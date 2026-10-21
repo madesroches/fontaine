@@ -609,18 +609,6 @@ carries the reasoning:
   not in rig `AgentHook`s; hooks are for bookkeeping only.
 - 2026-10-20: rig's Bevy-based harness/TUI (`rig-harness`, `rig-tui`) is not adopted; Fontaine
   keeps its own ratatui TUI.
-- 2026-10-20 (superseded 2026-10-21 — dropped; the floors survive as the every-mode deterministic
-  layer, see below): `bypass` mode was to be included in v1 behind an explicit opt-in flag with a
-  loud warning, containers-only framing — parity with Claude Code's `bypassPermissions`
-  **including its floor**: `[permissions] deny` rules and the never-auto-approved critical-path
-  structural check (`rm` of filesystem root `/`, top-level dirs, home, cwd and its parents, `/etc`,
-  `$HOME`, `.git`, dotfiles) still blocked even under bypass (reason then: Claude Code documents
-  "deny rules block in every mode, including bypassPermissions"; keeping floors is the faithful
-  parity — the floors stay, the mode goes).
-- 2026-10-20 (superseded 2026-10-21; the same-gate rule survives, now in v1): No subagents in v1;
-  when added (post-v1), subagent spawns/reports and
-  `SendMessage`-style agent-to-agent calls go through the same guardian gate (Claude Code's
-  classifier reviews agent-team messages the same way).
 - 2026-10-20: License is Apache-2.0 — the repo's `LICENSE` is verbatim Apache-2.0 text; rule prose
   adapted from Anthropic's published documentation gets an attribution note in docs/guardian.md.
 - 2026-10-21: "fontaine" is the final product name — binary, crate prefix, config dir
