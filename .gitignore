@@ -2,7 +2,7 @@
 rust/target/
 
 # Fontaine local settings (personal, never committed)
-.fontaine/settings.local.toml
+**/.fontaine/settings.local.toml
 
 # Emacs
 *~
