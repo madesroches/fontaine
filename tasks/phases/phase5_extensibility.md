@@ -33,7 +33,9 @@ in the main session, and their results return to the parent as a summary.
   never looser than inherited, on the session ladder `dontAsk < manual < acceptEdits < auto`
   (`plan` is off the ladder: a session-root interactive posture, not a child mode).
   `plan`/`acceptEdits`/`auto` are reachable for a child only via `"inherit"` from a parent already
-  there — so a `manual` parent can never produce a silently-adjudicating `plan` child.
+  there — so a `manual` parent can never produce a silently-adjudicating `plan` child. The child's mode is
+  not fixed at spawn: it is re-evaluated on every call as the tighter of its own setting and the
+  parent's current mode.
   (iii) **Parent↔child and peer messages** (Claude Code's `SendMessage`-style) go through the same guardian gate — the
   2026-10-20 decision, which stands and now applies in v1.
 - **Budgets.** `[agents] max_parallel` (default small, e.g. 4) plus per-subagent token/cost budgets, so fan-out cannot
@@ -68,7 +70,8 @@ transcript.
    own context/model/per-type restricted registries; list/stream-status/interrupt; spawn call
    gated as a pipeline request; subagent tool calls re-enter the permission pipeline with
    one-way mode inheritance (child mode ≤ parent mode); agent-to-agent messages through the same
-   guardian gate; results routed through the tool-result scanner path; `[agents]` budgets
+   guardian gate; results returned as ordinary tool results through the shared result-handling hook (where the
+   Phase 6 scanner attaches); `[agents]` budgets
    enforced; TUI background-agents panel (status, kill/pause, per-agent decisions).
 4. Docs — `docs/mcp.md`: declaring stdio / streamable-HTTP servers in config, and the MCP trust
    model (server annotations are hints surfaced to the guardian, never gates; all MCP tools
@@ -76,7 +79,7 @@ transcript.
    (model / restricted toolset / mode with the ≤-parent ladder), nesting depth cap, spawn gating,
    per-agent audit in the background-agents panel; extend `docs/tui.md` with the panel; add the
    session persistence/resume surface to `docs/architecture.md`; extend `docs/configuration.md`
-   with the MCP server keys and every `[agents]`/`[agents.types]` key.
+   with the MCP server keys and every `[agents]`/`[agents.types]` key; append a CHANGELOG entry.
 
 ## Roadmap slot (not urgent)
 
@@ -86,7 +89,7 @@ Amendments A3–A4 (analysis-strategic-verdict; folded in per user decision 2026
 (sandbox = blast radius, guardian = intent). Fontaine-verified srt/bubblewrap launch is what
 unlocks `[guardian] profile = "minimal"` (see the Phase 4 plan). When taken, its deliverables:
 the spike, the **escape-detection test suite** (mount/umount, docker.sock, cgroup-control writes,
-bind-mount symlink escape, proxy bypass → denied even under minimal — Manual Verification item 8),
+bind-mount symlink escape, proxy bypass → denied even under minimal — Manual Verification item 6),
 and **`docs/sandboxing.md`** documenting the integration path, the container containment probe
 (`--in-container` verification), and the escape classes minimal must still deny. And keep
 `fontaine-guardian` **dependency-light and lift-out-able** as an embeddable crate, so other
@@ -101,17 +104,24 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
 ## Tests owned by this phase
 
 - **parallel agents** (master Testing Strategy): spawn-call gating (task × toolset × model
-  composite); mode-inheritance invariant (child ≤ parent, never looser); per-type registry is a
-  subset of the parent's; budget caps stop a subagent; subagent results pass the tool-result
-  scanner path; `SendMessage`-style peer messages hit the same gate.
+  composite); mode-inheritance invariant (child ≤ parent, never looser), including a test where the
+  parent switches mode mid-run and the child's next call follows the tighter mode; per-type registry
+  is a subset of the parent's; budget caps stop a subagent; subagent reports return as ordinary
+  tool results through the shared result-handling hook; `SendMessage`-style peer messages hit the
+  same gate.
+- Parallel orchestration (deterministic `test_utils` models or cassettes): spawn N subagents, kill
+  one, assert the others complete and every tool call has a gate decision in the audit log keyed by
+  agent id.
 - MCP: servers from config register wrapped `Arbitrary`; a declared `readOnlyHint` never earns a
   fast path (choke-point test extended to MCP-imported tools).
 - Persistence: save/resume round-trip through `AgentRun`.
 
 ## Definition of done
 
-- Manual Verification item 7 passes (4 parallel subagents, kill-one-mid-run, per-agent audit).
-- Item 8 ships **with the sandbox slot when taken** (minimal-profile escape denies + probe
+- Manual Verification item 5 passes (agents-panel visual check; gating and audit are covered by the
+  automated parallel-orchestration test).
+- Item 6 ships **with the sandbox slot when taken** (minimal-profile escape denies + probe
   fail-closed); the build steps above do not depend on it.
 - `docs/mcp.md` + `docs/agents.md` complete; every new config key documented at ship.
+- CHANGELOG entry appended.
 - Log the phase in the master plan's Progress log.

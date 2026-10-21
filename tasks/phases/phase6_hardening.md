@@ -31,7 +31,7 @@ path — see the Phase 5 plan.
    reaches the agent, why off-by-default (latency), and that scanned results carry into the
    subagent-report path; write the gated-download / Llama 4 Community License caveat up beside
    the in-app first-enable notice; `docs/configuration.md` for `scan_tool_results`, the BYO
-   scanner interface, and the cheap-LLM fallback.
+   scanner interface, and the cheap-LLM fallback; append a CHANGELOG entry.
 
 ## Composite guardian — roadmap direction (Phase 6+)
 
@@ -51,6 +51,8 @@ master plan's §Composite guardian; v1's shipped spine — deterministic tiers +
   benign results unflagged; annotation present before the agent reads the result).
 - BYO-scanner interface: a test scanner plugs in via the trait; default-off means zero behavior
   change until enabled.
+- Subagent reports (ordinary tool results from Phase 5) pass the scanner when enabled: an
+  injection-bearing report is flagged before the parent reads it.
 - License-notice path: first-enable notice fires exactly once per model download.
 
 ## Definition of done
@@ -58,4 +60,5 @@ master plan's §Composite guardian; v1's shipped spine — deterministic tiers +
 - Scanning demonstrable in a live session behind the config flag, with the license caveat
   surfaced; off remains the default.
 - `docs/guardian.md` scanning section complete.
+- CHANGELOG entry appended.
 - Log the phase in the master plan's Progress log.

@@ -26,14 +26,18 @@ I like" requirement is met by dependency rather than by code we maintain.
 2. Headless surface `fontaine -p "task"` on the same core — a non-interactive run driven by the CI
    runner, the Phase-0 golden-dataset eval harness, and the integration tests, so the core is
    testable headlessly from day one (the `clap` entry from Phase 0 step 1 wires to the rig model
-   layer now and to the agent loop as soon as Phase 2 step 2 lands). Denial semantics (unchanged
-   from the earlier Phase-5 draft): headless `auto` = guardian-only adjudication (nothing
-   prompts); headless `manual` = anything not pre-allowed is denied, matching Claude Code.
+   layer now and to the agent loop as soon as Phase 2 step 2 lands). Headless semantics (Claude Code
+   parity; enforced by the pipeline in Phase 3 for manual/dontAsk and Phase 4 for auto): nothing
+   prompts — every would-prompt outcome (ask-rule match, Escalate verdict, low-confidence
+   escalation, critical-path/protected-path prompt, loop breaker) becomes a Deny returned to the
+   agent as the tool_result and the run continues; headless `manual` = anything not pre-allowed is
+   denied; headless `auto` = guardian-only adjudication. Exit codes: 0 run completed (denials do not
+   change it), 1 run error, 2 config or usage error.
 3. Docs — provider setup: grow `docs/configuration.md` with a `[model]` section carrying worked
    examples for every supported path (Anthropic, OpenAI, Gemini, Ollama, and OpenAI-compatible
    base URLs: OpenRouter / LM Studio / vLLM / LiteLLM) and env-key handling; document the headless
    `-p` surface (flags, exit codes, denial semantics, its role as the CI/eval driver) in
-   `docs/architecture.md`; refresh the README quickstart's links into `docs/`.
+   `docs/architecture.md`; refresh the README quickstart's links into `docs/`; append a CHANGELOG entry.
 
 ## Files created or modified
 
@@ -44,7 +48,8 @@ I like" requirement is met by dependency rather than by code we maintain.
 
 - **model wiring** (master Testing Strategy): config → rig provider-client mapping (provider
   choice, base URLs, env keys, guardian-model override), with one smoke test per provider against
-  a `wiremock` OpenAI-compatible endpoint.
+  a `wiremock` endpoint speaking that provider's wire format (Anthropic, OpenAI, Gemini); the
+  OpenAI-compatible mock serves only openai-compatible/Ollama.
 - Integration surface: the headless `-p` run is the driver for every later integration test
   (cassette replay lands with Phase 2/3 tests).
 
@@ -53,4 +58,5 @@ I like" requirement is met by dependency rather than by code we maintain.
 - Spike completes a streamed prompt + tool round-trip against a mock endpoint.
 - `fontaine -p "…"` runs non-interactively and exits with the run's result.
 - Provider docs examples compile-check against the config loader's schema tests.
+- CHANGELOG entry appended.
 - Log the phase in the master plan's Progress log.

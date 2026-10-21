@@ -68,6 +68,13 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
   pre-classifier → guardian in `auto`) before delegating to the inner tool. This is the **single
   choke point**: every tool — rig built-in, Fontaine-added, or MCP-imported — is registered
   wrapped, so nothing can execute without passing the gate.
+- **Session-state carrier**: the pipeline's inputs (mode, task intent, recent user messages,
+  session facts, prior denials, audit-log sink, and the human-approval callback) travel in a shared
+  `Arc<SessionState>` injected into every wrapper at registration; rig's per-call `&mut ToolContext`
+  carries only per-call identity (agent id) for per-agent audit keying. Because rig-core 0.45.0's
+  `Tool` has a `const NAME` and typed `Args`, the wrapper is a generic `GuardedTool<T: Tool>`
+  (`NAME = T::NAME`) for built-ins; MCP tools arrive as `DynamicTool` and are wrapped by a parallel
+  `DynamicTool` wrapper path. Both call the same `PermissionPipeline` entry point.
 
 `WorkspaceWrite` (write/edit within workdir) is auto-allowed only in `acceptEdits`/`auto`(guardian)
 per mode. `Arbitrary` (shell, webfetch, MCP tools) always hits the guardian in `auto` (shell calls
@@ -87,7 +94,8 @@ allow/deny decision itself.
 
 ## Steps
 
-1. `fontaine-tools`: `RiskClass` registry; `GuardedTool` decorator over `rig_core::tool::Tool`;
+1. `fontaine-tools`: `RiskClass` registry; generic `GuardedTool<T: Tool>` decorator over `rig_core::tool::Tool`, a `DynamicTool`
+   wrapper path for MCP, and the shared `Arc<SessionState>` carrier;
    register rig-tools' read/write/edit/search/shell wrapped with risk classes; expose the dedicated
    first-party read tools (`ls`/`read`/`glob`/`grep`) with containment inside the tool; add
    `webfetch`; workspace-scope/symlink validator; harden shell (timeout, output cap) via wrapper
@@ -100,7 +108,7 @@ allow/deny decision itself.
    `shell`/`webfetch`), each tool's `RiskClass`, what earns the read-only fast path
    (Fontaine-enforced workspace containment — never the label), and the shell hardening (timeout,
    output cap); extend `docs/architecture.md` with the agent-loop diagram (rig runtime + wrapped
-   registry); link the new page from `docs/index.md`.
+   registry); link the new page from `docs/index.md`; append a CHANGELOG entry.
 
 ## Files created or modified
 
@@ -123,4 +131,5 @@ allow/deny decision itself.
   Phase 3).
 - Choke-point test green: every registered tool has a `RiskClass`.
 - `docs/tools.md` complete for the shipped inventory.
+- CHANGELOG entry appended.
 - Log the phase in the master plan's Progress log.

