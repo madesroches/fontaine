@@ -18,7 +18,7 @@ Scorecard:
 |---|---|
 | Is the market validated? | Yes — Anthropic and OpenAI both shipped LLM adjudication as default/flag in Aug 2026 |
 | Is the open cell empty? | Yes — every open harness still uses static allow/deny/ask |
-| Is the cell defensible long-term? | No — one OpenCode/Goose/claw-code plugin fills it |
+| Is the cell defensible long-term? | No — one OpenCode/Goose/claw-code-lineage plugin fills it (successors LazyCodex / Gajae-Code) |
 | Is the differentiation non-trivial? | Partially — choke-point architecture + eval harness are real work; the harness itself is commodity |
 | Biggest existential risk | KILL #1 (absorption as a plugin) and KILL #3 (public guardian bypass before trust is established) |
 | Recommendation | Build, with the five plan amendments below; adopt kill criteria |
@@ -44,14 +44,14 @@ fold these into the plan:
   maintenance-mode project since May 2025) — Fontaine's guardian is a pre-execution
   **authorization gate** with deny/escalate verdicts and prose intent rules. Different seat;
   cite their paper's anti-proprietary-guardrails argument (§2.4) — it is our pitch from Meta.
-- Adopt **PromptGuard 2** as the default tool-result scanner (Phase 6 item 12) via ONNX Runtime
+- Adopt **PromptGuard 2** as the default tool-result scanner (Phase 6 item 14) via ONNX Runtime
   (`ort` crate) or a sidecar, instead of a hand-rolled cheap-model pass: model-card recall @1% FPR
-  0.971 EN / 0.956 multilingual (language-dependent; "97.5%" is third-party rounding), 19–92ms.
-  Caveat to document: PromptGuard 2 weights are **Llama-Community-licensed** (non-commercial
-  terms; *not* gated — no HF approval required today) — the air-gapped
-  "fully open" story must say "bring your own scanner model; PromptGuard 2 supported if
-  licensed" (Llama Guard 4 is Apache 2.0 but too heavy for hot-path scanning; ONNX ports and
-  mirrors exist).
+  97.5% (English), AUC 0.98 EN / 0.995 multilingual, 19–92ms.
+  Caveat to document: PromptGuard 2 weights are **Llama-4-Community-licensed** (commercial use
+  permitted; the HF repos *are* gated — license acceptance required) — the air-gapped
+  "fully open" story must surface that at first enable and keep a "bring your own scanner model"
+  interface (Llama Guard 4 is under the same license — not Apache 2.0 — and too heavy for
+  hot-path scanning; ONNX ports and mirrors exist but don't change the license).
 - Report Fontaine's eval results in **AgentDojo-comparable terms** (ASR × utility) against their
   published baseline: no-defense .176 / PromptGuard .075 / AlignmentCheck .029 / combined .0175.
 - Mine their MIT-licensed AlignmentCheck prompts (paper Appendix C.6) as attributed prior art
@@ -91,7 +91,8 @@ Quickstart, README, and demo should lead with #1 (it's the only one with no alte
 ## Kill criteria (pre-committed, to avoid sunk-cost drift)
 
 Abandon or pivot fontaine-the-harness (keeping fontaine-guardian-the-library) if any of:
-- OpenCode, Goose, or claw-code ships a first-party LLM-guardian permission backend **with
+- OpenCode, Goose, or the claw-code lineage's active successors (LazyCodex / Gajae-Code) ship a
+  first-party LLM-guardian permission backend **with
   published evals** before Fontaine's eval harness is public.
 - A public red-team bypass of Fontaine's guardian cannot be closed within one release cycle
   (the category's trust bar, per KILL #3).

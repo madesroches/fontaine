@@ -13,7 +13,8 @@ story is. The guardrail-runtime market (LlamaFirewall, proxies, MCP scanners) is
 ### Tier 1 — Closed platform harnesses (the feature originators)
 
 **Claude Code (Anthropic)** — the product Fontaine's signature feature replicates.
-- Auto mode is now the **default** for Pro/Max/Team (since Aug 14, 2026). A server-side
+- Auto mode is now the **default**: the built-in starting mode for interactive sessions on every
+  plan (since v2.1.283; initially Pro/Max/Team from Aug 14, 2026). A server-side
   classifier reviews every non-read-only action; Anthropic reports **89% of dangerous commands
   caught vs 13.6% for human reviewers** (study of 1,053 paid testers).
   (anthropic.com/engineering/claude-code-auto-mode; explainx.ai/blog/claude-code-auto-mode-default-pro-max-team-august-2026)
@@ -27,7 +28,7 @@ story is. The guardrail-runtime market (LlamaFirewall, proxies, MCP scanners) is
 - Limits for our purposes: classifier is **closed, server-side, Anthropic-models-only**. You cannot
   inspect, extend, or run it locally. That is precisely Fontaine's opening.
 
-**Codex CLI (OpenAI)** — shipped the same pattern three weeks before Claude Code's default flip.
+**Codex CLI (OpenAI)** — shipped the same pattern the same week Claude Code announced its default flip (`--approve-for-me` / auto-review, v0.147.0, Aug 2026).
 - `--approve-for-me` (v0.147.0, Aug 7, 2026): a **separate reviewer agent** answers approval
   requests at the sandbox boundary. "Auto-review replaces manual approval at the sandbox boundary
   with a separate reviewer agent." (codex-docs.com/en/docs/sandboxing/auto-review;
@@ -62,23 +63,31 @@ embeddable `goosed` server. (developersdigest.tech/blog/github-trending-goose-20
   LLM-adjudicated.
 - Same threat profile as OpenCode: extensible enough that a guardian could be added upstream.
 
-**Claw Code (instructkr)** — clean-room Rust+Python reimplementation of Claude Code's
-architecture; one of the fastest repos to ~100k stars after Claude Code's source leaked via npm.
-(github.com/instructkr/claw-code; thursdai.news/topics/coding; arxiv.org/html/2609.00006v1
+**Claw Code (ultraworkers, formerly instructkr)** — clean-room Rust reimplementation of Claude
+Code's architecture; one of the fastest repos to ~100k stars (now ~195k, MIT) after Claude Code's
+source leaked via npm; transferred from instructkr to ultraworkers.
+(github.com/ultraworkers/claw-code; thursdai.news/topics/coding; arxiv.org/html/2609.00006v1
 "Harness Engineering" — a source-code study of eleven coding agents including Claw Code)
-- Today: ~20–25% of Claude Code's functional surface — core loop, SSE client, six tools,
+- **Retired (per its README, Oct 2026)**: "not the serious production project — closer to a museum
+  exhibit", an agent-managed exhibit; its active successors are **LazyCodex**
+  (code-yeongyu/lazycodex) and **Gajae-Code** (Yeachan-Heo/gajae-code). The crates.io `claw-code`
+  crate is a deprecated stub renamed to `agent-code`.
+- Dated snapshot (eigent.ai, Apr 1 2026): ~20–25% of Claude Code's functional surface — core loop,
+  SSE client, six tools,
   **three-tier static permissions (Allow/Deny/Prompt)**; no MCP, no subagents, no hooks.
   (eigent.ai/blog/claw-code)
 - Provider-agnostic ambition, but **no auto-mode classifier reimplementation** found in research.
-- Threat level: proves the *harness* is commoditized and cloneable in weeks. If this community
-  decides to clone auto mode too, they beat us to "open Claude Code parity" without the rig
+- Threat level: proves the *harness* is commoditized and cloneable in weeks. The lineage's active
+  successors (LazyCodex / Gajae-Code) carry that clone speed — if they decide to clone auto mode
+  too, they beat us to "open Claude Code parity" without the rig
   dependency.
 
 **Crush (Charmbracelet)** — ~26k stars, Go-native, model-agnostic, polished TUI. Same category,
 static permissions. (arxiv Harness Engineering paper)
 
-**Long tail**: yavchn.com ranks **167 agent harnesses** weekly; lib.rs lists multiple Rust CLI
-agents (including a `claw-code` crate). The harness layer is saturated and free.
+**Long tail**: github.com/RyanAlberts/best-of-Agent-Harnesses is a "ranked list of 167 AI agent
+harnesses … rescored weekly"; lib.rs lists multiple Rust CLI
+agents (the `claw-code` crate is a deprecated stub — renamed `agent-code`). The harness layer is saturated and free.
 
 ### Tier 3 — Local-first Rust agents
 
@@ -93,7 +102,7 @@ exact pitch Fontaine's model-agnostic story competes with, minus the guardian. D
 | Codex CLI | ✓ (Rust) | ✗ (OpenAI) | ✗ (closed reviewer) | **LLM reviewer** at sandbox boundary | ✓ |
 | OpenCode | ✓ | ✓ | ✗ | static allow/deny/ask + policies | ✗ |
 | Goose | ✓ | ✓ | ✗ | human prompts / trust settings | ✗ |
-| Claw Code | ✓ | ✓ (ambition) | ✗ | static 3-tier | ✗ |
+| Claw Code (retired; lineage: LazyCodex / Gajae-Code) | ✓ | ✓ (ambition) | ✗ | static 3-tier | ✗ |
 | Crush | ✓ | ✓ | ✗ | static | ✗ |
 | **Fontaine** | ✓ | ✓ | **✓** | **LLM guardian, prose rules, fail-closed** | ✗ (v1, out of scope) |
 
@@ -107,5 +116,6 @@ exact pitch Fontaine's model-agnostic story competes with, minus the guardian. D
 3. **The empty cell in the table is real**: open + any-model + local LLM guardian + inspectable
    prose rules. Fontaine targets precisely that cell, and today nothing occupies it.
 4. **The cell is undefended.** It's empty because nobody shipped it yet, not because it's hard to
-   enter. OpenCode's plugin API, Goose's extensions, and Claw Code's momentum are all one PR away
+   enter. OpenCode's plugin API, Goose's extensions, and the claw-code lineage's momentum (now
+   active as LazyCodex / Gajae-Code) are all one PR away
    from filling it. Time-to-market and eval quality are the only durable claims. (See analysis-04.)

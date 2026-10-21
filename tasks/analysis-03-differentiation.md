@@ -29,8 +29,9 @@ auto mode as an open standard rather than an Anthropic service.**
   adjacent, EU public sector) and zero incumbents.
 
 ### 3. Prose intent-aware rules vs static allow/deny/ask
-- Every open harness (OpenCode, Goose, Claw Code, Crush) gates with **pattern/config lists**.
-  Anthropic's own data: humans rubber-stamp 93% of prompts, catch 13.6% of dangerous ones —
+- Every open harness (OpenCode, Goose, Crush, and the claw-code lineage — Claw Code itself is
+  retired as a museum exhibit, its active successors LazyCodex / Gajae-Code) gates with **pattern/config lists**.
+  Anthropic's own data (Aug 2026 announcement): humans approve 97% of permission prompts, catch 13.6% of dangerous ones —
   static lists are the same failure mode in config form.
 - Prose rules ("force-push allowed only when the user specifically asked for it"; "never send repo
   contents to third-party review APIs") express **intent-conditional policy** that regex cannot,
@@ -41,7 +42,8 @@ auto mode as an open standard rather than an Anthropic service.**
 ### 4. Guardian-native architecture vs bolted-on guardrail
 - LlamaFirewall et al. are libraries an agent runtime integrates; the integration must be written
   and maintained per harness — and Meta's own project shows maintenance-mode commit history
-  (bot-only chores; no Meta declaration — see `research-llamafirewall.md` §6). More fundamentally, AlignmentCheck is a trace *drift
+  (predominantly bot chores since March 2026 — last functional change Jan 2026, last commit
+  Aug 18, 2026; no Meta declaration — see `research-llamafirewall.md` §6). More fundamentally, AlignmentCheck is a trace *drift
   monitor*: it can halt a run, but it cannot deny one tool call pre-execution, explain the denial
   to the agent, and keep the session running. Fontaine's choke point is architectural: **every** tool — built-in,
   Fontaine-added, or MCP-imported — is registered wrapped in `GuardedTool`, and a test fails if any
@@ -66,7 +68,8 @@ auto mode as an open standard rather than an Anthropic service.**
 
 ## Why it's not trivial (honest engineering assessment)
 
-The loop is easy — Claw Code proved a harness skeleton is weeks of work. The non-trivial 20%:
+The loop is easy — Claw Code proved a harness skeleton is weeks of work (the repo has since
+retired as a museum exhibit; the lineage continues as LazyCodex / Gajae-Code). The non-trivial 20%:
 
 1. **Adjudication quality is an empirical problem, not a code problem.** The plan's eval harness
    (~150+ golden cases across benign/attack/ambiguous classes) *is* the product. Anthropic tuned

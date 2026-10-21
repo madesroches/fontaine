@@ -29,20 +29,21 @@ its AgentDojo numbers; the harness-native adjudication gate remains unclaimed.
   CC-BY-NC-4.0 and the enclosing PurpleLlama repo is CC-BY-NC-4.0, so the *code* vendors cleanly
   under permissive terms, the *examples and weights* do not). Model weights:
   **PromptGuard 2** (`Llama-Prompt-Guard-2-86M/22M`, updated Apr 29, 2025) is under the
-  **Llama Community License** (non-commercial; requires license compliance + use-policy adherence +
-  a "Built with Llama" notice) — but carries **no gated approval** (per the
-  HF model-card YAML `license:` field). **Llama Guard 4 12B** is explicitly **Apache 2.0** — clean
-  for the "fully open" story, but 12B is too heavy for hot-path scanning.
-  `meta-llama/Llama-Firewall-AlignCheck-8B` *is* gated (verified: returns 401 without access
-  grant). Neither PromptGuard 2 nor Llama Guard 4 requires Meta license approval today; the gate
-  could be reinstated — flag that.
+  **Llama 4 Community License** — which **permits commercial use** (royalty-free, conditional;
+  extra restrictions only above 700M monthly active users) with AUP adherence + a "Built with
+  Llama" notice — and the HF repos are **gated** (`gated: "manual"` — license acceptance required
+  before download, verified via HF API). **Llama Guard 4 12B** is **not Apache-2.0** — its LICENSE
+  file in PurpleLlama is also the Llama 4 Community License, and it is gated too; 12B is in any
+  case too heavy for hot-path scanning. No AlignCheck model was released at all — see §4.2.
 - Paper: Chennabasappa, Nikolaidis, Song, Molnar, … Saxe (Meta AI Security), arXiv:2505.03574,
   May 2025. Explicit framing: "a real-time guardrail monitor to serve as a **final layer of
   defense**"; analogized to **Snort/Zeek/Sigma** — a shared, community-extensible security
   foundation, not a product.
-- Design stance vs proprietary systems (paper §2.4): provider-embedded safety (OpenAI moderation,
-  Constitutional AI) offers "limited visibility, auditability, and customizability" — *the exact
-  same argument Fontaine makes against Claude Code's closed classifier.* We should cite them.
+- Design stance vs proprietary systems: the quoted complaint — provider-embedded safety (OpenAI
+  moderation, Constitutional AI) offers "limited visibility, auditability, and customizability" —
+  is from the paper's **Introduction (§1)**; §2.4 ("Open-Source vs. Proprietary Approaches") says
+  "limited visibility and extensibility". *The exact same argument Fontaine makes against Claude
+  Code's closed classifier.* We should cite them.
 
 ## 3. Architecture
 
@@ -73,14 +74,10 @@ ScanResult(decision=ALLOW|BLOCK, reason="prompt_guard"|"agent_alignment"|..., sc
 - Trained only on *explicit jailbreak* patterns (instruction overrides, role reassignment, token
   injection); energy-based loss for OOD precision; tokenization fix against fragmented-token /
   whitespace adversarial evasion.
-- Direct-jailbreak benchmarks: 86M — AUC .98 EN / .995 multilingual (paper Table), 92.4ms per
-  512-token classification (A100). Recall @ 1% FPR is **language-dependent**: **0.971 EN / 0.956
-  multilingual** per the HF model card (en/vi/th/id/hi and it-IT/fr-FR/de-ES); Meta's blog reports
-  **0.63 (EN) / 0.73 (multilingual)** recall@1%FPR on its own eval set [needs verification —
-  model-card vs blog eval sets differ; the widely-quoted "97.5% recall @1% FPR" appears in no Meta
-  source and is third-party rounding of the 0.971 figure]. 22M — AUC .995 EN,
-  recall 88.7% @1% FPR, **19.3ms**. (v1 comparison: recall 21.2% @1% FPR — the improvement is
-  mostly false-positive reduction.)
+- Direct-jailbreak benchmarks (HF model card + paper §4.1 table): 86M — **recall @ 1% FPR 97.5%
+  (English)**, AUC .98 EN / .995 multilingual, 92.4ms per 512-token classification (A100).
+  22M (English-only model) — recall 88.7% @1% FPR, **19.3ms**. (v1 comparison: PromptGuard 1
+  recall 21.2% @1% FPR — the improvement is mostly false-positive reduction.)
 - AgentDojo: as sole defense, ASR .176 → **.075** at ~3% utility cost.
 - Known limit (and our plan already cites the research): specialized detectors like this catch
   ~0–2% of *realistic agent* injections beyond explicit jailbreak phrasing; it's a cheap first
@@ -93,15 +90,17 @@ ScanResult(decision=ALLOW|BLOCK, reason="prompt_guard"|"agent_alignment"|..., sc
   injection defense (their claim).
 - Scans **assistant-role messages** (reasoning + tool invocations + plans), i.e. it audits the
   trace, incrementally — it is a **drift detector**, not a pre-execution per-tool-call gate.
-- Backing model matters enormously (paper Appendix C ablation): with **Llama 4 Maverick or
+- Backing model matters enormously (paper Appendix C ablation; C.2: small backbones degrade
+  severely): with **Llama 4 Maverick or
   Llama 3.3 70B** it reaches **>80% recall at <4% FPR** on Meta's in-house goal-hijacking
-  benchmark; smaller models degrade sharply. A **fine-tuned `Llama-Firewall-AlignCheck-8B`**
-  was released (gated, Llama license).
+  benchmark. AlignmentCheck remains a **few-shot prompting method** over large hosted models
+  (needs `TOGETHER_API_KEY`); **no small open AlignCheck model was released** — Meta published
+  only the eval dataset `facebook/llamafirewall-alignmentcheck-evals` (MIT).
 - AgentDojo: AlignmentCheck alone ASR .176 → **.029** (−84%) with utility .477 → .431;
   **combined with PromptGuard 2: ASR → .0175 (−90%), utility .427**. Beats Spotlighting
   (arXiv:2410.10785, Samuel et al.), paraphrasing, and CaMeL-style defenses on this benchmark.
   These numbers are the **LlamaFirewall paper's own runs** (§4.3.2) — the AgentDojo paper
-  (arXiv:2406.18649, Liu/Yu/Li/Li, ICLR 2025) never mentions LlamaFirewall or AlignmentCheck, and
+  (arXiv:2406.13352, Debenedetti et al., NeurIPS 2024 Datasets & Benchmarks) never mentions LlamaFirewall or AlignmentCheck, and
   its published table is **task-completion under attack** (defense effectiveness = benign success
   minus attack success), so the two papers' numbers are not directly comparable. A circulated
   "ASR <1% with LlamaFirewall" headline (the abstract-level claim) corresponds to Table 6's
@@ -130,7 +129,7 @@ ScanResult(decision=ALLOW|BLOCK, reason="prompt_guard"|"agent_alignment"|..., sc
 | Adjudication context | messages/trace | `AdjudicationRequest`: task intent, FONTAINE.md, tool args, cwd, **git remotes at session start, pre-session file inventory, prior denials** |
 | Deny UX | none (library returns a verdict) | inline `[Rule]` + explanation, `/denied` retry list, loop breaker, "teach the rules" flow |
 | Fail-closed | not a framework concept | every non-verdict outcome = Deny (code, not LLM) |
-| Judge model | default **Together-hosted** Llama 4 Maverick; gated 8B fine-tune; small models degrade | any rig provider incl. **fully local** Ollama/vLLM, independently configurable |
+| Judge model | default **Together-hosted** Llama 4 Maverick (few-shot prompting; no small open AlignCheck model released); small backbones degrade | any rig provider incl. **fully local** Ollama/vLLM, independently configurable |
 | Language | Python, in-process | Rust; harness-native |
 | Modes | none | manual / acceptEdits / plan / auto / dontAsk / bypass |
 
@@ -142,25 +141,26 @@ job — but the public will conflate them, so the plan must articulate this cris
 
 ## 6. Project health (verified via GitHub API, Oct 2026)
 
-- Commit history on `LlamaFirewall/` since ~Mar 2026: **exclusively `meta-codesync[bot]` chores**
-  — dependency vuln bumps (postcss, lodash, uuid, minimatch…), lint cleanups ("Remove unused type
-  error suppressions", "Enable Pyrefly"). Last substantive feature work dates to the 2025 launch.
+- Commit history on `LlamaFirewall/`: **predominantly bot chores since March 2026**
+  (`meta-codesync[bot]`) — dependency vuln bumps (postcss, lodash, uuid, minimatch…), lint
+  cleanups ("Remove unused type error suppressions", "Enable Pyrefly"). The last functional
+  changes were small (a tokenizer fix and a model addition, Jan 2026); last commit 2026-08-18.
+  Last substantive feature work dates to the 2025 launch.
 - Attribution note on "maintenance mode": Meta has **not** said in its own blog that the project
-  is in maintenance mode or "will not be updated further" — no such LlamaFirewall statement exists,
-  and the 2025-04-05 launch blog says the team "will continue to release new defenses". The
-  end-of-line facts are narrower and come from the model docs themselves:
-  LlamaGuard4.md — Llama Guard 4 is "the final version" of the line, "will not be updated further"
-  and has no successor; the PromptGuard HF model card — "The final version of PromptGuard 2 will
-  not be updated further." The facebook/PromptGuard repo itself remains public and responsive
-  (open issues through Sep 2026; latest release 0.3.1, 2025-08-08). The maintenance-mode reading
-  above is *our* commit-history evidence, not a Meta declaration. Actionable conclusion: treat
+  is in maintenance mode — no such LlamaFirewall statement exists, and the 2025-04-05 launch blog
+  says the team "will continue to release new defenses". The model cards make no end-of-line
+  declaration either — they say improvements "will be incorporated into future versions" (there
+  is no `meta-llama/PurpleLlama/LlamaGuard4.md`, and PromptGuard's code lives under
+  meta-llama/PurpleLlama — there is no facebook/PromptGuard repo). The maintenance-mode reading
+  above is *our* commit-history evidence (predominantly bot chores since March 2026; last commit
+  2026-08-18), not a Meta declaration. Actionable conclusion: treat
   classifier updates as slow-moving and support BYO scanners (§7.2).
 - No MCP scanner, no Rust port, no coding-agent integration shipped in 15+ months. The paper's
   own future-work list (multimodal, distillation, broader threat coverage incl. **unsafe
   tool-use**, better agent benchmarks) has not materialized publicly.
 - AlignmentCheck still labeled experimental; still defaults to a hosted API.
 - Ecosystem uptake is real but third-party: ONNX ports (`shisa-ai/promptguard2-onnx`,
-  `gravitee-io/*-onnx`), license-free mirrors (`project-free-llama/Prompt-Guard-2-86M`),
+  `gravitee-io/*-onnx`), license-free mirrors (`project-free-llama/Llama-Prompt-Guard-2-86M`),
   Mozilla.ai `any-guardrail` wraps PromptGuard 2, gateway products (Gravitee) embed it.
   **PromptGuard 2 has become infrastructure; LlamaFirewall-the-framework has not.**
 
@@ -176,18 +176,23 @@ a Llama-platform priority.
    same insight (reasoning-model oversight beats lexical filters — their AgentDojo table is the
    best public evidence), different seat (library/monitoring vs harness/authorization).
    Cite their anti-proprietary argument (§2.4 of the paper) — it *is* our pitch, from Meta.
-2. **Adopt PromptGuard 2 as the default Phase-6 tool-result scanner** (replaces the hand-rolled
-   "second cheap-model pass"): 19–92ms CPU/GPU latency, recall @1% FPR **0.971 (EN) / 0.956
-   (multilingual)** per the HF model card — language-dependent, and the "97.5%" figure is
-   third-party rounding — on explicit jailbreaks, free. Rust options, in order of pragmatism: (a)
-   ONNX Runtime via the `ort` crate with the community ONNX ports or our own export; (b) tiny
-   sidecar Python process; (c) keep the cheap-LLM pass as fallback. Note the **weight-license
+2. **Adopt PromptGuard 2 as the default Phase-6 tool-result scanner** (user decision 2026-10-21;
+   replaces the hand-rolled
+   "second cheap-model pass"): 19–92ms CPU/GPU latency, recall @1% FPR **97.5% (English)** with
+   AUC 0.98 EN / 0.995 multilingual per the HF model card and paper §4.1 table — on explicit
+   jailbreaks, free. Rust options, in order of pragmatism: (a)
+   ONNX Runtime via the `ort` crate (**default**, with the community ONNX ports or our own
+   export); (b) tiny
+   sidecar Python process; (c) keep the cheap-LLM pass as fallback / BYO option. Note the **weight-license
    wrinkle** for the air-gapped "fully open" story: PromptGuard 2's weights carry the
-   **Llama Community License** (non-commercial terms; no gated approval today — that, not Llama
-   Guard 4's Apache 2.0, is the license wrinkle to document; LG4 is license-clean but 12B is too
-   heavy for hot-path scanning) — mirror/ONNX ports exist but the cleanest claim is "bring your
-   own scanner model; PromptGuard 2 supported if licensed". Treat classifier updates as
-   slow-moving (final-generation models, §6) and support BYO scanners.
+   **Llama 4 Community License** (**commercial use permitted** — royalty-free, with AUP +
+   "Built with Llama" notice; extra restrictions only above 700M monthly active users) and the
+   HF repos are **gated** (`gated: "manual"`, license acceptance required). Llama Guard 4 is
+   under the same license (not Apache-2.0) and 12B is too heavy for hot-path scanning. Mirrors and
+   ONNX ports exist but do not change the license; the cleanest claim is a **BYO-scanner
+   interface** ("bring your own scanner model"), with PromptGuard 2 the default where its terms
+   are acceptable — surface the gated-download caveat at first enable. Treat classifier updates as
+   slow-moving (§6 commit-history reading) and support BYO scanners.
 3. **Eval alignment**: report Fontaine guardian results in AgentDojo-comparable terms
    (ASR reduction × utility cost) alongside our golden dataset, using their table
    (no-defense .176 / PromptGuard .075 / AlignmentCheck .029 / combined .0175) as the published
@@ -207,16 +212,19 @@ a Llama-platform priority.
   Getting Started — Together API requirement, HF model download flow, OpenAI/LangChain examples).
 - Repo: github.com/meta-llama/PurpleLlama/tree/main/LlamaFirewall (README; LICENSE MIT, with
   `Examples/` CC-BY-NC-4.0 and the enclosing PurpleLlama repo CC-BY-NC-4.0;
-  commit history via api.github.com — bot-chores-only evidence behind §6, latest commits 2026-08-18).
-- Models: huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M and -22M (Llama Community License —
-  non-commercial terms, **not gated**; model-card recall@1% FPR 0.971 EN / 0.956 multilingual;
-  updated Apr 2025; "The final version of PromptGuard 2 will not be updated further");
-  meta-llama/Llama-Guard-4-12B (Apache 2.0 per model card; LlamaGuard4.md: "final version", no
-  successor);
-  meta-llama/Llama-Firewall-AlignCheck-8B (gated — 401 verified);
-  mirrors: project-free-llama/Prompt-Guard-2-86M, shisa-ai/promptguard2-onnx,
+  commit history via api.github.com — predominantly-bot-chores evidence behind §6, latest commits 2026-08-18).
+- Models: huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M and -22M (Llama 4 Community License —
+  commercial use permitted; **gated** downloads, `gated: "manual"` license acceptance required;
+  model-card recall@1% FPR 97.5% EN, AUC 0.98 EN / 0.995 multilingual;
+  updated Apr 2025; cards say improvements "will be incorporated into future versions");
+  meta-llama/Llama-Guard-4-12B (also Llama 4 Community License per its LICENSE in PurpleLlama,
+  also gated — not Apache 2.0);
+  AlignmentCheck: no released model — few-shot prompting method only; Meta published the eval
+  dataset facebook/llamafirewall-alignmentcheck-evals (MIT);
+  mirrors: project-free-llama/Llama-Prompt-Guard-2-86M, shisa-ai/promptguard2-onnx,
   gravitee-io/Llama-Prompt-Guard-2-*-onnx; wrapper: docs.mozilla.ai/any-guardrail.
-- Benchmarks compared against: AgentDojo — arXiv:2406.18649 (Liu, Yu, Li, Li, ICLR 2025; its
+- Benchmarks compared against: AgentDojo — arXiv:2406.13352 (Debenedetti, Zhang, Balunović,
+  Beurer-Kellner, Fischer & Tramèr, ETH Zürich, NeurIPS 2024 Datasets & Benchmarks; its
   published table is task-completion under attack — defense effectiveness = benign success −
   attack success; it does not mention LlamaFirewall); Spotlighting — arXiv:2410.10785
   (Samuel et al.).

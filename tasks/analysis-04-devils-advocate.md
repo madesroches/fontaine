@@ -15,9 +15,10 @@ thread). Its permission layer (`allow/deny/ask` + policies) is exactly the seam 
 - **If OpenCode ships an LLM-guardian permission backend** (first-party or popular plugin),
   Fontaine's entire value proposition becomes an OpenCode feature. Users do not switch harnesses
   for one feature; they enable a plugin.
-- Same story for **Goose** (Block-backed, Apache-2.0, extension architecture) and **Claw Code**
-  (a community whose explicit purpose is cloning Claude Code — auto mode is the most famous
-  un-cloned feature left, and cloning it is that project's obvious next milestone).
+- Same story for **Goose** (Block-backed, Apache-2.0, extension architecture) and the **claw-code
+  lineage, now active as LazyCodex / Gajae-Code** (Claw Code itself retired as a "museum exhibit";
+  the community's explicit purpose is cloning Claude Code — auto mode is the most famous
+  un-cloned feature left, and cloning it is the successors' obvious next milestone).
 - Fontaine's answer must be: be the *reference implementation and eval standard* so that when
   those plugins ship, they're compared against Fontaine's scorecard — or be so good they adopt
   the prompt/rules assets. There is no answer that involves being merely one more option.
@@ -69,8 +70,8 @@ CodeShield) explicitly designed as the final defense layer for *any* agent. Alig
 structurally adjacent to the guardian (audit agent reasoning against user goal), and Meta's
 brand makes it the comparison everyone will reach for.
 - **Deep-research downgrade** (see `research-llamafirewall.md`): the framework has been in
-  **maintenance mode since its May 2025 launch** — commit history through Aug 2026 is
-  exclusively bot dependency bumps; AlignmentCheck remains "experimental" and defaults to a
+  **maintenance mode since its May 2025 launch** — commit history is predominantly bot chores
+  since March 2026 (last functional change Jan 2026; last commit Aug 18, 2026); AlignmentCheck remains "experimental" and defaults to a
   *hosted* Together API; no MCP support, no Rust port, promised roadmap (distillation, unsafe
   tool-use coverage) unshipped in 15+ months. Meta shipped components, not a standard, and
   stopped investing. Also, AlignmentCheck is a trace *drift monitor* (halt-the-run), not a

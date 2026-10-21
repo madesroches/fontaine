@@ -16,13 +16,15 @@ product be plugged into an existing harness, making a guardian-native harness re
   a harness); used in production at
   Meta. Open-source guardrail system for building secure AI agents; four scanner tiers:
   - **PromptGuard 2** — 86M/22M DeBERTa-family classifiers for explicit jailbreak/injection
-    detection (model-card recall @1% FPR **0.971 EN / 0.956 multilingual** — language-dependent;
-    the "97.5%" figure is third-party rounding; 19–92ms on A100; weights under the Llama Community
-    License — **no gated approval** — ONNX ports and mirrors exist),
+    detection (model-card recall @1% FPR **97.5% (English)**, AUC 0.98 EN / 0.995 multilingual;
+    19–92ms; weights under the **Llama 4 Community License** — commercial use permitted — with HF
+    repos **gated** (license acceptance required); ONNX ports and mirrors exist),
   - **AlignmentCheck** — a few-shot **chain-of-thought auditor** of the agent's reasoning trace:
     a *drift monitor* (halt-the-run), not a pre-execution per-tool-call gate. Experimental;
     needs a big backing model (Llama 4 Maverick / Llama 3.3 70B) and **defaults to a hosted
-    Together API**; a gated fine-tuned AlignCheck-8B exists. AgentDojo: ASR .176→.029 alone,
+    Together API**; it remains a prompting method — no small open AlignCheck model was released
+    (Meta published only the eval dataset `facebook/llamafirewall-alignmentcheck-evals`, MIT).
+    AgentDojo: ASR .176→.029 alone,
     →.0175 combined with PromptGuard 2,
   - **CodeShield** — Semgrep/regex static analysis of generated code (8 languages, 50+ CWEs),
   - regex/custom scanners.
@@ -32,8 +34,8 @@ product be plugged into an existing harness, making a guardian-native harness re
   LangChain only. It guards *your* agent runtime; using it with OpenCode/Goose means writing
   that integration yourself.
 - **Project health (verified Oct 2026 via commit history)**: maintenance mode since the May 2025
-  launch — commits are exclusively `meta-codesync[bot]` dependency bumps and lint chores through
-  Aug 2026. No MCP support, no Rust port, promised future work (distillation, unsafe tool-use
+  launch — predominantly bot (`meta-codesync[bot]`) dependency bumps and lint chores since
+  March 2026 (last functional change Jan 2026; last commit Aug 18, 2026). No MCP support, no Rust port, promised future work (distillation, unsafe tool-use
   coverage) not shipped. PromptGuard 2 *the model* became widely-embedded infrastructure;
   LlamaFirewall *the framework* did not become a standard.
 - Threat assessment (revised down from first pass): AlignmentCheck + a harness plugin is still
