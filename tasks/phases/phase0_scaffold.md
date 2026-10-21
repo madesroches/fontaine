@@ -17,21 +17,21 @@ thing it scores.
    `windows-latest`, each from `rust/`: `cargo fmt --check`,
    `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo deny check` (advisories, licenses, bans, sources; cargo-deny installed at the pinned `0.20.2`, runs on all three OSes), then the offline eval fixture runs from
    step 2: default profile and `--profile minimal`), config loading (`fontaine-core/src/config.rs`) with the schema in
-   `tasks/design/config.md` §Config — `config.rs` defines and scope-validates the COMPLETE schema (every section incl. `[accounts]`, `[model]`, `[guardian]` with scanner keys, `[agents]`, `[mcp]`, `[hooks]`, `[telemetry]`; later phases wire behavior to already-parsed keys) — as the settings scope stack: reserved managed slot (empty), CLI `--settings` overlay,
-   project-local `.fontaine/settings.local.toml` (user trust only while the path is absent from the work tree's index — ignored ⇒ untracked, a force-added file is tracked ⇒ project scope; otherwise project scope — Fontaine never spawns `git` for this: index membership comes from `gix` (exact pin, default features off, index/config reading only — no hooks, filters or fsmonitor), opening the enclosing work tree by gix discovery upward from the primary root (a `.git` file / worktree is accepted); no work tree found or a `gix` error ⇒ project scope), project `.fontaine/settings.toml`, user file; scalars by
-   precedence, lists by union; a named table entry (`[accounts.<name>]`, `[mcp.servers.<name>]`, `[agents.types]`) is replaced whole by the highest-precedence scope defining that name; `[[hooks.*]]` arrays merge by union; every key a scope may not set (per the `tasks/design/config.md` scope table, incl.
+   `tasks/design/config.md` §Config — `config.rs` defines and scope-validates the COMPLETE schema (every section incl. `[accounts]`, `[model]`, `[guardian]` with scanner keys, `[agents]`, `[mcp]`, `[hooks]`, `[telemetry]`; later phases wire behavior to already-parsed keys), and exposes a parse + schema/scope validation function separate from the full load that skips phase-gated value rules and env/credential resolution — as the settings scope stack: reserved managed slot (empty), CLI `--settings` overlay,
+   project-local `.fontaine/settings.local.toml` (user trust only while the path is absent from the work tree's index — ignored ⇒ untracked, a force-added file is tracked ⇒ project scope, keeping the project-local precedence slot but validated against the project column; otherwise project scope — Fontaine never spawns `git` for this: index membership comes from `gix` (exact pin, default features off, index/config reading only — no hooks, filters or fsmonitor), opening the enclosing work tree by gix discovery upward from the primary root (a `.git` file / worktree is accepted); no work tree found or a `gix` error ⇒ project scope), project `.fontaine/settings.toml`, user file; scalars by
+   precedence, lists by union; a named table entry (`[accounts.<name>]`, `[mcp.servers.<name>]`, `[agents.types.<name>]`) is replaced whole by the highest-precedence scope defining that name; map-valued keys (e.g. `[telemetry] resource_attributes`) merge per key, higher-precedence scope winning; `[[hooks.*]]` arrays merge by union; every key a scope may not set (per the `tasks/design/config.md` scope table, incl.
    project and project-local `default_mode` limited to `manual`/`dontAsk`) rejected at load; `default_mode = "auto"` is a config error (exit 2) from user and CLI scope until Phase 4 step 2 lifts it, and always from project and project-local scope. The primary
    workspace root is the canonicalized launch cwd; config is read only from it. The loader takes launch dir, config dir, data dir and an env-lookup function (for `api_key_env`) as parameters; only the bin and `dirs.rs` read real cwd/env. Rule strings in
    `[permissions] deny`/`ask`/`allow` are parsed into the `Tool(specifier)` grammar at load
    (`fontaine-core/src/permission_rules.rs`; an unparseable rule is a config error, exit 2; matching
    lands in Phase 3). Directory resolution (`fontaine-core/src/dirs.rs`, `dirs 7.0.0`, caret: config dir
    `dirs::config_dir()/fontaine`, data dir `dirs::data_dir()/fontaine`, overrides `FONTAINE_CONFIG_DIR` /
-   `FONTAINE_DATA_DIR`) and an owner-only file helper (0600 on Unix, current-user-only ACL on Windows).
+   `FONTAINE_DATA_DIR`) and an owner-only file helper (0600 on Unix, current-user-only ACL on Windows): it creates files restrictive at open time (Unix `OpenOptions::mode(0o600)`, Windows security descriptor at creation) and tightens a pre-existing file before writing.
    Workspace trust store (`fontaine-core/src/trust.rs`): read/write
    `<data dir>/trust.toml` (written via the owner-only helper) keyed by canonical root, and an `is_trusted(root)` query the
-   Phase-5 loaders of project executables call. Credentials file schema and read-only lookup
+   Phase-5 loaders of project executables call (unreadable or unparseable `trust.toml` ⇒ false for every root, fail closed). Credentials file schema and read-only lookup
    (`fontaine-core/src/credentials.rs`): `<data dir>/credentials.toml` holds one entry per account
-   name plus the telemetry entry; the lookup returns an account's or the telemetry credential (Phase 1
+   name plus the telemetry entry; the lookup returns an account's or the telemetry credential; an unparseable file is a config error, exit 2 (Phase 1
    adds the writer, `fontaine auth login`). Tracing facade
    (`rust/fontaine/src/telemetry/mod.rs`): the `tracing_subscriber` registry, the `--debug-file` /
    `FONTAINE_LOG` layer (`--debug-file` enables it at default filter `debug`; `FONTAINE_LOG` only overrides the filter; file owner-only), an inert export slot filled in Phase 1, a `fontaine.session` span;
@@ -49,15 +49,15 @@ thing it scores.
    → proceed; `pipeline` floor cases with a `permissions` field: a deny rule, an ask rule, a critical path and a protected path); the tier enum is defined here in `fontaine-core` (`rust/fontaine-core/src/tier.rs`; Phase 3's `GateDecision.tier` reuses it) and the `RuleLabel` enum in `fontaine-guardian` (`rust/fontaine-guardian/src/rule_label.rs`; Phase 4's `Verdict` reuses it), and `fontaine-evals` imports both to validate `expected_tier` / `fixture_verdict.tier` and `attack:<class>`; the runner is the bin + lib crate `rust/fontaine-evals` (CLI table in `tasks/design/testing.md` Testing Strategy, Eval harness; Phase 0 flags: `--dataset`, `--guardian fixture`, `--profile`, `--filter`, `--out`; `--models-file` lands in Phase 4), reading `evals/dataset/*.jsonl` (case schema and per-kind scoring in
    `tasks/design/testing.md` Testing Strategy) and scoring canned `fixture_verdict` outcomes; CI runs `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture`
    from `rust/` — offline, deterministic verdict fixtures — so it is green before the guardian
-   exists; CI also runs it with `--profile minimal`. Fixture mode schema-validates every case in the dataset regardless of `--profile` / `--filter`.
+   exists; CI also runs it with `--profile minimal`. Fixture mode schema-validates every case in the dataset regardless of `--profile` / `--filter`, and parses every case's `permissions` deny/ask/allow strings with `permission_rules.rs`, exiting 1 on an unparseable one.
 3. Docs — start the documentation tree under `docs/` (see `tasks/design/documentation.md`): `docs/index.md` (landing/TOC), `docs/architecture.md`
    seeded with the workspace map + crate responsibilities, and `docs/configuration.md` seeded
    from the step-1 config schema (every key: meaning, per-scope settability, default; a key that is parsed but not yet active says "accepted and validated; not yet active" — docs describe current behavior, phase attribution lives only in `CHANGELOG.md`), the settings
    scope stack and its merge rules, workspace trust, and `[telemetry]` (off by default; enabling
    requires the ingestion URL and key). Also
    `evals/README.md` defining the golden-dataset format. Create root `README.md` as the thin front
-   door (pitch, install, build — install/build only; the Ollama agent quickstart lands in Phase 1's docs step and the guardian leg in Phase 4's) linking into `docs/` — not a second copy of it. Add a short root `CONTRIBUTING.md`
-   (build/test commands, branch and commit rules, how to submit golden-dataset cases; guardian-bypass reports go to `SECURITY.md`, and public dataset PRs for a bypass only after a fix ships) and a root `SECURITY.md` (private reporting via GitHub private vulnerability reporting; 90-day coordinated disclosure window; Needs a human: enable GitHub private vulnerability reporting in the repository settings). Create `CHANGELOG.md` (Keep a Changelog format, with an `## [Unreleased]` section) with the first entry. Add the docs check `rust/fontaine-core/tests/docs.rs` (contract: `tasks/design/testing.md` Testing Strategy, docs bullet).
+   door (pitch and build-from-source only; the install section lands in Phase 4; the Ollama agent quickstart lands in Phase 1's docs step and the guardian leg in Phase 4's) linking into `docs/` — not a second copy of it. Add a short root `CONTRIBUTING.md`
+   (build/test commands, branch and commit rules, how to submit golden-dataset cases; guardian-bypass reports go to `SECURITY.md`, and public dataset PRs for a bypass only after a fix ships) and a root `SECURITY.md` (private reporting via GitHub private vulnerability reporting; 90-day coordinated disclosure window). Create `CHANGELOG.md` (Keep a Changelog format, with an `## [Unreleased]` section) with the first entry. Add the docs check `rust/fontaine-core/tests/docs.rs`, which validates ```toml blocks via the config.rs validation function (contract: `tasks/design/testing.md` Testing Strategy, docs bullet).
 
 ## Files created or modified
 
@@ -71,28 +71,27 @@ thing it scores.
   discovered only at `<workspace>/.fontaine/settings{,.local}.toml` (a settings file in a parent directory is
   ignored); precedence (the managed slot is empty in v1), project-can-only-tighten enforcement —
   including that `[guardian] profile` is rejected from project scope (user trust scopes only, it is a
-  loosening knob) and only `full`/`minimal` validate: no config value disables the guardian. Every key `tasks/design/config.md` §Config scope
-  table denies to project scope (`[accounts]`, `[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets,
-  `[agents.types]`, …) is rejected from project scope. Scope stack: CLI > project-local > project
-  > user precedence for scalars and union for lists; a same-name `[accounts.<name>]` entry is replaced whole by the higher scope, not merged; a tracked `settings.local.toml` loads as project
+  loosening knob) and only `full`/`minimal` validate: no config value disables the guardian. Scope-rejection is table-driven over every "no"/limited cell of the `tasks/design/config.md` §Config scope
+  table, for project, project-local and CLI `--settings` scopes (incl. user-file-only `[guardian] scanner*` keys rejected from CLI and project-local). Scope stack: CLI > project-local > project
+  > user precedence for scalars and union for lists; a same-name `[accounts.<name>]` entry is replaced whole by the higher scope, not merged (same for `[mcp.servers.<name>]` and `[agents.types.<name>]`); `[[hooks.*]]` arrays union; a tracked `settings.local.toml` loads as project
   scope; endpoint/credential keys rejected from project-local; project and project-local
   `default_mode` accept only `manual`/`dontAsk` (`"plan"`, `"acceptEdits"`, `"auto"` rejected from both); `[permissions] allow` / `additional_directories`
   rejected from project scope; unparseable rule strings rejected; `default_mode = "auto"` rejected (exit 2) from user and CLI scope until Phase 4, and always from project and project-local scope.
 - **project-local trust classification** (`gix`, temp git repos): an untracked `settings.local.toml` and an ignored one load as user trust; a tracked one loads as project scope; a force-added `settings.local.toml` matched by `.gitignore` loads as project scope; a directory with no work tree loads as project scope; a launch from a subdirectory of the repo and a launch from a git worktree (`.git` file) classify an untracked `settings.local.toml` as user trust; a repo config with `core.fsmonitor` set to a canary command never executes it.
-- **dirs**: `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR` override the `dirs` defaults (only `env.rs` tests env resolution; other tests pass dirs and an env-lookup closure to the loader; env-mutating tests here and in the telemetry-config bullet are `#[serial]` (`serial_test`) in their own test binary, since edition 2024 makes `set_var` unsafe); owner-only files (incl. the `--debug-file` output) are 0600 on Unix and current-user-only on Windows (`#[cfg(windows)]` ACL test, compile-checked locally with the windows-gnu target and executed in the windows CI job).
-- **credentials lookup**: account entries and the telemetry entry round-trip from a temp `credentials.toml`; a missing file or entry yields no credential.
+- **dirs**: `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR` override the `dirs` defaults (only `env.rs` tests env resolution; other tests pass dirs and an env-lookup closure to the loader; env-mutating tests are `#[serial]` (`serial_test`) in their own test binary, since edition 2024 makes `set_var` unsafe); owner-only files (incl. the `--debug-file` output) are 0600 on Unix and current-user-only on Windows, including a pre-existing 0644 file tightened before writing (`#[cfg(windows)]` ACL test, compile-checked locally with the windows-gnu target and executed in the windows CI job).
+- **credentials lookup**: account entries and the telemetry entry round-trip from a temp `credentials.toml`; a missing file or entry yields no credential; an unparseable file is a config error (exit 2).
 - **trust store**: trust recorded for one root does not trust another; the record is written under
-  the data dir, never inside the workspace; `trust.toml` is 0600 on Unix (ACL under `#[cfg(windows)]`).
+  the data dir, never inside the workspace; `trust.toml` is 0600 on Unix (ACL under `#[cfg(windows)]`); an unparseable `trust.toml` trusts no root.
 - **telemetry config**: every `[telemetry]` key rejected from project and project-local scope except
   `enabled = false`; `enabled = true` without `endpoint`, or without a resolvable ingestion key (no
   `api_key_env` and no stored credential, or the named env var unset/empty), is a config error (exit
   2).
-- Golden-dataset schema validation; runner green against verdict fixtures; fixture mode exits 1 on a schema-invalid case or a `fixture_verdict` / `expected` mismatch, or a `pipeline` case's `fixture_verdict.tier` / `expected_tier` mismatch.
+- Golden-dataset schema validation; runner green against verdict fixtures; fixture mode exits 1 on a schema-invalid case or a `fixture_verdict` / `expected` mismatch, a `pipeline` case's `fixture_verdict.tier` / `expected_tier` mismatch, or an unparseable `permissions` rule string.
 - **docs** (`rust/fontaine-core/tests/docs.rs`, run by `cargo test`): the contract in `tasks/design/testing.md` Testing Strategy, docs bullet.
 
 ## Definition of done
 
-- Local offline gate: `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test` / `cargo deny check` green from `rust/`, plus `cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings` (or `cargo check --all-targets --target x86_64-pc-windows-gnu`) where the toolchain supports it.
+- Local gate (no live APIs): `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test` / `cargo deny check` green from `rust/`, plus `cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings` (or `cargo check --all-targets --target x86_64-pc-windows-gnu`) where the toolchain supports it.
 - Needs a human (not runnable by the agent, which cannot push): push the branch and confirm the CI matrix is green on ubuntu, macOS and Windows.
 - `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` (from `rust/`)
   exits 0 on the fixture set, offline, with no guardian in the tree.
