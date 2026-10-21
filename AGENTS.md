@@ -50,7 +50,7 @@ all tests pass:
 
 - Root directories are only `rust/`, `evals/`, `docs/`, `tasks/`, `research/` (plus `.github/`);
   root files are `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`,
-  `.gitignore`.
+  `SECURITY.md`, `.gitignore`.
 - The Cargo workspace lives at `rust/Cargo.toml` (micromegas convention) and **every crate
   sits directly under `rust/`**: `fontaine` (bin), `fontaine-core`, `fontaine-tools`,
   `fontaine-guardian`, `fontaine-agents`, `fontaine-mcp`, `fontaine-tui`, `fontaine-evals`.
