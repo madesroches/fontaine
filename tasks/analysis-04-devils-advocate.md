@@ -24,7 +24,8 @@ thread). Its permission layer (`allow/deny/ask` + policies) is exactly the seam 
   the prompt/rules assets. There is no answer that involves being merely one more option.
 
 ### KILL #2 — The closed platforms already did it, better, for free (probability: certain — it's shipping)
-Claude Code auto mode is the **default** for Pro/Max/Team since Aug 2026; Codex `--approve-for-me`
+Claude Code auto mode is the **built-in starting mode on every plan** since v2.1.283 (initially
+Pro/Max/Team from Aug 14, 2026); Codex `--approve-for-me`
 ships free for ChatGPT sign-ins. Both are tuned on vendor fleet telemetry Fontaine will never have.
 - The pragmatic developer's math: "I already pay for Claude Code/ChatGPT; the guardian is built
   in; why install a third harness?" The 89%-vs-13.6% number is *their* marketing asset, and
@@ -70,7 +71,7 @@ CodeShield) explicitly designed as the final defense layer for *any* agent. Alig
 structurally adjacent to the guardian (audit agent reasoning against user goal), and Meta's
 brand makes it the comparison everyone will reach for.
 - **Deep-research downgrade** (see `research-llamafirewall.md`): the framework has been in
-  **maintenance mode since its late-April 2025 launch (paper posted May 6)** — commit history is predominantly bot chores
+  **maintenance mode since its late-April 2025 launch (paper posted May 6)** — commit history is maintenance chores
   since March 2026 (last functional change Jan 2026; last commit Aug 18, 2026); AlignmentCheck remains "experimental" and defaults to a
   *hosted* Together API; no MCP support, no Rust port, promised roadmap (distillation, unsafe
   tool-use coverage) unshipped in 15+ months. Meta shipped components, not a standard, and
@@ -123,8 +124,8 @@ doesn't stop rig-harness from building on rig's momentum.
   currently unresolved. (RESOLVED 2026-10-21 — guardian default is the top-ranked benchmark-validated
   model on the configured provider; unset + no catalog match → main model with a one-time notice;
   recorded in the plan's Decisions, 2026-10-21.)
-- **Name/category confusion**: "guardian agent" overlaps Striker's "Guardian Agents" enterprise
-  product and generic AI-security marketing. SEO/discoverability will be a fight.
+- **Name/category confusion**: "guardian agent" overlaps enterprise vendors' "guardian"/agent-security
+  branding generally. SEO/discoverability will be a fight.
 
 ## What survives the kill list (steelman, briefly)
 

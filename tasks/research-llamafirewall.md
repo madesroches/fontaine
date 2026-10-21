@@ -81,7 +81,7 @@ ScanResult(decision=ALLOW|BLOCK, reason="prompt_guard"|"agent_alignment"|..., sc
   (English)**, AUC .98 EN / .995 multilingual, 92.4ms per 512-token classification (A100).
   22M (English-only model) — recall 88.7% @1% FPR, **19.3ms**. (v1 comparison: PromptGuard 1
   recall 21.2% @1% FPR — the improvement is mostly false-positive reduction.)
-- AgentDojo: as sole defense, ASR .176 → **.075** at ~3% utility cost.
+- AgentDojo: as sole defense, ASR .176 → **.075** at 0.7 pt utility cost (47.7% → 47.0%).
 - Known limit (and our plan already cites the research): specialized detectors like this catch
   ~0–2% of *realistic agent* injections beyond explicit jailbreak phrasing; it's a cheap first
   layer, not a judge.
@@ -130,7 +130,7 @@ ScanResult(decision=ALLOW|BLOCK, reason="prompt_guard"|"agent_alignment"|..., sc
 | Decision | ALLOW / BLOCK + score | Allow / **Deny / Escalate-to-human** + rule label + explanation fed back to the agent + confidence thresholding |
 | Policy language | regex + few-shot prompts + custom scanners | prose rule hierarchy (environment / hard_deny / soft_deny / allow), precedence semantics, trust asymmetry (projects can only tighten) |
 | Adjudication context | messages/trace | `AdjudicationRequest`: task intent, FONTAINE.md, tool args, cwd, **git remotes at session start, pre-session file inventory, prior denials** |
-| Deny UX | none (library returns a verdict) | inline `[Rule]` + explanation, `/denied` retry list, loop breaker, "teach the rules" flow |
+| Deny UX | none (library returns a verdict) | inline `[Rule]` + explanation, `/denied` retry list, loop breaker, "teach the classifier" flow |
 | Fail-closed | not a framework concept | every non-verdict outcome = Deny (code, not LLM) |
 | Judge model | default **Together-hosted** Llama 4 Maverick (few-shot prompting; no small open AlignCheck model released); small backbones degrade | any rig provider incl. **fully local** Ollama/vLLM, independently configurable |
 | Language | Python, in-process | Rust; harness-native |
@@ -144,10 +144,11 @@ job — but the public will conflate them, so the plan must articulate this cris
 
 ## 6. Project health (verified via GitHub API, Oct 2026)
 
-- Commit history on `LlamaFirewall/`: **predominantly bot chores since March 2026**
-  (`meta-codesync[bot]`) — dependency vuln bumps (postcss, lodash, uuid, minimatch…), lint
-  cleanups ("Remove unused type error suppressions", "Enable Pyrefly"). The last functional
-  changes were small (a tokenizer fix and a model addition, Jan 2026); last commit 2026-08-18.
+- Commit history on `LlamaFirewall/`: **maintenance chores since March 2026** — dependency
+  vuln bumps (postcss, lodash, uuid, minimatch…) authored by `JinpengMiao` (human maintainer
+  account); lint/type-sync commits ("Remove unused type error suppressions", "Enable Pyrefly")
+  via Meta's `generatedunixname*` fbcode-sync accounts. The last functional
+  changes were small (a tokenizer fix, Jan 2026); last commit 2026-08-18.
   Last substantive feature work dates to the 2025 launch.
 - Attribution note on "maintenance mode": Meta has **not** said in its own blog that the project
   is in maintenance mode — no such LlamaFirewall statement exists, and the launch blog (dated
@@ -158,7 +159,7 @@ job — but the public will conflate them, so the plan must articulate this cris
   Llama Prompt Guard" (there
   is no `meta-llama/PurpleLlama/LlamaGuard4.md`, and PromptGuard's code lives under
   meta-llama/PurpleLlama — there is no facebook/PromptGuard repo). The maintenance-mode reading
-  above is *our* commit-history evidence (predominantly bot chores since March 2026; last commit
+  above is *our* commit-history evidence (maintenance chores since March 2026; last commit
   2026-08-18), not a Meta declaration. Actionable conclusion: treat
   classifier updates as slow-moving and support BYO scanners (§7.2).
 - No MCP scanner, no Rust port, no coding-agent integration shipped in 15+ months. The paper's

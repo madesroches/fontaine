@@ -34,8 +34,9 @@ product be plugged into an existing harness, making a guardian-native harness re
   LangChain only. It guards *your* agent runtime; using it with OpenCode/Goose means writing
   that integration yourself.
 - **Project health (verified Oct 2026 via commit history)**: maintenance mode since the late-April 2025
-  launch (paper posted May 6) — predominantly bot (`meta-codesync[bot]`) dependency bumps and lint chores since
-  March 2026 (last functional change Jan 2026; last commit Aug 18, 2026). No MCP support, no Rust port, promised future work (distillation, unsafe tool-use
+  launch (paper posted May 6) — maintenance chores since March 2026 (dep-vuln bumps by `JinpengMiao`;
+  lint/type-sync via Meta's `generatedunixname*` fbcode-sync accounts; last functional change Jan 2026;
+  last commit Aug 18, 2026). No MCP support, no Rust port, promised future work (distillation, unsafe tool-use
   coverage) not shipped. PromptGuard 2 *the model* became widely-embedded infrastructure;
   LlamaFirewall *the framework* did not become a standard.
 - Threat assessment (revised down from first pass): AlignmentCheck + a harness plugin is still
@@ -86,7 +87,7 @@ PII-masking, etc.) applied to all traffic through the proxy.
 
 ## Segment D — Enterprise agent security platforms
 
-Lakera (F5), Protect AI, HiddenLayer, Striker, Pillar, Prompt Security, etc. — runtime
+Lakera (Check Point), Protect AI, HiddenLayer, Striker, Pillar, Prompt Security, etc. — runtime
 monitoring, agent-SPM, governance dashboards. (striker.ai blog; knowbe4.com blog;
 giskard.ai/knowledge/ai-guardrails-comparison-2026; folio3.com roundup)
 - Sales motion is CISO/enterprise, SaaS, per-seat. Not competitors for a dev's terminal, but they

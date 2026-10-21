@@ -132,7 +132,8 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
 - **AgentDojo** (Debenedetti, Zhang, Balunović, Beurer-Kellner, Fischer & Tramèr, ETH Zürich;
   arXiv:2406.13352, NeurIPS 2024 Datasets & Benchmarks) and follow-ups: prompt-injection detectors transfer poorly between
   benchmarks; specialized small detectors (e.g. Prompt Guard 2) catch ~0–2% of realistic agent
-  injections. Conclusion: a **general reasoning model as guardian with task context** is currently
+  injections **beyond explicit jailbreak phrasing** — a cheap first layer, not a judge; on
+  AgentDojo's suite PG2 blocks the majority of ASR (see below). Conclusion: a **general reasoning model as guardian with task context** is currently
   the strongest practical approach — and the guardian itself must be treated as an attack surface
   (hence: no tools, structured output, content clearly delimited as untrusted data, fail-closed).
 - **OPA for agent tool calling**: policy-as-data approach exists but is rule-based; orthogonal —
@@ -263,8 +264,11 @@ entirely.
                       ▼  (every registered tool is a GuardedTool wrapper)
          PermissionPipeline (fontaine-core, inside GuardedTool::call)
            1. registry.lookup(name) → RiskClass
-           2. mode == plan?  → block state-changing tools outright
-           3. mode == bypass → Allow (no checks; opt-in flag only)
+           2. mode == plan?  → no state-changing call executes: ReadOnly-in-scope and Tier-0.5-eligible
+              calls proceed (steps 4–5); everything else reaches the terminal plan-mode branch 9.
+              "state-changing" = WorkspaceWrite / edit-class or write-capable/unparsed shell
+           3. mode == bypass → Allow (no guardian; opt-in flag only) — deny rules and critical-path floors
+              (rm of ~, /etc, $HOME, .git, dotfiles) still block
            4. RiskClass::ReadOnly && args within workspace scope? → Allow (no guardian)
               (scope check enforced by Fontaine's wrapper/scope validator, first-party only;
                MCP-declared read_only does not qualify — such tools register as Arbitrary)
@@ -284,13 +288,18 @@ entirely.
            6. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
            7. mode == auto → Guardian::adjudicate(request) ──▶ Verdict
            8. mode == dontAsk → anything not pre-allowed is Denied
+           9. mode == plan (not allowed by steps 4–5): WorkspaceWrite / edit-class / write-capable
+              or unparsed shell → BLOCKED outright — no escalation path can override the edit
+              block while plan mode is on; non-mutating but out-of-scope `Arbitrary` calls
+              (webfetch, out-of-scope reads) → human prompt (Claude Code parity: in plan mode,
+              commands outside the read-only set prompt for approval; never auto-classified)
                       │
          Allow ──▶ inner rig Tool executes ──▶ result appended to conversation (rig-memory)
          Deny  ──▶ tool_result = "Denied by guardian: [reason]"; agent sees it and adapts
          Escalate ──▶ human prompt (with guardian's explanation shown)
 
  (the `agent` tool call that spawns a subagent is an ordinary `Arbitrary`-class pipeline request —
-  gated at steps 6–8 like any other; every tool call the subagent then makes re-enters this same
+  gated at steps 6–9 like any other; every tool call the subagent then makes re-enters this same
   pipeline)
 ```
 
@@ -345,7 +354,7 @@ pub struct Verdict {
     pub decision: Decision,      // Allow | Deny | Escalate
     pub rule: String,            // matched rule label, e.g. "Data Exfiltration", "Git Destructive"
     pub explanation: String,     // 1-3 sentences, shown to user and fed back to the agent on deny
-    pub confidence: f32,         // guardian self-report; below threshold ⇒ Escalate, not Allow
+    pub confidence: f32,         // guardian self-report; destructive-class Allow below threshold ⇒ Escalate
 }
 ```
 
@@ -426,7 +435,8 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
   so `cat ~/.ssh/id_rsa` is adjudicated like a write. The curated command set ships **opinionated
   and conservative** (`ls`, `pwd`, `wc`, `file`, read-only `git status|log|diff|show`, `rg`/`grep`,
   `cat`/`head`/`tail`); users may extend it via `[shell_preclassifier]` config keys (`allow_extra`,
-  per-mode `allow_auto`, … — NOT the guardian's `[auto_mode].allow` prose list), and Fontaine
+  a single mode-agnostic list applying in every mode — the pipeline runs the pre-classifier
+  before the mode branches, so no per-mode keys; NOT the guardian's `[auto_mode].allow` prose list), and Fontaine
   **never auto-extends** it from observed usage — unlike Claude Code, whose set is fixed and whose
   "don't ask again" grants accumulate prefixes: Fontaine's grants go to explicit config rules only
   (recorded in Decisions as a deviation).
@@ -442,7 +452,7 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
   write/network-capable tool `read_only`), so the fast path applies only where *Fontaine itself*
   enforces containment at the execution boundary (built-in tools and wrapped paths validated by the
   scope checker). MCP tools default to full adjudication; their declared `read_only` is an
-  optimization hint for first-party tools, not an authorization token.
+  optimization hint surfaced to the guardian, never an authorization token.
 - **GuardedTool**: a decorator implementing `rig_core::tool::Tool` that wraps any inner tool and,
   in its `call`, runs the `PermissionPipeline` (mode check → read-only fast path → Tier-0.5 shell
   pre-classifier → guardian in `auto`) before delegating to the inner tool. This is the **single
@@ -484,16 +494,21 @@ in the main session, and their results return to the parent as a summary.
   composite — adjudicated by the guardian in `auto`, prompted in manual modes. (ii) **Every subagent tool call goes
   through the same permission pipeline** as the parent's (including Tier 0.5). Mode inheritance is one-way: a
   subagent's effective mode is **≤ the parent's** — never looser (a `manual` parent cannot hand a child `auto`).
+  Mechanism: the `[agents.types]` `mode` key (default `"inherit"` = the parent's effective mode); a per-type
+  `mode` may only **tighten** relative to the parent's, on the looseness order
+  plan < dontAsk < manual < acceptEdits < auto < bypass; `bypass` is never inherited and never settable
+  per-type (session-root opt-in flag only).
   (iii) **Parent↔child and peer messages** (Claude Code's `SendMessage`-style) go through the same guardian gate — the
   2026-10-20 decision, which stands and now applies in v1.
 - **Budgets.** `[agents] max_parallel` (default small, e.g. 4) plus per-subagent token/cost budgets, so fan-out cannot
   silently multiply guardian round-trips and model spend (Claude Code documents that each subagent spends tokens of
-  its own and running many multiplies usage). The guardian is stateless-per-request, so parallel adjudications scale
-  naturally with no shared mutable state. Nesting is capped and budgets are tree-wide, mirroring Claude Code's
+  its own and running many multiplies usage). Two caps, both binding: every subagent's spend **debits the parent
+  session's budget** (a root-of-tree total) **and** counts against its own per-subagent cap — grandchildren cannot
+  slip past either. A subagent hitting its cap **stops**, returns its result as **partial**, and its pending
+  escalation/approval prompts are **cancelled as denied**. Nesting is capped, mirroring Claude Code's
   documented rules: a subagent may itself spawn subagents up to a default depth of **three layers below the main
   conversation**, and at the cap the `agent` tool is withheld from further subagents. `max_parallel` bounds concurrent
-  agents across the **whole session tree**, not just the parent's direct children, and per-subagent token/cost budgets
-  count against the tree — so grandchildren cannot slip spend past the caps.
+  agents across the **whole session tree**, not just the parent's direct children.
 
 ### Model layer: rig-core providers (replaces fontaine-llm)
 
@@ -535,25 +550,35 @@ hard_deny   = ["$defaults", "Never send repo contents to third-party code-review
 [agents]
 max_parallel = 4                  # concurrent subagents (v1 requirement, Claude Code-style)
 subagent_token_budget = 200000    # per-subagent cap; hitting it stops that subagent, result
-                                  #   returned as partial — fan-out can't silently multiply cost
-subagent_cost_budget_usd = 2.0    # per-subagent spend cap (same enforcement)
+                                  #   returned as partial, pending escalation/approval prompts
+                                  #   cancelled as denied; spend also debits the parent session's
+                                  #   budget (root-of-tree total) — fan-out can't silently multiply cost
+subagent_cost_budget_usd = 2.0    # per-subagent spend cap (same enforcement, incl. parent debit)
 
-[agents.types]                    # per-agent-type policy: model + restricted toolset; a type's
+[agents.types]                    # per-agent-type policy: model + restricted toolset + mode
+                                  #   (default `mode = "inherit"`; a per-type `mode` may only
+                                  #   tighten vs the parent's effective mode — looseness order
+                                  #   plan < dontAsk < manual < acceptEdits < auto < bypass;
+                                  #   `bypass` never inherited, never settable here); a type's
+                                  #   toolset is always a subset of the parent's
   explore = { model = "$guardian_default", tools = ["ls", "read", "glob", "grep"] }
   worker  = { model = "$main", tools = ["ls", "read", "glob", "grep", "edit", "write", "shell"] }
 
 [shell_preclassifier]
-allow_extra = []                  # user extensions to the curated read-only command set,
-                                  #   per-mode ([shell_preclassifier.allow_auto], …); Fontaine
+allow_extra = []                  # user extensions to the curated read-only command set — one
+                                  #   mode-agnostic list, applying in every mode (the pre-classifier
+                                  #   runs before the mode branches); Fontaine
                                   #   never auto-extends it from observed usage
 ```
 
 Rule-precedence semantics and the `$defaults` splice marker are adopted directly from Claude
-Code's auto-mode config (proven design). **Trust asymmetry**: project-level settings may only
+Code's auto-mode config (proven design). Two more splice markers appear in `[agents.types]`:
+`$main` = the session model (`[model]`), `$guardian_default` = the top-ranked validated guardian
+model available on the configured provider (per Decisions). **Trust asymmetry**: project-level settings may only
 *tighten* (add hard/soft denies); only user-level config may loosen. Mirroring Claude Code's
 documented semantics (where `defaultMode: "auto"` and `"bypassPermissions"` are ignored in
 project settings), **project-level settings cannot set `[permissions] default_mode` to `auto` or
-`bypass` — those are user/managed-scope only**; a checked-in repo must not be able to disarm its
+`bypass` — those are user-scope only**; a checked-in repo must not be able to disarm its
 own guardian. Tier-0.5 `[shell_preclassifier]` extensions are loosening, so they follow the same
 rule: user-scope config only, never project-scope.
 
@@ -666,7 +691,7 @@ All new. Key files: workspace `Cargo.toml` (rig crates pinned);
 `crates/fontaine-mcp/src/{lib,servers,register}.rs`;
 `crates/fontaine-agents/src/{lib,spawn,registry,budget}.rs`;
 `crates/fontaine-tui/src/{app,transcript,approval,denials,statusbar,agents_panel}.rs`;
-`fontaine/src/main.rs`; `docs/{architecture,guardian,configuration}.md`; `evals/` dataset + runner.
+`fontaine/src/main.rs`; `docs/{architecture,guardian,configuration,sandboxing}.md`; `evals/` dataset + runner.
 No `fontaine-llm` crate — the model layer is rig.
 
 ## Trade-offs
@@ -743,7 +768,8 @@ carries the reasoning:
 ## Decisions
 
 - 2026-10-20: Hybrid gate — tool-declared `read_only` + workspace-scope check skips the guardian;
-  everything else is adjudicated. (User choice.)
+  everything else is adjudicated. (refined 2026-10-21 — containment enforcement, not the label,
+  earns the fast path; see below) (User choice.)
 - 2026-10-21: Hybrid-gate refinement — read/write is not a security classification: the fast path
   requires *Fontaine-enforced* workspace containment, not the tool's label. Read-only ≠ safe
   (out-of-scope reads are adjudicated/denied like writes), and third-party/MCP self-declared
@@ -758,8 +784,11 @@ carries the reasoning:
   not in rig `AgentHook`s; hooks are for bookkeeping only.
 - 2026-10-20: rig's Bevy-based harness/TUI (`rig-harness`, `rig-tui`) is not adopted; Fontaine
   keeps its own ratatui TUI.
-- 2026-10-20: `bypass` mode is included in v1 behind an explicit opt-in flag with a loud warning,
-  containers-only framing (parity with Claude Code's `bypassPermissions`).
+- 2026-10-20 (amended 2026-10-21): `bypass` mode is included in v1 behind an explicit opt-in flag
+  with a loud warning, containers-only framing — parity with Claude Code's `bypassPermissions`
+  **including its floor**: deny rules and never-auto-approved critical paths (`rm` of `~`, `/etc`,
+  `$HOME`, `.git`, dotfiles) still block under bypass (reason: Claude Code documents "deny rules
+  block in every mode, including bypassPermissions"; keeping floors is the faithful parity).
 - 2026-10-20 (superseded 2026-10-21; the same-gate rule survives, now in v1): No subagents in v1;
   when added (post-v1), subagent spawns/reports and
   `SendMessage`-style agent-to-agent calls go through the same guardian gate (Claude Code's
@@ -788,8 +817,9 @@ carries the reasoning:
   `glob`/`grep`) plus a deterministic, zero-LLM shell pre-classifier (structural: shlex/AST lexing
   + curated read-only set membership + per-command read-only flag allowlist + the step-4 scope
   validator; never regex-on-args; fail-through on anything unparsed) as a guardian-skipping fast path; curated set ships conservative,
-  user-extensible via `[shell_preclassifier]` config keys (`allow_extra` + per-mode allow keys,
-  user-scope only; not the guardian's `[auto_mode].allow` prose list), never auto-extended. Mirrors
+  user-extensible via the `[shell_preclassifier] allow_extra` key — one mode-agnostic list
+  applying in every mode (no per-mode keys: the pre-classifier runs before the mode branches),
+  user-scope only; not the guardian's `[auto_mode].allow` prose list — never auto-extended. Mirrors
   Claude Code's read-tool split + built-in read-only Bash command set per the tie-breaker.
   Deviations from Claude Code, recorded per that guideline: we reject unquoted globs in
   pre-classified commands (Claude Code permits them for read-only commands — reason: the glob
@@ -805,11 +835,20 @@ carries the reasoning:
 - 2026-10-21: deliberate Claude-Code deviation — child mode is never looser than parent's (≤
   parent); Claude Code lets default/dontAsk/plan parents set child permissionMode including auto;
   Fontaine hardens it because a child's effective authority must never exceed what the human
-  granted the session.
+  granted the session. Mechanism (2026-10-21): `[agents.types]` `mode` key, default `"inherit"`,
+  may only tighten vs the parent's effective mode (looseness order plan < dontAsk < manual <
+  acceptEdits < auto < bypass; `bypass` never inherited, never settable per-type).
+- 2026-10-21: deliberate Claude-Code deviation — `acceptEdits` auto-approves Fontaine's edit-class
+  tools only; Claude Code's acceptEdits also auto-approves in-scope filesystem Bash (`mkdir`,
+  `touch`, `rm`, `rmdir`, `mv`, `cp`, `sed`), while Fontaine keeps those `Arbitrary`-class shell
+  calls behind a prompt (stricter than Claude Code; reason: writes ride the classified edit tools,
+  the pre-classifier set is read-only, and a mutating shell must not fast-path).
 - 2026-10-21: subagent nesting mirrors Claude Code's documented rules (per the tie-breaker — not a
   deviation): default depth cap of three layers below the main conversation, at which the `agent`
   tool is withheld from subagents; `[agents] max_parallel` bounds concurrent agents across the
-  whole session tree and per-subagent budgets count against the tree.
+  whole session tree, and per-subagent spend debits both the parent session's budget (root-of-tree
+  total) and the per-subagent cap — hitting either stops the subagent with a partial result and
+  its pending prompts cancelled as denied.
 
 ## Documentation
 
@@ -820,6 +859,8 @@ carries the reasoning:
   and attribution of Anthropic-derived rule prose (and MIT-licensed LlamaFirewall prompts if
   mined).
 - `docs/configuration.md`: every config key, trust asymmetry of project vs user settings.
+- `docs/sandboxing.md`: sandbox-interop integration path (srt/bubblewrap spike — Phase 5 roadmap
+  slot); sandbox = blast radius, guardian = intent, complementary.
 
 ## Testing Strategy
 
@@ -828,7 +869,9 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   guardian-model override); rig itself owns and tests SSE parsing/delta accumulation, so we test
   only our mapping layer, with one smoke test per provider against a `wiremock` OpenAI-compatible
   endpoint to catch wiring regressions rig's tests can't see.
-- **permission pipeline**: mode × risk-class matrix; plan-mode blocking; read-only scope check
+- **permission pipeline**: mode × risk-class matrix; plan-mode terminal branch 9 (write attempt
+  blocked outright with no escalation; out-of-scope read / webfetch prompts for approval; in-scope
+  `shell("ls")` proceeds via Tier-0.5); read-only scope check
   incl. symlink-escape denial; batch tool-call partial-deny semantics; GuardedTool delegation
   (inner tool runs exactly once, only after Allow).
 - **Tier 0.5 pre-classifier**: the classifier's *soundness* (fail-through to the guardian on
@@ -883,8 +926,8 @@ catches terminal-rendering and streaming-latency issues no unit test can.
 4. Kill network mid-adjudication → denial with `GuardianUnavailable`, no hang. (Fail-closed.)
 5. Same session against Ollama (local model as both agent and guardian) → steps 2–4 hold.
    (Model-agnostic guarantee.)
-6. `auto` mode: `Bash("ls")` inside the workspace completes with **no guardian round-trip** — the
-   audit log shows a Tier-0.5 Allow and zero guardian calls; `Bash("ls ../")` falls through to the
+6. `auto` mode: `shell("ls")` inside the workspace completes with **no guardian round-trip** — the
+   audit log shows a Tier-0.5 Allow and zero guardian calls; `shell("ls ../")` falls through to the
    guardian (out-of-scope). (Tier-0.5 fast path + containment boundary.)
 7. Spawn 4 parallel subagents (the default `max_parallel`), kill one mid-run → the other three
    complete and report back as tool results; the killed one's row shows its state; every spawn and

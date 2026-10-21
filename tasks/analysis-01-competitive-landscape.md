@@ -28,20 +28,22 @@ story is. The guardrail-runtime market (LlamaFirewall, proxies, MCP scanners) is
 - Limits for our purposes: classifier is **closed, server-side, Anthropic-models-only**. You cannot
   inspect, extend, or run it locally. That is precisely Fontaine's opening.
 
-**Codex CLI (OpenAI)** — shipped the same pattern the same week Claude Code announced its default flip (`--approve-for-me` / auto-review, v0.147.0, Aug 2026).
+**Codex CLI (OpenAI)** — `--approve-for-me` surfaced the pattern at the CLI the same week Claude Code announced its default flip (v0.147.0, Aug 7, 2026); OpenAI had already released Auto-review in Codex in late April 2026 (alignment.openai.com/auto-review, Apr 30, 2026: "Last week, we released Auto-review in Codex").
 - `--approve-for-me` (v0.147.0, Aug 7, 2026): a **separate reviewer agent** answers approval
   requests at the sandbox boundary. "Auto-review replaces manual approval at the sandbox boundary
   with a separate reviewer agent." (codex-docs.com/en/docs/sandboxing/auto-review;
   alignment.openai.com/auto-review/)
-- Reported free for ChatGPT sign-ins, "200x fewer approvals" marketing. (explainx.ai)
+- Free for ChatGPT sign-ins (help.openai.com — auto-review checks are free and don't count toward
+  plan usage); "stop for human approval roughly 200x less often" (alignment.openai.com/auto-review).
 - **Critical data point**: PromptArmor demonstrated the auto-review agent **approving a malicious
   npm install with elevated privileges via indirect prompt injection**, and separately got Codex to
   exfiltrate connector data. (promptarmor.com/resources/agentic-auto-review-approves-malware)
   → The guardian-agent pattern is real but **breakable**; see analysis-04.
 - Limits: reviewer is closed, OpenAI-only, tied to their sandbox model.
 
-**Read**: both majors have validated the pattern and made it a default. The pattern itself is no
-longer novel. What remains unclaimed is the **open, inspectable, model-agnostic** version.
+**Read**: both majors have validated the pattern and shipped it — as the default in Claude Code,
+as an opt-in reviewer mode in Codex (Settings → Permissions; `approvals_reviewer = "auto_review"`).
+The pattern itself is no longer novel. What remains unclaimed is the **open, inspectable, model-agnostic** version.
 
 ### Tier 2 — Open, model-agnostic harnesses (the direct competitors)
 
@@ -83,7 +85,7 @@ Code in its ecosystem survey)
   too, they beat us to "open Claude Code parity" without the rig
   dependency.
 
-**Crush (Charmbracelet)** — ~26k stars, Go-native, model-agnostic, polished TUI. Same category,
+**Crush (Charmbracelet)** — ~29k stars, Go-native, model-agnostic, polished TUI. Same category,
 static permissions. (arxiv Harness Engineering paper)
 
 **Long tail**: github.com/RyanAlberts/best-of-Agent-Harnesses is a "ranked list of 167 AI agent

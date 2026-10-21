@@ -42,7 +42,7 @@ auto mode as an open standard rather than an Anthropic service.**
 ### 4. Guardian-native architecture vs bolted-on guardrail
 - LlamaFirewall et al. are libraries an agent runtime integrates; the integration must be written
   and maintained per harness — and Meta's own project shows maintenance-mode commit history
-  (predominantly bot chores since March 2026 — last functional change Jan 2026, last commit
+  (maintenance chores since March 2026 — last functional change Jan 2026, last commit
   Aug 18, 2026; no Meta declaration — see `research-llamafirewall.md` §6). More fundamentally, AlignmentCheck is a trace *drift
   monitor*: it can halt a run, but it cannot deny one tool call pre-execution, explain the denial
   to the agent, and keep the session running. Fontaine's choke point is architectural: **every** tool — built-in,
