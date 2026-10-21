@@ -95,7 +95,7 @@ agents port by copying; `.claude/` is not read directly.
   user on a name clash); project files only narrow — toolset a subset of the parent's, `mode`
   `manual` (default) or `dontAsk`, no `model` key (session model) — and a project file breaking that
   is rejected at load (exit 2).
-- **Output styles** are system-prompt overlays selected per session with `/output-style`.
+- **Output styles** are system-prompt overlays selected per session with `/output-style`. Output styles never alter the guardian's prompt or `AdjudicationRequest`.
 
 ### TUI extension — background-agents panel
 
@@ -140,7 +140,7 @@ transcript.
    `"third-party"`).
 4. User hooks (design above); `post_tool_use` attaches to `ResultPipeline` as its hook stage.
 
-   New registered model tools this phase adds (each wrapped; the Phase-2 choke-point test's exact set is
+   New registered model tools this phase adds (each wrapped; the exact set asserted by `rust/fontaine-core/tests/choke_point.rs` is
    extended to the Phase-2 table plus exactly these, plus dynamic `mcp__<server>__<tool>` names):
 
    | Tool | RiskClass | Args |
@@ -194,18 +194,19 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   tool results through `ResultPipeline`; `send_message` peer messages hit the
   same gate.
 - **ChildRunner seam** (`rust/fontaine-agents/tests/`, fake `ChildRunner`): the spawn tool, registry and budget logic run with no `fontaine-core` dependency; the fake receives type, effective mode, budget and ledger handle; status/kill/report flow through the returned handle.
+- **output styles** (`rust/fontaine-core/tests/`): the guardian's `AdjudicationRequest` and rendered prompt are byte-identical with and without an active output style.
 - **agents panel** (`rust/fontaine-tui/tests/`, ratatui `TestBackend` with a scripted model): a killed subagent's row shows `killed` and its token/cost spend against budget.
 - **subagent intent** (`rust/fontaine/tests/parallel_agents.rs`): an injected spawn prompt claiming user authorization does not appear as `task_intent` or in `recent_user_messages` in any `AdjudicationRequest`; it appears only inside an untrusted-delimited block.
-- **choke point** (`rust/fontaine-tools/tests/choke_point.rs`, extended): the exact registered set is the Phase-2 table plus `agent` (Arbitrary), `skill` (ReadOnly) and `send_message` (Arbitrary) — no other names, no duplicates, every one with a `RiskClass`; no list/status/kill tool is registered for the model.
+- **choke point** (`rust/fontaine-core/tests/choke_point.rs`, over core's registry-assembly function — the one place built-ins, `agent`/`send_message`/`skill` and MCP tools are all assembled; the Phase-2 builtins-only check stays in `fontaine-tools`): the exact registered set is the Phase-2 table plus `agent` (Arbitrary), `skill` (ReadOnly) and `send_message` (Arbitrary) — no other names, no duplicates, every one with a `RiskClass`; no list/status/kill tool is registered for the model.
 - Parallel orchestration (deterministic `test_utils` models or cassettes; scripted endpoints via the Phase-1 `common/mod.rs` helper): spawn N subagents, kill
   one, assert the others complete and every tool call has a gate decision in the audit log keyed by
   agent id.
 - MCP (`rust/fontaine-mcp/tests/mcp_registration.rs`): servers from config register wrapped `Arbitrary`; a declared `readOnlyHint` never earns a
-  fast path (choke-point test extended to MCP-imported tools and to a list-changed refresh: tools added or
+  fast path (`rust/fontaine-core/tests/choke_point.rs` extended to MCP-imported tools and to a list-changed refresh: tools added or
   replaced by a refresh are registered wrapped as `Arbitrary` under `mcp__<server>__<tool>`, none
   reachable raw).
 - Persistence: save/resume round-trip through `AgentRun` + ledger; resume starts in the default mode
-  without session grants; fork copies both stores under a new id; a rewind keeps ledger history.
+  without session grants; fork copies both stores under a new id.
 - **workspace trust** (TUI `TestBackend`): an untrusted root's project MCP servers and hooks do not
   start before the trust prompt is accepted; declining starts none; a trusted root still asks per
   new project server; headless `-p` loads them, and in both surfaces a project hook's `allow` is

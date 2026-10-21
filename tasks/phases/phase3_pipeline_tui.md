@@ -85,7 +85,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
    log, then `tool_decision` telemetry and the headless `gate_decision` event; `fontaine.permission`
    and `fontaine.tool.blocked_on_user` spans, `permission_mode_changed` event; human-approval
    callback trait.
-   Plan mode's step-9 guardian leg falls through to the human prompt until the guardian ships.
+   Plan mode's step-9 guardian leg falls through to the human prompt until the guardian ships (audit `tier = mode`, including its headless Deny).
    Interim default mode: `manual` — no auto without a guardian. Headless `-p` semantics for
    manual/dontAsk: every would-prompt outcome becomes a Deny returned to the agent and the run
    continues (`tasks/design/permissions.md` §Core data flow, Headless).
@@ -102,7 +102,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
    `Tool(specifier)` rule grammar and allow rules (sources, step order, session vs always grants,
    suspension of broad rules in `auto`), and the Tier-0.5 pre-classifier (curated set,
    per-command read-only flag allowlist, fail-through rule, `[shell_preclassifier] allow_extra` —
-   user-scope only, flag-free, positionals must be in-scope paths); complete the full permission-pipeline diagram in `docs/architecture.md`;
+   user trust scopes only (per the config scope table), flag-free, positionals must be in-scope paths); complete the full permission-pipeline diagram in `docs/architecture.md`;
    start `docs/tui.md` (keybinds incl. Shift+Tab, approval-prompt options, `/add-dir`); add
    `--allowed-tools` / `--disallowed-tools` and the `gate_decision` event to `docs/headless.md`; add
    the `tool_decision` event and permission spans to `docs/telemetry.md`; fill the README mode
@@ -172,6 +172,6 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
 - Needs a human (the agent cannot push): push the branch and confirm the windows CI job runs the `#[cfg(windows)]` tests green.
 - Needs a human and live keys (not CI): `tasks/design/testing.md` Manual Verification item 1 passes (TUI manual approval
   flow, end to end); the manual-mode rig-cassette (in-scope read round-trip) recorded via `cassettes.rs`
-  (`RIG_PROVIDER_TEST_MODE=record`, account `base_url` at the cassette proxy; once committed it
+  (`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes`, account `base_url` at the cassette proxy; the test carries `#[ignore = "cassette not recorded"]` until the fixture is committed, and the recording commit removes the attribute; once committed it
   replays in CI with no keys, and `cassettes.rs` asserts the tool executed via the fast path, the `gate_decision` tier, and the final answer); the `claude -p` baseline capture.
 - Log the phase in the master plan's Progress log.

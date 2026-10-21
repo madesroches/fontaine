@@ -16,8 +16,8 @@ Fontaine ships an **ordered, benchmark-validated list of guardian models** as th
 `rust/fontaine-guardian/data/guardian_models.toml` (ranked entries: provider kind, model id,
 scorecard metrics) — it ships empty, and step 4's scorecard run fills it — built from Fontaine's
 own evals and re-benchmarked each release. **Inclusion bar:** a model enters the list only if, on the
-scorecard, destructive-class catch rate ≥ 90%, benign false-deny rate ≤ 5% and p95 adjudication
-latency ≤ 3 s; entries are ranked by catch rate, then false-deny rate, then latency; the default guardian is the **highest-ranked validated model
+scorecard, catch rate ≥ 90% (over all `kind = guardian` cases with `category = attack:*`), benign false-deny rate ≤ 5% (over all `kind = guardian` benign cases) and p95 adjudication
+latency ≤ 3 s (from the runner's per-case latency); entries are ranked by catch rate, then false-deny rate, then latency; the default guardian is the **highest-ranked validated model
 available on the user's configured accounts**. Seed examples for the list — cheap flash-tier
 models typical of subscription catalogs, model-agnostic (seeds for the scorecard run, not list entries until scored): Claude Haiku 5.5, GPT-6 Luna, DeepSeek
 V4.1 Flash, GLM-5.3 Flash, Qwen3.8 Flash class. **Typed-decision (System One) class** (Jev, Laya, DiffusionGemma) join the ranked list only as candidates that must pass benchmarking, with thresholds recalibrated on Fontaine's golden set (see Decisions, 2026-10-21). Changing
@@ -86,9 +86,21 @@ fail-closed code, never offered to the model. A verdict outside the enum is unpa
 `ToolCallSummary.destructive` from the call itself, structurally (the Tier-0.5 `brush-parser` pass and the scope
 validator; no regex), never from the guardian's label. A `shell`, `write`/`edit`, MCP or other
 `Arbitrary` call is destructive when it has any of: a removal or overwrite (a parsed
-`rm`/`rmdir`/`mv`-class word, or a write over a path whose status is `pre_existing` or
+word from the removal/overwrite list below, or a write over a path whose status is `pre_existing` or
 `unindexed`), a write target outside every workspace root, network egress (`webfetch`, or a parsed
-network-client / `git push` / `git remote` word), or any construct the parser cannot classify. The
+word from the network-client list below), or any construct the parser cannot classify. Every MCP
+call is destructive. The shipped constant word lists:
+
+- removal/overwrite: `rm`, `rmdir`, `mv`, `cp`, `dd`, `truncate`, `shred`, `unlink`, `ln`, `chmod`,
+  `chown`, `install`, `tee`, `sed -i`, `perl -i`, `find` with `-delete`/`-exec`/`-execdir`, `xargs`,
+  any output redirection (`>`, `>>`), and `git` with `reset --hard`, `clean`, `checkout --`,
+  `restore`, `branch -D`, `push --force`/`-f`, `rebase`, `filter-branch`, `stash drop`/`clear`.
+- network-client: `curl`, `wget`, `ssh`, `scp`, `sftp`, `rsync`, `nc`, `ncat`, `netcat`, `socat`,
+  `telnet`, `ftp`, `git push`/`fetch`/`pull`/`clone`/`remote`, and package installers (`pip`/`pip3
+  install`, `npm`/`pnpm`/`yarn` `install`/`add`, `cargo install`, `gem install`, `go install`,
+  `apt`/`apt-get`/`brew`/`dnf`/`yum` `install`).
+
+The lists are checked against `claude -p` baselines and extended by code change, not config. The
 derivation lives in `rust/fontaine-core/src/destructive.rs`, so `fontaine-guardian` stays
 dependency-light.
 
@@ -123,13 +135,18 @@ Deny or Escalate."* All request content is wrapped in delimited untrusted blocks
 **Minimal guardian profile (`[guardian] profile = "minimal"`)** — the container-mode narrowing;
 the guardian never goes fully off, it narrows (no zero-guardian mode exists — the dropped `bypass`
 mode is not resurrected here; minimal adjudicates, just less):
-- A **reduced ruleset + reduced adjudication context** (smaller `AdjudicationRequest`: trimmed
-  intent digest + session facts) run on the **resolved `[guardian] model`** (no separate model key). Permitted **only when
+- A **reduced ruleset + reduced adjudication context** (smaller `AdjudicationRequest`, below) run on the **resolved `[guardian] model`** (no separate model key). Permitted **only when
   containment is Fontaine-verified**: an explicit `--in-container` CLI flag (a user
   assertion — Phase 1 CLI table) **backed by an actual runtime probe** (Linux: any of `/.dockerenv`, `/run/.containerenv`, `container=` in PID 1's environment, or container markers in `/proc/1/cgroup`; macOS and Windows always report "not contained", so minimal falls back to `full` there). Detecting an srt/bubblewrap launch (`@anthropic-ai/sandbox-runtime`) belongs to the Phase 5 sandbox roadmap slot. A
   failed or missing probe fails closed — minimal refuses to load and falls back to `full` with a
   notice. **Default `full`.** Never settable by project settings: profile is a loosening knob, so
-  the existing trust-asymmetry rule extends to it — user-scope only.
+  the existing trust-asymmetry rule extends to it — user trust scopes only (per the config scope table).
+- **Trimmed `AdjudicationRequest` under minimal**: keeps `tool_call` (full args and the derived
+  `destructive` flag), `task_intent` truncated to its most recent 500 characters, the last 3
+  `recent_user_messages`, `session_facts` reduced to workspace roots plus the touched paths'
+  pre-existence status, `environment` and the minimal `rules` list; drops `project_instructions`, `hook_context`
+  and `prior_denials`. Full args and roots are kept so exfiltration-class remote writes (destination
+  vs. session-start remotes) can still be judged.
 - **What minimal still enforces (its whole reason to exist): containment integrity.** With blast
   radius sandbox-bounded, escape-class actions are the remaining catastrophic risk. The minimal
   ruleset denies/escalates: mount/umount; docker-socket access; `/proc/sys` and cgroup
@@ -161,14 +178,14 @@ mode is not resurrected here; minimal adjudicates, just less):
    usage attributed `query_source = guardian` through its ancestor span, and
    `fontaine.guardian.fail_closed.count` by reason. Shipped default mode
    flips `manual` → `auto` here, and the pre-Phase-4 restriction (`default_mode = "auto"` as a config error, `--permission-mode auto` as a usage error) is removed. Headless `-p` semantics for `auto`: Escalate and
-   loop-breaker outcomes become Deny returned to the agent; the run continues.
+   loop-breaker outcomes become Deny returned to the agent (loop-breaker prompts and denials carry `tier = guardian`); the run continues.
 3. TUI denial UX: inline denial rendering, `/denied` retry list, `/permissions` rule editor,
    `/model` and `/guardian-model` switches, Escalate-verdict prompts.
 4. Run the Phase-0 eval harness against live guardian models and **publish the guardian scorecard**
    with the release: catch rate per attack class × false-deny rate on benign commands × per-model
    results (no ASR × utility / AgentDojo-comparable reporting); the same harness validates and **ranks the guardian
    candidates for the default-guardian list** and writes the entries that clear the inclusion bar
-   (destructive-class catch rate ≥ 90%, benign false-deny rate ≤ 5%, p95 adjudication latency ≤ 3 s,
+   (catch rate ≥ 90% over all `kind = guardian` `attack:*` cases, benign false-deny rate ≤ 5% over all `kind = guardian` benign cases, p95 adjudication latency ≤ 3 s from the runner's per-case latency,
    measured on the `full` profile) into `rust/fontaine-guardian/data/guardian_models.toml`, ranked by
    catch rate, then false-deny rate, then latency — including the typed-decision candidates (Jev/Laya/DiffusionGemma join
    the ranked list only if they score) and a **`minimal` profile column** (same golden set +
@@ -178,8 +195,8 @@ mode is not resurrected here; minimal adjudicates, just less):
    A1, mitigating KILL #3). Also run the `fontaine-evals` `baseline capture` / `baseline diff` subcommands with
    `auto` against the Tier-0.5 adversarial set and the floor/headless cases to confirm the
    Claude Code parity (manual/eval-side, never a CI dependency — see AGENTS.md).
-5. Minimal profile implementation: profile resolution (`[guardian] profile`, user-scope only; only
-   `full`/`minimal` validate) with the reduced ruleset (`rust/fontaine-guardian/prompts/guardian_minimal.md`, versioned alongside `guardian_prompt.md`) and trimmed `AdjudicationRequest` on the resolved `[guardian] model` (no separate model key; `rust/fontaine-guardian/src/profile.rs`); the runtime containment probe
+5. Minimal profile implementation: profile resolution (`[guardian] profile`, user trust scopes only per the config scope table; only
+   `full`/`minimal` validate) with the reduced ruleset (`rust/fontaine-guardian/prompts/guardian_minimal.md`, versioned alongside `guardian_prompt.md`) and the trimmed `AdjudicationRequest` (fields kept/dropped per the Minimal guardian profile section) on the resolved `[guardian] model` (no separate model key; `rust/fontaine-guardian/src/profile.rs`); the runtime containment probe
    (Linux: contained if ANY of `/.dockerenv` exists, `/run/.containerenv` exists (Podman), PID 1's
    environment has `container=` (read `/proc/1/environ`; unreadable ⇒ no signal), or `/proc/1/cgroup`
    contains `docker`, `kubepods`, `containerd`, `libpod` or `lxc`; macOS and Windows always report "not
@@ -189,9 +206,9 @@ mode is not resurrected here; minimal adjudicates, just less):
    one-time notice.
 6. Release setup: cargo-dist (exact-pinned version) configured in `rust/Cargo.toml` and
    `.github/workflows/release.yml` — on a `vX.Y.Z` tag it builds binaries for Linux, macOS and Windows
-   and publishes a GitHub Release (semver 0.x); `cargo install` from git/crates.io also supported.
+   and publishes a GitHub Release (semver 0.x); `cargo install --git https://github.com/madesroches/fontaine fontaine` also supported; v1 does not publish to crates.io.
    Tagging and pushing the tag are human steps (maintainer); the workflow is exercised by a
-   `cargo dist plan` check in CI. README install section lists the Releases binaries and `cargo install`.
+   `cargo dist plan` check in CI. README install section lists the Releases binaries and `cargo install --git`.
    `CHANGELOG.md` keeps `## [Unreleased]` (Keep a Changelog); at release it moves under the version.
 7. Docs — finish `docs/guardian.md`: threat model (guardian as attack surface: no tools,
    structured output only, untrusted-delimiting, fail-closed on every non-verdict outcome), the
@@ -236,9 +253,9 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   signal, not an error; macOS/Windows ⇒ not contained; a positive probe without `--in-container`, and
   `--in-container` without a positive probe, both ⇒ `full` with the notice.
 - **guardian list** (`rust/fontaine-guardian/tests/`): a synthetic scorecard applies the inclusion
-  bar (below-bar catch, above-bar false-deny or slow p95 each excluded) and the catch → false-deny →
+  bar (catch computed over `kind = guardian` `attack:*` cases and false-deny over `kind = guardian` benign cases only — `pipeline`/`scanner` cases never count; below-bar catch, above-bar false-deny or slow p95 each excluded) and the catch → false-deny →
   latency ordering.
-- **destructive class** (`rust/fontaine-core/tests/destructive.rs`): derivation from the call —
+- **destructive class** (`rust/fontaine-core/tests/destructive.rs`): every member of both shipped word lists (each `git` subcommand, `sed -i`/`perl -i`, `find` flag, installer and redirection form) classifies destructive, and every MCP call does; derivation from the call —
   removal/overwrite words, out-of-workspace write, network egress, unparseable command ⇒ destructive;
   in-workspace new-file `write` and a plain `cargo test` ⇒ not; a verdict labelled with a benign
   category on a destructive call below threshold still ⇒ Deny; a verdict outside the `RuleLabel` enum
@@ -266,7 +283,7 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   `openai-compatible` accounts, built with the Phase-1 `common/mod.rs` helper), including the fail-closed cases above end to end (guardian endpoint
   500s, resets, or drops mid-stream ⇒ tool call denied) and an unavailable pinned guardian in headless
   `auto` ⇒ every adjudication `Deny GuardianUnavailable`, with the notice in the `init` event and on stderr. The Phase 4 auto-mode rig-cassette (tool call → guardian verdict → execute → answer) needs live keys and a
-  human to record; once committed, replay runs in CI via `rust/fontaine/tests/cassettes.rs`, which asserts the
+  human to record (`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes`; the test carries `#[ignore = "cassette not recorded"]` until the fixture is committed, and the recording commit removes the attribute); once committed, replay runs in CI via `rust/fontaine/tests/cassettes.rs`, which asserts the
   guardian verdict, the `gate_decision` tier and the audit record, plus the tool result and final answer.
 - Eval: golden-set scoring incl. the `minimal` column — run manually/nightly, never CI-gated.
 
@@ -283,5 +300,5 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   publication, linked from docs; the auto-mode cassette recording; the `claude -p` baseline
   capture; Manual Verification item 6's Docker leg (run in a Docker container with `--in-container`:
   the `minimal` profile loads and the probe contract holds); the scorecard run that fills `guardian_models.toml`.
-- Needs a human: cut the first release (tag `vX.Y.Z` and push the tag; the release workflow builds and publishes the binaries); move `## [Unreleased]` under the version in `CHANGELOG.md`.
+- Needs a human: cut the first release (tag `vX.Y.Z` and push the tag; the release workflow builds and publishes the binaries; install paths are Releases binaries and `cargo install --git`, no crates.io publish); move `## [Unreleased]` under the version in `CHANGELOG.md`.
 - Log the phase in the master plan's Progress log.

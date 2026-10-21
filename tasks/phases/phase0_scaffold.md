@@ -79,9 +79,9 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 - **config** (`tasks/design/testing.md` Testing Strategy): workspace = canonicalized launch cwd; project config
   discovered only at `<workspace>/.fontaine/settings{,.local}.toml` (a settings file in a parent directory is
   ignored); precedence, project-can-only-tighten enforcement —
-  including that `[guardian] profile` is rejected from project scope (user-scope only, it is a
-  loosening knob) and only `full`/`minimal` validate: no config value disables the guardian. Every user-scope-only key in `tasks/design/config.md` §Config scope
-  table (`[accounts]`, `[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets,
+  including that `[guardian] profile` is rejected from project scope (user trust scopes only, it is a
+  loosening knob) and only `full`/`minimal` validate: no config value disables the guardian. Every key `tasks/design/config.md` §Config scope
+  table denies to project scope (`[accounts]`, `[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets,
   `[agents.types]`, …) is rejected from project scope. Scope stack: CLI > project-local > project
   > user precedence for scalars and union for lists; a tracked `settings.local.toml` loads as project
   scope; endpoint/credential keys rejected from project-local; project and project-local

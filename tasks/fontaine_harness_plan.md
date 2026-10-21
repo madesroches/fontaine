@@ -92,7 +92,7 @@ sits directly under `rust/`** — the root directories are only `rust/`, `evals/
 `research/`, plus root files `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`,
 `.github/workflows/release.yml` (cargo-dist release build; see `design/platforms.md` §Releases) and
 `.github/workflows/ci.yml` (GitHub Actions; matrix `ubuntu-latest`, `macos-latest`, `windows-latest`, each job installs the toolchain pinned in `rust/rust-toolchain.toml` and from `rust/` runs `cargo fmt --check`,
-`cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run — see
+`cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run (Phase 6 adds `cargo clippy --all-targets --features fontaine-guardian/pg2 -- -D warnings` and `cargo test --features fontaine-guardian/pg2`) — see
 `design/testing.md` §Testing Strategy).
 
 ```
@@ -105,7 +105,8 @@ fontaine/
 │   │                           #   owns the tracing subscriber + telemetry export (`src/telemetry/`)
 │   ├── fontaine-core/          # session orchestration on rig-agent (AgentRun, rig bookkeeping hooks),
 │   │                           #   permission pipeline + rule grammar, settings scope stack, workspace
-│   │                           #   trust, user hooks, session ledger, extension loading, FONTAINE.md
+│   │                           #   trust, user hooks, session ledger, extension loading, FONTAINE.md,
+│   │                           #   registry assembly (full choke-point test: `fontaine-core/tests/choke_point.rs`)
 │   ├── fontaine-tools/         # risk metadata registry + GuardedTool wrapper around
 │   │                           #   rig-core Tool (calls the `ToolGate` trait it defines); rig-tools built-ins re-exposed with risk
 │   │                           #   classes; workspace-scope validation over `rig_tools::fs::place`; confined rig tool config
@@ -137,18 +138,6 @@ fontaine-guardian     ─▶ (no Fontaine crates)
 fontaine-tools        ─▶ (no Fontaine crates — never fontaine-core)
 ```
 
-`fontaine-agents` defines a `ChildRunner` trait — spawn a gated child run given agent type,
-effective mode, budget and a root-ledger handle (a trait object defined beside it, so agents never
-names core's ledger type); it returns a handle for status, kill and report. `fontaine-core`
-implements it (building the child's `AgentRun` with the gated registry and the tighter-of-parent mode)
-and injects it at startup, the same inversion as `ToolGate`; the `fontaine-core ─▶ fontaine-agents`
-edge stays one-way.
-
-`fontaine-tools` defines a `ToolGate` trait (one async check per call, returning allow or a denial
-for the tool_result); `GuardedTool` calls it. `fontaine-core`'s `PermissionPipeline` implements
-`ToolGate` and is injected into every wrapper at registration, so the gate logic lives in core
-without tools depending on it.
-
 `fontaine-llm` from the first draft is **gone** — rig-core's provider layer (20+ providers,
 streaming, OpenAI-compatible custom endpoints for OpenRouter/LM Studio/vLLM/LiteLLM) replaces it
 entirely.
@@ -160,8 +149,7 @@ user hooks, extension files, session resume/fork (Phase 5), result scanning (Pha
 
 ## Files to Modify
 
-All new. Workspace-level files: `rust/Cargo.toml` (members = ["*"], exclude = ["target", ".*"], resolver 2,
-workspace.package block with edition 2024 and rust-version 1.97.1; rig crates pinned), `rust/rust-toolchain.toml`,
+All new. Workspace-level files: `rust/Cargo.toml` (see Phase 0 step 1), `rust/rust-toolchain.toml`,
 `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `.github/workflows/*`. Each phase plan lists its own
 file slice in dependency order. No `fontaine-llm` crate — the model layer is rig.
 
@@ -259,8 +247,6 @@ carries the reasoning:
 - 2026-10-20: Core is built on the rig crate family (rig-core/rig-agent/rig-memory/rig-tools/
   rig-rmcp/rig-cassette), pinned to exact versions; no custom provider layer. (User directive:
   reuse existing crates for the core wherever possible.)
-- 2026-10-20: The guardian gate lives in the `GuardedTool` decorator (registry-level choke point),
-  not in rig `AgentHook`s; hooks are for bookkeeping only. Settled (see 2026-10-21 below).
 - 2026-10-20: rig's Bevy-based harness/TUI (`rig-harness`, `rig-tui`) is not adopted; Fontaine
   keeps its own ratatui TUI.
 - 2026-10-20: License is Apache-2.0 — the repo's `LICENSE` is verbatim Apache-2.0 text; rule prose
@@ -289,7 +275,7 @@ carries the reasoning:
   validator; never regex-on-args; fail-through on anything unparsed) as a guardian-skipping fast path; curated set ships conservative,
   user-extensible via the `[shell_preclassifier] allow_extra` key — one mode-agnostic list
   applying in every mode (no per-mode keys: the pre-classifier runs before the mode branches),
-  user-scope only; not the guardian's `[auto_mode].allow` prose list — never auto-extended. Mirrors
+  user trust scopes only (per the config scope table); not the guardian's `[auto_mode].allow` prose list — never auto-extended. Mirrors
   Claude Code's read-tool split + built-in read-only Bash command set per the tie-breaker.
   Deviations from Claude Code, recorded per that guideline: we reject unquoted globs in
   pre-classified commands (Claude Code permits them for read-only commands — reason: the glob
@@ -342,7 +328,7 @@ carries the reasoning:
   privileged namespace ops, raw device access, bind-mount host writes via symlink traversal,
   sandbox-proxy bypass) + the deterministic floors; exfiltration-class remote writes still
   adjudicate; requires Fontaine-verified containment (user-scope `--in-container` + Linux runtime probe in
-  Phase 4; srt/bubblewrap launch detection joins with the Phase 5 sandbox slot; probe failure ⇒ fall back to `full`); user-scope only; ships
+  Phase 4; srt/bubblewrap launch detection joins with the Phase 5 sandbox slot; probe failure ⇒ fall back to `full`); user trust scopes only (per the config scope table); ships
   with its own scorecard column.
 - 2026-10-21 (user): Jev + open alternatives (Laya, DiffusionGemma) enter the benchmark-validated
   guardian list as CANDIDATES (screening tier + standalone evaluation); hosted-Jev never the local
@@ -403,8 +389,8 @@ carries the reasoning:
   spans upstream; OTLP/HTTP is the fallback. Deliberate Claude-Code deviation (Claude Code exports only
   OTel); reason: user requirement (micromegas out of the box); the `otlp` backend keeps a Claude
   Code-compatible collector story. Metric and event names mirror `claude_code.*` under a `fontaine.`
-  prefix; content opt-ins mirror the `OTEL_LOG_*` flags; endpoint, credentials and opt-ins are
-  user-scope only, and a project may only set `enabled = false` (Claude Code parity).
+  prefix; content opt-ins mirror the `OTEL_LOG_*` flags; endpoint, credentials and opt-ins come
+  from the user file and CLI `--settings` only, and a project may only set `enabled = false` (Claude Code parity).
 - 2026-10-21: the audit log is a separate, always-on, durable local record, not derived from
   telemetry. Both are written from one typed `GateDecision`, the audit log first. Reason: telemetry
   is opt-in, lossy and redacted, while the audit log is the security record. Claude Code has no
@@ -484,9 +470,13 @@ carries the reasoning:
 - 2026-10-21 (user): the minimal guardian profile uses the resolved `[guardian] model` (no separate
   model key); its reduced ruleset is `rust/fontaine-guardian/prompts/guardian_minimal.md`, versioned
   alongside `guardian_prompt.md`.
+- 2026-10-21: `pg2` flag threshold is the fixed constant 0.9 in `scanner.rs`, LlamaFirewall's `PromptGuardScanner` default `block_threshold` (PurpleLlama `prompt_guard_scanner.py`).
+- 2026-10-21 (user): v1 does not publish to crates.io; install paths are GitHub Releases binaries and `cargo install --git`; crates.io publishing is future work.
+- 2026-10-21 (user): destructive-class word lists ship as constants in Phase 4 (checked against `claude -p` baselines, extended by code change); catch rate is measured over all `kind = guardian` `attack:*` cases, benign false-deny over all `kind = guardian` benign cases, and the eval runner reports per-case latency with p50/p95.
+- 2026-10-21: output styles never alter the guardian's prompt or `AdjudicationRequest` (Phase 5 test).
 - 2026-10-21 (user): releases — semver 0.x, tags `vX.Y.Z`; GitHub Releases with prebuilt Linux, macOS
-  and Windows binaries built by cargo-dist (exact-pinned; verified 0.32.0) plus `cargo install` from
-  git/crates.io; the maintainer cuts releases (tagging and pushing are human steps); CHANGELOG follows
+  and Windows binaries built by cargo-dist (exact-pinned; verified 0.32.0) plus `cargo install --git https://github.com/madesroches/fontaine fontaine`;
+  v1 does not publish to crates.io (future work); the maintainer cuts releases (tagging and pushing are human steps); CHANGELOG follows
   Keep a Changelog. Workflow set up in Phase 4, the first phase that produces a release.
 
 - 2026-10-21 (user): `fontaine-agents` defines a `ChildRunner` trait (spawn a gated child run from agent
@@ -501,7 +491,7 @@ carries the reasoning:
   "command"` (default `"off"`), replacing the `scan_tool_results` boolean; `scanner_command` is the BYO
   program (JSON `{tool, content}` on stdin, `{"verdict","reason"}` on stdout); `llm` uses the resolved
   `[guardian] model`. A scanner error, timeout or unparseable output is treated as flagged (fail
-  closed: the result is annotated, never passed as clean). All scanner keys are user-scope only.
+  closed: the result is annotated, never passed as clean). All scanner keys are user file only.
 - 2026-10-21 (user): Linux containment probe is contained if any of: `/.dockerenv`; `/run/.containerenv`;
   `container=` in PID 1's environment (unreadable ⇒ no signal); container markers in `/proc/1/cgroup`.
   macOS and Windows ⇒ not contained. `minimal` still needs `--in-container` AND a positive probe.

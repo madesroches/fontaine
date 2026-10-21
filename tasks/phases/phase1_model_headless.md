@@ -112,7 +112,7 @@ upstream builder knob.
    then returns an `ExitCode`); exporter init failure ⇒ one-line notice, run continues with export
    off. Env scrubbing lands with the shell tool in Phase 2.
 4. Docs — accounts and models: grow `docs/configuration.md` with `[accounts]` and `[model]`
-   sections (multiple accounts, `<account>/<model>` addressing, credential sources, user-scope-only
+   sections (multiple accounts, `<account>/<model>` addressing, credential sources, user-file-or-CLI-only
    rule, fail-closed guardian on bad credentials) carrying worked
    examples for every supported path (Anthropic, OpenAI, Gemini, Ollama, and OpenAI-compatible
    base URLs: OpenRouter / LM Studio / vLLM / LiteLLM) and env-key handling; create

@@ -64,13 +64,13 @@ model = "work/claude-haiku-5-5"   # `<account>/<model>`, may be a different acco
                                   #   validated guardian model available on any configured account (see the Phase 4 plan)
 profile = "full"                  # "full" | "minimal" — minimal is the container-mode narrowing (never off):
                                   #   escape-class ruleset + reduced context on the resolved `model` above; requires
-                                  #   Fontaine-verified containment; loosening knob ⇒ user-scope only, never
+                                  #   Fontaine-verified containment; loosening knob ⇒ user trust scopes only, never
                                   #   project-settable; see the Phase 4 plan
 timeout_secs = 30
 confidence_threshold = 0.7
 cache = true
 scanner = "off"                   # tool-result scanner: "off" | "pg2" | "llm" | "command"; `llm` uses the resolved `model`
-                                  #   above; error/timeout/unparseable ⇒ flagged (fail closed); user-scope only
+                                  #   above; error/timeout/unparseable ⇒ flagged (fail closed); user file only
 # scanner_command = ""           # `command` only: program run with JSON {tool, content} on stdin, prints
                                   #   {"verdict":"clean"|"flagged","reason":...}; bounded by `timeout_secs`
 # scanner_model_path = ""        # `pg2` only: dir with model.safetensors + tokenizer.json + config.json; unset ⇒ download on first enable
@@ -110,7 +110,7 @@ args = ["stdio"]
 env_vars = ["GITHUB_TOKEN"]        # env var NAMES passed through; values never in config
 
 [auto_mode]                        # prose lists; the loosening slots (allow/environment) are
-environment = ["$defaults",        #   user-scope file only; project files may add to
+environment = ["$defaults",        #   user trust scopes only; project files may add to
                                    #   soft_deny/hard_deny but NEVER to allow/environment
   "Source control: github.com/myorg"]
 allow       = ["$defaults", "Deploying to staging namespace is allowed: resets nightly"]
@@ -134,7 +134,7 @@ allow_extra = []                  # user extensions to the curated read-only com
                                   #   never auto-extends it from observed usage. Each entry is a
                                   #   command name or a `command subcommand` pair; no flags are
                                   #   allowed (any flag falls through to the guardian) and positional
-                                  #   arguments must be in-scope paths; user-scope only
+                                  #   arguments must be in-scope paths; user trust scopes only
 
 [telemetry]                        # off unless enabled (Claude Code parity)
 enabled = false                    # true REQUIRES `endpoint` and an ingestion key (below); either

@@ -23,7 +23,7 @@ that is never sufficient alone.
 
 semver 0.x, git tags `vX.Y.Z`. GitHub Releases carry prebuilt binaries for Linux, macOS and Windows
 built by cargo-dist (exact-pinned version; workflow `.github/workflows/release.yml`, set up in Phase 4,
-the first phase that produces a release); `cargo install` from git/crates.io also works. The
+the first phase that produces a release); `cargo install --git https://github.com/madesroches/fontaine fontaine` also works; v1 does not publish to crates.io. The
 maintainer cuts releases — tagging and pushing the tag are human steps, never the agent's.
 `CHANGELOG.md` follows Keep a Changelog: entries accumulate under `## [Unreleased]`, which moves under
 the version heading at release. The README install section lists both install paths.

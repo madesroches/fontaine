@@ -63,9 +63,9 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   (a test that fails if any registered tool is missing a risk class — the choke point stays closed).
 - **config**: workspace = canonicalized launch cwd, project config read only from
   the primary root's `.fontaine/settings.toml` and `.fontaine/settings.local.toml`; precedence, project-can-only-tighten enforcement — including that `[guardian] profile`
-  is rejected from project scope (user-scope only, it is a loosening knob) and only `full`/`minimal`
-  validate: no config value disables the guardian; every user-scope-only key in the `config.md` §Config scope
-  table (`[accounts]`, `[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets, `[agents.types]`,
+  is rejected from project scope (user trust scopes only, it is a loosening knob) and only `full`/`minimal`
+  validate: no config value disables the guardian; every key the `config.md` §Config scope
+  table denies to project scope (`[accounts]`, `[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets, `[agents.types]`,
   …) is rejected from project scope. Scope stack: precedence managed (empty) > CLI > project-local >
   project > user for scalars, union for lists; a tracked `settings.local.toml` loads as project scope;
   endpoint/credential keys rejected from project-local; project and project-local `default_mode` accept only `manual`/`dontAsk`
@@ -100,7 +100,7 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   messages and no summary text (canary instruction placed in a compaction summary never reaches the
   guardian); the pre-session file index respects `.gitignore`, truncates at the cap and records the
   truncation, and the request carries only the touched paths' status; resume restores context + ledger
-  in the default mode without session grants; fork copies both; rewind keeps denial history.
+  in the default mode without session grants; fork copies both.
 - **headless contract**: `json` and `stream-json` outputs validate against the versioned schema
   (snapshot per `schema_version`); `init` lists roots, config sources, trust state and suspended allow
   rules; every gate decision appears as a `gate_decision` event whose `tier` equals the audit record's;
@@ -148,10 +148,10 @@ connection, or drops mid-stream (see the guardian bullet) and the tool call is d
 read round-trip: prompt → stream → tool call → fast-path execute → result → answer; `cassettes.rs` asserts the
 tool executed via the fast path, the `gate_decision` tier, and the final answer) and the Phase 4 auto-mode
 cassette (tool call → guardian verdict → execute → answer; `cassettes.rs` asserts the verdict, the
-`gate_decision` tier, and the audit record, plus the final answer). Once a cassette is committed, replay is the CI default and needs no keys. Cassettes live in
+`gate_decision` tier, and the audit record, plus the final answer). Once a cassette is committed, replay is the CI default and needs no keys; until its fixture is committed a cassette test carries `#[ignore = "cassette not recorded"]`, and the recording commit removes the attribute. Cassettes live in
 `rust/fontaine/tests/cassettes/`; recording scrubs API keys, auth headers, and home-directory paths
 through rig-cassette's scrubbing configuration, and runs only via
-`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes -- --ignored` with the
+`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes` with the
 account's `base_url` pointed at the cassette proxy's `base_url()` and the provider key env var set
 (record tests skip without it; replay is rig-cassette's default mode). Token and cost telemetry assertions before Phase 3 run against a scripted `wiremock` endpoint, not a cassette. rig prices by provider vendor and model id, so a custom `openai-compatible` endpoint has no price: cost and `--max-budget-usd` tests use an account of `kind = "openai"` (or `anthropic`) whose `base_url` points at the wiremock server and whose model id is listed in rig's price catalog.
 
@@ -163,7 +163,7 @@ This is the tier where "89% vs 13.6%" style claims get verified for whatever mod
 Runner: the workspace bin crate `rust/fontaine-evals`, run from `rust/` as
 `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture`; it scores the
 selected guardian's verdict for each case against `expected` (live modes adjudicate through the same
-core as `fontaine -p`). Dataset: `evals/dataset/*.jsonl`, one JSON object per line with `id`, `kind` (`guardian` |
+core as `fontaine -p`). Scorecard populations: catch rate = all `kind = guardian` cases with `category = attack:*`; benign false-deny rate = all `kind = guardian` benign cases. The runner records per-adjudication latency (ms) for each case in its JSON output and reports p50 and p95 per model. Dataset: `evals/dataset/*.jsonl`, one JSON object per line with `id`, `kind` (`guardian` |
 `pipeline` | `scanner`), `category` (benign | attack:<class> | injection-in-args | ambiguous-intent |
 tier05-adversarial | spawn | minimal-escape | minimal-benign), `profile` (`full` | `minimal`),
 `task_intent`, `tool`, `args`, `expected`, and `fixture_verdict` (the canned outcome the offline

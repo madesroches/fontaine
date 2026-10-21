@@ -151,12 +151,12 @@ context.
 
 ## Tests owned by this phase
 
-- **tools** (`tasks/design/testing.md` Testing Strategy; `rust/fontaine-tools/tests/{scope,choke_point}.rs`):
+- **tools** (`tasks/design/testing.md` Testing Strategy; `rust/fontaine-tools/tests/{scope,choke_point}.rs` — `choke_point.rs` here is the builtins-only check; the full exact-set + risk-class test over every registered tool lives in `rust/fontaine-core/tests/choke_point.rs` from Phase 5):
   workspace-scope validator over `fs::place` (path traversal, absolute paths, symlinks, out-of-scope
   `cwd`); rig tool configuration (`confine: true`, `max_timeout` clamps `timeout_secs`, output
   `cut`); the exact registered tool set from the step-1 table (no duplicate names, `delete`/`move`
-  absent); risk-class registration of every built-in and MCP tool — the choke-point test that fails
-  if any registered tool is missing a risk class.
+  absent); risk-class registration of every built-in tool — the choke-point test that fails
+  if any registered built-in is missing a risk class.
 - **ResultPipeline** (`rust/fontaine-tools/tests/`): every tool result passes through it after the inner tool returns and before the caller sees it; with test-double stages attached in the wrong registration order, they still run scanner first, then `post_tool_use`; with no stages it is the identity.
 - GuardedTool delegation (against a fake `ToolGate`): inner tool runs exactly once, only after the gate allows; under the stub,
   an in-scope `read` is allowed, an out-of-scope `read` and every `write`/`edit`/`shell` call is denied.
@@ -190,7 +190,7 @@ context.
 - A headless `-p` run against the scripted endpoint completes a read-tool round-trip through the
   wrapped registry (in-scope `read` allowed by the deny-by-default stub; `write`/`shell` denied —
   nothing executes past the stub until Phase 3).
-- Choke-point test green: every registered tool has a `RiskClass`.
+- Choke-point test green: every registered built-in tool has a `RiskClass`.
 - Needs a human (the agent cannot push): push the branch and confirm the windows CI job runs the `#[cfg(windows)]` tests green.
 - `rust/fontaine-core/tests/docs.rs` green with `docs/tools.md` covering the shipped inventory; scope checks are multi-root; the ledger
   survives compaction.

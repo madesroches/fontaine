@@ -59,4 +59,4 @@ delivered (or extended) by the docs step of the phase named with it — see the 
   section; every phase appends an entry there in its docs step (plan/phase citations belong here, not
   in the docs pages); at release, `[Unreleased]` moves under the new version heading.
 - README install section: prebuilt binaries from GitHub Releases (Linux, macOS, Windows) or
-  `cargo install` from git/crates.io (Phase 4).
+  `cargo install --git https://github.com/madesroches/fontaine fontaine` (Phase 4).
