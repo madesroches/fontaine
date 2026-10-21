@@ -141,8 +141,8 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
 - **PromptGuard 2 as the tool-result scanner** (default — user decision 2026-10-21): adopt as the
   default for the result-scanning slot (recall @ 1% FPR **97.5% (English)** per both the HF model
   card and the paper's §4.1 table; EN AUC differs — .998 on the card vs .98 in the paper's table;
-  0.995 multilingual AUC; 19–92ms) via ONNX Runtime
-  (`ort` crate), with the cheap-LLM pass as the fallback / bring-your-own option. Caveat: the
+  0.995 multilingual AUC; 19–92ms) via `candle` (DeBERTa-v2
+  sequence classification over the repo's safetensors weights), with the cheap-LLM pass as the fallback / bring-your-own option. Caveat: the
   PromptGuard 2 HF repos are **gated downloads** (`gated: "manual"` — license acceptance required)
   and the weights carry the **Llama 4 Community License**, which **permits commercial use**
   (royalty-free, conditional; extra restrictions only above 700M monthly active users; AUP +

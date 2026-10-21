@@ -15,8 +15,9 @@ guardian context to poison). Runs on a **separately configured model** (`guardia
 Fontaine ships an **ordered, benchmark-validated list of guardian models** as the data file
 `rust/fontaine-guardian/data/guardian_models.toml` (ranked entries: provider kind, model id,
 scorecard metrics) — it ships empty, and step 4's scorecard run fills it — built from Fontaine's
-own evals (guardrail accuracy on the golden dataset, latency, robustness to evasion) and
-re-benchmarked each release; the default guardian is the **highest-ranked validated model
+own evals and re-benchmarked each release. **Inclusion bar:** a model enters the list only if, on the
+scorecard, destructive-class catch rate ≥ 90%, benign false-deny rate ≤ 5% and p95 adjudication
+latency ≤ 3 s; entries are ranked by catch rate, then false-deny rate, then latency; the default guardian is the **highest-ranked validated model
 available on the user's configured accounts**. Seed examples for the list — cheap flash-tier
 models typical of subscription catalogs, model-agnostic (seeds for the scorecard run, not list entries until scored): Claude Haiku 5.5, GPT-6 Luna, DeepSeek
 V4.1 Flash, GLM-5.3 Flash, Qwen3.8 Flash class. **Typed-decision (System One) class** (Jev, Laya, DiffusionGemma) join the ranked list only as candidates that must pass benchmarking, with thresholds recalibrated on Fontaine's golden set (see Decisions, 2026-10-21). Changing
@@ -125,7 +126,7 @@ mode is not resurrected here; minimal adjudicates, just less):
 - A **reduced ruleset + reduced adjudication context** (smaller `AdjudicationRequest`: trimmed
   intent digest + session facts) run on the **resolved `[guardian] model`** (no separate model key). Permitted **only when
   containment is Fontaine-verified**: an explicit `--in-container` CLI flag (a user
-  assertion — Phase 1 CLI table) **backed by an actual runtime probe** (Linux cgroup-namespace check and `/.dockerenv`; macOS and Windows always report "not contained", so minimal falls back to `full` there). Detecting an srt/bubblewrap launch (`@anthropic-ai/sandbox-runtime`) belongs to the Phase 5 sandbox roadmap slot. A
+  assertion — Phase 1 CLI table) **backed by an actual runtime probe** (Linux: any of `/.dockerenv`, `/run/.containerenv`, `container=` in PID 1's environment, or container markers in `/proc/1/cgroup`; macOS and Windows always report "not contained", so minimal falls back to `full` there). Detecting an srt/bubblewrap launch (`@anthropic-ai/sandbox-runtime`) belongs to the Phase 5 sandbox roadmap slot. A
   failed or missing probe fails closed — minimal refuses to load and falls back to `full` with a
   notice. **Default `full`.** Never settable by project settings: profile is a loosening knob, so
   the existing trust-asymmetry rule extends to it — user-scope only.
@@ -166,9 +167,10 @@ mode is not resurrected here; minimal adjudicates, just less):
 4. Run the Phase-0 eval harness against live guardian models and **publish the guardian scorecard**
    with the release: catch rate per attack class × false-deny rate on benign commands × per-model
    results (no ASR × utility / AgentDojo-comparable reporting); the same harness validates and **ranks the guardian
-   candidates for the default-guardian list** and writes the ranked entries into
-   `rust/fontaine-guardian/data/guardian_models.toml` (guardrail accuracy on the golden dataset × latency ×
-   robustness to evasion) — including the typed-decision candidates (Jev/Laya/DiffusionGemma join
+   candidates for the default-guardian list** and writes the entries that clear the inclusion bar
+   (destructive-class catch rate ≥ 90%, benign false-deny rate ≤ 5%, p95 adjudication latency ≤ 3 s,
+   measured on the `full` profile) into `rust/fontaine-guardian/data/guardian_models.toml`, ranked by
+   catch rate, then false-deny rate, then latency — including the typed-decision candidates (Jev/Laya/DiffusionGemma join
    the ranked list only if they score) and a **`minimal` profile column** (same golden set +
    escape-focused additions; a profile ships only once it is scored, KILL #3 framing inherits). The
    guardian never ships un-scored — a bypass found by Fontaine's own public eval is a credibility
@@ -178,8 +180,11 @@ mode is not resurrected here; minimal adjudicates, just less):
    Claude Code parity (manual/eval-side, never a CI dependency — see AGENTS.md).
 5. Minimal profile implementation: profile resolution (`[guardian] profile`, user-scope only; only
    `full`/`minimal` validate) with the reduced ruleset (`rust/fontaine-guardian/prompts/guardian_minimal.md`, versioned alongside `guardian_prompt.md`) and trimmed `AdjudicationRequest` on the resolved `[guardian] model` (no separate model key; `rust/fontaine-guardian/src/profile.rs`); the runtime containment probe
-   (Linux cgroup-namespace check and `/.dockerenv`; macOS and Windows always report "not
-   contained"; srt/bubblewrap launch detection is deferred to the Phase 5 roadmap slot) in `rust/fontaine-core/src/containment.rs`, with the `--in-container` CLI flag as an input that is
+   (Linux: contained if ANY of `/.dockerenv` exists, `/run/.containerenv` exists (Podman), PID 1's
+   environment has `container=` (read `/proc/1/environ`; unreadable ⇒ no signal), or `/proc/1/cgroup`
+   contains `docker`, `kubepods`, `containerd`, `libpod` or `lxc`; macOS and Windows always report "not
+   contained"; srt/bubblewrap launch detection is deferred to the Phase 5 roadmap slot) in
+   `rust/fontaine-core/src/containment.rs`, reading through an injectable root path so tests use a fake root, with the `--in-container` CLI flag as an input that is
    never sufficient alone; on probe failure or missing verification, resolve to `full` and emit a
    one-time notice.
 6. Release setup: cargo-dist (exact-pinned version) configured in `rust/Cargo.toml` and
@@ -225,6 +230,14 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   present); redaction of credential-shaped inputs; minimal-profile resolution fail-closed (probe
   failure ⇒ fall back to `full`), and under `minimal` the escape primitives + exfiltration-class
   remote writes still Deny/Escalate.
+- **containment probe** (`rust/fontaine-core/tests/containment.rs`, fake root dir): each signal alone
+  (`/.dockerenv`, `/run/.containerenv`, `container=` in `/proc/1/environ`, each cgroup marker) ⇒
+  contained; an empty root and a plain-host cgroup ⇒ not contained; unreadable `/proc/1/environ` ⇒ no
+  signal, not an error; macOS/Windows ⇒ not contained; a positive probe without `--in-container`, and
+  `--in-container` without a positive probe, both ⇒ `full` with the notice.
+- **guardian list** (`rust/fontaine-guardian/tests/`): a synthetic scorecard applies the inclusion
+  bar (below-bar catch, above-bar false-deny or slow p95 each excluded) and the catch → false-deny →
+  latency ordering.
 - **destructive class** (`rust/fontaine-core/tests/destructive.rs`): derivation from the call —
   removal/overwrite words, out-of-workspace write, network egress, unparseable command ⇒ destructive;
   in-workspace new-file `write` and a plain `cargo test` ⇒ not; a verdict labelled with a benign

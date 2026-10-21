@@ -20,7 +20,7 @@ in the main session, and their results return to the parent as a summary.
   registry is a subset of the parent's, never a superset. N subagents run concurrently in the background and the parent receives summarized results back. Listing,
   status streaming and interrupt/kill/pause are TUI-only user controls (the agents panel), not model tools.
 - **Results re-enter through the gate.** A subagent's report comes back to the parent as an ordinary *tool result*, so
-  when scanning is enabled it passes the tool-result scanner (PromptGuard 2 default, off by default) like any other
+  when a scanner is configured (`[guardian] scanner`, off by default) it passes the tool-result scanner like any other
   result — only then is injection text surviving inside a subagent's output flagged before the parent reads it. The
   classifier does not screen reports at handoff — the guardian by construction never sees tool outputs (Deviation
   recorded in Decisions).
@@ -124,7 +124,10 @@ transcript.
    `--fork-session` copies both stores under a new session id without session grants;
    `fontaine.session.count{start_type=resume}`. (Headless `-p` moved to Phase 1 step 2 — user
    decision 2026-10-21.)
-3. `fontaine-agents`: `agent` spawn tool over rig-agent — concurrent background subagents with
+3. `fontaine-agents`: defines the `ChildRunner` trait (`rust/fontaine-agents/src/runner.rs`: spawn a gated child
+   run from agent type, effective mode, budget and a root-ledger handle; returns a handle for status, kill
+   and report) which `fontaine-core` implements (`rust/fontaine-core/src/child_runner.rs`) and injects at startup, like
+   `ToolGate`; the core impl re-evaluates the child's mode as the tighter of its own and the parent's on every call. `agent` spawn tool over rig-agent — concurrent background subagents with
    own context/model/per-type restricted registries; list/stream-status/interrupt as TUI-only controls; spawn call
    gated as a pipeline request; subagent tool calls re-enter the permission pipeline with
    one-way mode inheritance (child mode ≤ parent mode); agent-to-agent messages (`send_message`) through the same
@@ -177,8 +180,8 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
 
 ## Files created or modified
 
-`rust/Cargo.toml` (direct `rmcp` pin); `rust/fontaine-mcp/src/{lib,servers,register}.rs`; `rust/fontaine-agents/src/{lib,spawn,registry,budget}.rs`;
-`rust/fontaine-core/src/{session,user_hooks,extensions}.rs`; `rust/fontaine-tools/src/skill.rs`;
+`rust/Cargo.toml` (direct `rmcp` pin); `rust/fontaine-mcp/src/{lib,servers,register}.rs`; `rust/fontaine-agents/src/{lib,spawn,registry,budget,runner}.rs`;
+`rust/fontaine-core/src/{session,user_hooks,extensions,child_runner}.rs`; `rust/fontaine-tools/src/skill.rs`;
 `rust/fontaine-tui/src/{agents_panel,trust_prompt}.rs`;
 `docs/{mcp,agents,hooks,extensions,tui,configuration,architecture,headless,telemetry,index}.md`.
 
@@ -190,6 +193,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   is a subset of the parent's; budget caps stop a subagent; subagent reports return as ordinary
   tool results through `ResultPipeline`; `send_message` peer messages hit the
   same gate.
+- **ChildRunner seam** (`rust/fontaine-agents/tests/`, fake `ChildRunner`): the spawn tool, registry and budget logic run with no `fontaine-core` dependency; the fake receives type, effective mode, budget and ledger handle; status/kill/report flow through the returned handle.
 - **agents panel** (`rust/fontaine-tui/tests/`, ratatui `TestBackend` with a scripted model): a killed subagent's row shows `killed` and its token/cost spend against budget.
 - **subagent intent** (`rust/fontaine/tests/parallel_agents.rs`): an injected spawn prompt claiming user authorization does not appear as `task_intent` or in `recent_user_messages` in any `AdjudicationRequest`; it appears only inside an untrusted-delimited block.
 - **choke point** (`rust/fontaine-tools/tests/choke_point.rs`, extended): the exact registered set is the Phase-2 table plus `agent` (Arbitrary), `skill` (ReadOnly) and `send_message` (Arbitrary) — no other names, no duplicates, every one with a `RiskClass`; no list/status/kill tool is registered for the model.

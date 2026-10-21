@@ -69,8 +69,11 @@ profile = "full"                  # "full" | "minimal" — minimal is the contai
 timeout_secs = 30
 confidence_threshold = 0.7
 cache = true
-scan_tool_results = false
-# scanner_model_path = ""        # local PromptGuard 2 ONNX dir; unset ⇒ download on first enable
+scanner = "off"                   # tool-result scanner: "off" | "pg2" | "llm" | "command"; `llm` uses the resolved `model`
+                                  #   above; error/timeout/unparseable ⇒ flagged (fail closed); user-scope only
+# scanner_command = ""           # `command` only: program run with JSON {tool, content} on stdin, prints
+                                  #   {"verdict":"clean"|"flagged","reason":...}; bounded by `timeout_secs`
+# scanner_model_path = ""        # `pg2` only: dir with model.safetensors + tokenizer.json + config.json; unset ⇒ download on first enable
 # scanner_hf_token_env = "HF_TOKEN"   # env var NAME holding the user's HF token for that download
 
 [permissions]
@@ -191,7 +194,8 @@ Per-key scope (the user file may set every key; a key a scope may not set is rej
 |-----|---------|---------------------------|-----|
 | `[accounts.*]` (`kind`, `base_url`, `api_key_env`, `models`) | no | no | `--settings` |
 | `[model]` `model` | no | yes | yes (`--model`) |
-| `[guardian]` `model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache`, `scan_tool_results`, `scanner_model_path`, `scanner_hf_token_env` | no | yes | `--settings` |
+| `[guardian]` `model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache` | no | yes | `--settings` |
+| `[guardian]` `scanner`, `scanner_command`, `scanner_model_path`, `scanner_hf_token_env` | no | no | no (user file only) |
 | `[permissions]` `default_mode` | `manual`/`dontAsk` only | `manual`/`dontAsk` only | yes (`--permission-mode`) |
 | `[permissions]` `deny`, `ask` | add only | add only | add only (`--disallowed-tools` → deny) |
 | `[permissions]` `allow` | no | yes | yes (`--allowed-tools`) |

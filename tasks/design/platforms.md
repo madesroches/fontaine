@@ -16,7 +16,7 @@ pre-classify. Path handling (scope validator, protected paths, critical-path) ac
 letters, UNC paths, MSYS-style `/c/...` argv paths (translated to drive paths before validation; an
 untranslatable one is out of scope), compares case-insensitively, and resolves junctions and
 symlinks. Critical paths on Windows include drive roots and `%USERPROFILE%`. The containment probe
-(Phase 4 step 5; Linux cgroup-namespace and `/.dockerenv` checks only) reports "not contained" on macOS and Windows; `--in-container` stays a manual assertion
+(Phase 4 step 5; Linux only — `/.dockerenv`, `/run/.containerenv`, `container=` in PID 1's environment, container markers in `/proc/1/cgroup`; any one suffices) reports "not contained" on macOS and Windows; `--in-container` stays a manual assertion
 that is never sufficient alone.
 
 ## Releases

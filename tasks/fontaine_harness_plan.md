@@ -58,7 +58,7 @@ product documentation lives under `docs/` (see `design/documentation.md` §Docum
 | 3 — pipeline & manual TUI | [phases/phase3_pipeline_tui.md](phases/phase3_pipeline_tui.md) | PermissionPipeline (manual/acceptEdits/plan/dontAsk; deterministic floor; `Tool(specifier)` rule grammar + allow rules; user-hook slot; Tier-0.5; audit log); headless `-p` denial semantics for manual/dontAsk; ratatui TUI; `docs/permissions.md` + pipeline diagram | not started | **usable Claude-Code-like agent with manual approvals** |
 | 4 — guardian + scorecard | [phases/phase4_guardian.md](phases/phase4_guardian.md) | fontaine-guardian; `auto` wired into pipeline (incl. headless `-p` semantics for auto); denial UX; live evals; **published scorecard**; `docs/guardian.md` + `docs/evals.md` | not started | shipped default flips `manual` → `auto`; scorecard public with the release |
 | 5 — extensibility | [phases/phase5_extensibility.md](phases/phase5_extensibility.md) | MCP (user + trust-gated project servers); session resume/fork; user hooks; skills/agent files/output styles; parallel subagents (v1) + budgets + agents panel; `docs/{mcp,agents,hooks,extensions}.md`; sandbox/sandboxing.md = **roadmap slot** | not started | gated background subagents live in one session |
-| 6 — guardian hardening | [phases/phase6_hardening.md](phases/phase6_hardening.md) | tool-result scanner (PromptGuard 2 ONNX default, BYO interface, cheap-LLM fallback); scanner docs | not started | scanning demonstrable behind config, license caveat surfaced |
+| 6 — guardian hardening | [phases/phase6_hardening.md](phases/phase6_hardening.md) | tool-result scanner (`[guardian] scanner` = off/pg2/llm/command; PromptGuard 2 via candle, BYO command, cheap-LLM); scanner docs | not started | scanning demonstrable behind config, license caveat surfaced |
 
 ### Progress log
 
@@ -112,7 +112,8 @@ fontaine/
 │   ├── fontaine-guardian/      # the guardian agent: verdict protocol (rig extractor),
 │   │                           #   prompt builder, rules config, caching, fail-closed logic
 │   ├── fontaine-agents/        # parallel subagent orchestration on rig-agent: spawn/list/
-│   │                           #   interrupt, per-type tool registries, budgets (v1)
+│   │                           #   interrupt, per-type tool registries, budgets (v1); defines the
+│   │                           #   `ChildRunner` trait (implemented by core)
 │   ├── fontaine-mcp/           # rig-rmcp wiring: MCP servers from config, tools registered
 │   │                           #   as RiskClass::Arbitrary, annotations → guardian hints
 │   ├── fontaine-tui/           # ratatui app: chat, approval prompts, denial/retry UI, modes
@@ -135,6 +136,13 @@ fontaine-agents       ─▶ fontaine-tools
 fontaine-guardian     ─▶ (no Fontaine crates)
 fontaine-tools        ─▶ (no Fontaine crates — never fontaine-core)
 ```
+
+`fontaine-agents` defines a `ChildRunner` trait — spawn a gated child run given agent type,
+effective mode, budget and a root-ledger handle (a trait object defined beside it, so agents never
+names core's ledger type); it returns a handle for status, kill and report. `fontaine-core`
+implements it (building the child's `AgentRun` with the gated registry and the tighter-of-parent mode)
+and injects it at startup, the same inversion as `ToolGate`; the `fontaine-core ─▶ fontaine-agents`
+edge stays one-way.
 
 `fontaine-tools` defines a `ToolGate` trait (one async check per call, returning allow or a denial
 for the tool_result); `GuardedTool` calls it. `fontaine-core`'s `PermissionPipeline` implements
@@ -203,7 +211,7 @@ file slice in dependency order. No `fontaine-llm` crate — the model layer is r
   tool label or server declaration, and never reaching past the floor.
 - **Parallel agents multiply guardian round-trips and model cost** — N subagents mean N× adjudications
   and token spend (Claude Code documents the same). Mitigated by Tier 0.5 (most read-ish subagent
-  calls never reach the guardian), the local PromptGuard 2 result scanner (no per-result LLM call),
+  calls never reach the guardian), the optional local PromptGuard 2 result scanner (`scanner = "pg2"`; no per-result LLM call),
   and `[agents]` budget caps; the stateless per-request guardian parallelizes without shared state.
 - **Prose rule lists over Rego/OPA-style policy** — prose matches the guardian's medium (it is an
   LLM), is what Claude Code proved works, and stays editable by humans; a deterministic policy
@@ -227,7 +235,8 @@ carries the reasoning:
 - rig adopts a permission-adjudication API and refuses upstream collaboration (KILL #8 becomes
   fatal rather than convertible).
 - Eval results show the best local guardian models cannot clear a credible bar (e.g. <60% catch
-  on the seeded attack classes at <10% benign false-deny) — meaning the "any model" promise is
+  on the seeded attack classes at <10% benign false-deny; this kill floor is separate from the
+  stricter guardian-list inclusion bar in Phase 4 step 4) — meaning the "any model" promise is
   hollow for the feature that matters.
 
 ## Decisions
@@ -262,7 +271,7 @@ carries the reasoning:
   that is available on the configured accounts; switching easy, explicit, never automatic; unset +
   no catalog match → main model with one-time notice. (User decision; resolves former Open
   Question 2.)
-- 2026-10-21: default tool-result scanner = PromptGuard 2 (ONNX); cheap-LLM pass fallback;
+- 2026-10-21: default tool-result scanner = PromptGuard 2; cheap-LLM pass fallback;
   Llama 4 Community License gated-download caveat surfaced at first enable; BYO-scanner interface
   for license-clean setups. (User decision.)
 - 2026-10-21: fold analysis-strategic-verdict amendments A3 (sandbox interop: srt/bubblewrap spike +
@@ -479,6 +488,26 @@ carries the reasoning:
   and Windows binaries built by cargo-dist (exact-pinned; verified 0.32.0) plus `cargo install` from
   git/crates.io; the maintainer cuts releases (tagging and pushing are human steps); CHANGELOG follows
   Keep a Changelog. Workflow set up in Phase 4, the first phase that produces a release.
+
+- 2026-10-21 (user): `fontaine-agents` defines a `ChildRunner` trait (spawn a gated child run from agent
+  type, effective mode, budget and root-ledger handle; returns a status/kill/report handle) that
+  `fontaine-core` implements and injects at startup — same inversion as `ToolGate`, no new crate edge.
+- 2026-10-21 (user): PromptGuard 2 runs on `candle` (safetensors weights from the gated HF repo), not
+  ONNX/`ort`. Verified: `candle-transformers` 0.11.0 ships `models::debertav2` with
+  `DebertaV2SeqClassificationModel` (PG2 86M is mDeBERTa-v3-base). Pins `candle-core`/`candle-nn`/
+  `candle-transformers` `=0.11.0`, `tokenizers` `=0.23.2`, all optional behind the `pg2` feature;
+  release builds enable `pg2`.
+- 2026-10-21 (user): scanner selection is one key, `[guardian] scanner = "off" | "pg2" | "llm" |
+  "command"` (default `"off"`), replacing the `scan_tool_results` boolean; `scanner_command` is the BYO
+  program (JSON `{tool, content}` on stdin, `{"verdict","reason"}` on stdout); `llm` uses the resolved
+  `[guardian] model`. A scanner error, timeout or unparseable output is treated as flagged (fail
+  closed: the result is annotated, never passed as clean). All scanner keys are user-scope only.
+- 2026-10-21 (user): Linux containment probe is contained if any of: `/.dockerenv`; `/run/.containerenv`;
+  `container=` in PID 1's environment (unreadable ⇒ no signal); container markers in `/proc/1/cgroup`.
+  macOS and Windows ⇒ not contained. `minimal` still needs `--in-container` AND a positive probe.
+- 2026-10-21 (user): guardian-list inclusion bar — a model enters `guardian_models.toml` only with
+  destructive-class catch rate ≥ 90%, benign false-deny rate ≤ 5% and p95 adjudication latency ≤ 3 s on
+  the scorecard; ranked by catch rate, then false-deny rate, then latency. Separate from the kill criteria.
 
 ## Open Questions
 

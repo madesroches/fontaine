@@ -9,11 +9,15 @@ Phase 5 for the subagent-result path) · **Master:** [fontaine_harness_plan.md](
 
 Like Claude Code's server-side probe, a scanner pass over incoming tool *results* that flags
 injection-looking content ("ignore previous instructions…", credential-shaped strings) and
-annotates the result before the main agent reads it. Default scanner: **PromptGuard 2 86M via
-ONNX (`ort` crate)** (per the LlamaFirewall findings — user decision 2026-10-21); the cheap-LLM
-pass is the fallback / BYO option. PromptGuard 2's HF downloads are gated and Llama 4 Community
-License-encumbered — that caveat is surfaced at first enable; a BYO-scanner interface serves
-license-clean setups. Off by default for latency; configurable.
+annotates the result before the main agent reads it. Scanner selection is one key,
+`[guardian] scanner = "off" | "pg2" | "llm" | "command"`, default `"off"` (latency). `pg2` is
+**PromptGuard 2 86M (mDeBERTa-v3-base) on `candle`** running the gated HF repo's safetensors weights
+(per the LlamaFirewall findings — user decision 2026-10-21); `llm` is the cheap-LLM pass on the resolved
+`[guardian] model`; `command` is the BYO scanner (`scanner_command`). PromptGuard 2's HF downloads are
+gated and Llama 4 Community License-encumbered — that caveat is surfaced at first `pg2` enable; `command`
+serves license-clean setups. A scanner that errors, times out or prints unparseable output yields
+**flagged** (fail closed: the result is annotated as unscanned-and-suspect, never passed as clean).
+Release builds enable the `pg2` cargo feature.
 
 Context for the choice: `research/research-llamafirewall.md` §7.2 (PG2 recall @ 1% FPR **97.5%**
 English; 19–92 ms — a cheap first layer, not a judge; AgentDojo evidence that small detectors
@@ -23,31 +27,42 @@ path (`ResultPipeline`, Phase 2) — see the Phase 5 plan.
 
 ## Steps
 
-1. Tool-result injection scanner, attached as the first stage of `ResultPipeline` (Phase 2; runs before Phase 5's `post_tool_use` hooks): default scanner is **PromptGuard 2 86M via ONNX (`ort` crate)**
-   (a sidecar process and the cheap-LLM pass are the fallback / BYO options), off by default,
-   configurable (`[guardian] scan_tool_results`). Surface the gated-download / Llama 4 Community
-   License caveat at first enable; expose a BYO-scanner interface for license-clean setups.
-   Acquisition: the weights are never bundled. Either the user supplies a local model directory
-   (`[guardian] scanner_model_path`: the `.onnx` file plus `tokenizer.json`), or first enable
-   downloads them from the gated HF repo using the user's HF token read from the env var named by
+1. Tool-result injection scanner, attached as the first stage of `ResultPipeline` (Phase 2; runs before Phase 5's `post_tool_use` hooks), selected by `[guardian] scanner`
+   (`off` default | `pg2` | `llm` | `command`; user-scope only; the one switch — there is no separate on/off boolean).
+   A `Scanner` trait in `fontaine-guardian` has three implementations:
+   - `pg2`: PromptGuard 2 86M via `candle` — `candle_transformers::models::debertav2::DebertaV2SeqClassificationModel`
+     over `model.safetensors`, with `tokenizer.json` and `config.json` (label map from `id2label`); the
+     malicious class at or above the flag threshold ⇒ flagged. Pins in `rust/Cargo.toml`: `candle-core`,
+     `candle-nn`, `candle-transformers` `=0.11.0` and `tokenizers` `=0.23.2` (default features off;
+     enable only what `tokenizer.json` loading needs) — confirm they resolve under the workspace toolchain
+     when the step lands. All are optional dependencies of `fontaine-guardian` behind the `pg2` cargo
+     feature so the crate stays dependency-light; release builds enable `pg2`; `scanner = "pg2"` in a build
+     without it is a config error (exit 2). A first spike loads the real weights and checks logits against
+     the model card's reference outputs before the step builds on it.
+   - `llm`: the cheap-LLM pass on the resolved `[guardian] model` (`query_source = scanner`).
+   - `command`: `scanner_command` is run directly (no shell) with the hook-style scrubbed environment;
+     it receives JSON `{"tool": ..., "content": ...}` on stdin and prints
+     `{"verdict":"clean"|"flagged","reason":...}` on stdout; bounded by `[guardian] timeout_secs`.
+   Any scanner error, timeout or unparseable/invalid output ⇒ flagged. Surface the gated-download /
+   Llama 4 Community License caveat at first `pg2` enable.
+   Acquisition (`pg2`): the weights are never bundled. Either the user supplies a local model directory
+   (`[guardian] scanner_model_path`: `model.safetensors`, `tokenizer.json`, `config.json`), or first enable
+   downloads those three files from the gated HF repo using the user's HF token read from the env var named by
    `[guardian] scanner_hf_token_env` (default `HF_TOKEN`; never stored or logged) after the user has
    accepted the license on HF. Downloads land in `<data dir>/models/promptguard2-86m/`
-   with their SHA-256 recorded alongside. Pins in `rust/Cargo.toml`: `ort = "=2.0.0-rc.15"` and
-   `tokenizers = "=0.22.0"` (default features off) — confirm both resolve under the workspace
-   toolchain when the step lands and pin the exact versions that do; both are optional dependencies
-   of `fontaine-guardian` behind a `pg2` cargo feature so the crate stays dependency-light.
+   with their SHA-256 recorded alongside.
    Telemetry: scanner verdict and latency on the `tool_result` event (`query_source = scanner` for
-   the cheap-LLM fallback's model usage).
+   the `llm` scanner's model usage).
 2. Docs — result scanning in `docs/guardian.md`: what the scanner flags, how the annotation
-   reaches the agent, why off-by-default (latency), and that scanned results carry into the
+   reaches the agent, why off-by-default (latency), the fail-closed behavior, and that scanned results carry into the
    subagent-report path; write the gated-download / Llama 4 Community License caveat up beside
-   the in-app first-enable notice; `docs/configuration.md` for `scan_tool_results`, the BYO
-   scanner interface, and the cheap-LLM fallback; the scanner fields in `docs/telemetry.md`; append
+   the in-app first-enable notice; `docs/configuration.md` for `scanner`, `scanner_command` (the BYO
+   stdin/stdout JSON contract), `scanner_model_path`, `scanner_hf_token_env` and the `llm` option; the scanner fields in `docs/telemetry.md`; append
    a CHANGELOG entry.
 
 ## Files created or modified
 
-`rust/fontaine-guardian/src/scanner.rs`; `[guardian] scan_tool_results`, `scanner_model_path`,
+`rust/fontaine-guardian/src/scanner.rs` (trait + `pg2`/`llm`/`command` implementations; `pg2` behind the cargo feature); `rust/Cargo.toml` (candle and tokenizers pins, `pg2` feature enabled for release builds); `[guardian] scanner`, `scanner_command`, `scanner_model_path`,
 `scanner_hf_token_env` config plumbing
 (`rust/fontaine-core/src/config.rs`); `docs/{guardian,configuration,telemetry}.md`.
 
@@ -55,12 +70,14 @@ path (`ResultPipeline`, Phase 2) — see the Phase 5 plan.
 
 - Scanner logic tests with fixture payloads against a fake scanner implementing the BYO trait (injection-looking text and credential shapes flagged;
   benign results unflagged; annotation present before the agent reads the result).
-- BYO-scanner interface: a test scanner plugs in via the trait; default-off means zero behavior
-  change until enabled.
+- Scanner selection: `scanner` accepts exactly `off`/`pg2`/`llm`/`command` (anything else, or `command` without `scanner_command`, is a config error); default `off` means zero behavior
+  change; each scanner key is rejected from project and project-local scope.
+- `command` scanner (a script in a temp dir): clean and flagged verdicts honored; non-zero exit, timeout (time-paused), invalid JSON and a missing program each ⇒ flagged; stdin carries exactly `{tool, content}`; configured credential env vars are absent from its environment.
+- `llm` scanner (scripted endpoint): verdict parsed; endpoint error or timeout ⇒ flagged.
 - Subagent reports (ordinary tool results from Phase 5) pass the scanner stage of `ResultPipeline` when enabled: an
   injection-bearing report is flagged before the parent reads it.
 - PromptGuard 2 inference test behind the `pg2` cargo feature, skipped unless `FONTAINE_PG2_MODEL`
-  points at a local model directory — never part of default CI; every other behavior (flag
+  points at a local model directory (safetensors + `tokenizer.json` + `config.json`) — never part of default CI; every other behavior (flag
   threshold, annotation, default-off, notice) is covered offline by the fake scanner.
 - License-notice path: first-enable notice fires exactly once per model download.
 - Telemetry: scanner verdict and latency present on `tool_result` and content-free.
@@ -68,12 +85,11 @@ path (`ResultPipeline`, Phase 2) — see the Phase 5 plan.
 ## Definition of done
 
 - Offline gates (no keys, no human): `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` /
-  `cargo test` green from `rust/`, including the fake-scanner tests (scanner logic, BYO trait,
+  `cargo test` green from `rust/`, including the fake-scanner tests (scanner logic, BYO trait, `command`/`llm` fail-closed, selection,
   subagent reports, license notice, telemetry) and the default-off test.
-- Needs a human and an HF token (not CI): scanning demonstrable in a live session behind the config
-  flag with the license caveat surfaced; the `pg2`-feature PromptGuard 2 inference test run against a
+- Needs a human and an HF token (not CI): scanning demonstrable in a live session with `scanner = "pg2"` set, with the license caveat surfaced; the `pg2`-feature PromptGuard 2 inference test run against a
   downloaded model (`FONTAINE_PG2_MODEL`).
-- Off remains the default.
+- `scanner = "off"` remains the default; the release build enables the `pg2` feature.
 - `rust/fontaine-core/tests/docs.rs` green with the `docs/guardian.md` scanning section in place.
 - CHANGELOG entry appended.
 - Log the phase in the master plan's Progress log.
