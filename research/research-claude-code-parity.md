@@ -88,7 +88,7 @@ form asked for), and why it is costly to retrofit. A deviation from Claude Code 
 marked **(Decision needed)**.
 
 ### P1 — Allow rules and a structured rule-specifier grammar
-**Phase:** master §Config + Phase 0 (loader/schema), Phase 3 (pipeline + approval widget).
+**Phase:** `tasks/design/config.md` §Config + Phase 0 (loader/schema), Phase 3 (pipeline + approval widget).
 CC: [permissions#permission-rule-syntax](https://code.claude.com/docs/en/permissions#permission-rule-syntax),
 [permission-modes](https://code.claude.com/docs/en/permission-modes).
 
@@ -109,7 +109,7 @@ rule grammar is shared by deny/ask, which Phase 3 builds. A grammar invented aft
 force deny/ask to be rewritten.
 
 ### P2 — Multi-root workspace (additional working directories)
-**Phase:** Phase 2 (scope validator, `SessionState`), master §Core data flow step 4.
+**Phase:** Phase 2 (scope validator, `SessionState`), `tasks/design/permissions.md` §Core data flow step 4.
 CC: [permissions#working-directories](https://code.claude.com/docs/en/permissions#working-directories).
 
 Sketch: The workspace becomes an ordered set of roots (the cwd plus `--add-dir` / `/add-dir`
@@ -125,7 +125,7 @@ validator, the Tier-0.5 path checks, and the critical-path "cwd and its parents"
 one root today.
 
 ### P3 — Settings scope model: managed > CLI > project-local > project > user
-**Phase:** master §Config scope table + Phase 0 step 1 (loader).
+**Phase:** `tasks/design/config.md` §Config scope table + Phase 0 step 1 (loader).
 CC: [settings#settings-precedence](https://code.claude.com/docs/en/settings#settings-precedence),
 [managed-settings](https://code.claude.com/docs/en/managed-settings).
 
@@ -228,7 +228,7 @@ SDK consumer all parse this stream. Changing it after Phase 4 publishes a scorec
 breaks all of them.
 
 ### P8 — Extension file layout: skills, agent definitions, commands
-**Phase:** master §Workspace/§Config (layout + scope), Phase 5 (build).
+**Phase:** master §Workspace layout + `tasks/design/config.md` §Config (layout + scope), Phase 5 (build).
 CC: [skills](https://code.claude.com/docs/en/skills),
 [sub-agents#configure-subagents](https://code.claude.com/docs/en/sub-agents#configure-subagents),
 [claude-directory](https://code.claude.com/docs/en/claude-directory).
@@ -257,12 +257,12 @@ only, the file format becomes a second, competing definition path.
 |---|---|---|---|---|
 | Permission modes: default/manual, acceptEdits, plan, auto, dontAsk; Shift+Tab cycling | [permission-modes](https://code.claude.com/docs/en/permission-modes) | planned | — | Phase 3 (modes) + Phase 4 (auto). Same names/semantics; acceptEdits shell deviation recorded in Decisions. |
 | bypassPermissions / --dangerously-skip-permissions | [permission-modes#skip-all-checks-with-bypasspermissions-mode](https://code.claude.com/docs/en/permission-modes#skip-all-checks-with-bypasspermissions-mode) | excluded | — | Decision 2026-10-21 (user): no bypass mode in v1; containers get `[guardian] profile = "minimal"`. |
-| Auto mode classifier (separate model, fail-closed, deny reasons fed back, prose environment/allow/soft_deny/hard_deny lists, $defaults) | [auto-mode-config](https://code.claude.com/docs/en/auto-mode-config) | planned | — | Phase 4 guardian; master §Config `[auto_mode]`. Local/any-model is the differentiator. |
+| Auto mode classifier (separate model, fail-closed, deny reasons fed back, prose environment/allow/soft_deny/hard_deny lists, $defaults) | [auto-mode-config](https://code.claude.com/docs/en/auto-mode-config) | planned | — | Phase 4 guardian; `tasks/design/config.md` §Config `[auto_mode]`. Local/any-model is the differentiator. |
 | Recently-denied list, retry, teach-the-classifier after repeated denials; fallback to prompting after N denials | [permission-modes#when-auto-mode-falls-back](https://code.claude.com/docs/en/permission-modes#when-auto-mode-falls-back) | planned | — | Phase 4 step 3 (`/denied`, loop breaker). |
 | Server-side tool-result probe for injected content | [permission-modes#server-side-classifier-review](https://code.claude.com/docs/en/permission-modes#server-side-classifier-review) | planned | — | Phase 6 local PromptGuard 2 scanner (default off). |
-| Deny and ask rules evaluated before everything, in every mode | [permissions#manage-permissions](https://code.claude.com/docs/en/permissions#manage-permissions) | planned | — | Master §Core data flow step 2; Phase 3. |
+| Deny and ask rules evaluated before everything, in every mode | [permissions#manage-permissions](https://code.claude.com/docs/en/permissions#manage-permissions) | planned | — | `tasks/design/permissions.md` §Core data flow step 2; Phase 3. |
 | Allow rules + `Tool(specifier)` rule grammar (Bash prefix/wildcard, Read/Edit gitignore-style paths, WebFetch(domain:), MCP server/tool names); `--allowedTools`/`--disallowedTools`; 'Yes, don't ask again' persistence; broad code-exec allow rules dropped on entering auto | [permissions#permission-rule-syntax](https://code.claude.com/docs/en/permissions#permission-rule-syntax) | partial | **plan-now** (P1) | Fontaine has deny/ask but no `allow` key and no specifier grammar, yet Decisions route 'don't ask again' grants to 'explicit user-scope config rules' that have no home. Approval widget has allow-once/allow-session only. |
-| Critical-path removals always prompt; protected paths (.git, dotfiles, settings files) | [permission-modes#critical-paths](https://code.claude.com/docs/en/permission-modes#critical-paths) | planned | — | Master §Core data flow step 2 floor. |
+| Critical-path removals always prompt; protected paths (.git, dotfiles, settings files) | [permission-modes#critical-paths](https://code.claude.com/docs/en/permission-modes#critical-paths) | planned | — | `tasks/design/permissions.md` §Core data flow step 2 floor. |
 | Additional working directories (`--add-dir`, `/add-dir`, `permissions.additionalDirectories`) | [permissions#working-directories](https://code.claude.com/docs/en/permissions#working-directories) | missing | **plan-now** (P2) | Workspace containment is what earns the fast path; plan assumes a single root. |
 | Workspace trust dialog gating project settings, project MCP servers (`.mcp.json` approvals), hooks, helper commands | [permissions#project-allow-rules-and-workspace-trust](https://code.claude.com/docs/en/permissions#project-allow-rules-and-workspace-trust) | missing | **plan-now** (P4) | Plan says project scope can only tighten, but project-declared MCP servers/hooks/skills execute code - a loosening path with no gate yet. |
 | Sandboxed Bash (bubblewrap/Seatbelt via sandbox-runtime; filesystem + network-proxy isolation; `/sandbox`) | [sandboxing](https://code.claude.com/docs/en/sandboxing) | planned | — | Phase 5 roadmap slot (srt/bubblewrap spike, `docs/sandboxing.md`); not a v1 gate. |

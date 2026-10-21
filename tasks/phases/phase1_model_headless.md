@@ -11,8 +11,8 @@ and 20+ providers behind one interface (Anthropic, OpenAI, Gemini, Ollama, Bedro
 custom OpenAI-compatible endpoints for OpenRouter/LM Studio/vLLM/LiteLLM). The **same rig model
 abstraction serves both the main agent and the guardian** — the guardian is just another rig agent
 pointed at a different model handle (`guardian.model`). Streaming to the TUI uses rig's streaming
-events; structured verdicts use rig's `structured_output` synthetic-tool path (see the master
-plan's §Ecosystem / dependencies). Provider selection comes from Fontaine config **accounts** (`[accounts.<name>]`: `kind`,
+events; structured verdicts use rig's `structured_output` synthetic-tool path (see
+`tasks/design/research-findings.md` §Ecosystem / dependencies). Provider selection comes from Fontaine config **accounts** (`[accounts.<name>]`: `kind`,
 optional `base_url`, credential source) and maps onto rig client constructors — one rig client per
 account, so two accounts of the same kind (work + personal Anthropic) coexist with separate
 credentials and endpoints. Each account provides models: an explicit `models` list, else discovery
@@ -20,7 +20,7 @@ from the provider where rig supports listing. Models are addressed `<account>/<m
 `[guardian] model`, and `[agents.types]`, so main agent and guardian may sit on different accounts.
 Credentials come from a named env var or the stored-credentials file (`fontaine auth login`,
 `<data dir>/credentials.toml`, owner-only); raw keys are never read from config files. Accounts and all account/model/endpoint
-keys follow the master scope table (`[accounts]` only from the user file or CLI; no
+keys follow the `tasks/design/config.md` scope table (`[accounts]` only from the user file or CLI; no
 account/model/endpoint reference from shared project scope — rejected at load); a missing or invalid credential on
 the guardian's account makes the guardian unavailable and fails closed. The "any model I like"
 requirement is met by dependency rather than by code we maintain.
@@ -37,7 +37,7 @@ rename or removal bumps it) and `session_id`. Event types:
   their scopes, workspace trust state, allow rules suspended by `auto`.
 - `assistant` — a complete assistant message; with `--include-partial-messages`, also `assistant_delta`.
 - `tool_call` — `tool_use_id`, tool, args.
-- `gate_decision` — `tool_use_id`, `tier` (the master tier enum, equal to the audit record's), `decision`, `rule`, and for
+- `gate_decision` — `tool_use_id`, `tier` (the tier enum in `tasks/design/permissions.md` §Core data flow, equal to the audit record's), `decision`, `rule`, and for
   guardian decisions `explanation`, `confidence`, `guardian_model`.
 - `tool_result` — `tool_use_id`, success, the result text as the agent receives it.
 - `result` — `subtype` (`success` | `error_max_turns` | `error_max_budget` | `error_run`), result
@@ -50,7 +50,7 @@ would-prompt outcome stays a Deny.
 
 ### Telemetry backends
 
-The export slot from Phase 0 gets both backends from the master plan's §Observability: the
+The export slot from Phase 0 gets both backends from `tasks/design/observability.md` §Observability: the
 micromegas sink guard (local sink, global capture and system monitor off; explicit endpoint +
 `ApiKeyRequestDecorator` from the configured key) with `TracingCaptureLayer` composed into
 Fontaine's registry and the `SpanBridge` mapping allowlisted spans to micromegas async span events
@@ -96,7 +96,7 @@ upstream builder knob.
    | `--max-turns <n>` / `--max-budget-usd <x>` | stop the run with `result.subtype` `error_max_turns` / `error_max_budget`, exit 1; a budget with no known price for a configured model is a usage error (exit 2) | 1 |
    | `--json-schema <file>` | structured final output via rig `structured_output`, in `result.structured_output` | 1 |
    | `--system-prompt <text>` / `--append-system-prompt <text>` | replace / extend the system prompt | 1 |
-   | `--settings <file>` | CLI-scope settings overlay (master §Config scope stack) | 1 |
+   | `--settings <file>` | CLI-scope settings overlay (`tasks/design/config.md` §Config scope stack) | 1 |
    | `--debug-file <path>` | local debug log (owner-only), `FONTAINE_LOG` filter | 1 |
    | `--add-dir <path>` | extra workspace root | 2 |
    | `--allowed-tools <rule>…` / `--disallowed-tools <rule>…` | CLI-scope `[permissions] allow` / `deny` rules in the `Tool(specifier)` grammar | 3 |
@@ -135,7 +135,7 @@ upstream builder knob.
 
 ## Tests owned by this phase
 
-- **model wiring** (master Testing Strategy): config → rig provider-client mapping (provider
+- **model wiring** (`tasks/design/testing.md` Testing Strategy): config → rig provider-client mapping (provider
   choice, base URLs, env keys, guardian-model override), with one smoke test per provider against
   a `wiremock` endpoint speaking that provider's wire format (Anthropic, OpenAI, Gemini); the
   OpenAI-compatible mock serves only openai-compatible/Ollama.

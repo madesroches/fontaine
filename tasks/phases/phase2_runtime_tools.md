@@ -21,7 +21,7 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
 - **Composite read tools + Tier 0.5 shell pre-classifier**: frequent read operations are also
   exposed as dedicated first-party tools (`ls`, `read`, `glob`, `grep`) with workspace containment
   enforced inside the tool at the execution boundary, and the system prompt steers the model toward
-  them rather than `shell`. The Tier 0.5 shell pre-classifier is master pipeline step 5, built in
+  them rather than `shell`. The Tier 0.5 shell pre-classifier is pipeline step 5 of `tasks/design/permissions.md` §Core data flow, built in
   Phase 3.
 - **Risk registry**: a `RiskClass { ReadOnly | WorkspaceWrite | Arbitrary }` assigned per tool at
   registration (rig's registry supports ordered registrations). This is the deterministic,
@@ -70,7 +70,7 @@ guardian as hints, not as gates).
 
 ### Workspace roots
 
-`scope.rs` validates against an ordered set of canonicalized roots (master §Config): a path is in
+`scope.rs` validates against an ordered set of canonicalized roots (`tasks/design/config.md` §Config): a path is in
 scope when `rig_tools::fs::place(root, true, path)` accepts it for some root, after resolving it
 against the call's `cwd`. rig file tools and `shell` take one confinement base (`shell` places its `cwd` against a single launcher dir), so each root gets its own
 confined instance of each rig file tool and of `shell` (`launcher.in_dir(root)`) and the wrapper dispatches a call to the instance of the root
@@ -80,7 +80,7 @@ the rig-tools 0.45 constructor shape when the step lands). `--add-dir` roots are
 
 ### Session ledger
 
-`fontaine-core/src/ledger.rs`: the append-only per-session record from the master plan's §Session
+`fontaine-core/src/ledger.rs`: the append-only per-session record from `tasks/design/sessions.md` §Session
 ledger (verbatim user messages, mode changes, approvals and session grants, denials, actions taken,
 roots, trust state, git remotes and the pre-session file index captured at start — gitignore-respecting,
 capped at 50,000 paths with overflow recorded as truncated), persisted as
@@ -149,7 +149,7 @@ context.
 
 ## Tests owned by this phase
 
-- **tools** (master Testing Strategy; `rust/fontaine-tools/tests/{scope,choke_point}.rs`):
+- **tools** (`tasks/design/testing.md` Testing Strategy; `rust/fontaine-tools/tests/{scope,choke_point}.rs`):
   workspace-scope validator over `fs::place` (path traversal, absolute paths, symlinks, out-of-scope
   `cwd`); rig tool configuration (`confine: true`, `max_timeout` clamps `timeout_secs`, output
   `cut`); the exact registered tool set from the step-1 table (no duplicate names, `delete`/`move`

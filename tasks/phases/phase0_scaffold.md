@@ -2,8 +2,8 @@
 
 **Status:** not started · **Depends on:** — · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
 
-Read the master plan's Overview, Design (§Workspace layout, §Config), Decisions, and
-Testing Strategy before implementing. This phase builds the eval harness **before** the
+Read the master plan's Overview, Design (master §Workspace layout, `tasks/design/config.md` §Config), Decisions, and
+`tasks/design/testing.md` Testing Strategy before implementing. This phase builds the eval harness **before** the
 thing it scores — per analysis-strategic-verdict amendment A1, the public guardian
 scorecard is the differentiating asset, so its harness is built first, not last.
 
@@ -17,11 +17,11 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    (`.github/workflows/ci.yml`, GitHub Actions, matrix `ubuntu-latest` / `macos-latest` /
    `windows-latest`, each from `rust/`: `cargo fmt --check`,
    `cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run from
-   step 2), config loading (`fontaine-core/src/config.rs`) with the schema in the master plan's
-   §Config as the settings scope stack: reserved managed slot (empty), CLI `--settings` overlay,
+   step 2), config loading (`fontaine-core/src/config.rs`) with the schema in
+   `tasks/design/config.md` §Config as the settings scope stack: reserved managed slot (empty), CLI `--settings` overlay,
    project-local `.fontaine/settings.local.toml` (user trust only while `git` reports it untracked
    or ignored; otherwise project scope), project `.fontaine/settings.toml`, user file; scalars by
-   precedence, lists by union; every key a scope may not set (per the master scope table, incl.
+   precedence, lists by union; every key a scope may not set (per the `tasks/design/config.md` scope table, incl.
    project and project-local `default_mode` limited to `manual`/`dontAsk`) rejected at load; `default_mode = "auto"` from any scope is a config error (exit 2) until Phase 4 step 2 lifts it, mirroring the CLI rule. The primary
    workspace root is the canonicalized launch cwd; config is read only from it. Rule strings in
    `[permissions] deny`/`ask`/`allow` are parsed into the `Tool(specifier)` grammar at load
@@ -40,7 +40,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 2. Eval golden-dataset scaffolding + CI runner skeleton (`evals/`): dataset format (~150+ cases:
    benign dev commands, each seeded attack class from Claude Code's default-block list, injection
    attempts *inside tool args*, ambiguous intent cases, Tier-0.5 adversarial shell cases — see
-   master Testing Strategy — and adversarial spawn/injection-propagation cases: a subagent result
+   `tasks/design/testing.md` Testing Strategy — and adversarial spawn/injection-propagation cases: a subagent result
    carrying injection text that must hit the tool-result scanner, a README tricking the parent
    into spawning with an escalated toolset — plus escape-focused container cases for the
    `[guardian] profile = "minimal"` column: `mount /dev/sda1`, docker.sock write, cgroup
@@ -49,8 +49,8 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    object per case: `id`, `kind`, `category`, `profile`, `task_intent`, `tool`, `args`, `expected`,
    `fixture_verdict`, `mode` (default `manual`), `workspace` (files, symlinks and `cwd` materialized in a
    temp root), plus optional request-context fields; `kind` = `guardian` | `pipeline` |
-   `scanner` selects the component a case scores — field list and per-kind scoring in the master
-   Testing Strategy; `pipeline` `expected` ∈ `allow` | `deny` | `prompt`, `expected_tier` from the master tier enum) and scoring any guardian model
+   `scanner` selects the component a case scores — field list and per-kind scoring in
+   `tasks/design/testing.md` Testing Strategy; `pipeline` `expected` ∈ `allow` | `deny` | `prompt`, `expected_tier` from the tier enum in `tasks/design/permissions.md` §Core data flow) and scoring any guardian model
    config; CI runs `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture`
    from `rust/` — offline, deterministic verdict fixtures — so it is green before the guardian
    exists.
@@ -76,11 +76,11 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 
 ## Tests owned by this phase
 
-- **config** (master Testing Strategy): workspace = canonicalized launch cwd; project config
+- **config** (`tasks/design/testing.md` Testing Strategy): workspace = canonicalized launch cwd; project config
   discovered only at `<workspace>/.fontaine/settings{,.local}.toml` (a settings file in a parent directory is
   ignored); precedence, project-can-only-tighten enforcement —
   including that `[guardian] profile` is rejected from project scope (user-scope only, it is a
-  loosening knob) and only `full`/`minimal` validate: no config value disables the guardian. Every user-scope-only key in the master §Config scope
+  loosening knob) and only `full`/`minimal` validate: no config value disables the guardian. Every user-scope-only key in `tasks/design/config.md` §Config scope
   table (`[accounts]`, `[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets,
   `[agents.types]`, …) is rejected from project scope. Scope stack: CLI > project-local > project
   > user precedence for scalars and union for lists; a tracked `settings.local.toml` loads as project

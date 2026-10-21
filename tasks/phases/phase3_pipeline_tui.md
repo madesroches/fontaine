@@ -3,7 +3,7 @@
 **Status:** not started · **Depends on:** [Phase 2](phase2_runtime_tools.md) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
 
 Fills the Phase-2 `GuardedTool` stub with the real gate: the pipeline order is specified by the
-master plan's §Core data flow diagram (steps 1–9). **Milestone: usable Claude-Code-like agent
+`tasks/design/permissions.md` §Core data flow diagram (steps 1–9). **Milestone: usable Claude-Code-like agent
 with manual approvals.**
 
 ## Design (excerpt owned by this phase)
@@ -58,29 +58,29 @@ table against `claude -p` baselines (step 3) and record differences in Decisions
 
 ### Permission rules and allow (pipeline steps 2 and 5a)
 
-The master plan's §Permission rules is the spec: one `Tool(specifier)` grammar (parsed at load since
+The `tasks/design/permissions.md` §Permission rules is the spec: one `Tool(specifier)` grammar (parsed at load since
 Phase 0) for deny/ask/allow; `shell` specifiers matched on the Tier-0.5 `brush-parser` argv — deny/ask
 as a prefix anywhere in the word stream and on any unparseable command containing the rule's first
 word, allow only on one simple command; path specifiers gitignore-style against scope-validator
 resolved paths; `webfetch(domain:)`; MCP names. Allow rules are step 5a, after the floor; the broad
 code-execution list that `auto` suspends is a shipped constant in `permission_rules.rs`, applied when
 Phase 4 wires `auto`. The pipeline also gets its step-1a slot: a `PreToolUseDecision` input
-(deny / ask / allow / `updated_input`) with the composition and failure rules of the master's §User
+(deny / ask / allow / `updated_input`) with the composition and failure rules of `tasks/design/permissions.md` §User
 hooks, driven in this phase only by test doubles — user hooks load in Phase 5.
 
 `GateDecision` is the one typed record per call: written to the audit log first, then projected to
-the `tool_decision` telemetry event and the headless `gate_decision` event; all three carry the master's one tier enum unchanged.
+the `tool_decision` telemetry event and the headless `gate_decision` event; all three carry the one tier enum in `tasks/design/permissions.md` §Core data flow unchanged.
 
 ## Steps
 
 1. `PermissionPipeline` (implements the `ToolGate` trait, replacing the Phase-2 stub; injected at registration) with modes `manual`/`acceptEdits`/`plan`/`dontAsk` (`auto` wires in at
-   Phase 4 step 2; there is no `bypass` mode) and the step order from the master's data-flow
+   Phase 4 step 2; there is no `bypass` mode) and the step order from the `tasks/design/permissions.md` §Core data flow
    diagram (the step-2 deterministic floor: deny → ask → critical-path (rm/rmdir targets prompt; deny in
-   `dontAsk`/headless) → protected-path (the master's enumerated list; `edit`/`write` only — prompt in manual/acceptEdits,
+   `dontAsk`/headless) → protected-path (the enumerated list in `tasks/design/permissions.md` §Core data flow; `edit`/`write` only — prompt in manual/acceptEdits,
    deny in `dontAsk`/headless), in every mode, with shell commands parsed by the Tier-0.5 `brush-parser` pass (`brush-parser` pinned to an exact version in `fontaine-tools`; no hand-rolled lexer); steps 4–5:
    read-only fast path, then the Tier-0.5 shell pre-classifier with its curated set +
-   per-command read-only flag allowlist (initial table above) + `allow_extra` entries (a command or `command subcommand` pair; no flags — any flag falls through; positional args validated as in-scope paths) + audit log, schema per the master
-   §Core data flow); rule matching and allow rules (design above; `--allowed-tools` /
+   per-command read-only flag allowlist (initial table above) + `allow_extra` entries (a command or `command subcommand` pair; no flags — any flag falls through; positional args validated as in-scope paths) + audit log, schema per
+   `tasks/design/permissions.md` §Core data flow); rule matching and allow rules (design above; `--allowed-tools` /
    `--disallowed-tools` as CLI-scope rules); the step-1a hook-decision slot; `GateDecision` → audit
    log, then `tool_decision` telemetry and the headless `gate_decision` event; `fontaine.permission`
    and `fontaine.tool.blocked_on_user` spans, `permission_mode_changed` event; human-approval
@@ -88,11 +88,11 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
    Plan mode's step-9 guardian leg falls through to the human prompt until the guardian ships.
    Interim default mode: `manual` — no auto without a guardian. Headless `-p` semantics for
    manual/dontAsk: every would-prompt outcome becomes a Deny returned to the agent and the run
-   continues (master §Core data flow, Headless).
+   continues (`tasks/design/permissions.md` §Core data flow, Headless).
 2. `fontaine-tui`: transcript, streaming render, input, approval prompts (incl. allow session /
    always allow), status bar, mode cycling, `/add-dir`.
 3. Differential baseline (manual/eval-side, never CI — see AGENTS.md): implement the `fontaine-evals`
-   `baseline capture` / `baseline diff` subcommands (master Testing Strategy, Differential
+   `baseline capture` / `baseline diff` subcommands (`tasks/design/testing.md` Testing Strategy, Differential
    baselines) and run them for manual/acceptEdits/plan/dontAsk over the Tier-0.5 adversarial set and
    the floor/headless cases; also confirm the protected-path list and the allowlist table against
    the captured `claude -p` behavior. Fix or record each divergence.
@@ -119,7 +119,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
 
 ## Tests owned by this phase
 
-- **permission pipeline** (master Testing Strategy; `rust/fontaine-core/tests/permissions.rs`): mode
+- **permission pipeline** (`tasks/design/testing.md` Testing Strategy; `rust/fontaine-core/tests/permissions.rs`): mode
   × risk-class matrix; plan-mode terminal branch 9 (edit-class blocked outright; the guardian leg
   prompts in the interim and denies in headless); read-only scope check incl. symlink-escape denial
   and an out-of-scope `cwd`; sequential tool calls in one turn (a Deny returns its own tool_result; later calls are still adjudicated, one at a time); the `[permissions] deny` rule
@@ -127,9 +127,9 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   to parse or are compound) prompts in manual/acceptEdits/plan, denies in `dontAsk` and headless, and is never
   auto-approved; protected-path writes via `edit`/`write` (the enumerated list) prompt or deny per
   mode; an `[permissions] ask` rule forces a prompt in `manual` and denies in `dontAsk`; every
-  decision appends an audit record matching the master schema (`tier`, `decision`, `rule`,
+  decision appends an audit record matching the audit schema in `tasks/design/permissions.md` §Core data flow (`tier`, `decision`, `rule`,
   `args_digest`, `agent_id`).
-- **permission rules** (`rust/fontaine-core/tests/permission_rules.rs`): the master Testing Strategy
+- **permission rules** (`rust/fontaine-core/tests/permission_rules.rs`): `tasks/design/testing.md` Testing Strategy
   bullet minus the `auto` legs — grammar per tool kind; `shell` deny/ask hit compound, wrapped and
   unparseable commands; `shell` allow never matches a compound command; resolved-path matching incl.
   symlinks; `webfetch(domain:)` normalization; a redirect leaving an allowed domain is returned, not followed; an allow rule never passes deny/ask/critical-path/
@@ -146,7 +146,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
 - **audit/telemetry consistency**: over the mode × risk-class matrix, each audit entry has exactly one
   matching `tool_decision` event and one headless `gate_decision` event (same ids; `tier` and `decision` equal as strings);
   the audit log is still written when telemetry is off or disabled by the project.
-- **Tier 0.5 pre-classifier**: the golden adversarial set from master Testing Strategy — the
+- **Tier 0.5 pre-classifier**: the golden adversarial set from `tasks/design/testing.md` Testing Strategy — the
   fail-through soundness property must hold for anything not fully parsed as one simple command; each
   allowlist-table row (listed flags pre-classify, the excluded flags fall through); in-scope `ls` → no
   prompt plus an audit record with `tier = tier05`; `ls ../` → one human prompt (interim; the
@@ -170,7 +170,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   `manual`; no mode or allow rule reaches past the deterministic floor; `docs/permissions.md` + pipeline diagram
   match the shipped step order and `rust/fontaine-core/tests/docs.rs` is green; CHANGELOG entry appended.
 - Needs a human (the agent cannot push): push the branch and confirm the windows CI job runs the `#[cfg(windows)]` tests green.
-- Needs a human and live keys (not CI): Manual Verification item 1 passes (TUI manual approval
+- Needs a human and live keys (not CI): `tasks/design/testing.md` Manual Verification item 1 passes (TUI manual approval
   flow, end to end); the first rig-cassette recording of a manual-mode session via `cassettes.rs`
   (`RIG_PROVIDER_TEST_MODE=record`, account `base_url` at the cassette proxy; once committed it
   replays in CI with no keys); the `claude -p` baseline capture.

@@ -107,7 +107,7 @@ Abandon or pivot fontaine-the-harness (keeping fontaine-guardian-the-library) if
 | Plan phase | Amendment |
 |---|---|
 | Phase 0 | + eval golden-dataset scaffolding & CI runner skeleton (A1) |
-| Phase 1 | + rig spike unchanged (A2 landed in Research Findings + Phase 6) |
+| Phase 1 | + rig spike unchanged (A2 landed in `tasks/design/research-findings.md` Research Findings + Phase 6) |
 | Phase 4 | guardian ships **with** its eval scorecard, published (A1) |
 | Phase 5 | + sandbox interop spike: run under srt/bubblewrap (A3); + guardian crate extraction seam (A4) |
 | Phase 6 | result-scanner default = PromptGuard 2 (A2); evals already public by now, not starting here |

@@ -53,17 +53,17 @@ in the main session, and their results return to the parent as a summary.
 ### Workspace trust and project executables
 
 Project MCP servers (`[mcp.servers.*]` in `.fontaine/settings.toml`), project hooks, and project
-skills' `!cmd` dynamic context are project-defined executables (master §Config, Workspace trust). In
+skills' `!cmd` dynamic context are project-defined executables (`tasks/design/config.md` §Config, Workspace trust). In
 the TUI, before any of them loads, an untrusted primary root gets the trust prompt (trust / don't
 trust; the answer is written to the trust store from Phase 0); each project MCP server is then
 approved individually at first load, and the repository cannot pre-approve its own servers. Declining
 loads the session without them. Headless `-p` loads them without a prompt, as Claude Code does. In
-both surfaces they never change a permission decision (master §Config, Workspace trust): a project
+both surfaces they never change a permission decision (`tasks/design/config.md` §Config, Workspace trust): a project
 hook's `allow` is ignored and project MCP tools are gated like any MCP tool.
 
 ### User hooks
 
-Built to the master plan's §User hooks, into the step-1a slot Phase 3 left: command handlers for
+Built to `tasks/design/permissions.md` §User hooks, into the step-1a slot Phase 3 left: command handlers for
 `pre_tool_use`, `post_tool_use` and `permission_denied` (`fontaine-core/src/user_hooks.rs`). The
 event goes to the handler as JSON on stdin (session id, agent id, tool, args, mode, roots); the
 answer comes back as JSON on stdout or exit code 2 (= deny, stderr as the reason). `pre_tool_use`
@@ -75,7 +75,7 @@ narrow matcher skips the guardian, a broad one is suspended. Every subagent tool
 
 ### Extension files (skills, agent files, output styles)
 
-Layout and scope per the master plan's §Config: `skills/<name>/SKILL.md`, `agents/<name>.md`,
+Layout and scope per `tasks/design/config.md` §Config: `skills/<name>/SKILL.md`, `agents/<name>.md`,
 `output-styles/<name>.md` under `~/.config/fontaine/` and `<root>/.fontaine/`, with Claude
 Code-compatible frontmatter (`name`, `description`, `tools`, `model`, `permissionMode` ↦ `mode`
 with `default` ↦ `manual`, `allowed-tools`, `disable-model-invocation`), so `.claude/` skills and
@@ -116,7 +116,7 @@ transcript.
    (one rmcp in the tree) with the transport features enabled. Server annotations surfaced to the
    guardian as hints.
 2. Session persistence via rig's serializable `AgentRun` + `rig-memory` save/resume, with the
-   Phase-2 ledger as the second store (master §Session ledger): `--continue` / `--resume <id>`
+   Phase-2 ledger as the second store (`tasks/design/sessions.md` §Session ledger): `--continue` / `--resume <id>`
    restore context and ledger, start in the resolved default mode and drop session grants;
    `--fork-session` copies both stores under a new session id without session grants;
    `fontaine.session.count{start_type=resume}`. (Headless `-p` moved to Phase 1 step 2 — user
@@ -166,7 +166,7 @@ Amendments A3–A4 (analysis-strategic-verdict; folded in per user decision 2026
 `--in-container` plus the Linux runtime probe; this slot adds srt/bubblewrap launch detection to that
 probe (`rust/fontaine-core/src/containment.rs`) as a second verification route. When taken, its deliverables:
 the spike, the **escape-detection test suite** (mount/umount, docker.sock, cgroup-control writes,
-bind-mount symlink escape, proxy bypass → denied even under minimal — Manual Verification item 6),
+bind-mount symlink escape, proxy bypass → denied even under minimal — `tasks/design/testing.md` Manual Verification item 6),
 and **`docs/sandboxing.md`** documenting the integration path, the container containment probe
 (`--in-container` verification), and the escape classes minimal must still deny. And keep
 `fontaine-guardian` **dependency-light and lift-out-able** as an embeddable crate, so other
@@ -181,7 +181,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
 
 ## Tests owned by this phase
 
-- **parallel agents** (master Testing Strategy; `rust/fontaine/tests/parallel_agents.rs`): spawn-call gating (task × toolset × model
+- **parallel agents** (`tasks/design/testing.md` Testing Strategy; `rust/fontaine/tests/parallel_agents.rs`): spawn-call gating (task × toolset × model
   composite); mode-inheritance invariant (child ≤ parent, never looser), including a test where the
   parent switches mode mid-run and the child's next call follows the tighter mode; per-type registry
   is a subset of the parent's; budget caps stop a subagent; subagent reports return as ordinary
@@ -202,7 +202,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   new project server; headless `-p` loads them, and in both surfaces a project hook's `allow` is
   ignored and a project MCP tool call is gated like any `Arbitrary` call.
 - **user hooks** (`rust/fontaine-core/tests/user_hooks.rs`, script handlers in a temp dir): the
-  master Testing Strategy bullet — rewritten input judged everywhere; deny > ask > allow; hook
+  `tasks/design/testing.md` Testing Strategy bullet — rewritten input judged everywhere; deny > ask > allow; hook
   `allow` never passes the floor and is suspended in `auto` for a broad matcher; failure ⇒ no
   decision; project hook `allow` ignored; scrubbed environment; exit code 2 = deny.
 - **extensions**: frontmatter parsing of Claude Code-style skills and agents; project agent file
@@ -218,7 +218,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   `cargo test` green from `rust/`, including `rust/fontaine/tests/parallel_agents.rs` (parallel-agents and
   parallel-orchestration tests), `rust/fontaine-mcp/tests/mcp_registration.rs` (MCP tests),
   `rust/fontaine-core/tests/user_hooks.rs`, and the trust, persistence, extensions and telemetry tests.
-- Manual Verification item 5 passes (agents-panel visual check; gating and audit are covered by the
+- `tasks/design/testing.md` Manual Verification item 5 passes (agents-panel visual check; gating and audit are covered by the
   automated parallel-orchestration test).
 - Needs live keys (not CI): the `claude -p` baseline check that a hook `allow` in `auto` skips the
   classifier for a narrow matcher and is suspended for a broad one.
