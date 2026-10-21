@@ -19,7 +19,7 @@ credentials and endpoints. Each account provides models: an explicit `models` li
 from the provider where rig supports listing. Models are addressed `<account>/<model>` in `[model]`,
 `[guardian] model`, and `[agents.types]`, so main agent and guardian may sit on different accounts.
 Credentials come from a named env var or the stored-credentials file (`fontaine auth login`,
-`<data dir>/credentials.toml`, owner-only); raw keys are never read from config files. Accounts and all account/model/endpoint
+`<data dir>/credentials.toml` with `[accounts.<name>]` / `[telemetry]` tables, owner-only); raw keys are never read from config files. Accounts and all account/model/endpoint
 keys follow the `tasks/design/config.md` scope table (`[accounts]` only from the user file or CLI; no
 account/model/endpoint reference from shared project scope — rejected at load); a missing or invalid credential on
 the guardian's account makes the guardian unavailable and fails closed. The "any model I like"

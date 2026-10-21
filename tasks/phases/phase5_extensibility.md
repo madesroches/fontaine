@@ -55,7 +55,7 @@ in the main session, and their results return to the parent as a summary.
 Project and project-local MCP servers (`[mcp.servers.*]` in `.fontaine/settings{,.local}.toml`), hooks, and
 skills' `!cmd` dynamic context are project-local executables (`tasks/design/config.md` §Config, Workspace trust). In
 the TUI, before any of them loads, an untrusted primary root gets the trust prompt (trust / don't
-trust; the answer is written to the trust store from Phase 0); each project MCP server is then
+trust; "trust" is written to the trust store from Phase 0; "don't trust" applies to the current session only and is re-prompted next session); each project MCP server is then
 approved individually at first load, and the repository cannot pre-approve its own servers. Declining
 loads the session without them. Headless `-p` loads them without a prompt, as Claude Code does. In
 both surfaces they never change a permission decision (`tasks/design/config.md` §Config, Workspace trust): a project

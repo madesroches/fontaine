@@ -147,7 +147,7 @@ the same tier attribution as the audit log.
 
 One grammar for `[permissions] deny`, `ask` and `allow` (and the CLI `--disallowed-tools` /
 `--allowed-tools`): `Tool` or `Tool(specifier)`. A bare tool name matches every call of that tool.
-Matching is structured — never regex on raw args.
+Matching is structured — never regex on raw args. A tool that is neither built-in nor `mcp__…` is a config error (exit 2).
 
 | Tool | Specifier | Match |
 |---|---|---|

@@ -23,15 +23,15 @@ thing it scores.
    project and project-local `default_mode` limited to `manual`/`dontAsk`) rejected at load; `default_mode = "auto"` is a config error (exit 2) from user and CLI scope until Phase 4 step 2 lifts it, and always from project and project-local scope. The primary
    workspace root is the canonicalized launch cwd; config is read only from it. The loader takes launch dir, config dir, data dir and an env-lookup function (for `api_key_env`) as parameters; only the bin and `dirs.rs` read real cwd/env. Rule strings in
    `[permissions] deny`/`ask`/`allow` are parsed into the `Tool(specifier)` grammar at load
-   (`fontaine-core/src/permission_rules.rs`; an unparseable rule is a config error, exit 2; matching
+   (`fontaine-core/src/permission_rules.rs`; an unparseable rule, or one whose tool is neither a built-in tool name nor an `mcp__…` name, is a config error, exit 2; matching
    lands in Phase 3). Directory resolution (`fontaine-core/src/dirs.rs`, `dirs 7.0.0`, caret: config dir
    `dirs::config_dir()/fontaine`, data dir `dirs::data_dir()/fontaine`, overrides `FONTAINE_CONFIG_DIR` /
    `FONTAINE_DATA_DIR`) and an owner-only file helper (0600 on Unix, current-user-only ACL on Windows): it creates files restrictive at open time (Unix `OpenOptions::mode(0o600)`, Windows security descriptor at creation) and tightens a pre-existing file before writing.
    Workspace trust store (`fontaine-core/src/trust.rs`): read/write
-   `<data dir>/trust.toml` (written via the owner-only helper) keyed by canonical root, and an `is_trusted(root)` query the
+   `<data dir>/trust.toml` (written via the owner-only helper) keyed by canonical root (only "trust" is persisted), and an `is_trusted(root)` query the
    Phase-5 loaders of project executables call (unreadable or unparseable `trust.toml` ⇒ false for every root, fail closed). Credentials file schema and read-only lookup
-   (`fontaine-core/src/credentials.rs`): `<data dir>/credentials.toml` holds one entry per account
-   name plus the telemetry entry; the lookup returns an account's or the telemetry credential; an unparseable file is a config error, exit 2 (Phase 1
+   (`fontaine-core/src/credentials.rs`): `<data dir>/credentials.toml` holds `[accounts.<name>] api_key = "…"`
+   per account and a separate `[telemetry] api_key = "…"`; the lookup returns an account's or the telemetry credential; an unparseable file is a config error, exit 2 (Phase 1
    adds the writer, `fontaine auth login`). Tracing facade
    (`rust/fontaine/src/telemetry/mod.rs`): the `tracing_subscriber` registry, the `--debug-file` /
    `FONTAINE_LOG` layer (`--debug-file` enables it at default filter `debug`; `FONTAINE_LOG` only overrides the filter; file owner-only), an inert export slot filled in Phase 1, a `fontaine.session` span;
@@ -76,10 +76,10 @@ thing it scores.
   > user precedence for scalars and union for lists; a same-name `[accounts.<name>]` entry is replaced whole by the higher scope, not merged (same for `[mcp.servers.<name>]` and `[agents.types.<name>]`); `[[hooks.*]]` arrays union; a tracked `settings.local.toml` loads as project
   scope; endpoint/credential keys rejected from project-local; project and project-local
   `default_mode` accept only `manual`/`dontAsk` (`"plan"`, `"acceptEdits"`, `"auto"` rejected from both); `[permissions] allow` / `additional_directories`
-  rejected from project scope; unparseable rule strings rejected; `default_mode = "auto"` rejected (exit 2) from user and CLI scope until Phase 4, and always from project and project-local scope.
+  rejected from project scope; unparseable rule strings and rules naming an unknown tool rejected; `default_mode = "auto"` rejected (exit 2) from user and CLI scope until Phase 4, and always from project and project-local scope.
 - **project-local trust classification** (`gix`, temp git repos): an untracked `settings.local.toml` and an ignored one load as user trust; a tracked one loads as project scope; a force-added `settings.local.toml` matched by `.gitignore` loads as project scope; a directory with no work tree loads as project scope; a launch from a subdirectory of the repo and a launch from a git worktree (`.git` file) classify an untracked `settings.local.toml` as user trust; a repo config with `core.fsmonitor` set to a canary command never executes it.
 - **dirs**: `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR` override the `dirs` defaults (only `env.rs` tests env resolution; other tests pass dirs and an env-lookup closure to the loader; env-mutating tests are `#[serial]` (`serial_test`) in their own test binary, since edition 2024 makes `set_var` unsafe); owner-only files (incl. the `--debug-file` output) are 0600 on Unix and current-user-only on Windows, including a pre-existing 0644 file tightened before writing (`#[cfg(windows)]` ACL test, compile-checked locally with the windows-gnu target and executed in the windows CI job).
-- **credentials lookup**: account entries and the telemetry entry round-trip from a temp `credentials.toml`; a missing file or entry yields no credential; an unparseable file is a config error (exit 2).
+- **credentials lookup**: account entries and the telemetry entry round-trip from a temp `credentials.toml`; an account named `telemetry` does not shadow the telemetry key; a missing file or entry yields no credential; an unparseable file is a config error (exit 2).
 - **trust store**: trust recorded for one root does not trust another; the record is written under
   the data dir, never inside the workspace; `trust.toml` is 0600 on Unix (ACL under `#[cfg(windows)]`); an unparseable `trust.toml` trusts no root.
 - **telemetry config**: every `[telemetry]` key rejected from project and project-local scope except
