@@ -19,6 +19,15 @@ thread). Its permission layer (`allow/deny/ask` + policies) is exactly the seam 
   lineage, now active as LazyCodex / Gajae-Code** (Claw Code itself retired as a "museum exhibit";
   the community's explicit purpose is cloning Claude Code — auto mode is the most famous
   un-cloned feature left, and cloning it is the successors' obvious next milestone).
+- The pattern is already shipping as third-party glue: agentgateway's `llm-guardrail-jev` example,
+  `jevguard-middleware` on PyPI (checks tool results/retrieval/model output for injection + exfil),
+  and `construct-auto-classifier` — an effect-based shell-command safety gate for OpenCode/Antigravity
+  coding agents (fast structural rules, then Jev or a chat model judges what a command does) — i.e.,
+  a Tier-0.5 + typed-screen hybrid around someone else's harness.
+- Note this does **not** change the probability/verdict framing above: more third-party glue around
+  existing harnesses strengthens the "users enable a plugin, don't switch harnesses" dynamic, but it
+  does not alter what would make this kill fire (a guardian shipped *inside* a popular harness's
+  permission layer).
 - Fontaine's answer must be: be the *reference implementation and eval standard* so that when
   those plugins ship, they're compared against Fontaine's scorecard — or be so good they adopt
   the prompt/rules assets. There is no answer that involves being merely one more option.

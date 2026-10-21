@@ -113,6 +113,32 @@ giskard.ai/knowledge/ai-guardrails-comparison-2026; folio3.com roundup)
   Cheapest credible move: integrate/interoperate with `srt` or bubblewrap post-v1 rather than
   build.
 
+## Segment F — Typed-decision (System One) guardrails — the new middle class (Sep–Oct 2026)
+
+**Jev (TypeSafe AI)** — non-autoregressive decision model: takes state + typed questions
+(Choice/Score/Noul), returns bounded verdicts with calibrated probabilities in ~70–500 ms, **no free
+text by construction** — which eliminates the reasoning-model token-budget failure mode (generative
+judges return empty `finish_reason=length` verdicts under small max-tokens). **HOSTED, closed
+weights** (docs.typesafe.ai) — the fast/cheap option, not the air-gapped one.
+- **Evidence**: JEV-as-trace-judge (arXiv:2609.34862, Wang & Gao): avg positive-class F1 **77.8 vs
+  74.1** for the best generative judge (GLM-5.2) across 5,219 trajectories; leads ATBench500/MCPHunt,
+  trails R-Judge/TraceSafe; ~$0.0002/valid judgment; the authors' own framing — "economical screening
+  signal with precision/recall trade-offs". Jev-Guard (arXiv:2610.18326, Hu et al.): safety
+  classification + routing over an editable policy tree — **93.72% safety accuracy @ 58 ms mean**,
+  93.10% routing accuracy; in the Hermes harness its permission gate cut per-task review time
+  **4.80s → 1.33s** vs an SFT-LLM judge.
+- **Open alternatives for the local story**: Laya (convaiinnovations/laya, ModernBert backbone, MIT)
+  and vLLM's DiffusionGemma decision-model support (Red Hat AI Safety benchmark, developers.redhat.com
+  Oct 2, 2026 — benchmarked Jev vs Qwen3.6/Nemotron/Laya/DiffusionGemma).
+- **Caveats**: shipped vendor default thresholds over-escalate on real dev traffic (measured in the
+  MIT approval-judge-bridge cookbook, typesafe-ai/skills#5: defaults escalated 17/21; recalibrated
+  0.65/0.30 → sane); typed verdicts carry no prose explanation (the deny-with-explanation gap);
+  "Hidden Risks of Jev" (arXiv:2610.04985) shows membership/internal-knowledge inference from
+  outputs — a decision model is an attack surface like any other.
+- **Market reading**: this is the segment **between static regex lists and LLM judges** — exactly the
+  price/latency point agent harnesses need; expect it to be absorbed into harnesses fast (see the
+  plugin evidence in analysis-04).
+
 ## Market map conclusion
 
 | Layer | Product examples | Sees tool-call intent + repo state? | Coding-agent UX? | Open? |
@@ -120,11 +146,15 @@ giskard.ai/knowledge/ai-guardrails-comparison-2026; folio3.com roundup)
 | Harness-native guardian | Claude Code classifier, Codex reviewer | ✓ | ✓ | ✗ (Claude Code classifier closed; Codex reviewer code + policy OSS in-tree in `codex-rs/core/src/guardian/`, model closed/OpenAI-hosted, never local) |
 | **Harness-native guardian (open)** | **— empty — (Fontaine's cell)** | ✓ | ✓ | ✓ |
 | Guardrail framework/library | LlamaFirewall, NeMo, Guardrails AI | partial (needs integration) | ✗ | ✓ |
+| Decision-model guardrails | Jev (hosted), Laya (OSS), DiffusionGemma (OSS) | partial — typed verdict + calibrated p on the question asked; no repo/session state, ✗ prose explanation | ✗ | mixed (Jev hosted-only; Laya/DiffusionGemma OSS) |
 | MCP boundary | Invariant/Snyk, Agent Wall | MCP calls only, rule-based | ✗ | ✓ |
 | Gateway/proxy | LiteLLM, Kong, TrueFoundry + Lakera etc. | ✗ (text traffic) | ✗ | mixed |
 | OS sandbox | srt, bubblewrap, microsandbox, E2B | ✗ (deterministic containment) | ✗ | ✓ |
 | Enterprise platform | Straiker, Pillar, Protect AI… | telemetry-level | ✗ | ✗ |
 
 **Nobody sells the open harness-native guardian.** The nearest substitutes require assembly
-(LlamaFirewall + a harness plugin) or operate at a layer that structurally cannot judge tool-call
-intent (proxies, sandboxes). That assembly risk is quantified in analysis-04.
+(LlamaFirewall + a harness plugin, or a typed-decision model — Jev/Laya — bolted on as the fast
+screen) or operate at a layer that structurally cannot judge tool-call intent (proxies, sandboxes).
+That assembly risk is quantified in analysis-04. The new decision-model segment (F) sharpens rather
+than fills the open cell: Jev is hosted-only, and Laya/DiffusionGemma ship a verdict without harness
+UX or prose explanations — so the empty **open harness-native guardian** row remains empty.
