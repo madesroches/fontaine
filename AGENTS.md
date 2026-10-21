@@ -21,6 +21,8 @@ changing design.
 - **When in doubt, do as Claude Code does.** Fontaine copies Claude Code's documented
   semantics at analogous design points. Any deviation must be recorded as a dated line in the
   plan's `## Decisions` section with a one-line reason — never deviate silently.
+  When unsure what Claude Code does, run `claude -p` to observe it directly rather than
+  guessing.
 
 ## Security invariants (do not weaken)
 
@@ -73,6 +75,8 @@ all tests pass:
   record/replay for full agent runs in CI.
 - The eval harness in `evals/` runs manually / nightly against live guardian models — it is
   **not** a CI gate.
+- `claude -p` may be run manually or from `evals/` to capture Claude Code baselines and
+  compare Fontaine's behavior as features land — never from unit/integration tests or CI.
 - Integration tests drive the core through the headless `fontaine -p` surface.
 - New shell-pre-classifier behavior must keep the soundness property: anything it cannot
   fully parse as one simple command falls through to the guardian (see the plan's Testing
