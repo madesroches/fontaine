@@ -5,7 +5,9 @@ This file provides guidance to AI coding agents when working with code in this r
 The master tracking plan is the source of truth: `tasks/fontaine_harness_plan.md` — it holds the
 cross-cutting design (workspace layout, permission-pipeline data flow, config schema), the Phase
 Tracker, and the `## Decisions` section, which records every deliberate deviation from Claude
-Code; `research/` holds the six companion analysis docs the plan is grounded in. The build is
+Code; `research/` holds the companion analysis docs the plan is grounded in, including
+`research-claude-code-parity.md` (Claude Code feature matrix). Backlog features not in the plan
+are GitHub issues (`gh issue list`). The build is
 split into one plan per phase under `tasks/phases/` (`phase0_scaffold.md` … `phase6_hardening.md`),
 each with its own design excerpt, steps (ending in a docs step), files, tests, and definition of
 done. Read the master sections you touch **and** the phase plan you are implementing before
@@ -33,21 +35,23 @@ all tests pass:
   output, low confidence on a destructive class → Deny.
 - **No config value disables the guardian.** No zero-guardian mode ships; containers get
   `[guardian] profile = "minimal"`, never off.
-- **The deterministic floor (`deny → ask → critical-path`) gates EVERY mode** — no mode,
+- **The deterministic floor (`deny → ask → critical-path → protected-path`) gates EVERY mode** — no mode,
   flag, or verdict reaches past it. No regex matching on tool arguments anywhere.
 - **The fast path is earned by Fontaine-enforced workspace containment, not by a label.**
   Read-only ≠ safe; MCP-declared `readOnlyHint` never skips the guardian.
 - **A child subagent's effective mode is never looser than its parent's.**
 - **Project-scope config can only tighten** (deny/ask additions); loosening keys are
-  user-scope only.
+  user-scope only. Project-defined executables (MCP servers, hooks, skill commands) load as in
+  Claude Code, but can never change a permission decision.
 - **Every registered tool must have a risk class** — keep the choke-point test green.
 
 ## Project layout
 
-- Repo root holds only `rust/`, `evals/`, `docs/`, `tasks/`, `research/`.
+- Root directories are only `rust/`, `evals/`, `docs/`, `tasks/`, `research/` (plus `.github/`);
+  root files are `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`.
 - The Cargo workspace lives at `rust/Cargo.toml` (micromegas convention) and **every crate
   sits directly under `rust/`**: `fontaine` (bin), `fontaine-core`, `fontaine-tools`,
-  `fontaine-guardian`, `fontaine-agents`, `fontaine-mcp`, `fontaine-tui`.
+  `fontaine-guardian`, `fontaine-agents`, `fontaine-mcp`, `fontaine-tui`, `fontaine-evals`.
 - The core is built on the **rig** crate family (`rig-core` / `rig-agent` / `rig-memory` /
   `rig-tools` / `rig-rmcp`, `rig-cassette` for dev tests), **pinned to exact versions**.
   No custom provider layer; no custom agent loop or history management. Do not adopt rig's
@@ -86,8 +90,11 @@ all tests pass:
 
 From `rust/`:
 
-- `cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test` — CI runs all
-  three.
+- `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test` /
+  `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` — CI runs all
+  four on Linux, macOS and Windows.
+- `RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes -- --ignored` —
+  re-record cassettes (needs live provider keys; a human step).
 - `cargo run` — interactive TUI (`fontaine`).
 - `cargo run -- -p "task"` — headless non-interactive run (CI/eval driver).
 - `cargo run -p <crate> --example ...` — per-crate spikes.
