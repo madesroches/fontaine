@@ -94,7 +94,7 @@ From `rust/`:
 - `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test` /
   `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` — CI runs all
   four on Linux, macOS and Windows.
-- `RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes -- --ignored` —
+- `RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes` —
   re-record cassettes (needs live provider keys; a human step).
 - `cargo run` — interactive TUI (`fontaine`).
 - `cargo run -- -p "task"` — headless non-interactive run (CI/eval driver).
