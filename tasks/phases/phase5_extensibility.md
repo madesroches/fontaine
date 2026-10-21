@@ -57,7 +57,9 @@ skills' `!cmd` dynamic context are project-defined executables (master §Config,
 the TUI, before any of them loads, an untrusted primary root gets the trust prompt (trust / don't
 trust; the answer is written to the trust store from Phase 0); each project MCP server is then
 approved individually at first load, and the repository cannot pre-approve its own servers. Declining
-loads the session without them. Headless `-p` loads them without a prompt, as Claude Code does.
+loads the session without them. Headless `-p` loads them without a prompt, as Claude Code does. In
+both surfaces they never change a permission decision (master §Config, Workspace trust): a project
+hook's `allow` is ignored and project MCP tools are gated like any MCP tool.
 
 ### User hooks
 
@@ -67,8 +69,9 @@ event goes to the handler as JSON on stdin (session id, agent id, tool, args, mo
 answer comes back as JSON on stdout or exit code 2 (= deny, stderr as the reason). `pre_tool_use`
 returns `decision` (deny / ask / allow), `updated_input`, `guardian_context`; `post_tool_use` may
 append a note to the tool result the agent sees; `permission_denied` may return `retry` (the agent is
-told it may retry, as with `/denied` → `r`). Handlers run with the scrubbed child environment and a
-`timeout_secs` cap, in a `fontaine.hook` span. Every subagent tool call runs the same hooks.
+told it may retry, as with `/denied` → `r`). Handlers run (through Git Bash on Windows) with the scrubbed child environment and a
+`timeout_secs` cap, in a `fontaine.hook` span. A user-scope `allow` in `auto` follows Claude Code: a
+narrow matcher skips the guardian, a broad one is suspended. Every subagent tool call runs the same hooks.
 
 ### Extension files (skills, agent files, output styles)
 
@@ -80,8 +83,8 @@ agents port by copying; `.claude/` is not read directly.
 
 - **Skills** are progressive-disclosure prompt content: names and descriptions go into the system
   prompt; the body loads through the first-party `skill` tool (`fontaine-tools/src/skill.rs`,
-  `RiskClass::ReadOnly`; its only argument is a skill name resolved against the index loaded at
-  start, so it can read nothing else). A user-invocable skill is also a `/name` slash command
+  `RiskClass::ReadOnly`, on the fast path: its only argument is a skill name resolved against the index loaded at
+  start, so it can read nothing else and only loads skill text into context). A user-invocable skill is also a `/name` slash command
   (custom slash commands are skills). `allowed-tools` from a user-trust-scope skill is a set of
   session-scope allow rules while the skill is active (same suspension in `auto`); from project scope
   it is ignored. `!cmd` dynamic context runs through the permission pipeline as a `shell` call.
@@ -185,7 +188,8 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   without session grants; fork copies both stores under a new id; a rewind keeps ledger history.
 - **workspace trust** (TUI `TestBackend`): an untrusted root's project MCP servers and hooks do not
   start before the trust prompt is accepted; declining starts none; a trusted root still asks per
-  new project server; headless `-p` loads them.
+  new project server; headless `-p` loads them, and in both surfaces a project hook's `allow` is
+  ignored and a project MCP tool call is gated like any `Arbitrary` call.
 - **user hooks** (`rust/fontaine-core/tests/user_hooks.rs`, script handlers in a temp dir): the
   master Testing Strategy bullet — rewritten input judged everywhere; deny > ask > allow; hook
   `allow` never passes the floor and is suspended in `auto` for a broad matcher; failure ⇒ no
@@ -205,6 +209,8 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   `rust/fontaine-core/tests/user_hooks.rs`, and the trust, persistence, extensions and telemetry tests.
 - Manual Verification item 5 passes (agents-panel visual check; gating and audit are covered by the
   automated parallel-orchestration test).
+- Needs live keys (not CI): the `claude -p` baseline check that a hook `allow` in `auto` skips the
+  classifier for a narrow matcher and is suspended for a broad one.
 - Item 6 ships **with the sandbox slot when taken** (minimal-profile escape denies + probe
   fail-closed); the build steps above do not depend on it.
 - `docs/mcp.md`, `docs/agents.md`, `docs/hooks.md`, `docs/extensions.md` complete; every new

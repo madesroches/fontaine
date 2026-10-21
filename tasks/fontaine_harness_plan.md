@@ -75,7 +75,7 @@ The model layer, agent runtime, memory/compaction, base tools, and MCP come from
 Per the micromegas convention, the Cargo workspace lives at `rust/Cargo.toml` and **every crate
 sits directly under `rust/`** — the root directories are only `rust/`, `evals/`, `docs/`, `tasks/`,
 `research/`, plus root files `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md` and
-`.github/workflows/ci.yml` (GitHub Actions; installs the toolchain pinned in `rust/rust-toolchain.toml`; from `rust/` it runs `cargo fmt --check`,
+`.github/workflows/ci.yml` (GitHub Actions; matrix `ubuntu-latest`, `macos-latest`, `windows-latest`, each job installs the toolchain pinned in `rust/rust-toolchain.toml` and from `rust/` runs `cargo fmt --check`,
 `cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run — see
 §Testing Strategy).
 
@@ -91,7 +91,7 @@ fontaine/
 │   │                           #   permission pipeline + rule grammar, settings scope stack, workspace
 │   │                           #   trust, user hooks, session ledger, extension loading, FONTAINE.md
 │   ├── fontaine-tools/         # risk metadata registry + GuardedTool wrapper around
-│   │                           #   rig-core Tool; rig-tools built-ins re-exposed with risk
+│   │                           #   rig-core Tool (calls the `ToolGate` trait it defines); rig-tools built-ins re-exposed with risk
 │   │                           #   classes; workspace-scope validation over `rig_tools::fs::place`; confined rig tool config
 │   ├── fontaine-guardian/      # the guardian agent: verdict protocol (rig extractor),
 │   │                           #   prompt builder, rules config, caching, fail-closed logic
@@ -107,6 +107,24 @@ fontaine/
 └── research/                   # six analysis/research companion docs
 ```
 
+Crate dependency graph (arrows point at dependencies; no cycles):
+
+```
+fontaine (bin)        ─▶ fontaine-core, fontaine-tui
+fontaine-evals (bin)  ─▶ fontaine-core, fontaine-guardian
+fontaine-tui          ─▶ fontaine-core
+fontaine-core         ─▶ fontaine-tools, fontaine-guardian, fontaine-mcp, fontaine-agents
+fontaine-mcp          ─▶ fontaine-tools
+fontaine-agents       ─▶ fontaine-tools
+fontaine-guardian     ─▶ (no Fontaine crates)
+fontaine-tools        ─▶ (no Fontaine crates — never fontaine-core)
+```
+
+`fontaine-tools` defines a `ToolGate` trait (one async check per call, returning allow or a denial
+for the tool_result); `GuardedTool` calls it. `fontaine-core`'s `PermissionPipeline` implements
+`ToolGate` and is injected into every wrapper at registration, so the gate logic lives in core
+without tools depending on it.
+
 `fontaine-llm` from the first draft is **gone** — rig-core's provider layer (20+ providers,
 streaming, OpenAI-compatible custom endpoints for OpenRouter/LM Studio/vLLM/LiteLLM) replaces it
 entirely.
@@ -115,6 +133,27 @@ Phase-owned design sections live in the phase plans: model layer + headless I/O 
 tools/risk registry/GuardedTool + multi-root workspace + session ledger (Phase 2), permission modes
 + rule grammar + base TUI (Phase 3), the guardian agent (Phase 4), parallel agents + agents panel,
 user hooks, extension files, session resume/fork (Phase 5), result scanning (Phase 6).
+
+### Platforms and directories
+
+v1 supports **Linux, macOS and Windows**; CI runs all four steps on `ubuntu-latest`,
+`macos-latest` and `windows-latest`. Windows follows Claude Code: the `shell` tool (and hook
+commands) run through **Git Bash** — Git for Windows is a prerequisite, and a missing install is a
+startup error naming it — so the POSIX shlex lexer, Tier 0.5, rule matching and the critical-path
+check apply unchanged. A PowerShell tool is backlog (GitHub issue #28); it would never
+pre-classify. Path handling (scope validator, protected paths, critical-path) accepts drive
+letters, UNC paths, MSYS-style `/c/...` argv paths (translated to drive paths before validation; an
+untranslatable one is out of scope), compares case-insensitively, and resolves junctions and
+symlinks. Critical paths on Windows include drive roots and `%USERPROFILE%`. The containment probe
+(Phase 4 step 5) reports "not contained" on Windows; `--in-container` stays a manual assertion
+that is never sufficient alone.
+
+Directories come from the `dirs` crate: config dir = `dirs::config_dir()/fontaine` (Linux
+`~/.config/fontaine`; macOS and Windows platform defaults, Windows under `%APPDATA%`), data dir =
+`dirs::data_dir()/fontaine` (Linux `~/.local/share/fontaine`). `FONTAINE_CONFIG_DIR` and
+`FONTAINE_DATA_DIR` override them and are what every test uses (temp dirs). Stored credentials live
+at `<data dir>/credentials.toml`. **Owner-only** files — credentials, trust store, audit log,
+session ledger, debug file — are mode 0600 on Unix and carry a current-user-only ACL on Windows.
 
 ### Core data flow
 
@@ -125,7 +164,7 @@ user hooks, extension files, session resume/fork (Phase 5), result scanning (Pha
                ToolCall { name, args }
                       │
                       ▼  (every registered tool is a GuardedTool wrapper)
-         PermissionPipeline (fontaine-core, inside GuardedTool::call)
+         PermissionPipeline (fontaine-core; GuardedTool::call reaches it through the `ToolGate` trait)
            1. registry.lookup(name) → RiskClass
            1a. User PreToolUse hooks (§User hooks): may return deny / ask / allow and an
               `updated_input` that replaces the call — every later step, the audit record and the
@@ -159,7 +198,9 @@ user hooks, extension files, session resume/fork (Phase 5), result scanning (Pha
            4. RiskClass::ReadOnly && args within workspace scope? → Allow (no guardian)
               (scope check enforced by Fontaine's wrapper/scope validator — `rig_tools::fs::place`
                against each canonicalized workspace root; inside any root counts — first-party only;
-               MCP-declared readOnlyHint does not qualify — such tools register as Arbitrary)
+               MCP-declared readOnlyHint does not qualify — such tools register as Arbitrary;
+               the `skill` tool qualifies: its only argument is a skill name resolved against the
+               start-time index, and it loads skill text into context)
            5. Tier 0.5 — deterministic shell pre-classifier (zero-LLM), `shell` calls only:
               lexically parsed (shlex/AST — NOT regex) into ONE simple command (no pipelines,
               `;`/`&&` chaining, redirections, command substitution, backgrounding, globs —
@@ -200,6 +241,10 @@ user hooks, extension files, session resume/fork (Phase 5), result scanning (Pha
  (the `agent` tool call that spawns a subagent is an ordinary `Arbitrary`-class pipeline request —
   gated at steps 6–9 like any other; every tool call the subagent then makes re-enters this same
   pipeline)
+
+ Tool calls within one model turn are adjudicated and executed one at a time, in order (rig-agent
+ `tool_concurrency = 1`); each call gets its own tool_result and a Deny does not affect the turn's
+ later calls.
 ```
 
 **Protected paths** (step 2, last floor check): applies to the edit-class tools `edit` and `write`
@@ -214,7 +259,7 @@ Per mode: manual/acceptEdits → prompt (acceptEdits' edit auto-allow does not a
 plan → not reachable (edit-class is blocked at steps 3/9); dontAsk → Deny; headless → Deny.
 
 **Audit log** (written by the pipeline in every mode; one record per gate decision): JSONL, one
-append-only file per session at `<user data dir>/fontaine/audit/<session-id>.jsonl`, mode 0600.
+append-only file per session at `<data dir>/audit/<session-id>.jsonl`, owner-only.
 Fields: `ts` (RFC 3339), `session_id`, `agent_id`, `tool`, `args_digest` (SHA-256 of the
 canonical-JSON args — raw args are never logged; when a hook rewrote the call, `original_args_digest`
 too), `tier` (resolving tier: `floor` | `hook` | `fast_path` | `tier05` | `allow_rule` | `mode` |
@@ -226,8 +271,8 @@ second record with `tier = human`.
 **Pipeline inputs**: mode, the workspace roots, the merged permission rules plus session-scope
 grants, the user-hook runner, the session ledger (source of task intent, recent user messages,
 session facts and prior denials — §Session ledger), the audit-log sink (schema above), and the
-human-approval callback reach `GuardedTool::call` through a shared `SessionState` injected into every
-wrapper at registration (see the Phase 2 plan).
+human-approval callback live in a shared `SessionState` owned by the `PermissionPipeline`, which is
+injected into every wrapper at registration as the `ToolGate` (see the Phase 2 plan).
 
 **Headless (`-p`)**: nothing prompts. Every would-prompt outcome — `ask`-rule match, Escalate
 verdict, critical-path/protected-path prompt, loop breaker — becomes a
@@ -293,8 +338,9 @@ events: `pre_tool_use`, `post_tool_use`, `permission_denied`. `pre_tool_use` run
 1a: it may return `deny`, `ask` or `allow`, an `updated_input`, and a `guardian_context` note
 (passed to the guardian inside an untrusted block). Composition across hooks: deny > ask > allow;
 the last `updated_input` in configured order wins and every later step judges it. A hook `allow` is
-treated exactly as a matching allow rule — step 5a only, never past the floor, and suspended in `auto`
-when the hook's matcher is broad by the allow-rule test. A hook that errors, times out or returns
+treated exactly as a matching allow rule — step 5a only, never past the floor; in `auto` a narrow
+matcher's `allow` skips the guardian (Claude Code parity) and a broad matcher (by the allow-rule
+test) is suspended. A hook that errors, times out or returns
 malformed output contributes no decision; the call continues through the normal pipeline — hooks
 never loosen on failure. Hook processes are user-configured, not tool calls, and are not gated by the
 pipeline. Sources follow §Config: user, project-local and CLI hooks load always; project hooks are
@@ -306,13 +352,15 @@ only tightens). No key in any scope disables hooks from a higher-trust scope. Bu
 Two stores per session. rig-memory holds the model context, which compaction may rewrite. The
 **session ledger** (`fontaine-core::ledger`) is Fontaine-owned and append-only: user messages
 verbatim, mode changes, approvals and session grants, denial records, actions taken, the workspace
-roots, trust state, and the git remotes and pre-session file index captured at start. The guardian's
+roots, trust state, and the git remotes and pre-session file index captured at start (the index
+respects `.gitignore` and is capped at 50,000 paths — overflow is recorded as truncated; paths
+the index does not hold are reported to the guardian as `unindexed`). The guardian's
 `AdjudicationRequest` is built only from the ledger — never from a compaction summary or other
 model-written text. Resume restores both stores but starts in the user's resolved default mode and
 drops session-scope grants; fork (`--fork-session`) copies both stores under a new session id, also
 without session grants; a rewind of the conversation (rig-memory `as_of`) truncates the context and
 appends to the ledger — denial and approval history is never removed. Both stores persist as JSONL
-under `<user data dir>/fontaine/sessions/<session-id>/` (mode 0600). Ledger in Phase 2; guardian
+under `<data dir>/sessions/<session-id>/` (owner-only). Ledger in Phase 2; guardian
 reads it in Phase 4; resume/fork in Phase 5.
 
 ### Composite guardian (the guardian tree)
@@ -351,7 +399,7 @@ crate but the `fontaine` bin depends on a subscriber or exporter (rig already em
 `tracing` spans, so this is the one facade that sees them). `fontaine-guardian` depends on
 `tracing` alone and stays embeddable: with no subscriber installed its spans are no-ops. The bin
 owns the global subscriber (`rust/fontaine/src/telemetry/`): a `tracing_subscriber::registry()`
-with (a) the local debug-file layer (`--debug-file <path>`, `FONTAINE_LOG` env filter; 0600; Claude
+with (a) the local debug-file layer (`--debug-file <path>`, `FONTAINE_LOG` env filter; owner-only; Claude
 Code's `--debug-file` analog), and (b) when `[telemetry] enabled`, one export backend:
 
 - `micromegas` (default backend): `micromegas-telemetry-sink` guard built with local sink off,
@@ -420,7 +468,8 @@ flush is capped (2 s) on both TUI exit and `-p` exit (`main` drops the guard, th
 `ExitCode` — `std::process::exit` would skip the flush), after which data is dropped.
 
 **Secrets.** Credentials are env-var names only (`api_key_env`), never inline. The telemetry
-credential variable, `MICROMEGAS_*` and `OTEL_EXPORTER_OTLP_HEADERS` are removed from the shell
+credential variable, `MICROMEGAS_*`, `OTEL_EXPORTER_OTLP_HEADERS`, every configured
+`[accounts.*] api_key_env` name and `[guardian] scanner_hf_token_env` are removed from the shell
 tool's and hooks' child environment. Opt-in content still passes through `rig_core::redact` and is
 truncated at `content_max_bytes`.
 
@@ -444,7 +493,7 @@ load from the primary root only. The guardian's `session_facts` and trust bounda
 3. **project-local** — `<root>/.fontaine/settings.local.toml`; user trust only while git reports it
    untracked or ignored in a git work tree; otherwise it loads as project scope.
 4. **project** — `<root>/.fontaine/settings.toml`; may only tighten.
-5. **user** — `~/.config/fontaine/config.toml`.
+5. **user** — `<config dir>/config.toml`.
 
 (`<root>` is the primary root — no parent-directory walk, no nested settings files.) Scalars: the
 highest-precedence scope that sets a key wins. Lists merge as a union across scopes; a scope may add
@@ -453,18 +502,20 @@ only to the lists the scope table lets it set. A key a scope may not set is reje
 **Workspace trust** (Claude Code parity). Project-defined executables — project MCP servers, project
 hooks, project skills' `!cmd` dynamic context — load in the TUI only after the user trusts the
 primary root at a trust prompt shown before they load; each project MCP server is also approved
-individually, and a repository cannot pre-approve its own servers. The trust record lives in
-`<user data dir>/fontaine/trust.toml`, keyed by canonical root path, never in the repo. Tightening
-keys (deny/ask, soft/hard deny) and prompt content (FONTAINE.md, skills, agent files, output styles)
-load regardless of trust. Headless `-p` loads project config without a prompt, as Claude Code does.
-Trust state is a ledger fact passed to the guardian in `session_facts`.
+individually, and a repository cannot pre-approve its own servers. Headless `-p` loads them without
+a prompt, as Claude Code does. In both surfaces they can **never change a permission decision**: a
+project hook's `allow` is ignored, project MCP tools are gated like any MCP tool (`Arbitrary`), and
+`!cmd` runs as a gated `shell` call. The trust record lives in `<data dir>/trust.toml`, keyed by
+canonical root path, never in the repo. Tightening keys (deny/ask, soft/hard deny) and prompt
+content (FONTAINE.md, skills, agent files, output styles) load regardless of trust. Trust state is
+a ledger fact passed to the guardian in `session_facts`.
 
 ```toml
 [accounts.work]                   # named accounts (opencode-style); several of one kind allowed
 kind = "anthropic"                # "anthropic" | "openai" | "gemini" | "openai-compatible" | "ollama"
 api_key_env = "ANTHROPIC_API_KEY_WORK"   # credential source: env var NAME, or omit to use the
                                   #   stored-credentials file written by `fontaine auth login <name>`
-                                  #   (user data dir, 0600). Raw keys are never accepted inline.
+                                  #   (`<data dir>/credentials.toml`, owner-only). Raw keys are never accepted inline.
 # base_url = ""                   # optional; required for openai-compatible (OpenRouter/LM Studio/vLLM/LiteLLM)
 # models = ["claude-sonnet-4-6"]  # optional explicit list; unset ⇒ discovered from the provider
                                   #   where it supports listing, else the account offers no models
@@ -515,7 +566,7 @@ additional_directories = []      # extra workspace roots; user trust scopes only
 
 [[hooks.pre_tool_use]]             # user hooks (§User hooks); also post_tool_use, permission_denied
 matcher = "shell(git *)"           #   rule grammar
-command = "~/.config/fontaine/hooks/git-guard.sh"
+command = "<config dir>/hooks/git-guard.sh"
 timeout_secs = 10
 
 [mcp.servers.github]               # stdio: command/args/env_vars; streamable HTTP: url
@@ -583,7 +634,7 @@ resource_attributes = {}           # static tags, e.g. { "team.id" = "platform" 
 ```
 
 Extension files (Claude Code-compatible frontmatter; built in Phase 5) live beside the settings
-files: `~/.config/fontaine/` and `<root>/.fontaine/` each hold `skills/<name>/SKILL.md`,
+files: `<config dir>/` and `<root>/.fontaine/` each hold `skills/<name>/SKILL.md`,
 `agents/<name>.md` and `output-styles/<name>.md`. Agent files and `[agents.types]` entries feed one
 agent-type registry (project definitions override user ones of the same name, as in Claude Code); a
 project agent file may only narrow — toolset a subset of the parent's, `mode` `manual` (default) or
@@ -601,17 +652,17 @@ guardian unavailable, which fails closed. **Trust asymmetry**: shared project se
 *tighten* (add deny/ask rules and hard/soft denies, choose a tightening default mode); loosening comes
 only from user trust scopes (user, untracked project-local, CLI). Mirroring Claude Code's documented
 semantics (`defaultMode: "auto"` and `"bypassPermissions"` are ignored in project settings — Fontaine
-ships no `bypass` mode at all), **project settings may set `[permissions] default_mode` to `manual`,
-`plan` or `dontAsk` only; `auto` and `acceptEdits` are rejected** — a checked-in repo must not be able
-to disarm its own guardian. Tier-0.5 `[shell_preclassifier]` extensions, `[permissions] allow` and
+ships no `bypass` mode at all), **project and project-local settings may set `[permissions]
+default_mode` to `manual` or `dontAsk` only; `auto`, `acceptEdits` and `plan` are rejected** — a
+checked-in repo must not be able to disarm its own guardian. Rejecting `auto` from project-local
+matches Claude Code; rejecting `acceptEdits` and `plan` is stricter (plan's guardian leg can loosen
+a manual user). Tier-0.5 `[shell_preclassifier]` extensions, `[permissions] allow` and
 `additional_directories` are loosening, so they follow the same rule. `[guardian] profile` follows it
 too — a loosening knob (minimal vs full), and no value of it disables the guardian. Keys that name an
 endpoint or a credential (`[accounts.*]`, `[telemetry]` other than `enabled = false`) never come from
 a file inside the repository directory, project-local included: each would let a checked-in or
 planted file send session data elsewhere. Project-defined executables (project MCP servers and hooks)
-are a separate class: they change no permission decision — their tool calls are gated like any other
-and a project hook's `allow` is ignored — but they run code when loaded, so the TUI loads them only
-after workspace trust.
+are a separate class, governed by Workspace trust above.
 
 Per-key scope (the user file may set every key; a key a scope may not set is rejected at load):
 
@@ -620,7 +671,7 @@ Per-key scope (the user file may set every key; a key a scope may not set is rej
 | `[accounts.*]` (`kind`, `base_url`, `api_key_env`, `models`) | no | no | `--settings` |
 | `[model]` `model` | no | yes | yes (`--model`) |
 | `[guardian]` `model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache`, `scan_tool_results`, `scanner_model_path`, `scanner_hf_token_env` | no | yes | `--settings` |
-| `[permissions]` `default_mode` | `manual`/`plan`/`dontAsk` only | yes | yes (`--permission-mode`) |
+| `[permissions]` `default_mode` | `manual`/`dontAsk` only | `manual`/`dontAsk` only | yes (`--permission-mode`) |
 | `[permissions]` `deny`, `ask` | add only | add only | add only (`--disallowed-tools` → deny) |
 | `[permissions]` `allow` | no | yes | yes (`--allowed-tools`) |
 | `[permissions]` `additional_directories` | no | yes | yes (`--add-dir`) |
@@ -763,10 +814,9 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   environment?" — a pre-execution **authorization gate** with Allow/Deny/Escalate verdicts, prose
   intent rules, and deny-reason feedback. Different seat; the public will conflate them, so the
   distinction must stay crisp in docs.
-- **AgentDojo baseline for our eval**: report Fontaine guardian results in AgentDojo-comparable
-  terms (ASR × utility) against their published numbers — no-defense .176 / PromptGuard 2 .075 /
-  AlignmentCheck .029 / combined .0175 — as the bar to beat. These are the LlamaFirewall paper's
-  own runs; the AgentDojo paper itself (arXiv:2406.13352, NeurIPS 2024) never mentions LlamaFirewall
+- **AgentDojo numbers are context, not a reporting target**: Fontaine's scorecard reports per-class
+  catch rate and false-deny rate, not ASR × utility. For reference, the LlamaFirewall paper's own
+  runs give no-defense .176 / PromptGuard 2 .075 / AlignmentCheck .029 / combined .0175; the AgentDojo paper itself (arXiv:2406.13352, NeurIPS 2024) never mentions LlamaFirewall
   or AlignmentCheck, and its published tables report **benign utility, utility-under-attack, and
   targeted/untargeted ASR separately (§3.4)** from live agent runs, while the LlamaFirewall paper
   offline-rescores static leaderboard traces — the two papers' numbers are not directly comparable.
@@ -849,10 +899,10 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
 All new. Key files: workspace `rust/Cargo.toml` (members = ["*", …], resolver 2,
 workspace.package block with edition 2024 and rust-version 1.97.1; rig crates pinned) and
 `rust/rust-toolchain.toml`;
-`rust/fontaine-core/src/{lib,models,permissions,permission_rules,config,trust,session,ledger,hooks,user_hooks,extensions,audit,containment}.rs`;
-`rust/fontaine-tools/src/{lib,guarded,risk,scope,builtins,webfetch,preclassify,skill}.rs`;
+`rust/fontaine-core/src/{lib,models,dirs,permissions,permission_rules,destructive,config,trust,session,ledger,hooks,user_hooks,extensions,audit,containment}.rs`;
+`rust/fontaine-tools/src/{lib,gate,guarded,risk,scope,builtins,webfetch,preclassify,skill}.rs`;
 `rust/fontaine-guardian/src/{lib,verdict,prompt_builder,rules,cache,profile,scanner}.rs` +
-`rust/fontaine-guardian/prompts/guardian_prompt.md`;
+`rust/fontaine-guardian/prompts/guardian_prompt.md` + `rust/fontaine-guardian/data/guardian_models.toml`;
 `rust/fontaine-mcp/src/{lib,servers,register}.rs`;
 `rust/fontaine-agents/src/{lib,spawn,registry,budget}.rs`;
 `rust/fontaine-tui/src/{app,transcript,approval,denials,statusbar,agents_panel,trust_prompt}.rs`;
@@ -887,7 +937,10 @@ order. No `fontaine-llm` crate — the model layer is rig.
   Rejected for the TUI: rig's own Bevy-plugin harness (`rig-harness`/`rig-tui`) — adopting its
   plugin kernel would subordinate the guardian architecture to someone else's app shape; ratatui
   stays ours.
-- **GuardedTool decorator vs rig AgentHook as the gate** — rig-agent 0.45 `AgentHook::on_dispatch` → `DispatchAction::Deny` exists; whether GuardedTool or the hook is the gate is an open question for the user.
+- **GuardedTool decorator vs rig AgentHook as the gate** — the decorator is the single gate:
+  registry-level wrapping covers built-ins, per-root instances and MCP tools in one place and each
+  wrapper is unit-testable without a run. rig-agent 0.45 `AgentHook::on_dispatch` is not used for
+  permission decisions; hooks stay bookkeeping-only.
 - **Stateless one-shot guardian requests vs persistent guardian conversation** — stateless chosen:
   no context poisoning over a long session, trivially cacheable and parallelizable, and each
   request carries a fresh digest of intent + session facts. Loses "guardian memory" of near-misses;
@@ -953,14 +1006,13 @@ carries the reasoning:
   rig-rmcp/rig-cassette), pinned to exact versions; no custom provider layer. (User directive:
   reuse existing crates for the core wherever possible.)
 - 2026-10-20: The guardian gate lives in the `GuardedTool` decorator (registry-level choke point),
-  not in rig `AgentHook`s; hooks are for bookkeeping only. (Reopened 2026-10-21: rig-agent 0.45
-  `AgentHook::on_dispatch` → `DispatchAction::Deny` exists; see Trade-offs.)
+  not in rig `AgentHook`s; hooks are for bookkeeping only. Settled (see 2026-10-21 below).
 - 2026-10-20: rig's Bevy-based harness/TUI (`rig-harness`, `rig-tui`) is not adopted; Fontaine
   keeps its own ratatui TUI.
 - 2026-10-20: License is Apache-2.0 — the repo's `LICENSE` is verbatim Apache-2.0 text; rule prose
   adapted from Anthropic's published documentation gets an attribution note in docs/guardian.md.
-- 2026-10-21: "fontaine" is the final product name — binary, crate prefix, config dir
-  `~/.config/fontaine`, `FONTAINE.md` convention. (User decision; resolves former Open Question 1.)
+- 2026-10-21: "fontaine" is the final product name — binary, crate prefix,
+  config dir `fontaine/` under the platform config dir, `FONTAINE.md` convention. (User decision.)
 - 2026-10-21: guardian default = top-ranked model on Fontaine's benchmark-validated guardian list
   that is available on the configured accounts; switching easy, explicit, never automatic; unset +
   no catalog match → main model with one-time notice. (User decision; resolves former Open
@@ -1087,8 +1139,8 @@ carries the reasoning:
   matching and allow fails toward not matching.
 - 2026-10-21: settings scope stack managed (reserved, empty in v1) > CLI > project-local > project >
   user, list keys merged, project-local trusted only while untracked (Claude Code parity). Project
-  settings may set `default_mode` to `manual`/`plan`/`dontAsk` but not `auto`/`acceptEdits` (Claude
-  Code parity; settles the former scope-table vs prose conflict). Deliberate Claude-Code deviation:
+  settings may set `default_mode` to `manual`/`dontAsk` only (see the dated lines at the end of this
+  section). Deliberate Claude-Code deviation:
   endpoint/credential keys (`[accounts.*]`, `[telemetry]` except `enabled = false`) are never read
   from project-local either — reason: a file inside the repo directory must not redirect session data.
 - 2026-10-21: multiple workspace roots (`--add-dir`, `/add-dir`, `additional_directories`; Claude
@@ -1127,6 +1179,58 @@ carries the reasoning:
 - 2026-10-21: the guardian loop breaker follows Claude Code — `auto` pauses after 3 consecutive or 20
   total guardian denials per session (any tool, not configurable); prompting resumes, approving resumes
   `auto`; headless treats the paused state as would-prompt → Deny.
+
+- 2026-10-21: gate location settled — the `GuardedTool` decorator is the single gate (registry-level
+  wrapping covers built-ins, per-root instances and MCP; unit-testable); rig `AgentHook::on_dispatch`
+  is not used for permission decisions. Resolves the former gate-location open question.
+- 2026-10-21: tool calls are adjudicated and executed one at a time (rig-agent `tool_concurrency =
+  1`); parallel batch adjudication is dropped for v1. Reason: simpler ordering and per-call audit
+  attribution; subagents still run concurrently.
+- 2026-10-21: crate cycle resolved — `fontaine-tools` defines the `ToolGate` trait that `GuardedTool`
+  calls; `fontaine-core`'s `PermissionPipeline` implements it and is injected at registration;
+  `fontaine-tools` never depends on `fontaine-core` (graph in §Workspace layout).
+- 2026-10-21: the "destructive" class behind the fail-closed Allow → Deny rule is derived
+  deterministically by `fontaine-core` from the tool call (risk class plus floor-relevant features),
+  never from the guardian's self-chosen label; verdict labels are Claude Code's default auto-mode
+  block categories plus `allow` (enum in the Phase 4 plan).
+- 2026-10-21: deliberate Claude-Code deviation — project scope cannot set `default_mode = "plan"`
+  (reason: plan's guardian leg can loosen a manual user); project and project-local scopes may set
+  `manual` or `dontAsk` only.
+- 2026-10-21: project `default_mode = "acceptEdits"` is rejected (deliberate deviation, stricter
+  than Claude Code; reason: a checked-in repo must not auto-approve edits); `auto` is rejected from
+  project-local `settings.local.toml` as well as project (Claude Code parity).
+- 2026-10-21: the pre-session file index is gitignore-respecting and capped at 50,000 paths
+  (overflow recorded as truncated); the guardian request carries only the pre-existence status of
+  the paths the current call touches, never the index.
+- 2026-10-21: directories come from the `dirs` crate (config dir `dirs::config_dir()/fontaine`, data
+  dir `dirs::data_dir()/fontaine`), overridable by `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR`, which
+  all tests use; credentials at `<data dir>/credentials.toml`, owner-only (0600 on Unix,
+  current-user-only ACL on Windows).
+- 2026-10-21: the eval dataset gains `mode` (default `manual`) and `workspace` (files, symlinks and
+  `cwd` materialized in a temp root) fields so `pipeline` cases are reproducible.
+- 2026-10-21: the default guardian list is the data file `rust/fontaine-guardian/data/guardian_models.toml`
+  (ranked entries: provider kind, model id, scorecard metrics); it ships empty — empty falls back to
+  the main model with the one-time notice — and the Phase 4 scorecard run fills it.
+- 2026-10-21: v1 supports Linux, macOS and Windows; CI matrix `ubuntu-latest`, `macos-latest`,
+  `windows-latest` on all four CI steps. Windows (Claude Code parity): `shell` runs through Git
+  Bash (Git for Windows is a prerequisite), so the lexer, Tier 0.5 and critical-path apply
+  unchanged; a PowerShell tool is backlog (GitHub issue #28) and would never pre-classify; owner-only
+  files use current-user-only ACLs; the containment probe reports "not contained".
+- 2026-10-21: deliberate Claude-Code deviation — every configured `[accounts.*] api_key_env` name,
+  `scanner_hf_token_env` and the telemetry credential names are removed from the `shell` and hook
+  child environment. Reason: a model-run command must not read provider keys (stricter than Claude
+  Code).
+- 2026-10-21: AgentDojo-comparable (ASR × utility) reporting is dropped; the scorecard reports
+  per-class catch rate and false-deny rate.
+- 2026-10-21: workspace trust (Claude Code parity) — project executables (project MCP servers, hooks,
+  skill `!cmd`) load after the TUI trust prompt and without one in headless `-p`; in both they can
+  never change a permission decision (a project hook's `allow` is ignored; project MCP tools are
+  gated like any MCP tool). Stated once, in §Config Workspace trust.
+- 2026-10-21: a user-scope hook `allow` in `auto` follows Claude Code — equivalent to an allow rule,
+  skips the guardian for a narrow matcher, broad matchers suspended; the `claude -p` baseline capture
+  confirms it.
+- 2026-10-21: the `skill` tool stays `ReadOnly` and on the fast path (it only loads skill text from
+  the start-time index into context); a skill's `!cmd` is gated as a `shell` call.
 
 ## Documentation
 
@@ -1197,7 +1301,8 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   like the other consequential calls; out-of-scope read / webfetch / MCP → guardian verdict, may
   Allow, but no edit ever executes; in-scope
   `shell("ls")` proceeds via Tier-0.5); read-only scope check
-  incl. symlink-escape denial; batch tool-call partial-deny semantics; GuardedTool delegation
+  incl. symlink-escape denial; sequential tool calls in one turn (a Deny returns its own tool_result and
+  later calls are still adjudicated, one at a time); GuardedTool delegation
   (inner tool runs exactly once, only after Allow); a `[permissions] deny` rule denies in
   EVERY mode; critical-path `shell("rm …")`-style calls (including unresolvable targets such as
   `rm -rf $(…)` / `rm -rf $X/*`, and commands that fail to lex) force a human prompt in
@@ -1224,7 +1329,7 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   prompt instead; the counting-guardian form lands with Phase 4).
 - **guardian**: verdict extraction via rig extractor with malformed outputs → retries → Deny;
   timeout → Deny (tokio time-pause); an Allow below the confidence threshold on a
-  destructive class → Deny; connection reset and mid-stream drop → Deny `GuardianUnavailable`, no
+  destructive class (derived from the call, not the verdict label) → Deny; connection reset and mid-stream drop → Deny `GuardianUnavailable`, no
   hang, driven by `rig_core::test_utils` streaming clients (`HttpErrorStreamingClient`,
   `NonSuccessStreamingClient`, `SequencedStreamingHttpClient`) or a raw `tokio::net::TcpListener`
   that drops the socket (wiremock 0.6 has no reset/abort API; wiremock stays for 500s and provider
@@ -1247,8 +1352,8 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   table (`[accounts]`, `[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets, `[agents.types]`,
   …) is rejected from project scope. Scope stack: precedence managed (empty) > CLI > project-local >
   project > user for scalars, union for lists; a tracked `settings.local.toml` loads as project scope;
-  endpoint/credential keys rejected from project-local; project `default_mode = "plan"` accepted,
-  `"auto"`/`"acceptEdits"` rejected; `[permissions] allow`/`additional_directories` rejected from
+  endpoint/credential keys rejected from project-local; project and project-local `default_mode` accept only `manual`/`dontAsk`
+  (`"auto"`, `"acceptEdits"`, `"plan"` rejected from both); `[permissions] allow`/`additional_directories` rejected from
   project scope; `[telemetry]` rejected from project scope except `enabled = false`, and
   `enabled = true` without `endpoint` or without a resolvable ingestion key is a config error (exit 2).
   Workspace trust: an untrusted root's project MCP servers and hooks do not load in the TUI until the
@@ -1267,11 +1372,18 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
 - **user hooks**: `updated_input` is what the floor, Tier 0.5, rules, guardian and audit see; hook
   deny > ask > allow; a hook `allow` never passes a deny rule or critical path and is suspended in
   `auto` for a broad matcher; error / timeout / malformed output ⇒ no decision (normal pipeline);
-  project hook `allow` ignored; hook children get the scrubbed environment.
+  project hook `allow` ignored; hook children get the scrubbed environment (no configured
+  `api_key_env` variable, `scanner_hf_token_env`, telemetry credential or `MICROMEGAS_*`).
+- **platforms** (Windows cases `#[cfg(windows)]`, run in the windows CI job): path normalization and
+  containment (drive letters, UNC, case-insensitive comparison, junction and symlink escape, MSYS-style
+  `/c/...` argv paths); critical-path drive root and `%USERPROFILE%`; owner-only ACL on credentials,
+  trust store and audit log; `dirs` resolution and the `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR`
+  overrides on every OS.
 - **session ledger**: after a compaction, `AdjudicationRequest` still carries the verbatim user
   messages and no summary text (canary instruction placed in a compaction summary never reaches the
-  guardian); resume restores context + ledger in the default mode without session grants; fork copies
-  both; rewind keeps denial history.
+  guardian); the pre-session file index respects `.gitignore`, truncates at the cap and records the
+  truncation, and the request carries only the touched paths' status; resume restores context + ledger
+  in the default mode without session grants; fork copies both; rewind keeps denial history.
 - **headless contract**: `json` and `stream-json` outputs validate against the versioned schema
   (snapshot per `schema_version`); `init` lists roots, config sources, trust state and suspended allow
   rules; every gate decision appears as a `gate_decision` event with the audit record's tier;
@@ -1338,7 +1450,9 @@ core as `fontaine -p`). Dataset: `evals/dataset/*.jsonl`, one JSON object per li
 tier05-adversarial | spawn | minimal-escape | minimal-benign), `profile` (`full` | `minimal`),
 `task_intent`, `tool`, `args`, `expected`, and `fixture_verdict` (the canned outcome the offline
 `fixture` mode returns), plus optional request-context fields `recent_user_messages`,
-`session_facts`, and rule/environment overrides (`auto_mode` / `environment` prose lists). `kind`
+`session_facts`, `mode` (default `manual`; the permission mode for `pipeline` cases), `workspace`
+(files, symlinks and a `cwd` materialized in a temp root before the case runs), and rule/environment
+overrides (`auto_mode` / `environment` prose lists). `kind`
 names the component a case scores: `guardian` — the `Guardian::adjudicate` verdict (`expected` ∈
 `allow` | `deny` | `escalate`; the benign, attack, injection-in-args, ambiguous-intent and
 `minimal-*` categories); `pipeline` — the full `PermissionPipeline` decision under a fixed mode,
@@ -1357,7 +1471,8 @@ case (the Tier-0.5 adversarial set and the floor/headless cases) into a prompt a
 tool call, poses it in a fresh scratch workspace via
 `claude -p --permission-mode <mode> --output-format json` (Fontaine `manual` ↔ Claude Code
 `default`), and extracts the permission denials from the JSON result (headless: ask and deny both
-surface as denials); it writes one JSONL record per case and mode — `case_id`, `mode`, `cc_outcome`
+surface as denials); the `auto` run also covers a PreToolUse hook `allow` (narrow and broad matcher);
+it writes one JSONL record per case and mode — `case_id`, `mode`, `cc_outcome`
 (`allowed` | `denied`), the `claude` version — under `evals/baselines/`. `diff` runs the same cases
 through Fontaine headless and reports every case whose outcome differs; each divergence is triaged
 into a Fontaine fix or a dated Decisions line.
@@ -1398,10 +1513,4 @@ End-to-end checks, each owned by the phase's definition of done (owner in parens
 
 ## Open Questions
 
-(Former questions 1 and 2 — project name and default-guardian policy — were resolved
-2026-10-21 and recorded in Decisions.)
-
-1. **Where is the permission gate?** Option A: the `GuardedTool` decorator (current design — the
-   gate runs inside each wrapped tool's `call`). Option B: rig-agent 0.45
-   `AgentHook::on_dispatch` returning `DispatchAction::{Proceed, Patch, Deny}`, with one gate for
-   every tool and no per-tool wrapper. Phase 2 step 1 is blocked on this.
+None.

@@ -18,8 +18,8 @@ account, so two accounts of the same kind (work + personal Anthropic) coexist wi
 credentials and endpoints. Each account provides models: an explicit `models` list, else discovery
 from the provider where rig supports listing. Models are addressed `<account>/<model>` in `[model]`,
 `[guardian] model`, and `[agents.types]`, so main agent and guardian may sit on different accounts.
-Credentials come from a named env var or the stored-credentials file (`fontaine auth login`, user
-data dir, 0600); raw keys are never read from config files. Accounts and all account/model/endpoint
+Credentials come from a named env var or the stored-credentials file (`fontaine auth login`,
+`<data dir>/credentials.toml`, owner-only); raw keys are never read from config files. Accounts and all account/model/endpoint
 keys follow the master scope table (`[accounts]` only from the user file or CLI; no
 account/model/endpoint reference from shared project scope — rejected at load); a missing or invalid credential on
 the guardian's account makes the guardian unavailable and fails closed. The "any model I like"
@@ -97,7 +97,7 @@ upstream builder knob.
    | `--json-schema <file>` | structured final output via rig `structured_output`, in `result.structured_output` | 1 |
    | `--system-prompt <text>` / `--append-system-prompt <text>` | replace / extend the system prompt | 1 |
    | `--settings <file>` | CLI-scope settings overlay (master §Config scope stack) | 1 |
-   | `--debug-file <path>` | local debug log (0600), `FONTAINE_LOG` filter | 1 |
+   | `--debug-file <path>` | local debug log (owner-only), `FONTAINE_LOG` filter | 1 |
    | `--add-dir <path>` | extra workspace root | 2 |
    | `--allowed-tools <rule>…` / `--disallowed-tools <rule>…` | CLI-scope `[permissions] allow` / `deny` rules in the `Tool(specifier)` grammar | 3 |
    | `--session-id <uuid>` | use this session id (ledger, audit log, telemetry) | 2 |

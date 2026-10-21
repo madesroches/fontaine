@@ -73,7 +73,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event.
 
 ## Steps
 
-1. `PermissionPipeline` with modes `manual`/`acceptEdits`/`plan`/`dontAsk` (`auto` wires in at
+1. `PermissionPipeline` (implements the `ToolGate` trait, replacing the Phase-2 stub; injected at registration) with modes `manual`/`acceptEdits`/`plan`/`dontAsk` (`auto` wires in at
    Phase 4 step 2; there is no `bypass` mode) and the step order from the master's data-flow
    diagram (the step-2 deterministic floor: deny → ask → critical-path (rm/rmdir targets prompt; deny in
    `dontAsk`/headless) → protected-path (the master's enumerated list; `edit`/`write` only — prompt in manual/acceptEdits,
@@ -122,7 +122,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event.
 - **permission pipeline** (master Testing Strategy; `rust/fontaine-core/tests/permissions.rs`): mode
   × risk-class matrix; plan-mode terminal branch 9 (edit-class blocked outright; the guardian leg
   prompts in the interim and denies in headless); read-only scope check incl. symlink-escape denial
-  and an out-of-scope `cwd`; batch tool-call partial-deny semantics; the `[permissions] deny` rule
+  and an out-of-scope `cwd`; sequential tool calls in one turn (a Deny returns its own tool_result; later calls are still adjudicated, one at a time); the `[permissions] deny` rule
   holds in EVERY mode; critical-path `rm`/`rmdir` (incl. unresolvable targets and commands that fail
   to lex) prompts in manual/acceptEdits/plan, denies in `dontAsk` and headless, and is never
   auto-approved; protected-path writes via `edit`/`write` (the enumerated list) prompt or deny per
@@ -137,6 +137,9 @@ the `tool_decision` telemetry event and the headless `gate_decision` event.
   skips the prompt in `manual`; "allow session" lasts only for the session, "always allow" writes
   exactly the shown rule to the user file; `--allowed-tools` / `--disallowed-tools` act as CLI rules;
   a project-scope allow rule is rejected at load.
+- **windows** (`#[cfg(windows)]`, windows CI job): critical-path prompts for a drive root and for
+  `%USERPROFILE%` targets; path-rule matching is case-insensitive and resolves junctions; protected
+  paths match across separators and case.
 - **hook slot**: with a test-double decision source, `updated_input` is what the floor, rules and
   audit see; deny > ask > allow; an `allow` never passes the floor; error / timeout / malformed ⇒ no
   decision.

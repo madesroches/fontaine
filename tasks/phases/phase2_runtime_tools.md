@@ -38,18 +38,22 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
   declared `readOnlyHint` is an optimization hint surfaced to the guardian, never an
   authorization token.
 - **GuardedTool**: a decorator implementing `rig_core::tool::Tool` that wraps any inner tool and,
-  in its `call`, runs the `PermissionPipeline` (mode check → read-only fast path → Tier-0.5 shell
-  pre-classifier → guardian in `auto`) before delegating to the inner tool. This is the **single
-  choke point**: every tool — rig built-in, Fontaine-added, or MCP-imported — is registered
-  wrapped, so nothing can execute without passing the gate.
+  in its `call`, asks the injected `ToolGate` (`fontaine-tools/src/gate.rs`; implemented by
+  `fontaine-core`'s `PermissionPipeline` — mode check → read-only fast path → Tier-0.5 shell
+  pre-classifier → guardian in `auto`) before delegating to the inner tool. `fontaine-tools` never
+  depends on `fontaine-core`. This is the **single choke point**: every tool — rig built-in,
+  Fontaine-added, or MCP-imported — is registered wrapped (registry-level wrapping covers built-ins,
+  per-root instances and MCP), so nothing can execute without passing the gate. rig
+  `AgentHook::on_dispatch` is not used for permission decisions; rig hooks stay bookkeeping-only.
 - **Session-state carrier**: the pipeline's inputs (mode, workspace roots, merged permission rules
   and session grants, the session ledger handle, audit-log sink, and the human-approval callback;
-  the user-hook runner joins in Phase 5) travel in a shared
-  `Arc<SessionState>` injected into every wrapper at registration; rig's per-call `&mut ToolContext`
+  the user-hook runner joins in Phase 5) live in a shared `Arc<SessionState>` owned by
+  `fontaine-core`'s pipeline, which is injected into every wrapper at registration as an
+  `Arc<dyn ToolGate>`; rig's per-call `&mut ToolContext`
   carries only per-call identity (agent id) for per-agent audit keying. Because rig-core 0.45.0's
   `Tool` has a `const NAME` and typed `Args`, the wrapper is a generic `GuardedTool<T: Tool>`
   (`NAME = T::NAME`) for built-ins; MCP tools arrive as `DynamicTool` and are wrapped by a parallel
-  `DynamicTool` wrapper path. Both call the same `PermissionPipeline` entry point.
+  `DynamicTool` wrapper path. Both call the same `ToolGate` entry point.
 
 `WorkspaceWrite` (write/edit within workdir) is auto-allowed only in `acceptEdits`/`auto`(guardian)
 per mode. `Arbitrary` (shell, webfetch, MCP tools) always hits the guardian in `auto` (shell calls
@@ -73,17 +77,17 @@ the rig-tools 0.45 constructor shape when the step lands). `--add-dir` roots are
 
 `fontaine-core/src/ledger.rs`: the append-only per-session record from the master plan's §Session
 ledger (verbatim user messages, mode changes, approvals and session grants, denials, actions taken,
-roots, trust state, git remotes and the pre-session file index captured at start), persisted as
-JSONL beside rig-memory's context under `<user data dir>/fontaine/sessions/<session-id>/` (0600).
+roots, trust state, git remotes and the pre-session file index captured at start — gitignore-respecting,
+capped at 50,000 paths with overflow recorded as truncated), persisted as
+JSONL beside rig-memory's context under `<data dir>/sessions/<session-id>/` (owner-only).
 It is written by the session orchestrator and the pipeline, never by the model, and it is the only
 source the guardian's request builder (Phase 4) reads. rig-memory compaction rewrites only the model
 context.
 
 ## Steps
 
-1. **Blocked on master Open Question 1 (gate location: `GuardedTool` vs `AgentHook::on_dispatch`).**
-   `fontaine-tools`: `RiskClass` registry; generic `GuardedTool<T: Tool>` decorator over `rig_core::tool::Tool`, a `DynamicTool`
-   wrapper path for MCP, and the shared `Arc<SessionState>` carrier; register exactly this tool set
+1. `fontaine-tools`: `RiskClass` registry; the `ToolGate` trait; generic `GuardedTool<T: Tool>` decorator over `rig_core::tool::Tool`, a `DynamicTool`
+   wrapper path for MCP; `fontaine-core` holds the shared `Arc<SessionState>` and the `ToolGate` impl injected at registration; register exactly this tool set
    (the choke-point test asserts it: no other names, no duplicates, `delete`/`move` absent):
 
    | Tool | RiskClass | Implementation |
@@ -104,16 +108,21 @@ context.
    model-supplied `timeout_secs`) and the output `cut` — no hand-rolled hardening layer. A `shell`
    call's model-supplied `cwd` is itself resolved through `place`; an out-of-scope `cwd`
    disqualifies the fast path and Tier 0.5, and relative path arguments resolve against it. The
-   `GuardedTool` gate body is a deny-by-default stub this phase: it allows only in-scope `ReadOnly`
+   `ToolGate` implementation is a deny-by-default stub this phase: it allows only in-scope `ReadOnly`
    calls (scope check via `scope.rs`) and denies everything else, so the always-on floor holds from
-   the first commit; the real `PermissionPipeline` lands in Phase 3 and fills the stub. `scope.rs`
+   the first commit; the real `PermissionPipeline` lands in Phase 3 and replaces the stub. `scope.rs`
    and the per-root tool instances are multi-root from the start (design above); `--add-dir` wires in.
-   The `shell` tool's child environment drops the telemetry credential variables, `MICROMEGAS_*` and
-   `OTEL_EXPORTER_OTLP_HEADERS`. `GuardedTool::call` opens a `fontaine.tool` span (beside rig's
+   On Windows the `shell` tool runs through Git Bash (Git for Windows is required; a missing install is a
+   startup error naming it), so the POSIX lexer and checks apply unchanged; `scope.rs` handles drive
+   letters, UNC paths, case-insensitive comparison, junctions and MSYS-style `/c/...` paths.
+   The `shell` tool's child environment drops the telemetry credential variables, `MICROMEGAS_*`,
+   `OTEL_EXPORTER_OTLP_HEADERS`, every configured `[accounts.*] api_key_env` name and
+   `[guardian] scanner_hf_token_env`. `GuardedTool::call` opens a `fontaine.tool` span (beside rig's
    `execute_tool`) and emits the `tool_result` telemetry event (`risk_class`, `tool_source`).
 2. `fontaine-core`: session orchestration on `rig_agent` (`AgentBuilder` + `AgentRun`), system
    prompt, FONTAINE.md loading (v1 set: `<primary root>/FONTAINE.md` plus the user-level `FONTAINE.md` in the user config dir; no parent-directory hierarchy or imports — backlog GitHub issue #7); `rig-memory` for context windows, compaction,
-   and save/resume — no custom agent loop or history management to write; the session ledger
+   and save/resume — no custom agent loop or history management to write; the agent is built with
+   `tool_concurrency = 1` (tool calls run one at a time, in order); the session ledger
    (design above) alongside it, keyed by the session id (`--session-id` or a fresh UUID).
 3. Docs — `docs/tools.md`: the built-in tool inventory (`ls`/`read`/`glob`/`grep`/`edit`/`write`/
    `shell`/`webfetch`), each tool's `RiskClass`, what earns the read-only fast path
@@ -126,7 +135,7 @@ context.
 
 ## Files created or modified
 
-`rust/fontaine-tools/src/{lib,guarded,risk,scope,builtins,webfetch}.rs`;
+`rust/fontaine-tools/src/{lib,gate,guarded,risk,scope,builtins,webfetch}.rs`;
 `rust/fontaine-core/src/{lib,session,ledger,hooks}.rs`; `docs/tools.md`, `docs/architecture.md`,
 `docs/configuration.md`, `docs/telemetry.md`, `docs/index.md`.
 
@@ -138,18 +147,22 @@ context.
   `cut`); the exact registered tool set from the step-1 table (no duplicate names, `delete`/`move`
   absent); risk-class registration of every built-in and MCP tool — the choke-point test that fails
   if any registered tool is missing a risk class.
-- GuardedTool delegation: inner tool runs exactly once, only after the gate allows; under the stub,
+- GuardedTool delegation (against a fake `ToolGate`): inner tool runs exactly once, only after the gate allows; under the stub,
   an in-scope `read` is allowed, an out-of-scope `read` and every `write`/`edit`/`shell` call is denied.
 - **workspace roots** (`rust/fontaine-tools/tests/scope.rs`): a path in an `--add-dir` root is in
   scope and reaches that root's confined instance; a `shell` call whose `cwd` is in an added root
   reaches that root's `Shell` instance and is not refused by rig; a symlink from one root into another stays in
   scope, out of every root falls out; settings in an added root are not loaded.
+- **windows** (`#[cfg(windows)]`, run in the windows CI job): scope validator over drive letters, UNC
+  paths, case-insensitive comparison, junction and symlink escape, and MSYS-style `/c/...` paths
+  (untranslatable ⇒ out of scope); the `shell` tool launches through Git Bash.
 - **session ledger** (`rust/fontaine-core/tests/ledger.rs`): after a forced compaction the ledger
   still holds every user message verbatim and no summary text; the ledger is append-only (no API
-  removes a record).
+  removes a record); the file index respects `.gitignore` and truncates at the cap with the
+  truncation recorded.
 - **telemetry**: canary test for tool args and output (absent without `log_tool_details` /
-  `log_tool_content`); the `shell` child environment has no telemetry credential or `MICROMEGAS_*`
-  variable.
+  `log_tool_content`); the `shell` child environment has no telemetry credential, `MICROMEGAS_*`
+  variable, configured `api_key_env` variable or `scanner_hf_token_env` variable.
 - Integration (`rust/fontaine/tests/headless_tools.rs`): `fontaine -p` against the scripted
   `openai-compatible` endpoint completes a read-tool round-trip.
 

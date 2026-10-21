@@ -31,7 +31,7 @@ path — see the Phase 5 plan.
    (`[guardian] scanner_model_path`: the `.onnx` file plus `tokenizer.json`), or first enable
    downloads them from the gated HF repo using the user's HF token read from the env var named by
    `[guardian] scanner_hf_token_env` (default `HF_TOKEN`; never stored or logged) after the user has
-   accepted the license on HF. Downloads land in `<user data dir>/fontaine/models/promptguard2-86m/`
+   accepted the license on HF. Downloads land in `<data dir>/models/promptguard2-86m/`
    with their SHA-256 recorded alongside. Pins in `rust/Cargo.toml`: `ort = "=2.0.0-rc.15"` and
    `tokenizers = "=0.22.0"` (default features off) — confirm both resolve under the workspace
    toolchain when the step lands and pin the exact versions that do; both are optional dependencies
