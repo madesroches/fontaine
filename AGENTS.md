@@ -8,7 +8,8 @@ deviation from Claude Code. The cross-cutting design (permission pipeline, confi
 observability, platforms, testing strategy) lives in topic docs under `tasks/design/`, indexed
 from the master's `## Design docs`; `research/` holds the companion analysis docs the plan is grounded in, including
 `research-claude-code-parity.md` (Claude Code feature matrix). Backlog features not in the plan
-are GitHub issues (`gh issue list`). The build is
+are GitHub issues (`gh issue list`); a `phase-N` label means "can be taken after phase N", not
+part of that phase's definition of done, and the plan's Decisions win over issue text. The build is
 split into one plan per phase under `tasks/phases/` (`phase0_scaffold.md` … `phase6_hardening.md`),
 each with its own design excerpt, steps (ending in a docs step), files, tests, and definition of
 done. Read the master and design-doc sections you touch **and** the phase plan you are implementing
