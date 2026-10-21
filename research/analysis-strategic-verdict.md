@@ -1,6 +1,6 @@
 # Analysis 05 — Strategic Verdict and Recommendations
 
-Date: 2026-10-20. Synthesis of the four analysis docs (`tasks/analysis-*.md`), applied to
+Date: 2026-10-20. Synthesis of the four analysis docs (`research/analysis-*.md`), applied to
 `tasks/fontaine_harness_plan.md`.
 
 ## Verdict
