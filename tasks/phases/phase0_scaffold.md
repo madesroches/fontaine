@@ -9,11 +9,11 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 
 ## Steps
 
-1. Cargo workspace (`rust/Cargo.toml`, micromegas layout, `members = ["*"]` with `exclude = ["target", ".*"]` so a second build with `rust/target/` present still resolves; `[workspace.package]` sets `edition = "2024"`
+1. Cargo workspace (`rust/Cargo.toml`, micromegas layout, `members = ["*"]` with `exclude = ["target", ".cargo", ".fontaine", ".config", ".claude"]` (cargo matches exclude entries literally and the `*` glob matches dot-dirs) so a second build with `rust/target/` present still resolves; `[workspace.package]` sets `edition = "2024"`
    and `rust-version = "1.97.1"`, and `rust/rust-toolchain.toml` pins `channel = "1.97.1"` to match rig
    0.45.0; CI installs that toolchain), crate skeletons under `rust/`
    (`fontaine`, `fontaine-core`, `fontaine-tools`, `fontaine-guardian`, `fontaine-agents`,
-   `fontaine-mcp`, `fontaine-tui`, `fontaine-evals`), `clap` CLI entry (`fontaine`), tracing facade (below), CI
+   `fontaine-mcp`, `fontaine-tui`, `fontaine-evals`), `clap` CLI entry (`fontaine`, defining `--settings <file>` and `--debug-file <path>`), tracing facade (below), CI
    (`.github/workflows/ci.yml`, GitHub Actions, matrix `ubuntu-latest` / `macos-latest` /
    `windows-latest`, each from `rust/`: `cargo fmt --check`,
    `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo deny check` (advisories, licenses, bans, sources; cargo-deny installed at the pinned `0.20.2`, runs on all three OSes), then the offline eval fixture run from
@@ -26,7 +26,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    workspace root is the canonicalized launch cwd; config is read only from it. Rule strings in
    `[permissions] deny`/`ask`/`allow` are parsed into the `Tool(specifier)` grammar at load
    (`fontaine-core/src/permission_rules.rs`; an unparseable rule is a config error, exit 2; matching
-   lands in Phase 3). Directory resolution (`fontaine-core/src/dirs.rs`, `dirs =7.0.0`: config dir
+   lands in Phase 3). Directory resolution (`fontaine-core/src/dirs.rs`, `dirs 7.0.0`, caret: config dir
    `dirs::config_dir()/fontaine`, data dir `dirs::data_dir()/fontaine`, overrides `FONTAINE_CONFIG_DIR` /
    `FONTAINE_DATA_DIR`) and an owner-only file helper (0600 on Unix, current-user-only ACL on Windows).
    Workspace trust store (`fontaine-core/src/trust.rs`): read/write
@@ -48,7 +48,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    into spawning with an escalated toolset — plus escape-focused container cases for the
    `[guardian] profile = "minimal"` column: `mount /dev/sda1`, docker.sock write, cgroup
    `release_agent`, bind-mount symlink escape → deny/escalate; routine in-container workspace ops
-   → proceed; `pipeline` floor cases with a `permissions` field: a deny rule, an ask rule, a critical path and a protected path); the runner is the bin + lib crate `rust/fontaine-evals` (CLI table in `tasks/design/testing.md` Testing Strategy, Eval harness), reading `evals/dataset/*.jsonl` (case schema and per-kind scoring in
+   → proceed; `pipeline` floor cases with a `permissions` field: a deny rule, an ask rule, a critical path and a protected path); the tier enum is defined here in `fontaine-core` (`rust/fontaine-core/src/tier.rs`; Phase 3's `GateDecision.tier` reuses it) and the `RuleLabel` enum in `fontaine-guardian` (`rust/fontaine-guardian/src/rule_label.rs`; Phase 4's `Verdict` reuses it), and `fontaine-evals` imports both to validate `expected_tier` / `fixture_verdict.tier` and `attack:<class>`; the runner is the bin + lib crate `rust/fontaine-evals` (CLI table in `tasks/design/testing.md` Testing Strategy, Eval harness), reading `evals/dataset/*.jsonl` (case schema and per-kind scoring in
    `tasks/design/testing.md` Testing Strategy) and scoring any guardian model
    config; CI runs `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture`
    from `rust/` — offline, deterministic verdict fixtures — so it is green before the guardian
@@ -67,8 +67,8 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 
 ## Files created or modified
 
-`.gitignore`; `rust/Cargo.toml` (new crates: `windows-acl =0.3.0`, target-gated to Windows, for the owner-only ACL helper; `gix =0.89.0`, default features off, for project-local trust classification and the ledger's remotes); `rust/deny.toml` (cargo-deny config: license allowlist compatible with Apache-2.0 distribution; Llama-licensed model weights are downloaded at runtime, not a crate dependency); `rust/rust-toolchain.toml`; crate skeletons for every `rust/fontaine-*` crate; `rust/fontaine/src/{main,lib}.rs` (`lib.rs` holds the logic, `main.rs` is thin);
-`rust/fontaine/src/telemetry/mod.rs`; `rust/fontaine-core/src/{config,dirs,permission_rules,trust,credentials}.rs`; `evals/` (dataset + README.md); `rust/fontaine-evals/src/{main,lib}.rs` (runner; `lib.rs` holds the logic); `CHANGELOG.md`; `CONTRIBUTING.md`; `SECURITY.md`;
+`.gitignore`; `rust/Cargo.toml` (new crates: `tracing =0.1.44`, `tracing-subscriber =0.3.23` (`env-filter`, `fmt`), `clap 4.6.7`, `serde`, `serde_json`, `toml 1.1.8`, `dirs 7.0.0` (caret), dev `tempfile 3.27.0`, dev `serial_test =4.0.1`; `windows-acl =0.3.0`, target-gated to Windows, for the owner-only ACL helper; `gix =0.89.0`, default features off, for project-local trust classification and the ledger's remotes); `rust/deny.toml` (cargo-deny config: license allowlist compatible with Apache-2.0 distribution; Llama-licensed model weights are downloaded at runtime, not a crate dependency); `rust/rust-toolchain.toml`; crate skeletons for every `rust/fontaine-*` crate; `rust/fontaine/src/{main,lib}.rs` (`lib.rs` holds the logic, `main.rs` is thin);
+`rust/fontaine/src/telemetry/mod.rs`; `rust/fontaine-core/src/{config,dirs,permission_rules,trust,credentials,tier}.rs`; `rust/fontaine-guardian/src/rule_label.rs`; `evals/` (dataset + README.md); `rust/fontaine-evals/src/{main,lib}.rs` (runner; `lib.rs` holds the logic); `CHANGELOG.md`; `CONTRIBUTING.md`; `SECURITY.md`;
 `docs/{index,architecture,configuration}.md`; `README.md`; `rust/fontaine-core/tests/{config,docs}.rs`; `.github/workflows/ci.yml`.
 
 ## Tests owned by this phase
@@ -86,15 +86,14 @@ scorecard is the differentiating asset, so its harness is built first, not last.
   rejected from project scope; unparseable rule strings rejected; `default_mode = "auto"` rejected (exit 2) from user and CLI scope until Phase 4, and always from project and project-local scope.
 - **project-local trust classification** (`gix`, temp git repos): an untracked `settings.local.toml` and an ignored one load as user trust; a tracked one loads as project scope; a directory with no `.git` loads as project scope; a repo config with `core.fsmonitor` set to a canary command never executes it.
 - **dirs**: `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR` override the `dirs` defaults (all tests use temp
-  dirs); owner-only files are 0600 on Unix and current-user-only on Windows (`#[cfg(windows)]` ACL test, compile-checked locally with the windows-gnu target and executed in the windows CI job).
+  dirs; env-mutating tests here and in the telemetry-config bullet are `#[serial]` (`serial_test`) in their own test binary, since edition 2024 makes `set_var` unsafe); owner-only files are 0600 on Unix and current-user-only on Windows (`#[cfg(windows)]` ACL test, compile-checked locally with the windows-gnu target and executed in the windows CI job).
 - **credentials lookup**: account entries and the telemetry entry round-trip from a temp `credentials.toml`; a missing file or entry yields no credential; the file is owner-only.
 - **trust store**: trust recorded for one root does not trust another; the record is written under
   the data dir, never inside the workspace.
 - **telemetry config**: every `[telemetry]` key rejected from project and project-local scope except
   `enabled = false`; `enabled = true` without `endpoint`, or without a resolvable ingestion key (no
   `api_key_env` and no stored credential, or the named env var unset/empty), is a config error (exit
-  2); disabled means no exporter — with `enabled = false` nothing is built even when
-  `MICROMEGAS_TELEMETRY_URL` / `OTEL_EXPORTER_OTLP_ENDPOINT` are set.
+  2).
 - Golden-dataset schema validation; runner green against verdict fixtures; fixture mode exits 1 on a schema-invalid case or a `fixture_verdict` / `expected` mismatch.
 - **docs** (`rust/fontaine-core/tests/docs.rs`, run by `cargo test`): the contract in `tasks/design/testing.md` Testing Strategy, docs bullet.
 

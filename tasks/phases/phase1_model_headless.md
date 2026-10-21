@@ -92,8 +92,8 @@ upstream builder knob.
    | `--max-turns <n>` / `--max-budget-usd <x>` | stop the run with `result.subtype` `error_max_turns` / `error_max_budget`, exit 1; a budget with no known price for a configured model is a usage error (exit 2) | 1 |
    | `--json-schema <file>` | structured final output via rig `structured_output`, in `result.structured_output` | 1 |
    | `--system-prompt <text>` / `--append-system-prompt <text>` | replace the base system prompt / append after all other layers (layering in Phase 2 step 2) | 1 |
-   | `--settings <file>` | CLI-scope settings overlay (`tasks/design/config.md` §Config scope stack) | 1 |
-   | `--debug-file <path>` | local debug log (owner-only), `FONTAINE_LOG` filter | 1 |
+   | `--settings <file>` | CLI-scope settings overlay (`tasks/design/config.md` §Config scope stack) | 0 |
+   | `--debug-file <path>` | local debug log (owner-only), `FONTAINE_LOG` filter | 0 |
    | `--add-dir <path>` | extra workspace root | 2 |
    | `--allowed-tools <rule>…` / `--disallowed-tools <rule>…` | CLI-scope `[permissions] allow` / `deny` rules in the `Tool(specifier)` grammar | 3 |
    | `--session-id <uuid>` | use this session id (ledger, audit log, telemetry) | 2 |
@@ -123,7 +123,7 @@ upstream builder knob.
 
 ## Files created or modified
 
-`rust/Cargo.toml` (rig + telemetry pins — `rig-core` with `reqwest`, dev `rig-core`/`rig-agent` with `test-utils`, dev `rig-cassette` with `http`; `jsonschema` and `serial_test` dev-dependencies; new crates: `wiremock =0.6.5` (dev), `rpassword 7.5.4` (hidden `auth login` prompt), `uuid 1.28.0` with the `v4` feature (session ids); clap/tokio/serde/toml are 1.x and use caret); `rust/fontaine-core/src/models.rs`; `rust/fontaine-core/src/credentials.rs` (adds the writer for `auth login`); `rust/fontaine/src/{main,lib,headless}.rs`
+`rust/Cargo.toml` (rig + telemetry pins — `rig-core` with `reqwest`, dev `rig-core`/`rig-agent` with `test-utils`, dev `rig-cassette` with `http`; `jsonschema` dev-dependency; new crates: `tokio` (caret), `wiremock =0.6.5` (dev), `rpassword 7.5.4` (hidden `auth login` prompt), `uuid 1.28.0` with the `v4` feature (session ids)); `rust/fontaine-core/src/models.rs`; `rust/fontaine-core/src/credentials.rs` (adds the writer for `auth login`); `rust/fontaine/src/{main,lib,headless}.rs`
 (`main.rs` thin; `lib.rs` holds the logic the integration tests import; `-p` flag wiring, I/O contract); `rust/fontaine/src/telemetry/{micromegas,otlp,span_bridge}.rs`;
 `rust/fontaine/tests/{headless_smoke,headless_contract,telemetry_micromegas,telemetry_otlp}.rs`;
 `docs/schemas/headless-v1.schema.json`; `rust/fontaine-core/tests/{models,accounts}.rs`; `rust/fontaine/tests/common/mod.rs` (shared scripted-wiremock helper);
@@ -161,7 +161,7 @@ upstream builder knob.
   pair per span with `parent_span_id` equal to the parent's `span_id` (0 at the root), `depth` + 1 per
   level, and the span fields as end-event properties; a wiremock OTLP endpoint receives protobuf on
   `/v1/traces` (parentage intact) and `/v1/metrics`; the canary test (prompt and response legs: no
-  content without the opt-in keys, and credential-shaped strings redacted even with them); a black-hole exporter: `-p` exits within the flush cap with the
+  content without the opt-in keys, and credential-shaped strings redacted even with them); with `enabled = false` nothing is built even when `MICROMEGAS_TELEMETRY_URL` / `OTEL_EXPORTER_OTLP_ENDPOINT` are set; a black-hole exporter: `-p` exits within the flush cap with the
   same result as telemetry off.
 
 ## Definition of done

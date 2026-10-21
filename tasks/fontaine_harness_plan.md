@@ -102,7 +102,7 @@ sits directly under `rust/`** — the root directories are only `rust/`, `evals/
 fontaine/
 ├── rust/
 │   ├── rust-toolchain.toml     # channel = "1.97.1" (rig 0.45.0 `rust-version`)
-│   ├── Cargo.toml              # workspace root (`[workspace] members = ["*"]`, `exclude = ["target", ".*"]`, resolver = "2",
+│   ├── Cargo.toml              # workspace root (`[workspace] members = ["*"]`, `exclude = ["target", ".cargo", ".fontaine", ".config", ".claude"]`, resolver = "2",
 │   │                           #   workspace.package: edition 2024, rust-version 1.97.1); rig crates pinned to exact versions
 │   ├── fontaine/               # bin + lib crate (logic in `src/lib.rs`, thin `src/main.rs`): CLI (clap), wires core+tui, `-p` headless from Phase 1,
 │   │                           #   owns the tracing subscriber + telemetry export (`src/telemetry/`)
