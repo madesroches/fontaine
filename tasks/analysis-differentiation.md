@@ -8,7 +8,7 @@ Date: 2026-10-20. Companion to `tasks/fontaine_harness_plan.md`.
 LLM guardian the user can inspect, configure in prose, run locally, and audit — i.e., Claude Code's
 auto mode as an open standard rather than an Anthropic service.**
 
-## Differentiation axes (each verified against analysis-01/02)
+## Differentiation axes (each verified against analysis-competitive-landscape + analysis-guardian-market)
 
 ### 1. Open guardian vs closed classifier — the auditability argument
 - Claude Code's classifier and Codex's reviewer are closed-model, server-side, tuned on vendor telemetry.
@@ -127,4 +127,4 @@ retired as a museum exhibit; the lineage continues as LazyCodex / Gajae-Code). T
 **The moat is thin but real, and it is three things**: (1) the published eval/scorecard + prompt
 asset (community-standard potential), (2) the architectural choke point done rigorously, (3) being
 first open in the cell. None of these survive passive maintenance; all of them compound if the
-eval harness becomes the thing other projects adopt to *test their own* guardians. See analysis-05.
+eval harness becomes the thing other projects adopt to *test their own* guardians. See analysis-strategic-verdict.

@@ -1,13 +1,13 @@
 # Analysis 05 — Strategic Verdict and Recommendations
 
-Date: 2026-10-20. Synthesis of analyses 01–04 (`tasks/analysis-01..04*.md`), applied to
+Date: 2026-10-20. Synthesis of the four analysis docs (`tasks/analysis-*.md`), applied to
 `tasks/fontaine_harness_plan.md`.
 
 ## Verdict
 
 **Proceed — but re-scoped.** The plan targets a genuinely empty cell (open × any-model ×
 harness-native LLM guardian × auditable prose rules): no product occupies it as of Oct 2026.
-However, the cell is narrow, undefended by architecture alone, and the analysis-04 kill list shows
+However, the cell is narrow, undefended by architecture alone, and the analysis-devils-advocate kill list shows
 the window is measured in **months, not years**. Fontaine wins only under one strategy:
 **be the open reference implementation and eval standard for guardian-adjudicated tool calls**,
 not "another Rust coding agent with a cool feature."

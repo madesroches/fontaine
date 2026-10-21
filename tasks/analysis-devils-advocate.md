@@ -141,5 +141,5 @@ doesn't stop rig-harness from building on rig's momentum.
 No kill is total: KILL #1–2 leave the open/local/auditable niche unclaimed *today*; KILL #3 argues
 for shipping evals first, not for not shipping; KILL #4–6 are layer-confusion arguments (gateway ≠
 tool-call intent; sandbox ≠ judgment; LlamaFirewall ≠ harness); KILL #7–8 are timeline bets.
-The honest synthesis is in analysis-05: the niche is real, narrow, and defended only by speed,
+The honest synthesis is in analysis-strategic-verdict: the niche is real, narrow, and defended only by speed,
 published evals, and becoming the *standard* the others integrate — never by existing.

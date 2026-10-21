@@ -46,9 +46,9 @@ User decisions already made:
 Repo `/home/mad/fontaine` is on branch `start` (not `main`); its history so far is this plan, the
 five analysis docs, the LlamaFirewall deep-dive, and review/fact-check passes on this branch. No
 Rust code exists yet — the implementation is greenfield. `tasks/` holds six companion docs that are this plan's precedent and inputs:
-`analysis-01-competitive-landscape.md` (market/permission-story survey),
-`analysis-02-guardian-market.md`, `analysis-03-differentiation.md`,
-`analysis-04-devils-advocate.md` (kill criteria), `analysis-05-strategic-verdict.md` (verdict and
+`analysis-competitive-landscape.md` (market/permission-story survey),
+`analysis-guardian-market.md`, `analysis-differentiation.md`,
+`analysis-devils-advocate.md` (kill criteria), `analysis-strategic-verdict.md` (verdict and
 "Required plan amendments" A1–A5, which this plan incorporates), and
 `research-llamafirewall.md` (deep-dive on the nearest open prior art).
 
@@ -761,7 +761,7 @@ audit entries) are listed per row, so a background subagent never hides an appro
    `release_agent`, bind-mount symlink escape → deny/escalate; routine in-container workspace ops
    → proceed); runner scores any guardian model config;
    CI runs it against a mock provider (verdict fixtures) so it is green before the guardian
-   exists. Per analysis-05 amendment A1: the public guardian scorecard is the differentiating
+   exists. Per analysis-strategic-verdict amendment A1: the public guardian scorecard is the differentiating
    asset — its harness is built first, not last.
 
 **Phase 1 — model layer + headless surface (mostly dependency wiring)**
@@ -818,7 +818,7 @@ audit entries) are listed per row, so a background subagent never hides an appro
     (same golden set + escape-focused additions; a profile ships only once it is scored, KILL #3
     framing inherits). The guardian never ships un-scored — a bypass
     found by Fontaine's own public eval is a credibility event; the same bypass found externally is
-    the kill event (analysis-05 amendment A1, mitigating KILL #3).
+    the kill event (analysis-strategic-verdict amendment A1, mitigating KILL #3).
 
 **Phase 5 — extensibility**
 13. `fontaine-mcp` (rig-rmcp): stdio + streamable-HTTP servers from config; MCP tools registered
@@ -833,7 +833,7 @@ audit entries) are listed per row, so a background subagent never hides an appro
     with one-way mode inheritance (child mode ≤ parent mode); agent-to-agent messages through the
     same guardian gate; results routed through the tool-result scanner; `[agents]` budgets
     enforced; TUI background-agents panel (status, kill/pause, per-agent decisions).
-- Roadmap slot (analysis-05 amendments A3–A4, folded into the plan per user decision 2026-10-21):
+- Roadmap slot (analysis-strategic-verdict amendments A3–A4, folded into the plan per user decision 2026-10-21):
   a **sandbox-interop spike + `docs/sandboxing.md`** integration path for running Fontaine under
   Anthropic's open-source `@anthropic-ai/sandbox-runtime` (srt) / bubblewrap — complements, does
   not replace, the guardian (sandbox = blast radius, guardian = intent). Fontaine-verified srt/
@@ -928,14 +928,14 @@ No `fontaine-llm` crate — the model layer is rig.
 ## Risk Gates (pre-committed kill criteria)
 
 Abandon or pivot fontaine-the-harness (keeping fontaine-guardian-the-library) if any of the
-following fires — transcribed from `analysis-05-strategic-verdict.md` ("Kill criteria"), which
+following fires — transcribed from `analysis-strategic-verdict.md` ("Kill criteria"), which
 carries the reasoning:
 
 - OpenCode, Goose, or the claw-code lineage's active successors (LazyCodex / Gajae-Code) ship a
   first-party LLM-guardian permission backend **with published evals** before Fontaine's eval
   harness is public.
 - A public red-team bypass of Fontaine's guardian cannot be closed within one release cycle
-  (analysis-04 KILL #3 — mitigated by the eval-first sequencing already built into Phase 0/4).
+  (analysis-devils-advocate KILL #3 — mitigated by the eval-first sequencing already built into Phase 0/4).
 - rig adopts a permission-adjudication API and refuses upstream collaboration (KILL #8 becomes
   fatal rather than convertible).
 - Eval results show the best local guardian models cannot clear a credible bar (e.g. <60% catch
@@ -985,11 +985,11 @@ carries the reasoning:
 - 2026-10-21: default tool-result scanner = PromptGuard 2 (ONNX); cheap-LLM pass fallback;
   Llama 4 Community License gated-download caveat surfaced at first enable; BYO-scanner interface
   for license-clean setups. (User decision.)
-- 2026-10-21: fold analysis-05 amendments A3 (sandbox interop: srt/bubblewrap spike +
+- 2026-10-21: fold analysis-strategic-verdict amendments A3 (sandbox interop: srt/bubblewrap spike +
   `docs/sandboxing.md`, Phase 5 roadmap slot) and A4 (dependency-light, lift-out-able
   `fontaine-guardian` crate) into the roadmap. (User decision.)
 - 2026-10-21: revisit core-vs-rig split if rig ships a permission-adjudication API (rig-harness
-  contingency, analysis-05 A4).
+  contingency, analysis-strategic-verdict A4).
 - 2026-10-21: design tie-breaker — when in doubt, do as Claude Code does: at analogous design
   points (permission modes, fail-closed behavior, escalation UX, config trust asymmetry, read-only
   skipping, deny-with-explanation) Fontaine copies Claude Code's documented semantics; any

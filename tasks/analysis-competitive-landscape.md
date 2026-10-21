@@ -6,7 +6,7 @@ Date: 2026-10-20. Companion to `tasks/fontaine_harness_plan.md`. Sources: web re
 
 Who competes with Fontaine **as a terminal AI coding agent**, and what their permission/safety
 story is. The guardrail-runtime market (LlamaFirewall, proxies, MCP scanners) is covered in
-`analysis-02`; that market is where the "does this make Fontaine useless" threat actually lives.
+`analysis-guardian-market`; that market is where the "does this make Fontaine useless" threat actually lives.
 
 ## The field (Oct 2026)
 
@@ -39,7 +39,7 @@ story is. The guardrail-runtime market (LlamaFirewall, proxies, MCP scanners) is
 - **Critical data point**: PromptArmor demonstrated the auto-review agent **approving a malicious
   npm install with elevated privileges via indirect prompt injection**, and separately got Codex to
   exfiltrate connector data. (promptarmor.com/resources/agentic-auto-review-approves-malware)
-  → The guardian-agent pattern is real but **breakable**; see analysis-04.
+  → The guardian-agent pattern is real but **breakable**; see analysis-devils-advocate.
 - Limits: the reviewer's **model** is OpenAI-only and never runs locally. The reviewer's
   implementation and policy are open source in the Codex repository itself — alignment.openai.com/auto-review:
   "Auto-review is open source in the Codex repository"; the policy lives in-tree as `policy_template.md` /
@@ -60,7 +60,7 @@ morphllm.com/comparisons/opencode-vs-goose)
   (agent37.com/blog/opencode-sandbox)
 - **Plugin ecosystem exists** — e.g. `opencode-allowlist` auto-approves file access from config.
   A "guardian plugin" for OpenCode is a weekend project for someone. ← biggest structural threat,
-  expanded in analysis-04.
+  expanded in analysis-devils-advocate.
 - Community friction signal: multiple reports of permissions not behaving as configured
   (github.com/anomalyco/opencode/issues/45059; reddit r/opencodeCLI "Cannot figure out
   permissions").
@@ -133,4 +133,4 @@ exact pitch Fontaine's model-agnostic story competes with, minus the guardian. D
 4. **The cell is undefended.** It's empty because nobody shipped it yet, not because it's hard to
    enter. OpenCode's plugin API, Goose's extensions, and the claw-code lineage's momentum (now
    active as LazyCodex / Gajae-Code) are all one PR away
-   from filling it. Time-to-market and eval quality are the only durable claims. (See analysis-04.)
+   from filling it. Time-to-market and eval quality are the only durable claims. (See analysis-devils-advocate.)

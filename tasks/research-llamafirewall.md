@@ -1,6 +1,6 @@
 # Research — LlamaFirewall (full deep-dive)
 
-Date: 2026-10-20. Fills the gap flagged in `analysis-05` amendment A2, which noted that the
+Date: 2026-10-20. Fills the gap flagged in `analysis-strategic-verdict` amendment A2, which noted that the
 plan's research section cited GuardAgent/CaMeL/AgentDojo but never mentioned Meta's LlamaFirewall.
 Primary sources: arXiv:2505.03574 (the paper), github.com/meta-llama/PurpleLlama/tree/main/LlamaFirewall
 (README + LICENSE + commit history via GitHub API), meta-llama.github.io/PurpleLlama/LlamaFirewall
@@ -179,7 +179,7 @@ job — but the public will conflate them, so the plan must articulate this cris
   Mozilla.ai `any-guardrail` wraps PromptGuard 2, gateway products (Gravitee) embed it.
   **PromptGuard 2 has become infrastructure; LlamaFirewall-the-framework has not.**
 
-Implication for `analysis-04` KILL #5: the "LlamaFirewall becomes the standard integration"
+Implication for `analysis-devils-advocate` KILL #5: the "LlamaFirewall becomes the standard integration"
 scenario is **weaker than feared** — Meta shipped components, not a standard, and stopped
 investing. The residual risk is the *models* becoming the default scanners everyone embeds
 (which we should embrace, not fight), and Meta reviving the framework if agent security becomes

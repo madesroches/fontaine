@@ -137,7 +137,7 @@ weights** (docs.typesafe.ai) — the fast/cheap option, not the air-gapped one.
   outputs — a decision model is an attack surface like any other.
 - **Market reading**: this is the segment **between static regex lists and LLM judges** — exactly the
   price/latency point agent harnesses need; expect it to be absorbed into harnesses fast (see the
-  plugin evidence in analysis-04).
+  plugin evidence in analysis-devils-advocate).
 
 ## Market map conclusion
 
@@ -155,6 +155,6 @@ weights** (docs.typesafe.ai) — the fast/cheap option, not the air-gapped one.
 **Nobody sells the open harness-native guardian.** The nearest substitutes require assembly
 (LlamaFirewall + a harness plugin, or a typed-decision model — Jev/Laya — bolted on as the fast
 screen) or operate at a layer that structurally cannot judge tool-call intent (proxies, sandboxes).
-That assembly risk is quantified in analysis-04. The new decision-model segment (F) sharpens rather
+That assembly risk is quantified in analysis-devils-advocate. The new decision-model segment (F) sharpens rather
 than fills the open cell: Jev is hosted-only, and Laya/DiffusionGemma ship a verdict without harness
 UX or prose explanations — so the empty **open harness-native guardian** row remains empty.
