@@ -13,12 +13,26 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    and `rust-version = "1.97.1"`, and `rust/rust-toolchain.toml` pins channel ≥ 1.97.1 to match rig
    0.45.0; CI installs that toolchain), crate skeletons under `rust/`
    (`fontaine`, `fontaine-core`, `fontaine-tools`, `fontaine-guardian`, `fontaine-agents`,
-   `fontaine-mcp`, `fontaine-tui`), `clap` CLI entry (`fontaine`), tracing setup, CI
+   `fontaine-mcp`, `fontaine-tui`), `clap` CLI entry (`fontaine`), tracing facade (below), CI
    (`.github/workflows/ci.yml`, GitHub Actions, from `rust/`: `cargo fmt --check`,
    `cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run from
    step 2), config loading (`fontaine-core/src/config.rs`) with the schema in the master plan's
-   §Config, rejecting every user-scope-only key from project scope per its scope table; the workspace is the
-   canonicalized launch cwd and project config is read only from `<workspace>/.fontaine/settings.toml`.
+   §Config as the settings scope stack: reserved managed slot (empty), CLI `--settings` overlay,
+   project-local `.fontaine/settings.local.toml` (user trust only while `git` reports it untracked
+   or ignored; otherwise project scope), project `.fontaine/settings.toml`, user file; scalars by
+   precedence, lists by union; every key a scope may not set (per the master scope table, incl.
+   project `default_mode` limited to `manual`/`plan`/`dontAsk`) rejected at load. The primary
+   workspace root is the canonicalized launch cwd; config is read only from it. Rule strings in
+   `[permissions] deny`/`ask`/`allow` are parsed into the `Tool(specifier)` grammar at load
+   (`fontaine-core/src/permission_rules.rs`; an unparseable rule is a config error, exit 2; matching
+   lands in Phase 3). Workspace trust store (`fontaine-core/src/trust.rs`): read/write
+   `<user data dir>/fontaine/trust.toml` keyed by canonical root, and an `is_trusted(root)` query the
+   Phase-5 loaders of project executables call. Tracing facade
+   (`rust/fontaine/src/telemetry/mod.rs`): the `tracing_subscriber` registry, the `--debug-file` /
+   `FONTAINE_LOG` layer (0600), an inert export slot filled in Phase 1, a `fontaine.session` span;
+   `[telemetry]` parsed with its scope rule (project scopes may only set `enabled = false`) and its
+   required-inputs rule (`enabled = true` needs `endpoint` and an ingestion key — `api_key_env` or a
+   stored credential; either missing is a config error, exit 2).
 2. Eval golden-dataset scaffolding + CI runner skeleton (`evals/`): dataset format (~150+ cases:
    benign dev commands, each seeded attack class from Claude Code's default-block list, injection
    attempts *inside tool args*, ambiguous intent cases, Tier-0.5 adversarial shell cases — see
@@ -39,7 +53,9 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    all prose, structured one-topic-per-page with relative cross-links so it can be lifted into a
    website later; no site tooling in v1): `docs/index.md` (landing/TOC), `docs/architecture.md`
    seeded with the workspace map + crate responsibilities, and `docs/configuration.md` seeded
-   from the step-1 config schema (every key: meaning, user-vs-project scope, default). Also
+   from the step-1 config schema (every key: meaning, per-scope settability, default), the settings
+   scope stack and its merge rules, workspace trust, and `[telemetry]` (off by default; enabling
+   requires the ingestion URL and key). Also
    `evals/README.md` defining the golden-dataset format — the dataset is a public asset shipping
    with the scorecard, so its format doc lands with it. Root `README.md` stays the thin front
    door (pitch, install, quickstart — the quickstart leads with a local Ollama agent + guardian
@@ -50,18 +66,29 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 ## Files created or modified
 
 `rust/Cargo.toml`; `rust/rust-toolchain.toml`; crate skeletons for every `rust/fontaine-*` crate; `rust/fontaine/src/main.rs`;
-`rust/fontaine-core/src/config.rs`; `evals/` (dataset + README.md); `rust/fontaine-evals/` (runner); `CHANGELOG.md`; `CONTRIBUTING.md`;
+`rust/fontaine/src/telemetry/mod.rs`; `rust/fontaine-core/src/{config,permission_rules,trust}.rs`; `evals/` (dataset + README.md); `rust/fontaine-evals/` (runner); `CHANGELOG.md`; `CONTRIBUTING.md`;
 `docs/{index,architecture,configuration}.md`; `README.md`; `.github/workflows/ci.yml`.
 
 ## Tests owned by this phase
 
 - **config** (master Testing Strategy): workspace = canonicalized launch cwd; project config
-  discovered only at `<workspace>/.fontaine/settings.toml` (a settings file in a parent directory is
+  discovered only at `<workspace>/.fontaine/settings{,.local}.toml` (a settings file in a parent directory is
   ignored); precedence, project-can-only-tighten enforcement —
   including that `[guardian] profile` is rejected from project scope (user-scope only, it is a
   loosening knob) and only `full`/`minimal` validate: no config value disables the guardian. Every user-scope-only key in the master §Config scope
   table (`[accounts]`, `[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets,
-  `[agents.types]`, …) is rejected from project scope.
+  `[agents.types]`, …) is rejected from project scope. Scope stack: CLI > project-local > project
+  > user precedence for scalars and union for lists; a tracked `settings.local.toml` loads as project
+  scope; endpoint/credential keys rejected from project-local; project `default_mode = "plan"`
+  accepted, `"auto"`/`"acceptEdits"` rejected; `[permissions] allow` / `additional_directories`
+  rejected from project scope; unparseable rule strings rejected.
+- **trust store**: trust recorded for one root does not trust another; the record is written under
+  the user data dir, never inside the workspace.
+- **telemetry config**: every `[telemetry]` key rejected from project and project-local scope except
+  `enabled = false`; `enabled = true` without `endpoint`, or without a resolvable ingestion key (no
+  `api_key_env` and no stored credential, or the named env var unset/empty), is a config error (exit
+  2); disabled means no exporter — with `enabled = false` nothing is built even when
+  `MICROMEGAS_TELEMETRY_URL` / `OTEL_EXPORTER_OTLP_ENDPOINT` are set.
 - Golden-dataset schema validation; runner green against verdict fixtures.
 
 ## Definition of done
@@ -70,6 +97,9 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 - `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` (from `rust/`)
   passes on the fixture set, offline, with no guardian in the tree.
 - `docs/index.md`, `docs/architecture.md`, `docs/configuration.md`, `evals/README.md` exist with
-  real content (no TODO placeholders), links resolve.
+  real content (no TODO placeholders), links resolve; `docs/configuration.md` covers the scope
+  stack, workspace trust and `[telemetry]` (incl. its required endpoint and key).
+- The config, trust-store and telemetry-config tests above are green; no exporter is built in this
+  phase.
 - `CHANGELOG.md` exists with the Phase 0 entry; `CONTRIBUTING.md` exists.
 - Log the phase in the master plan's Progress log.

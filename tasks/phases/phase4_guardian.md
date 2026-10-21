@@ -39,19 +39,24 @@ asks** — no silent substitution. For providers with no catalog match (custom o
 endpoints / Ollama): only models explicitly set via `guardian.model` are used; if unset, fall back
 to the main model with a one-time notice.
 
-**Adjudication request** (what the guardian sees — mirrors Claude Code's classifier inputs):
+**Adjudication request** (what the guardian sees — mirrors Claude Code's classifier inputs). Built
+only from the session ledger (master §Session ledger) — never from rig-memory context, so a
+compaction summary or any other model-written text never reaches the guardian as intent:
 
 ```rust
 pub struct AdjudicationRequest {
-    pub task_intent: String,          // latest user message(s) + session goal summary
-    pub recent_user_messages: Vec<String>, // user turns only — NOT tool outputs
+    pub task_intent: String,          // latest user message(s), verbatim from the ledger; trimmed
+                                      //   to budget by dropping the oldest, never summarized
+    pub recent_user_messages: Vec<String>, // user turns only, from the ledger — NOT tool outputs
     pub project_instructions: Option<String>, // FONTAINE.md (equivalent of CLAUDE.md)
     pub environment: EnvironmentConfig,     // prose trust slots (see master §Config)
     pub rules: RuleConfig,                  // hard_deny / soft_deny / allow prose lists
     pub tool_call: ToolCallSummary,         // tool name, full args, description written by agent
-    pub session_facts: SessionFacts,        // cwd, git remotes at session start, files that
-                                            //   existed before session (for destruction checks),
-                                            //   actions already taken this session (compact list)
+    pub session_facts: SessionFacts,        // workspace roots, workspace trust state, git remotes
+                                            //   at session start, files that existed before session
+                                            //   (for destruction checks), actions already taken
+                                            //   this session (compact list) — all from the ledger
+    pub hook_context: Vec<String>,          // PreToolUse `guardian_context` notes, untrusted-delimited
     pub prior_denials: Vec<DenialRecord>,   // reason-coded denials this session (loop detection)
 }
 ```
@@ -139,7 +144,13 @@ mode is not resurrected here; minimal adjudicates, just less):
    lists seeded from Claude Code's published defaults); timeout, verdict cache, consecutive-denial
    loop breaker; `rig_core::redact` applied to anything credential-shaped in adjudication inputs.
 2. Wire `auto` mode into the pipeline (fills pipeline branches 7 and 9); denial reason →
-   tool_result; denial records; parallel adjudication of batched tool calls. Shipped default mode
+   tool_result; denial records (to the ledger and audit log); parallel adjudication of batched tool
+   calls; the request builder reads only the ledger. Allow rules in `auto` (master §Permission rules):
+   narrow rules skip the guardian; on entering `auto` the broad code-execution rules are suspended
+   for as long as the mode is on and listed (TUI notice, headless `init` event). Telemetry: a
+   `fontaine.guardian` span in `fontaine-guardian` (which depends on `tracing` only), guardian model
+   usage attributed `query_source = guardian` through its ancestor span, and
+   `fontaine.guardian.fail_closed.count` by reason. Shipped default mode
    flips `manual` → `auto` here. Headless `-p` semantics for `auto`: Escalate and
    loop-breaker outcomes become Deny returned to the agent; the run continues.
 3. TUI denial UX: inline denial rendering, `/denied` retry list, `/permissions` rule editor,
@@ -174,7 +185,8 @@ mode is not resurrected here; minimal adjudicates, just less):
    LlamaFirewall prompts if mined). Publish the scorecard as `docs/evals.md` (per-model table +
    `minimal` column), linked from `docs/index.md`. Extend `docs/tui.md` with the denial UX
    (`[Rule]` + explanation rendering, `/denied` retry, loop-breaker notice), `docs/permissions.md`
-   with `auto` and the `[auto_mode]` prose lists, and `docs/configuration.md` with every
+   with `auto`, the `[auto_mode]` prose lists and allow-rule suspension in `auto`,
+   `docs/telemetry.md` with the guardian span and metrics, and `docs/configuration.md` with every
    `[guardian]`/`[auto_mode]` key; turn the README auto-mode explainer from stub to real; append a CHANGELOG entry.
 
 ## Files created or modified
@@ -183,7 +195,7 @@ mode is not resurrected here; minimal adjudicates, just less):
 `rust/fontaine-guardian/prompts/guardian_prompt.md`; `rust/fontaine-core/src/permissions.rs`
 (auto branch); `rust/fontaine-core/src/containment.rs`; `rust/fontaine-tui/src/{denials,approval}.rs`;
 tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/fontaine/tests/`,
-`rust/fontaine-tui/tests/`; `docs/{guardian,evals,tui,permissions,configuration,index}.md`;
+`rust/fontaine-tui/tests/`; `docs/{guardian,evals,tui,permissions,configuration,telemetry,index}.md`;
 `README.md`; scorecard output under `evals/`.
 
 ## Tests owned by this phase
@@ -205,6 +217,14 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   (denies in `dontAsk`); plan mode's step-9 consequential calls (write-capable `shell`, webfetch,
   out-of-scope reads, MCP) reach the guardian while edits stay blocked regardless of verdict —
   replacing Phase 3's interim prompt assertions.
+- **allow rules in auto** (`permissions_auto.rs`): a narrow `shell(npm test)` rule ⇒ zero guardian
+  calls and an `allow_rule` audit record; bare `shell`, `shell(python *)`, `shell(npm run *)` and
+  bare `agent` are suspended (guardian called) and listed on entering `auto`; leaving `auto`
+  restores them; a narrow allow rule never passes an `ask` rule or critical path in `auto`.
+- **ledger-only request**: after a compaction whose summary carries a canary instruction, the
+  `AdjudicationRequest` holds the verbatim user messages and no canary text.
+- **telemetry**: guardian verdicts match bit-for-bit between telemetry off and a failing exporter;
+  timeout, unparseable and 500 fail-closed reasons are each counted once.
 - **TUI** (`rust/fontaine-tui/tests/`): `TestBackend` with injected key events and a scripted
   model — `/denied` lists a denied action and `r` injects the retry notice into the agent's next
   turn; the Shift+Tab cycle now includes `auto`.
@@ -219,7 +239,8 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
 
 - Offline gates (no keys, no human): `cargo fmt` / `cargo clippy --all-targets -- -D warnings` /
   `cargo test` green, including scripted-endpoint auto-mode runs, the fail-closed tests, the Tier-0.5
-  counting-guardian test, the ask-in-auto and plan-mode guardian-branch pipeline tests, and the
+  counting-guardian test, the ask-in-auto and plan-mode guardian-branch pipeline tests, the
+  allow-rules-in-auto and ledger-only request tests, and the
   TUI `/denied` test; shipped default mode is `auto`; CHANGELOG entry appended.
 - Needs live keys and/or a human (explicitly not CI): Manual Verification items 2–4 (auto-mode
   judgment, retry UX, Ollama model-agnostic parity); the live-model scorecard run and its

@@ -24,8 +24,12 @@ guardian against any model.
 
 ratatui + crossterm, codex-rs-style: transcript pane (streaming assistant text, collapsed tool
 calls), input box, status bar showing mode (`⏵⏵ auto mode on`). Approval prompt widget for
-manual/escalate (allow once / allow session / deny + feedback). `/permissions` edits rules;
-`/model` switches live; Shift+Tab cycles modes. (The denial UX — inline `[Rule]` rendering,
+manual/escalate (allow once / allow session / always allow / deny + feedback): "allow session" adds
+a session-scope grant to `SessionState` (recorded in the ledger); "always allow" shows the exact
+`Tool(specifier)` rule it will write and appends it to the user file's `[permissions] allow`; the
+proposed rule is the narrowest that covers the call (exact argv for `shell`, the resolved path for
+path tools, the host for `webfetch`). `/permissions` edits rules; `/add-dir <path>` adds a
+workspace root; `/model` switches live; Shift+Tab cycles modes. (The denial UX — inline `[Rule]` rendering,
 `/denied`, `/guardian-model` — is designed and built in Phase 4; the background-agents panel in
 Phase 5; see those plans.)
 
@@ -52,6 +56,21 @@ table against `claude -p` baselines (step 3) and record differences in Decisions
 
 `git` must have the subcommand as `argv[1]` (`git -c …` and `git -C …` fall through).
 
+### Permission rules and allow (pipeline steps 2 and 5a)
+
+The master plan's §Permission rules is the spec: one `Tool(specifier)` grammar (parsed at load since
+Phase 0) for deny/ask/allow; `shell` specifiers matched on the Tier-0.5 shlex-lexed argv — deny/ask
+as a prefix anywhere in the word stream and on any unlexable command containing the rule's first
+word, allow only on one simple command; path specifiers gitignore-style against scope-validator
+resolved paths; `webfetch(domain:)`; MCP names. Allow rules are step 5a, after the floor; the broad
+code-execution list that `auto` suspends is a shipped constant in `permission_rules.rs`, applied when
+Phase 4 wires `auto`. The pipeline also gets its step-1a slot: a `PreToolUseDecision` input
+(deny / ask / allow / `updated_input`) with the composition and failure rules of the master's §User
+hooks, driven in this phase only by test doubles — user hooks load in Phase 5.
+
+`GateDecision` is the one typed record per call: written to the audit log first, then projected to
+the `tool_decision` telemetry event and the headless `gate_decision` event.
+
 ## Steps
 
 1. `PermissionPipeline` with modes `manual`/`acceptEdits`/`plan`/`dontAsk` (`auto` wires in at
@@ -61,13 +80,17 @@ table against `claude -p` baselines (step 3) and record differences in Decisions
    deny in `dontAsk`/headless), in every mode, with shell commands lexed by the Tier-0.5 shlex lexer; steps 4–5:
    read-only fast path, then the Tier-0.5 shell pre-classifier with its curated set +
    per-command read-only flag allowlist (initial table above) + audit log, schema per the master
-   §Core data flow); human-approval callback trait.
+   §Core data flow); rule matching and allow rules (design above; `--allowed-tools` /
+   `--disallowed-tools` as CLI-scope rules); the step-1a hook-decision slot; `GateDecision` → audit
+   log, then `tool_decision` telemetry and the headless `gate_decision` event; `fontaine.permission`
+   and `fontaine.tool.blocked_on_user` spans, `permission_mode_changed` event; human-approval
+   callback trait.
    Plan mode's step-9 guardian leg falls through to the human prompt until the guardian ships.
    Interim default mode: `manual` — no auto without a guardian. Headless `-p` semantics for
    manual/dontAsk: every would-prompt outcome becomes a Deny returned to the agent and the run
    continues (master §Core data flow, Headless).
-2. `fontaine-tui`: transcript, streaming render, input, approval prompts, status bar, mode
-   cycling.
+2. `fontaine-tui`: transcript, streaming render, input, approval prompts (incl. allow session /
+   always allow), status bar, mode cycling, `/add-dir`.
 3. Differential baseline (manual/eval-side, never CI — see AGENTS.md): implement the `fontaine-evals`
    `baseline capture` / `baseline diff` subcommands (master Testing Strategy, Differential
    baselines) and run them for manual/acceptEdits/plan/dontAsk over the Tier-0.5 adversarial set and
@@ -75,18 +98,22 @@ table against `claude -p` baselines (step 3) and record differences in Decisions
    the captured `claude -p` behavior. Fix or record each divergence.
 4. Docs — `docs/permissions.md`: the mode table (`manual`/`acceptEdits`/`plan`/`dontAsk`, the
    interim default and its Phase-4 flip to `auto`), the deterministic floor (deny → ask →
-   critical-path with its rm/rmdir list, protected-path with its enumerated list), and the Tier-0.5 pre-classifier (curated set,
+   critical-path with its rm/rmdir list, protected-path with its enumerated list), the
+   `Tool(specifier)` rule grammar and allow rules (sources, step order, session vs always grants,
+   suspension of broad rules in `auto`), and the Tier-0.5 pre-classifier (curated set,
    per-command read-only flag allowlist, fail-through rule, `[shell_preclassifier] allow_extra` —
    user-scope only); complete the full permission-pipeline diagram in `docs/architecture.md`;
-   start `docs/tui.md` (keybinds incl. Shift+Tab, approval-prompt options); fill the README mode
+   start `docs/tui.md` (keybinds incl. Shift+Tab, approval-prompt options, `/add-dir`); add
+   `--allowed-tools` / `--disallowed-tools` and the `gate_decision` event to `docs/headless.md`; add
+   the `tool_decision` event and permission spans to `docs/telemetry.md`; fill the README mode
    table; append a CHANGELOG entry.
 
 ## Files created or modified
 
-`rust/fontaine-core/src/{permissions,audit}.rs`; `rust/fontaine-evals/src/baseline.rs`;
+`rust/fontaine-core/src/{permissions,permission_rules,audit}.rs`; `rust/fontaine-evals/src/baseline.rs`;
 `rust/fontaine-tui/src/{app,transcript,approval,statusbar}.rs`; tests under `rust/fontaine-core/tests/`,
 `rust/fontaine/tests/`, `rust/fontaine-tui/tests/`;
-`rust/fontaine/src/main.rs` (TUI wiring); `docs/{permissions,tui}.md`, `docs/architecture.md`,
+`rust/fontaine/src/main.rs` (TUI wiring); `docs/{permissions,tui,headless,telemetry}.md`, `docs/architecture.md`,
 `docs/index.md`, `README.md`.
 
 ## Tests owned by this phase
@@ -101,6 +128,20 @@ table against `claude -p` baselines (step 3) and record differences in Decisions
   mode; an `[permissions] ask` rule forces a prompt in `manual` and denies in `dontAsk`; every
   decision appends an audit record matching the master schema (`tier`, `decision`, `rule`,
   `args_digest`, `agent_id`).
+- **permission rules** (`rust/fontaine-core/tests/permission_rules.rs`): the master Testing Strategy
+  bullet minus the `auto` legs — grammar per tool kind; `shell` deny/ask hit compound, wrapped and
+  unlexable commands; `shell` allow never matches a compound command; resolved-path matching incl.
+  symlinks; `webfetch(domain:)` normalization; an allow rule never passes deny/ask/critical-path/
+  protected-path and never lets an edit run in `plan`; an allow rule pre-approves in `dontAsk` and
+  skips the prompt in `manual`; "allow session" lasts only for the session, "always allow" writes
+  exactly the shown rule to the user file; `--allowed-tools` / `--disallowed-tools` act as CLI rules;
+  a project-scope allow rule is rejected at load.
+- **hook slot**: with a test-double decision source, `updated_input` is what the floor, rules and
+  audit see; deny > ask > allow; an `allow` never passes the floor; error / timeout / malformed ⇒ no
+  decision.
+- **audit/telemetry consistency**: over the mode × risk-class matrix, each audit entry has exactly one
+  matching `tool_decision` event and one headless `gate_decision` event (same ids, tier, decision);
+  the audit log is still written when telemetry is off or disabled by the project.
 - **Tier 0.5 pre-classifier**: the golden adversarial set from master Testing Strategy — the
   fail-through soundness property must hold for anything not fully parsed as one simple command; each
   allowlist-table row (listed flags pre-classify, the excluded flags fall through); in-scope `ls` → no
@@ -118,8 +159,8 @@ table against `claude -p` baselines (step 3) and record differences in Decisions
 ## Definition of done
 
 - Offline gates (no keys, no human): `cargo fmt` / `cargo clippy --all-targets -- -D warnings` /
-  `cargo test` green, including the scripted-endpoint headless, pipeline, and TUI tests above; interim default is
-  `manual`; no mode reaches past the deterministic floor; `docs/permissions.md` + pipeline diagram
+  `cargo test` green, including the scripted-endpoint headless, pipeline, permission-rule, and TUI tests above; interim default is
+  `manual`; no mode or allow rule reaches past the deterministic floor; `docs/permissions.md` + pipeline diagram
   match the shipped step order; CHANGELOG entry appended.
 - Needs a human and live keys (not CI): Manual Verification item 1 passes (TUI manual approval
   flow, end to end); the first rig-cassette recording of a manual-mode session (once committed it

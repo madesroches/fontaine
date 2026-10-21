@@ -36,11 +36,14 @@ path — see the Phase 5 plan.
    `tokenizers = "=0.22.0"` (default features off) — confirm both resolve under the workspace
    toolchain when the step lands and pin the exact versions that do; both are optional dependencies
    of `fontaine-guardian` behind a `pg2` cargo feature so the crate stays dependency-light.
+   Telemetry: scanner verdict and latency on the `tool_result` event (`query_source = scanner` for
+   the cheap-LLM fallback's model usage).
 2. Docs — result scanning in `docs/guardian.md`: what the scanner flags, how the annotation
    reaches the agent, why off-by-default (latency), and that scanned results carry into the
    subagent-report path; write the gated-download / Llama 4 Community License caveat up beside
    the in-app first-enable notice; `docs/configuration.md` for `scan_tool_results`, the BYO
-   scanner interface, and the cheap-LLM fallback; append a CHANGELOG entry.
+   scanner interface, and the cheap-LLM fallback; the scanner fields in `docs/telemetry.md`; append
+   a CHANGELOG entry.
 
 ## Composite guardian — roadmap direction (Phase 6+)
 
@@ -53,7 +56,7 @@ master plan's §Composite guardian; v1's shipped spine — deterministic tiers +
 
 `rust/fontaine-guardian/src/scanner.rs`; `[guardian] scan_tool_results`, `scanner_model_path`,
 `scanner_hf_token_env` config plumbing
-(`rust/fontaine-core/src/config.rs`); `docs/{guardian,configuration}.md`.
+(`rust/fontaine-core/src/config.rs`); `docs/{guardian,configuration,telemetry}.md`.
 
 ## Tests owned by this phase
 
@@ -67,6 +70,7 @@ master plan's §Composite guardian; v1's shipped spine — deterministic tiers +
   points at a local model directory — never part of default CI; every other behavior (flag
   threshold, annotation, default-off, notice) is covered offline by the fake scanner.
 - License-notice path: first-enable notice fires exactly once per model download.
+- Telemetry: scanner verdict and latency present on `tool_result` and content-free.
 
 ## Definition of done
 

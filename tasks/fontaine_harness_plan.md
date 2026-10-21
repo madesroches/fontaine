@@ -51,12 +51,12 @@ product documentation lives under `docs/` (see §Documentation).
 
 | Phase | Plan | Scope | Status | Exit milestone |
 |-------|------|-------|--------|----------------|
-| 0 — scaffold (eval first) | [phases/phase0_scaffold.md](phases/phase0_scaffold.md) | Cargo workspace, crate skeletons, CLI entry, tracing, CI, config loading; eval golden-dataset + runner skeleton; `docs/` tree started | not started | CI green; eval runner green against verdict fixtures with no guardian in the tree |
-| 1 — model layer + headless | [phases/phase1_model_headless.md](phases/phase1_model_headless.md) | rig crates pinned; config → provider mapping; streaming spike; `fontaine -p`; provider docs | not started | `fontaine -p` streams a prompt plus a spike tool round-trip against a mock endpoint |
-| 2 — agent runtime & tools | [phases/phase2_runtime_tools.md](phases/phase2_runtime_tools.md) | RiskClass registry, GuardedTool (gate stubbed), rig-tools built-ins + read tools + webfetch, scope validator, confined rig tool config; rig-agent session orchestration; `docs/tools.md` | not started | agent runs tools end-to-end headless through wrapped registry; choke-point test green |
-| 3 — pipeline & manual TUI | [phases/phase3_pipeline_tui.md](phases/phase3_pipeline_tui.md) | PermissionPipeline (manual/acceptEdits/plan/dontAsk; deterministic floor; Tier-0.5; audit log); headless `-p` denial semantics for manual/dontAsk; ratatui TUI; `docs/permissions.md` + pipeline diagram | not started | **usable Claude-Code-like agent with manual approvals** |
+| 0 — scaffold (eval first) | [phases/phase0_scaffold.md](phases/phase0_scaffold.md) | Cargo workspace, crate skeletons, CLI entry, tracing facade + `[telemetry]` config, CI, settings scope stack + workspace trust store; eval golden-dataset + runner skeleton; `docs/` tree started | not started | CI green; eval runner green against verdict fixtures with no guardian in the tree |
+| 1 — model layer + headless | [phases/phase1_model_headless.md](phases/phase1_model_headless.md) | rig crates pinned; config → provider mapping; streaming spike; `fontaine -p` with the versioned headless I/O contract; telemetry backends (micromegas/OTLP) + `docs/telemetry.md`; provider docs | not started | `fontaine -p` streams a prompt plus a spike tool round-trip against a mock endpoint |
+| 2 — agent runtime & tools | [phases/phase2_runtime_tools.md](phases/phase2_runtime_tools.md) | RiskClass registry, GuardedTool (gate stubbed), rig-tools built-ins + read tools + webfetch, multi-root scope validator, confined rig tool config; rig-agent session orchestration + session ledger; `docs/tools.md` | not started | agent runs tools end-to-end headless through wrapped registry; choke-point test green |
+| 3 — pipeline & manual TUI | [phases/phase3_pipeline_tui.md](phases/phase3_pipeline_tui.md) | PermissionPipeline (manual/acceptEdits/plan/dontAsk; deterministic floor; `Tool(specifier)` rule grammar + allow rules; user-hook slot; Tier-0.5; audit log); headless `-p` denial semantics for manual/dontAsk; ratatui TUI; `docs/permissions.md` + pipeline diagram | not started | **usable Claude-Code-like agent with manual approvals** |
 | 4 — guardian + scorecard | [phases/phase4_guardian.md](phases/phase4_guardian.md) | fontaine-guardian; `auto` wired into pipeline (incl. headless `-p` semantics for auto); denial UX; live evals; **published scorecard**; `docs/guardian.md` + `docs/evals.md` | not started | shipped default flips `manual` → `auto`; scorecard public with the release |
-| 5 — extensibility | [phases/phase5_extensibility.md](phases/phase5_extensibility.md) | MCP; session persistence; parallel subagents (v1) + budgets + agents panel; `docs/mcp.md` + `docs/agents.md`; sandbox/sandboxing.md = **roadmap slot** | not started | gated background subagents live in one session |
+| 5 — extensibility | [phases/phase5_extensibility.md](phases/phase5_extensibility.md) | MCP (user + trust-gated project servers); session resume/fork; user hooks; skills/agent files/output styles; parallel subagents (v1) + budgets + agents panel; `docs/{mcp,agents,hooks,extensions}.md`; sandbox/sandboxing.md = **roadmap slot** | not started | gated background subagents live in one session |
 | 6 — guardian hardening | [phases/phase6_hardening.md](phases/phase6_hardening.md) | tool-result scanner (PromptGuard 2 ONNX default, BYO interface, cheap-LLM fallback); scanner docs | not started | scanning demonstrable behind config, license caveat surfaced |
 
 ### Progress log
@@ -85,9 +85,11 @@ fontaine/
 │   ├── rust-toolchain.toml     # channel ≥ 1.97.1 (rig 0.45.0 `rust-version`)
 │   ├── Cargo.toml              # workspace root (`[workspace] members = ["*", …]`, resolver = "2",
 │   │                           #   workspace.package: edition 2024, rust-version 1.97.1); rig crates pinned to exact versions
-│   ├── fontaine/               # thin bin crate: CLI (clap), wires core+tui, `-p` headless from Phase 1
-│   ├── fontaine-core/          # session orchestration on rig-agent (AgentRun, hooks),
-│   │                           #   permission pipeline, config, FONTAINE.md loading
+│   ├── fontaine/               # thin bin crate: CLI (clap), wires core+tui, `-p` headless from Phase 1,
+│   │                           #   owns the tracing subscriber + telemetry export (`src/telemetry/`)
+│   ├── fontaine-core/          # session orchestration on rig-agent (AgentRun, rig bookkeeping hooks),
+│   │                           #   permission pipeline + rule grammar, settings scope stack, workspace
+│   │                           #   trust, user hooks, session ledger, extension loading, FONTAINE.md
 │   ├── fontaine-tools/         # risk metadata registry + GuardedTool wrapper around
 │   │                           #   rig-core Tool; rig-tools built-ins re-exposed with risk
 │   │                           #   classes; workspace-scope validation over `rig_tools::fs::place`; confined rig tool config
@@ -109,9 +111,10 @@ fontaine/
 streaming, OpenAI-compatible custom endpoints for OpenRouter/LM Studio/vLLM/LiteLLM) replaces it
 entirely.
 
-Phase-owned design sections live in the phase plans: model layer (Phase 1), tools/risk registry/
-GuardedTool (Phase 2), permission modes + base TUI (Phase 3), the guardian agent (Phase 4),
-parallel agents + agents panel (Phase 5), result scanning (Phase 6).
+Phase-owned design sections live in the phase plans: model layer + headless I/O contract (Phase 1),
+tools/risk registry/GuardedTool + multi-root workspace + session ledger (Phase 2), permission modes
++ rule grammar + base TUI (Phase 3), the guardian agent (Phase 4), parallel agents + agents panel,
+user hooks, extension files, session resume/fork (Phase 5), result scanning (Phase 6).
 
 ### Core data flow
 
@@ -124,13 +127,18 @@ parallel agents + agents panel (Phase 5), result scanning (Phase 6).
                       ▼  (every registered tool is a GuardedTool wrapper)
          PermissionPipeline (fontaine-core, inside GuardedTool::call)
            1. registry.lookup(name) → RiskClass
+           1a. User PreToolUse hooks (§User hooks): may return deny / ask / allow and an
+              `updated_input` that replaces the call — every later step, the audit record and the
+              guardian judge the rewritten call; their decision is held and applied below
+              (deny → Deny here; ask → joins the step-2 forced prompt; allow → acts at step 5a only)
            2. Deterministic floor — evaluated BEFORE the mode branches, in EVERY mode (no mode,
               flag, or verdict reaches past it; it can only prompt or deny, never allow; order:
               deny → ask → critical-path → protected-path):
               `[permissions] deny` rule match → Deny; `[permissions] ask` rule match → force the
-              human prompt (even in `auto`; a match in `dontAsk` denies); critical-path check →
-              `rm`/`rmdir` targets that are the filesystem root, a top-level dir, home, or the
-              working directory or one of its parents force the human prompt in
+              human prompt (even in `auto`; a match in `dontAsk` denies); rules use the
+              `Tool(specifier)` grammar (§Permission rules); critical-path check →
+              `rm`/`rmdir` targets that are the filesystem root, a top-level dir, home, or a
+              workspace root or one of its parents force the human prompt in
               manual/acceptEdits/plan/auto (never auto-approved by any mode or verdict) and Deny in
               `dontAsk`; protected-path check (a separate list, enumerated under Protected paths below; applies to
               the edit-class tools `edit`/`write`) → writes prompt in manual/acceptEdits, go to the
@@ -142,14 +150,15 @@ parallel agents + agents panel (Phase 5), result scanning (Phase 6).
               equality), resolving each against the call's `cwd` argument (the model-supplied
               `ShellArgs.cwd`, not the process cwd); a target it cannot resolve (command substitution, variable-rooted glob), or
               a command that fails to lex while containing such a word, is treated as critical.
-           3. mode == plan?  → no edit ever executes: ReadOnly-in-scope and Tier-0.5-eligible
-              calls proceed (steps 4–5); everything else reaches the terminal plan-mode branch 9.
+           3. mode == plan?  → no edit ever executes: ReadOnly-in-scope, Tier-0.5-eligible and
+              allow-rule-matched non-edit calls proceed (steps 4–5a); everything else reaches the
+              terminal plan-mode branch 9.
               Structurally blocked = WorkspaceWrite / edit-class only; write-capable/unparsed
               shell is NOT edit-class — it is adjudicated at branch 9 with the other
               consequential calls
            4. RiskClass::ReadOnly && args within workspace scope? → Allow (no guardian)
               (scope check enforced by Fontaine's wrapper/scope validator — `rig_tools::fs::place`
-               against the canonicalized workspace — first-party only;
+               against each canonicalized workspace root; inside any root counts — first-party only;
                MCP-declared readOnlyHint does not qualify — such tools register as Arbitrary)
            5. Tier 0.5 — deterministic shell pre-classifier (zero-LLM), `shell` calls only:
               lexically parsed (shlex/AST — NOT regex) into ONE simple command (no pipelines,
@@ -167,10 +176,16 @@ parallel agents + agents panel (Phase 5), result scanning (Phase 6).
               the call's `cwd` is resolved first: relative path arguments resolve against it and an
               out-of-scope `cwd` disqualifies the fast path
               → Allow, with an audit-log entry (no guardian)
+           5a. Allow rules — only when the floor forced nothing (no Deny, prompt, or
+              protected-path routing):
+              `[permissions] allow` rule match (session grants in `SessionState` included) or a
+              PreToolUse hook `allow` → Allow (no guardian), audit `tier = allow_rule` / `hook`;
+              in `auto`, broad code-execution rules and hooks are suspended (§Permission rules);
+              in `plan`, edit-class calls never get here
            6. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
            7. mode == auto → Guardian::adjudicate(request) ──▶ Verdict
-           8. mode == dontAsk → anything not pre-allowed is Denied
-           9. mode == plan (not allowed by steps 4–5): WorkspaceWrite / edit-class → BLOCKED
+           8. mode == dontAsk → anything not pre-allowed is Denied (pre-allowed = steps 4, 5, 5a)
+           9. mode == plan (not allowed by steps 4–5a): WorkspaceWrite / edit-class → BLOCKED
               outright (structural; no verdict or escalation can override the edit block while
               plan mode is on); every other consequential call — write-capable or unparsed shell,
               webfetch, out-of-scope reads, ALL MCP calls (anything non-shell `Arbitrary`) →
@@ -190,8 +205,8 @@ parallel agents + agents panel (Phase 5), result scanning (Phase 6).
 **Protected paths** (step 2, last floor check): applies to the edit-class tools `edit` and `write`
 — the only registered tools that write structurally (`delete`/`move` are not registered; shell writes
 are not structurally detectable without regex on args, so they take the ordinary shell path: guardian
-in `auto`, prompt in manual/acceptEdits). Matched on resolved path components, in the workspace or the
-home directory. Directories: `.git`, `.vscode`, `.idea`, `.husky`, `.fontaine`. Files: `.gitconfig`,
+in `auto`, prompt in manual/acceptEdits). Matched on resolved path components, in any workspace root or
+the home directory. Directories: `.git`, `.vscode`, `.idea`, `.husky`, `.fontaine`. Files: `.gitconfig`,
 `.gitmodules`, `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc`,
 `.mcp.json`. This follows Claude Code's documented protected-paths list (`.fontaine` in place of
 `.claude`); confirm it against a `claude -p` baseline in Phase 3 and record any difference in Decisions.
@@ -201,21 +216,100 @@ plan → not reachable (edit-class is blocked at steps 3/9); dontAsk → Deny; h
 **Audit log** (written by the pipeline in every mode; one record per gate decision): JSONL, one
 append-only file per session at `<user data dir>/fontaine/audit/<session-id>.jsonl`, mode 0600.
 Fields: `ts` (RFC 3339), `session_id`, `agent_id`, `tool`, `args_digest` (SHA-256 of the
-canonical-JSON args — raw args are never logged), `tier` (resolving tier: `floor` | `fast_path` |
-`tier05` | `mode` | `guardian` | `human`), `decision` (`allow` | `deny` | `prompt`), `rule` (deny/ask
-rule id, floor check, or guardian rule label; null if none), `confidence` and `guardian_model`
+canonical-JSON args — raw args are never logged; when a hook rewrote the call, `original_args_digest`
+too), `tier` (resolving tier: `floor` | `hook` | `fast_path` | `tier05` | `allow_rule` | `mode` |
+`guardian` | `human`), `decision` (`allow` | `deny` | `prompt`), `rule` (deny/ask/allow rule text and
+its source scope, hook id, floor check, or guardian rule label; null if none), `confidence` and `guardian_model`
 (`<account>/<model>`) for guardian decisions, `latency_ms`. A human answer to a prompt appends a
 second record with `tier = human`.
 
-**Pipeline inputs**: mode, task intent, recent user messages, session facts, prior denials, the
-audit-log sink (schema above), and the human-approval callback reach `GuardedTool::call` through a shared
-`SessionState` injected into every wrapper at registration (see the Phase 2 plan).
+**Pipeline inputs**: mode, the workspace roots, the merged permission rules plus session-scope
+grants, the user-hook runner, the session ledger (source of task intent, recent user messages,
+session facts and prior denials — §Session ledger), the audit-log sink (schema above), and the
+human-approval callback reach `GuardedTool::call` through a shared `SessionState` injected into every
+wrapper at registration (see the Phase 2 plan).
 
 **Headless (`-p`)**: nothing prompts. Every would-prompt outcome — `ask`-rule match, Escalate
 verdict, critical-path/protected-path prompt, loop breaker — becomes a
 Deny returned to the agent as the tool_result, and the run continues (Claude Code parity). Exit
 codes: 0 run completed (denials do not change it), 1 run error (provider/model failure,
-interruption), 2 config or usage error.
+interruption), 2 config or usage error. Output and input follow the versioned headless I/O contract
+(`--output-format text|json|stream-json`; see the Phase 1 plan), whose `gate_decision` events carry
+the same tier attribution as the audit log.
+
+### Permission rules (deny / ask / allow)
+
+One grammar for `[permissions] deny`, `ask` and `allow` (and the CLI `--disallowed-tools` /
+`--allowed-tools`): `Tool` or `Tool(specifier)`. A bare tool name matches every call of that tool.
+Matching is structured — never regex on raw args.
+
+| Tool | Specifier | Match |
+|---|---|---|
+| `shell` | words, optional trailing ` *` (`shell(git push)`, `shell(npm run test *)`) | argv from the Tier-0.5 shlex lexer: exact argv, or argv prefix when the rule ends in ` *`; no wildcard inside a word |
+| `read`, `edit`, `write`, `ls`, `glob`, `grep` | gitignore-style path pattern (`src/**`, `~/.aws/**`, `//etc/hosts`) | relative patterns anchor at each workspace root; the path argument is resolved by the scope validator (symlinks, `..`, the call's `cwd`) and the resolved path is matched |
+| `webfetch` | `domain:<host>` or `domain:*.<host>` | parsed URL host (lowercased, IDNA-normalized); `*.` matches subdomains only |
+| MCP | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | registered tool name |
+| `agent`, `skill` | agent type / skill name | exact name |
+
+**Asymmetric failure.** Deny and ask fail toward matching; allow fails toward not matching. A
+`shell` deny/ask rule is always a prefix match (trailing ` *` implied) and matches when its words appear
+contiguously anywhere in the lexed word stream (control operators split off first, so `ls && git push`
+and `sudo git push -f` hit `deny shell(git push)`),
+and a command that fails to lex, or puts a substitution or variable in command position, matches every
+deny/ask `shell` rule whose first word appears in it (the critical-path posture). A `shell` allow rule
+matches only a command the Tier-0.5 parser accepts as one simple command (no chaining, pipes,
+redirections, substitution, globs) whose argv matches; anything else falls through. Path deny/ask
+rules match the given path and the resolved path; path allow rules match the resolved path only.
+
+**Where allow acts.** Allow rules are pipeline step 5a: after the floor, never past it — a deny, ask,
+critical-path or protected-path outcome stands whatever allow says, and `plan` still blocks edits. A
+matching allow rule skips the human prompt in manual/acceptEdits, pre-approves in `dontAsk`, and
+skips the guardian in `auto` (Claude Code parity). In `auto`, **broad code-execution allow rules are
+suspended** for as long as the mode is on (Claude Code parity): bare `shell`; `shell(<w> *)` where
+`<w>` is an interpreter, shell or package-manager runner on a shipped list (`python`, `python3`,
+`node`, `deno`, `bun`, `ruby`, `perl`, `bash`, `sh`, `zsh`, `npx`, `npm run`/`exec`, `pnpm`, `yarn`,
+`uv run`, `cargo run`, …); bare `agent`. Suspended rules are listed on entering `auto` (TUI notice;
+headless `init` event). An allow rule is a **user grant**: the containment fast path (step 4) and
+Tier 0.5 (step 5) remain the only guardian skips earned without one, and no tool label or server
+declaration ever creates an allow rule.
+
+**Sources.** Allow rules are loosening, so they come only from user trust scopes: the user file,
+an untracked `settings.local.toml`, and the CLI (§Config scope stack); a shared project file may add
+deny/ask but never allow. "Allow session" answers at the approval prompt are session-scope grants
+held in `SessionState` (and recorded in the session ledger; never persisted); "always allow" appends
+the exact rule shown in the prompt to the user file's `[permissions] allow`. A grant never
+auto-extends the Tier-0.5 curated set.
+
+### User hooks
+
+Distinct from rig `AgentHook`s, which stay bookkeeping-only. User hooks are configured handlers
+(`[[hooks.<event>]]`: a `matcher` in the rule grammar, a `command`, `timeout_secs`) that receive the
+event as JSON on stdin and answer on stdout (exit code 2 = deny, Claude Code's convention). v1
+events: `pre_tool_use`, `post_tool_use`, `permission_denied`. `pre_tool_use` runs at pipeline step
+1a: it may return `deny`, `ask` or `allow`, an `updated_input`, and a `guardian_context` note
+(passed to the guardian inside an untrusted block). Composition across hooks: deny > ask > allow;
+the last `updated_input` in configured order wins and every later step judges it. A hook `allow` is
+treated exactly as a matching allow rule — step 5a only, never past the floor, and suspended in `auto`
+when the hook's matcher is broad by the allow-rule test. A hook that errors, times out or returns
+malformed output contributes no decision; the call continues through the normal pipeline — hooks
+never loosen on failure. Hook processes are user-configured, not tool calls, and are not gated by the
+pipeline. Sources follow §Config: user, project-local and CLI hooks load always; project hooks are
+project-defined executables (workspace trust) and their `allow` decisions are ignored (project scope
+only tightens). No key in any scope disables hooks from a higher-trust scope. Built in Phase 5.
+
+### Session ledger
+
+Two stores per session. rig-memory holds the model context, which compaction may rewrite. The
+**session ledger** (`fontaine-core::ledger`) is Fontaine-owned and append-only: user messages
+verbatim, mode changes, approvals and session grants, denial records, actions taken, the workspace
+roots, trust state, and the git remotes and pre-session file index captured at start. The guardian's
+`AdjudicationRequest` is built only from the ledger — never from a compaction summary or other
+model-written text. Resume restores both stores but starts in the user's resolved default mode and
+drops session-scope grants; fork (`--fork-session`) copies both stores under a new session id, also
+without session grants; a rewind of the conversation (rig-memory `as_of`) truncates the context and
+appends to the ledger — denial and approval history is never removed. Both stores persist as JSONL
+under `<user data dir>/fontaine/sessions/<session-id>/` (mode 0600). Ledger in Phase 2; guardian
+reads it in Phase 4; resume/fork in Phase 5.
 
 ### Composite guardian (the guardian tree)
 
@@ -246,11 +340,120 @@ trail (per-layer attribution).
   (composite ≠ safety by committee). No new config keys for v1 (roadmap-only; `[guardian] profile`
   interacts — minimal narrows the ruleset *within* the tree, it never removes the tree).
 
-### Config (`~/.config/fontaine/config.toml` + project `.fontaine/settings.toml`)
+### Observability
 
-The **workspace** is the canonicalized launch cwd (Claude Code parity: a session is rooted where it
-starts; no upward search for a repo root). Project config is `<workspace>/.fontaine/settings.toml`
-only — no parent-directory walk and no merging of nested settings files.
+**Facade: `tracing` everywhere.** Every crate instruments with `tracing` spans/events only — no
+crate but the `fontaine` bin depends on a subscriber or exporter (rig already emits GenAI-semconv
+`tracing` spans, so this is the one facade that sees them). `fontaine-guardian` depends on
+`tracing` alone and stays embeddable: with no subscriber installed its spans are no-ops. The bin
+owns the global subscriber (`rust/fontaine/src/telemetry/`): a `tracing_subscriber::registry()`
+with (a) the local debug-file layer (`--debug-file <path>`, `FONTAINE_LOG` env filter; 0600; Claude
+Code's `--debug-file` analog), and (b) when `[telemetry] enabled`, one export backend:
+
+- `micromegas` (default backend): `micromegas-telemetry-sink` guard built with local sink off,
+  global tracing capture off (its `TracingCaptureLayer` is composed into Fontaine's registry for
+  events), system monitor off, explicit URL + `ApiKeyRequestDecorator` (never the implicit env
+  fallback). micromegas does not capture `tracing` spans, so a Fontaine **`SpanBridge`** layer maps
+  each allowlisted span onto micromegas **async span events**, which carry `span_id`,
+  `parent_span_id` and `depth` and are reassembled into trees by the analytics side (`async_events`
+  view, `process_spans(…, 'async')`): `on_new_span` →
+  `dispatch::on_begin_async_named_scope_dyn(location, name, parent_mm_id, depth)` with the parent
+  taken from the `tracing` parent span's stored micromegas id (0 at a root); the returned id and depth
+  live in the span's extensions; `on_close` → `dispatch::on_end_async_named_scope_tagged(…)`
+  carrying the span's recorded fields as properties. One `SpanLocation` per `tracing` callsite is
+  leaked once and cached (bounded by the callsite count). Async span events ride micromegas thread
+  streams, which exist only while CPU tracing is enabled: until micromegas grows a builder knob, the bin
+  sets `MICROMEGAS_ENABLE_CPU_TRACING=true` in its own environment before building the guard (while
+  still single-threaded; child environments scrub it), the tokio runtime is built with
+  `TracingRuntimeExt::with_tracing_callbacks()`, and the bridge calls `init_thread_stream()` before
+  emitting from any other thread. The same layer derives the metrics (`imetric!`/`fmetric!`) on close.
+  Once micromegas captures `tracing` spans with parentage upstream, the bridge shrinks to the stock
+  layer plus Fontaine's metric derivation.
+- `otlp` (fallback; any OTel collector, including micromegas's `/ingestion/otlp`): OTLP/HTTP
+  protobuf via `opentelemetry-otlp` (no gRPC); spans via `tracing-opentelemetry`, events via
+  `opentelemetry-appender-tracing`, metrics from the same `SpanBridge` metric derivation through an
+  OTel `Meter`.
+
+Both backends sit behind a per-layer **target allowlist** (`fontaine::telemetry`, `rig::completions`,
+`rig::agent_chat`): nothing else rig or a dependency logs is exported (it reaches only the
+opt-in local debug file). Fontaine's own telemetry fields are content-free by construction;
+content fields exist only behind the opt-in keys below, and rig's content recording follows
+them via `record_content_telemetry`.
+
+**What is emitted** (names mirror Claude Code with a `fontaine.` prefix):
+- Spans: `fontaine.session` > `fontaine.interaction` (one user turn; `prompt.id`) > rig
+  `invoke_agent`/`chat` and `fontaine.tool` > `fontaine.permission` (> `fontaine.hook`,
+  `fontaine.guardian`, `fontaine.tool.blocked_on_user`) + rig `execute_tool`; `fontaine.subagent`
+  parented to the spawning tool call; `fontaine.mcp.call`. Both backends export this as a tree.
+- Metrics: `fontaine.session.count` (`start_type`), `fontaine.token.usage` (`type` =
+  input/output/cacheRead/cacheCreation/reasoning, `model`, `query_source` =
+  main/guardian/subagent/scanner), `fontaine.cost.usage` (USD; absent when rig has no price),
+  `fontaine.tool_decision.count` (`tier`, `decision`), `fontaine.guardian.latency` (ms),
+  `fontaine.guardian.fail_closed.count` (`reason`). No `prompt.id`/`tool_use_id` on metrics.
+- Events: `api_request`/`api_error` (model, tokens, cost, duration, query_source),
+  `user_prompt` (length only), `tool_result` (tool_name, risk_class, success, duration, sizes,
+  tool_source builtin/mcp), `tool_decision` (CC attributes + `tier` = deny_rule | ask_rule |
+  critical_path | protected_path | hook | read_only_fast_path | tier05 | allow_rule | guardian |
+  human | plan_block | dont_ask, `permission_mode`, `headless`, `guardian.{model,profile,verdict,
+  confidence,cache_hit,latency_ms}`, `fail_closed_reason` = error | timeout | unparseable |
+  low_confidence | unavailable), `permission_mode_changed`, `mcp_server_connection`, `subagent`
+  (spawn | complete | killed | budget_exhausted), `internal_error` (class only).
+- Standard attributes: `session.id`, `agent.id`/`agent.type`, `app.version`; events add
+  `prompt.id` and `event.sequence`.
+
+**Audit log vs telemetry.** The pipeline builds one typed `GateDecision` per tool call; it is
+written to the audit log **first** (append + flush, always on, unaffected by `[telemetry]`), then
+projected to the content-free `tool_decision` event. The audit log is the security record —
+complete, local, synchronous, keyed by agent id, feeding `/denied` and the agents panel;
+telemetry is best-effort, lossy under backpressure (bounded queues drop), redacted, and may be
+off. Neither derives from the other; consistency comes from the shared struct.
+
+**Failure isolation.** Telemetry can never block or change a decision: no pipeline/guardian
+code reads telemetry state; exporters run off-thread with bounded queues that drop on overflow;
+exporter init failure logs to the debug file, shows a one-line notice, and the run continues
+with export off (a malformed `[telemetry]` value is still a config error, exit 2); shutdown
+flush is capped (2 s) on both TUI exit and `-p` exit (`main` drops the guard, then returns an
+`ExitCode` — `std::process::exit` would skip the flush), after which data is dropped.
+
+**Secrets.** Credentials are env-var names only (`api_key_env`), never inline. The telemetry
+credential variable, `MICROMEGAS_*` and `OTEL_EXPORTER_OTLP_HEADERS` are removed from the shell
+tool's and hooks' child environment. Opt-in content still passes through `rig_core::redact` and is
+truncated at `content_max_bytes`.
+
+### Config (settings scope stack)
+
+The **workspace** is an ordered set of roots. The primary root is the canonicalized launch cwd
+(Claude Code parity: a session is rooted where it starts; no upward search for a repo root); further
+roots come from `--add-dir`, the `/add-dir` command, and `[permissions] additional_directories`
+(Claude Code parity). Containment means "inside any root after symlink resolution" — for the fast
+path, Tier 0.5, rule path patterns, protected paths and the critical-path list (each root and its
+parents). Only the user adds roots at runtime (`/add-dir` is a user command; no tool can add one).
+Extra roots grant file access, not configuration: settings, hooks, MCP servers and extension files
+load from the primary root only. The guardian's `session_facts` and trust boundary list every root.
+
+**Scope stack** (highest precedence first; Claude Code parity):
+
+1. **managed** — reserved slot, empty in v1 (no file is read); when it lands, its deny/ask/hard_deny
+   entries cannot be removed and it can lock keys.
+2. **CLI** — `--settings <file>` plus the flag forms (`--permission-mode`, `--model`,
+   `--allowed-tools`, `--disallowed-tools`, `--add-dir`); one session; user trust.
+3. **project-local** — `<root>/.fontaine/settings.local.toml`; user trust only while git reports it
+   untracked or ignored in a git work tree; otherwise it loads as project scope.
+4. **project** — `<root>/.fontaine/settings.toml`; may only tighten.
+5. **user** — `~/.config/fontaine/config.toml`.
+
+(`<root>` is the primary root — no parent-directory walk, no nested settings files.) Scalars: the
+highest-precedence scope that sets a key wins. Lists merge as a union across scopes; a scope may add
+only to the lists the scope table lets it set. A key a scope may not set is rejected at load (exit 2).
+
+**Workspace trust** (Claude Code parity). Project-defined executables — project MCP servers, project
+hooks, project skills' `!cmd` dynamic context — load in the TUI only after the user trusts the
+primary root at a trust prompt shown before they load; each project MCP server is also approved
+individually, and a repository cannot pre-approve its own servers. The trust record lives in
+`<user data dir>/fontaine/trust.toml`, keyed by canonical root path, never in the repo. Tightening
+keys (deny/ask, soft/hard deny) and prompt content (FONTAINE.md, skills, agent files, output styles)
+load regardless of trust. Headless `-p` loads project config without a prompt, as Claude Code does.
+Trust state is a ledger fact passed to the guardian in `session_facts`.
 
 ```toml
 [accounts.work]                   # named accounts (opencode-style); several of one kind allowed
@@ -301,6 +504,20 @@ ask = []                          # deterministic always-prompt rules (CC parity
                                   #   AND project-scope may ADD ask rules (asking is tightening),
                                   #   never remove; evaluated right after deny, before Tier 0.5,
                                   #   in every mode
+allow = []                        # pre-approval rules, same grammar; user trust scopes only
+                                  #   (user, untracked project-local, CLI); step 5a, after the
+                                  #   floor; broad code-exec rules suspended in `auto`
+additional_directories = []      # extra workspace roots; user trust scopes only
+
+[[hooks.pre_tool_use]]             # user hooks (§User hooks); also post_tool_use, permission_denied
+matcher = "shell(git *)"           #   rule grammar
+command = "~/.config/fontaine/hooks/git-guard.sh"
+timeout_secs = 10
+
+[mcp.servers.github]               # stdio: command/args/env_vars; streamable HTTP: url
+command = "github-mcp-server"
+args = ["stdio"]
+env_vars = ["GITHUB_TOKEN"]        # env var NAMES passed through; values never in config
 
 [auto_mode]                        # prose lists; the loosening slots (allow/environment) are
 environment = ["$defaults",        #   user-scope file only; project files may add to
@@ -339,36 +556,78 @@ allow_extra = []                  # user extensions to the curated read-only com
                                   #   mode-agnostic list, applying in every mode (the pre-classifier
                                   #   runs before the mode branches); Fontaine
                                   #   never auto-extends it from observed usage
+
+[telemetry]                        # off unless enabled (Claude Code parity)
+enabled = false                    # true REQUIRES `endpoint` and an ingestion key (below); either
+                                   #   missing ⇒ config error, exit 2
+backend = "micromegas"             # "micromegas" (native sink, span trees) | "otlp" (OTLP/HTTP protobuf)
+# endpoint = "https://telemetry.example.com"   # ingestion URL, no default: micromegas ingestion root,
+                                   #   or OTLP base URL (/v1/{traces,metrics,logs} appended;
+                                   #   micromegas over OTLP: …/ingestion/otlp)
+# api_key_env = "MICROMEGAS_INGESTION_API_KEY" # ingestion key: env var NAME holding the bearer token,
+                                   #   or omit to use the stored-credentials entry written by
+                                   #   `fontaine auth login --telemetry`; never inline; a named
+                                   #   env var that is unset or empty counts as missing
+traces = true                      # export spans (both backends export trees)
+log_user_prompts = false           # content opt-ins, all default false
+log_assistant_responses = false    #   (OTEL_LOG_USER_PROMPTS / _ASSISTANT_RESPONSES /
+log_tool_details = false           #   _TOOL_DETAILS / _TOOL_CONTENT parity); tool_details = args,
+log_tool_content = false           #   shell commands, paths, MCP server/tool names, guardian
+                                   #   rule names + reasons; tool_content = tool outputs
+content_max_bytes = 61440
+resource_attributes = {}           # static tags, e.g. { "team.id" = "platform" }
 ```
+
+Extension files (Claude Code-compatible frontmatter; built in Phase 5) live beside the settings
+files: `~/.config/fontaine/` and `<root>/.fontaine/` each hold `skills/<name>/SKILL.md`,
+`agents/<name>.md` and `output-styles/<name>.md`. Agent files and `[agents.types]` entries feed one
+agent-type registry (project definitions override user ones of the same name, as in Claude Code); a
+project agent file may only narrow — toolset a subset of the parent's, `mode` `manual` (default) or
+`dontAsk` (no `inherit`), no `model` key (it runs on the session model). A skill's `allowed-tools`
+acts as session-scope allow rules while the skill is active when the skill comes from a user trust
+scope, and is ignored from project scope.
 
 Rule-precedence semantics and the `$defaults` splice marker are adopted directly from Claude
 Code's auto-mode config (proven design). Two more splice markers appear in `[agents.types]`:
 `$main` = the session model (`[model]`), `$guardian_default` = the top-ranked validated guardian
-model available on the configured accounts (per Decisions). `[accounts]` and every `<account>/<model>`
-reference are user-scope only — a project file must not be able to point the guardian (or the
-session) at another endpoint; a missing or invalid credential for the guardian's account makes the
-guardian unavailable, which fails closed. **Trust asymmetry**: project-level settings may only
-*tighten* (add hard/soft denies and `ask` rules); only user-level config may loosen. Mirroring Claude Code's
-documented semantics (where `defaultMode: "auto"` and `"bypassPermissions"` are ignored in
-project settings — Fontaine ships no `bypass` mode at all), **project-level settings cannot set
-`[permissions] default_mode` to `auto` — that is user-scope only**; a checked-in repo must not be able to disarm its
-own guardian. Tier-0.5 `[shell_preclassifier]` extensions are loosening, so they follow the same
-rule: user-scope config only, never project-scope. `[guardian] profile` follows it too — a loosening
-knob (minimal vs full), user-scope only, and no value of it disables the guardian.
+model available on the configured accounts (per Decisions). `[accounts]` comes only from the user
+file or the CLI, and every `<account>/<model>` reference is rejected from shared project scope — a
+project file must not be able to point the guardian (or the session) at another endpoint; a missing or invalid credential for the guardian's account makes the
+guardian unavailable, which fails closed. **Trust asymmetry**: shared project settings may only
+*tighten* (add deny/ask rules and hard/soft denies, choose a tightening default mode); loosening comes
+only from user trust scopes (user, untracked project-local, CLI). Mirroring Claude Code's documented
+semantics (`defaultMode: "auto"` and `"bypassPermissions"` are ignored in project settings — Fontaine
+ships no `bypass` mode at all), **project settings may set `[permissions] default_mode` to `manual`,
+`plan` or `dontAsk` only; `auto` and `acceptEdits` are rejected** — a checked-in repo must not be able
+to disarm its own guardian. Tier-0.5 `[shell_preclassifier]` extensions, `[permissions] allow` and
+`additional_directories` are loosening, so they follow the same rule. `[guardian] profile` follows it
+too — a loosening knob (minimal vs full), and no value of it disables the guardian. Keys that name an
+endpoint or a credential (`[accounts.*]`, `[telemetry]` other than `enabled = false`) never come from
+a file inside the repository directory, project-local included: each would let a checked-in or
+planted file send session data elsewhere. Project-defined executables (project MCP servers and hooks)
+are a separate class: they change no permission decision — their tool calls are gated like any other
+and a project hook's `allow` is ignored — but they run code when loaded, so the TUI loads them only
+after workspace trust.
 
-Per-key scope (a project file that sets a user-scope-only key is rejected at load):
+Per-key scope (the user file may set every key; a key a scope may not set is rejected at load):
 
-| Key | Project scope |
-|-----|---------------|
-| `[accounts.*]` (`kind`, `base_url`, `api_key_env`, `models`) | no — user only |
-| `[model]` `model` | no — user only |
-| `[guardian]` `model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache`, `scan_tool_results`, `scanner_model_path`, `scanner_hf_token_env` | no — user only |
-| `[permissions]` `default_mode` | no — user only |
-| `[permissions]` `deny`, `ask` | yes — add only |
-| `[auto_mode]` `environment`, `allow` | no — user only |
-| `[auto_mode]` `soft_deny`, `hard_deny` | yes — add only |
-| `[agents]` `max_parallel`, budgets; `[agents.types]` | no — user only |
-| `[shell_preclassifier]` `allow_extra` | no — user only |
+| Key | Project | Project-local (untracked) | CLI |
+|-----|---------|---------------------------|-----|
+| `[accounts.*]` (`kind`, `base_url`, `api_key_env`, `models`) | no | no | `--settings` |
+| `[model]` `model` | no | yes | yes (`--model`) |
+| `[guardian]` `model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache`, `scan_tool_results`, `scanner_model_path`, `scanner_hf_token_env` | no | yes | `--settings` |
+| `[permissions]` `default_mode` | `manual`/`plan`/`dontAsk` only | yes | yes (`--permission-mode`) |
+| `[permissions]` `deny`, `ask` | add only | add only | add only (`--disallowed-tools` → deny) |
+| `[permissions]` `allow` | no | yes | yes (`--allowed-tools`) |
+| `[permissions]` `additional_directories` | no | yes | yes (`--add-dir`) |
+| `[auto_mode]` `environment`, `allow` | no | yes | `--settings` |
+| `[auto_mode]` `soft_deny`, `hard_deny` | add only | add only | add only |
+| `[agents]` `max_parallel`, budgets; `[agents.types]` | no | yes | `--settings` |
+| agent files `agents/*.md` | narrowing only (see above) | — | — |
+| `[shell_preclassifier]` `allow_extra` | no | yes | `--settings` |
+| `[hooks.*]` | after workspace trust; `allow` ignored | yes | `--settings` |
+| `[mcp.servers.*]` | after workspace trust + per-server approval | yes | `--settings` |
+| `[telemetry]` | `enabled = false` only | `enabled = false` only | `--settings` |
 
 ## Research Findings (prior art this design is grounded in)
 
@@ -564,20 +823,37 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   rig in JetBrains' "Rust AI in Practice" session — a coding agent built on rig + ratatui).
 - **tokio, serde, clap, tracing, toml** — glue. **wiremock** (dev-dependency) — used by the
   per-provider smoke tests and the fail-closed 500 test (see Testing Strategy).
+- **Observability:**
+  - `tracing =0.1.44` / `tracing-subscriber =0.3.23` (env-filter, fmt).
+  - micromegas backend: `micromegas-tracing =0.32.0` (`tokio` feature, for
+    `TracingRuntimeExt`) + `micromegas-telemetry-sink =0.32.0`; move the pins to the micromegas
+    release that ships the upstream items below as each lands.
+  - OTLP backend: `opentelemetry =0.33.1`, `opentelemetry_sdk =0.33.1`,
+    `opentelemetry-otlp =0.33.1` (`default-features = false`, `http-proto`, `reqwest-client`;
+    shares rig's reqwest 0.13), `tracing-opentelemetry =0.34.0` and
+    `opentelemetry-appender-tracing =0.33.1`.
+  - Both backends are compiled in by default, behind the bin crate's features
+    `telemetry-micromegas` and `telemetry-otlp`; pinned exactly, like rig, because they are pre-1.0.
+  - Caveats: the micromegas sink brings a second reqwest (0.12) and publishes no `rust-version`;
+    its async span events need CPU tracing enabled, settable only through
+    `MICROMEGAS_ENABLE_CPU_TRACING`. Upstream micromegas work (same author) removes each: `tracing`
+    span capture with parentage in `TracingCaptureLayer`, a builder knob for span/thread streams,
+    reqwest 0.13, a published `rust-version`.
 
 ## Files to Modify
 
 All new. Key files: workspace `rust/Cargo.toml` (members = ["*", …], resolver 2,
 workspace.package block with edition 2024 and rust-version 1.97.1; rig crates pinned) and
 `rust/rust-toolchain.toml`;
-`rust/fontaine-core/src/{lib,models,permissions,config,session,hooks,audit,containment}.rs`;
-`rust/fontaine-tools/src/{lib,guarded,risk,scope,builtins,webfetch,preclassify}.rs`;
+`rust/fontaine-core/src/{lib,models,permissions,permission_rules,config,trust,session,ledger,hooks,user_hooks,extensions,audit,containment}.rs`;
+`rust/fontaine-tools/src/{lib,guarded,risk,scope,builtins,webfetch,preclassify,skill}.rs`;
 `rust/fontaine-guardian/src/{lib,verdict,prompt_builder,rules,cache,profile,scanner}.rs` +
 `rust/fontaine-guardian/prompts/guardian_prompt.md`;
 `rust/fontaine-mcp/src/{lib,servers,register}.rs`;
 `rust/fontaine-agents/src/{lib,spawn,registry,budget}.rs`;
-`rust/fontaine-tui/src/{app,transcript,approval,denials,statusbar,agents_panel}.rs`;
-`rust/fontaine/src/main.rs`; `docs/{index,architecture,configuration,tools,permissions,guardian,evals,tui,mcp,agents,sandboxing}.md`;
+`rust/fontaine-tui/src/{app,transcript,approval,denials,statusbar,agents_panel,trust_prompt}.rs`;
+`rust/fontaine/src/{main,headless}.rs` + `rust/fontaine/src/telemetry/{mod,span_bridge,micromegas,otlp}.rs`;
+`docs/{index,architecture,configuration,headless,telemetry,tools,permissions,guardian,evals,tui,mcp,agents,hooks,extensions,sandboxing}.md`;
 `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `.github/workflows/ci.yml`; `evals/` dataset +
 `rust/fontaine-evals/` runner. Each phase plan lists its own file slice in dependency
 order. No `fontaine-llm` crate — the model layer is rig.
@@ -620,7 +896,9 @@ order. No `fontaine-llm` crate — the model layer is rig.
   deterministic code enforced by Fontaine at the execution boundary, not regex-on-args and not the
   tool's own declaration; a read that escapes scope, and any command the classifier cannot fully
   parse, goes to the guardian (read ≠ safe — out-of-workspace reads are recon/exfiltration risk),
-  and MCP tools' self-declared `readOnlyHint` never qualifies for a fast path.
+  and MCP tools' self-declared `readOnlyHint` never qualifies for a fast path. Explicit allow rules
+  (§Permission rules) are a separate path: a user grant, written by the user, never derived from a
+  tool label or server declaration, and never reaching past the floor.
 - **Parallel agents multiply guardian round-trips and model cost** — N subagents mean N× adjudications
   and token spend (Claude Code documents the same). Mitigated by Tier 0.5 (most read-ish subagent
   calls never reach the guardian), the local PromptGuard 2 result scanner (no per-result LLM call),
@@ -712,7 +990,7 @@ carries the reasoning:
   pre-classified commands (Claude Code permits them for read-only commands — reason: the glob
   could expand to an out-of-scope path or a write-capable flag, and shell-side expansion is
   invisible to the scope validator); and "don't ask again" style grants never auto-extend the
-  curated set — they land only as explicit user-scope config rules (reason: a checked-in repo or
+  curated set — they land only as explicit user-scope config rules (`[permissions] allow`) (reason: a checked-in repo or
   an injected session must not accumulate loosened prefixes; auto-extension is loosening).
   (User directive 2.)
 - 2026-10-21 (supersedes 2026-10-20 "no subagents in v1"): parallel multi-agent management is a
@@ -792,6 +1070,57 @@ carries the reasoning:
   (User directive.)
 - 2026-10-21: the eval runner is the workspace bin crate `rust/fontaine-evals` (keeps the "every
   crate sits under `rust/`" rule); the dataset stays in `evals/dataset/` as JSONL.
+- 2026-10-21 (user): `[permissions] allow` + one `Tool(specifier)` grammar for deny/ask/allow
+  (§Permission rules). Allow rules act after the deterministic floor and never reach past it; narrow
+  allow rules skip the guardian in `auto` and broad code-execution allow rules are suspended in `auto`
+  (Claude Code parity). A user-authored allow rule — or a user hook's `allow` — counts as a user
+  grant, as in Claude Code; it is distinct from the containment fast path, which stays the only
+  guardian skip earned without a user grant, and no tool label or server declaration produces one.
+  Resolves the former allow-key and rule-grammar gaps.
+- 2026-10-21: deliberate Claude-Code deviation — shared project settings cannot hold allow rules, a
+  project hook's `allow` decision is ignored, and a project skill's `allowed-tools` is ignored; Claude
+  Code honors project allow rules once the folder is trusted. Reason: project scope can only tighten.
+- 2026-10-21: deliberate Claude-Code deviation — `shell` rule matching: deny/ask rules always match
+  as a prefix and anywhere in the lexed word stream, and anything unlexable that contains the rule's
+  first word matches; an allow rule matches only one simple command the Tier-0.5 parser accepts, so a
+  compound command never matches an allow rule (Claude Code splits compound commands and requires
+  every part to match). Reason: no regex and no operator-level parser in v1, so deny/ask fail toward
+  matching and allow fails toward not matching.
+- 2026-10-21: settings scope stack managed (reserved, empty in v1) > CLI > project-local > project >
+  user, list keys merged, project-local trusted only while untracked (Claude Code parity). Project
+  settings may set `default_mode` to `manual`/`plan`/`dontAsk` but not `auto`/`acceptEdits` (Claude
+  Code parity; settles the former scope-table vs prose conflict). Deliberate Claude-Code deviation:
+  endpoint/credential keys (`[accounts.*]`, `[telemetry]` except `enabled = false`) are never read
+  from project-local either — reason: a file inside the repo directory must not redirect session data.
+- 2026-10-21: multiple workspace roots (`--add-dir`, `/add-dir`, `additional_directories`; Claude
+  Code parity): containment = inside any root; extra roots grant file access, not configuration; only
+  the user adds roots.
+- 2026-10-21: session ledger — the guardian's inputs come from a Fontaine-owned append-only ledger,
+  never from rig-memory context that compaction rewrites; resume returns to the resolved default mode
+  and drops session grants; fork copies both stores without session grants; rewind never removes
+  ledger history. Claude Code has no documented analogous design point.
+- 2026-10-21: the headless I/O contract (`--output-format text|json|stream-json`,
+  `--input-format stream-json`) is versioned (`schema_version`; additive changes keep the version,
+  any rename or removal bumps it), mirroring Claude Code's flags plus Fontaine `gate_decision` events.
+- 2026-10-21 (user; amends the `[agents.types]` user-only rule): project-defined agent files
+  (`.fontaine/agents/*.md`) are allowed but only narrow — toolset a subset of the parent's, `mode`
+  `manual` (default) or `dontAsk`, no `model` key. Deliberate Claude-Code deviation (Claude Code's
+  project agents may set any tools, model and `permissionMode`); reason: a checked-in repo must not
+  widen a child's authority or pick its endpoint.
+- 2026-10-21 (user): observability goes through the `tracing` facade in every crate, and only the bin
+  crate installs a subscriber. Export is opt-in and off by default, like Claude Code; enabling it
+  requires an ingestion URL and an ingestion key (env-var name or stored credential; no default
+  endpoint). The default backend is native micromegas, exporting span trees through Fontaine's
+  `SpanBridge` (micromegas async span events with parent ids) until micromegas captures `tracing`
+  spans upstream; OTLP/HTTP is the fallback. Deliberate Claude-Code deviation (Claude Code exports only
+  OTel); reason: user requirement (micromegas out of the box); the `otlp` backend keeps a Claude
+  Code-compatible collector story. Metric and event names mirror `claude_code.*` under a `fontaine.`
+  prefix; content opt-ins mirror the `OTEL_LOG_*` flags; endpoint, credentials and opt-ins are
+  user-scope only, and a project may only set `enabled = false` (Claude Code parity).
+- 2026-10-21: the audit log is a separate, always-on, durable local record, not derived from
+  telemetry. Both are written from one typed `GateDecision`, the audit log first. Reason: telemetry
+  is opt-in, lossy and redacted, while the audit log is the security record. Claude Code has no
+  analogous design point.
 
 ## Documentation
 
@@ -806,14 +1135,24 @@ delivered (or extended) by the docs step of the phase named with it — see the 
 
 - `docs/index.md`: landing page / TOC (Phase 0).
 - `docs/architecture.md`: workspace map, agent-loop and permission-pipeline diagrams, surfaces
-  (TUI + headless), session persistence (skeleton Phase 0; grown in Phases 1, 3, 5).
-- `docs/configuration.md`: every config key, trust asymmetry of project vs user settings,
-  account and provider setup examples — seeded from the §Config schema (Phase 0); grown in Phases 1, 3, 4,
+  (TUI + headless), workspace roots, session ledger vs model context, session persistence/resume/fork
+  (skeleton Phase 0; grown in Phases 1, 2, 3, 5).
+- `docs/configuration.md`: every config key, the settings scope stack and per-key scope table,
+  trust asymmetry, workspace trust, account and provider setup examples — seeded from the §Config schema (Phase 0); grown in Phases 1, 3, 4,
   5, 6 as each `[section]` ships.
 - `docs/tools.md`: built-in tool inventory, risk classes, the containment fast path, shell
   hardening (Phase 2).
-- `docs/permissions.md`: mode table, deterministic floor, Tier-0.5 pre-classifier, `auto` and the
-  `[auto_mode]` prose lists (Phases 3–4).
+- `docs/permissions.md`: mode table, deterministic floor, the `Tool(specifier)` rule grammar and
+  allow rules (incl. suspension in `auto`), Tier-0.5 pre-classifier, `auto` and the `[auto_mode]`
+  prose lists (Phases 3–4).
+- `docs/headless.md`: `fontaine -p`, the CLI flag table, exit codes, denial semantics, and the
+  versioned `json`/`stream-json` event schema (Phase 1; grown in Phases 3, 5 as flags land).
+- `docs/telemetry.md`: enabling telemetry (the required ingestion URL and ingestion key — env-var
+  name or stored credential, never inline; enabled without either is a config error), both backends
+  with recipes for micromegas native (span trees via async span events, queried through
+  `process_spans`) and micromegas over OTLP, the full metric/event/span table, privacy defaults and
+  opt-in keys, the scope rule (project may only set `enabled = false`), and telemetry vs the audit
+  log (Phase 1; grown in Phases 2–6).
 - `docs/guardian.md`: threat model, request/verdict schema, rule precedence, prompt-versioning
   policy, how to choose a guardian model, known limits (latency, injection surface, eval results),
   result scanning, and attribution of Anthropic-derived rule prose (and MIT-licensed
@@ -822,7 +1161,12 @@ delivered (or extended) by the docs step of the phase named with it — see the 
   (Phases 3–5).
 - `docs/evals.md`: the published guardian scorecard — per model, per profile (Phase 4).
 - `docs/mcp.md`: MCP server config + trust model (Phase 5).
-- `docs/agents.md`: parallel subagents, budgets, mode inheritance (Phase 5).
+- `docs/agents.md`: parallel subagents, budgets, mode inheritance, agent files and project-agent
+  narrowing (Phase 5).
+- `docs/hooks.md`: user hooks — events, handler I/O, place in the pipeline, composition, failure
+  semantics, scopes and trust (Phase 5).
+- `docs/extensions.md`: skills, custom slash commands, output styles, file layout and frontmatter,
+  porting from `.claude/` (Phase 5).
 - `docs/sandboxing.md`: sandbox-interop integration path (srt/bubblewrap spike — Phase 5 roadmap
   slot); sandbox = blast radius, guardian = intent, complementary. Documents the container
   containment probe (`--in-container` verification) and the escape-detection test suite that gates
@@ -891,11 +1235,61 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   model-supplied `cwd` resolved through `fs::place`); risk-class registration of every built-in and MCP tool
   (a test that fails if any registered tool is missing a risk class — the choke point stays closed).
 - **config**: workspace = canonicalized launch cwd, project config read only from
-  `<workspace>/.fontaine/settings.toml`; precedence, project-can-only-tighten enforcement — including that `[guardian] profile`
+  the primary root's `.fontaine/settings.toml` and `.fontaine/settings.local.toml`; precedence, project-can-only-tighten enforcement — including that `[guardian] profile`
   is rejected from project scope (user-scope only, it is a loosening knob) and only `full`/`minimal`
   validate: no config value disables the guardian; every user-scope-only key in the §Config scope
   table (`[accounts]`, `[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets, `[agents.types]`,
-  …) is rejected from project scope.
+  …) is rejected from project scope. Scope stack: precedence managed (empty) > CLI > project-local >
+  project > user for scalars, union for lists; a tracked `settings.local.toml` loads as project scope;
+  endpoint/credential keys rejected from project-local; project `default_mode = "plan"` accepted,
+  `"auto"`/`"acceptEdits"` rejected; `[permissions] allow`/`additional_directories` rejected from
+  project scope; `[telemetry]` rejected from project scope except `enabled = false`, and
+  `enabled = true` without `endpoint` or without a resolvable ingestion key is a config error (exit 2).
+  Workspace trust: an untrusted root's project MCP servers and hooks do not load in the TUI until the
+  trust prompt is accepted (trust record written outside the repo); headless loads them.
+- **permission rules**: grammar parsing for every tool kind; `shell` deny/ask hit compound,
+  wrapped (`sudo`, `env`) and unlexable commands; `shell` allow never matches a compound command;
+  path rules match resolved paths (symlink into a denied path is denied; allow on a symlinked alias
+  does not match); `webfetch(domain:)` host normalization; allow never reaches past deny/ask/
+  critical-path/protected-path, and never lets an edit run in `plan`; in `auto` a narrow allow rule
+  skips the guardian (counting fake guardian: zero calls) and bare `shell` / `shell(python *)` /
+  bare `agent` are suspended (guardian called); session grants vanish on resume and fork; "always"
+  writes the rule to the user file only; `--allowed-tools`/`--disallowed-tools` behave as CLI rules.
+- **workspace roots**: containment across roots (symlink from one root into another stays in; out of
+  all roots falls through); critical-path covers every root and its parents; settings/hooks/MCP in an
+  added root are not loaded; the agent has no way to add a root.
+- **user hooks**: `updated_input` is what the floor, Tier 0.5, rules, guardian and audit see; hook
+  deny > ask > allow; a hook `allow` never passes a deny rule or critical path and is suspended in
+  `auto` for a broad matcher; error / timeout / malformed output ⇒ no decision (normal pipeline);
+  project hook `allow` ignored; hook children get the scrubbed environment.
+- **session ledger**: after a compaction, `AdjudicationRequest` still carries the verbatim user
+  messages and no summary text (canary instruction placed in a compaction summary never reaches the
+  guardian); resume restores context + ledger in the default mode without session grants; fork copies
+  both; rewind keeps denial history.
+- **headless contract**: `json` and `stream-json` outputs validate against the versioned schema
+  (snapshot per `schema_version`); `init` lists roots, config sources, trust state and suspended allow
+  rules; every gate decision appears as a `gate_decision` event with the audit record's tier;
+  `--max-turns` / `--max-budget-usd` stop the run with the matching result subtype; `--input-format
+  stream-json` drives a multi-turn run.
+- **extensions**: frontmatter parsing (Claude Code-compatible keys); a project agent file with a
+  `model` key, `mode = "inherit"`/`auto`, or a tool outside the parent's set is rejected; project
+  agent overrides a same-name user agent but stays narrowed; project skill `allowed-tools` ignored;
+  `!cmd` dynamic context runs through the pipeline as a `shell` call; `skill` has a risk class
+  (choke-point test).
+- **telemetry**: every test runs against a capture layer, micromegas `InMemorySink` (its own test
+  binary — dispatch is process-global), or a wiremock OTLP/HTTP endpoint, never a live collector.
+  **Span tree round-trip**: a nested `fontaine.session > fontaine.interaction > fontaine.tool >
+  fontaine.permission` tree (inner spans closed on a different tokio worker than they opened on)
+  passes through the `SpanBridge` into `InMemorySink`; decoding its thread blocks yields one begin/end
+  async span event pair per span whose `parent_span_id` equals the parent's `span_id` (0 at the root),
+  `depth` increasing by one per level, and the span fields as end-event properties. **No content by
+  default**: a canary secret in the prompt, tool args, tool output and an env var never appears in
+  exported data unless its opt-in key is set, and credential-shaped strings are redacted even then.
+  **Telemetry cannot change a decision**: a run against a black-hole or 500ing exporter makes the same
+  gate decisions as a telemetry-off run, and `-p` exits within the flush cap. **Disabled means no
+  exporter**: with `enabled = false` nothing is exported even when `MICROMEGAS_TELEMETRY_URL` /
+  `OTEL_EXPORTER_OTLP_ENDPOINT` are set. **Audit/telemetry consistency**: each audit entry has exactly
+  one matching `tool_decision` event (same ids, tier and verdict).
 - **parallel agents**: spawn-call gating (task × toolset × model composite); mode inheritance
   invariant (child effective mode ≤ parent, never looser), including a parent that switches mode
   mid-run (the child's next call uses the tighter of its own setting and the parent's new mode);
