@@ -107,7 +107,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
 
 ## Files created or modified
 
-`rust/fontaine-core/src/{permissions,permission_rules,audit}.rs`; `.github/workflows/ci.yml` (adds the `--guardian none` eval step on all three OSes); `rust/fontaine-evals/src/baseline.rs`; `rust/fontaine-evals/tests/{baseline,none_mode}.rs`;
+`rust/Cargo.toml` (new crates: `ratatui =0.30.2`, `crossterm =0.29.0`, `brush-parser =0.4.0`, `toml_edit =0.25.17`, `sha2 =0.11.1` (audit `args_digest`), `serde_jcs =0.2.0` (args canonicalization)); `rust/fontaine-core/src/{permissions,permission_rules,audit}.rs`; `.github/workflows/ci.yml` (adds the `--guardian none` eval step on all three OSes); `rust/fontaine-evals/src/baseline.rs`; `rust/fontaine-evals/tests/{baseline,none_mode}.rs`;
 `rust/fontaine-tools/src/preclassify.rs`; `rust/fontaine/tests/cassettes.rs` (manual-mode cassette, built in step 4; the auto-mode cassette is added in Phase 4);
 `rust/fontaine-tui/src/{app,transcript,approval,statusbar}.rs`; tests under `rust/fontaine-core/tests/`,
 `rust/fontaine/tests/`, `rust/fontaine-tui/tests/`;
@@ -150,9 +150,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   prompt plus an audit record with `tier = tier05`; `ls ../` → one human prompt (interim; the
   counting-guardian form is owned by Phase 4); a relative path under an out-of-scope `cwd` falls
   through; `allow_extra` — an extra entry given a flag falls through to the guardian, an out-of-scope
-  positional falls through, an in-scope positional pre-classifies; golden parser cases: `ls;rm x`, `a|b`
-  and `ls && rm x` never fast-path and `deny shell(rm)` matches the `rm` segment (floor treats the `rm` as
-  critical), while a quoted `';'` argument stays one argument; non-literal argument words never fast-path and never match an allow rule (`cat $HOME/.ssh/id_rsa`, `cat {notes.txt,/etc/passwd}` → guardian; `rm -rf {/,x}` → critical-path; brace patterns detected via brush-parser `parse_brace_expansions`); every `git` invocation, including the config-execution cases in the golden set, goes to the guardian and never fast-paths.
+  positional falls through, an in-scope positional pre-classifies.
 - **headless** (`rust/fontaine/tests/pipeline_headless.rs`, scripted `openai-compatible` endpoint via the Phase-1 `common/mod.rs` helper, passing `--permission-mode manual` explicitly):
   every would-prompt outcome becomes a Deny returned as the tool_result, the run continues, exit
   code 0.
@@ -169,5 +167,6 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   match the shipped step order and `rust/fontaine-core/tests/docs.rs` is green; CHANGELOG entry appended.
 - Needs a human (the agent cannot push): push the branch and confirm the windows CI job runs the `#[cfg(windows)]` tests green.
 - Needs a human and live keys (not CI): `tasks/design/testing.md` Manual Verification item 1 passes (TUI manual approval
-  flow, end to end); the manual-mode rig-cassette recorded per `tasks/design/testing.md` Testing Strategy (Integration, cassettes); the `claude -p` baseline capture, then `baseline diff` against a `--guardian none --out` run file.
+  flow, end to end); the manual-mode rig-cassette recorded per `tasks/design/testing.md` Testing Strategy (Integration, cassettes).
+- Agent step needing a logged-in `claude` CLI (manual or eval-side; never CI): the `claude -p` baseline capture, then `baseline diff` against a `--guardian none --out` run file, and triage of each divergence (fix or record).
 - Log the phase in the master plan's Progress log.

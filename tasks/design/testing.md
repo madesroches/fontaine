@@ -142,7 +142,7 @@ End-to-end checks, each owned by the phase's definition of done (owner in parens
    `TestBackend` test, and gating, per-agent audit and survivor completion by the automated
    parallel-agents test.) (Phase 5)
 6. Minimal profile (narrowed, never off), with `[guardian] profile = "minimal"`: `shell("ls")` in the
-   workspace completes via Tier-0.5 Allow; for the rest the guardian receives an `AdjudicationRequest` without `project_instructions`, `hook_context`, `prior_denials`, with `task_intent` ≤ 500 chars and ≤ 3 `recent_user_messages`, rendered from `guardian_minimal.md`; an
+   workspace completes via Tier-0.5 Allow; an
    attempted escape (`mount /dev/sda1`, docker.sock write) is **Denied by the minimal guardian**,
    audit entry carrying rule label `Container Escape` with the escape class in the `explanation` (`class=<name>`).
    - Docker leg: run in a Docker container with `--in-container` — minimal loads, probe contract

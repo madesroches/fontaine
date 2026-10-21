@@ -116,7 +116,7 @@ plan → not reachable (edit-class is blocked at steps 3/9); dontAsk → Deny; h
 **Audit log** (written by the pipeline in every mode; one record per gate decision): JSONL, one
 append-only file per session at `<data dir>/audit/<session-id>.jsonl`, owner-only.
 Fields: `ts` (RFC 3339), `session_id`, `agent_id`, `tool`, `args_digest` (SHA-256 over the
-RFC 8785 JSON Canonicalization Scheme serialization of the args — raw args are never logged; when a hook rewrote the call, `original_args_digest`
+RFC 8785 JSON Canonicalization Scheme serialization of the args, produced by `serde_jcs` — raw args are never logged; when a hook rewrote the call, `original_args_digest`
 too), `tier` (the tier enum below), `decision` (`allow` | `deny` | `prompt`), `rule` (deny/ask/allow rule text and
 its source scope, hook id, floor check, or guardian rule label; null if none), `confidence` and `guardian_model`
 (`<account>/<model>`) for guardian decisions, `latency_ms`. A human answer to a prompt appends a
@@ -198,7 +198,7 @@ auto-extends the Tier-0.5 curated set.
 
 Distinct from rig `AgentHook`s, which stay bookkeeping-only. User hooks are configured handlers
 (`[[hooks.<event>]]`: a `matcher` in the rule grammar, a `command`, `timeout_secs`) that receive the
-event as JSON on stdin and answer on stdout (exit code 2 = deny, Claude Code's convention). v1
+event as JSON on stdin and answer on stdout (exit code 2 = deny, Claude Code's convention); the field names and output shape are pinned in Phase 5 §User hooks. v1
 events: `pre_tool_use`, `post_tool_use`, `permission_denied`. `pre_tool_use` runs at pipeline step
 1a: it may return `deny`, `ask` or `allow`, an `updated_input`, and a `guardian_context` note
 (passed to the guardian inside an untrusted block). Composition across hooks: deny > ask > allow;

@@ -175,11 +175,11 @@ mode is not resurrected here; minimal adjudicates, just less):
    fills `destructive` and the touched paths' pre-existence status. Allow rules in `auto` (`tasks/design/permissions.md` §Permission rules):
    narrow rules skip the guardian; on entering `auto` the broad code-execution rules are suspended
    for as long as the mode is on and listed (TUI notice, headless `init` event). Telemetry: a
-   `fontaine.guardian` span in `fontaine-guardian` (which depends on `tracing` only), guardian model
+   `fontaine.guardian` span in `fontaine-guardian` (which, for telemetry, uses only `tracing` — no subscriber or exporter), guardian model
    usage attributed `query_source = guardian` through its ancestor span, and
    `fontaine.guardian.fail_closed.count` by reason. Shipped default mode
    flips `manual` → `auto` here, and the pre-Phase-4 restriction on user-scope `default_mode = "auto"` (config error) and on `--permission-mode auto` (usage error) is removed — project and project-local `auto` stay rejected — and only the user and CLI cases of the Phase 0 config tests and Phase 1 `headless_smoke.rs` "auto rejected" tests flip to assert acceptance. Headless `-p` semantics for `auto`: `tasks/design/permissions.md` §Headless.
-3. TUI denial UX: inline denial rendering, `/denied` retry list, `/permissions` rule editor,
+3. TUI denial UX: inline denial rendering, `/denied` retry list,
    `/model` and `/guardian-model` switches (live session + persisted to the user file via `toml_edit`; unavailable-pinned-guardian prompt — design above), Escalate-verdict prompts.
 4. Eval runner live modes (`rust/fontaine-evals/src/{live,report}.rs`; CLI in `tasks/design/testing.md` Testing Strategy, Eval harness): `--guardian live:<account>/<model>` routes
    `kind = guardian` cases to `Guardian::adjudicate` and `kind = pipeline` cases to `PermissionPipeline`
@@ -215,18 +215,18 @@ mode is not resurrected here; minimal adjudicates, just less):
    request/verdict schemas, rule precedence (`hard_deny` > `soft_deny` > `allow` > explicit
    specific user intent), prompt-versioning policy, how to choose a guardian model (the ranked
    list, `/guardian-model`, fail-loudly on unavailability, custom-endpoint fallback notice), the
-   minimal profile, and known limits (latency, injection surface) with a link to the published
+   minimal profile (the containment probe signals from step 6, the `--in-container` AND probe rule, and the fallback-to-`full` notice), and known limits (latency, injection surface) with a link to the published
    scorecard; include the attribution note for Anthropic-derived rule prose (and MIT-licensed
    LlamaFirewall prompts if mined). Publish the scorecard as `docs/evals.md` (per-model table +
    `minimal` column), linked from `docs/index.md`. Extend `docs/tui.md` with the denial UX
    (`[Rule]` + explanation rendering, `/denied` retry, loop-breaker notice), `docs/permissions.md`
    with `auto`, the `[auto_mode]` prose lists and allow-rule suspension in `auto`,
-   `docs/telemetry.md` with the guardian span and metrics, `docs/headless.md` with `--permission-mode auto`, `--in-container` and the `GuardianUnavailable` `init` notice, `docs/tui.md` with `/permissions`, `/model` and `/guardian-model` (persistence, the main-model-fallback rule, the unavailable-guardian prompt), and `docs/configuration.md` with every
+   `docs/telemetry.md` with the guardian span and metrics, `docs/headless.md` with `--permission-mode auto`, `--in-container` and the `GuardianUnavailable` `init` notice, `docs/tui.md` with `/model` and `/guardian-model` (persistence, the main-model-fallback rule, the unavailable-guardian prompt), and `docs/configuration.md` with every
    `[guardian]`/`[auto_mode]` key; turn the README auto-mode explainer from stub to real; append a CHANGELOG entry.
 
 ## Files created or modified
 
-`rust/fontaine-guardian/src/{lib,verdict,prompt_builder,rules,cache,profile}.rs` + `rust/fontaine-evals/src/{live,report}.rs` +
+`rust/Cargo.toml` (dev: tokio `test-util` feature for the time-pause tests; `insta` from Phase 2 for the prompt-builder snapshots); `rust/fontaine-guardian/src/{lib,verdict,prompt_builder,rules,cache,profile}.rs` + `rust/fontaine-evals/src/{live,report}.rs` +
 `rust/fontaine-guardian/prompts/{guardian_prompt,guardian_minimal}.md` + `rust/fontaine-guardian/data/guardian_models.toml`
 (ships empty; filled by step 5); `rust/fontaine-evals/tests/{live,report}.rs`; `rust/fontaine-core/src/permissions.rs`
 (auto branch); `rust/fontaine-core/src/{containment,destructive}.rs`; `rust/fontaine-tui/src/{denials,approval}.rs`;
@@ -238,13 +238,13 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
 ## Tests owned by this phase
 
 - **guardian** (`tasks/design/testing.md` Testing Strategy): malformed verdict outputs → retries → Deny; timeout →
-  Deny (tokio time-pause); endpoint 500 (wiremock) → Deny `GuardianUnavailable` (`fail_closed_reason = error`); connection reset
+  Deny (tokio `test-util` time-pause); endpoint 500 (wiremock) → Deny `GuardianUnavailable` (`fail_closed_reason = error`); connection reset
   and mid-stream drop → Deny `GuardianUnavailable` (`error`), no hang; a missing guardian credential → Deny `GuardianUnavailable` (`unavailable`) — driven by `rig_core::test_utils`
   streaming clients (`HttpErrorStreamingClient`, `NonSuccessStreamingClient`,
   `SequencedStreamingHttpClient`) or a raw `tokio::net::TcpListener` that drops the socket (wiremock
   0.6 has no reset/abort API); an Allow below `confidence_threshold` on a destructive class → Deny,
   and a Deny verdict is never softened; cache-key correctness incl. rules-version invalidation; loop
-  breaker (3 consecutive / 20 total denials pause `auto`; approval resumes; headless paused ⇒ Deny); prompt-builder snapshots (defaults spliced, `$defaults` marker, untrusted delimiting
+  breaker (3 consecutive / 20 total denials pause `auto`; approval resumes; headless paused ⇒ Deny); prompt-builder `insta` snapshots (defaults spliced, `$defaults` marker, untrusted delimiting
   present); redaction of credential-shaped inputs; minimal-profile resolution fail-closed (probe
   failure ⇒ fall back to `full`), and under `minimal` the guardian receives an `AdjudicationRequest` without `project_instructions`, `hook_context` and `prior_denials`, with `task_intent` ≤ 500 chars and ≤ 3 `recent_user_messages`, rendered from `guardian_minimal.md`, while the escape primitives (mount, docker.sock write, cgroup control write, proxy bypass) + exfiltration-class
   remote writes still Deny/Escalate.
@@ -279,7 +279,7 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   timeout (`timeout`), unparseable (`unparseable`), 500 (`error`), missing credential (`unavailable`) and low confidence (`low_confidence`) fail-closed reasons are each counted once under those names, with the audit labels `Timeout` / `Unparseable` / `GuardianUnavailable` / `GuardianUnavailable` / `LowConfidence`.
 - **TUI** (`rust/fontaine-tui/tests/`): `TestBackend` with injected key events and a scripted
   model — `/denied` lists a denied action and `r` injects the retry notice into the agent's next
-  turn; the Shift+Tab cycle now includes `auto`; `/permissions` edits a rule (appended to the user file's `[permissions]` list); `/model` switches the live model and persists it to the user file; `/guardian-model` switches the guardian and persists it, and an unavailable pinned guardian offers retry / pick another validated guardian / switch to `manual`.
+  turn; the Shift+Tab cycle now includes `auto`; `/model` switches the live model and persists it to the user file; `/guardian-model` switches the guardian and persists it, and an unavailable pinned guardian offers retry / pick another validated guardian / switch to `manual`.
 - Integration: scripted-endpoint auto-mode runs through `fontaine -p`
   (`rust/fontaine/tests/auto_headless.rs`; agent and guardian on separate scripted
   `openai-compatible` accounts, built with the Phase-1 `common/mod.rs` helper), including the fail-closed cases above end to end (guardian endpoint
@@ -298,9 +298,9 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   Phase 4 docs in place; CHANGELOG entry appended.
 - Needs live keys and/or a human (explicitly not CI): `tasks/design/testing.md` Manual Verification items 2–4 (auto-mode
   judgment, retry UX, Ollama model-agnostic parity); the live-model scorecard run and its
-  publication, linked from docs; the auto-mode cassette recording; the `claude -p` baseline
-  capture; Manual Verification item 6's Docker leg (run in a Docker container with `--in-container`:
+  publication, linked from docs; the auto-mode cassette recording; Manual Verification item 6's Docker leg (run in a Docker container with `--in-container`:
   the `minimal` profile loads and the probe contract holds); the scorecard run that fills `guardian_models.toml`.
-- Needs a human: cross-check the dataset `expected` labels against `claude -p` baselines and sign them off (maintainer) before the scorecard is published.
+- Agent step needing a logged-in `claude` CLI (manual or eval-side; never CI): the `claude -p` baseline capture and diff, and triage of divergences against the dataset `expected` labels.
+- Needs a human: sign off the dataset `expected` labels (maintainer) before the scorecard is published.
 - Needs a human: cut the first release (tag `vX.Y.Z` and push the tag; the release workflow builds and publishes the binaries; install paths are Releases binaries and `cargo install --git`, no crates.io publish); move `## [Unreleased]` under the version in `CHANGELOG.md`.
 - Log the phase in the master plan's Progress log.

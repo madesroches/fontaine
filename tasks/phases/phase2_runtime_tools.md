@@ -74,7 +74,7 @@ the rig-tools 0.45 constructor shape when the step lands). `--add-dir` roots are
 
 `fontaine-core/src/ledger.rs`: the append-only per-session record from `tasks/design/sessions.md` §Session
 ledger (verbatim user messages, mode changes, approvals and session grants, denials, actions taken,
-roots, trust state, git remotes and the pre-session file index captured at start — gitignore-respecting via the `ignore` crate (`=0.4.33`; already transitive via rig-tools — align the pin with the version rig-tools resolves),
+roots, trust state, git remotes (via `gix`, config read without following `include`/`includeIf`; none when there is no `.git` or `gix` errors; Fontaine never spawns `git`) and the pre-session file index captured at start — gitignore-respecting via the `ignore` crate (`=0.4.33`; already transitive via rig-tools — align the pin with the version rig-tools resolves),
 capped at 50,000 paths with overflow recorded as truncated), persisted as
 JSONL beside rig-memory's context under `<data dir>/sessions/<session-id>/` (owner-only).
 It is written by the session orchestrator and the pipeline, never by the model, and it is the only
@@ -133,7 +133,7 @@ context.
 
 ## Files created or modified
 
-`rust/fontaine-tools/src/{lib,gate,guarded,result_pipeline,risk,scope,builtins,webfetch,git_bash}.rs`;
+`rust/Cargo.toml` (new crates: `reqwest =0.13.5` (webfetch; the version rig-core 0.45's `rig-reqwest` resolves), `htmd =0.5.6`, `ignore =0.4.33`, `url` 2.x caret (IDNA host normalization), `insta` 1.x caret (dev; system-prompt snapshot)); `rust/fontaine-tools/src/{lib,gate,guarded,result_pipeline,risk,scope,builtins,webfetch,git_bash}.rs`;
 `rust/fontaine-core/src/{lib,session,ledger}.rs`; `rust/fontaine-core/prompts/system_prompt.md`; `rust/fontaine-tools/tests/{scope,choke_point}.rs`; `rust/fontaine-core/tests/{ledger,config}.rs`; `rust/fontaine/tests/{headless_smoke,headless_contract}.rs` (retargeted from `echo` to `read`); `rust/fontaine/tests/headless_tools.rs`; `docs/tools.md`, `docs/architecture.md`,
 `docs/configuration.md`, `docs/telemetry.md`, `docs/headless.md`, `docs/index.md`.
 
@@ -160,7 +160,7 @@ context.
 - **webfetch** (wiremock): HTML converted to markdown; a body over 10 MB is cut at the fetch cap; output
   over 100,000 characters is truncated with the truncation noted; a response slower than 30 s times out;
   a cross-host redirect is returned, not followed; only `url` is accepted.
-- **system prompt** (`rust/fontaine-core/tests/`): snapshot of the assembled prompt (base → `FONTAINE.md` → append; `--system-prompt` replaces only the base); the base contains the required steering content.
+- **system prompt** (`rust/fontaine-core/tests/`): `insta` snapshot of the assembled prompt (base → `FONTAINE.md` → append; `--system-prompt` replaces only the base); the base contains the required steering content.
 - **session ledger** (`rust/fontaine-core/tests/ledger.rs`): after a forced compaction the ledger
   still holds every user message verbatim and no summary text; the ledger is append-only (no API
   removes a record); the file index respects `.gitignore` and truncates at the cap with the

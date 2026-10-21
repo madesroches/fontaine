@@ -47,9 +47,8 @@ delivered (or extended) by the docs step of the phase named with it — see the 
 - `docs/extensions.md`: skills, custom slash commands, output styles, file layout and frontmatter,
   porting from `.claude/` (Phase 5).
 - `docs/sandboxing.md`: sandbox-interop integration path (srt/bubblewrap spike — Phase 5 roadmap
-  slot); sandbox = blast radius, guardian = intent, complementary. Documents the container
-  containment probe (`--in-container` verification) and the escape-detection test suite that gates
-  `[guardian] profile = "minimal"` — the escape classes minimal must still deny.
+  slot); sandbox = blast radius, guardian = intent, complementary. Documents the srt/bubblewrap
+  escape-detection test suite — the escape classes minimal must still deny under a sandbox.
 - `evals/README.md`: golden-dataset format + runner usage (Phase 0) — the dataset is a public
   asset, so its format doc ships with it.
 - `CONTRIBUTING.md` (repo root, Phase 0): build/test commands, branch and commit rules, how to submit

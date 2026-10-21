@@ -6,8 +6,8 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 
 **Facade: `tracing` everywhere.** Every crate instruments with `tracing` spans/events only — no
 crate but the `fontaine` bin depends on a subscriber or exporter (rig already emits GenAI-semconv
-`tracing` spans, so this is the one facade that sees them). `fontaine-guardian` depends on
-`tracing` alone and stays embeddable: with no subscriber installed its spans are no-ops. The bin
+`tracing` spans, so this is the one facade that sees them). for telemetry, `fontaine-guardian` uses only
+`tracing` (no subscriber or exporter) and stays embeddable: with no subscriber installed its spans are no-ops. The bin
 owns the global subscriber (`rust/fontaine/src/telemetry/`): a `tracing_subscriber::registry()`
 with (a) the local debug-file layer (`--debug-file <path>`, `FONTAINE_LOG` env filter; owner-only; Claude
 Code's `--debug-file` analog), and (b) when `[telemetry] enabled`, one export backend:

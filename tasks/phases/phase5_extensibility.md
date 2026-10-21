@@ -65,9 +65,9 @@ hook's `allow` is ignored and project MCP tools are gated like any MCP tool.
 
 Built to `tasks/design/permissions.md` §User hooks, into the step-1a slot Phase 3 left: command handlers for
 `pre_tool_use`, `post_tool_use` and `permission_denied` (`fontaine-core/src/user_hooks.rs`). The
-event goes to the handler as JSON on stdin (session id, agent id, tool, args, mode, roots); the
-answer comes back as JSON on stdout or exit code 2 (= deny, stderr as the reason). `pre_tool_use`
-returns `decision` (deny / ask / allow), `updated_input`, `guardian_context`; `post_tool_use` may
+event goes to the handler as one JSON object on stdin with Claude Code's field names: `session_id`, `cwd`, `hook_event_name`, `tool_name` (Fontaine tool names), `tool_input`, plus `tool_response` for `post_tool_use`, and the Fontaine extensions `agent_id`, `permission_mode` (Fontaine mode names) and `workspace_roots`; there is no `transcript_path` (Fontaine has no transcript file equivalent). The
+answer is one JSON object on stdout: `hookSpecificOutput` with `hookEventName`, `permissionDecision` (`allow` | `deny` | `ask`), `permissionDecisionReason`, `updatedInput`, plus the Fontaine extension `guardian_context`. Exit codes as Claude Code: 0 = parse stdout; 2 = block, stderr as the reason (a deny); any other code = non-blocking error that contributes no decision and never loosens. `pre_tool_use`
+returns the decision, `updatedInput` and `guardian_context` above; `post_tool_use` may
 append a note to the tool result the agent sees (a `ResultPipeline` stage that runs after the Phase 6 scanner stage); `permission_denied` may return `retry` (the agent is
 told it may retry, as with `/denied` → `r`). Handlers run (through Git Bash on Windows, found by the same discovery as the `shell` tool, including `FONTAINE_GIT_BASH_PATH`) with the scrubbed child environment and a
 `timeout_secs` cap, in a `fontaine.hook` span. A user-scope `allow` in `auto` follows Claude Code: a
@@ -169,8 +169,7 @@ Amendments A3–A4 (analysis-strategic-verdict; folded in per user decision 2026
 probe (`rust/fontaine-core/src/containment.rs`) as a second verification route. When taken, its deliverables:
 the spike, the **escape-detection test suite** (mount/umount, docker.sock, cgroup-control writes,
 bind-mount symlink escape, proxy bypass → denied even under minimal — the srt/bubblewrap leg of `tasks/design/testing.md` Manual Verification item 6),
-and **`docs/sandboxing.md`** documenting the integration path, the container containment probe
-(`--in-container` verification), and the escape classes minimal must still deny. And keep
+and **`docs/sandboxing.md`** documenting the srt/bubblewrap integration path and the escape classes minimal must still deny. And keep
 `fontaine-guardian` **dependency-light and lift-out-able** as an embeddable crate, so other
 harnesses can embed the adjudicator via adapters (see the rig contingency in Decisions).
 
@@ -226,7 +225,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   `rust/fontaine-core/tests/user_hooks.rs`, and the trust, persistence, extensions and telemetry tests.
 - Needs a human: `tasks/design/testing.md` Manual Verification item 5 passes (live look-and-feel only; the killed-row state and budget display are covered by the agents-panel `TestBackend` test, gating and audit by the
   automated parallel-orchestration test).
-- Needs live keys (not CI): the `claude -p` baseline check (`fontaine-evals` `baseline capture` / `diff`) that a hook `allow` in `auto` skips the
+- Agent step needing a logged-in `claude` CLI (manual or eval-side; never CI): the `claude -p` baseline check (`fontaine-evals` `baseline capture` / `diff`) that a hook `allow` in `auto` skips the
   classifier for a narrow matcher and is suspended for a broad one.
 - Item 6's srt/bubblewrap leg ships **with the sandbox slot when taken** (minimal-profile escape denies + probe
   fail-closed under srt/bubblewrap); its Docker leg is owned by Phase 4; the build steps above do not depend on it.

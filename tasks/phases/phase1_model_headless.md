@@ -64,8 +64,8 @@ upstream builder knob.
 
 ## Steps
 
-1. Add rig crates (pinned exact versions): `rig-core`, `rig-agent`, `rig-memory`, `rig-tools`,
-   `rig-rmcp`, `rig-cassette` (dev). `fontaine-core/src/models.rs`: map Fontaine config
+1. Add rig crates (pinned exact versions): `rig-core` (feature `reqwest`, plus defaults), `rig-agent`, `rig-memory`, `rig-tools`,
+   `rig-rmcp`, `rig-cassette` (dev, feature `http`; the `agent` feature is not used — cassettes replay provider HTTP, not `AgentRun`); dev-dependencies `rig-core` and `rig-agent` with `test-utils`. `fontaine-core/src/models.rs`: map Fontaine config
    accounts → rig provider clients (one per account; Anthropic, OpenAI, Gemini, Ollama, custom
    OpenAI-compatible base URLs; `kind = "ollama"` uses rig's native Ollama client against Ollama's native API, `base_url` like `http://localhost:11434`; `openai-compatible` is the kind for OpenAI-style endpoints), resolve `<account>/<model>` references (unknown account or model
    is a config error, exit 2), resolve credentials (env var / the Phase 0 `credentials.rs` lookup, plus the
@@ -123,7 +123,7 @@ upstream builder knob.
 
 ## Files created or modified
 
-`rust/Cargo.toml` (rig + telemetry pins, `jsonschema` and `serial_test` dev-dependencies; new crates: `wiremock =0.6.5` (dev), `rpassword 7.5.4` (hidden `auth login` prompt), `sha2 =0.11.1` (audit `args_digest`), `uuid 1.28.0` with the `v4` feature (session ids); clap/tokio/serde/toml are 1.x and use caret); `rust/fontaine-core/src/models.rs`; `rust/fontaine-core/src/credentials.rs` (adds the writer for `auth login`); `rust/fontaine/src/{main,lib,headless}.rs`
+`rust/Cargo.toml` (rig + telemetry pins — `rig-core` with `reqwest`, dev `rig-core`/`rig-agent` with `test-utils`, dev `rig-cassette` with `http`; `jsonschema` and `serial_test` dev-dependencies; new crates: `wiremock =0.6.5` (dev), `rpassword 7.5.4` (hidden `auth login` prompt), `uuid 1.28.0` with the `v4` feature (session ids); clap/tokio/serde/toml are 1.x and use caret); `rust/fontaine-core/src/models.rs`; `rust/fontaine-core/src/credentials.rs` (adds the writer for `auth login`); `rust/fontaine/src/{main,lib,headless}.rs`
 (`main.rs` thin; `lib.rs` holds the logic the integration tests import; `-p` flag wiring, I/O contract); `rust/fontaine/src/telemetry/{micromegas,otlp,span_bridge}.rs`;
 `rust/fontaine/tests/{headless_smoke,headless_contract,telemetry_micromegas,telemetry_otlp}.rs`;
 `docs/schemas/headless-v1.schema.json`; `rust/fontaine-core/tests/{models,accounts}.rs`; `rust/fontaine/tests/common/mod.rs` (shared scripted-wiremock helper);
