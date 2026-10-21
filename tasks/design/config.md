@@ -20,7 +20,7 @@ load from the primary root only. The guardian's `session_facts` and trust bounda
 2. **CLI** — `--settings <file>` plus the flag forms (`--permission-mode`, `--model`,
    `--allowed-tools`, `--disallowed-tools`, `--add-dir`); one session; user trust.
 3. **project-local** — `<root>/.fontaine/settings.local.toml`; user trust only while `gix` reports it
-   untracked or ignored in a git work tree; otherwise (tracked, no `.git`, or a `gix` error) it loads as project scope. Fontaine never spawns `git` for this.
+   untracked or ignored in a git work tree (a missing index counts as empty) AND the primary root is trusted; otherwise (tracked, untrusted root, no `.git`, or a `gix` error) it loads as project scope. Fontaine never spawns `git` for this.
 4. **project** — `<root>/.fontaine/settings.toml`; may only tighten.
 5. **user** — `<config dir>/config.toml`.
 
