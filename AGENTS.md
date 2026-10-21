@@ -94,8 +94,10 @@ all tests pass:
 From `rust/`:
 
 - `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test` /
-  `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` — CI runs all
-  four on Linux, macOS and Windows.
+  `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` — the core CI
+  steps, on Linux, macOS and Windows. Later phases add steps (`--guardian none` eval run,
+  `cargo dist plan`, `--features fontaine/pg2` builds); the master plan's workspace layout lists
+  the full `ci.yml` step set.
 - `RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes` —
   re-record cassettes (needs live provider keys; a human step).
 - `cargo run` — interactive TUI (`fontaine`).
