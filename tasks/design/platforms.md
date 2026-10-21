@@ -4,8 +4,8 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 
 ## Platforms and directories
 
-v1 supports **Linux, macOS and Windows**; CI runs all four steps on `ubuntu-latest`,
-`macos-latest` and `windows-latest`. Windows follows Claude Code: the `shell` tool (and hook
+v1 supports **Linux, macOS and Windows**; every CI step runs on all three OSes (`ubuntu-latest`,
+`macos-latest`, `windows-latest`). Windows follows Claude Code: the `shell` tool (and hook
 commands) run through **Git Bash** — Git for Windows is a prerequisite — so the POSIX shell parser, Tier 0.5, rule matching and the critical-path
 check apply unchanged. Discovery: locate `git.exe` on PATH (then the standard Git for Windows install
 locations), derive `<Git>\usr\bin` and `<Git>\bin`, and prepend both to the shell launcher's PATH
@@ -16,7 +16,7 @@ pre-classify. Path handling (scope validator, protected paths, critical-path) ac
 letters, UNC paths, MSYS-style `/c/...` argv paths (translated to drive paths before validation; an
 untranslatable one is out of scope), compares case-insensitively, and resolves junctions and
 symlinks. Critical paths on Windows include drive roots and `%USERPROFILE%`. The containment probe
-(Phase 4 step 6; Linux only — `/.dockerenv`, `/run/.containerenv`, `container=` in PID 1's environment, container markers in `/proc/1/cgroup`; any one suffices) reports "not contained" on macOS and Windows; `--in-container` stays a manual assertion
+(Phase 4 step 6; Linux only, signals defined there) reports "not contained" on macOS and Windows; `--in-container` stays a manual assertion
 that is never sufficient alone.
 
 ## Releases

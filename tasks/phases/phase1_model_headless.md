@@ -42,7 +42,7 @@ rename or removal bumps it) and `session_id`. Event types:
 - `tool_result` — `tool_use_id`, success, the result text as the agent receives it.
 - `result` — `subtype` (`success` | `error_max_turns` | `error_max_budget` | `error_run`), result
   text, `structured_output` (with `--json-schema`), usage and cost (main / guardian / subagents),
-  and the denial list (tool, tier, rule, reason).
+  and the denial list (tool, tier, rule, explanation).
 
 `--input-format stream-json` reads user messages as JSONL on stdin for a multi-turn headless run. An
 external approval delegate (Claude Code's `--permission-prompt-tool`) is not in v1: every
@@ -103,8 +103,8 @@ upstream builder knob.
    | `--session-id <uuid>` | use this session id (ledger, audit log, telemetry) | 2 |
    | `--continue` / `--resume <id>` / `--fork-session` | resume the latest / a given session; fork it under a new id | 5 |
    | `--in-container` | user assertion that the process runs inside a container; only an input to `[guardian] profile = "minimal"` resolution, never sufficient alone (the runtime probe must also pass — Phase 4 step 6); a CLI flag, not a config key | 1 (read from 4) |
-   | `fontaine auth login <account>` | store the account's credentials in the stored-credentials file | 1 |
-   | `fontaine auth login --telemetry` | store the telemetry ingestion key in the stored-credentials file | 1 |
+   | `fontaine auth login <account>` | store the account's credentials in the stored-credentials file; the secret comes from a hidden TTY prompt, or from stdin when stdin is not a TTY | 1 |
+   | `fontaine auth login --telemetry` | store the telemetry ingestion key in the stored-credentials file; same secret input | 1 |
 3. Telemetry backends (design above): `rust/fontaine/src/telemetry/{micromegas,otlp,span_bridge}.rs`;
    the `SpanBridge` maps rig `chat` / `invoke_agent` spans to `api_request`, `token.usage` and
    `cost.usage` and exports the span tree; a `fontaine.interaction` span with `prompt.id`; content
@@ -127,8 +127,8 @@ upstream builder knob.
 
 ## Files created or modified
 
-`rust/Cargo.toml` (rig + telemetry pins); `rust/fontaine-core/src/models.rs`; `rust/fontaine-core/src/credentials.rs` (adds the writer for `auth login`); `rust/fontaine/src/{main,headless}.rs`
-(`-p` flag wiring, I/O contract); `rust/fontaine/src/telemetry/{micromegas,otlp,span_bridge}.rs`;
+`rust/Cargo.toml` (rig + telemetry pins); `rust/fontaine-core/src/models.rs`; `rust/fontaine-core/src/credentials.rs` (adds the writer for `auth login`); `rust/fontaine/src/{main,lib,headless}.rs`
+(`main.rs` thin; `lib.rs` holds the logic the integration tests import; `-p` flag wiring, I/O contract); `rust/fontaine/src/telemetry/{micromegas,otlp,span_bridge}.rs`;
 `rust/fontaine/tests/{headless_smoke,headless_contract,telemetry_micromegas,telemetry_otlp}.rs`;
 `rust/fontaine-core/tests/{models,accounts}.rs`; `rust/fontaine/tests/common/mod.rs` (shared scripted-wiremock helper);
 `docs/{configuration,architecture,headless,telemetry,index}.md`, `README.md`.
@@ -144,6 +144,7 @@ upstream builder knob.
   own `wiremock` endpoints; project-scope `[accounts]` (and `[model]`/`[guardian] model`) rejected;
   credentials resolved from env (and a temp stored-credentials file) with no live API; inline raw
   key rejected; missing guardian-account credential ⇒ guardian unavailable.
+- **credentials writer** (`rust/fontaine-core/tests/accounts.rs`, temp `FONTAINE_DATA_DIR`): `auth login` entries (account and telemetry) round-trip through the lookup; the file is owner-only (0600 on Unix, current-user-only ACL on Windows).
 - Integration surface: the headless `-p` run is the driver for every later integration test. The
   offline driver is an `openai-compatible` account whose `base_url` is a scripted `wiremock`
   endpoint, built by the shared helper `rust/fontaine/tests/common/mod.rs`: a scripted

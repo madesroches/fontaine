@@ -52,8 +52,8 @@ in the main session, and their results return to the parent as a summary.
 
 ### Workspace trust and project executables
 
-Project MCP servers (`[mcp.servers.*]` in `.fontaine/settings.toml`), project hooks, and project
-skills' `!cmd` dynamic context are project-defined executables (`tasks/design/config.md` §Config, Workspace trust). In
+Project and project-local MCP servers (`[mcp.servers.*]` in `.fontaine/settings{,.local}.toml`), hooks, and
+skills' `!cmd` dynamic context are project-local executables (`tasks/design/config.md` §Config, Workspace trust). In
 the TUI, before any of them loads, an untrusted primary root gets the trust prompt (trust / don't
 trust; the answer is written to the trust store from Phase 0); each project MCP server is then
 approved individually at first load, and the repository cannot pre-approve its own servers. Declining
@@ -203,7 +203,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   reachable raw).
 - Persistence: save/resume round-trip through `AgentRun` + ledger; resume starts in the default mode
   without session grants; fork copies both stores under a new id.
-- **workspace trust** (TUI `TestBackend`): an untrusted root's project MCP servers and hooks do not
+- **workspace trust** (TUI `TestBackend`): an untrusted root's project and project-local MCP servers and hooks do not
   start before the trust prompt is accepted; declining starts none; a trusted root still asks per
   new project server; headless `-p` loads them, and in both surfaces a project hook's `allow` is
   ignored and a project MCP tool call is gated like any `Arbitrary` call.

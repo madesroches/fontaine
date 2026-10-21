@@ -28,13 +28,13 @@ load from the primary root only. The guardian's `session_facts` and trust bounda
 highest-precedence scope that sets a key wins. Lists merge as a union across scopes; a scope may add
 only to the lists the scope table lets it set. A key a scope may not set is rejected at load (exit 2).
 
-**Workspace trust** (Claude Code parity). Project-defined executables — project MCP servers, project
-hooks, project skills' `!cmd` dynamic context — load in the TUI only after the user trusts the
-primary root at a trust prompt shown before they load; each project MCP server is also approved
-individually, and a repository cannot pre-approve its own servers. Headless `-p` loads them without
-a prompt, as Claude Code does. In both surfaces they can **never change a permission decision**: a
-project hook's `allow` is ignored, project MCP tools are gated like any MCP tool (`Arbitrary`), and
-`!cmd` runs as a gated `shell` call. The trust record lives in `<data dir>/trust.toml`, keyed by
+**Workspace trust** (Claude Code parity: folder trust covers the whole folder). Project and
+project-local executables — MCP servers, hooks, skills' `!cmd` dynamic context — load in the TUI only
+after the user trusts the primary root at a trust prompt shown before they load; each project MCP
+server is also approved individually, and a repository cannot pre-approve its own servers. Headless
+`-p` loads them without a prompt, as Claude Code does. In both surfaces a project hook's `allow` is
+ignored, project MCP tools are gated like any MCP tool (`Arbitrary`), and `!cmd` runs as a gated
+`shell` call; a project-local (user-trust) hook's `allow` counts as a user grant. The trust record lives in `<data dir>/trust.toml`, keyed by
 canonical root path, never in the repo. Tightening keys (deny/ask, soft/hard deny) and prompt
 content (FONTAINE.md, skills, agent files, output styles) load regardless of trust. Trust state is
 a ledger fact passed to the guardian in `session_facts`.
@@ -152,7 +152,7 @@ log_user_prompts = false           # content opt-ins, all default false
 log_assistant_responses = false    #   (OTEL_LOG_USER_PROMPTS / _ASSISTANT_RESPONSES /
 log_tool_details = false           #   _TOOL_DETAILS / _TOOL_CONTENT parity); tool_details = args,
 log_tool_content = false           #   shell commands, paths, MCP server/tool names, guardian
-                                   #   rule names + reasons; tool_content = tool outputs
+                                   #   rule names + explanations; tool_content = tool outputs
 content_max_bytes = 61440
 resource_attributes = {}           # static tags, e.g. { "team.id" = "platform" }
 ```
@@ -185,8 +185,8 @@ a manual user). Tier-0.5 `[shell_preclassifier]` extensions, `[permissions] allo
 too — a loosening knob (minimal vs full), and no value of it disables the guardian. Keys that name an
 endpoint or a credential (`[accounts.*]`, `[telemetry]` other than `enabled = false`) never come from
 a file inside the repository directory, project-local included: each would let a checked-in or
-planted file send session data elsewhere. Project-defined executables (project MCP servers and hooks)
-are a separate class, governed by Workspace trust above.
+planted file send session data elsewhere. Project and project-local executables (MCP servers, hooks,
+skill `!cmd`) are a separate class, governed by Workspace trust above.
 
 Per-key scope (the user file may set every key; a key a scope may not set is rejected at load):
 
@@ -205,6 +205,6 @@ Per-key scope (the user file may set every key; a key a scope may not set is rej
 | `[agents]` `max_parallel`, budgets; `[agents.types]` | no | yes | `--settings` |
 | agent files `agents/*.md` | narrowing only (see above) | — | — |
 | `[shell_preclassifier]` `allow_extra` | no | yes | `--settings` |
-| `[hooks.*]` | after workspace trust; `allow` ignored | yes | `--settings` |
-| `[mcp.servers.*]` | after workspace trust + per-server approval | yes | `--settings` |
+| `[hooks.*]` | after workspace trust; `allow` ignored | yes, after workspace trust | `--settings` |
+| `[mcp.servers.*]` | after workspace trust + per-server approval | yes, after workspace trust | `--settings` |
 | `[telemetry]` | `enabled = false` only | `enabled = false` only | `--settings` |

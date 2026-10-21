@@ -99,9 +99,9 @@ context.
    | Tool | RiskClass | Implementation |
    |---|---|---|
    | `read` | ReadOnly | rig-tools `read`, wrapped, `confine: true` |
-   | `ls` | ReadOnly | new first-party `Tool` (`NAME = "ls"`) delegating to rig `list`; args `path`, optional `ignore` (globs) |
+   | `ls` | ReadOnly | new first-party `Tool` (`NAME = "ls"`) delegating to rig `list`; args are rig-tools 0.45 `ListArgs`: `path`, `depth`, `glob` (include filter), `hidden` |
    | `glob` | ReadOnly | new first-party `Tool` over rig `search`; args `pattern`, optional `path` |
-   | `grep` | ReadOnly | new first-party `Tool` over rig `search`; args `pattern`, optional `path`, `glob`, `type`, `output_mode` (`content` \| `files_with_matches` \| `count`), `-i`, `-n`, context flags (`-A`/`-B`/`-C`) as Claude Code, `head_limit` |
+   | `grep` | ReadOnly | new first-party `Tool` over rig `search`; args are rig-tools 0.45 `SearchArgs`: `pattern`, `path`, `glob`, `hidden`, `files` mode; 200-match cap. Case-insensitivity is `(?i)` in the pattern; no context lines, count, type or head_limit |
    | `write` | WorkspaceWrite | rig-tools `write`, wrapped, `confine: true` |
    | `edit` | WorkspaceWrite | rig-tools `edit`, wrapped, `confine: true` |
    | `shell` | Arbitrary | rig-tools `shell`, wrapped; `confine: true`, `max_timeout`, output `cut` set |
@@ -120,11 +120,7 @@ context.
    calls (scope check via `scope.rs`) and denies everything else, so the always-on floor holds from
    the first commit; the real `PermissionPipeline` lands in Phase 3 and replaces the stub. `scope.rs`
    and the per-root tool instances are multi-root from the start (design above); `--add-dir` wires in.
-   On Windows the `shell` tool runs through Git Bash (Git for Windows is required), so the POSIX parser and checks apply unchanged. Discovery (shared with hooks): `git.exe` on PATH, then the standard
-   Git for Windows install locations; derive `<Git>\usr\bin` and `<Git>\bin` and prepend them to the launcher's
-   PATH (rig-tools `Launcher::with_env`) so rig's `sh` resolves; `FONTAINE_GIT_BASH_PATH` overrides; not found ⇒
-   startup error, exit 2, naming Git for Windows and the override; `scope.rs` handles drive
-   letters, UNC paths, case-insensitive comparison, junctions and MSYS-style `/c/...` paths.
+   On Windows the `shell` tool runs through Git Bash, discovered per `tasks/design/platforms.md` §Platforms and directories (`git_bash.rs`); `scope.rs` handles the Windows path forms listed there.
    The `shell` tool's child environment drops the telemetry credential variables, `MICROMEGAS_*`,
    `OTEL_EXPORTER_OTLP_HEADERS`, every configured `[accounts.*] api_key_env` name and
    `[guardian] scanner_hf_token_env`. `GuardedTool::call` opens a `fontaine.tool` span (beside rig's
@@ -168,8 +164,7 @@ context.
 - **windows** (`#[cfg(windows)]`; compile-checked locally with `cargo check --all-targets --target x86_64-pc-windows-gnu`, executed in the windows CI job): scope validator over drive letters, UNC
   paths, case-insensitive comparison, junction and symlink escape, and MSYS-style `/c/...` paths
   (untranslatable ⇒ out of scope); the `shell` tool launches through Git Bash; Git Bash discovery
-  (`git.exe` on PATH, standard install locations, `FONTAINE_GIT_BASH_PATH` override, not found ⇒ exit 2);
-  a platform-independent unit test of the `<Git>\usr\bin` / `<Git>\bin` path derivation.
+  (discovery cases per `tasks/design/platforms.md`, including the platform-independent path-derivation unit test).
 - **webfetch** (wiremock): HTML converted to markdown; a body over 10 MB is cut at the fetch cap; output
   over 100,000 characters is truncated with the truncation noted; a response slower than 30 s times out;
   a cross-host redirect is returned, not followed; only `url` is accepted.

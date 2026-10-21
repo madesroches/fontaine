@@ -52,7 +52,7 @@ path (`ResultPipeline`, Phase 2) — see the Phase 5 plan.
    `[guardian] scanner_hf_token_env` (default `HF_TOKEN`; never stored or logged) after the user has
    accepted the license on HF. Downloads land in `<data dir>/models/promptguard2-86m/`
    with their SHA-256 recorded alongside.
-   Behavior is wired to the `[guardian] scanner*` keys already parsed and scope-validated by Phase 0's `config.rs`. The eval runner's `--guardian live:<model>` mode also routes `kind = scanner` cases to the configured scanner (`rust/fontaine-evals/src/live.rs`).
+   Behavior is wired to the `[guardian] scanner*` keys already parsed and scope-validated by Phase 0's `config.rs`. The eval runner's `--guardian live:<account>/<model>` mode (CLI in `tasks/design/testing.md`) also routes `kind = scanner` cases to the configured scanner (`rust/fontaine-evals/src/live.rs`).
    Telemetry: scanner verdict and latency on the `tool_result` event (`query_source = scanner` for
    the `llm` scanner's model usage).
 2. Docs — result scanning in `docs/guardian.md`: what the scanner flags, how the annotation
@@ -71,7 +71,7 @@ path (`ResultPipeline`, Phase 2) — see the Phase 5 plan.
 
 - Scanner logic tests with fixture payloads against a fake scanner implementing the BYO trait (injection-looking text and credential shapes flagged;
   benign results unflagged; annotation present before the agent reads the result).
-- Eval live routing (`rust/fontaine-evals/tests/live.rs`): under `--guardian live:<model>`, `kind = scanner` cases are scored by the configured scanner (fake BYO scanner in the test), not the guardian.
+- Eval live routing (`rust/fontaine-evals/tests/live.rs`): under `--guardian live:<account>/<model>`, `kind = scanner` cases are scored by the configured scanner (fake BYO scanner in the test), not the guardian.
 - Scanner selection: `scanner` accepts exactly `off`/`pg2`/`llm`/`command` (anything else, or `command` without `scanner_command`, is a config error); default `off` means zero behavior
   change; each scanner key is rejected from project and project-local scope.
 - `command` scanner (a script in a temp dir): clean and flagged verdicts honored; non-zero exit, timeout (time-paused), invalid JSON and a missing program each ⇒ flagged; stdin carries exactly `{tool, content}`; configured credential env vars are absent from its environment.

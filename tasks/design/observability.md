@@ -75,8 +75,6 @@ with export off (a malformed `[telemetry]` value is still a config error, exit 2
 flush is capped (2 s) on both TUI exit and `-p` exit (`main` drops the guard, then returns an
 `ExitCode` — `std::process::exit` would skip the flush), after which data is dropped.
 
-**Secrets.** Credentials are env-var names only (`api_key_env`), never inline. The telemetry
-credential variable, `MICROMEGAS_*`, `OTEL_EXPORTER_OTLP_HEADERS`, every configured
-`[accounts.*] api_key_env` name and `[guardian] scanner_hf_token_env` are removed from the shell
-tool's and hooks' child environment. Opt-in content still passes through `rig_core::redact` and is
+**Secrets.** Credentials are env-var names only (`api_key_env`), never inline. The variables
+removed from the shell tool's and hooks' child environment are listed in the Phase 2 plan, step 1. Opt-in content still passes through `rig_core::redact` and is
 truncated at `content_max_bytes`.

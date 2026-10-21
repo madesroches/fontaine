@@ -37,8 +37,7 @@ Phase 5; see those plans.)
 
 Conservative starting table; any flag not listed, any `--flag=value` whose flag is not listed, and
 any combined short-flag cluster containing an unlisted letter fall through to the guardian (`ls -la`
-is accepted as `-l -a`). Positional tokens are validated as paths (a ref name such as `HEAD` resolves
-in scope and passes). Numeric flag values are parsed as integers, not pattern-matched. Check the
+is accepted as `-l -a`). Positional tokens are validated as paths. Numeric flag values are parsed as integers, not pattern-matched. Check the
 table against `claude -p` baselines (step 3) and record differences in Decisions.
 
 | Command | Allowed flags | Values validated as paths |
@@ -51,10 +50,8 @@ table against `claude -p` baselines (step 3) and record differences in Decisions
 | `head`, `tail` | `-n N -c N -q -v` (`tail -f`/`-F` not allowed) | positionals |
 | `rg` | `-i -s -S -n -N -H -w -x -F -v -c -l -A N -B N -C N -m N -t TYPE -T TYPE --hidden --no-heading` | positionals; `-f`/`--file`, `--ignore-file` values. `--pre`, `--pre-glob`, `--hostname-bin`, `-z`/`--search-zip`, `-L`/`--follow`, `-g`/`--glob` not allowed |
 | `grep` | `-i -n -v -w -x -F -E -c -l -L -H -h -o -q -s -r -A N -B N -C N` | positionals; `-f`/`--file` value. `-R` and `--exclude-from` not allowed |
-| `git status` | `-s --short -b --branch --porcelain` | every positional, before or after `--`, validated as a path |
-| `git log`, `git diff`, `git show` | `--oneline --stat --name-only --name-status --graph --decorate --no-color --cached --staged -n N -U N` | every positional, before or after `--`, validated as a path. Only when `--no-ext-diff --no-textconv` are also present (required flags; repo config can name external diff/textconv programs); `--no-ext-diff` and `--no-textconv` are also allowed flags; `--output`, `--ext-diff`, `--textconv` not allowed |
 
-`git` must have the subcommand as `argv[1]` (`git -c …` and `git -C …` fall through). Pre-classified `git` commands are launched with forced-safe config through the launcher environment (`GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`): `core.fsmonitor=false`, `log.showSignature=false`, `diff.external=` (empty), `core.pager=cat` — so repo `.git/config` cannot make a read-only subcommand execute a program. `GIT_CONFIG_NOSYSTEM=1` is not used (it would change behavior). The override list is checked against `claude -p` baselines and git docs when implementing.
+No `git` subcommand is in the curated set: every git invocation goes to the guardian, because repo-controlled config and attributes can make a read-only subcommand execute a program.
 
 ### Permission rules and allow (pipeline steps 2 and 5a)
 
@@ -63,8 +60,8 @@ Phase 0) for deny/ask/allow; `shell` specifiers matched on the Tier-0.5 `brush-p
 as a prefix anywhere in the word stream and on any unparseable command containing the rule's first
 word, allow only on one simple command; path specifiers gitignore-style against scope-validator
 resolved paths; `webfetch(domain:)`; MCP names. Allow rules are step 5a, after the floor; the broad
-code-execution list that `auto` suspends is a shipped constant in `permission_rules.rs`, applied when
-Phase 4 wires `auto`. The pipeline also gets its step-1a slot: a `PreToolUseDecision` input
+code-execution list that `auto` suspends (`tasks/design/permissions.md` §Permission rules, Where allow acts) is a shipped
+constant in `permission_rules.rs`, applied when Phase 4 wires `auto`. The pipeline also gets its step-1a slot: a `PreToolUseDecision` input
 (deny / ask / allow / `updated_input`) with the composition and failure rules of `tasks/design/permissions.md` §User
 hooks, driven in this phase only by test doubles — user hooks load in Phase 5.
 
@@ -157,7 +154,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   through; `allow_extra` — an extra entry given a flag falls through to the guardian, an out-of-scope
   positional falls through, an in-scope positional pre-classifies; golden parser cases: `ls;rm x`, `a|b`
   and `ls && rm x` never fast-path and `deny shell(rm)` matches the `rm` segment (floor treats the `rm` as
-  critical), while a quoted `';'` argument stays one argument; git config-execution cases (see the golden set): the command does not execute on the fast path.
+  critical), while a quoted `';'` argument stays one argument; every `git` invocation, including the config-execution cases in the golden set, goes to the guardian and never fast-paths.
 - **headless** (`rust/fontaine/tests/pipeline_headless.rs`, scripted `openai-compatible` endpoint via the Phase-1 `common/mod.rs` helper, passing `--permission-mode manual` explicitly):
   every would-prompt outcome becomes a Deny returned as the tool_result, the run continues, exit
   code 0.
@@ -174,7 +171,5 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   match the shipped step order and `rust/fontaine-core/tests/docs.rs` is green; CHANGELOG entry appended.
 - Needs a human (the agent cannot push): push the branch and confirm the windows CI job runs the `#[cfg(windows)]` tests green.
 - Needs a human and live keys (not CI): `tasks/design/testing.md` Manual Verification item 1 passes (TUI manual approval
-  flow, end to end); the manual-mode rig-cassette (in-scope read round-trip) recorded via `cassettes.rs`
-  (`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes`, account `base_url` at the cassette proxy; the test carries `#[ignore = "cassette not recorded"]` until the fixture is committed, and the recording commit removes the attribute; once committed it
-  replays in CI with no keys, and `cassettes.rs` asserts the tool executed via the fast path, the `gate_decision` tier, and the final answer); the `claude -p` baseline capture.
+  flow, end to end); the manual-mode rig-cassette recorded per `tasks/design/testing.md` Testing Strategy (Integration, cassettes); the `claude -p` baseline capture.
 - Log the phase in the master plan's Progress log.

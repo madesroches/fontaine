@@ -102,7 +102,7 @@ fontaine/
 │   ├── rust-toolchain.toml     # channel = "1.97.1" (rig 0.45.0 `rust-version`)
 │   ├── Cargo.toml              # workspace root (`[workspace] members = ["*"]`, `exclude = ["target", ".*"]`, resolver = "2",
 │   │                           #   workspace.package: edition 2024, rust-version 1.97.1); rig crates pinned to exact versions
-│   ├── fontaine/               # thin bin crate: CLI (clap), wires core+tui, `-p` headless from Phase 1,
+│   ├── fontaine/               # bin + lib crate (logic in `src/lib.rs`, thin `src/main.rs`): CLI (clap), wires core+tui, `-p` headless from Phase 1,
 │   │                           #   owns the tracing subscriber + telemetry export (`src/telemetry/`)
 │   ├── fontaine-core/          # session orchestration on rig-agent (AgentRun, rig bookkeeping hooks),
 │   │                           #   permission pipeline + rule grammar, settings scope stack, workspace
@@ -119,7 +119,7 @@ fontaine/
 │   ├── fontaine-mcp/           # rig-rmcp wiring: MCP servers from config, tools registered
 │   │                           #   as RiskClass::Arbitrary, annotations → guardian hints
 │   ├── fontaine-tui/           # ratatui app: chat, approval prompts, denial/retry UI, modes
-│   └── fontaine-evals/         # eval runner (bin crate): scores guardian verdicts against the dataset
+│   └── fontaine-evals/         # eval runner (bin + lib crate, same split): scores guardian verdicts against the dataset
 ├── evals/                      # golden dataset (`evals/dataset/*.jsonl`) + README; runner is rust/fontaine-evals
 ├── docs/                       # all product docs — one topic per page, website-ready (see `design/documentation.md` §Documentation)
 ├── tasks/                      # this master plan + design/ (topic design docs) + phases/ (one plan per phase)
@@ -129,8 +129,8 @@ fontaine/
 Crate dependency graph (arrows point at dependencies; no cycles):
 
 ```
-fontaine (bin)        ─▶ fontaine-core, fontaine-tui
-fontaine-evals (bin)  ─▶ fontaine-core, fontaine-guardian
+fontaine (bin+lib)       ─▶ fontaine-core, fontaine-tui
+fontaine-evals (bin+lib) ─▶ fontaine-core, fontaine-guardian
 fontaine-tui          ─▶ fontaine-core
 fontaine-core         ─▶ fontaine-tools, fontaine-guardian, fontaine-mcp, fontaine-agents
 fontaine-mcp          ─▶ fontaine-tools
@@ -221,305 +221,94 @@ carries the reasoning:
   fatal rather than convertible).
 - Eval results show the best local guardian models cannot clear a credible bar (e.g. <60% catch
   on the seeded attack classes at <10% benign false-deny; this kill floor is separate from the
-  stricter guardian-list inclusion bar in Phase 4 step 5) — meaning the "any model" promise is
+  stricter guardian-list inclusion bar in the Phase 4 design) — meaning the "any model" promise is
   hollow for the feature that matters.
 
 ## Decisions
 
-- 2026-10-21: Multi-account model registry, following opencode: named `[accounts.<name>]`, each
-  providing models addressed `<account>/<model>`, one rig client per account; replaces
-  `[model] provider`/`base_url`. Reason: user requirement; Claude Code has no analogous design point.
-- 2026-10-20: Hybrid gate — tool-declared `read_only` + workspace-scope check skips the guardian;
-  everything else is adjudicated. (refined 2026-10-21 — containment enforcement, not the label,
-  earns the fast path; see below) (User choice.)
-- 2026-10-21: Hybrid-gate refinement — read/write is not a security classification: the fast path
-  requires *Fontaine-enforced* workspace containment, not the tool's label. Read-only ≠ safe
-  (out-of-scope reads are adjudicated/denied like writes), and third-party/MCP self-declared
-  `readOnlyHint` never earns the fast path. (User choice.)
-- 2026-10-20 (amended 2026-10-21: Phase 5 → Phase 1, see below): TUI-first (ratatui), headless
-  `-p` mode in Phase 1 on the same core. (User choice.)
-- 2026-10-20: Guardian is fail-closed on every non-verdict outcome (error, timeout, unparseable
-  output; an Allow below the confidence threshold on a destructive class → Deny; Deny verdicts are
-  never softened). Adopted from Claude Code's documented behavior.
-- 2026-10-20: Core is built on the rig crate family (rig-core/rig-agent/rig-memory/rig-tools/
-  rig-rmcp/rig-cassette), pinned to exact versions; no custom provider layer. (User directive:
-  reuse existing crates for the core wherever possible.)
-- 2026-10-20: rig's Bevy-based harness/TUI (`rig-harness`, `rig-tui`) is not adopted; Fontaine
-  keeps its own ratatui TUI.
-- 2026-10-20: License is Apache-2.0 — the repo's `LICENSE` is verbatim Apache-2.0 text; rule prose
-  adapted from Anthropic's published documentation gets an attribution note in docs/guardian.md.
-- 2026-10-21: "fontaine" is the final product name — binary, crate prefix,
-  config dir `fontaine/` under the platform config dir, `FONTAINE.md` convention. (User decision.)
-- 2026-10-21: guardian default = top-ranked model on Fontaine's benchmark-validated guardian list
-  that is available on the configured accounts; switching easy, explicit, never automatic; unset +
-  no catalog match → main model with one-time notice. (User decision; resolves former Open
-  Question 2.)
-- 2026-10-21: default tool-result scanner = PromptGuard 2; cheap-LLM pass fallback;
-  Llama 4 Community License gated-download caveat surfaced at first enable; BYO-scanner interface
-  for license-clean setups. (User decision.)
-- 2026-10-21: fold analysis-strategic-verdict amendments A3 (sandbox interop: srt/bubblewrap spike +
-  `docs/sandboxing.md`, Phase 5 roadmap slot) and A4 (dependency-light, lift-out-able
-  `fontaine-guardian` crate) into the roadmap. (User decision.)
-- 2026-10-21: revisit core-vs-rig split if rig ships a permission-adjudication API (rig-harness
-  contingency, analysis-strategic-verdict A4).
-- 2026-10-21: design tie-breaker — when in doubt, do as Claude Code does: at analogous design
-  points (permission modes, fail-closed behavior, escalation UX, config trust asymmetry, read-only
-  skipping, deny-with-explanation) Fontaine copies Claude Code's documented semantics; any
-  deviation gets a dated line in Decisions with a one-line reason. (User directive.)
-- 2026-10-21: composite tools + Tier 0.5 — dedicated first-party read tools (`ls`/`read`/
-  `glob`/`grep`) plus a deterministic, zero-LLM shell pre-classifier (structural: `brush-parser` parsing
-  + curated read-only set membership + per-command read-only flag allowlist + the step-4 scope
-  validator; never regex-on-args; fail-through on anything unparsed) as a guardian-skipping fast path; curated set ships conservative,
-  user-extensible via the `[shell_preclassifier] allow_extra` key — one mode-agnostic list
-  applying in every mode (no per-mode keys: the pre-classifier runs before the mode branches),
-  user trust scopes only (per the config scope table); not the guardian's `[auto_mode].allow` prose list — never auto-extended. Mirrors
-  Claude Code's read-tool split + built-in read-only Bash command set per the tie-breaker.
-  Deviations from Claude Code, recorded per that guideline: we reject unquoted globs in
-  pre-classified commands (Claude Code permits them for read-only commands — reason: the glob
-  could expand to an out-of-scope path or a write-capable flag, and shell-side expansion is
-  invisible to the scope validator); and "don't ask again" style grants never auto-extend the
-  curated set — they land only as explicit user-scope config rules (`[permissions] allow`) (reason: a checked-in repo or
-  an injected session must not accumulate loosened prefixes; auto-extension is loosening).
-  (User directive 2.)
-- 2026-10-21 (supersedes 2026-10-20 "no subagents in v1"): parallel multi-agent management is a
-  v1 requirement, Claude Code-style (`fontaine-agents`; spawn/list/stream/interrupt, per-agent
-  context + model + restricted toolset, budgets); agent-to-agent messages go through the same
-  guardian gate — the 2026-10-20 line stands, now in v1. (User directive 3.)
-- 2026-10-21: deliberate Claude-Code deviation — a child's effective mode is never looser than its parent's (Claude Code lets a parent set a child `auto`); mechanism in Phase 5 "Parallel agent orchestration".
-- 2026-10-21: deliberate Claude-Code deviation — `acceptEdits` auto-approves Fontaine's edit-class
-  tools only; Claude Code's acceptEdits also auto-approves in-scope filesystem Bash (`mkdir`,
-  `touch`, `rm`, `rmdir`, `mv`, `cp`, `sed`), while Fontaine keeps those `Arbitrary`-class shell
-  calls behind a prompt (stricter than Claude Code; reason: writes ride the classified edit tools,
-  the pre-classifier set is read-only, and a mutating shell must not fast-path).
-- 2026-10-21: subagent nesting and budgets mirror Claude Code's documented rules (not a deviation); details in Phase 5 "Parallel agent orchestration".
-- 2026-10-21: plan mode follows Claude Code's default (classifier reviews consequential non-edit
-  calls; `useAutoModeDuringPlan` is on by default) — edits structurally blocked regardless of
-  verdict.
-- 2026-10-21 (revised): deterministic `[permissions] deny`/`ask` rules and the critical-path and
-  protected-path checks gate every mode and can only prompt or deny, never allow. Critical-path
-  (`rm`/`rmdir` targets: filesystem root, top-level dirs, home, cwd and its parents) forces a human
-  prompt — never auto-approved by any mode or verdict — and denies in `dontAsk` and headless;
-  the protected-path list (enumerated in `design/permissions.md` §Core data flow; applies to `edit`/`write`; plan: edits
-  already blocked) is a separate write check (prompt in manual/acceptEdits,
-  guardian in `auto`, deny in `dontAsk`), matching Claude Code; independent of any bypass mode
-  (structured tool/path matching, not arg regex). Floor order: deny → ask → critical-path →
-  protected-path.
-- 2026-10-21: deliberate Claude-Code deviation — config trust asymmetry is looser than Claude
-  Code on the deny side: CC ignores the whole `autoMode` block from project settings (no denies
-  from checked-in files); Fontaine lets a project repo at least add deny-side rules (reason:
-  deny-only additions can only tighten — never allow or mode changes; `ask` rules count as
-  deny-side additions and may likewise be added project-wide).
-- 2026-10-21 (user): bypass/permissions-prompt-bypass not shipped at all in v1 — deviation from
-  Claude Code's bypassPermissions; eval/CI baselines always run WITH the guardian; the
-  deterministic deny/ask/critical-path layer gates every mode.
-- 2026-10-21: shipped default mode = auto (Claude Code parity, v2.1.283+ built-in starting mode);
-  interim default = manual until the guardian wires in at Phase 4 — no auto without a guardian.
-- 2026-10-21 (user): headless -p promoted to Phase 1 — CI integration tests and the eval harness
-  drive core headlessly from day one; TUI-first unchanged as interactive posture.
-- 2026-10-21: deliberate Claude-Code deviation — subagent reports screened by the optional
-  (default-off) result scanner, not by the classifier at handoff as Claude Code does — deviation
-  recorded; the guardian's no-tool-output rule is why.
-- 2026-10-21 (user): no zero-guardian mode exists — containers get `[guardian] profile="minimal"`,
-  never off; minimal = containment-integrity ruleset (the escape classes enumerated in Minimal
-  guardian profile: mount/umount, docker-socket access, /proc/sys + cgroup control writes,
-  privileged namespace ops, raw device access, bind-mount host writes via symlink traversal,
-  sandbox-proxy bypass) + the deterministic floors; exfiltration-class remote writes still
-  adjudicate; requires Fontaine-verified containment (user-scope `--in-container` + Linux runtime probe in
-  Phase 4; srt/bubblewrap launch detection joins with the Phase 5 sandbox slot; probe failure ⇒ fall back to `full`); user trust scopes only (per the config scope table); ships
-  with its own scorecard column.
-- 2026-10-21 (user): Jev + open alternatives (Laya, DiffusionGemma) are deferred to the screening-tier
-  roadmap — v1 has no adapter for them and Phase 4 does not score them; hosted-Jev never the local
-  default; thresholds always recalibrated on Fontaine's golden set (vendor defaults over-escalate —
-  measured: 17/21 wrong escalations at the shipped 0.85/0.6 defaults).
-- 2026-10-21 (user): guardian tree accepted as design direction — strictest-wins composition,
-  fail-closed between tiers, per-domain policy subtrees (Jev-Guard precedent), benchmarked tiers
-  only; v1 ships the deterministic+LLM spine, screen tier + subtree specialization are roadmap
-  (Phase 6+); one tree serves the whole session agent tree (no per-subagent guardians).
-- 2026-10-21 (user): the plan is split into this master tracking task + one plan per phase under
-  `tasks/phases/` (a Phase 0–6 numbering; each phase plan ends with a docs step — documentation
-  is a per-phase deliverable, all of it under `docs/`, the website-ready home for product prose).
-  (User directive.)
-- 2026-10-21: the eval runner is the workspace bin crate `rust/fontaine-evals` (keeps the "every
-  crate sits under `rust/`" rule); the dataset stays in `evals/dataset/` as JSONL.
-- 2026-10-21 (user): `[permissions] allow` + one `Tool(specifier)` grammar for deny/ask/allow
-  (`design/permissions.md` §Permission rules). Allow rules act after the deterministic floor and never reach past it; narrow
-  allow rules skip the guardian in `auto` and broad code-execution allow rules are suspended in `auto`
-  (Claude Code parity). A user-authored allow rule — or a user hook's `allow` — counts as a user
-  grant, as in Claude Code; it is distinct from the containment fast path, which stays the only
-  guardian skip earned without a user grant, and no tool label or server declaration produces one.
-  Resolves the former allow-key and rule-grammar gaps.
-- 2026-10-21: deliberate Claude-Code deviation — shared project settings cannot hold allow rules, a
-  project hook's `allow` decision is ignored, and a project skill's `allowed-tools` is ignored; Claude
-  Code honors project allow rules once the folder is trusted. Reason: project scope can only tighten.
-- 2026-10-21: deliberate Claude-Code deviation — `shell` rule matching: deny/ask rules always match
-  as a prefix and anywhere in the parsed word stream, and anything unparseable that contains the rule's
-  first word matches; an allow rule matches only one simple command the Tier-0.5 parser accepts, so a
-  compound command never matches an allow rule (Claude Code splits compound commands and requires
-  every part to match). Reason: no regex and no operator-level parser in v1, so deny/ask fail toward
-  matching and allow fails toward not matching.
-- 2026-10-21: settings scope stack managed (reserved, empty in v1) > CLI > project-local > project >
-  user, list keys merged, project-local trusted only while untracked (Claude Code parity). Project
-  settings may set `default_mode` to `manual`/`dontAsk` only (see the dated lines at the end of this
-  section). Deliberate Claude-Code deviation:
-  endpoint/credential keys (`[accounts.*]`, `[telemetry]` except `enabled = false`) are never read
-  from project-local either — reason: a file inside the repo directory must not redirect session data.
-- 2026-10-21: multiple workspace roots (`--add-dir`, `/add-dir`, `additional_directories`; Claude
-  Code parity): containment = inside any root; extra roots grant file access, not configuration; only
-  the user adds roots.
-- 2026-10-21: session ledger — the guardian's inputs come from a Fontaine-owned append-only ledger,
-  never from rig-memory context that compaction rewrites; resume returns to the resolved default mode
-  and drops session grants; fork copies both stores without session grants; rewind never removes
-  ledger history. Claude Code has no documented analogous design point.
-- 2026-10-21: the headless I/O contract (`--output-format text|json|stream-json`,
-  `--input-format stream-json`) is versioned (`schema_version`; additive changes keep the version,
-  any rename or removal bumps it), mirroring Claude Code's flags plus Fontaine `gate_decision` events.
-- 2026-10-21 (user; amends the `[agents.types]` user-only rule): project-defined agent files
-  (`.fontaine/agents/*.md`) are allowed but only narrow — toolset a subset of the parent's, `mode`
-  `manual` (default) or `dontAsk`, no `model` key. Deliberate Claude-Code deviation (Claude Code's
-  project agents may set any tools, model and `permissionMode`); reason: a checked-in repo must not
-  widen a child's authority or pick its endpoint.
-- 2026-10-21 (user): observability goes through the `tracing` facade in every crate, and only the bin
-  crate installs a subscriber. Export is opt-in and off by default, like Claude Code; enabling it
-  requires an ingestion URL and an ingestion key (env-var name or stored credential; no default
-  endpoint). The default backend is native micromegas, exporting span trees through Fontaine's
-  `SpanBridge` (micromegas async span events with parent ids) until micromegas captures `tracing`
-  spans upstream; OTLP/HTTP is the fallback. Deliberate Claude-Code deviation (Claude Code exports only
-  OTel); reason: user requirement (micromegas out of the box); the `otlp` backend keeps a Claude
-  Code-compatible collector story. Metric and event names mirror `claude_code.*` under a `fontaine.`
-  prefix; content opt-ins mirror the `OTEL_LOG_*` flags; endpoint, credentials and opt-ins come
-  from the user file and CLI `--settings` only, and a project may only set `enabled = false` (Claude Code parity).
-- 2026-10-21: the audit log is a separate, always-on, durable local record, not derived from
-  telemetry. Both are written from one typed `GateDecision`, the audit log first. Reason: telemetry
-  is opt-in, lossy and redacted, while the audit log is the security record. Claude Code has no
-  analogous design point.
-- 2026-10-21 (user): `FONTAINE.md` v1 loads `<primary root>/FONTAINE.md` plus the user-level file in the
-  user config dir; no parent-directory hierarchy or imports (backlog GitHub issue #7).
-- 2026-10-21 (user): the micromegas crates need no published `rust-version` (Fontaine pins its own
-  toolchain); that upstream item is dropped.
-- 2026-10-21: the guardian loop breaker follows Claude Code — `auto` pauses after 3 consecutive or 20
-  total guardian denials per session (any tool, not configurable); prompting resumes, approving resumes
-  `auto`; headless treats the paused state as would-prompt → Deny.
-
-- 2026-10-21: gate location settled — the `GuardedTool` decorator is the single gate (registry-level
-  wrapping covers built-ins, per-root instances and MCP; unit-testable); rig `AgentHook::on_dispatch`
-  is not used for permission decisions. Resolves the former gate-location open question.
-- 2026-10-21: tool calls are adjudicated and executed one at a time (rig-agent `tool_concurrency =
-  1`); parallel batch adjudication is dropped for v1. Reason: simpler ordering and per-call audit
-  attribution; subagents still run concurrently.
-- 2026-10-21: crate cycle resolved — `fontaine-tools` defines the `ToolGate` trait that `GuardedTool`
-  calls; `fontaine-core`'s `PermissionPipeline` implements it and is injected at registration;
-  `fontaine-tools` never depends on `fontaine-core` (graph in §Workspace layout).
-- 2026-10-21: the "destructive" class behind the fail-closed Allow → Deny rule is derived
-  deterministically by `fontaine-core` from the tool call (risk class plus floor-relevant features),
-  never from the guardian's self-chosen label; verdict labels are Claude Code's default auto-mode
-  block categories plus `allow` (enum in the Phase 4 plan).
-- 2026-10-21: deliberate Claude-Code deviation — project scope cannot set `default_mode = "plan"`
-  (reason: plan's guardian leg can loosen a manual user); project and project-local scopes may set
-  `manual` or `dontAsk` only.
-- 2026-10-21: project `default_mode = "acceptEdits"` is rejected (deliberate deviation, stricter
-  than Claude Code; reason: a checked-in repo must not auto-approve edits); `auto` is rejected from
-  project-local `settings.local.toml` as well as project (Claude Code parity).
-- 2026-10-21: the pre-session file index is gitignore-respecting and capped at 50,000 paths
-  (overflow recorded as truncated); the guardian request carries only the pre-existence status of
-  the paths the current call touches, never the index.
-- 2026-10-21: directories come from the `dirs` crate (config dir `dirs::config_dir()/fontaine`, data
-  dir `dirs::data_dir()/fontaine`), overridable by `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR`, which
-  all tests use; credentials at `<data dir>/credentials.toml`, owner-only (0600 on Unix,
-  current-user-only ACL on Windows).
-- 2026-10-21: the eval dataset gains `mode` (default `manual`) and `workspace` (files, symlinks and
-  `cwd` materialized in a temp root) fields so `pipeline` cases are reproducible.
-- 2026-10-21: the default guardian list is the data file `rust/fontaine-guardian/data/guardian_models.toml`
-  (ranked entries: provider kind, model id, scorecard metrics); it ships empty — empty falls back to
-  the main model with the one-time notice — and the Phase 4 scorecard run fills it.
-- 2026-10-21: v1 supports Linux, macOS and Windows; CI matrix `ubuntu-latest`, `macos-latest`,
-  `windows-latest` on all four CI steps. Windows (Claude Code parity): `shell` runs through Git
-  Bash (Git for Windows is a prerequisite), so the shell parser, Tier 0.5 and critical-path apply
-  unchanged; a PowerShell tool is backlog (GitHub issue #28) and would never pre-classify; owner-only
-  files use current-user-only ACLs; the containment probe reports "not contained".
-- 2026-10-21: deliberate Claude-Code deviation — every configured `[accounts.*] api_key_env` name,
-  `scanner_hf_token_env` and the telemetry credential names are removed from the `shell` and hook
-  child environment. Reason: a model-run command must not read provider keys (stricter than Claude
-  Code).
-- 2026-10-21: AgentDojo-comparable (ASR × utility) reporting is dropped; the scorecard reports
-  per-class catch rate and false-deny rate.
-- 2026-10-21: workspace trust (Claude Code parity) — project executables (project MCP servers, hooks,
-  skill `!cmd`) load after the TUI trust prompt and without one in headless `-p`; in both they can
-  never change a permission decision (a project hook's `allow` is ignored; project MCP tools are
-  gated like any MCP tool). Stated once, in `design/config.md` §Config Workspace trust.
-- 2026-10-21: a user-scope hook `allow` in `auto` follows Claude Code — equivalent to an allow rule,
-  skips the guardian for a narrow matcher, broad matchers suspended; the `claude -p` baseline capture
-  confirms it.
-- 2026-10-21: the `skill` tool stays `ReadOnly` and on the fast path (it only loads skill text from
-  the start-time index into context); a skill's `!cmd` is gated as a `shell` call.
-- 2026-10-21 (user): shell parsing uses `brush-parser` (exact-pinned; verified 0.4.0) for Tier 0.5, the
-  critical-path check and `shell` rule matching — no hand-rolled lexer, and the `shlex` crate is not
-  used. Soundness unchanged: anything not exactly one simple command falls through to the guardian;
-  for the floor, any `rm`/`rmdir` word in an unparseable or compound command is critical.
-- 2026-10-21 (user): Windows Git Bash discovery — `git.exe` on PATH or standard install locations,
-  `<Git>\usr\bin` + `<Git>\bin` prepended to the launcher PATH, `FONTAINE_GIT_BASH_PATH` override
-  (parity with `CLAUDE_CODE_GIT_BASH_PATH`), not found ⇒ exit 2 at startup; hooks share it.
-- 2026-10-21 (user): `[shell_preclassifier] allow_extra` entries are a command or `command subcommand`
-  pair, flag-free (any flag falls through) with positional args validated as in-scope paths.
-- 2026-10-21 (user): `webfetch` v1 takes `url` only; HTML → markdown via `htmd` (exact-pinned; verified
-  0.5.6); 10 MB fetch cap, 100,000-character output cap (truncation noted), 30 s timeout. Deliberate
-  Claude-Code deviation: Claude Code's `prompt` argument with small-model post-processing is not in v1
-  (backlog) — reason: keeps `webfetch` a single deterministic tool with no extra model call.
-- 2026-10-21 (user): the minimal guardian profile uses the resolved `[guardian] model` (no separate
-  model key); its reduced ruleset is `rust/fontaine-guardian/prompts/guardian_minimal.md`, versioned
-  alongside `guardian_prompt.md`.
-- 2026-10-21: `pg2` flag threshold is the fixed constant 0.9 in `scanner.rs`, LlamaFirewall's `PromptGuardScanner` default `block_threshold` (PurpleLlama `prompt_guard_scanner.py`).
-- 2026-10-21 (user): destructive-class word lists ship as constants in Phase 4 (checked against `claude -p` baselines, extended by code change); catch rate is measured over all `kind = guardian` `attack:*` cases, benign false-deny over all `kind = guardian` benign cases, and the eval runner reports per-case latency with p50/p95.
-- 2026-10-21: output styles never alter the guardian's prompt or `AdjudicationRequest` (Phase 5 test).
-- 2026-10-21 (user): releases — semver 0.x, tags `vX.Y.Z`; GitHub Releases with prebuilt Linux, macOS
-  and Windows binaries built by cargo-dist (exact-pinned; verified 0.32.0) plus `cargo install --git https://github.com/madesroches/fontaine fontaine`;
-  v1 does not publish to crates.io (future work); the maintainer cuts releases (tagging and pushing are human steps); CHANGELOG follows
-  Keep a Changelog. Workflow set up in Phase 4, the first phase that produces a release.
-
-- 2026-10-21 (user): `fontaine-agents` defines a `ChildRunner` trait (spawn a gated child run from agent
-  type, effective mode, budget and root-ledger handle; returns a status/kill/report handle) that
-  `fontaine-core` implements and injects at startup — same inversion as `ToolGate`, no new crate edge.
-  The root-ledger handle is a small `LedgerView` trait defined in `fontaine-agents` (read root human
-  messages, append child events), implemented by `fontaine-core`'s ledger — the same inversion.
-- 2026-10-21 (user): the `agent` tool blocks until the child finishes and returns its report as the tool
-  result (Claude Code parity); with `background: true` it returns `{agent_id}` immediately and the report
-  is delivered later as a notification injected into the parent's next turn through `ResultPipeline`.
-  With `tool_concurrency = 1`, concurrency comes from background children.
-- 2026-10-21 (user): `send_message` — any agent may message its parent, its children or siblings in the
-  same root tree, and `"main"` addresses the root session; delivery is queued and injected into the
-  recipient's next turn as a notification marked with the sender's agent id, treated as untrusted
-  (guardian sees it only as untrusted context); the sender gets `{status: "queued"}`; a finished or
-  killed target is an error tool result, `agent not running`.
-- 2026-10-21 (user): the RuleLabel enum gains `Container Escape`, used by `guardian_minimal.md`; the
-  specific escape class goes in the verdict reason as `class=<name>`, and the `minimal` scorecard column
-  reports per class from that tag.
-- 2026-10-21 (user): guardian constants shipped in `fontaine-guardian`, not config keys — verdict cache
-  TTL 60 s; full-profile `task_intent` budget 2,000 characters; `recent_user_messages` = last 5;
-  actions-taken compact list = last 20; extractor retries on malformed output = 2.
-- 2026-10-21 (user): root `SECURITY.md` (Phase 0): private reporting via GitHub private vulnerability
-  reporting, 90-day coordinated disclosure window; `CONTRIBUTING.md` routes guardian-bypass reports there,
-  and public dataset PRs for a bypass come only after a fix ships.
-- 2026-10-21 (user): eval dataset minimum case counts — at least 10 per attack class, 30 benign, 15
-  ambiguous-intent, plus the tier05-adversarial golden set; `expected` labels are cross-checked against
-  `claude -p` baselines and signed off by the maintainer (human step) before the Phase 4 scorecard is
-  published.
-- 2026-10-21 (user): PromptGuard 2 runs on `candle` (safetensors weights from the gated HF repo), not
-  ONNX/`ort`. Verified: `candle-transformers` 0.11.0 ships `models::debertav2` with
-  `DebertaV2SeqClassificationModel` (PG2 86M is mDeBERTa-v3-base). Pins `candle-core`/`candle-nn`/
-  `candle-transformers` `=0.11.0`, `tokenizers` `=0.23.2`, all optional behind the `pg2` feature;
-  release builds enable `pg2`.
-- 2026-10-21 (user): scanner selection is one key, `[guardian] scanner = "off" | "pg2" | "llm" |
-  "command"` (default `"off"`), replacing the `scan_tool_results` boolean; `scanner_command` is the BYO
-  program (JSON `{tool, content}` on stdin, `{"verdict","reason"}` on stdout); `llm` uses the resolved
-  `[guardian] model`. A scanner error, timeout or unparseable output is treated as flagged (fail
-  closed: the result is annotated, never passed as clean). All scanner keys are user file only.
-- 2026-10-21 (user): Linux containment probe is contained if any of: `/.dockerenv`; `/run/.containerenv`;
-  `container=` in PID 1's environment (unreadable ⇒ no signal); container markers in `/proc/1/cgroup`.
-  macOS and Windows ⇒ not contained. `minimal` still needs `--in-container` AND a positive probe.
-- 2026-10-21 (user): guardian-list inclusion bar — a model enters `guardian_models.toml` only with
-  catch rate over all `kind = guardian` `attack:*` cases ≥ 90%, benign false-deny rate ≤ 5% and p95 adjudication latency ≤ 3 s on
-  the scorecard; ranked by catch rate, then false-deny rate, then latency. Separate from the kill criteria.
-- 2026-10-21: while a parent is in `plan`, every child's edits are structurally blocked (plan's edit block is inherited) and the child's non-edit calls use the tighter of the child's own effective mode and `manual`; re-evaluated per call, including a parent that switches into `plan` mid-run.
-- 2026-10-21: Tier-0.5 pre-classified `git` commands run with forced-safe config via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` (`core.fsmonitor=false`, `log.showSignature=false`, `diff.external=`, `core.pager=cat`) plus `--no-ext-diff --no-textconv`; `GIT_CONFIG_NOSYSTEM` is not used (reason: repo config must not make a read-only subcommand execute a program).
+- 2026-10-21: Multi-account model registry, following opencode: named `[accounts.<name>]`, models addressed `<account>/<model>`, one rig client per account; replaces `[model] provider`/`base_url`. Reason: user requirement; Claude Code has no analogous design point.
+- 2026-10-20: Hybrid gate — tool-declared `read_only` + workspace-scope check skips the guardian; everything else is adjudicated. (User choice.)
+- 2026-10-21: Hybrid-gate refinement — the fast path is earned by Fontaine-enforced workspace containment, not the tool's label; read-only ≠ safe, and MCP `readOnlyHint` never earns it. (User choice.)
+- 2026-10-20 (amended 2026-10-21: headless to Phase 1): TUI-first (ratatui), headless `-p` on the same core. (User choice.)
+- 2026-10-20: Guardian is fail-closed on every non-verdict outcome; Deny verdicts are never softened (Claude Code behavior; Phase 4 §Fail-closed guarantees).
+- 2026-10-20: Core is built on the rig crate family, pinned to exact versions; no custom provider layer. (User directive: reuse existing crates.)
+- 2026-10-20: rig's Bevy-based `rig-harness`/`rig-tui` are not adopted; Fontaine keeps its own ratatui TUI.
+- 2026-10-20: License is Apache-2.0 (verbatim `LICENSE`); adapted Anthropic rule prose is attributed in `docs/guardian.md`.
+- 2026-10-21: "fontaine" is the final product name — binary, crate prefix, config dir, `FONTAINE.md`. (User decision.)
+- 2026-10-21: Guardian default = top-ranked benchmark-validated model available on the configured accounts; switching is easy, explicit, never automatic; no catalog match ⇒ main model with a one-time notice. (User decision.)
+- 2026-10-21: Default tool-result scanner = PromptGuard 2 with a cheap-LLM fallback; the Llama 4 Community License caveat is surfaced at first enable; BYO-scanner interface for license-clean setups. (User decision.)
+- 2026-10-21: Fold strategic-verdict amendments A3 (sandbox interop, Phase 5 roadmap slot) and A4 (dependency-light, lift-out-able `fontaine-guardian`) into the roadmap. (User decision.)
+- 2026-10-21: Revisit the core-vs-rig split if rig ships a permission-adjudication API.
+- 2026-10-21: Design tie-breaker — when in doubt, do as Claude Code does; every deviation gets a dated line here with a one-line reason. (User directive.)
+- 2026-10-21: Dedicated read tools plus a deterministic, zero-LLM Tier-0.5 shell pre-classifier (`brush-parser` + curated set + flag allowlist + scope validator; fail-through on anything unparsed), extended only via the user-scope `[shell_preclassifier] allow_extra` (`design/permissions.md` step 5). Deviations from Claude Code: unquoted globs are rejected (shell-side expansion is invisible to the scope validator), and "don't ask again" grants never auto-extend the curated set (a repo or injected session must not accumulate loosened prefixes). (User directive 2.)
+- 2026-10-21: The Tier-0.5 curated set contains no `git` subcommand in v1 — every git invocation goes to the guardian. Deviation from Claude Code (stricter); reason: repo-controlled config and attributes (filter drivers, textconv, ext-diff, fsmonitor, gpg.program) can make read-only git execute programs and no override set closes it.
+- 2026-10-21: Phase 2 `ls`/`grep` take rig-tools 0.45 `ListArgs`/`SearchArgs` only (`grep`: `pattern`, `path`, `glob`, `hidden`, `files` mode, 200-match cap; `(?i)` for case-insensitivity; no context lines, count, type or head_limit). Deviation from Claude Code's Grep/LS arguments; reason: no custom search layer over rig.
+- 2026-10-21 (supersedes "no subagents in v1"): Parallel multi-agent management is a v1 requirement, Claude Code-style; agent-to-agent messages go through the same guardian gate. (User directive 3.)
+- 2026-10-21: Deviation — a child's effective mode is never looser than its parent's (Claude Code lets a parent set a child `auto`); Phase 5 "Parallel agent orchestration".
+- 2026-10-21: Deviation — `acceptEdits` auto-approves Fontaine's edit-class tools only, not in-scope filesystem Bash; reason: writes ride the classified edit tools and a mutating shell must not fast-path (stricter than Claude Code).
+- 2026-10-21: Subagent nesting and budgets mirror Claude Code's documented rules (not a deviation); Phase 5.
+- 2026-10-21: Plan mode follows Claude Code's default (classifier reviews consequential non-edit calls); edits are structurally blocked regardless of verdict.
+- 2026-10-21 (revised): The deterministic floor (deny → ask → critical-path → protected-path) gates every mode and can only prompt or deny, never allow; critical-path never auto-approves and denies in `dontAsk`/headless; protected paths follow Claude Code. Spec: `design/permissions.md` §Core data flow.
+- 2026-10-21: Deviation — config trust asymmetry is looser than Claude Code on the deny side: project repos may add deny/ask rules (Claude Code ignores the project `autoMode` block); reason: deny-side additions can only tighten.
+- 2026-10-21 (user): Bypass mode is not shipped in v1 (deviation from `bypassPermissions`); eval/CI baselines always run with the guardian.
+- 2026-10-21: Shipped default mode = auto (Claude Code parity); interim default = manual until the guardian wires in at Phase 4.
+- 2026-10-21 (user): Headless `-p` promoted to Phase 1 so CI and the eval harness drive core headlessly from day one.
+- 2026-10-21: Deviation — subagent reports are screened by the optional (default-off) result scanner, not by the classifier at handoff; reason: the guardian never sees tool output.
+- 2026-10-21 (user): No zero-guardian mode; containers get `[guardian] profile = "minimal"`, never off, and it requires Fontaine-verified containment (user-scope `--in-container` plus the Linux probe; probe failure ⇒ `full`). Ruleset and request: Phase 4 §Minimal guardian profile; it ships with its own scorecard column.
+- 2026-10-21 (user): Typed-decision screeners (Jev, Laya, DiffusionGemma) are deferred to the screening-tier roadmap; thresholds are always recalibrated on Fontaine's golden set (vendor defaults over-escalate: 17/21 wrong escalations at 0.85/0.6).
+- 2026-10-21 (user): Guardian tree accepted as design direction — strictest-wins composition, fail-closed between tiers, per-domain subtrees, benchmarked tiers only; v1 ships the deterministic+LLM spine; one tree serves the whole agent tree.
+- 2026-10-21 (user): The plan is split into this master tracker plus one plan per phase under `tasks/phases/`, each ending in a docs step; all documentation lives under `docs/`.
+- 2026-10-21: The eval runner is the workspace bin + lib crate `rust/fontaine-evals` (like `fontaine`: logic in `src/lib.rs`, thin `src/main.rs`, so integration tests can import it); the dataset stays in `evals/dataset/` as JSONL.
+- 2026-10-21 (user): `[permissions] allow` plus one `Tool(specifier)` grammar for deny/ask/allow (`design/permissions.md` §Permission rules); allow acts after the floor, narrow rules skip the guardian in `auto`, broad code-execution rules are suspended in `auto` (Claude Code parity); a user allow rule or user hook `allow` is a user grant distinct from the containment fast path.
+- 2026-10-21: Deviation — shared project settings cannot hold allow rules, a project hook's `allow` and a project skill's `allowed-tools` are ignored; reason: project scope can only tighten.
+- 2026-10-21: Deviation — `shell` deny/ask rules match as a prefix anywhere in the parsed word stream (and on unparseable commands containing the first word) while allow matches only one simple command; reason: no regex and no operator-level parser in v1, so deny fails toward matching and allow toward not matching.
+- 2026-10-21: Settings scope stack managed (reserved) > CLI > project-local > project > user (Claude Code parity). Deviation: endpoint/credential keys (`[accounts.*]`, `[telemetry]` except `enabled = false`) are never read from project-local; reason: a file in the repo must not redirect session data.
+- 2026-10-21: Multiple workspace roots (`--add-dir`, `/add-dir`, `additional_directories`; Claude Code parity): containment is inside any root, extra roots grant file access not configuration, only the user adds roots.
+- 2026-10-21: Session ledger — the guardian's inputs come from a Fontaine-owned append-only ledger, never rig-memory context; resume/fork drop session grants (`design/sessions.md`). Claude Code has no analogous design point.
+- 2026-10-21: The headless I/O contract is versioned (`schema_version`; additive keeps it, rename or removal bumps it), mirroring Claude Code's flags plus `gate_decision` events.
+- 2026-10-21 (user): Project agent files (`.fontaine/agents/*.md`) are allowed but only narrow (subset toolset, `manual`/`dontAsk`, no `model`). Deviation from Claude Code; reason: a checked-in repo must not widen a child's authority or pick its endpoint.
+- 2026-10-21 (user): Observability goes through `tracing` in every crate with only the bin installing a subscriber; export is opt-in, off by default, native micromegas by default (OTLP/HTTP fallback). Deviation (Claude Code exports only OTel); reason: user requirement. Names and opt-ins mirror `claude_code.*` / `OTEL_LOG_*`; details in `design/observability.md`.
+- 2026-10-21: The audit log is a separate, always-on local record written before telemetry from one typed `GateDecision`; reason: telemetry is opt-in, lossy and redacted.
+- 2026-10-21 (user): `FONTAINE.md` v1 loads `<primary root>/FONTAINE.md` plus the user-level file; no hierarchy or imports (backlog GitHub issue #7).
+- 2026-10-21 (user): The micromegas crates need no published `rust-version`; that upstream item is dropped.
+- 2026-10-21: The loop breaker follows Claude Code — `auto` pauses after 3 consecutive or 20 total guardian denials (not configurable); headless treats the paused state as would-prompt → Deny.
+- 2026-10-21: The `GuardedTool` decorator is the single gate; rig `AgentHook::on_dispatch` is not used for permission decisions.
+- 2026-10-21: Tool calls are adjudicated and executed one at a time (`tool_concurrency = 1`); parallel batch adjudication is dropped for v1.
+- 2026-10-21: `fontaine-tools` defines the `ToolGate` trait that `fontaine-core`'s `PermissionPipeline` implements, so `fontaine-tools` never depends on `fontaine-core`.
+- 2026-10-21: The "destructive" class behind the fail-closed Allow → Deny rule is derived deterministically by `fontaine-core` from the call, never from the guardian's label; verdict labels are Claude Code's default block categories plus `allow` (Phase 4).
+- 2026-10-21: Deviation — project and project-local scopes may set `default_mode` to `manual` or `dontAsk` only; `plan` (its guardian leg can loosen a manual user) and `acceptEdits` (a repo must not auto-approve edits) are stricter than Claude Code, and `auto` is rejected from project-local too (Claude Code parity).
+- 2026-10-21: The pre-session file index is gitignore-respecting, capped at 50,000 paths; the guardian request carries only the touched paths' pre-existence status.
+- 2026-10-21: Directories come from the `dirs` crate, overridable by `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR`; credentials at `<data dir>/credentials.toml`, owner-only (`design/platforms.md`).
+- 2026-10-21: The eval dataset gains `mode` and `workspace` fields so `pipeline` cases are reproducible.
+- 2026-10-21: The default guardian list is the data file `rust/fontaine-guardian/data/guardian_models.toml`; it ships empty (fallback to the main model) and the Phase 4 scorecard run fills it.
+- 2026-10-21: v1 supports Linux, macOS and Windows; every CI step runs on all three OSes. Windows runs `shell` through Git Bash (Claude Code parity; PowerShell tool is backlog issue #28); details in `design/platforms.md`.
+- 2026-10-21: Deviation — provider and telemetry credential variables are scrubbed from the `shell` and hook child environment (list: Phase 2 step 1); reason: a model-run command must not read provider keys.
+- 2026-10-21: AgentDojo-comparable (ASR × utility) reporting is dropped; the scorecard reports per-class catch rate and false-deny rate.
+- 2026-10-21: Workspace trust (Claude Code parity: folder trust covers the whole folder) — in the TUI, project and project-local executables (hooks, MCP servers, skill `!cmd`) load only after the trust prompt; headless loads them without one; they never change a permission decision (`design/config.md` §Config, Workspace trust).
+- 2026-10-21: A user-scope hook `allow` in `auto` follows Claude Code (like an allow rule; broad matchers suspended); the `claude -p` baseline confirms it.
+- 2026-10-21: The `skill` tool stays `ReadOnly` on the fast path; a skill's `!cmd` is gated as a `shell` call.
+- 2026-10-21 (user): Shell parsing uses exact-pinned `brush-parser` for Tier 0.5, critical-path and rule matching; no hand-rolled lexer, no `shlex`; anything not exactly one simple command falls through.
+- 2026-10-21 (user): Windows Git Bash discovery follows Claude Code's pattern with `FONTAINE_GIT_BASH_PATH` override (`design/platforms.md`).
+- 2026-10-21 (user): `[shell_preclassifier] allow_extra` entries are a command or `command subcommand` pair, flag-free, with in-scope positional paths.
+- 2026-10-21 (user): `webfetch` v1 takes `url` only (HTML → markdown via exact-pinned `htmd`; caps in Phase 2). Deviation: no `prompt` argument or small-model post-processing (backlog); reason: one deterministic tool with no extra model call.
+- 2026-10-21 (user): The minimal profile uses the resolved `[guardian] model` and its ruleset in `prompts/guardian_minimal.md`.
+- 2026-10-21: The `pg2` flag threshold is the fixed constant 0.9, LlamaFirewall's default `block_threshold`.
+- 2026-10-21 (user): Destructive-class word lists ship as constants (Phase 4), checked against `claude -p` baselines; catch rate is over all `kind = guardian` `attack:*` cases, false-deny over all `kind = guardian` benign cases, and the runner reports p50/p95 latency.
+- 2026-10-21: Output styles never alter the guardian's prompt or `AdjudicationRequest`.
+- 2026-10-21 (user): Releases — semver 0.x, cargo-dist (exact-pinned) GitHub Releases plus `cargo install --git`, no crates.io, maintainer cuts releases, Keep a Changelog (`design/platforms.md` §Releases).
+- 2026-10-21 (user): `fontaine-agents` defines `ChildRunner` and `LedgerView` traits implemented and injected by `fontaine-core`, the same inversion as `ToolGate`.
+- 2026-10-21 (user): The `agent` tool blocks until the child finishes (Claude Code parity); `background: true` returns `{agent_id}` and delivers the report as a notification (Phase 5).
+- 2026-10-21 (user): `send_message` reaches parent, children, siblings and `"main"`; delivery is queued, untrusted and sender-marked (Phase 5).
+- 2026-10-21 (user): The RuleLabel enum gains `Container Escape` for `guardian_minimal.md`; the escape class goes in the verdict `explanation` as `class=<name>` and the `minimal` column reports per class from it.
+- 2026-10-21 (user): Guardian constants ship in `fontaine-guardian`, not config keys (cache TTL, `task_intent` budget, message and action counts, extractor retries; Phase 4).
+- 2026-10-21 (user): Root `SECURITY.md` (Phase 0): private reporting, 90-day coordinated disclosure; bypass dataset PRs only after a fix ships.
+- 2026-10-21 (user): The eval dataset has minimum case counts and maintainer sign-off of `expected` labels against `claude -p` baselines before the scorecard publishes (`design/testing.md` §Eval harness).
+- 2026-10-21 (user): PromptGuard 2 runs on `candle` (safetensors from the gated HF repo), not ONNX/`ort`; exact pins and the `pg2` feature in Phase 6.
+- 2026-10-21 (user): Scanner selection is one key, `[guardian] scanner = "off" | "pg2" | "llm" | "command"` (default `off`), replacing `scan_tool_results`; scanner errors fail closed (flagged); scanner keys are user file only.
+- 2026-10-21 (user): The Linux containment probe and its signals are defined in Phase 4 step 6; macOS and Windows ⇒ not contained; `minimal` needs `--in-container` AND a positive probe.
+- 2026-10-21 (user): The guardian-list inclusion bar and ranking are defined in Phase 4 §The guardian agent; separate from the kill criteria.
+- 2026-10-21: While a parent is in `plan`, every child's edits are blocked and its non-edit calls use the tighter of its own mode and `manual` (Phase 5).
+- 2026-10-21 (user): `/model` and `/guardian-model` switch the live session and persist to the user config file (Claude Code `/model` parity); `/model` moves the guardian only when it is unset and on the main-model fallback; an unavailable pinned guardian in the TUI prompts retry / pick another validated guardian / switch to `manual` (Phase 4 §The guardian agent).
 
 ## Open Questions
 

@@ -55,8 +55,8 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               regex, no hand-rolled lexer) into exactly ONE simple command (no control operators
               `; | & && ||`, redirections, substitutions, subshells, backgrounding, globs —
               anything else falls through) AND argv[0]+subcommand ∈ curated read-only set
-              (`ls`, `pwd`, `wc`, `file`, `git status|log|diff|show`, `rg`/`grep`,
-              `cat`/`head`/`tail`; pre-classified `git` runs with forced-safe config overrides via the launcher environment, see Phase 3 §Tier-0.5 initial allowlist) AND every remaining token is either a path argument passing
+              (`ls`, `pwd`, `wc`, `file`, `rg`/`grep`, `cat`/`head`/`tail`; no `git`
+              subcommand — every git invocation goes to the guardian) AND every remaining token is either a path argument passing
               the step-4 scope validator (symlink-resolved; absolute / out-of-workspace paths
               never qualify) or a flag on a per-command read-only flag allowlist — any flag not
               explicitly allowlisted for that command, any glob/`~`/wildcard token, or any
@@ -85,7 +85,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               these step-9 calls fall through to the human prompt.
                       │
          Allow ──▶ inner rig Tool executes ──▶ ResultPipeline ──▶ result appended to conversation (rig-memory)
-         Deny  ──▶ tool_result = "Denied by guardian: [reason]"; agent sees it and adapts
+         Deny  ──▶ tool_result = "Denied by guardian: [explanation]"; agent sees it and adapts
          Escalate ──▶ human prompt (with guardian's explanation shown)
 
  (the `agent` tool call that spawns a subagent is an ordinary `Arbitrary`-class pipeline request —
@@ -174,11 +174,15 @@ rules match the given path and the resolved path; path allow rules match the res
 critical-path or protected-path outcome stands whatever allow says, and `plan` still blocks edits. A
 matching allow rule skips the human prompt in manual/acceptEdits, pre-approves in `dontAsk`, and
 skips the guardian in `auto` (Claude Code parity). In `auto`, **broad code-execution allow rules are
-suspended** for as long as the mode is on (Claude Code parity): bare `shell`; `shell(<w> *)` where
-`<w>` is an interpreter, shell or package-manager runner on a shipped list (`python`, `python3`,
-`node`, `deno`, `bun`, `ruby`, `perl`, `bash`, `sh`, `zsh`, `npx`, `npm run`/`exec`, `pnpm`, `yarn`,
-`uv run`, `cargo run`, …); bare `agent`. Suspended rules are listed on entering `auto` (TUI notice;
-headless `init` event). An allow rule is a **user grant**: the containment fast path (step 4) and
+suspended** for as long as the mode is on (Claude Code parity: its docs drop blanket `Bash(*)`,
+wildcarded interpreters, package-manager run commands and `Agent` allow rules, and keep narrow rules
+such as `Bash(npm test)`). The docs give categories, not an exhaustive list, so the list Fontaine
+ships is: bare `shell`; bare `agent`; and `shell(<entry>)` or `shell(<entry> *)` for each `<entry>` in
+`sh`, `bash`, `zsh`, `python`, `python3`, `node`, `ruby`, `perl`, `deno`, `bun`, `cargo run`,
+`npm run`, `npx`, `pnpm`, `yarn`, `make`, `eval`, `exec`, `xargs`, `env`, `sudo`. A rule with more
+words (`shell(npm test)`, `shell(python script.py)`) is narrow and stays. The list is a constant in
+`permission_rules.rs`, checked against `claude -p` baselines. Suspended rules are listed on entering
+`auto` (TUI notice, headless `init` event). An allow rule is a **user grant**: the containment fast path (step 4) and
 Tier 0.5 (step 5) remain the only guardian skips earned without one, and no tool label or server
 declaration ever creates an allow rule.
 
@@ -203,9 +207,9 @@ matcher's `allow` skips the guardian (Claude Code parity) and a broad matcher (b
 test) is suspended. A hook that errors, times out or returns
 malformed output contributes no decision; the call continues through the normal pipeline — hooks
 never loosen on failure. Hook processes are user-configured, not tool calls, and are not gated by the
-pipeline. Sources follow `config.md` §Config: user, project-local and CLI hooks load always; project hooks are
-project-defined executables (workspace trust) and their `allow` decisions are ignored (project scope
-only tightens). No key in any scope disables hooks from a higher-trust scope. Built in Phase 5.
+pipeline. Sources follow `config.md` §Config: user and CLI hooks load always; project and project-local hooks are
+executables gated by workspace trust in the TUI, and a project hook's `allow` decision is ignored
+(project scope only tightens). No key in any scope disables hooks from a higher-trust scope. Built in Phase 5.
 
 ## Composite guardian (the guardian tree)
 
