@@ -59,8 +59,8 @@ table against `claude -p` baselines (step 3) and record differences in Decisions
 ### Permission rules and allow (pipeline steps 2 and 5a)
 
 The master plan's §Permission rules is the spec: one `Tool(specifier)` grammar (parsed at load since
-Phase 0) for deny/ask/allow; `shell` specifiers matched on the Tier-0.5 shlex-lexed argv — deny/ask
-as a prefix anywhere in the word stream and on any unlexable command containing the rule's first
+Phase 0) for deny/ask/allow; `shell` specifiers matched on the Tier-0.5 `brush-parser` argv — deny/ask
+as a prefix anywhere in the word stream and on any unparseable command containing the rule's first
 word, allow only on one simple command; path specifiers gitignore-style against scope-validator
 resolved paths; `webfetch(domain:)`; MCP names. Allow rules are step 5a, after the floor; the broad
 code-execution list that `auto` suspends is a shipped constant in `permission_rules.rs`, applied when
@@ -77,9 +77,9 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
    Phase 4 step 2; there is no `bypass` mode) and the step order from the master's data-flow
    diagram (the step-2 deterministic floor: deny → ask → critical-path (rm/rmdir targets prompt; deny in
    `dontAsk`/headless) → protected-path (the master's enumerated list; `edit`/`write` only — prompt in manual/acceptEdits,
-   deny in `dontAsk`/headless), in every mode, with shell commands lexed by the Tier-0.5 shlex lexer; steps 4–5:
+   deny in `dontAsk`/headless), in every mode, with shell commands parsed by the Tier-0.5 `brush-parser` pass (`brush-parser` pinned to an exact version in `fontaine-tools`; no hand-rolled lexer); steps 4–5:
    read-only fast path, then the Tier-0.5 shell pre-classifier with its curated set +
-   per-command read-only flag allowlist (initial table above) + audit log, schema per the master
+   per-command read-only flag allowlist (initial table above) + `allow_extra` entries (a command or `command subcommand` pair; no flags — any flag falls through; positional args validated as in-scope paths) + audit log, schema per the master
    §Core data flow); rule matching and allow rules (design above; `--allowed-tools` /
    `--disallowed-tools` as CLI-scope rules); the step-1a hook-decision slot; `GateDecision` → audit
    log, then `tool_decision` telemetry and the headless `gate_decision` event; `fontaine.permission`
@@ -102,7 +102,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
    `Tool(specifier)` rule grammar and allow rules (sources, step order, session vs always grants,
    suspension of broad rules in `auto`), and the Tier-0.5 pre-classifier (curated set,
    per-command read-only flag allowlist, fail-through rule, `[shell_preclassifier] allow_extra` —
-   user-scope only); complete the full permission-pipeline diagram in `docs/architecture.md`;
+   user-scope only, flag-free, positionals must be in-scope paths); complete the full permission-pipeline diagram in `docs/architecture.md`;
    start `docs/tui.md` (keybinds incl. Shift+Tab, approval-prompt options, `/add-dir`); add
    `--allowed-tools` / `--disallowed-tools` and the `gate_decision` event to `docs/headless.md`; add
    the `tool_decision` event and permission spans to `docs/telemetry.md`; fill the README mode
@@ -124,14 +124,14 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   prompts in the interim and denies in headless); read-only scope check incl. symlink-escape denial
   and an out-of-scope `cwd`; sequential tool calls in one turn (a Deny returns its own tool_result; later calls are still adjudicated, one at a time); the `[permissions] deny` rule
   holds in EVERY mode; critical-path `rm`/`rmdir` (incl. unresolvable targets and commands that fail
-  to lex) prompts in manual/acceptEdits/plan, denies in `dontAsk` and headless, and is never
+  to parse or are compound) prompts in manual/acceptEdits/plan, denies in `dontAsk` and headless, and is never
   auto-approved; protected-path writes via `edit`/`write` (the enumerated list) prompt or deny per
   mode; an `[permissions] ask` rule forces a prompt in `manual` and denies in `dontAsk`; every
   decision appends an audit record matching the master schema (`tier`, `decision`, `rule`,
   `args_digest`, `agent_id`).
 - **permission rules** (`rust/fontaine-core/tests/permission_rules.rs`): the master Testing Strategy
   bullet minus the `auto` legs — grammar per tool kind; `shell` deny/ask hit compound, wrapped and
-  unlexable commands; `shell` allow never matches a compound command; resolved-path matching incl.
+  unparseable commands; `shell` allow never matches a compound command; resolved-path matching incl.
   symlinks; `webfetch(domain:)` normalization; a redirect leaving an allowed domain is returned, not followed; an allow rule never passes deny/ask/critical-path/
   protected-path and never lets an edit run in `plan`; an allow rule pre-approves in `dontAsk` and
   skips the prompt in `manual`; "allow session" lasts only for the session, "always allow" writes
@@ -151,7 +151,10 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   allowlist-table row (listed flags pre-classify, the excluded flags fall through); in-scope `ls` → no
   prompt plus an audit record with `tier = tier05`; `ls ../` → one human prompt (interim; the
   counting-guardian form is owned by Phase 4); a relative path under an out-of-scope `cwd` falls
-  through.
+  through; `allow_extra` — an extra entry given a flag falls through to the guardian, an out-of-scope
+  positional falls through, an in-scope positional pre-classifies; golden parser cases: `ls;rm x`, `a|b`
+  and `ls && rm x` never fast-path and `deny shell(rm)` matches the `rm` segment (floor treats the `rm` as
+  critical), while a quoted `';'` argument stays one argument.
 - **headless** (`rust/fontaine/tests/pipeline_headless.rs`, scripted `openai-compatible` endpoint via the Phase-1 `common/mod.rs` helper):
   every would-prompt outcome becomes a Deny returned as the tool_result, the run continues, exit
   code 0.

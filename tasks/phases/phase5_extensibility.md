@@ -69,7 +69,7 @@ event goes to the handler as JSON on stdin (session id, agent id, tool, args, mo
 answer comes back as JSON on stdout or exit code 2 (= deny, stderr as the reason). `pre_tool_use`
 returns `decision` (deny / ask / allow), `updated_input`, `guardian_context`; `post_tool_use` may
 append a note to the tool result the agent sees (a `ResultPipeline` stage that runs after the Phase 6 scanner stage); `permission_denied` may return `retry` (the agent is
-told it may retry, as with `/denied` → `r`). Handlers run (through Git Bash on Windows) with the scrubbed child environment and a
+told it may retry, as with `/denied` → `r`). Handlers run (through Git Bash on Windows, found by the same discovery as the `shell` tool, including `FONTAINE_GIT_BASH_PATH`) with the scrubbed child environment and a
 `timeout_secs` cap, in a `fontaine.hook` span. A user-scope `allow` in `auto` follows Claude Code: a
 narrow matcher skips the guardian, a broad one is suspended. Every subagent tool call runs the same hooks.
 

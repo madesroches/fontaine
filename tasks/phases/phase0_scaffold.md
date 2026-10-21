@@ -66,7 +66,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    door (pitch, install, quickstart — the quickstart leads with a local Ollama agent + guardian
    setup) linking into `docs/` — not a second copy of it. Add a short root `CONTRIBUTING.md`
    (build/test commands, branch and commit rules, how to submit golden-dataset cases and red-team
-   bypasses). Create `CHANGELOG.md` with the first entry. Add the docs check `rust/fontaine-core/tests/docs.rs` (see Tests).
+   bypasses). Create `CHANGELOG.md` (Keep a Changelog format, with an `## [Unreleased]` section) with the first entry. Add the docs check `rust/fontaine-core/tests/docs.rs` (see Tests).
 
 ## Files created or modified
 

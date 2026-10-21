@@ -81,12 +81,12 @@ set-url` to unnamed third parties), `Unreviewed Merge`. `GuardianUnavailable` is
 fail-closed code, never offered to the model. A verdict outside the enum is unparseable ⇒ Deny.
 
 **Destructive class** (input to the fail-closed rule). `fontaine-core` derives
-`ToolCallSummary.destructive` from the call itself, structurally (the Tier-0.5 lexer and the scope
+`ToolCallSummary.destructive` from the call itself, structurally (the Tier-0.5 `brush-parser` pass and the scope
 validator; no regex), never from the guardian's label. A `shell`, `write`/`edit`, MCP or other
-`Arbitrary` call is destructive when it has any of: a removal or overwrite (a lexed
+`Arbitrary` call is destructive when it has any of: a removal or overwrite (a parsed
 `rm`/`rmdir`/`mv`-class word, or a write over a path whose status is `pre_existing` or
-`unindexed`), a write target outside every workspace root, network egress (`webfetch`, or a lexed
-network-client / `git push` / `git remote` word), or any construct the lexer cannot classify. The
+`unindexed`), a write target outside every workspace root, network egress (`webfetch`, or a parsed
+network-client / `git push` / `git remote` word), or any construct the parser cannot classify. The
 derivation lives in `rust/fontaine-core/src/destructive.rs`, so `fontaine-guardian` stays
 dependency-light.
 
@@ -122,7 +122,7 @@ Deny or Escalate."* All request content is wrapped in delimited untrusted blocks
 the guardian never goes fully off, it narrows (no zero-guardian mode exists — the dropped `bypass`
 mode is not resurrected here; minimal adjudicates, just less):
 - A **reduced ruleset + reduced adjudication context** (smaller `AdjudicationRequest`: trimmed
-  intent digest + session facts) run on a **cheap validated model**. Permitted **only when
+  intent digest + session facts) run on the **resolved `[guardian] model`** (no separate model key). Permitted **only when
   containment is Fontaine-verified**: an explicit `--in-container` CLI flag (a user
   assertion — Phase 1 CLI table) **backed by an actual runtime probe** (Linux cgroup-namespace check and `/.dockerenv`; macOS and Windows always report "not contained", so minimal falls back to `full` there). Detecting an srt/bubblewrap launch (`@anthropic-ai/sandbox-runtime`) belongs to the Phase 5 sandbox roadmap slot. A
   failed or missing probe fails closed — minimal refuses to load and falls back to `full` with a
@@ -177,13 +177,18 @@ mode is not resurrected here; minimal adjudicates, just less):
    `allow` in `auto` (narrow matcher skips the classifier; broad matcher suspended) to confirm the
    Claude Code parity (manual/eval-side, never a CI dependency — see AGENTS.md).
 5. Minimal profile implementation: profile resolution (`[guardian] profile`, user-scope only; only
-   `full`/`minimal` validate) with the reduced ruleset and trimmed `AdjudicationRequest` on a cheap
-   validated model (`rust/fontaine-guardian/src/profile.rs`); the runtime containment probe
+   `full`/`minimal` validate) with the reduced ruleset (`rust/fontaine-guardian/prompts/guardian_minimal.md`, versioned alongside `guardian_prompt.md`) and trimmed `AdjudicationRequest` on the resolved `[guardian] model` (no separate model key; `rust/fontaine-guardian/src/profile.rs`); the runtime containment probe
    (Linux cgroup-namespace check and `/.dockerenv`; macOS and Windows always report "not
    contained"; srt/bubblewrap launch detection is deferred to the Phase 5 roadmap slot) in `rust/fontaine-core/src/containment.rs`, with the `--in-container` CLI flag as an input that is
    never sufficient alone; on probe failure or missing verification, resolve to `full` and emit a
    one-time notice.
-6. Docs — finish `docs/guardian.md`: threat model (guardian as attack surface: no tools,
+6. Release setup: cargo-dist (exact-pinned version) configured in `rust/Cargo.toml` and
+   `.github/workflows/release.yml` — on a `vX.Y.Z` tag it builds binaries for Linux, macOS and Windows
+   and publishes a GitHub Release (semver 0.x); `cargo install` from git/crates.io also supported.
+   Tagging and pushing the tag are human steps (maintainer); the workflow is exercised by a
+   `cargo dist plan` check in CI. README install section lists the Releases binaries and `cargo install`.
+   `CHANGELOG.md` keeps `## [Unreleased]` (Keep a Changelog); at release it moves under the version.
+7. Docs — finish `docs/guardian.md`: threat model (guardian as attack surface: no tools,
    structured output only, untrusted-delimiting, fail-closed on every non-verdict outcome), the
    request/verdict schemas, rule precedence (`hard_deny` > `soft_deny` > `allow` > explicit
    specific user intent), prompt-versioning policy, how to choose a guardian model (the ranked
@@ -200,11 +205,11 @@ mode is not resurrected here; minimal adjudicates, just less):
 ## Files created or modified
 
 `rust/fontaine-guardian/src/{lib,verdict,prompt_builder,rules,cache,profile}.rs` +
-`rust/fontaine-guardian/prompts/guardian_prompt.md` + `rust/fontaine-guardian/data/guardian_models.toml`
+`rust/fontaine-guardian/prompts/{guardian_prompt,guardian_minimal}.md` + `rust/fontaine-guardian/data/guardian_models.toml`
 (ships empty; filled by step 4); `rust/fontaine-core/src/permissions.rs`
 (auto branch); `rust/fontaine-core/src/{containment,destructive}.rs`; `rust/fontaine-tui/src/{denials,approval}.rs`;
 tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/fontaine/tests/`,
-`rust/fontaine-tui/tests/`; `docs/{guardian,evals,tui,permissions,configuration,telemetry,index}.md`;
+`rust/fontaine-tui/tests/`; `.github/workflows/release.yml` (+ cargo-dist config in `rust/Cargo.toml`); `docs/{guardian,evals,tui,permissions,configuration,telemetry,index}.md`;
 `README.md`; scorecard output under `evals/`.
 
 ## Tests owned by this phase
@@ -221,7 +226,7 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   failure ⇒ fall back to `full`), and under `minimal` the escape primitives + exfiltration-class
   remote writes still Deny/Escalate.
 - **destructive class** (`rust/fontaine-core/tests/destructive.rs`): derivation from the call —
-  removal/overwrite words, out-of-workspace write, network egress, unlexable command ⇒ destructive;
+  removal/overwrite words, out-of-workspace write, network egress, unparseable command ⇒ destructive;
   in-workspace new-file `write` and a plain `cargo test` ⇒ not; a verdict labelled with a benign
   category on a destructive call below threshold still ⇒ Deny; a verdict outside the `RuleLabel` enum
   ⇒ Deny; the request carries only the touched paths' pre-existence status, never the index; an empty
@@ -263,4 +268,5 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   judgment, retry UX, Ollama model-agnostic parity); the live-model scorecard run and its
   publication, linked from docs; the first auto-mode cassette recording; the `claude -p` baseline
   capture (incl. hook `allow` in `auto`); the scorecard run that fills `guardian_models.toml`.
+- Needs a human: cut the first release (tag `vX.Y.Z` and push the tag; the release workflow builds and publishes the binaries); move `## [Unreleased]` under the version in `CHANGELOG.md`.
 - Log the phase in the master plan's Progress log.

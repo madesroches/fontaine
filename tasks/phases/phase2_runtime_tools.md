@@ -105,7 +105,7 @@ context.
    | `write` | WorkspaceWrite | rig-tools `write`, wrapped, `confine: true` |
    | `edit` | WorkspaceWrite | rig-tools `edit`, wrapped, `confine: true` |
    | `shell` | Arbitrary | rig-tools `shell`, wrapped; `confine: true`, `max_timeout`, output `cut` set |
-   | `webfetch` | Arbitrary | new first-party; never follows a cross-host redirect (returns the redirect URL to the model, as Claude Code does); response size and timeout caps |
+   | `webfetch` | Arbitrary | new first-party; args `url` only; HTML → markdown via `htmd` (exact-pinned); 10 MB fetch cap, 100,000-character output cap (truncation noted in the result), 30 s timeout; never follows a cross-host redirect (returns the redirect URL to the model, as Claude Code does). No `prompt` argument / small-model post-processing in v1 (backlog) |
 
    Removal and rename go through `shell` (Arbitrary), so the shell-only critical-path check covers
    every removal path. `scope.rs` resolves every path through `rig_tools::fs::place` (base = the
@@ -118,8 +118,10 @@ context.
    calls (scope check via `scope.rs`) and denies everything else, so the always-on floor holds from
    the first commit; the real `PermissionPipeline` lands in Phase 3 and replaces the stub. `scope.rs`
    and the per-root tool instances are multi-root from the start (design above); `--add-dir` wires in.
-   On Windows the `shell` tool runs through Git Bash (Git for Windows is required; a missing install is a
-   startup error naming it), so the POSIX lexer and checks apply unchanged; `scope.rs` handles drive
+   On Windows the `shell` tool runs through Git Bash (Git for Windows is required), so the POSIX parser and checks apply unchanged. Discovery (shared with hooks): `git.exe` on PATH, then the standard
+   Git for Windows install locations; derive `<Git>\usr\bin` and `<Git>\bin` and prepend them to the launcher's
+   PATH (rig-tools `Launcher::with_env`) so rig's `sh` resolves; `FONTAINE_GIT_BASH_PATH` overrides; not found ⇒
+   startup error, exit 2, naming Git for Windows and the override; `scope.rs` handles drive
    letters, UNC paths, case-insensitive comparison, junctions and MSYS-style `/c/...` paths.
    The `shell` tool's child environment drops the telemetry credential variables, `MICROMEGAS_*`,
    `OTEL_EXPORTER_OTLP_HEADERS`, every configured `[accounts.*] api_key_env` name and
@@ -141,7 +143,7 @@ context.
 
 ## Files created or modified
 
-`rust/fontaine-tools/src/{lib,gate,guarded,result_pipeline,risk,scope,builtins,webfetch}.rs`;
+`rust/fontaine-tools/src/{lib,gate,guarded,result_pipeline,risk,scope,builtins,webfetch,git_bash}.rs`;
 `rust/fontaine-core/src/{lib,session,ledger,hooks}.rs`; `docs/tools.md`, `docs/architecture.md`,
 `docs/configuration.md`, `docs/telemetry.md`, `docs/index.md`.
 
@@ -162,7 +164,12 @@ context.
   scope, out of every root falls out; settings in an added root are not loaded.
 - **windows** (`#[cfg(windows)]`; compile-checked locally with `cargo check --all-targets --target x86_64-pc-windows-gnu`, executed in the windows CI job): scope validator over drive letters, UNC
   paths, case-insensitive comparison, junction and symlink escape, and MSYS-style `/c/...` paths
-  (untranslatable ⇒ out of scope); the `shell` tool launches through Git Bash.
+  (untranslatable ⇒ out of scope); the `shell` tool launches through Git Bash; Git Bash discovery
+  (`git.exe` on PATH, standard install locations, `FONTAINE_GIT_BASH_PATH` override, not found ⇒ exit 2);
+  a platform-independent unit test of the `<Git>\usr\bin` / `<Git>\bin` path derivation.
+- **webfetch** (wiremock): HTML converted to markdown; a body over 10 MB is cut at the fetch cap; output
+  over 100,000 characters is truncated with the truncation noted; a response slower than 30 s times out;
+  a cross-host redirect is returned, not followed; only `url` is accepted.
 - **session ledger** (`rust/fontaine-core/tests/ledger.rs`): after a forced compaction the ledger
   still holds every user message verbatim and no summary text; the ledger is append-only (no API
   removes a record); the file index respects `.gitignore` and truncates at the cap with the
