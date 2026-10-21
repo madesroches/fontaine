@@ -86,8 +86,8 @@ all tests pass:
   compare Fontaine's behavior as features land — never from unit/integration tests or CI.
 - Integration tests drive the core through the headless `fontaine -p` surface.
 - New shell-pre-classifier behavior must keep the soundness property: anything it cannot
-  fully parse as one simple command falls through to the guardian (see the plan's Testing
-  Strategy golden adversarial set).
+  fully parse as one simple command falls through to the guardian (see the golden adversarial set
+  in `tasks/design/testing.md`).
 
 ## Essential Commands
 
