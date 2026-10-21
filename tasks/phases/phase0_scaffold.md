@@ -17,8 +17,8 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    (`.github/workflows/ci.yml`, GitHub Actions, matrix `ubuntu-latest` / `macos-latest` /
    `windows-latest`, each from `rust/`: `cargo fmt --check`,
    `cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run from
-   step 2), config loading (`fontaine-core/src/config.rs`) with the schema in
-   `tasks/design/config.md` §Config as the settings scope stack: reserved managed slot (empty), CLI `--settings` overlay,
+   step 2), root `.gitignore` (at least `rust/target/` and `.fontaine/settings.local.toml`), config loading (`fontaine-core/src/config.rs`) with the schema in
+   `tasks/design/config.md` §Config — `config.rs` defines and scope-validates the COMPLETE schema (every section incl. `[accounts]`, `[model]`, `[guardian]` with scanner keys, `[agents]`, `[mcp]`, `[hooks]`, `[telemetry]`; later phases wire behavior to already-parsed keys) — as the settings scope stack: reserved managed slot (empty), CLI `--settings` overlay,
    project-local `.fontaine/settings.local.toml` (user trust only while `git` reports it untracked
    or ignored; otherwise project scope), project `.fontaine/settings.toml`, user file; scalars by
    precedence, lists by union; every key a scope may not set (per the `tasks/design/config.md` scope table, incl.
@@ -70,7 +70,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 
 ## Files created or modified
 
-`rust/Cargo.toml`; `rust/rust-toolchain.toml`; crate skeletons for every `rust/fontaine-*` crate; `rust/fontaine/src/main.rs`;
+`.gitignore`; `rust/Cargo.toml`; `rust/rust-toolchain.toml`; crate skeletons for every `rust/fontaine-*` crate; `rust/fontaine/src/main.rs`;
 `rust/fontaine/src/telemetry/mod.rs`; `rust/fontaine-core/src/{config,dirs,permission_rules,trust}.rs`; `evals/` (dataset + README.md); `rust/fontaine-evals/` (runner); `CHANGELOG.md`; `CONTRIBUTING.md`;
 `docs/{index,architecture,configuration}.md`; `README.md`; `rust/fontaine-core/tests/docs.rs`; `.github/workflows/ci.yml`.
 

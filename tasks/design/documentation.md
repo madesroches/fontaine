@@ -18,8 +18,8 @@ delivered (or extended) by the docs step of the phase named with it — see the 
   (TUI + headless), workspace roots, session ledger vs model context, session persistence/resume/fork
   (skeleton Phase 0; grown in Phases 1, 2, 3, 5).
 - `docs/configuration.md`: every config key, the settings scope stack and per-key scope table,
-  trust asymmetry, workspace trust, account and provider setup examples — seeded from the `config.md` §Config schema (Phase 0); grown in Phases 1, 3, 4,
-  5, 6 as each `[section]` ships.
+  trust asymmetry, workspace trust, account and provider setup examples — seeded from the `config.md` §Config schema (Phase 0) and documenting every key from Phase 0; sections note which phase enables the behavior (Phases 1, 3, 4,
+  5, 6).
 - `docs/tools.md`: built-in tool inventory, risk classes, the containment fast path, shell
   hardening (Phase 2).
 - `docs/permissions.md`: mode table, deterministic floor, the `Tool(specifier)` rule grammar and

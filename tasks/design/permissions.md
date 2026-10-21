@@ -56,7 +56,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               `; | & && ||`, redirections, substitutions, subshells, backgrounding, globs —
               anything else falls through) AND argv[0]+subcommand ∈ curated read-only set
               (`ls`, `pwd`, `wc`, `file`, `git status|log|diff|show`, `rg`/`grep`,
-              `cat`/`head`/`tail`) AND every remaining token is either a path argument passing
+              `cat`/`head`/`tail`; pre-classified `git` runs with forced-safe config overrides via the launcher environment, see Phase 3 §Tier-0.5 initial allowlist) AND every remaining token is either a path argument passing
               the step-4 scope validator (symlink-resolved; absolute / out-of-workspace paths
               never qualify) or a flag on a per-command read-only flag allowlist — any flag not
               explicitly allowlisted for that command, any glob/`~`/wildcard token, or any

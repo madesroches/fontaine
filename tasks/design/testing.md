@@ -40,7 +40,7 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   reads → guardian), `file -m`/`--magic-file` and `grep -f` (values validated as paths), `rg --pre`,
   `git diff --output`/`--ext-diff`, `sort -o out`, `git log --output` → guardian), a relative path
   under an out-of-scope `cwd` (falls through), redirections and backgrounding (`ls > out.txt`,
-  `ls &`). Pipeline unit test with a counting fake guardian: in-scope `ls` → zero guardian calls
+  `ls &`), and git config-execution cases (a repo `.git/config` with `core.fsmonitor = <cmd>`; one with `log.showSignature = true` plus `gpg.program = <cmd>` — `git status` / `git log` pre-classify but `<cmd>` must not execute on the fast path, per the forced-safe git config overrides). Pipeline unit test with a counting fake guardian: in-scope `ls` → zero guardian calls
   plus a Tier-0.5 audit entry; `ls ../` → exactly one guardian call (Phase 3 asserts the interim
   prompt instead; the counting-guardian form lands with Phase 4).
 - **guardian**: verdict extraction via rig extractor with malformed outputs → retries → Deny;

@@ -32,10 +32,10 @@ in the main session, and their results return to the parent as a summary.
   parent's effective mode; an **explicit** per-type `mode` may only be `manual` or `dontAsk` —
   never looser than inherited, on the session ladder `dontAsk < manual < acceptEdits < auto`
   (`plan` is off the ladder: a session-root interactive posture, not a child mode).
-  `plan`/`acceptEdits`/`auto` are reachable for a child only via `"inherit"` from a parent already
-  there — so a `manual` parent can never produce a silently-adjudicating `plan` child. The child's mode is
+  `acceptEdits`/`auto` are reachable for a child only via `"inherit"` from a parent already
+  there. While the parent is in `plan`, every child's edits are structurally blocked (plan's edit block is inherited) and the child's non-edit calls use the tighter of the child's own effective mode and `manual` (so `auto`/`acceptEdits` children drop to `manual` for non-edits). The child's mode is
   not fixed at spawn: it is re-evaluated on every call as the tighter of its own setting and the
-  parent's current mode.
+  parent's current mode, including a parent that switches into `plan` mid-run.
   The guardian's intent for every agent in the tree comes from the **root session's ledger**: `task_intent` and
   `recent_user_messages` are built from the root's human messages only. Spawn prompts and `send_message` bodies reach
   the guardian only as untrusted-delimited context, never as intent.
@@ -189,7 +189,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
 
 - **parallel agents** (`tasks/design/testing.md` Testing Strategy; `rust/fontaine/tests/parallel_agents.rs`): spawn-call gating (task × toolset × model
   composite); mode-inheritance invariant (child ≤ parent, never looser), including a test where the
-  parent switches mode mid-run and the child's next call follows the tighter mode; per-type registry
+  parent switches mode mid-run and the child's next call follows the tighter mode; a `plan` parent blocks every child edit and drops an `auto`/`acceptEdits` child's non-edit calls to `manual`, including when the parent enters `plan` mid-run; per-type registry
   is a subset of the parent's; budget caps stop a subagent; subagent reports return as ordinary
   tool results through `ResultPipeline`; `send_message` peer messages hit the
   same gate.

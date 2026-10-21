@@ -94,7 +94,7 @@ context.
 1. `fontaine-tools`: `RiskClass` registry; the `ToolGate` trait; generic `GuardedTool<T: Tool>` decorator over `rig_core::tool::Tool`, a `DynamicTool`
    wrapper path for MCP; `fontaine-core` holds the shared `Arc<SessionState>` and the `ToolGate` impl injected at registration; register exactly this tool set
    (the choke-point test asserts it: no other names, no duplicates, `delete`/`move` absent; the Phase-1
-   test-only `echo` spike tool is removed here; Phase 5 extends the set and the test):
+   test-only `echo` spike tool is removed here, and the `headless_smoke.rs` tool round-trip and `headless_contract.rs` `--max-turns` scripts that used it are retargeted to the in-scope `read` tool; Phase 5 extends the set and the test):
 
    | Tool | RiskClass | Implementation |
    |---|---|---|
@@ -146,7 +146,7 @@ context.
 ## Files created or modified
 
 `rust/fontaine-tools/src/{lib,gate,guarded,result_pipeline,risk,scope,builtins,webfetch,git_bash}.rs`;
-`rust/fontaine-core/src/{lib,session,ledger,hooks}.rs`; `docs/tools.md`, `docs/architecture.md`,
+`rust/fontaine-core/src/{lib,session,ledger,hooks}.rs`; `rust/fontaine/tests/{headless_smoke,headless_contract}.rs` (retargeted from `echo` to `read`); `docs/tools.md`, `docs/architecture.md`,
 `docs/configuration.md`, `docs/telemetry.md`, `docs/index.md`.
 
 ## Tests owned by this phase

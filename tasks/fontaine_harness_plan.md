@@ -89,7 +89,7 @@ Built **on rig**: Fontaine crates are the guardian, the permission pipeline, con
 The model layer, agent runtime, memory/compaction, base tools, and MCP come from rig crates.
 Per the micromegas convention, the Cargo workspace lives at `rust/Cargo.toml` and **every crate
 sits directly under `rust/`** — the root directories are only `rust/`, `evals/`, `docs/`, `tasks/`,
-`research/`, plus root files `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`,
+`research/`, plus root files `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`, `.gitignore`,
 `.github/workflows/release.yml` (cargo-dist release build; see `design/platforms.md` §Releases) and
 `.github/workflows/ci.yml` (GitHub Actions; matrix `ubuntu-latest`, `macos-latest`, `windows-latest`, each job installs the toolchain pinned in `rust/rust-toolchain.toml` and from `rust/` runs `cargo fmt --check`,
 `cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run (Phase 6 adds `cargo clippy --all-targets --features fontaine-guardian/pg2 -- -D warnings` and `cargo test --features fontaine-guardian/pg2`) — see
@@ -224,7 +224,7 @@ carries the reasoning:
   fatal rather than convertible).
 - Eval results show the best local guardian models cannot clear a credible bar (e.g. <60% catch
   on the seeded attack classes at <10% benign false-deny; this kill floor is separate from the
-  stricter guardian-list inclusion bar in Phase 4 step 4) — meaning the "any model" promise is
+  stricter guardian-list inclusion bar in Phase 4 step 5) — meaning the "any model" promise is
   hollow for the feature that matters.
 
 ## Decisions
@@ -498,6 +498,8 @@ carries the reasoning:
 - 2026-10-21 (user): guardian-list inclusion bar — a model enters `guardian_models.toml` only with
   destructive-class catch rate ≥ 90%, benign false-deny rate ≤ 5% and p95 adjudication latency ≤ 3 s on
   the scorecard; ranked by catch rate, then false-deny rate, then latency. Separate from the kill criteria.
+- 2026-10-21: while a parent is in `plan`, every child's edits are structurally blocked (plan's edit block is inherited) and the child's non-edit calls use the tighter of the child's own effective mode and `manual`; re-evaluated per call, including a parent that switches into `plan` mid-run.
+- 2026-10-21: Tier-0.5 pre-classified `git` commands run with forced-safe config via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` (`core.fsmonitor=false`, `log.showSignature=false`, `diff.external=`, `core.pager=cat`) plus `--no-ext-diff --no-textconv`; `GIT_CONFIG_NOSYSTEM` is not used (reason: repo config must not make a read-only subcommand execute a program).
 
 ## Open Questions
 

@@ -12,7 +12,7 @@ custom OpenAI-compatible endpoints for OpenRouter/LM Studio/vLLM/LiteLLM). The *
 abstraction serves both the main agent and the guardian** — the guardian is just another rig agent
 pointed at a different model handle (`guardian.model`). Streaming to the TUI uses rig's streaming
 events; structured verdicts use rig's `structured_output` synthetic-tool path (see
-`tasks/design/research-findings.md` §Ecosystem / dependencies). Provider selection comes from Fontaine config **accounts** (`[accounts.<name>]`: `kind`,
+`tasks/design/research-findings.md` §Ecosystem / dependencies). Provider selection comes from Fontaine config **accounts** (already parsed and scope-validated by Phase 0's `config.rs`; this phase wires behavior to them) (`[accounts.<name>]`: `kind`,
 optional `base_url`, credential source) and maps onto rig client constructors — one rig client per
 account, so two accounts of the same kind (work + personal Anthropic) coexist with separate
 credentials and endpoints. Each account provides models: an explicit `models` list, else discovery
@@ -102,7 +102,7 @@ upstream builder knob.
    | `--allowed-tools <rule>…` / `--disallowed-tools <rule>…` | CLI-scope `[permissions] allow` / `deny` rules in the `Tool(specifier)` grammar | 3 |
    | `--session-id <uuid>` | use this session id (ledger, audit log, telemetry) | 2 |
    | `--continue` / `--resume <id>` / `--fork-session` | resume the latest / a given session; fork it under a new id | 5 |
-   | `--in-container` | user assertion that the process runs inside a container; only an input to `[guardian] profile = "minimal"` resolution, never sufficient alone (the runtime probe must also pass — Phase 4 step 5); a CLI flag, not a config key | 1 (read from 4) |
+   | `--in-container` | user assertion that the process runs inside a container; only an input to `[guardian] profile = "minimal"` resolution, never sufficient alone (the runtime probe must also pass — Phase 4 step 6); a CLI flag, not a config key | 1 (read from 4) |
    | `fontaine auth login <account>` | store the account's credentials in the stored-credentials file | 1 |
    | `fontaine auth login --telemetry` | store the telemetry ingestion key in the stored-credentials file | 1 |
 3. Telemetry backends (design above): `rust/fontaine/src/telemetry/{micromegas,otlp,span_bridge}.rs`;
@@ -127,7 +127,7 @@ upstream builder knob.
 
 ## Files created or modified
 
-`rust/Cargo.toml` (rig + telemetry pins); `rust/fontaine-core/src/models.rs` (plus the accounts/credentials config types and `auth login`); `rust/fontaine/src/{main,headless}.rs`
+`rust/Cargo.toml` (rig + telemetry pins); `rust/fontaine-core/src/models.rs` (plus `auth login`); `rust/fontaine/src/{main,headless}.rs`
 (`-p` flag wiring, I/O contract); `rust/fontaine/src/telemetry/{micromegas,otlp,span_bridge}.rs`;
 `rust/fontaine/tests/{headless_smoke,headless_contract,telemetry_micromegas,telemetry_otlp}.rs`;
 `rust/fontaine/tests/common/mod.rs` (shared scripted-wiremock helper);

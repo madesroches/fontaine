@@ -52,9 +52,9 @@ table against `claude -p` baselines (step 3) and record differences in Decisions
 | `rg` | `-i -s -S -n -N -H -w -x -F -v -c -l -A N -B N -C N -m N -t TYPE -T TYPE --hidden --no-heading` | positionals; `-f`/`--file`, `--ignore-file` values. `--pre`, `--pre-glob`, `--hostname-bin`, `-z`/`--search-zip`, `-L`/`--follow`, `-g`/`--glob` not allowed |
 | `grep` | `-i -n -v -w -x -F -E -c -l -L -H -h -o -q -s -r -A N -B N -C N` | positionals; `-f`/`--file` value. `-R` and `--exclude-from` not allowed |
 | `git status` | `-s --short -b --branch --porcelain` | every positional, before or after `--`, validated as a path |
-| `git log`, `git diff`, `git show` | `--oneline --stat --name-only --name-status --graph --decorate --no-color --cached --staged -n N -U N` | every positional, before or after `--`, validated as a path. Only when `--no-ext-diff --no-textconv` are also present (repo config can name external diff/textconv programs); `--output`, `--ext-diff`, `--textconv` not allowed |
+| `git log`, `git diff`, `git show` | `--oneline --stat --name-only --name-status --graph --decorate --no-color --cached --staged -n N -U N` | every positional, before or after `--`, validated as a path. Only when `--no-ext-diff --no-textconv` are also present (required flags; repo config can name external diff/textconv programs); `--no-ext-diff` and `--no-textconv` are also allowed flags; `--output`, `--ext-diff`, `--textconv` not allowed |
 
-`git` must have the subcommand as `argv[1]` (`git -c …` and `git -C …` fall through).
+`git` must have the subcommand as `argv[1]` (`git -c …` and `git -C …` fall through). Pre-classified `git` commands are launched with forced-safe config through the launcher environment (`GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`): `core.fsmonitor=false`, `log.showSignature=false`, `diff.external=` (empty), `core.pager=cat` — so repo `.git/config` cannot make a read-only subcommand execute a program. `GIT_CONFIG_NOSYSTEM=1` is not used (it would change behavior). The override list is checked against `claude -p` baselines and git docs when implementing.
 
 ### Permission rules and allow (pipeline steps 2 and 5a)
 
@@ -154,7 +154,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   through; `allow_extra` — an extra entry given a flag falls through to the guardian, an out-of-scope
   positional falls through, an in-scope positional pre-classifies; golden parser cases: `ls;rm x`, `a|b`
   and `ls && rm x` never fast-path and `deny shell(rm)` matches the `rm` segment (floor treats the `rm` as
-  critical), while a quoted `';'` argument stays one argument.
+  critical), while a quoted `';'` argument stays one argument; git config-execution cases (see the golden set): the command does not execute on the fast path.
 - **headless** (`rust/fontaine/tests/pipeline_headless.rs`, scripted `openai-compatible` endpoint via the Phase-1 `common/mod.rs` helper):
   every would-prompt outcome becomes a Deny returned as the tool_result, the run continues, exit
   code 0.
