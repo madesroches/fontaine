@@ -26,7 +26,7 @@ load from the primary root only. The guardian's `session_facts` and trust bounda
 
 (`<root>` is the primary root — no parent-directory walk, no nested settings files.) Scalars: the
 highest-precedence scope that sets a key wins. Lists merge as a union across scopes; a scope may add
-only to the lists the scope table lets it set. A key a scope may not set is rejected at load (exit 2).
+only to the lists the scope table lets it set. A named table entry (`[accounts.<name>]`, `[mcp.servers.<name>]`, `[agents.types]`) is replaced whole by the highest-precedence scope defining that name; `[[hooks.*]]` arrays merge by union. A key a scope may not set is rejected at load (exit 2).
 
 **Workspace trust** (Claude Code parity: folder trust covers the whole folder). Project and
 project-local executables — MCP servers, hooks, skills' `!cmd` dynamic context — load in the TUI only

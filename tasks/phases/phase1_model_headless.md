@@ -155,7 +155,7 @@ upstream builder knob.
   `--max-turns` / `--max-budget-usd` stop with the matching subtype and exit 1 (the budget test uses a catalog-priced account, see the telemetry bullet; `--max-budget-usd` against an unpriced `openai-compatible` model is a usage error, exit 2); `--input-format
   stream-json` drives a two-turn run; `--json-schema` fills `result.structured_output`.
 - **telemetry**: `-p` against the scripted `wiremock` endpoint returning `usage` yields `api_request` with tokens and cost — cost and budget tests use an account of `kind = "openai"` (or `anthropic`) whose `base_url` points at the wiremock server and whose model id is in rig's price catalog, because rig 0.45's `Catalog` prices by provider vendor and model id and a custom `openai-compatible` endpoint has no price; **span tree
-  round-trip** (`telemetry_micromegas.rs`, its own test binary, `serial_test =4.0.1`): a nested span tree,
+  round-trip** (`telemetry_micromegas.rs`, its own test binary, `serial_test 4.0.1`): a nested span tree,
   inner spans closed on a different tokio worker than they opened on, passes through the `SpanBridge`
   into micromegas `InMemorySink`, and decoding the thread blocks gives one begin/end async span event
   pair per span with `parent_span_id` equal to the parent's `span_id` (0 at the root), `depth` + 1 per
