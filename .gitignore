@@ -1,0 +1,18 @@
+# Rust
+rust/target/
+
+# Fontaine local settings (personal, never committed)
+.fontaine/settings.local.toml
+
+# Emacs
+*~
+\#*\#
+.\#*
+.saves/
+*.elc
+auto-save-list/
+tramp
+flycheck_*.el
+.projectile
+.dir-locals-2.el
+TAGS
