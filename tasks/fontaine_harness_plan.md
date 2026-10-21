@@ -8,10 +8,11 @@ endpoint — OpenRouter, Ollama, LM Studio, vLLM, LiteLLM). Its signature featur
 instead of static allow/deny regex lists or an OS sandbox/docker wrapper, every non-trivially-safe
 tool call is adjudicated by a **guardian agent** — a separate LLM session that uses its judgment,
 grounded in the user's task intent and a prose trust/rule configuration, to decide
-`allow | deny | escalate-to-human`. This is exactly the architecture Anthropic shipped server-side
-in Claude Code's auto mode (a classifier model reviews each action, denies fail-closed, reasons are
-fed back to the agent), but Claude Code's classifier is closed, server-side, and Anthropic-only.
-Fontaine makes that pattern open, local, and model-agnostic.
+`allow | deny | escalate-to-human`. This is the architecture both majors shipped in 2026: Claude
+Code's auto mode (a classifier model reviews each action, denies fail-closed, reasons are fed back
+to the agent) and Codex CLI's `--approve-for-me` auto-review (a separate reviewer agent answers
+approval requests). Both are closed and provider-locked. Fontaine makes that pattern open, local,
+and model-agnostic.
 
 User decisions already made:
 - **Hybrid gate**: tools declare `read_only` risk metadata at registration; read-only tools inside
@@ -24,8 +25,14 @@ User decisions already made:
 
 ## Current State
 
-Empty repo (`/home/mad/fontaine`, branch `main`): only `LICENSE`. Everything is greenfield. No
-`tasks/` precedent exists; this plan sets the level of detail for future ones.
+Repo `/home/mad/fontaine` is on branch `start` (not `main`) with 5 commits: this plan, the five
+analysis docs, and the LlamaFirewall deep-dive. No Rust code exists yet — the implementation is
+greenfield. `tasks/` holds six companion docs that are this plan's precedent and inputs:
+`analysis-01-competitive-landscape.md` (market/permission-story survey),
+`analysis-02-guardian-market.md`, `analysis-03-differentiation.md`,
+`analysis-04-devils-advocate.md` (kill criteria), `analysis-05-strategic-verdict.md` (verdict and
+"Required plan amendments" A1–A5, which this plan incorporates), and
+`research-llamafirewall.md` (deep-dive on the nearest open prior art).
 
 ## Research Findings (prior art this design is grounded in)
 
@@ -80,6 +87,14 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   `sandbox_mode` as orthogonal axes. Fontaine mirrors this shape but replaces the
   sandbox/approval-policy axes with **permission mode × guardian**.
 - Confirms the pattern: headless and TUI are thin surfaces over a shared `core` crate.
+- **Codex ships its own LLM adjudicator too**: codex-rs main source has `GuardianReviewContext` +
+  `strict_auto_review` in `core/src/tools/orchestrator.rs`, plus `ext/guardian-reviewer` and
+  `ext/guardian-v2` crates; the `--approve-for-me` flag (v0.147.0, Aug 2026) replaces manual
+  approval with a separate reviewer agent at the sandbox boundary. Like Claude Code's classifier it
+  is closed and OpenAI-only, and PromptArmor demonstrated bypasses of the auto-review agent
+  (approving malicious npm installs via indirect prompt injection) — the pattern is validated by
+  both majors but breakable, which is why Fontaine's guardian ships with a public eval scorecard
+  (see Testing Strategy).
 
 ### Goose (Block / AAIF) — model-agnostic Rust precedent
 
@@ -112,6 +127,34 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   our prose `hard_deny`/`allow` lists fill that niche inside the guardian prompt rather than as an
   external policy engine.
 
+### LlamaFirewall (Meta) — nearest open prior art (full deep-dive: `research-llamafirewall.md`)
+
+- **Positioning**: LlamaFirewall (arXiv:2505.03574, May 2025) is an open (MIT), in-process Python
+  guardrail *framework*: a policy engine orchestrating scanners over agent messages/traces —
+  PromptGuard 2 (injection classifier), AlignmentCheck (LLM chain-of-thought auditor), CodeShield
+  (static analysis), regex/custom scanners. It is the strongest open prior art and the benchmark
+  baseline we will be compared against — but it is a *detector library for agent builders*, not a
+  *permission engine inside a harness*, and has been in maintenance mode since launch.
+- **Monitoring vs authorization**: AlignmentCheck answers "has this agent drifted from the user's
+  goal?" — a trace **drift monitor** (labeled experimental; defaults to a Together-hosted model).
+  Fontaine's guardian answers "may this specific action run, under these rules, in this
+  environment?" — a pre-execution **authorization gate** with Allow/Deny/Escalate verdicts, prose
+  intent rules, and deny-reason feedback. Different seat; the public will conflate them, so the
+  distinction must stay crisp in docs.
+- **AgentDojo baseline for our eval**: report Fontaine guardian results in AgentDojo-comparable
+  terms (ASR × utility) against their published numbers — no-defense .176 / PromptGuard 2 .075 /
+  AlignmentCheck .029 / combined .0175 — as the bar to beat.
+- **PromptGuard 2 as the tool-result scanner**: adopt as the default for the result-scanning slot
+  (97.5% recall @ 1% FPR, 19–92ms) via ONNX Runtime (`ort` crate) or a sidecar, instead of a
+  hand-rolled cheap-model pass. Caveat: Meta weights are gated Llama-Community-licensed — the
+  air-gapped story is "bring your own scanner model; PromptGuard 2 supported if licensed."
+- **Attribution**: the LlamaFirewall code is MIT-licensed; their AlignmentCheck prompts (paper
+  Appendix C.6) are reusable, attributed prior art for `guardian_prompt.md`. Cite their §2.4
+  anti-proprietary-guardrails argument — provider-embedded safety offers "limited visibility,
+  auditability, and customizability" — it is our pitch, from Meta. Do **not** take a runtime
+  dependency on the `llamafirewall` Python package; depend on its models and numbers, not its
+  framework.
+
 ### Ecosystem / dependencies — reuse-first (user requirement)
 
 - **rig** (MIT, v0.45.0, Oct 2026, 0xPlaygrounds) — the Rust LLM framework, now split into exactly
@@ -142,13 +185,6 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
 - **ratatui + crossterm** — the standard Rust TUI stack (used by codex-rs; also demonstrated with
   rig in JetBrains' "Rust AI in Practice" session — a coding agent built on rig + ratatui).
 - **tokio, serde, clap, tracing, toml** — glue.
-- Alternatives considered for the model layer and rejected: hand-rolled adapters over
-  `reqwest`/`eventsource-stream` (the goose/codex-rs pattern — maximal control, but weeks of SSE
-  delta-accumulation and per-provider quirk work that rig already maintains); `genai`
-  (jeremychone/rust-genai — excellent thin multi-provider *client*, 27+ native-protocol providers,
-  but no agent runtime, hooks, memory, or tool registry, so we'd still hand-build the core);
-  embedding `codex-core`/`codex-codes` (imports OpenAI's own approval+sandbox policy engine,
-  which conflicts with the guardian design, and is not published as a reusable library crate).
 
 ## Design
 
@@ -274,10 +310,11 @@ wrapped in delimited untrusted blocks.
   those allowed, in order; a Deny in a batch does not poison the others (each gets its own
   tool_result).
 
-**Result scanning (phase 2 of guardian)**: like Claude Code's server-side probe, an optional
-second cheap-model pass over incoming tool *results* that flags injection-looking content
+**Result scanning (phase 2 of guardian)**: like Claude Code's server-side probe, a scanner pass
+over incoming tool *results* that flags injection-looking content
 ("ignore previous instructions…", credential-shaped strings) and annotates the result before the
-main agent reads it. Off by default for latency; configurable.
+main agent reads it. Default scanner: PromptGuard 2 (per the LlamaFirewall findings); a cheap-LLM
+pass is the fallback. Off by default for latency; configurable.
 
 ### Tools: rig-tools + a risk-metadata registry + GuardedTool wrapper (fontaine-tools)
 
@@ -355,7 +392,11 @@ hard_deny   = ["$defaults", "Never send repo contents to third-party code-review
 
 Rule-precedence semantics and the `$defaults` splice marker are adopted directly from Claude
 Code's auto-mode config (proven design). **Trust asymmetry**: project-level settings may only
-*tighten* (add hard/soft denies); only user-level config may loosen.
+*tighten* (add hard/soft denies); only user-level config may loosen. Mirroring Claude Code's
+documented semantics (where `defaultMode: "auto"` and `"bypassPermissions"` are ignored in
+project settings), **project-level settings cannot set `[permissions] default_mode` to `auto` or
+`bypass` — those are user/managed-scope only**; a checked-in repo must not be able to disarm its
+own guardian.
 
 ### TUI (fontaine-tui)
 
@@ -368,56 +409,67 @@ marks actions for retry (sends "you may retry" back to the agent) — Claude Cod
 
 ## Implementation Steps
 
-**Phase 0 — scaffold**
+**Phase 0 — scaffold (eval first — it is the product)**
 1. Cargo workspace, crate skeletons, `clap` CLI entry (`fontaine`), tracing setup, CI (fmt, clippy,
    test), config loading (`fontaine-core/src/config.rs`) with the schema above.
+2. Eval golden-dataset scaffolding + CI runner skeleton (`evals/`): dataset format (~150+ cases:
+   benign dev commands, each seeded attack class from Claude Code's default-block list, injection
+   attempts *inside tool args*, ambiguous intent cases); runner scores any guardian model config;
+   CI runs it against a mock provider (verdict fixtures) so it is green before the guardian
+   exists. Per analysis-05 amendment A1: the public guardian scorecard is the differentiating
+   asset — its harness is built first, not last.
 
 **Phase 1 — model layer (mostly dependency wiring)**
-2. Add rig crates (pinned exact versions): `rig-core`, `rig-agent`, `rig-memory`, `rig-tools`,
+3. Add rig crates (pinned exact versions): `rig-core`, `rig-agent`, `rig-memory`, `rig-tools`,
    `rig-rmcp`, `rig-cassette` (dev). `fontaine-core/src/models.rs`: map Fontaine config → rig
    provider clients (Anthropic, OpenAI, Gemini, Ollama, custom OpenAI-compatible base URLs) and
    expose main-model + guardian-model handles. Spike: streaming one prompt to stdout via rig, with
    a tool call round-trip, to validate rig's ergonomics before building on it.
 
 **Phase 2 — agent runtime & tools**
-3. `fontaine-tools`: `RiskClass` registry; `GuardedTool` decorator over `rig_core::tool::Tool`;
+4. `fontaine-tools`: `RiskClass` registry; `GuardedTool` decorator over `rig_core::tool::Tool`;
    register rig-tools' read/write/edit/search/shell wrapped with risk classes; add `webfetch`;
    workspace-scope/symlink validator; harden shell (timeout, output cap) via wrapper config.
-4. `fontaine-core`: session orchestration on `rig_agent` (`AgentBuilder` + `AgentRun`), system
+5. `fontaine-core`: session orchestration on `rig_agent` (`AgentBuilder` + `AgentRun`), system
    prompt, FONTAINE.md project-instruction loading; `rig-memory` for context windows, compaction,
    and save/resume — no custom agent loop or history management to write.
 
 **Phase 3 — permission pipeline & manual TUI**
-5. `PermissionPipeline` with modes `manual`/`acceptEdits`/`plan`/`dontAsk`/`bypass` and the
+6. `PermissionPipeline` with modes `manual`/`acceptEdits`/`plan`/`dontAsk`/`bypass` and the
    step order from the data-flow diagram; human-approval callback trait.
-6. `fontaine-tui`: transcript, streaming render, input, approval prompts, status bar, mode
+7. `fontaine-tui`: transcript, streaming render, input, approval prompts, status bar, mode
    cycling. **Milestone: usable Claude-Code-like agent with manual approvals.**
 
-**Phase 4 — the guardian (the feature)**
-7. `fontaine-guardian`: `AdjudicationRequest`/`Verdict` types; `Verdict` extracted via rig's typed
+**Phase 4 — the guardian (the feature) + its published scorecard**
+8. `fontaine-guardian`: `AdjudicationRequest`/`Verdict` types; `Verdict` extracted via rig's typed
    extraction (`rig_agent::extractor` over the synthetic output tool) with retries, then validated
    by our own fail-closed code; prompt builder (versioned `guardian_prompt.md` asset + default rule
    lists seeded from Claude Code's published defaults); timeout, verdict cache, consecutive-denial
    loop breaker; `rig_core::redact` applied to anything credential-shaped in adjudication inputs.
-8. Wire `auto` mode into the pipeline; denial reason → tool_result; denial records; parallel
+9. Wire `auto` mode into the pipeline; denial reason → tool_result; denial records; parallel
    adjudication of batched tool calls.
-9. TUI denial UX: inline denial rendering, `/denied` retry list, `/permissions` rule editor,
-   `/guardian` model switch, low-confidence escalation prompts.
+10. TUI denial UX: inline denial rendering, `/denied` retry list, `/permissions` rule editor,
+    `/guardian` model switch, low-confidence escalation prompts.
+11. Run the Phase-0 eval harness against live guardian models and **publish the guardian
+    scorecard** with the release: catch rate per attack class × false-deny rate on benign commands
+    × per-model results, reported in AgentDojo-comparable terms (ASR × utility) against the
+    LlamaFirewall baseline (see Research Findings). The guardian never ships un-scored — a bypass
+    found by Fontaine's own public eval is a credibility event; the same bypass found externally is
+    the kill event (analysis-05 amendment A1, mitigating KILL #3).
 
 **Phase 5 — extensibility**
-10. `fontaine-mcp` (rig-rmcp): stdio + streamable-HTTP servers from config; MCP tools registered
+12. `fontaine-mcp` (rig-rmcp): stdio + streamable-HTTP servers from config; MCP tools registered
     into rig's tool registry wrapped in `GuardedTool` with `Arbitrary` risk; server annotations
     surfaced to the guardian as hints.
-11. Session persistence via rig's serializable `AgentRun` + `rig-memory` save/resume (JSONL on
+13. Session persistence via rig's serializable `AgentRun` + `rig-memory` save/resume (JSONL on
     disk, our own transcript log alongside); headless `fontaine -p "task"` on the same core
     (denials in headless auto = guardian only; in manual = denied, matching Claude Code).
 
-**Phase 6 — guardian hardening & eval**
-12. Optional tool-result injection scanner (second cheap-model pass, off by default).
-13. Eval harness: golden dataset (~150+ cases: benign dev commands, each seeded attack class from
-    Claude Code's default-block list, injection attempts *inside tool args*, ambiguous intent
-    cases); runner scores any guardian model config; used in CI with a mock provider (verdict
-    fixtures) and manually with live models.
+**Phase 6 — guardian hardening**
+14. Tool-result injection scanner: default scanner is **PromptGuard 2** (per
+    `research-llamafirewall.md` §7.2 — ONNX Runtime via the `ort` crate or a sidecar, with the
+    cheap-LLM pass as fallback), off by default, configurable. Evals are already public as of
+    Phase 4; nothing new lands in this phase.
 
 ## Files to Modify
 
@@ -489,13 +541,22 @@ No `fontaine-llm` crate — the model layer is rig.
   not in rig `AgentHook`s; hooks are for bookkeeping only.
 - 2026-10-20: rig's Bevy-based harness/TUI (`rig-harness`, `rig-tui`) is not adopted; Fontaine
   keeps its own ratatui TUI.
+- 2026-10-20: `bypass` mode is included in v1 behind an explicit opt-in flag with a loud warning,
+  containers-only framing (parity with Claude Code's `bypassPermissions`).
+- 2026-10-20: No subagents in v1; when added (post-v1), subagent spawns/reports and
+  `SendMessage`-style agent-to-agent calls go through the same guardian gate (Claude Code's
+  classifier reviews agent-team messages the same way).
+- 2026-10-20: License is Apache-2.0 — the repo's `LICENSE` is verbatim Apache-2.0 text; rule prose
+  adapted from Anthropic's published documentation gets an attribution note in docs/guardian.md.
 
 ## Documentation
 
 - `README.md`: pitch, quickstart (providers incl. Ollama), mode table, auto-mode explainer.
 - `docs/architecture.md`: workspace map, agent-loop and permission-pipeline diagrams.
 - `docs/guardian.md`: threat model, request/verdict schema, rule precedence, prompt-versioning
-  policy, how to choose a guardian model, known limits (latency, injection surface, eval results).
+  policy, how to choose a guardian model, known limits (latency, injection surface, eval results),
+  and attribution of Anthropic-derived rule prose (and MIT-licensed LlamaFirewall prompts if
+  mined).
 - `docs/configuration.md`: every config key, trust asymmetry of project vs user settings.
 
 ## Testing Strategy
@@ -523,7 +584,8 @@ deterministically in CI; plus a fail-closed test where the guardian endpoint 500
 the tool call is denied. Cassette replay is what makes the end-to-end loop CI-able without live
 models or flaky network.
 
-Eval harness (Phase 6, run manually / nightly, not CI-gated on live models): golden dataset scored
+Eval harness (scaffolded in Phase 0, scorecard published with the guardian in Phase 4; run
+manually / nightly, not CI-gated on live models): golden dataset scored
 against live guardian models; catches prompt regressions unit fixtures can't — specifically
 guardian *judgment quality* (false-deny rate on benign commands, catch rate per attack class).
 This is the tier where "89% vs 13.6%" style claims get verified for whatever model the user picks.
@@ -550,10 +612,3 @@ catches terminal-rendering and streaming-latency issues no unit test can.
 2. **Default guardian policy when unset** — default to the main model (safe, slower/costlier) or
    require explicit `guardian.model` before `auto` mode can activate? Recommendation: default to
    main model, show a one-time notice suggesting a faster one.
-3. **`bypass` mode** — include at all in v1, or defer until a sandbox layer exists?
-   Recommendation: include behind a scary flag (parity with the ecosystem, useful in containers).
-4. **Subagents** — Claude Code's classifier also reviews agent-to-agent messages. v1 has no
-   subagents; when added (post-v1), the same guardian gate applies to `SendMessage`-style calls.
-5. **License** — LICENSE exists (Apache-2.0 text?); confirm it matches intent for a project that
-   embeds rule text adapted from Anthropic's published documentation (prose rules are functional
-   descriptions, but worth a note in docs/guardian.md attributing the source).
