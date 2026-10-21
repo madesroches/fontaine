@@ -69,9 +69,10 @@ pub struct Verdict {
                                  //   a JSON schema in fontaine-guardian; set seeded in
                                  //   prompts/guardian_prompt.md), e.g. "Data Exfiltration", "Git Destructive"
     pub explanation: String,     // 1-3 sentences, shown to user and fed back to the agent on deny
-    pub confidence: f32,         // guardian self-report; rule ∈ DESTRUCTIVE subset (data-exfiltration,
-                                 //   mass-delete, credential-access, remote-exec, …) ∧ confidence below
-                                 //   threshold ⇒ Escalate
+    pub confidence: f32,         // guardian self-report; decision == Allow ∧ rule ∈ DESTRUCTIVE subset
+                                 //   (data-exfiltration, mass-delete, credential-access, remote-exec, …)
+                                 //   ∧ confidence below threshold ⇒ rewritten to Deny; Deny verdicts are
+                                 //   never softened
 }
 ```
 
@@ -87,8 +88,8 @@ Deny or Escalate."* All request content is wrapped in delimited untrusted blocks
 **Fail-closed guarantees** (regular code, not LLM):
 - provider error / timeout (default 30s, configurable) → `Deny { rule: "GuardianUnavailable" }`
 - unparseable or schema-invalid verdict → Deny
-- low-confidence Allow on a destructive-class verdict (`rule ∈ DESTRUCTIVE ∧ confidence <
-  threshold`, per the fixed rule enum above) → Escalate
+- a below-threshold-confidence Allow on a destructive class (`rule ∈ DESTRUCTIVE ∧ confidence <
+  threshold`, per the fixed rule enum above) → Deny; Deny verdicts are never softened
 - `N` consecutive denials for the same tool → stop and surface to the human (loop breaker; in headless `-p` it becomes a Deny and the run continues)
 
 **Caching & latency**:
@@ -110,8 +111,8 @@ mode is not resurrected here; minimal adjudicates, just less):
 - A **reduced ruleset + reduced adjudication context** (smaller `AdjudicationRequest`: trimmed
   intent digest + session facts) run on a **cheap validated model**. Permitted **only when
   containment is Fontaine-verified**: launched under `@anthropic-ai/sandbox-runtime` (srt) /
-  bubblewrap (the Phase-5 sandbox-interop path), or an explicit user-scope `--in-container`
-  assertion **backed by an actual runtime probe** (cgroup-namespace check, `/.dockerenv`). A
+  bubblewrap (the Phase-5 sandbox-interop path), or an explicit `--in-container` CLI flag (a user
+  assertion — Phase 1 CLI table) **backed by an actual runtime probe** (cgroup-namespace check, `/.dockerenv`). A
   failed or missing probe fails closed — minimal refuses to load and falls back to `full` with a
   notice. **Default `full`.** Never settable by project settings: profile is a loosening knob, so
   the existing trust-asymmetry rule extends to it — user-scope only.
@@ -139,10 +140,10 @@ mode is not resurrected here; minimal adjudicates, just less):
    loop breaker; `rig_core::redact` applied to anything credential-shaped in adjudication inputs.
 2. Wire `auto` mode into the pipeline (fills pipeline branches 7 and 9); denial reason →
    tool_result; denial records; parallel adjudication of batched tool calls. Shipped default mode
-   flips `manual` → `auto` here. Headless `-p` semantics for `auto`: Escalate, low-confidence
-   escalation, and loop-breaker outcomes become Deny returned to the agent; the run continues.
+   flips `manual` → `auto` here. Headless `-p` semantics for `auto`: Escalate and
+   loop-breaker outcomes become Deny returned to the agent; the run continues.
 3. TUI denial UX: inline denial rendering, `/denied` retry list, `/permissions` rule editor,
-   `/model` and `/guardian-model` switches, low-confidence escalation prompts.
+   `/model` and `/guardian-model` switches, Escalate-verdict prompts.
 4. Run the Phase-0 eval harness against live guardian models and **publish the guardian scorecard**
    with the release: catch rate per attack class × false-deny rate on benign commands × per-model
    results, reported in AgentDojo-comparable terms (ASR × utility) against the LlamaFirewall
@@ -153,10 +154,17 @@ mode is not resurrected here; minimal adjudicates, just less):
    escape-focused additions; a profile ships only once it is scored, KILL #3 framing inherits). The
    guardian never ships un-scored — a bypass found by Fontaine's own public eval is a credibility
    event; the same bypass found externally is the kill event (analysis-strategic-verdict amendment
-   A1, mitigating KILL #3). Also capture `claude -p --permission-mode auto` decisions on the Tier-0.5
-   adversarial set and the floor/headless cases as baseline fixtures under `evals/baselines/` and
-   diff against them (manual/eval-side, never a CI dependency — see AGENTS.md).
-5. Docs — finish `docs/guardian.md`: threat model (guardian as attack surface: no tools,
+   A1, mitigating KILL #3). Also run the `fontaine-evals` `baseline capture` / `baseline diff` subcommands with
+   `auto` against the Tier-0.5 adversarial set and the floor/headless cases (manual/eval-side,
+   never a CI dependency — see AGENTS.md).
+5. Minimal profile implementation: profile resolution (`[guardian] profile`, user-scope only; only
+   `full`/`minimal` validate) with the reduced ruleset and trimmed `AdjudicationRequest` on a cheap
+   validated model (`rust/fontaine-guardian/src/profile.rs`); the runtime containment probe
+   (cgroup-namespace check, `/.dockerenv`, detection of an srt/bubblewrap launch) in
+   `rust/fontaine-core/src/containment.rs`, with the `--in-container` CLI flag as an input that is
+   never sufficient alone; on probe failure or missing verification, resolve to `full` and emit a
+   one-time notice.
+6. Docs — finish `docs/guardian.md`: threat model (guardian as attack surface: no tools,
    structured output only, untrusted-delimiting, fail-closed on every non-verdict outcome), the
    request/verdict schemas, rule precedence (`hard_deny` > `soft_deny` > `allow` > explicit
    specific user intent), prompt-versioning policy, how to choose a guardian model (the ranked
@@ -171,30 +179,50 @@ mode is not resurrected here; minimal adjudicates, just less):
 
 ## Files created or modified
 
-`rust/fontaine-guardian/src/{lib,verdict,prompt_builder,rules,cache}.rs` +
+`rust/fontaine-guardian/src/{lib,verdict,prompt_builder,rules,cache,profile}.rs` +
 `rust/fontaine-guardian/prompts/guardian_prompt.md`; `rust/fontaine-core/src/permissions.rs`
-(auto branch); `rust/fontaine-tui/src/{denials,approval}.rs`; `docs/{guardian,evals,tui,permissions,configuration,index}.md`;
+(auto branch); `rust/fontaine-core/src/containment.rs`; `rust/fontaine-tui/src/{denials,approval}.rs`;
+tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/fontaine/tests/`,
+`rust/fontaine-tui/tests/`; `docs/{guardian,evals,tui,permissions,configuration,index}.md`;
 `README.md`; scorecard output under `evals/`.
 
 ## Tests owned by this phase
 
 - **guardian** (master Testing Strategy): malformed verdict outputs → retries → Deny; timeout →
-  Deny (tokio time-pause); connection reset and mid-stream drop (wiremock) → Deny
-  `GuardianUnavailable`, no hang; cache-key correctness incl. rules-version invalidation; loop breaker;
-  prompt-builder snapshots (defaults spliced, `$defaults` marker, untrusted delimiting present);
-  redaction of credential-shaped inputs; minimal-profile resolution fail-closed (probe failure ⇒
-  fall back to `full`), and under `minimal` the escape primitives + exfiltration-class remote
-  writes still Deny/Escalate.
-- Integration: cassette-replayed auto-mode runs; the fail-closed wiremock tests (guardian
-  endpoint 500s, resets, or drops mid-stream ⇒ tool call denied).
+  Deny (tokio time-pause); endpoint 500 (wiremock) → Deny `GuardianUnavailable`; connection reset
+  and mid-stream drop → Deny `GuardianUnavailable`, no hang — driven by `rig_core::test_utils`
+  streaming clients (`HttpErrorStreamingClient`, `NonSuccessStreamingClient`,
+  `SequencedStreamingHttpClient`) or a raw `tokio::net::TcpListener` that drops the socket (wiremock
+  0.6 has no reset/abort API); an Allow below `confidence_threshold` on a destructive class → Deny,
+  and a Deny verdict is never softened; cache-key correctness incl. rules-version invalidation; loop
+  breaker; prompt-builder snapshots (defaults spliced, `$defaults` marker, untrusted delimiting
+  present); redaction of credential-shaped inputs; minimal-profile resolution fail-closed (probe
+  failure ⇒ fall back to `full`), and under `minimal` the escape primitives + exfiltration-class
+  remote writes still Deny/Escalate.
+- **pipeline, auto-dependent** (moved from Phase 3; `rust/fontaine-core/tests/permissions_auto.rs`):
+  counting fake guardian — in-scope `ls` → zero guardian calls plus a `tier05` audit record, `ls ../`
+  → exactly one guardian call; an `[permissions] ask` rule forces a human prompt even in `auto`
+  (denies in `dontAsk`); plan mode's step-9 consequential calls (write-capable `shell`, webfetch,
+  out-of-scope reads, MCP) reach the guardian while edits stay blocked regardless of verdict —
+  replacing Phase 3's interim prompt assertions.
+- **TUI** (`rust/fontaine-tui/tests/`): `TestBackend` with injected key events and a scripted
+  model — `/denied` lists a denied action and `r` injects the retry notice into the agent's next
+  turn; the Shift+Tab cycle now includes `auto`.
+- Integration: scripted-endpoint auto-mode runs through `fontaine -p`
+  (`rust/fontaine/tests/auto_headless.rs`; agent and guardian on separate scripted
+  `openai-compatible` accounts), including the fail-closed cases above end to end (guardian endpoint
+  500s, resets, or drops mid-stream ⇒ tool call denied). The first rig-cassette recording of an
+  auto-mode session needs live keys and a human; once committed, replay runs in CI.
 - Eval: golden-set scoring incl. the `minimal` column — run manually/nightly, never CI-gated.
 
 ## Definition of done
 
 - Offline gates (no keys, no human): `cargo fmt` / `cargo clippy --all-targets -- -D warnings` /
-  `cargo test` green, including cassette-replayed auto-mode runs, the fail-closed wiremock tests,
-  and the Tier-0.5 counting-guardian test; shipped default mode is `auto`; CHANGELOG entry appended.
+  `cargo test` green, including scripted-endpoint auto-mode runs, the fail-closed tests, the Tier-0.5
+  counting-guardian test, the ask-in-auto and plan-mode guardian-branch pipeline tests, and the
+  TUI `/denied` test; shipped default mode is `auto`; CHANGELOG entry appended.
 - Needs live keys and/or a human (explicitly not CI): Manual Verification items 2–4 (auto-mode
   judgment, retry UX, Ollama model-agnostic parity); the live-model scorecard run and its
-  publication, linked from docs; the `claude -p` baseline capture.
+  publication, linked from docs; the first auto-mode cassette recording; the `claude -p` baseline
+  capture.
 - Log the phase in the master plan's Progress log.

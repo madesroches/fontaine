@@ -38,17 +38,27 @@ requirement is met by dependency rather than by code we maintain.
    testable headlessly from day one (the `clap` entry from Phase 0 step 1 wires to the rig model
    layer now and to the agent loop as soon as Phase 2 step 2 lands). Headless semantics (Claude Code
    parity; enforced by the pipeline in Phase 3 for manual/dontAsk and Phase 4 for auto): nothing
-   prompts — every would-prompt outcome (ask-rule match, Escalate verdict, low-confidence
-   escalation, critical-path/protected-path prompt, loop breaker) becomes a Deny returned to the
+   prompts — every would-prompt outcome (ask-rule match, Escalate verdict,
+   critical-path/protected-path prompt, loop breaker) becomes a Deny returned to the
    agent as the tool_result and the run continues; headless `manual` = anything not pre-allowed is
    denied; headless `auto` = guardian-only adjudication. Exit codes: 0 run completed (denials do not
-   change it), 1 run error, 2 config or usage error.
+   change it), 1 run error, 2 config or usage error. CLI surface:
+
+   | Invocation | Meaning |
+   |---|---|
+   | `fontaine` | interactive TUI (Phase 3) |
+   | `fontaine -p "task"` | headless run; result on stdout |
+   | `--permission-mode <manual\|acceptEdits\|plan\|auto\|dontAsk>` | session mode, overriding `[permissions] default_mode`; Fontaine's five modes, no bypass; `auto` is a usage error (exit 2) until the guardian ships (Phase 4) |
+   | `--model <account>/<model>` | overrides `[model] model` |
+   | `--output-format text\|json` | headless output; `json` is one final object with the result text and the list of denials (tool, reason) |
+   | `--in-container` | user assertion that the process runs inside a container; only an input to `[guardian] profile = "minimal"` resolution, never sufficient alone (the runtime probe must also pass — Phase 4 step 5); a CLI flag, not a config key |
+   | `fontaine auth login <account>` | store the account's credentials in the stored-credentials file |
 3. Docs — accounts and models: grow `docs/configuration.md` with `[accounts]` and `[model]`
    sections (multiple accounts, `<account>/<model>` addressing, credential sources, user-scope-only
    rule, fail-closed guardian on bad credentials) carrying worked
    examples for every supported path (Anthropic, OpenAI, Gemini, Ollama, and OpenAI-compatible
    base URLs: OpenRouter / LM Studio / vLLM / LiteLLM) and env-key handling; document the headless
-   `-p` surface (flags, exit codes, denial semantics, its role as the CI/eval driver) in
+   `-p` surface (the CLI table, exit codes, denial semantics, its role as the CI/eval driver) in
    `docs/architecture.md`; refresh the README quickstart's links into `docs/`; append a CHANGELOG entry.
 
 ## Files created or modified
@@ -67,8 +77,12 @@ requirement is met by dependency rather than by code we maintain.
   own `wiremock` endpoints; project-scope `[accounts]` (and `[model]`/`[guardian] model`) rejected;
   credentials resolved from env (and a temp stored-credentials file) with no live API; inline raw
   key rejected; missing guardian-account credential ⇒ guardian unavailable.
-- Integration surface: the headless `-p` run is the driver for every later integration test
-  (cassette replay lands with Phase 2/3 tests).
+- Integration surface: the headless `-p` run is the driver for every later integration test. The
+  offline driver is an `openai-compatible` account whose `base_url` is a scripted `wiremock`
+  endpoint; `rust/fontaine/tests/headless_smoke.rs` runs `fontaine -p` against it (streamed prompt,
+  tool-call round-trip, exit codes 0/1/2) and covers CLI parsing (`--permission-mode auto` rejected
+  before Phase 4; no bypass value). Library-level tests (`rust/fontaine-core/tests/{models,accounts}.rs`)
+  use `rig_core::test_utils` models.
 
 ## Definition of done
 

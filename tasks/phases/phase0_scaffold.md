@@ -9,13 +9,16 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 
 ## Steps
 
-1. Cargo workspace (`rust/Cargo.toml`, micromegas layout), crate skeletons under `rust/`
+1. Cargo workspace (`rust/Cargo.toml`, micromegas layout; `[workspace.package]` sets `edition = "2024"`
+   and `rust-version = "1.97.1"`, and `rust/rust-toolchain.toml` pins channel ≥ 1.97.1 to match rig
+   0.45.0; CI installs that toolchain), crate skeletons under `rust/`
    (`fontaine`, `fontaine-core`, `fontaine-tools`, `fontaine-guardian`, `fontaine-agents`,
    `fontaine-mcp`, `fontaine-tui`), `clap` CLI entry (`fontaine`), tracing setup, CI
    (`.github/workflows/ci.yml`, GitHub Actions, from `rust/`: `cargo fmt --check`,
    `cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run from
    step 2), config loading (`fontaine-core/src/config.rs`) with the schema in the master plan's
-   §Config, rejecting every user-scope-only key from project scope per its scope table.
+   §Config, rejecting every user-scope-only key from project scope per its scope table; the workspace is the
+   canonicalized launch cwd and project config is read only from `<workspace>/.fontaine/settings.toml`.
 2. Eval golden-dataset scaffolding + CI runner skeleton (`evals/`): dataset format (~150+ cases:
    benign dev commands, each seeded attack class from Claude Code's default-block list, injection
    attempts *inside tool args*, ambiguous intent cases, Tier-0.5 adversarial shell cases — see
@@ -25,8 +28,10 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    `[guardian] profile = "minimal"` column: `mount /dev/sda1`, docker.sock write, cgroup
    `release_agent`, bind-mount symlink escape → deny/escalate; routine in-container workspace ops
    → proceed); the runner is the bin crate `rust/fontaine-evals`, reading `evals/dataset/*.jsonl` (one JSON
-   object per case: `id`, `category`, `profile`, `task_intent`, `tool`, `args`, `expected`,
-   `fixture_verdict` — field list in the master Testing Strategy) and scoring any guardian model
+   object per case: `id`, `kind`, `category`, `profile`, `task_intent`, `tool`, `args`, `expected`,
+   `fixture_verdict`, plus optional request-context fields; `kind` = `guardian` | `pipeline` |
+   `scanner` selects the component a case scores — field list and per-kind scoring in the master
+   Testing Strategy) and scoring any guardian model
    config; CI runs `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture`
    from `rust/` — offline, deterministic verdict fixtures — so it is green before the guardian
    exists.
@@ -37,17 +42,22 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    from the step-1 config schema (every key: meaning, user-vs-project scope, default). Also
    `evals/README.md` defining the golden-dataset format — the dataset is a public asset shipping
    with the scorecard, so its format doc lands with it. Root `README.md` stays the thin front
-   door (pitch, install, quickstart) linking into `docs/` — not a second copy of it. Create `CHANGELOG.md` with the first entry.
+   door (pitch, install, quickstart — the quickstart leads with a local Ollama agent + guardian
+   setup) linking into `docs/` — not a second copy of it. Add a short root `CONTRIBUTING.md`
+   (build/test commands, branch and commit rules, how to submit golden-dataset cases and red-team
+   bypasses). Create `CHANGELOG.md` with the first entry.
 
 ## Files created or modified
 
-`rust/Cargo.toml`; crate skeletons for every `rust/fontaine-*` crate; `rust/fontaine/src/main.rs`;
-`rust/fontaine-core/src/config.rs`; `evals/` (dataset + README.md); `rust/fontaine-evals/` (runner); `CHANGELOG.md`;
+`rust/Cargo.toml`; `rust/rust-toolchain.toml`; crate skeletons for every `rust/fontaine-*` crate; `rust/fontaine/src/main.rs`;
+`rust/fontaine-core/src/config.rs`; `evals/` (dataset + README.md); `rust/fontaine-evals/` (runner); `CHANGELOG.md`; `CONTRIBUTING.md`;
 `docs/{index,architecture,configuration}.md`; `README.md`; `.github/workflows/ci.yml`.
 
 ## Tests owned by this phase
 
-- **config** (master Testing Strategy): precedence, project-can-only-tighten enforcement —
+- **config** (master Testing Strategy): workspace = canonicalized launch cwd; project config
+  discovered only at `<workspace>/.fontaine/settings.toml` (a settings file in a parent directory is
+  ignored); precedence, project-can-only-tighten enforcement —
   including that `[guardian] profile` is rejected from project scope (user-scope only, it is a
   loosening knob) and only `full`/`minimal` validate: no config value disables the guardian. Every user-scope-only key in the master §Config scope
   table (`[accounts]`, `[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets,
@@ -61,5 +71,5 @@ scorecard is the differentiating asset, so its harness is built first, not last.
   passes on the fixture set, offline, with no guardian in the tree.
 - `docs/index.md`, `docs/architecture.md`, `docs/configuration.md`, `evals/README.md` exist with
   real content (no TODO placeholders), links resolve.
-- `CHANGELOG.md` exists with the Phase 0 entry.
+- `CHANGELOG.md` exists with the Phase 0 entry; `CONTRIBUTING.md` exists.
 - Log the phase in the master plan's Progress log.

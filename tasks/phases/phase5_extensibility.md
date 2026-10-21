@@ -60,9 +60,15 @@ transcript.
 
 ## Steps
 
-1. `fontaine-mcp` (rig-rmcp): stdio + streamable-HTTP servers from config; MCP tools registered
-   into rig's tool registry wrapped in `GuardedTool` with `Arbitrary` risk; server annotations
-   surfaced to the guardian as hints.
+1. `fontaine-mcp` (rig-rmcp): stdio + streamable-HTTP servers from config. `McpClientHandler::new(config, sink)`
+   registers raw `DynamicTool`s with whatever sink it is given — again on every list-changed
+   refresh — so Fontaine passes a wrapping sink that registers every MCP tool, initial and
+   refreshed, as a `GuardedTool` (DynamicTool path) with `Arbitrary` risk under the name
+   `mcp__<server>__<tool>` (Claude Code naming); the agent's `ToolServerHandle` is never handed to
+   rig-rmcp directly. rig-rmcp enables only rmcp's `client` feature, so the transports need a direct
+   `rmcp` dependency, pinned to an exact version inside rig-rmcp 0.45.0's declared 3.5 range
+   (one rmcp in the tree) with the transport features enabled. Server annotations surfaced to the
+   guardian as hints.
 2. Session persistence via rig's serializable `AgentRun` + `rig-memory` save/resume (JSONL on
    disk, our own transcript log alongside). (Headless `-p` moved to Phase 1 step 2 — user
    decision 2026-10-21.)
@@ -97,7 +103,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
 
 ## Files created or modified
 
-`rust/fontaine-mcp/src/{lib,servers,register}.rs`; `rust/fontaine-agents/src/{lib,spawn,registry,budget}.rs`;
+`rust/Cargo.toml` (direct `rmcp` pin); `rust/fontaine-mcp/src/{lib,servers,register}.rs`; `rust/fontaine-agents/src/{lib,spawn,registry,budget}.rs`;
 `rust/fontaine-core/src/session.rs` (persistence); `rust/fontaine-tui/src/agents_panel.rs`;
 `docs/{mcp,agents,tui,configuration,architecture,index}.md`.
 
@@ -113,7 +119,9 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   one, assert the others complete and every tool call has a gate decision in the audit log keyed by
   agent id.
 - MCP: servers from config register wrapped `Arbitrary`; a declared `readOnlyHint` never earns a
-  fast path (choke-point test extended to MCP-imported tools).
+  fast path (choke-point test extended to MCP-imported tools and to a list-changed refresh: tools added or
+  replaced by a refresh are registered wrapped as `Arbitrary` under `mcp__<server>__<tool>`, none
+  reachable raw).
 - Persistence: save/resume round-trip through `AgentRun`.
 
 ## Definition of done

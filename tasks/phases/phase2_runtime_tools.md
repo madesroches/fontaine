@@ -10,11 +10,14 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
 `rig_core::tool::Tool` and adds the two things rig doesn't have for our security model: a
 **risk classification** per tool and a **guard wrapper** that enforces the permission pipeline.
 
-- **Base tools**: `rig-tools` ships `read`, `write`, `edit`, `search`, `shell`. These are adopted
-  directly as the v1 built-ins; Fontaine adds `glob`/`grep` aliases over rig's `search` and a
-  `webfetch` tool. Where rig-tools' `shell`/`write` need hardening for our model (workspace
-  containment, symlink resolution, timeout, output cap), Fontaine wraps or configures them rather
-  than forking — keeping upgrades cheap.
+- **Base tools**: `rig-tools` 0.45.0 ships `read`, `write`, `edit`, `search`, `list`, `shell`,
+  `delete`, `move`. Fontaine registers exactly the set in the step-1 table: `read`/`write`/`edit`/
+  `shell` are rig tools wrapped as-is; `ls`/`glob`/`grep` are new first-party `Tool` impls that
+  delegate to rig's `list`/`search` (rig's own `list`/`search` are not registered: `GuardedTool<T>`
+  takes `NAME = T::NAME`, so a rig tool cannot be renamed, and a second registration under the same
+  name would clash); `delete`/`move` are not registered. rig tools are configured (`confine: true`,
+  `max_timeout`, output `cut`) rather than forked or wrapped in a hardening layer — keeping upgrades
+  cheap.
 - **Composite read tools + Tier 0.5 shell pre-classifier** (user directive 2026-10-21; mirrors
   Claude Code's split of dedicated read tools that skip prompts from a built-in read-only command
   set for `Bash`, per the design tie-breaker). Frequent read operations are **also** exposed as
@@ -23,7 +26,7 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
   (pipeline step 4), and the system prompt steers the model toward these rather than `shell` for
   reads. The **Tier 0.5 pre-classifier** (pipeline step 5) is the fallback fast path for read-ish
   shell invocations: it is purely *structural* — lex the command line, check `argv[0]`+subcommand
-  against the curated set, accept only path arguments that pass the scope checker plus flags on a
+  against the curated set, accept only path arguments (resolved against the call's `cwd`; an out-of-scope `cwd` disqualifies the fast path) that pass the scope checker plus flags on a
   per-command read-only flag allowlist (values of file-opening flags like `--files-from`/`-f`/`-m`
   are validated as path arguments; any other flag, glob, or unparsed token falls through) — which
   honors the "no regex matching on arguments anywhere" decision. Lexing uses **`shlex`** (v2.0.1,
@@ -84,51 +87,66 @@ Code's read-only Bash set prompting in no mode), prompts in `manual`. MCP tools 
 regardless of server `readOnlyHint` annotations — annotations are claims, surfaced to the
 guardian as hints, not as gates).
 
-**Guardian injection point — decision**: two viable seams exist. (1) A `rig_agent::AgentHook`
-(`HookContext`) around tool-dispatch turns; (2) the `GuardedTool` decorator above. The plan adopts
-**the GuardedTool decorator as primary** because it is guaranteed to wrap *every* tool call at the
-registry level (including MCP), is easy to unit-test in isolation, and doesn't depend on rig's
-hook semantics staying stable across pre-1.0 releases. A thin `AgentHook` is added only for
-cross-cutting concerns (logging, denial-record bookkeeping, result-scan trigger), not for the
-allow/deny decision itself.
-
 ## Steps
 
 1. `fontaine-tools`: `RiskClass` registry; generic `GuardedTool<T: Tool>` decorator over `rig_core::tool::Tool`, a `DynamicTool`
-   wrapper path for MCP, and the shared `Arc<SessionState>` carrier;
-   register rig-tools' read/write/edit/search/shell wrapped with risk classes; expose the dedicated
-   first-party read tools (`ls`/`read`/`glob`/`grep`) with containment inside the tool; add
-   `webfetch`; workspace-scope/symlink validator; harden shell (timeout, output cap) via wrapper
-   config. The `GuardedTool` gate body is stubbed this phase (execute-after-check pass-through);
-   the real `PermissionPipeline` lands in Phase 3 and fills the stub.
+   wrapper path for MCP, and the shared `Arc<SessionState>` carrier; register exactly this tool set
+   (the choke-point test asserts it: no other names, no duplicates, `delete`/`move` absent):
+
+   | Tool | RiskClass | Implementation |
+   |---|---|---|
+   | `read` | ReadOnly | rig-tools `read`, wrapped, `confine: true` |
+   | `ls` | ReadOnly | new first-party `Tool` (`NAME = "ls"`) delegating to rig `list` |
+   | `glob` | ReadOnly | new first-party `Tool` over rig `search` |
+   | `grep` | ReadOnly | new first-party `Tool` over rig `search` |
+   | `write` | WorkspaceWrite | rig-tools `write`, wrapped, `confine: true` |
+   | `edit` | WorkspaceWrite | rig-tools `edit`, wrapped, `confine: true` |
+   | `shell` | Arbitrary | rig-tools `shell`, wrapped; `confine: true`, `max_timeout`, output `cut` set |
+   | `webfetch` | Arbitrary | new first-party |
+
+   Removal and rename go through `shell` (Arbitrary), so the shell-only critical-path check covers
+   every removal path. `scope.rs` resolves every path through `rig_tools::fs::place` (base = the
+   canonicalized workspace; symlinks and `..` canonicalized) instead of re-implementing containment;
+   `builtins.rs` registers the tools and sets `confine: true`, `max_timeout` (clamps the
+   model-supplied `timeout_secs`) and the output `cut` — no hand-rolled hardening layer. A `shell`
+   call's model-supplied `cwd` is itself resolved through `place`; an out-of-scope `cwd`
+   disqualifies the fast path and Tier 0.5, and relative path arguments resolve against it. The
+   `GuardedTool` gate body is a deny-by-default stub this phase: it allows only in-scope `ReadOnly`
+   calls (scope check via `scope.rs`) and denies everything else, so the always-on floor holds from
+   the first commit; the real `PermissionPipeline` lands in Phase 3 and fills the stub.
 2. `fontaine-core`: session orchestration on `rig_agent` (`AgentBuilder` + `AgentRun`), system
    prompt, FONTAINE.md project-instruction loading; `rig-memory` for context windows, compaction,
    and save/resume — no custom agent loop or history management to write.
 3. Docs — `docs/tools.md`: the built-in tool inventory (`ls`/`read`/`glob`/`grep`/`edit`/`write`/
    `shell`/`webfetch`), each tool's `RiskClass`, what earns the read-only fast path
-   (Fontaine-enforced workspace containment — never the label), and the shell hardening (timeout,
-   output cap); extend `docs/architecture.md` with the agent-loop diagram (rig runtime + wrapped
+   (Fontaine-enforced workspace containment — never the label), and the shell configuration (confinement,
+   max timeout, output cap) — noting that rig's `list`/`search`/`delete`/`move` are not registered; extend `docs/architecture.md` with the agent-loop diagram (rig runtime + wrapped
    registry); link the new page from `docs/index.md`; append a CHANGELOG entry.
 
 ## Files created or modified
 
-`rust/fontaine-tools/src/{lib,guarded,risk,scope,webfetch,shell_hardening,preclassify}.rs`;
+`rust/fontaine-tools/src/{lib,guarded,risk,scope,builtins,webfetch,preclassify}.rs`;
 `rust/fontaine-core/src/{lib,session,hooks}.rs`; `docs/tools.md`, `docs/architecture.md`,
 `docs/index.md`.
 
 ## Tests owned by this phase
 
-- **tools** (master Testing Strategy): workspace-scope validator (path traversal, absolute paths,
-  symlinks); shell hardening wrapper (timeout, output cap); risk-class registration of every
-  built-in and MCP tool — the choke-point test that fails if any registered tool is missing a
-  risk class.
-- GuardedTool delegation: inner tool runs exactly once, only after the gate allows.
+- **tools** (master Testing Strategy; `rust/fontaine-tools/tests/{scope,choke_point}.rs`):
+  workspace-scope validator over `fs::place` (path traversal, absolute paths, symlinks, out-of-scope
+  `cwd`); rig tool configuration (`confine: true`, `max_timeout` clamps `timeout_secs`, output
+  `cut`); the exact registered tool set from the step-1 table (no duplicate names, `delete`/`move`
+  absent); risk-class registration of every built-in and MCP tool — the choke-point test that fails
+  if any registered tool is missing a risk class.
+- GuardedTool delegation: inner tool runs exactly once, only after the gate allows; under the stub,
+  an in-scope `read` is allowed, an out-of-scope `read` and every `write`/`edit`/`shell` call is denied.
+- Integration (`rust/fontaine/tests/headless_tools.rs`): `fontaine -p` against the scripted
+  `openai-compatible` endpoint completes a read-tool round-trip.
 
 ## Definition of done
 
-- A headless `-p` run completes a full agent turn with a tool call end-to-end through the
-  wrapped registry (gate stubbed per the no-bypass invariant — nothing gates past stub until
-  Phase 3).
+- A headless `-p` run against the scripted endpoint completes a read-tool round-trip through the
+  wrapped registry (in-scope `read` allowed by the deny-by-default stub; `write`/`shell` denied —
+  nothing executes past the stub until Phase 3).
 - Choke-point test green: every registered tool has a `RiskClass`.
 - `docs/tools.md` complete for the shipped inventory.
 - CHANGELOG entry appended.

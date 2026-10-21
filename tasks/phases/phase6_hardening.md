@@ -27,6 +27,15 @@ path — see the Phase 5 plan.
    (a sidecar process and the cheap-LLM pass are the fallback / BYO options), off by default,
    configurable (`[guardian] scan_tool_results`). Surface the gated-download / Llama 4 Community
    License caveat at first enable; expose a BYO-scanner interface for license-clean setups.
+   Acquisition: the weights are never bundled. Either the user supplies a local model directory
+   (`[guardian] scanner_model_path`: the `.onnx` file plus `tokenizer.json`), or first enable
+   downloads them from the gated HF repo using the user's HF token read from the env var named by
+   `[guardian] scanner_hf_token_env` (default `HF_TOKEN`; never stored or logged) after the user has
+   accepted the license on HF. Downloads land in `<user data dir>/fontaine/models/promptguard2-86m/`
+   with their SHA-256 recorded alongside. Pins in `rust/Cargo.toml`: `ort = "=2.0.0-rc.15"` and
+   `tokenizers = "=0.22.0"` (default features off) — confirm both resolve under the workspace
+   toolchain when the step lands and pin the exact versions that do; both are optional dependencies
+   of `fontaine-guardian` behind a `pg2` cargo feature so the crate stays dependency-light.
 2. Docs — result scanning in `docs/guardian.md`: what the scanner flags, how the annotation
    reaches the agent, why off-by-default (latency), and that scanned results carry into the
    subagent-report path; write the gated-download / Llama 4 Community License caveat up beside
@@ -42,17 +51,21 @@ master plan's §Composite guardian; v1's shipped spine — deterministic tiers +
 
 ## Files created or modified
 
-`rust/fontaine-guardian/src/scanner.rs`; `[guardian] scan_tool_results` config plumbing
+`rust/fontaine-guardian/src/scanner.rs`; `[guardian] scan_tool_results`, `scanner_model_path`,
+`scanner_hf_token_env` config plumbing
 (`rust/fontaine-core/src/config.rs`); `docs/{guardian,configuration}.md`.
 
 ## Tests owned by this phase
 
-- Scanner unit tests with fixture payloads (injection-looking text and credential shapes flagged;
+- Scanner logic tests with fixture payloads against a fake scanner implementing the BYO trait (injection-looking text and credential shapes flagged;
   benign results unflagged; annotation present before the agent reads the result).
 - BYO-scanner interface: a test scanner plugs in via the trait; default-off means zero behavior
   change until enabled.
 - Subagent reports (ordinary tool results from Phase 5) pass the scanner when enabled: an
   injection-bearing report is flagged before the parent reads it.
+- PromptGuard 2 inference test behind the `pg2` cargo feature, skipped unless `FONTAINE_PG2_MODEL`
+  points at a local model directory — never part of default CI; every other behavior (flag
+  threshold, annotation, default-off, notice) is covered offline by the fake scanner.
 - License-notice path: first-enable notice fires exactly once per model download.
 
 ## Definition of done

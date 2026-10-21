@@ -29,28 +29,53 @@ manual/escalate (allow once / allow session / deny + feedback). `/permissions` e
 `/denied`, `/guardian-model` — is designed and built in Phase 4; the background-agents panel in
 Phase 5; see those plans.)
 
+### Tier-0.5 initial allowlist
+
+Conservative starting table; any flag not listed, any `--flag=value` whose flag is not listed, and
+any combined short-flag cluster containing an unlisted letter fall through to the guardian (`ls -la`
+is accepted as `-l -a`). Positional tokens are validated as paths (a ref name such as `HEAD` resolves
+in scope and passes). Numeric flag values are parsed as integers, not pattern-matched. Check the
+table against `claude -p` baselines (step 3) and record differences in Decisions.
+
+| Command | Allowed flags | Values validated as paths |
+|---|---|---|
+| `ls` | `-a -A -l -h -1 -d -t -r -S -F` | positionals |
+| `pwd` | none | — |
+| `wc` | `-l -w -c -m` | positionals |
+| `file` | `-b -i --mime --mime-type --brief` | positionals; `-m`/`--magic-file` value. `-f`/`--files-from` not allowed (indirect reads) |
+| `cat` | `-n -b -s` | positionals |
+| `head`, `tail` | `-n N -c N -q -v` (`tail -f`/`-F` not allowed) | positionals |
+| `rg` | `-i -s -S -n -N -H -w -x -F -v -c -l -A N -B N -C N -m N -t TYPE -T TYPE --hidden --no-heading` | positionals; `-f`/`--file`, `--ignore-file` values. `--pre`, `--pre-glob`, `--hostname-bin`, `-z`/`--search-zip`, `-L`/`--follow`, `-g`/`--glob` not allowed |
+| `grep` | `-i -n -v -w -x -F -E -c -l -L -H -h -o -q -s -r -A N -B N -C N` | positionals; `-f`/`--file` value. `-R` and `--exclude-from` not allowed |
+| `git status` | `-s --short -b --branch --porcelain` | positionals after `--` |
+| `git log`, `git diff`, `git show` | `--oneline --stat --name-only --name-status --graph --decorate --no-color --cached --staged -n N -U N` | positionals after `--`. Only when `--no-ext-diff --no-textconv` are also present (repo config can name external diff/textconv programs); `--output`, `--ext-diff`, `--textconv` not allowed |
+
+`git` must have the subcommand as `argv[1]` (`git -c …` and `git -C …` fall through).
+
 ## Steps
 
 1. `PermissionPipeline` with modes `manual`/`acceptEdits`/`plan`/`dontAsk` (`auto` wires in at
    Phase 4 step 2; there is no `bypass` mode) and the step order from the master's data-flow
    diagram (the step-2 deterministic floor: deny → ask → critical-path (rm/rmdir targets prompt; deny in
-   `dontAsk`/headless) → protected-path (`.git`/dotfile writes prompt in manual/acceptEdits, deny in
-   `dontAsk`), in every mode, with shell commands lexed by the Tier-0.5 shlex lexer; steps 4–5:
+   `dontAsk`/headless) → protected-path (the master's enumerated list; `edit`/`write` only — prompt in manual/acceptEdits,
+   deny in `dontAsk`/headless), in every mode, with shell commands lexed by the Tier-0.5 shlex lexer; steps 4–5:
    read-only fast path, then the Tier-0.5 shell pre-classifier with its curated set +
-   per-command read-only flag allowlist + audit log); human-approval callback trait.
+   per-command read-only flag allowlist (initial table above) + audit log, schema per the master
+   §Core data flow); human-approval callback trait.
    Plan mode's step-9 guardian leg falls through to the human prompt until the guardian ships.
    Interim default mode: `manual` — no auto without a guardian. Headless `-p` semantics for
    manual/dontAsk: every would-prompt outcome becomes a Deny returned to the agent and the run
    continues (master §Core data flow, Headless).
 2. `fontaine-tui`: transcript, streaming render, input, approval prompts, status bar, mode
    cycling.
-3. Differential baseline (manual/eval-side, never CI — see AGENTS.md): run
-   `claude -p --permission-mode <mode>` for manual/acceptEdits/plan/dontAsk over the Tier-0.5
-   adversarial set and the floor/headless cases, and capture its decisions as golden fixtures under
-   `evals/baselines/`; diff Fontaine's decisions against them and fix or record each divergence.
+3. Differential baseline (manual/eval-side, never CI — see AGENTS.md): implement the `fontaine-evals`
+   `baseline capture` / `baseline diff` subcommands (master Testing Strategy, Differential
+   baselines) and run them for manual/acceptEdits/plan/dontAsk over the Tier-0.5 adversarial set and
+   the floor/headless cases; also confirm the protected-path list and the allowlist table against
+   the captured `claude -p` behavior. Fix or record each divergence.
 4. Docs — `docs/permissions.md`: the mode table (`manual`/`acceptEdits`/`plan`/`dontAsk`, the
    interim default and its Phase-4 flip to `auto`), the deterministic floor (deny → ask →
-   critical-path with its rm/rmdir list, protected-path with the `.git`/dotfile list), and the Tier-0.5 pre-classifier (curated set,
+   critical-path with its rm/rmdir list, protected-path with its enumerated list), and the Tier-0.5 pre-classifier (curated set,
    per-command read-only flag allowlist, fail-through rule, `[shell_preclassifier] allow_extra` —
    user-scope only); complete the full permission-pipeline diagram in `docs/architecture.md`;
    start `docs/tui.md` (keybinds incl. Shift+Tab, approval-prompt options); fill the README mode
@@ -58,31 +83,45 @@ Phase 5; see those plans.)
 
 ## Files created or modified
 
-`rust/fontaine-core/src/permissions.rs`; `rust/fontaine-tui/src/{app,transcript,approval,statusbar}.rs`;
+`rust/fontaine-core/src/{permissions,audit}.rs`; `rust/fontaine-evals/src/baseline.rs`;
+`rust/fontaine-tui/src/{app,transcript,approval,statusbar}.rs`; tests under `rust/fontaine-core/tests/`,
+`rust/fontaine/tests/`, `rust/fontaine-tui/tests/`;
 `rust/fontaine/src/main.rs` (TUI wiring); `docs/{permissions,tui}.md`, `docs/architecture.md`,
 `docs/index.md`, `README.md`.
 
 ## Tests owned by this phase
 
-- **permission pipeline** (master Testing Strategy): mode × risk-class matrix; plan-mode terminal
-  branch 9 behavior; read-only scope check incl. symlink-escape denial; batch tool-call
-  partial-deny semantics; the `[permissions] deny` rule holds in EVERY mode; critical-path
-  `rm`/`rmdir` (incl. unresolvable targets and commands that fail to lex) prompts in
-  manual/acceptEdits/plan, denies in `dontAsk` and headless, and is never auto-approved;
-  protected-path writes (`.git`, dotfiles) prompt or deny per mode; an `[permissions] ask` rule
-  forces a prompt even in `auto` (denies in `dontAsk`); headless `-p` turns every would-prompt
-  outcome into a Deny and the run continues.
+- **permission pipeline** (master Testing Strategy; `rust/fontaine-core/tests/permissions.rs`): mode
+  × risk-class matrix; plan-mode terminal branch 9 (edit-class blocked outright; the guardian leg
+  prompts in the interim and denies in headless); read-only scope check incl. symlink-escape denial
+  and an out-of-scope `cwd`; batch tool-call partial-deny semantics; the `[permissions] deny` rule
+  holds in EVERY mode; critical-path `rm`/`rmdir` (incl. unresolvable targets and commands that fail
+  to lex) prompts in manual/acceptEdits/plan, denies in `dontAsk` and headless, and is never
+  auto-approved; protected-path writes via `edit`/`write` (the enumerated list) prompt or deny per
+  mode; an `[permissions] ask` rule forces a prompt in `manual` and denies in `dontAsk`; every
+  decision appends an audit record matching the master schema (`tier`, `decision`, `rule`,
+  `args_digest`, `agent_id`).
 - **Tier 0.5 pre-classifier**: the golden adversarial set from master Testing Strategy — the
-  fail-through soundness property must hold for anything not fully parsed as one simple command; pipeline unit test with a counting
-  fake guardian — in-scope `ls` → zero guardian calls plus a Tier-0.5 audit entry, `ls ../` →
-  exactly one guardian call.
+  fail-through soundness property must hold for anything not fully parsed as one simple command; each
+  allowlist-table row (listed flags pre-classify, the excluded flags fall through); in-scope `ls` → no
+  prompt plus an audit record with `tier = tier05`; `ls ../` → one human prompt (interim; the
+  counting-guardian form is owned by Phase 4); a relative path under an out-of-scope `cwd` falls
+  through.
+- **headless** (`rust/fontaine/tests/pipeline_headless.rs`, scripted `openai-compatible` endpoint):
+  every would-prompt outcome becomes a Deny returned as the tool_result, the run continues, exit
+  code 0.
+- **TUI** (`rust/fontaine-tui/tests/`): ratatui `TestBackend` with injected key events and a scripted
+  `rig_core::test_utils` model — approval prompt → allow runs the tool (file written), deny returns
+  the denial tool_result; Shift+Tab cycles manual → acceptEdits → plan → (auto once Phase 4 lands;
+  wraps to manual until then).
 
 ## Definition of done
 
 - Offline gates (no keys, no human): `cargo fmt` / `cargo clippy --all-targets -- -D warnings` /
-  `cargo test` green, including cassette replay and the pipeline tests above; interim default is
+  `cargo test` green, including the scripted-endpoint headless, pipeline, and TUI tests above; interim default is
   `manual`; no mode reaches past the deterministic floor; `docs/permissions.md` + pipeline diagram
   match the shipped step order; CHANGELOG entry appended.
 - Needs a human and live keys (not CI): Manual Verification item 1 passes (TUI manual approval
-  flow, end to end); the `claude -p` baseline capture.
+  flow, end to end); the first rig-cassette recording of a manual-mode session (once committed it
+  replays in CI with no keys); the `claude -p` baseline capture.
 - Log the phase in the master plan's Progress log.
