@@ -19,8 +19,10 @@ story is. The guardrail-runtime market (LlamaFirewall, proxies, MCP scanners) is
   (anthropic.com/engineering/claude-code-auto-mode; explainx.ai/blog/claude-code-auto-mode-default-pro-max-team-august-2026)
 - Six permission modes, prose-based classifier config (environment / hard_deny / soft_deny /
   allow), fail-closed semantics, denial-reason feedback loop. (code.claude.com/docs/en/permission-modes)
-- Also ships an **open-sourced OS sandbox** (`@anthropic-ai/sandbox-runtime`, "srt"): Seatbelt on
-  macOS, bubblewrap on Linux, plus a network proxy — defense-in-depth underneath the classifier.
+- Also publishes an **OS sandbox engine** (`@anthropic-ai/sandbox-runtime`, "srt") — *extracted
+  from Claude Code's internal implementation* and available as a standalone open-source library;
+  Claude Code's own isolation is built on Seatbelt (macOS) / bubblewrap (Linux) plus a network
+  proxy — defense-in-depth underneath the classifier.
   (anthropic.com/engineering/claude-code-sandboxing; simonwillison.net/2026/May/30/how-we-contain-claude/)
 - Limits for our purposes: classifier is **closed, server-side, Anthropic-models-only**. You cannot
   inspect, extend, or run it locally. That is precisely Fontaine's opening.
@@ -87,7 +89,7 @@ exact pitch Fontaine's model-agnostic story competes with, minus the guardian. D
 
 | Product | Open | Any model | Local guardian model | Permission engine | OS sandbox |
 |---|---|---|---|---|---|
-| Claude Code | ✗ | ✗ (Anthropic) | ✗ (server-side classifier) | **LLM classifier** + prose rules + static rules | ✓ (open-sourced srt) |
+| Claude Code | ✗ | ✗ (Anthropic) | ✗ (server-side classifier) | **LLM classifier** + prose rules + static rules | ✓ (Seatbelt/bubblewrap; srt extracted from it) |
 | Codex CLI | ✓ (Rust) | ✗ (OpenAI) | ✗ (closed reviewer) | **LLM reviewer** at sandbox boundary | ✓ |
 | OpenCode | ✓ | ✓ | ✗ | static allow/deny/ask + policies | ✗ |
 | Goose | ✓ | ✓ | ✗ | human prompts / trust settings | ✗ |

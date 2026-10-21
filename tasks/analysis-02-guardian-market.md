@@ -12,11 +12,13 @@ product be plugged into an existing harness, making a guardian-native harness re
 
 **LlamaFirewall (Meta / Purple Llama)** — the most direct conceptual competitor.
 (Deep-dive with primary sources and all numbers: `research-llamafirewall.md`.)
-- MIT-licensed **in-process Python library** (not a proxy, not a harness); used in production at
+- MIT-licensed (code; `Examples/` is CC-BY-NC-4.0) **in-process Python library** (not a proxy, not
+  a harness); used in production at
   Meta. Open-source guardrail system for building secure AI agents; four scanner tiers:
   - **PromptGuard 2** — 86M/22M DeBERTa-family classifiers for explicit jailbreak/injection
-    detection (97.5% recall @1% FPR, 19–92ms on A100; weights gated under Llama Community
-    License, ONNX ports and ungated mirrors exist),
+    detection (model-card recall @1% FPR **0.971 EN / 0.956 multilingual** — language-dependent;
+    the "97.5%" figure is third-party rounding; 19–92ms on A100; weights under the Llama Community
+    License — **no gated approval** — ONNX ports and mirrors exist),
   - **AlignmentCheck** — a few-shot **chain-of-thought auditor** of the agent's reasoning trace:
     a *drift monitor* (halt-the-run), not a pre-execution per-tool-call gate. Experimental;
     needs a big backing model (Llama 4 Maverick / Llama 3.3 70B) and **defaults to a hosted

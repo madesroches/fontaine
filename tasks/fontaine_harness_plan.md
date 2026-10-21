@@ -118,7 +118,7 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   results), so it must have **no tools of its own**, must emit **structured output only** (a fixed
   verdict schema can't carry an injection forward), and its verdicts are validated by the
   controller (regular code) before acting.
-- **AgentDojo** (NeurIPS 2024) and follow-ups: prompt-injection detectors transfer poorly between
+- **AgentDojo** (Liu, Yu, Li, Li; arXiv:2406.18649, ICLR 2025) and follow-ups: prompt-injection detectors transfer poorly between
   benchmarks; specialized small detectors (e.g. Prompt Guard 2) catch ~0–2% of realistic agent
   injections. Conclusion: a **general reasoning model as guardian with task context** is currently
   the strongest practical approach — and the guardian itself must be treated as an attack surface
@@ -134,7 +134,12 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   PromptGuard 2 (injection classifier), AlignmentCheck (LLM chain-of-thought auditor), CodeShield
   (static analysis), regex/custom scanners. It is the strongest open prior art and the benchmark
   baseline we will be compared against — but it is a *detector library for agent builders*, not a
-  *permission engine inside a harness*, and has been in maintenance mode since launch.
+  *permission engine inside a harness*. Commit activity through 2026 is bot chores only
+  (`research-llamafirewall.md` §6) — though Meta has **not** declared the project in maintenance
+  mode (no such blog statement exists); the "end-of-line" facts are narrower: PromptGuard 2 is the
+  final generation of the Llama Guard line (HF model card: "The final version of PromptGuard 2 will
+  not be updated further"; LlamaGuard4.md: no successor), the repos remain public and responsive,
+  and no successor is announced — treat classifier updates as slow-moving.
 - **Monitoring vs authorization**: AlignmentCheck answers "has this agent drifted from the user's
   goal?" — a trace **drift monitor** (labeled experimental; defaults to a Together-hosted model).
   Fontaine's guardian answers "may this specific action run, under these rules, in this
@@ -143,13 +148,21 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   distinction must stay crisp in docs.
 - **AgentDojo baseline for our eval**: report Fontaine guardian results in AgentDojo-comparable
   terms (ASR × utility) against their published numbers — no-defense .176 / PromptGuard 2 .075 /
-  AlignmentCheck .029 / combined .0175 — as the bar to beat.
+  AlignmentCheck .029 / combined .0175 — as the bar to beat. These are the LlamaFirewall paper's
+  own runs; the AgentDojo paper itself (arXiv:2406.18649, ICLR 2025) never mentions LlamaFirewall
+  or AlignmentCheck, and its published table is **task-completion under attack** — defense
+  effectiveness = benign success minus attack success.
 - **PromptGuard 2 as the tool-result scanner**: adopt as the default for the result-scanning slot
-  (97.5% recall @ 1% FPR, 19–92ms) via ONNX Runtime (`ort` crate) or a sidecar, instead of a
-  hand-rolled cheap-model pass. Caveat: Meta weights are gated Llama-Community-licensed — the
-  air-gapped story is "bring your own scanner model; PromptGuard 2 supported if licensed."
-- **Attribution**: the LlamaFirewall code is MIT-licensed; their AlignmentCheck prompts (paper
-  Appendix C.6) are reusable, attributed prior art for `guardian_prompt.md`. Cite their §2.4
+  (recall @ 1% FPR **0.971 EN / 0.956 multilingual** per the HF model card — language-dependent;
+  the widely-quoted "97.5%" is third-party rounding; 19–92ms) via ONNX Runtime (`ort` crate) or a
+  sidecar, instead of a hand-rolled cheap-model pass. Caveat: PromptGuard 2 weights carry the
+  **Llama Community License** (non-commercial terms; license + use-policy + "Built with Llama"
+  notice; no gated approval today) — Llama Guard 4 is the Apache-2.0 model but 12B is too heavy
+  for hot-path scanning. The air-gapped story is "bring your own scanner model; PromptGuard 2
+  supported if licensed."
+- **Attribution**: the LlamaFirewall code is MIT-licensed (its `Examples/` dir is CC-BY-NC-4.0;
+  the enclosing PurpleLlama repo is CC-BY-NC-4.0); their AlignmentCheck prompts (paper Appendix
+  C.6, CC BY 4.0) are reusable, attributed prior art for `guardian_prompt.md`. Cite their §2.4
   anti-proprietary-guardrails argument — provider-embedded safety offers "limited visibility,
   auditability, and customizability" — it is our pitch, from Meta. Do **not** take a runtime
   dependency on the `llamafirewall` Python package; depend on its models and numbers, not its
@@ -171,20 +184,24 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
     machine for model turns + tool recovery + history — session persistence for free), `extractor`
     (typed extraction through a submit-output tool with configurable retries — reuse verbatim for
     parsing guardian `Verdict`s), tool registry with ordered registrations.
-  - `rig-memory`: context windows, **compaction**, and saving/resuming/forking conversations.
+  - `rig-memory`: context windows, **compaction**, saving/resuming and time-travel
+    (`as_of`/restore).
   - `rig-tools`: ready coding tools (read, write, edit, search, shell) any rig agent can use.
   - `rig-rmcp`: MCP integration for rig agents (native), bridging rmcp into the rig tool registry.
   - `rig-cassette`: effect recording/replay and checkpoints — deterministic integration tests of
     full agent runs without live APIs.
   - Caveat: rig is pre-1.0 with breaking changes each release; pin exact versions workspace-wide
-    (`rig = "=0.45.0"` style) and upgrade deliberately. rig also ships its own Bevy-plugin coding
+    (`rig-core = "=0.45.0"` style) and upgrade deliberately. The bare `rig` crate is a facade that
+    is `no_run` in the workspace (never compiled or CI-tested) — depend on `rig-core` directly.
+    rig also ships its own Bevy-plugin coding
     agent (`rig-harness`, `rig-tui`) — we do **not** build on that; Fontaine keeps its own ratatui
     TUI and guardian-first architecture.
 - **rmcp** — official MCP Rust SDK, v3.6.0 (Oct 2026), tokio-based, spec 2026-07-28; reached
   through `rig-rmcp` so third-party tools plug into the same registry and guardian gate.
 - **ratatui + crossterm** — the standard Rust TUI stack (used by codex-rs; also demonstrated with
   rig in JetBrains' "Rust AI in Practice" session — a coding agent built on rig + ratatui).
-- **tokio, serde, clap, tracing, toml** — glue.
+- **tokio, serde, clap, tracing, toml** — glue. **wiremock** (dev-dependency) — used by the
+  per-provider smoke tests and the fail-closed 500 test (see Testing Strategy).
 
 ## Design
 
@@ -208,6 +225,7 @@ fontaine/
 │   │                           #   as RiskClass::Arbitrary, annotations → guardian hints
 │   └── fontaine-tui/           # ratatui app: chat, approval prompts, denial/retry UI, modes
 ├── fontaine/                   # thin bin crate: CLI (clap), wires core+tui, later `-p` headless
+├── evals/                      # Phase-0 golden dataset + guardian scorecard runner
 ├── docs/
 └── tasks/
 ```
@@ -228,10 +246,11 @@ entirely.
          PermissionPipeline (fontaine-core, inside GuardedTool::call)
            1. registry.lookup(name) → RiskClass
            2. mode == plan?  → block state-changing tools outright
-           3. RiskClass::ReadOnly && args within workspace scope? → Allow (no guardian)
-           4. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
-           5. mode == auto → Guardian::adjudicate(request) ──▶ Verdict
-           6. mode == dontAsk → anything not pre-allowed is Denied
+           3. mode == bypass → Allow (no checks; opt-in flag only)
+           4. RiskClass::ReadOnly && args within workspace scope? → Allow (no guardian)
+           5. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
+           6. mode == auto → Guardian::adjudicate(request) ──▶ Verdict
+           7. mode == dontAsk → anything not pre-allowed is Denied
                       │
          Allow ──▶ inner rig Tool executes ──▶ result appended to conversation (rig-memory)
          Deny  ──▶ tool_result = "Denied by guardian: [reason]"; agent sees it and adapts

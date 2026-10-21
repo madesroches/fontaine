@@ -45,10 +45,13 @@ fold these into the plan:
   **authorization gate** with deny/escalate verdicts and prose intent rules. Different seat;
   cite their paper's anti-proprietary-guardrails argument (§2.4) — it is our pitch from Meta.
 - Adopt **PromptGuard 2** as the default tool-result scanner (Phase 6 item 12) via ONNX Runtime
-  (`ort` crate) or a sidecar, instead of a hand-rolled cheap-model pass: 97.5% recall @1% FPR,
-  19–92ms. Caveat to document: weights are gated Llama-Community-licensed — the air-gapped
+  (`ort` crate) or a sidecar, instead of a hand-rolled cheap-model pass: model-card recall @1% FPR
+  0.971 EN / 0.956 multilingual (language-dependent; "97.5%" is third-party rounding), 19–92ms.
+  Caveat to document: PromptGuard 2 weights are **Llama-Community-licensed** (non-commercial
+  terms; *not* gated — no HF approval required today) — the air-gapped
   "fully open" story must say "bring your own scanner model; PromptGuard 2 supported if
-  licensed" (ungated mirrors/ONNX ports exist).
+  licensed" (Llama Guard 4 is Apache 2.0 but too heavy for hot-path scanning; ONNX ports and
+  mirrors exist).
 - Report Fontaine's eval results in **AgentDojo-comparable terms** (ASR × utility) against their
   published baseline: no-defense .176 / PromptGuard .075 / AlignmentCheck .029 / combined .0175.
 - Mine their MIT-licensed AlignmentCheck prompts (paper Appendix C.6) as attributed prior art
