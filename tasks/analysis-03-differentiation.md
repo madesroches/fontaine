@@ -40,7 +40,10 @@ auto mode as an open standard rather than an Anthropic service.**
 
 ### 4. Guardian-native architecture vs bolted-on guardrail
 - LlamaFirewall et al. are libraries an agent runtime integrates; the integration must be written
-  and maintained per harness. Fontaine's choke point is architectural: **every** tool — built-in,
+  and maintained per harness — and Meta's own project has been in maintenance mode since launch
+  (see `research-llamafirewall.md`). More fundamentally, AlignmentCheck is a trace *drift
+  monitor*: it can halt a run, but it cannot deny one tool call pre-execution, explain the denial
+  to the agent, and keep the session running. Fontaine's choke point is architectural: **every** tool — built-in,
   Fontaine-added, or MCP-imported — is registered wrapped in `GuardedTool`, and a test fails if any
   registered tool lacks a risk class. The gate cannot be forgotten.
 - Proxy/gateway guardrails (LiteLLM+Lakera etc.) see text traffic, not `{tool, args, cwd, git

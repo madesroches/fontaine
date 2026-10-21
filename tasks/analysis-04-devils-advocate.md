@@ -63,17 +63,26 @@ with the LLM judge as a nicety on top.
   Cymulate's CBSE escapes show sandboxes fail too, but they fail into a contained blast radius.
 - If Fontaine never ships sandbox interop, it stays half a stack.
 
-### KILL #5 — LlamaFirewall becomes the standard integration (probability: medium)
-Meta ships an open, model-agnostic, brand-strong guardrail system (PromptGuard 2 + AlignmentCheck
-+ CodeShield) explicitly designed as the final defense layer for *any* agent. AlignmentCheck is
-structurally the same idea as the guardian (audit agent actions against user goal).
-- If harnesses integrate LlamaFirewall (Python-side or via ports), "add guardrails to your agent"
-  is answered by Meta's framework, and Fontaine becomes a hand-rolled duplicate of a
-  corporate-backed standard with worse benchmarks-by-default (LlamaFirewall ships fine-tuned
-  classifiers; Fontaine ships a prompt).
-- The plan cites GuardAgent/CaMeL but **does not mention LlamaFirewall anywhere** — a gap. It
-  should at minimum be evaluated as the default result-scanner and as prior art to differentiate
-  against.
+### KILL #5 — LlamaFirewall becomes the standard integration (probability: LOW — downgraded after deep-dive)
+Meta ships an open, model-agnostic guardrail system (PromptGuard 2 + AlignmentCheck +
+CodeShield) explicitly designed as the final defense layer for *any* agent. AlignmentCheck is
+structurally adjacent to the guardian (audit agent reasoning against user goal), and Meta's
+brand makes it the comparison everyone will reach for.
+- **Deep-research downgrade** (see `research-llamafirewall.md`): the framework has been in
+  **maintenance mode since its May 2025 launch** — commit history through Aug 2026 is
+  exclusively bot dependency bumps; AlignmentCheck remains "experimental" and defaults to a
+  *hosted* Together API; no MCP support, no Rust port, promised roadmap (distillation, unsafe
+  tool-use coverage) unshipped in 15+ months. Meta shipped components, not a standard, and
+  stopped investing. Also, AlignmentCheck is a trace *drift monitor* (halt-the-run), not a
+  pre-execution per-tool-call authorization gate — it cannot deny one call, explain it to the
+  agent, and keep the session running.
+- Residual risk that survives: PromptGuard 2 **the model** has become embedded infrastructure
+  (ONNX ports, gateway products, Mozilla wrappers) — if a harness embeds it plus a big-model
+  AlignmentCheck pass, "add guardrails to your agent" is answered without Fontaine. And if Meta
+  ever revives the framework as a Llama-platform priority, the brand returns.
+- Counter-move (cheap, do it): **adopt their assets** — PromptGuard 2 as Fontaine's default
+  tool-result scanner, their AgentDojo numbers as the eval baseline to beat, their MIT-licensed
+  AlignmentCheck prompts as prior art for `guardian_prompt.md`. Embrace, don't fight.
 
 ### KILL #6 — Gateway guardrails cover the compliance buyers (probability: medium)
 LiteLLM guardrails (free, with Lakera/Aporia/PII-masking), Kong/TrueFoundry/Portkey gateways, and

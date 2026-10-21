@@ -34,15 +34,27 @@ before or alongside the TUI; publish results per guardian model; invite red-team
 dataset. This is also the direct mitigation for KILL #3: a bypass discovered *by Fontaine's own
 public eval* is a credibility event; the same bypass discovered by PromptArmor is a kill event.
 
-### A2. Answer LlamaFirewall explicitly (plan gap)
+### A2. Answer LlamaFirewall explicitly (plan gap) — RESOLVED by `research-llamafirewall.md`
 The plan's research section cites GuardAgent/CaMeL/AgentDojo but never mentions Meta's
-LlamaFirewall — the most-cited open guardrail system and the nearest conceptual prior art
-(AlignmentCheck ≈ guardian). Amend the plan:
-- Add a research subsection positioning against PromptGuard 2 / AlignmentCheck / CodeShield.
-- Evaluate PromptGuard 2 as the default **tool-result scanner** (Phase 6 item 12) instead of a
-  hand-rolled cheap-model pass — it's a fine-tuned classifier, free, and its adoption blunts
-  KILL #5 ("we ship Meta's engines in the seat they're good at; our guardian does the part
-  they can't: harness-context intent judgment").
+LlamaFirewall — the most-cited open guardrail system and the nearest conceptual prior art.
+Full deep-dive completed (primary sources: arXiv:2505.03574, repo + commit history, HF models);
+fold these into the plan:
+- Add a research subsection positioning against PromptGuard 2 / AlignmentCheck / CodeShield:
+  AlignmentCheck is a trace **drift monitor** (experimental, hosted-Together-API default,
+  maintenance-mode project since May 2025) — Fontaine's guardian is a pre-execution
+  **authorization gate** with deny/escalate verdicts and prose intent rules. Different seat;
+  cite their paper's anti-proprietary-guardrails argument (§2.4) — it is our pitch from Meta.
+- Adopt **PromptGuard 2** as the default tool-result scanner (Phase 6 item 12) via ONNX Runtime
+  (`ort` crate) or a sidecar, instead of a hand-rolled cheap-model pass: 97.5% recall @1% FPR,
+  19–92ms. Caveat to document: weights are gated Llama-Community-licensed — the air-gapped
+  "fully open" story must say "bring your own scanner model; PromptGuard 2 supported if
+  licensed" (ungated mirrors/ONNX ports exist).
+- Report Fontaine's eval results in **AgentDojo-comparable terms** (ASR × utility) against their
+  published baseline: no-defense .176 / PromptGuard .075 / AlignmentCheck .029 / combined .0175.
+- Mine their MIT-licensed AlignmentCheck prompts (paper Appendix C.6) as attributed prior art
+  for `guardian_prompt.md`.
+- Do **not** take a runtime dependency on the `llamafirewall` Python package (maintenance mode,
+  Python-in-Rust, hosted-API default). Depend on its models and numbers, not its framework.
 
 ### A3. Add sandbox interop to the roadmap (not v1 build, but v1.1 slot)
 Guardian-only is half the converged stack (KILL #4). Cheapest credible move: a documented

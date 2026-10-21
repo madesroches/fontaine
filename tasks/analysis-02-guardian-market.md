@@ -11,20 +11,34 @@ product be plugged into an existing harness, making a guardian-native harness re
 ## Segment A — Open-source agent guardrail frameworks
 
 **LlamaFirewall (Meta / Purple Llama)** — the most direct conceptual competitor.
-- Open-source guardrail system for building secure AI agents; three engines:
-  - **PromptGuard 2** — small classifier for injection detection,
-  - **AlignmentCheck** — an LLM-based audit of the agent's *plan/actions against the user's
-    goal* (functionally a guardian),
-  - **CodeShield** — online static analysis of generated code.
-- Real-time monitor designed as "final layer of defense," model-agnostic, extensible.
-  (ai.meta.com/research/publications/llama-firewall…; arxiv.org/abs/2505.03574;
-  meta-llama.github.io/PurpleLlama/LlamaFirewall; infoq.com/news/2025/05/llama-firewall-agent-protection/)
+(Deep-dive with primary sources and all numbers: `research-llamafirewall.md`.)
+- MIT-licensed **in-process Python library** (not a proxy, not a harness); used in production at
+  Meta. Open-source guardrail system for building secure AI agents; four scanner tiers:
+  - **PromptGuard 2** — 86M/22M DeBERTa-family classifiers for explicit jailbreak/injection
+    detection (97.5% recall @1% FPR, 19–92ms on A100; weights gated under Llama Community
+    License, ONNX ports and ungated mirrors exist),
+  - **AlignmentCheck** — a few-shot **chain-of-thought auditor** of the agent's reasoning trace:
+    a *drift monitor* (halt-the-run), not a pre-execution per-tool-call gate. Experimental;
+    needs a big backing model (Llama 4 Maverick / Llama 3.3 70B) and **defaults to a hosted
+    Together API**; a gated fine-tuned AlignCheck-8B exists. AgentDojo: ASR .176→.029 alone,
+    →.0175 combined with PromptGuard 2,
+  - **CodeShield** — Semgrep/regex static analysis of generated code (8 languages, 50+ CWEs),
+  - regex/custom scanners.
 - **But**: it is a **Python middleware library** for agent builders — not a coding harness, no
-  permission-mode UX, no TUI, no tool-call choke point shipped for terminal coding agents. It
-  guards *your* agent runtime. To use it with OpenCode/Goose, someone must write the integration.
-- Threat assessment: AlignmentCheck + a harness plugin = Fontaine's core value, assembled from
-  parts. Meta's brand and "free" price make it the reference implementation everyone will compare
-  Fontaine's guardian against.
+  permission-mode UX, no deny/escalate-to-human verdicts, no prose intent rules, no tool-call
+  choke point shipped for terminal coding agents. Integrations shipped: OpenAI Agents SDK and
+  LangChain only. It guards *your* agent runtime; using it with OpenCode/Goose means writing
+  that integration yourself.
+- **Project health (verified Oct 2026 via commit history)**: maintenance mode since the May 2025
+  launch — commits are exclusively `meta-codesync[bot]` dependency bumps and lint chores through
+  Aug 2026. No MCP support, no Rust port, promised future work (distillation, unsafe tool-use
+  coverage) not shipped. PromptGuard 2 *the model* became widely-embedded infrastructure;
+  LlamaFirewall *the framework* did not become a standard.
+- Threat assessment (revised down from first pass): AlignmentCheck + a harness plugin is still
+  the assembly path to Fontaine's core value, but Meta has shown no appetite to walk it in 15+
+  months. The lasting competitive pressure is **comparison, not substitution**: their AgentDojo
+  table is the published baseline Fontaine's eval harness must beat, and their paper's
+  anti-proprietary argument (§2.4) is our pitch from Meta's mouth — cite it.
 
 **NVIDIA NeMo Guardrails / Guardrails AI** — programmable rails (dialog + action), rule/flow based
 with optional LLM self-check calls. Enterprise-flavored, Python, framework-agnostic. Same shape of
