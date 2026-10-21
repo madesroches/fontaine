@@ -17,22 +17,7 @@ own evals (guardrail accuracy on the golden dataset, latency, robustness to evas
 re-benchmarked each release; the default guardian is the **highest-ranked validated model
 available on the user's configured accounts**. Seed examples for the list — cheap flash-tier
 models typical of subscription catalogs, model-agnostic: Claude Haiku 5.5, GPT-6 Luna, DeepSeek
-V4.1 Flash, GLM-5.3 Flash, Qwen3.8 Flash class. **Typed-decision (System One) class — candidates**:
-Jev (TypeSafe AI's "System One" decision model, docs.typesafe.ai — **hosted, closed weights**: a
-BYO/API path, never the default for the local/air-gapped story) is non-autoregressive — it takes
-state + typed questions (Choice/Score/Noul) and returns bounded decisions with calibrated
-probabilities in ~70–500 ms, with no free text by construction (so no parsing failures and no
-reasoning-token-budget empty-verdict failure mode that generative judges exhibit); its calibrated
-probability maps natively onto the `Verdict` confidence + the APPROVE/DENY/ESCALATE shape via a
-single 3-choice question whose option text IS the rule label, and the explanation gap vs
-deny-with-explanation is filled by the chosen question/option, not prose. Open-source decision-model
-options for the local story: Laya (convaiinnovations/laya, a ModernBERT-based alternative) and vLLM
-DiffusionGemma (Red Hat benchmark, developers.redhat.com, Oct 2 2026). All join the ranked list only
-as **candidates — must pass benchmarking before joining** — and thresholds are always recalibrated
-on Fontaine's golden set, never inherited from vendor defaults (measured: Jev's shipped defaults,
-auto-accept 0.85 / margin 0.6, escalated 17/21 judgments wrongly on real dev traffic —
-typesafe-ai/skills issue #5, the MIT approval-judge-bridge cookbook — while recalibrated 0.65/0.30
-gave 19 APPROVE / 10 DENY / 7 ESCALATE at median 0.18 s, fail-closed on every error path). Changing
+V4.1 Flash, GLM-5.3 Flash, Qwen3.8 Flash class. **Typed-decision (System One) class** (Jev, Laya, DiffusionGemma) join the ranked list only as candidates that must pass benchmarking, with thresholds recalibrated on Fontaine's golden set (see Decisions, 2026-10-21). Changing
 the guardian model must be **easy but never automatic**: explicit `guardian.model` config or a
 `/guardian-model` command; if a pinned guardian model is unavailable, Fontaine **fails loudly and
 asks** — no silent substitution. For providers with no catalog match (custom openai-compatible
@@ -48,10 +33,10 @@ pub struct AdjudicationRequest {
     pub task_intent: String,          // latest user message(s), verbatim from the ledger; trimmed
                                       //   to budget by dropping the oldest, never summarized
     pub recent_user_messages: Vec<String>, // user turns only, from the ledger — NOT tool outputs
-    pub project_instructions: Option<String>, // FONTAINE.md (equivalent of CLAUDE.md)
+    pub project_instructions: Option<String>, // FONTAINE.md: primary root + user-level file
     pub environment: EnvironmentConfig,     // prose trust slots (see master §Config)
     pub rules: RuleConfig,                  // hard_deny / soft_deny / allow prose lists
-    pub tool_call: ToolCallSummary,         // tool name, full args, description written by agent
+    pub tool_call: ToolCallSummary,         // tool name, full args
     pub session_facts: SessionFacts,        // workspace roots, workspace trust state, git remotes
                                             //   at session start, files that existed before session
                                             //   (for destruction checks), actions already taken
@@ -95,7 +80,7 @@ Deny or Escalate."* All request content is wrapped in delimited untrusted blocks
 - unparseable or schema-invalid verdict → Deny
 - a below-threshold-confidence Allow on a destructive class (`rule ∈ DESTRUCTIVE ∧ confidence <
   threshold`, per the fixed rule enum above) → Deny; Deny verdicts are never softened
-- `N` consecutive denials for the same tool → stop and surface to the human (loop breaker; in headless `-p` it becomes a Deny and the run continues)
+- 3 consecutive or 20 total guardian denials in a session (any tool; not configurable) → `auto` pauses and prompting resumes; approving resumes `auto` (Claude Code parity). In headless `-p` the paused state means would-prompt → Deny and the run continues
 
 **Caching & latency**:
 - verdict cache keyed by `hash(normalized tool call + rules version + environment version +
@@ -207,7 +192,7 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   `SequencedStreamingHttpClient`) or a raw `tokio::net::TcpListener` that drops the socket (wiremock
   0.6 has no reset/abort API); an Allow below `confidence_threshold` on a destructive class → Deny,
   and a Deny verdict is never softened; cache-key correctness incl. rules-version invalidation; loop
-  breaker; prompt-builder snapshots (defaults spliced, `$defaults` marker, untrusted delimiting
+  breaker (3 consecutive / 20 total denials pause `auto`; approval resumes; headless paused ⇒ Deny); prompt-builder snapshots (defaults spliced, `$defaults` marker, untrusted delimiting
   present); redaction of credential-shaped inputs; minimal-profile resolution fail-closed (probe
   failure ⇒ fall back to `full`), and under `minimal` the escape primitives + exfiltration-class
   remote writes still Deny/Escalate.

@@ -18,40 +18,11 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
   name would clash); `delete`/`move` are not registered. rig tools are configured (`confine: true`,
   `max_timeout`, output `cut`) rather than forked or wrapped in a hardening layer — keeping upgrades
   cheap.
-- **Composite read tools + Tier 0.5 shell pre-classifier** (user directive 2026-10-21; mirrors
-  Claude Code's split of dedicated read tools that skip prompts from a built-in read-only command
-  set for `Bash`, per the design tie-breaker). Frequent read operations are **also** exposed as
-  dedicated first-party tools — `ls`/list, `read`, `glob`/`grep` search (wrapping the `rig-tools`
-  equivalents) — with workspace containment enforced *inside the tool* at the execution boundary
-  (pipeline step 4), and the system prompt steers the model toward these rather than `shell` for
-  reads. The **Tier 0.5 pre-classifier** (pipeline step 5) is the fallback fast path for read-ish
-  shell invocations: it is purely *structural* — lex the command line, check `argv[0]`+subcommand
-  against the curated set, accept only path arguments (resolved against the call's `cwd`; an out-of-scope `cwd` disqualifies the fast path) that pass the scope checker plus flags on a
-  per-command read-only flag allowlist (values of file-opening flags like `--files-from`/`-f`/`-m`
-  are validated as path arguments; any other flag, glob, or unparsed token falls through) — which
-  honors the "no regex matching on arguments anywhere" decision. Lexing uses **`shlex`** (v2.0.1,
-  MIT OR Apache-2.0, actively maintained — 2.0.0 shipped 2026-05) for POSIX word splitting; a full
-  bash AST via **`tree-sitter-bash`** (v0.25.1, MIT, maintained under the tree-sitter org; pulls
-  in the `tree-sitter` runtime and a C build step) is the optional upgrade when operator-level
-  parsing (pipelines, redirections, substitutions) must be *recognized* rather than merely
-  rejected. Anything the classifier cannot fully parse **falls through to the guardian** — the
-  same fail-through soundness Claude Code documents ("when it can't fully parse a command, it
-  asks for approval instead of treating the command as read-only"). Curated set membership alone
-  is unsound: several allowlisted commands carry write/exec-capable or file-opening flags, so the
-  per-command read-only flag allowlist mirrors Claude Code's documented per-command flag handling
-  (its docs prompt on `file -m`/`--magic-file`/`-f`/`--files-from`, and on unquoted globs for
-  `find`/`sort`/`sed`/`git` because of write-capable flags like `sort -o` and `git log --output`).
-  Out-of-workspace reads never pre-classify as safe: read-only ≠ safe, per the 2026-10-21
-  hybrid-gate refinement (Fontaine-enforced containment at the execution boundary earns the fast
-  path, never the read-only label), so `cat ~/.ssh/id_rsa` is adjudicated like a write. The
-  curated command set ships **opinionated and conservative** (`ls`, `pwd`, `wc`, `file`, read-only
-  `git status|log|diff|show`, `rg`/`grep`, `cat`/`head`/`tail`); users may extend it via
-  `[shell_preclassifier]` config keys (`allow_extra`, a single mode-agnostic list applying in
-  every mode — the pipeline runs the pre-classifier before the mode branches, so no per-mode keys;
-  NOT the guardian's `[auto_mode].allow` prose list), and Fontaine **never auto-extends** it from
-  observed usage — unlike Claude Code, whose set is fixed and whose "don't ask again" grants
-  accumulate prefixes: Fontaine's grants go to explicit config rules only (recorded in Decisions
-  as a deviation).
+- **Composite read tools + Tier 0.5 shell pre-classifier**: frequent read operations are also
+  exposed as dedicated first-party tools (`ls`, `read`, `glob`, `grep`) with workspace containment
+  enforced inside the tool at the execution boundary, and the system prompt steers the model toward
+  them rather than `shell`. The Tier 0.5 shell pre-classifier is master pipeline step 5, built in
+  Phase 3.
 - **Risk registry**: a `RiskClass { ReadOnly | WorkspaceWrite | Arbitrary }` assigned per tool at
   registration (rig's registry supports ordered registrations). This is the deterministic,
   non-LLM half of the hybrid gate: `ReadOnly` + args validated within workspace scope (a
@@ -92,9 +63,9 @@ guardian as hints, not as gates).
 
 `scope.rs` validates against an ordered set of canonicalized roots (master §Config): a path is in
 scope when `rig_tools::fs::place(root, true, path)` accepts it for some root, after resolving it
-against the call's `cwd`. rig file tools take one confinement base, so each root gets its own
-confined instance of each rig file tool and the wrapper dispatches a call to the instance of the root
-that contains the resolved path — rig's confinement and Fontaine's scope check always agree (confirm
+against the call's `cwd`. rig file tools and `shell` take one confinement base (`shell` places its `cwd` against a single launcher dir), so each root gets its own
+confined instance of each rig file tool and of `shell` (`launcher.in_dir(root)`) and the wrapper dispatches a call to the instance of the root
+that contains the resolved path (for `shell`, the resolved `cwd`) — rig's confinement and Fontaine's scope check always agree (confirm
 the rig-tools 0.45 constructor shape when the step lands). `--add-dir` roots are added at start;
 `/add-dir` (Phase 3 TUI) adds one at runtime; no tool can add a root.
 
@@ -110,7 +81,8 @@ context.
 
 ## Steps
 
-1. `fontaine-tools`: `RiskClass` registry; generic `GuardedTool<T: Tool>` decorator over `rig_core::tool::Tool`, a `DynamicTool`
+1. **Blocked on master Open Question 1 (gate location: `GuardedTool` vs `AgentHook::on_dispatch`).**
+   `fontaine-tools`: `RiskClass` registry; generic `GuardedTool<T: Tool>` decorator over `rig_core::tool::Tool`, a `DynamicTool`
    wrapper path for MCP, and the shared `Arc<SessionState>` carrier; register exactly this tool set
    (the choke-point test asserts it: no other names, no duplicates, `delete`/`move` absent):
 
@@ -123,7 +95,7 @@ context.
    | `write` | WorkspaceWrite | rig-tools `write`, wrapped, `confine: true` |
    | `edit` | WorkspaceWrite | rig-tools `edit`, wrapped, `confine: true` |
    | `shell` | Arbitrary | rig-tools `shell`, wrapped; `confine: true`, `max_timeout`, output `cut` set |
-   | `webfetch` | Arbitrary | new first-party |
+   | `webfetch` | Arbitrary | new first-party; never follows a cross-host redirect (returns the redirect URL to the model, as Claude Code does); response size and timeout caps |
 
    Removal and rename go through `shell` (Arbitrary), so the shell-only critical-path check covers
    every removal path. `scope.rs` resolves every path through `rig_tools::fs::place` (base = the
@@ -140,7 +112,7 @@ context.
    `OTEL_EXPORTER_OTLP_HEADERS`. `GuardedTool::call` opens a `fontaine.tool` span (beside rig's
    `execute_tool`) and emits the `tool_result` telemetry event (`risk_class`, `tool_source`).
 2. `fontaine-core`: session orchestration on `rig_agent` (`AgentBuilder` + `AgentRun`), system
-   prompt, FONTAINE.md project-instruction loading; `rig-memory` for context windows, compaction,
+   prompt, FONTAINE.md loading (v1 set: `<primary root>/FONTAINE.md` plus the user-level `FONTAINE.md` in the user config dir; no parent-directory hierarchy or imports — backlog GitHub issue #7); `rig-memory` for context windows, compaction,
    and save/resume — no custom agent loop or history management to write; the session ledger
    (design above) alongside it, keyed by the session id (`--session-id` or a fresh UUID).
 3. Docs — `docs/tools.md`: the built-in tool inventory (`ls`/`read`/`glob`/`grep`/`edit`/`write`/
@@ -154,7 +126,7 @@ context.
 
 ## Files created or modified
 
-`rust/fontaine-tools/src/{lib,guarded,risk,scope,builtins,webfetch,preclassify}.rs`;
+`rust/fontaine-tools/src/{lib,guarded,risk,scope,builtins,webfetch}.rs`;
 `rust/fontaine-core/src/{lib,session,ledger,hooks}.rs`; `docs/tools.md`, `docs/architecture.md`,
 `docs/configuration.md`, `docs/telemetry.md`, `docs/index.md`.
 
@@ -169,7 +141,8 @@ context.
 - GuardedTool delegation: inner tool runs exactly once, only after the gate allows; under the stub,
   an in-scope `read` is allowed, an out-of-scope `read` and every `write`/`edit`/`shell` call is denied.
 - **workspace roots** (`rust/fontaine-tools/tests/scope.rs`): a path in an `--add-dir` root is in
-  scope and reaches that root's confined instance; a symlink from one root into another stays in
+  scope and reaches that root's confined instance; a `shell` call whose `cwd` is in an added root
+  reaches that root's `Shell` instance and is not refused by rig; a symlink from one root into another stays in
   scope, out of every root falls out; settings in an added root are not loaded.
 - **session ledger** (`rust/fontaine-core/tests/ledger.rs`): after a forced compaction the ledger
   still holds every user message verbatim and no summary text; the ledger is append-only (no API
@@ -182,6 +155,9 @@ context.
 
 ## Definition of done
 
+- Offline gates (no keys, no human): `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` /
+  `cargo test` green from `rust/`, including `rust/fontaine-tools/tests/{scope,choke_point}.rs`,
+  `rust/fontaine-core/tests/ledger.rs`, `rust/fontaine/tests/headless_tools.rs`.
 - A headless `-p` run against the scripted endpoint completes a read-tool round-trip through the
   wrapped registry (in-scope `read` allowed by the deny-by-default stub; `write`/`shell` denied —
   nothing executes past the stub until Phase 3).

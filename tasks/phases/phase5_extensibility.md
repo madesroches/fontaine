@@ -168,7 +168,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
 
 ## Tests owned by this phase
 
-- **parallel agents** (master Testing Strategy): spawn-call gating (task × toolset × model
+- **parallel agents** (master Testing Strategy; `rust/fontaine/tests/parallel_agents.rs`): spawn-call gating (task × toolset × model
   composite); mode-inheritance invariant (child ≤ parent, never looser), including a test where the
   parent switches mode mid-run and the child's next call follows the tighter mode; per-type registry
   is a subset of the parent's; budget caps stop a subagent; subagent reports return as ordinary
@@ -177,7 +177,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
 - Parallel orchestration (deterministic `test_utils` models or cassettes): spawn N subagents, kill
   one, assert the others complete and every tool call has a gate decision in the audit log keyed by
   agent id.
-- MCP: servers from config register wrapped `Arbitrary`; a declared `readOnlyHint` never earns a
+- MCP (`rust/fontaine-mcp/tests/mcp_registration.rs`): servers from config register wrapped `Arbitrary`; a declared `readOnlyHint` never earns a
   fast path (choke-point test extended to MCP-imported tools and to a list-changed refresh: tools added or
   replaced by a refresh are registered wrapped as `Arbitrary` under `mcp__<server>__<tool>`, none
   reachable raw).
@@ -199,6 +199,10 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
 
 ## Definition of done
 
+- Offline gates (no keys, no human): `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` /
+  `cargo test` green from `rust/`, including `rust/fontaine/tests/parallel_agents.rs` (parallel-agents and
+  parallel-orchestration tests), `rust/fontaine-mcp/tests/mcp_registration.rs` (MCP tests),
+  `rust/fontaine-core/tests/user_hooks.rs`, and the trust, persistence, extensions and telemetry tests.
 - Manual Verification item 5 passes (agents-panel visual check; gating and audit are covered by the
   automated parallel-orchestration test).
 - Item 6 ships **with the sandbox slot when taken** (minimal-profile escape denies + probe

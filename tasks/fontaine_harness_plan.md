@@ -251,6 +251,10 @@ Matching is structured — never regex on raw args.
 | MCP | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | registered tool name |
 | `agent`, `skill` | agent type / skill name | exact name |
 
+`webfetch` never follows a cross-host redirect — the redirect URL is returned to the model and a
+follow-up fetch is gated on its own host — so an allowed domain cannot bounce a request to an
+unlisted one.
+
 **Asymmetric failure.** Deny and ask fail toward matching; allow fails toward not matching. A
 `shell` deny/ask rule is always a prefix match (trailing ` *` implied) and matches when its words appear
 contiguously anywhere in the lexed word stream (control operators split off first, so `ls && git push`
@@ -834,11 +838,11 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
     `opentelemetry-appender-tracing =0.33.1`.
   - Both backends are compiled in by default, behind the bin crate's features
     `telemetry-micromegas` and `telemetry-otlp`; pinned exactly, like rig, because they are pre-1.0.
-  - Caveats: the micromegas sink brings a second reqwest (0.12) and publishes no `rust-version`;
+  - Caveats: the micromegas sink brings a second reqwest (0.12);
     its async span events need CPU tracing enabled, settable only through
     `MICROMEGAS_ENABLE_CPU_TRACING`. Upstream micromegas work (same author) removes each: `tracing`
     span capture with parentage in `TracingCaptureLayer`, a builder knob for span/thread streams,
-    reqwest 0.13, a published `rust-version`.
+    reqwest 0.13.
 
 ## Files to Modify
 
@@ -903,11 +907,6 @@ order. No `fontaine-llm` crate — the model layer is rig.
   and token spend (Claude Code documents the same). Mitigated by Tier 0.5 (most read-ish subagent
   calls never reach the guardian), the local PromptGuard 2 result scanner (no per-result LLM call),
   and `[agents]` budget caps; the stateless per-request guardian parallelizes without shared state.
-- **Composite guardian: tier latency/cost stacking vs screening-head economics** — a deeper tree could
-  multiply round-trips per call. Mitigated by tier ordering (deterministic → decision-model screen →
-  LLM adjudicator: each tier only sees what the cheaper one above could not resolve) and confidence-
-  gated escalation — the measured Jev-Guard 4.80 s → 1.33 s review time is the counter-economics;
-  scope discipline (benchmarked tiers only, roadmap-gated) keeps v1 at the deterministic+LLM spine.
 - **Prose rule lists over Rego/OPA-style policy** — prose matches the guardian's medium (it is an
   LLM), is what Claude Code proved works, and stays editable by humans; a deterministic policy
   engine can't express "unless the user specifically asked for it".
@@ -1121,6 +1120,13 @@ carries the reasoning:
   telemetry. Both are written from one typed `GateDecision`, the audit log first. Reason: telemetry
   is opt-in, lossy and redacted, while the audit log is the security record. Claude Code has no
   analogous design point.
+- 2026-10-21 (user): `FONTAINE.md` v1 loads `<primary root>/FONTAINE.md` plus the user-level file in the
+  user config dir; no parent-directory hierarchy or imports (backlog GitHub issue #7).
+- 2026-10-21 (user): the micromegas crates need no published `rust-version` (Fontaine pins its own
+  toolchain); that upstream item is dropped.
+- 2026-10-21: the guardian loop breaker follows Claude Code — `auto` pauses after 3 consecutive or 20
+  total guardian denials per session (any tool, not configurable); prompting resumes, approving resumes
+  `auto`; headless treats the paused state as would-prompt → Deny.
 
 ## Documentation
 
@@ -1223,7 +1229,7 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   `NonSuccessStreamingClient`, `SequencedStreamingHttpClient`) or a raw `tokio::net::TcpListener`
   that drops the socket (wiremock 0.6 has no reset/abort API; wiremock stays for 500s and provider
   smoke tests); cache key correctness incl. rules-version invalidation;
-  loop breaker after N denials; prompt builder snapshots (defaults spliced, `$defaults` marker,
+  loop breaker (3 consecutive / 20 total denials pause `auto`; a human approval resumes it; headless paused ⇒ Deny); prompt builder snapshots (defaults spliced, `$defaults` marker,
   untrusted delimiting present); redaction of credential-shaped strings in adjudication inputs;
   minimal-profile resolution is fail-closed — containment probe failure ⇒ `minimal` refuses to
   load and falls back to `full` with a notice; under `minimal`, in-workspace routine ops skip
@@ -1250,7 +1256,7 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
 - **permission rules**: grammar parsing for every tool kind; `shell` deny/ask hit compound,
   wrapped (`sudo`, `env`) and unlexable commands; `shell` allow never matches a compound command;
   path rules match resolved paths (symlink into a denied path is denied; allow on a symlinked alias
-  does not match); `webfetch(domain:)` host normalization; allow never reaches past deny/ask/
+  does not match); `webfetch(domain:)` host normalization; a redirect leaving an allowed domain is returned, not followed; allow never reaches past deny/ask/
   critical-path/protected-path, and never lets an edit run in `plan`; in `auto` a narrow allow rule
   skips the guardian (counting fake guardian: zero calls) and bare `shell` / `shell(python *)` /
   bare `agent` are suspended (guardian called); session grants vanish on resume and fork; "always"
@@ -1308,13 +1314,16 @@ chat-completion sequences (agent and guardian on separate scripted accounts), ex
 `fontaine -p` tests under `rust/fontaine/tests/`; below the binary, `rig_core::test_utils` models
 drive the library crates. Fail-closed tests: the guardian endpoint 500s (wiremock), resets the
 connection, or drops mid-stream (see the guardian bullet) and the tool call is denied.
-`rig-cassette` record/replay covers full runs against real provider wire behavior: the first
-recording (prompt → stream → tool call → guardian verdict → execute → result → answer) is a
-human-plus-live-keys step, never CI; once a cassette is committed, replay is the CI default and
-needs no keys. Cassettes live in `rust/fontaine/tests/cassettes/`; recording scrubs API keys, auth
-headers, and home-directory paths through rig-cassette's scrubbing configuration, and runs only via
-`FONTAINE_RECORD=1 cargo test -p fontaine --test cassettes -- --ignored` with the provider key env
-var set (record tests skip without it).
+`rig-cassette` record/replay covers full runs against real provider wire behavior; the harness
+(`rust/fontaine/tests/cassettes.rs`) is built in Phase 3. The first recording (prompt → stream →
+tool call → guardian verdict → execute → result → answer) is a human-plus-live-keys step, never
+CI; once a cassette is committed, replay is the CI default and needs no keys. Cassettes live in
+`rust/fontaine/tests/cassettes/`; recording scrubs API keys, auth headers, and home-directory paths
+through rig-cassette's scrubbing configuration, and runs only via
+`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes -- --ignored` with the
+account's `base_url` pointed at the cassette proxy's `base_url()` and the provider key env var set
+(record tests skip without it; replay is rig-cassette's default mode). Token and cost telemetry
+assertions before Phase 3 run against the scripted `openai-compatible` endpoint, not a cassette.
 
 Eval harness (scaffolded in Phase 0, scorecard published with the guardian in Phase 4; run
 manually / nightly, not CI-gated on live models): golden dataset scored
@@ -1390,4 +1399,9 @@ End-to-end checks, each owned by the phase's definition of done (owner in parens
 ## Open Questions
 
 (Former questions 1 and 2 — project name and default-guardian policy — were resolved
-2026-10-21 and recorded in Decisions. None remaining.)
+2026-10-21 and recorded in Decisions.)
+
+1. **Where is the permission gate?** Option A: the `GuardedTool` decorator (current design — the
+   gate runs inside each wrapped tool's `call`). Option B: rig-agent 0.45
+   `AgentHook::on_dispatch` returning `DispatchAction::{Proceed, Patch, Deny}`, with one gate for
+   every tool and no per-tool wrapper. Phase 2 step 1 is blocked on this.

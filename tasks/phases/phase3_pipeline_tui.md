@@ -111,6 +111,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event.
 ## Files created or modified
 
 `rust/fontaine-core/src/{permissions,permission_rules,audit}.rs`; `rust/fontaine-evals/src/baseline.rs`;
+`rust/fontaine-tools/src/preclassify.rs`; `rust/fontaine/tests/cassettes.rs`;
 `rust/fontaine-tui/src/{app,transcript,approval,statusbar}.rs`; tests under `rust/fontaine-core/tests/`,
 `rust/fontaine/tests/`, `rust/fontaine-tui/tests/`;
 `rust/fontaine/src/main.rs` (TUI wiring); `docs/{permissions,tui,headless,telemetry}.md`, `docs/architecture.md`,
@@ -131,7 +132,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event.
 - **permission rules** (`rust/fontaine-core/tests/permission_rules.rs`): the master Testing Strategy
   bullet minus the `auto` legs — grammar per tool kind; `shell` deny/ask hit compound, wrapped and
   unlexable commands; `shell` allow never matches a compound command; resolved-path matching incl.
-  symlinks; `webfetch(domain:)` normalization; an allow rule never passes deny/ask/critical-path/
+  symlinks; `webfetch(domain:)` normalization; a redirect leaving an allowed domain is returned, not followed; an allow rule never passes deny/ask/critical-path/
   protected-path and never lets an edit run in `plan`; an allow rule pre-approves in `dontAsk` and
   skips the prompt in `manual`; "allow session" lasts only for the session, "always allow" writes
   exactly the shown rule to the user file; `--allowed-tools` / `--disallowed-tools` act as CLI rules;
@@ -163,6 +164,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event.
   `manual`; no mode or allow rule reaches past the deterministic floor; `docs/permissions.md` + pipeline diagram
   match the shipped step order; CHANGELOG entry appended.
 - Needs a human and live keys (not CI): Manual Verification item 1 passes (TUI manual approval
-  flow, end to end); the first rig-cassette recording of a manual-mode session (once committed it
+  flow, end to end); the first rig-cassette recording of a manual-mode session via `cassettes.rs`
+  (`RIG_PROVIDER_TEST_MODE=record`, account `base_url` at the cassette proxy; once committed it
   replays in CI with no keys); the `claude -p` baseline capture.
 - Log the phase in the master plan's Progress log.

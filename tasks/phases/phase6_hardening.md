@@ -45,13 +45,6 @@ path — see the Phase 5 plan.
    scanner interface, and the cheap-LLM fallback; the scanner fields in `docs/telemetry.md`; append
    a CHANGELOG entry.
 
-## Composite guardian — roadmap direction (Phase 6+)
-
-Not a build item in this phase. The tier-tree direction (typed-decision screen tier, per-domain
-policy subtrees, strictest-wins composition, benchmarked-tiers-only gating) is specified in the
-master plan's §Composite guardian; v1's shipped spine — deterministic tiers + single LLM guardian
-+ this phase's optional PG2 result scanner — is already the 3-deep tree that section describes.
-
 ## Files created or modified
 
 `rust/fontaine-guardian/src/scanner.rs`; `[guardian] scan_tool_results`, `scanner_model_path`,
@@ -74,8 +67,13 @@ master plan's §Composite guardian; v1's shipped spine — deterministic tiers +
 
 ## Definition of done
 
-- Scanning demonstrable in a live session behind the config flag, with the license caveat
-  surfaced; off remains the default.
+- Offline gates (no keys, no human): `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` /
+  `cargo test` green from `rust/`, including the fake-scanner tests (scanner logic, BYO trait,
+  subagent reports, license notice, telemetry) and the default-off test.
+- Needs a human and an HF token (not CI): scanning demonstrable in a live session behind the config
+  flag with the license caveat surfaced; the `pg2`-feature PromptGuard 2 inference test run against a
+  downloaded model (`FONTAINE_PG2_MODEL`).
+- Off remains the default.
 - `docs/guardian.md` scanning section complete.
 - CHANGELOG entry appended.
 - Log the phase in the master plan's Progress log.

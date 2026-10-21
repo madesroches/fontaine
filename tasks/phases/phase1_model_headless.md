@@ -72,8 +72,9 @@ upstream builder knob.
    a tool call round-trip, to validate rig's ergonomics before building on it.
 2. Headless surface `fontaine -p "task"` on the same core — a non-interactive run driven by the CI
    runner, the Phase-0 golden-dataset eval harness, and the integration tests, so the core is
-   testable headlessly from day one (the `clap` entry from Phase 0 step 1 wires to the rig model
-   layer now and to the agent loop as soon as Phase 2 step 2 lands). Headless semantics (Claude Code
+   testable headlessly from day one (the `clap` entry from Phase 0 step 1 wires to a minimal rig-agent
+   `AgentBuilder` loop with the spike tool — enough for `--max-turns`, multi-turn stream-json input
+   and the tool round-trip; Phase 2 step 2 replaces it with full session orchestration). Headless semantics (Claude Code
    parity; enforced by the pipeline in Phase 3 for manual/dontAsk and Phase 4 for auto): nothing
    prompts — every would-prompt outcome (ask-rule match, Escalate verdict,
    critical-path/protected-path prompt, loop breaker) becomes a Deny returned to the
@@ -152,7 +153,7 @@ upstream builder knob.
   validate against the schema snapshot for `schema_version` 1; `init` and `result` present;
   `--max-turns` / `--max-budget-usd` stop with the matching subtype and exit 1; `--input-format
   stream-json` drives a two-turn run; `--json-schema` fills `result.structured_output`.
-- **telemetry**: a cassette `-p` replay yields `api_request` with tokens and cost; **span tree
+- **telemetry**: `-p` against the scripted `wiremock` `openai-compatible` endpoint returning `usage` yields `api_request` with tokens and cost; **span tree
   round-trip** (`telemetry_micromegas.rs`, its own test binary, `serial_test`): a nested span tree,
   inner spans closed on a different tokio worker than they opened on, passes through the `SpanBridge`
   into micromegas `InMemorySink`, and decoding the thread blocks gives one begin/end async span event
@@ -164,6 +165,9 @@ upstream builder knob.
 
 ## Definition of done
 
+- Offline gates (no keys, no human): `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` /
+  `cargo test` green from `rust/`, including `rust/fontaine-core/tests/{models,accounts}.rs`,
+  `rust/fontaine/tests/{headless_smoke,headless_contract,telemetry_micromegas,telemetry_otlp}.rs`.
 - Spike completes a streamed prompt + tool round-trip against a mock endpoint.
 - `fontaine -p "…"` runs non-interactively and exits with the run's result.
 - Multiple accounts resolve `<account>/<model>` and route to their own endpoints; project-scope
