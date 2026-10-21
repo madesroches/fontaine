@@ -9,7 +9,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 
 ## Steps
 
-1. Cargo workspace (`rust/Cargo.toml`, micromegas layout; `[workspace.package]` sets `edition = "2024"`
+1. Cargo workspace (`rust/Cargo.toml`, micromegas layout, `members = ["*"]` with `exclude = ["target", ".*"]` so a second build with `rust/target/` present still resolves; `[workspace.package]` sets `edition = "2024"`
    and `rust-version = "1.97.1"`, and `rust/rust-toolchain.toml` pins channel ≥ 1.97.1 to match rig
    0.45.0; CI installs that toolchain), crate skeletons under `rust/`
    (`fontaine`, `fontaine-core`, `fontaine-tools`, `fontaine-guardian`, `fontaine-agents`,
@@ -22,7 +22,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    project-local `.fontaine/settings.local.toml` (user trust only while `git` reports it untracked
    or ignored; otherwise project scope), project `.fontaine/settings.toml`, user file; scalars by
    precedence, lists by union; every key a scope may not set (per the master scope table, incl.
-   project and project-local `default_mode` limited to `manual`/`dontAsk`) rejected at load. The primary
+   project and project-local `default_mode` limited to `manual`/`dontAsk`) rejected at load; `default_mode = "auto"` from any scope is a config error (exit 2) until Phase 4 step 2 lifts it, mirroring the CLI rule. The primary
    workspace root is the canonicalized launch cwd; config is read only from it. Rule strings in
    `[permissions] deny`/`ask`/`allow` are parsed into the `Tool(specifier)` grammar at load
    (`fontaine-core/src/permission_rules.rs`; an unparseable rule is a config error, exit 2; matching
@@ -50,7 +50,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    `fixture_verdict`, `mode` (default `manual`), `workspace` (files, symlinks and `cwd` materialized in a
    temp root), plus optional request-context fields; `kind` = `guardian` | `pipeline` |
    `scanner` selects the component a case scores — field list and per-kind scoring in the master
-   Testing Strategy) and scoring any guardian model
+   Testing Strategy; `pipeline` `expected` ∈ `allow` | `deny` | `prompt`, `expected_tier` from the master tier enum) and scoring any guardian model
    config; CI runs `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture`
    from `rust/` — offline, deterministic verdict fixtures — so it is green before the guardian
    exists.
@@ -66,13 +66,13 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    door (pitch, install, quickstart — the quickstart leads with a local Ollama agent + guardian
    setup) linking into `docs/` — not a second copy of it. Add a short root `CONTRIBUTING.md`
    (build/test commands, branch and commit rules, how to submit golden-dataset cases and red-team
-   bypasses). Create `CHANGELOG.md` with the first entry.
+   bypasses). Create `CHANGELOG.md` with the first entry. Add the docs check `rust/fontaine-core/tests/docs.rs` (see Tests).
 
 ## Files created or modified
 
 `rust/Cargo.toml`; `rust/rust-toolchain.toml`; crate skeletons for every `rust/fontaine-*` crate; `rust/fontaine/src/main.rs`;
 `rust/fontaine/src/telemetry/mod.rs`; `rust/fontaine-core/src/{config,dirs,permission_rules,trust}.rs`; `evals/` (dataset + README.md); `rust/fontaine-evals/` (runner); `CHANGELOG.md`; `CONTRIBUTING.md`;
-`docs/{index,architecture,configuration}.md`; `README.md`; `.github/workflows/ci.yml`.
+`docs/{index,architecture,configuration}.md`; `README.md`; `rust/fontaine-core/tests/docs.rs`; `.github/workflows/ci.yml`.
 
 ## Tests owned by this phase
 
@@ -86,9 +86,9 @@ scorecard is the differentiating asset, so its harness is built first, not last.
   > user precedence for scalars and union for lists; a tracked `settings.local.toml` loads as project
   scope; endpoint/credential keys rejected from project-local; project and project-local
   `default_mode` accept only `manual`/`dontAsk` (`"plan"`, `"acceptEdits"`, `"auto"` rejected from both); `[permissions] allow` / `additional_directories`
-  rejected from project scope; unparseable rule strings rejected.
+  rejected from project scope; unparseable rule strings rejected; `default_mode = "auto"` rejected (exit 2) from user, project-local and CLI scope too until Phase 4.
 - **dirs**: `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR` override the `dirs` defaults (all tests use temp
-  dirs); owner-only files are 0600 on Unix and current-user-only on Windows (`#[cfg(windows)]` ACL test).
+  dirs); owner-only files are 0600 on Unix and current-user-only on Windows (`#[cfg(windows)]` ACL test, compile-checked locally with the windows-gnu target and executed in the windows CI job).
 - **trust store**: trust recorded for one root does not trust another; the record is written under
   the data dir, never inside the workspace.
 - **telemetry config**: every `[telemetry]` key rejected from project and project-local scope except
@@ -97,14 +97,16 @@ scorecard is the differentiating asset, so its harness is built first, not last.
   2); disabled means no exporter — with `enabled = false` nothing is built even when
   `MICROMEGAS_TELEMETRY_URL` / `OTEL_EXPORTER_OTLP_ENDPOINT` are set.
 - Golden-dataset schema validation; runner green against verdict fixtures.
+- **docs** (`rust/fontaine-core/tests/docs.rs`, run by `cargo test`): every ```toml block in `docs/*.md` parses through the config loader (as user-scope settings); every relative link in `docs/`, `README.md` and `evals/README.md` resolves; any `TODO` / `TBD` in those files fails the test.
 
 ## Definition of done
 
-- `cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test` green in CI on ubuntu, macOS and Windows.
+- Local offline gate: `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test` green from `rust/`, plus `cargo clippy --all-targets --target x86_64-pc-windows-gnu` (or `cargo check --all-targets --target x86_64-pc-windows-gnu`) where the toolchain supports it.
+- Needs a human (not runnable by the agent, which cannot push): push the branch and confirm the CI matrix is green on ubuntu, macOS and Windows.
 - `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` (from `rust/`)
   passes on the fixture set, offline, with no guardian in the tree.
 - `docs/index.md`, `docs/architecture.md`, `docs/configuration.md`, `evals/README.md` exist with
-  real content (no TODO placeholders), links resolve; `docs/configuration.md` covers the scope
+  real content; `rust/fontaine-core/tests/docs.rs` is green (toml blocks parse, links resolve, no `TODO`/`TBD`); `docs/configuration.md` covers the scope
   stack, workspace trust and `[telemetry]` (incl. its required endpoint and key).
 - The config, trust-store and telemetry-config tests above are green; no exporter is built in this
   phase.

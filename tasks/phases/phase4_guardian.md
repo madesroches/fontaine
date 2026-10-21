@@ -22,7 +22,9 @@ models typical of subscription catalogs, model-agnostic (seeds for the scorecard
 V4.1 Flash, GLM-5.3 Flash, Qwen3.8 Flash class. **Typed-decision (System One) class** (Jev, Laya, DiffusionGemma) join the ranked list only as candidates that must pass benchmarking, with thresholds recalibrated on Fontaine's golden set (see Decisions, 2026-10-21). Changing
 the guardian model must be **easy but never automatic**: explicit `guardian.model` config or a
 `/guardian-model` command; if a pinned guardian model is unavailable, Fontaine **fails loudly and
-asks** — no silent substitution. For providers with no catalog match (custom openai-compatible
+asks** — no silent substitution. In headless `-p` nothing can ask: an unavailable pinned guardian
+makes every `auto` adjudication `Deny GuardianUnavailable`, with a notice in the `init` event and on
+stderr. For providers with no catalog match (custom openai-compatible
 endpoints / Ollama): only models explicitly set via `guardian.model` are used; if unset, fall back
 to the main model with a one-time notice. An empty list (the state before the scorecard run) takes
 the same fallback.
@@ -121,9 +123,8 @@ the guardian never goes fully off, it narrows (no zero-guardian mode exists — 
 mode is not resurrected here; minimal adjudicates, just less):
 - A **reduced ruleset + reduced adjudication context** (smaller `AdjudicationRequest`: trimmed
   intent digest + session facts) run on a **cheap validated model**. Permitted **only when
-  containment is Fontaine-verified**: launched under `@anthropic-ai/sandbox-runtime` (srt) /
-  bubblewrap (the Phase-5 sandbox-interop path), or an explicit `--in-container` CLI flag (a user
-  assertion — Phase 1 CLI table) **backed by an actual runtime probe** (cgroup-namespace check, `/.dockerenv`). A
+  containment is Fontaine-verified**: an explicit `--in-container` CLI flag (a user
+  assertion — Phase 1 CLI table) **backed by an actual runtime probe** (Linux cgroup-namespace check and `/.dockerenv`; macOS and Windows always report "not contained", so minimal falls back to `full` there). Detecting an srt/bubblewrap launch (`@anthropic-ai/sandbox-runtime`) belongs to the Phase 5 sandbox roadmap slot. A
   failed or missing probe fails closed — minimal refuses to load and falls back to `full` with a
   notice. **Default `full`.** Never settable by project settings: profile is a loosening knob, so
   the existing trust-asymmetry rule extends to it — user-scope only.
@@ -157,7 +158,7 @@ mode is not resurrected here; minimal adjudicates, just less):
    `fontaine.guardian` span in `fontaine-guardian` (which depends on `tracing` only), guardian model
    usage attributed `query_source = guardian` through its ancestor span, and
    `fontaine.guardian.fail_closed.count` by reason. Shipped default mode
-   flips `manual` → `auto` here. Headless `-p` semantics for `auto`: Escalate and
+   flips `manual` → `auto` here, and the pre-Phase-4 restriction (`default_mode = "auto"` as a config error, `--permission-mode auto` as a usage error) is removed. Headless `-p` semantics for `auto`: Escalate and
    loop-breaker outcomes become Deny returned to the agent; the run continues.
 3. TUI denial UX: inline denial rendering, `/denied` retry list, `/permissions` rule editor,
    `/model` and `/guardian-model` switches, Escalate-verdict prompts.
@@ -178,8 +179,8 @@ mode is not resurrected here; minimal adjudicates, just less):
 5. Minimal profile implementation: profile resolution (`[guardian] profile`, user-scope only; only
    `full`/`minimal` validate) with the reduced ruleset and trimmed `AdjudicationRequest` on a cheap
    validated model (`rust/fontaine-guardian/src/profile.rs`); the runtime containment probe
-   (cgroup-namespace check, `/.dockerenv`, detection of an srt/bubblewrap launch; always "not
-   contained" on Windows) in `rust/fontaine-core/src/containment.rs`, with the `--in-container` CLI flag as an input that is
+   (Linux cgroup-namespace check and `/.dockerenv`; macOS and Windows always report "not
+   contained"; srt/bubblewrap launch detection is deferred to the Phase 5 roadmap slot) in `rust/fontaine-core/src/containment.rs`, with the `--in-container` CLI flag as an input that is
    never sufficient alone; on probe failure or missing verification, resolve to `full` and emit a
    one-time notice.
 6. Docs — finish `docs/guardian.md`: threat model (guardian as attack surface: no tools,
@@ -244,8 +245,9 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   turn; the Shift+Tab cycle now includes `auto`.
 - Integration: scripted-endpoint auto-mode runs through `fontaine -p`
   (`rust/fontaine/tests/auto_headless.rs`; agent and guardian on separate scripted
-  `openai-compatible` accounts), including the fail-closed cases above end to end (guardian endpoint
-  500s, resets, or drops mid-stream ⇒ tool call denied). The first rig-cassette recording of an
+  `openai-compatible` accounts, built with the Phase-1 `common/mod.rs` helper), including the fail-closed cases above end to end (guardian endpoint
+  500s, resets, or drops mid-stream ⇒ tool call denied) and an unavailable pinned guardian in headless
+  `auto` ⇒ every adjudication `Deny GuardianUnavailable`, with the notice in the `init` event and on stderr. The first rig-cassette recording of an
   auto-mode session needs live keys and a human; once committed, replay runs in CI.
 - Eval: golden-set scoring incl. the `minimal` column — run manually/nightly, never CI-gated.
 
@@ -255,7 +257,8 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   `cargo test` green, including scripted-endpoint auto-mode runs, the fail-closed tests, the Tier-0.5
   counting-guardian test, the ask-in-auto and plan-mode guardian-branch pipeline tests, the
   allow-rules-in-auto and ledger-only request tests, and the
-  TUI `/denied` test; shipped default mode is `auto`; CHANGELOG entry appended.
+  TUI `/denied` test; shipped default mode is `auto`; `rust/fontaine-core/tests/docs.rs` green with the
+  Phase 4 docs in place; CHANGELOG entry appended.
 - Needs live keys and/or a human (explicitly not CI): Manual Verification items 2–4 (auto-mode
   judgment, retry UX, Ollama model-agnostic parity); the live-model scorecard run and its
   publication, linked from docs; the first auto-mode cassette recording; the `claude -p` baseline

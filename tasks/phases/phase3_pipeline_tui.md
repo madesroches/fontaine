@@ -69,7 +69,7 @@ Phase 4 wires `auto`. The pipeline also gets its step-1a slot: a `PreToolUseDeci
 hooks, driven in this phase only by test doubles — user hooks load in Phase 5.
 
 `GateDecision` is the one typed record per call: written to the audit log first, then projected to
-the `tool_decision` telemetry event and the headless `gate_decision` event.
+the `tool_decision` telemetry event and the headless `gate_decision` event; all three carry the master's one tier enum unchanged.
 
 ## Steps
 
@@ -137,14 +137,14 @@ the `tool_decision` telemetry event and the headless `gate_decision` event.
   skips the prompt in `manual`; "allow session" lasts only for the session, "always allow" writes
   exactly the shown rule to the user file; `--allowed-tools` / `--disallowed-tools` act as CLI rules;
   a project-scope allow rule is rejected at load.
-- **windows** (`#[cfg(windows)]`, windows CI job): critical-path prompts for a drive root and for
+- **windows** (`#[cfg(windows)]`; compile-checked locally with `cargo check --all-targets --target x86_64-pc-windows-gnu`, executed in the windows CI job): critical-path prompts for a drive root and for
   `%USERPROFILE%` targets; path-rule matching is case-insensitive and resolves junctions; protected
   paths match across separators and case.
 - **hook slot**: with a test-double decision source, `updated_input` is what the floor, rules and
   audit see; deny > ask > allow; an `allow` never passes the floor; error / timeout / malformed ⇒ no
   decision.
 - **audit/telemetry consistency**: over the mode × risk-class matrix, each audit entry has exactly one
-  matching `tool_decision` event and one headless `gate_decision` event (same ids, tier, decision);
+  matching `tool_decision` event and one headless `gate_decision` event (same ids; `tier` and `decision` equal as strings);
   the audit log is still written when telemetry is off or disabled by the project.
 - **Tier 0.5 pre-classifier**: the golden adversarial set from master Testing Strategy — the
   fail-through soundness property must hold for anything not fully parsed as one simple command; each
@@ -152,7 +152,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event.
   prompt plus an audit record with `tier = tier05`; `ls ../` → one human prompt (interim; the
   counting-guardian form is owned by Phase 4); a relative path under an out-of-scope `cwd` falls
   through.
-- **headless** (`rust/fontaine/tests/pipeline_headless.rs`, scripted `openai-compatible` endpoint):
+- **headless** (`rust/fontaine/tests/pipeline_headless.rs`, scripted `openai-compatible` endpoint via the Phase-1 `common/mod.rs` helper):
   every would-prompt outcome becomes a Deny returned as the tool_result, the run continues, exit
   code 0.
 - **TUI** (`rust/fontaine-tui/tests/`): ratatui `TestBackend` with injected key events and a scripted
@@ -165,7 +165,8 @@ the `tool_decision` telemetry event and the headless `gate_decision` event.
 - Offline gates (no keys, no human): `cargo fmt` / `cargo clippy --all-targets -- -D warnings` /
   `cargo test` green, including the scripted-endpoint headless, pipeline, permission-rule, and TUI tests above; interim default is
   `manual`; no mode or allow rule reaches past the deterministic floor; `docs/permissions.md` + pipeline diagram
-  match the shipped step order; CHANGELOG entry appended.
+  match the shipped step order and `rust/fontaine-core/tests/docs.rs` is green; CHANGELOG entry appended.
+- Needs a human (the agent cannot push): push the branch and confirm the windows CI job runs the `#[cfg(windows)]` tests green.
 - Needs a human and live keys (not CI): Manual Verification item 1 passes (TUI manual approval
   flow, end to end); the first rig-cassette recording of a manual-mode session via `cassettes.rs`
   (`RIG_PROVIDER_TEST_MODE=record`, account `base_url` at the cassette proxy; once committed it

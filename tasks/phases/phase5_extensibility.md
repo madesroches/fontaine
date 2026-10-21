@@ -17,8 +17,8 @@ in the main session, and their results return to the parent as a summary.
 - **The `agent` tool** (Claude Code's `Agent`/`Task` tool): a first-party tool that spawns a subagent. Each subagent is
   a separate **rig-agent** conversation (`AgentBuilder` + `AgentRun`, its own `rig-memory` context), with its own
   selectable model and a **per-agent-type restricted tool registry** drawn from Fontaine's risk registry — a subagent's
-  registry is a subset of the parent's, never a superset. N subagents run concurrently in the background; the parent
-  can list them, stream their status, interrupt/kill any one, and receives summarized results back.
+  registry is a subset of the parent's, never a superset. N subagents run concurrently in the background and the parent receives summarized results back. Listing,
+  status streaming and interrupt/kill/pause are TUI-only user controls (the agents panel), not model tools.
 - **Results re-enter through the gate.** A subagent's report comes back to the parent as an ordinary *tool result*, so
   when scanning is enabled it passes the tool-result scanner (PromptGuard 2 default, off by default) like any other
   result — only then is injection text surviving inside a subagent's output flagged before the parent reads it. The
@@ -36,7 +36,7 @@ in the main session, and their results return to the parent as a summary.
   there — so a `manual` parent can never produce a silently-adjudicating `plan` child. The child's mode is
   not fixed at spawn: it is re-evaluated on every call as the tighter of its own setting and the
   parent's current mode.
-  (iii) **Parent↔child and peer messages** (Claude Code's `SendMessage`-style) go through the same guardian gate — the
+  (iii) **Parent↔child and peer messages** (the `send_message` tool, Claude Code's `SendMessage`-style) go through the same guardian gate — the
   2026-10-20 decision, which stands and now applies in v1.
 - **Budgets.** `[agents] max_parallel` (default small, e.g. 4) plus per-subagent token/cost budgets, so fan-out cannot
   silently multiply guardian round-trips and model spend (Claude Code documents that each subagent spends tokens of
@@ -68,7 +68,7 @@ Built to the master plan's §User hooks, into the step-1a slot Phase 3 left: com
 event goes to the handler as JSON on stdin (session id, agent id, tool, args, mode, roots); the
 answer comes back as JSON on stdout or exit code 2 (= deny, stderr as the reason). `pre_tool_use`
 returns `decision` (deny / ask / allow), `updated_input`, `guardian_context`; `post_tool_use` may
-append a note to the tool result the agent sees; `permission_denied` may return `retry` (the agent is
+append a note to the tool result the agent sees (a `ResultPipeline` stage that runs after the Phase 6 scanner stage); `permission_denied` may return `retry` (the agent is
 told it may retry, as with `/denied` → `r`). Handlers run (through Git Bash on Windows) with the scrubbed child environment and a
 `timeout_secs` cap, in a `fontaine.hook` span. A user-scope `allow` in `auto` follows Claude Code: a
 narrow matcher skips the guardian, a broad one is suspended. Every subagent tool call runs the same hooks.
@@ -122,17 +122,26 @@ transcript.
    `fontaine.session.count{start_type=resume}`. (Headless `-p` moved to Phase 1 step 2 — user
    decision 2026-10-21.)
 3. `fontaine-agents`: `agent` spawn tool over rig-agent — concurrent background subagents with
-   own context/model/per-type restricted registries; list/stream-status/interrupt; spawn call
+   own context/model/per-type restricted registries; list/stream-status/interrupt as TUI-only controls; spawn call
    gated as a pipeline request; subagent tool calls re-enter the permission pipeline with
-   one-way mode inheritance (child mode ≤ parent mode); agent-to-agent messages through the same
-   guardian gate; results returned as ordinary tool results through the shared result-handling hook (where the
-   Phase 6 scanner attaches); `[agents]` budgets
+   one-way mode inheritance (child mode ≤ parent mode); agent-to-agent messages (`send_message`) through the same
+   guardian gate; results returned as ordinary tool results through `ResultPipeline` (Phase 2; the Phase 6 scanner
+   stage attaches there); `[agents]` budgets
    enforced; TUI background-agents panel (status, kill/pause, per-agent decisions). Telemetry:
    `fontaine.subagent` spans (`agent.id` / `agent.type`) parented to the spawning tool call,
    `subagent` lifecycle events (incl. `budget_exhausted`), `mcp_server_connection` and
    `fontaine.mcp.call` (server and tool names only under `log_tool_details`, otherwise
    `"third-party"`).
-4. User hooks (design above).
+4. User hooks (design above); `post_tool_use` attaches to `ResultPipeline` as its hook stage.
+
+   New registered model tools this phase adds (each wrapped; the Phase-2 choke-point test's exact set is
+   extended to the Phase-2 table plus exactly these, plus dynamic `mcp__<server>__<tool>` names):
+
+   | Tool | RiskClass | Args |
+   |---|---|---|
+   | `agent` | Arbitrary | `agent_type`, `prompt`, optional `model`; withheld from subagents at the depth cap |
+   | `skill` | ReadOnly | `name` (resolved against the start-time index) |
+   | `send_message` | Arbitrary | `to` (agent id), `message` |
 5. Extension files (design above): loader in `fontaine-core/src/extensions.rs`; `skill` tool and
    skill slash commands; agent files into the agent-type registry; output styles.
 6. Docs — `docs/mcp.md`: declaring stdio / streamable-HTTP servers in config, project servers
@@ -153,8 +162,9 @@ transcript.
 Amendments A3–A4 (analysis-strategic-verdict; folded in per user decision 2026-10-21): a
 **sandbox-interop spike** for running Fontaine under Anthropic's open-source
 `@anthropic-ai/sandbox-runtime` (srt) / bubblewrap — complements, does not replace, the guardian
-(sandbox = blast radius, guardian = intent). Fontaine-verified srt/bubblewrap launch is what
-unlocks `[guardian] profile = "minimal"` (see the Phase 4 plan). When taken, its deliverables:
+(sandbox = blast radius, guardian = intent). Phase 4 unlocks `[guardian] profile = "minimal"` through
+`--in-container` plus the Linux runtime probe; this slot adds srt/bubblewrap launch detection to that
+probe (`rust/fontaine-core/src/containment.rs`) as a second verification route. When taken, its deliverables:
 the spike, the **escape-detection test suite** (mount/umount, docker.sock, cgroup-control writes,
 bind-mount symlink escape, proxy bypass → denied even under minimal — Manual Verification item 6),
 and **`docs/sandboxing.md`** documenting the integration path, the container containment probe
@@ -175,9 +185,10 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   composite); mode-inheritance invariant (child ≤ parent, never looser), including a test where the
   parent switches mode mid-run and the child's next call follows the tighter mode; per-type registry
   is a subset of the parent's; budget caps stop a subagent; subagent reports return as ordinary
-  tool results through the shared result-handling hook; `SendMessage`-style peer messages hit the
+  tool results through `ResultPipeline`; `send_message` peer messages hit the
   same gate.
-- Parallel orchestration (deterministic `test_utils` models or cassettes): spawn N subagents, kill
+- **choke point** (`rust/fontaine-tools/tests/choke_point.rs`, extended): the exact registered set is the Phase-2 table plus `agent` (Arbitrary), `skill` (ReadOnly) and `send_message` (Arbitrary) — no other names, no duplicates, every one with a `RiskClass`; no list/status/kill tool is registered for the model.
+- Parallel orchestration (deterministic `test_utils` models or cassettes; scripted endpoints via the Phase-1 `common/mod.rs` helper): spawn N subagents, kill
   one, assert the others complete and every tool call has a gate decision in the audit log keyed by
   agent id.
 - MCP (`rust/fontaine-mcp/tests/mcp_registration.rs`): servers from config register wrapped `Arbitrary`; a declared `readOnlyHint` never earns a
@@ -213,7 +224,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   classifier for a narrow matcher and is suspended for a broad one.
 - Item 6 ships **with the sandbox slot when taken** (minimal-profile escape denies + probe
   fail-closed); the build steps above do not depend on it.
-- `docs/mcp.md`, `docs/agents.md`, `docs/hooks.md`, `docs/extensions.md` complete; every new
+- `rust/fontaine-core/tests/docs.rs` green with `docs/mcp.md`, `docs/agents.md`, `docs/hooks.md`, `docs/extensions.md` in place; every new
   config key documented at ship.
 - Trust, hooks, extensions, persistence and telemetry tests above green.
 - CHANGELOG entry appended.

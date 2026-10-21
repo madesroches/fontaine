@@ -45,6 +45,11 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
   Fontaine-added, or MCP-imported — is registered wrapped (registry-level wrapping covers built-ins,
   per-root instances and MCP), so nothing can execute without passing the gate. rig
   `AgentHook::on_dispatch` is not used for permission decisions; rig hooks stay bookkeeping-only.
+- **ResultPipeline** (`fontaine-tools/src/result_pipeline.rs`): the post-call step in `GuardedTool::call`
+  after the inner tool returns; every tool result — built-in, MCP, `agent` report — passes through it
+  before the agent sees it, in fixed order: (Phase 6) the tool-result scanner, then (Phase 5)
+  `post_tool_use` user hooks. Both stages are optional and absent in this phase (the pipeline is the
+  identity); later phases attach stages to it rather than adding their own hook points.
 - **Session-state carrier**: the pipeline's inputs (mode, workspace roots, merged permission rules
   and session grants, the session ledger handle, audit-log sink, and the human-approval callback;
   the user-hook runner joins in Phase 5) live in a shared `Arc<SessionState>` owned by
@@ -88,7 +93,8 @@ context.
 
 1. `fontaine-tools`: `RiskClass` registry; the `ToolGate` trait; generic `GuardedTool<T: Tool>` decorator over `rig_core::tool::Tool`, a `DynamicTool`
    wrapper path for MCP; `fontaine-core` holds the shared `Arc<SessionState>` and the `ToolGate` impl injected at registration; register exactly this tool set
-   (the choke-point test asserts it: no other names, no duplicates, `delete`/`move` absent):
+   (the choke-point test asserts it: no other names, no duplicates, `delete`/`move` absent; the Phase-1
+   test-only `echo` spike tool is removed here; Phase 5 extends the set and the test):
 
    | Tool | RiskClass | Implementation |
    |---|---|---|
@@ -135,7 +141,7 @@ context.
 
 ## Files created or modified
 
-`rust/fontaine-tools/src/{lib,gate,guarded,risk,scope,builtins,webfetch}.rs`;
+`rust/fontaine-tools/src/{lib,gate,guarded,result_pipeline,risk,scope,builtins,webfetch}.rs`;
 `rust/fontaine-core/src/{lib,session,ledger,hooks}.rs`; `docs/tools.md`, `docs/architecture.md`,
 `docs/configuration.md`, `docs/telemetry.md`, `docs/index.md`.
 
@@ -147,13 +153,14 @@ context.
   `cut`); the exact registered tool set from the step-1 table (no duplicate names, `delete`/`move`
   absent); risk-class registration of every built-in and MCP tool — the choke-point test that fails
   if any registered tool is missing a risk class.
+- **ResultPipeline** (`rust/fontaine-tools/tests/`): every tool result passes through it after the inner tool returns and before the caller sees it; with test-double stages attached in the wrong registration order, they still run scanner first, then `post_tool_use`; with no stages it is the identity.
 - GuardedTool delegation (against a fake `ToolGate`): inner tool runs exactly once, only after the gate allows; under the stub,
   an in-scope `read` is allowed, an out-of-scope `read` and every `write`/`edit`/`shell` call is denied.
 - **workspace roots** (`rust/fontaine-tools/tests/scope.rs`): a path in an `--add-dir` root is in
   scope and reaches that root's confined instance; a `shell` call whose `cwd` is in an added root
   reaches that root's `Shell` instance and is not refused by rig; a symlink from one root into another stays in
   scope, out of every root falls out; settings in an added root are not loaded.
-- **windows** (`#[cfg(windows)]`, run in the windows CI job): scope validator over drive letters, UNC
+- **windows** (`#[cfg(windows)]`; compile-checked locally with `cargo check --all-targets --target x86_64-pc-windows-gnu`, executed in the windows CI job): scope validator over drive letters, UNC
   paths, case-insensitive comparison, junction and symlink escape, and MSYS-style `/c/...` paths
   (untranslatable ⇒ out of scope); the `shell` tool launches through Git Bash.
 - **session ledger** (`rust/fontaine-core/tests/ledger.rs`): after a forced compaction the ledger
@@ -164,7 +171,7 @@ context.
   `log_tool_content`); the `shell` child environment has no telemetry credential, `MICROMEGAS_*`
   variable, configured `api_key_env` variable or `scanner_hf_token_env` variable.
 - Integration (`rust/fontaine/tests/headless_tools.rs`): `fontaine -p` against the scripted
-  `openai-compatible` endpoint completes a read-tool round-trip.
+  `openai-compatible` endpoint (built with the Phase-1 `common/mod.rs` helper) completes a read-tool round-trip.
 
 ## Definition of done
 
@@ -175,7 +182,8 @@ context.
   wrapped registry (in-scope `read` allowed by the deny-by-default stub; `write`/`shell` denied —
   nothing executes past the stub until Phase 3).
 - Choke-point test green: every registered tool has a `RiskClass`.
-- `docs/tools.md` complete for the shipped inventory; scope checks are multi-root; the ledger
+- Needs a human (the agent cannot push): push the branch and confirm the windows CI job runs the `#[cfg(windows)]` tests green.
+- `rust/fontaine-core/tests/docs.rs` green with `docs/tools.md` covering the shipped inventory; scope checks are multi-root; the ledger
   survives compaction.
 - CHANGELOG entry appended.
 - Log the phase in the master plan's Progress log.

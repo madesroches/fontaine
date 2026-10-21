@@ -19,11 +19,11 @@ Context for the choice: `research/research-llamafirewall.md` §7.2 (PG2 recall @
 English; 19–92 ms — a cheap first layer, not a judge; AgentDojo evidence that small detectors
 catch little beyond explicit jailbreak phrasing, which is why this scans results *for the main
 agent's benefit* and never substitutes for the guardian). Subagent reports flow through this same
-path — see the Phase 5 plan.
+path (`ResultPipeline`, Phase 2) — see the Phase 5 plan.
 
 ## Steps
 
-1. Tool-result injection scanner: default scanner is **PromptGuard 2 86M via ONNX (`ort` crate)**
+1. Tool-result injection scanner, attached as the first stage of `ResultPipeline` (Phase 2; runs before Phase 5's `post_tool_use` hooks): default scanner is **PromptGuard 2 86M via ONNX (`ort` crate)**
    (a sidecar process and the cheap-LLM pass are the fallback / BYO options), off by default,
    configurable (`[guardian] scan_tool_results`). Surface the gated-download / Llama 4 Community
    License caveat at first enable; expose a BYO-scanner interface for license-clean setups.
@@ -57,7 +57,7 @@ path — see the Phase 5 plan.
   benign results unflagged; annotation present before the agent reads the result).
 - BYO-scanner interface: a test scanner plugs in via the trait; default-off means zero behavior
   change until enabled.
-- Subagent reports (ordinary tool results from Phase 5) pass the scanner when enabled: an
+- Subagent reports (ordinary tool results from Phase 5) pass the scanner stage of `ResultPipeline` when enabled: an
   injection-bearing report is flagged before the parent reads it.
 - PromptGuard 2 inference test behind the `pg2` cargo feature, skipped unless `FONTAINE_PG2_MODEL`
   points at a local model directory — never part of default CI; every other behavior (flag
@@ -74,6 +74,6 @@ path — see the Phase 5 plan.
   flag with the license caveat surfaced; the `pg2`-feature PromptGuard 2 inference test run against a
   downloaded model (`FONTAINE_PG2_MODEL`).
 - Off remains the default.
-- `docs/guardian.md` scanning section complete.
+- `rust/fontaine-core/tests/docs.rs` green with the `docs/guardian.md` scanning section in place.
 - CHANGELOG entry appended.
 - Log the phase in the master plan's Progress log.

@@ -37,7 +37,7 @@ rename or removal bumps it) and `session_id`. Event types:
   their scopes, workspace trust state, allow rules suspended by `auto`.
 - `assistant` — a complete assistant message; with `--include-partial-messages`, also `assistant_delta`.
 - `tool_call` — `tool_use_id`, tool, args.
-- `gate_decision` — `tool_use_id`, `tier` (same values as the audit log), `decision`, `rule`, and for
+- `gate_decision` — `tool_use_id`, `tier` (the master tier enum, equal to the audit record's), `decision`, `rule`, and for
   guardian decisions `explanation`, `confidence`, `guardian_model`.
 - `tool_result` — `tool_use_id`, success, the result text as the agent receives it.
 - `result` — `subtype` (`success` | `error_max_turns` | `error_max_budget` | `error_run`), result
@@ -69,11 +69,11 @@ upstream builder knob.
    OpenAI-compatible base URLs), resolve `<account>/<model>` references (unknown account or model
    is a config error, exit 2), resolve credentials (env var / stored-credentials file, plus the
    `fontaine auth login` subcommand), and expose main-model + guardian-model handles. Spike: streaming one prompt to stdout via rig, with
-   a tool call round-trip, to validate rig's ergonomics before building on it.
+   a tool call round-trip through a side-effect-free, test-only `echo` tool (no gate exists until Phase 2; Phase 2 removes it when it registers the wrapped tool set), to validate rig's ergonomics before building on it.
 2. Headless surface `fontaine -p "task"` on the same core — a non-interactive run driven by the CI
    runner, the Phase-0 golden-dataset eval harness, and the integration tests, so the core is
    testable headlessly from day one (the `clap` entry from Phase 0 step 1 wires to a minimal rig-agent
-   `AgentBuilder` loop with the spike tool — enough for `--max-turns`, multi-turn stream-json input
+   `AgentBuilder` loop with the `echo` spike tool — enough for `--max-turns`, multi-turn stream-json input
    and the tool round-trip; Phase 2 step 2 replaces it with full session orchestration). Headless semantics (Claude Code
    parity; enforced by the pipeline in Phase 3 for manual/dontAsk and Phase 4 for auto): nothing
    prompts — every would-prompt outcome (ask-rule match, Escalate verdict,
@@ -88,7 +88,7 @@ upstream builder knob.
    |---|---|---|
    | `fontaine` | interactive TUI | 3 |
    | `fontaine -p "task"` | headless run; result on stdout | 1 |
-   | `--permission-mode <manual\|acceptEdits\|plan\|auto\|dontAsk>` | session mode, overriding `[permissions] default_mode`; Fontaine's five modes, no bypass; `auto` is a usage error (exit 2) until the guardian ships | 1 (`auto` 4) |
+   | `--permission-mode <manual\|acceptEdits\|plan\|auto\|dontAsk>` | session mode, overriding `[permissions] default_mode`; Fontaine's five modes, no bypass; `auto` is a usage error (exit 2) until the guardian ships, as is `[permissions] default_mode = "auto"` from any scope (config error, exit 2) | 1 (`auto` 4) |
    | `--model <account>/<model>` | overrides `[model] model` | 1 |
    | `--output-format text\|json\|stream-json` | output per the I/O contract | 1 |
    | `--input-format text\|stream-json` | `stream-json`: user messages as JSONL on stdin | 1 |
@@ -130,6 +130,7 @@ upstream builder knob.
 `rust/Cargo.toml` (rig + telemetry pins); `rust/fontaine-core/src/models.rs` (plus the accounts/credentials config types and `auth login`); `rust/fontaine/src/{main,headless}.rs`
 (`-p` flag wiring, I/O contract); `rust/fontaine/src/telemetry/{micromegas,otlp,span_bridge}.rs`;
 `rust/fontaine/tests/{headless_smoke,headless_contract,telemetry_micromegas,telemetry_otlp}.rs`;
+`rust/fontaine/tests/common/mod.rs` (shared scripted-wiremock helper);
 `docs/{configuration,architecture,headless,telemetry,index}.md`, `README.md`.
 
 ## Tests owned by this phase
@@ -145,15 +146,18 @@ upstream builder knob.
   key rejected; missing guardian-account credential ⇒ guardian unavailable.
 - Integration surface: the headless `-p` run is the driver for every later integration test. The
   offline driver is an `openai-compatible` account whose `base_url` is a scripted `wiremock`
-  endpoint; `rust/fontaine/tests/headless_smoke.rs` runs `fontaine -p` against it (streamed prompt,
+  endpoint, built by the shared helper `rust/fontaine/tests/common/mod.rs`: a scripted
+  openai-compatible (and catalog-priced `kind = "openai"`, see the telemetry bullet) wiremock builder
+  with a turn script, tool-call responses, `usage` fields, a guardian-verdict helper, and temp
+  `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR` setup. Later phases reuse it; `rust/fontaine/tests/headless_smoke.rs` runs `fontaine -p` against it (streamed prompt,
   tool-call round-trip, exit codes 0/1/2) and covers CLI parsing (`--permission-mode auto` rejected
   before Phase 4; no bypass value). Library-level tests (`rust/fontaine-core/tests/{models,accounts}.rs`)
   use `rig_core::test_utils` models.
 - **headless contract** (`rust/fontaine/tests/headless_contract.rs`): `json` and `stream-json` output
   validate against the schema snapshot for `schema_version` 1; `init` and `result` present;
-  `--max-turns` / `--max-budget-usd` stop with the matching subtype and exit 1; `--input-format
+  `--max-turns` / `--max-budget-usd` stop with the matching subtype and exit 1 (the budget test uses a catalog-priced account, see the telemetry bullet; `--max-budget-usd` against an unpriced `openai-compatible` model is a usage error, exit 2); `--input-format
   stream-json` drives a two-turn run; `--json-schema` fills `result.structured_output`.
-- **telemetry**: `-p` against the scripted `wiremock` `openai-compatible` endpoint returning `usage` yields `api_request` with tokens and cost; **span tree
+- **telemetry**: `-p` against the scripted `wiremock` endpoint returning `usage` yields `api_request` with tokens and cost — cost and budget tests use an account of `kind = "openai"` (or `anthropic`) whose `base_url` points at the wiremock server and whose model id is in rig's price catalog, because rig 0.45's `Catalog` prices by provider vendor and model id and a custom `openai-compatible` endpoint has no price; **span tree
   round-trip** (`telemetry_micromegas.rs`, its own test binary, `serial_test`): a nested span tree,
   inner spans closed on a different tokio worker than they opened on, passes through the `SpanBridge`
   into micromegas `InMemorySink`, and decoding the thread blocks gives one begin/end async span event
@@ -172,7 +176,7 @@ upstream builder knob.
 - `fontaine -p "…"` runs non-interactively and exits with the run's result.
 - Multiple accounts resolve `<account>/<model>` and route to their own endpoints; project-scope
   `[accounts]` is rejected; bad guardian-account credentials fail closed.
-- Provider docs examples compile-check against the config loader's schema tests.
+- Provider docs examples are covered by `rust/fontaine-core/tests/docs.rs` (toml blocks parse through the config loader, links resolve, no `TODO`/`TBD`).
 - `json` / `stream-json` output matches the versioned schema; `docs/headless.md` documents it.
 - With telemetry enabled, the micromegas backend exports a span tree with correct parentage
   (`InMemorySink` test) and the OTLP backend exports to a mock collector; `docs/telemetry.md` exists.
