@@ -29,7 +29,8 @@ product be plugged into an existing harness, making a guardian-native harness re
   - **CodeShield** — Semgrep/regex static analysis of generated code (8 languages, 50+ CWEs),
   - regex/custom scanners.
 - **But**: it is a **Python middleware library** for agent builders — not a coding harness, no
-  permission-mode UX, no deny/escalate-to-human verdicts, no prose intent rules, no tool-call
+  permission-mode UX, no built-in human-approval flow (a HUMAN_IN_THE_LOOP_REQUIRED verdict
+  exists, but acting on it is the caller's job), no prose intent rules, no tool-call
   choke point shipped for terminal coding agents. Integrations shipped: OpenAI Agents SDK and
   LangChain only. It guards *your* agent runtime; using it with OpenCode/Goose means writing
   that integration yourself.
@@ -59,8 +60,8 @@ product. Already cited in the plan.
 
 **Invariant Guardrails → Snyk (Snyk Labs acquired/partnered; mcp-scan became Snyk Agent Scan)**
 - Invariant Guardrails: rule-based, contextual policy enforcement deployed **between the agent and
-  the MCP server** — "state-of-the-art guardrailing for MCP and agentic AI."
-  (invariantlabs.ai/guardrails; github.com/invariantlabs-ai/invariant)
+  the MCP server** — "state-of-the-art guardrailing system for MCP and agentic AI applications".
+  (invariantlabs.ai/blog/guardrails, Apr 17 2025; github.com/invariantlabs-ai/invariant)
 - Snyk Agent Scan (successor to mcp-scan): open-source Apache-2.0 scanner; discovers MCP configs
   and skills, flags rug-pull/tool-description changes. (labs.snyk.io; pipelab.org/blog/
   best-ai-agent-security-tools-2026; pillar.security enterprise roundup, Oct 2, 2026)
@@ -87,8 +88,8 @@ PII-masking, etc.) applied to all traffic through the proxy.
 
 ## Segment D — Enterprise agent security platforms
 
-Lakera (Check Point), Protect AI, HiddenLayer, Striker, Pillar, Prompt Security, etc. — runtime
-monitoring, agent-SPM, governance dashboards. (striker.ai blog; knowbe4.com blog;
+Lakera (Check Point), Protect AI, HiddenLayer, Straiker, Pillar, Prompt Security, etc. — runtime
+monitoring, agent-SPM, governance dashboards. (straiker.ai/blog; knowbe4.com blog;
 giskard.ai/knowledge/ai-guardrails-comparison-2026; folio3.com roundup)
 - Sales motion is CISO/enterprise, SaaS, per-seat. Not competitors for a dev's terminal, but they
   define the vocabulary ("agent firewall," "runtime enforcement") Fontaine will be compared in.
@@ -115,13 +116,13 @@ giskard.ai/knowledge/ai-guardrails-comparison-2026; folio3.com roundup)
 
 | Layer | Product examples | Sees tool-call intent + repo state? | Coding-agent UX? | Open? |
 |---|---|---|---|---|
-| Harness-native guardian | Claude Code classifier, Codex reviewer | ✓ | ✓ | ✗ |
+| Harness-native guardian | Claude Code classifier, Codex reviewer | ✓ | ✓ | ✗ (Claude Code classifier closed; Codex reviewer code + policy OSS in-tree in `codex-rs/core/src/guardian/`, model closed/OpenAI-hosted, never local) |
 | **Harness-native guardian (open)** | **— empty — (Fontaine's cell)** | ✓ | ✓ | ✓ |
 | Guardrail framework/library | LlamaFirewall, NeMo, Guardrails AI | partial (needs integration) | ✗ | ✓ |
 | MCP boundary | Invariant/Snyk, Agent Wall | MCP calls only, rule-based | ✗ | ✓ |
 | Gateway/proxy | LiteLLM, Kong, TrueFoundry + Lakera etc. | ✗ (text traffic) | ✗ | mixed |
 | OS sandbox | srt, bubblewrap, microsandbox, E2B | ✗ (deterministic containment) | ✗ | ✓ |
-| Enterprise platform | Striker, Pillar, Protect AI… | telemetry-level | ✗ | ✗ |
+| Enterprise platform | Straiker, Pillar, Protect AI… | telemetry-level | ✗ | ✗ |
 
 **Nobody sells the open harness-native guardian.** The nearest substitutes require assembly
 (LlamaFirewall + a harness plugin) or operate at a layer that structurally cannot judge tool-call

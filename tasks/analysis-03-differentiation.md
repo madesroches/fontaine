@@ -11,13 +11,17 @@ auto mode as an open standard rather than an Anthropic service.**
 ## Differentiation axes (each verified against analysis-01/02)
 
 ### 1. Open guardian vs closed classifier — the auditability argument
-- Claude Code's classifier and Codex's reviewer are closed, server-side, tuned on vendor telemetry.
-  Users cannot see the prompt, the rules, or the failure modes; they can only trust the 89% number.
+- Claude Code's classifier and Codex's reviewer are closed-model, server-side, tuned on vendor telemetry.
+  Users cannot see the fixed prompt template — Anthropic states "the classifier's prompt is a fixed
+  template we ship" — cannot run or extend the judge on their own model, and denials return only a
+  rule label, so per-decision adjudication is unauditable locally; only aggregate, vendor-run
+  numbers are published (e.g., 0.4% false-positive and 17% false-negative rates on real actions,
+  5.7% on synthetic-exfil evals).
 - PromptArmor's demonstrations (auto-review approving malicious npm installs; connector data
   exfiltration) show **closed guardians fail silently and unaccountably**.
-- Fontaine's guardian is: a versioned `guardian_prompt.md` in the repo, prose rule lists the user
-  owns, a verdict schema with `rule` + `explanation` + `confidence` on every decision, and an
-  eval harness the user can run against *their* guardian model. **Auditable adjudication is a
+- Per the plan, Fontaine's guardian will be: a versioned `guardian_prompt.md` in the repo, prose
+  rule lists the user owns, a verdict schema with `rule` + `explanation` + `confidence` on every
+  decision, and an eval harness the user can run against *their* guardian model. **Auditable adjudication is a
   product property no closed classifier can offer** — it's the "Signal vs. SMS" argument applied
   to agent permissions.
 
@@ -29,8 +33,14 @@ auto mode as an open standard rather than an Anthropic service.**
   adjacent, EU public sector) and zero incumbents.
 
 ### 3. Prose intent-aware rules vs static allow/deny/ask
-- Every open harness (OpenCode, Goose, Crush, and the claw-code lineage — Claw Code itself is
-  retired as a museum exhibit, its active successors LazyCodex / Gajae-Code) gates with **pattern/config lists**.
+- Open, model-agnostic harnesses gate essentially with **pattern/config lists** (OpenCode, Crush,
+  and the claw-code lineage — Claw Code itself is retired as a museum exhibit, its active successors
+  LazyCodex / Gajae-Code). Goose's `smart_approve` is the nearest prior art but is only a
+  best-effort LLM read/write classification — "uses a risk-based approach to automatically approve
+  low-risk actions", with the classification "interpreted by your LLM provider" — no prose rules,
+  no per-verdict explanation, no fail-closed gate. Codex's Guardian is an LLM reviewer wired into
+  the open repo but runs a closed, OpenAI-only model. What ships nowhere is the
+  *prose-configurable + locally runnable + per-verdict-explaining* combination.
   Anthropic's own data (Aug 2026 announcement): humans approve 97% of permission prompts, catch 13.6% of dangerous ones —
   static lists are the same failure mode in config form.
 - Prose rules ("force-push allowed only when the user specifically asked for it"; "never send repo
@@ -45,9 +55,10 @@ auto mode as an open standard rather than an Anthropic service.**
   (maintenance chores since March 2026 — last functional change Jan 2026, last commit
   Aug 18, 2026; no Meta declaration — see `research-llamafirewall.md` §6). More fundamentally, AlignmentCheck is a trace *drift
   monitor*: it can halt a run, but it cannot deny one tool call pre-execution, explain the denial
-  to the agent, and keep the session running. Fontaine's choke point is architectural: **every** tool — built-in,
-  Fontaine-added, or MCP-imported — is registered wrapped in `GuardedTool`, and a test fails if any
-  registered tool lacks a risk class. The gate cannot be forgotten.
+  to the agent, and keep the session running. Per the plan, Fontaine's choke point is architectural:
+  **every** tool — built-in, Fontaine-added, or MCP-imported — will be registered wrapped in
+  `GuardedTool`, and the plan's test suite will fail if any registered tool lacks a risk class.
+  The gate cannot be forgotten.
 - Proxy/gateway guardrails (LiteLLM+Lakera etc.) see text traffic, not `{tool, args, cwd, git
   remotes, pre-session files, prior denials}`. The `AdjudicationRequest` is structurally richer
   than anything a proxy can construct. This is the deepest technical difference: **judgment
@@ -58,7 +69,11 @@ auto mode as an open standard rather than an Anthropic service.**
   not regex-on-args); everything else is adjudicated; fail-closed on every non-verdict outcome
   (error, timeout, unparseable, low-confidence-on-destructive).
 - This combination — deterministic where possible, judgment where necessary, denial where uncertain
-  — is not shipped as a coherent whole anywhere open. Claude Code has it; it's closed.
+  — is not shipped anywhere with an open, user-runnable judge. Claude Code has it, closed; Codex
+  has the same layered shape in its open repo — static ExecPolicy → fail-closed Guardian LLM
+  reviewer with a per-turn rejection circuit breaker → OS sandbox (arXiv:2609.00006 §10.2), with
+  the reviewer model and policy prompt closed and OpenAI-only (§13 documents LLM approval
+  classifiers going "from one (Claude Code) to two (Codex's Guardian)").
 
 ### 6. Denial UX as a first-class product surface
 - Denial reason fed back to the agent (it adapts), `/denied` retry list, consecutive-denial loop

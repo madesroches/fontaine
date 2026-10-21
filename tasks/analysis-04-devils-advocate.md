@@ -88,7 +88,7 @@ brand makes it the comparison everyone will reach for.
 
 ### KILL #6 — Gateway guardrails cover the compliance buyers (probability: medium)
 LiteLLM guardrails (free, with Lakera/Aporia/PII-masking), Kong/TrueFoundry/Portkey gateways, and
-enterprise platforms (Striker, Pillar, Protect AI) already sell "model-agnostic AI firewall" to
+enterprise platforms (Straiker, Pillar, Protect AI) already sell "model-agnostic AI firewall" to
 the exact buyer Fontaine's air-gapped/regulated story targets — with dashboards, audit logs, and
 procurement paperwork. An enterprise that wants governed agents buys a gateway, not a Rust CLI.
 Fontaine's local-guardian story doesn't reach the budget holder.

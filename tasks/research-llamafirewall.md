@@ -1,7 +1,7 @@
 # Research — LlamaFirewall (full deep-dive)
 
-Date: 2026-10-20. Fills the gap flagged in `analysis-05` amendment A2 ("the plan cites
-GuardAgent/CaMeL/AgentDojo but never mentions LlamaFirewall").
+Date: 2026-10-20. Fills the gap flagged in `analysis-05` amendment A2, which noted that the
+plan's research section cited GuardAgent/CaMeL/AgentDojo but never mentioned Meta's LlamaFirewall.
 Primary sources: arXiv:2505.03574 (the paper), github.com/meta-llama/PurpleLlama/tree/main/LlamaFirewall
 (README + LICENSE + commit history via GitHub API), meta-llama.github.io/PurpleLlama/LlamaFirewall
 (official docs), HuggingFace model pages.
@@ -54,8 +54,12 @@ A `LlamaFirewall` object is a **policy engine**: scanners are registered **per m
 (`Role.USER`, `Role.ASSISTANT`, tool messages), and each scan returns:
 
 ```python
-ScanResult(decision=ALLOW|BLOCK, reason="prompt_guard"|"agent_alignment"|..., score=0.95)
+ScanResult(decision=ALLOW|BLOCK|HUMAN_IN_THE_LOOP_REQUIRED, reason="prompt_guard"|"agent_alignment"|..., score=0.95)
 ```
+
+Three decision values (`ScanDecision` enum in `llamafirewall_data_types.py`): when AlignmentCheck
+fires alone (score == 1.0), `scan()` returns **HUMAN_IN_THE_LOOP_REQUIRED**, not BLOCK — the
+verdict is only returned; acting on it is the caller's job.
 
 - `scan(message)` — single message.
 - `scan_replay(trace)` — full conversation trace scanned incrementally; a trace is flagged if
@@ -77,8 +81,9 @@ ScanResult(decision=ALLOW|BLOCK, reason="prompt_guard"|"agent_alignment"|..., sc
 - Trained only on *explicit jailbreak* patterns (instruction overrides, role reassignment, token
   injection); energy-based loss for OOD precision; tokenization fix against fragmented-token /
   whitespace adversarial evasion.
-- Direct-jailbreak benchmarks (HF model card + paper §4.1 table): 86M — **recall @ 1% FPR 97.5%
-  (English)**, AUC .98 EN / .995 multilingual, 92.4ms per 512-token classification (A100).
+- Direct-jailbreak benchmarks: 86M — **recall @ 1% FPR 97.5% (English)**, multilingual AUC .995,
+  92.4ms per 512-token classification (A100) — these three agree across the HF model card and the
+  paper §4.1 table; **EN AUC differs** (.998 on the card, .98 in the paper's table).
   22M (English-only model) — recall 88.7% @1% FPR, **19.3ms**. (v1 comparison: PromptGuard 1
   recall 21.2% @1% FPR — the improvement is mostly false-positive reduction.)
 - AgentDojo: as sole defense, ASR .176 → **.075** at 0.7 pt utility cost (47.7% → 47.0%).
@@ -127,7 +132,7 @@ ScanResult(decision=ALLOW|BLOCK, reason="prompt_guard"|"agent_alignment"|..., sc
 |---|---|---|
 | What it is | detector library inside *your* agent runtime | permission engine inside *our* harness |
 | Deployment point | scanners on message roles, trace streaming | `GuardedTool` choke point: **before execution** of every non-read-only tool call |
-| Decision | ALLOW / BLOCK + score | Allow / **Deny / Escalate-to-human** + rule label + explanation fed back to the agent + confidence thresholding |
+| Decision | ALLOW / BLOCK / HUMAN_IN_THE_LOOP_REQUIRED + score | Verdict vocabulary alone is **not** the differentiator (HITL exists on both sides): the escalation is **built in** — human-approval callback + TUI prompt + mode semantics + audit entry, plus rule label, explanation fed back to the agent, and confidence thresholding; LlamaFirewall only *returns* HITL and has no approval UX (see Deny UX row) |
 | Policy language | regex + few-shot prompts + custom scanners | prose rule hierarchy (environment / hard_deny / soft_deny / allow), precedence semantics, trust asymmetry (projects can only tighten) |
 | Adjudication context | messages/trace | `AdjudicationRequest`: task intent, FONTAINE.md, tool args, cwd, **git remotes at session start, pre-session file inventory, prior denials** |
 | Deny UX | none (library returns a verdict) | inline `[Rule]` + explanation, `/denied` retry list, loop breaker, "teach the classifier" flow |
@@ -186,8 +191,9 @@ a Llama-platform priority.
    Cite their anti-proprietary argument (§2.4 of the paper) — it *is* our pitch, from Meta.
 2. **Adopt PromptGuard 2 as the default Phase-6 tool-result scanner** (user decision 2026-10-21;
    replaces the hand-rolled
-   "second cheap-model pass"): 19–92ms CPU/GPU latency, recall @1% FPR **97.5% (English)** with
-   AUC 0.98 EN / 0.995 multilingual per the HF model card and paper §4.1 table — on explicit
+   "second cheap-model pass"): 19–92ms CPU/GPU latency, recall @1% FPR **97.5% (English)** + 0.995
+   multilingual AUC (both in the HF model card and paper §4.1 table; EN AUC reads 0.998 on the
+   card, 0.98 in the paper's table) — on explicit
    jailbreaks, free. Rust options, in order of pragmatism: (a)
    ONNX Runtime via the `ort` crate (**default**, with the community ONNX ports or our own
    export); (b) tiny
@@ -225,7 +231,8 @@ a Llama-platform priority.
   commit history via api.github.com — predominantly-bot-chores evidence behind §6, latest commits 2026-08-18).
 - Models: huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M and -22M (Llama 4 Community License —
   commercial use permitted; **gated** downloads, `gated: "manual"` license acceptance required;
-  model-card recall@1% FPR 97.5% EN, AUC 0.98 EN / 0.995 multilingual;
+  model-card recall@1% FPR 97.5% EN, AUC .998 EN / .995 multilingual — the paper's §4.1 table
+  reads .98 EN for the English AUC;
   updated Apr 2025; cards say "we will look to incorporate improvements into future versions of
   Llama Prompt Guard");
   meta-llama/Llama-Guard-4-12B (also Llama 4 Community License per its LICENSE in PurpleLlama,

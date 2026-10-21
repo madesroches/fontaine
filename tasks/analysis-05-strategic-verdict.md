@@ -17,7 +17,7 @@ Scorecard:
 | Question | Answer |
 |---|---|
 | Is the market validated? | Yes — Anthropic and OpenAI both shipped LLM adjudication as default/flag in Aug 2026 |
-| Is the open cell empty? | Yes — every open harness still uses static allow/deny/ask |
+| Is the open cell empty? | Yes — no open, locally-runnable, prose-configurable, per-verdict-explaining judge exists (Goose `smart_approve` is best-effort LLM read/write classification: no prose rules, no per-verdict explanation, no fail-closed gate; Codex Guardian's reviewer code + policy are open in-tree, but the reviewer model is closed/OpenAI-only and never runs locally) |
 | Is the cell defensible long-term? | No — one OpenCode/Goose/claw-code-lineage plugin fills it (successors LazyCodex / Gajae-Code) |
 | Is the differentiation non-trivial? | Partially — choke-point architecture + eval harness are real work; the harness itself is commodity |
 | Biggest existential risk | KILL #1 (absorption as a plugin) and KILL #3 (public guardian bypass before trust is established) |
@@ -35,7 +35,7 @@ dataset. This is also the direct mitigation for KILL #3: a bypass discovered *by
 public eval* is a credibility event; the same bypass discovered by PromptArmor is a kill event.
 
 ### A2. Answer LlamaFirewall explicitly (plan gap) — RESOLVED by `research-llamafirewall.md`
-The plan's research section cites GuardAgent/CaMeL/AgentDojo but never mentions Meta's
+The plan's research section cited GuardAgent/CaMeL/AgentDojo but never mentioned Meta's
 LlamaFirewall — the most-cited open guardrail system and the nearest conceptual prior art.
 Full deep-dive completed (primary sources: arXiv:2505.03574, repo + commit history, HF models);
 fold these into the plan:
@@ -107,7 +107,7 @@ Abandon or pivot fontaine-the-harness (keeping fontaine-guardian-the-library) if
 | Plan phase | Amendment |
 |---|---|
 | Phase 0 | + eval golden-dataset scaffolding & CI runner skeleton (A1) |
-| Phase 1 | + rig spike unchanged; + LlamaFirewall/PromptGuard-2 evaluation note (A2) |
+| Phase 1 | + rig spike unchanged (A2 landed in Research Findings + Phase 6) |
 | Phase 4 | guardian ships **with** its eval scorecard, published (A1) |
 | Phase 5 | + sandbox interop spike: run under srt/bubblewrap (A3); + guardian crate extraction seam (A4) |
 | Phase 6 | result-scanner default = PromptGuard 2 (A2); evals already public by now, not starting here |
