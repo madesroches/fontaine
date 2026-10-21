@@ -132,12 +132,6 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   environment?" — a pre-execution **authorization gate** with Allow/Deny/Escalate verdicts, prose
   intent rules, and deny-reason feedback. Different seat; the public will conflate them, so the
   distinction must stay crisp in docs.
-- **AgentDojo numbers are context, not a reporting target**: Fontaine's scorecard reports per-class
-  catch rate and false-deny rate, not ASR × utility. For reference, the LlamaFirewall paper's own
-  runs give no-defense .176 / PromptGuard 2 .075 / AlignmentCheck .029 / combined .0175; the AgentDojo paper itself (arXiv:2406.13352, NeurIPS 2024) never mentions LlamaFirewall
-  or AlignmentCheck, and its published tables report **benign utility, utility-under-attack, and
-  targeted/untargeted ASR separately (§3.4)** from live agent runs, while the LlamaFirewall paper
-  offline-rescores static leaderboard traces — the two papers' numbers are not directly comparable.
 - **PromptGuard 2 as the tool-result scanner** (default — user decision 2026-10-21): adopt as the
   default for the result-scanning slot (recall @ 1% FPR **97.5% (English)** per both the HF model
   card and the paper's §4.1 table; EN AUC differs — .998 on the card vs .98 in the paper's table;
@@ -173,7 +167,7 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
     text the harness logs or displays — reuse for transcripts and guardian inputs); `test_utils`
     for deterministic completion-model tests.
   - `rig-agent`: the agent runtime — `AgentBuilder`, `AgentHook`/`HookContext` (typed hooks around
-    agent turns — a candidate guardian injection point), `AgentRun` (serializable, sans-I/O state
+    agent turns — bookkeeping only; not the gate), `AgentRun` (serializable, sans-I/O state
     machine for model turns + tool recovery + history — session persistence for free), `extractor`
     (typed extraction through a submit-output tool with configurable retries — reuse verbatim for
     parsing guardian `Verdict`s), tool registry with ordered registrations.

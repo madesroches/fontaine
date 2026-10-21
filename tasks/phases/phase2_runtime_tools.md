@@ -39,7 +39,7 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
   authorization token.
 - **GuardedTool**: a decorator implementing `rig_core::tool::Tool` that wraps any inner tool and,
   in its `call`, asks the injected `ToolGate` (`fontaine-tools/src/gate.rs`; implemented by
-  `fontaine-core`'s `PermissionPipeline` — mode check → read-only fast path → Tier-0.5 shell
+  `fontaine-core`'s `PermissionPipeline` — floor → mode check → read-only fast path → Tier-0.5 shell
   pre-classifier → guardian in `auto`) before delegating to the inner tool. `fontaine-tools` never
   depends on `fontaine-core`. This is the **single choke point**: every tool — rig built-in,
   Fontaine-added, or MCP-imported — is registered wrapped (registry-level wrapping covers built-ins,
@@ -141,13 +141,13 @@ context.
    registry); add workspace roots (`--add-dir`, containment across roots, roots grant file access
    but not configuration) to `docs/tools.md` and `docs/configuration.md`, and the session ledger vs
    compactable model context to `docs/architecture.md`; add `fontaine.tool` / `tool_result` to
-   `docs/telemetry.md`; link the new page from `docs/index.md`; append a CHANGELOG entry.
+   `docs/telemetry.md`; update `docs/headless.md` with `--add-dir` and `--session-id`; link the new page from `docs/index.md`; append a CHANGELOG entry.
 
 ## Files created or modified
 
 `rust/fontaine-tools/src/{lib,gate,guarded,result_pipeline,risk,scope,builtins,webfetch,git_bash}.rs`;
-`rust/fontaine-core/src/{lib,session,ledger,hooks}.rs`; `rust/fontaine/tests/{headless_smoke,headless_contract}.rs` (retargeted from `echo` to `read`); `docs/tools.md`, `docs/architecture.md`,
-`docs/configuration.md`, `docs/telemetry.md`, `docs/index.md`.
+`rust/fontaine-core/src/{lib,session,ledger}.rs`; `rust/fontaine-tools/tests/{scope,choke_point}.rs`; `rust/fontaine-core/tests/{ledger,config}.rs`; `rust/fontaine/tests/{headless_smoke,headless_contract}.rs` (retargeted from `echo` to `read`); `rust/fontaine/tests/headless_tools.rs`; `docs/tools.md`, `docs/architecture.md`,
+`docs/configuration.md`, `docs/telemetry.md`, `docs/headless.md`, `docs/index.md`.
 
 ## Tests owned by this phase
 
@@ -163,7 +163,8 @@ context.
 - **workspace roots** (`rust/fontaine-tools/tests/scope.rs`): a path in an `--add-dir` root is in
   scope and reaches that root's confined instance; a `shell` call whose `cwd` is in an added root
   reaches that root's `Shell` instance and is not refused by rig; a symlink from one root into another stays in
-  scope, out of every root falls out; settings in an added root are not loaded.
+  scope, out of every root falls out.
+- **added-root settings** (`rust/fontaine-core/tests/config.rs`): settings in an added root are not loaded.
 - **windows** (`#[cfg(windows)]`; compile-checked locally with `cargo check --all-targets --target x86_64-pc-windows-gnu`, executed in the windows CI job): scope validator over drive letters, UNC
   paths, case-insensitive comparison, junction and symlink escape, and MSYS-style `/c/...` paths
   (untranslatable ⇒ out of scope); the `shell` tool launches through Git Bash; Git Bash discovery
@@ -180,7 +181,7 @@ context.
   `log_tool_content`); the `shell` child environment has no telemetry credential, `MICROMEGAS_*`
   variable, configured `api_key_env` variable or `scanner_hf_token_env` variable.
 - Integration (`rust/fontaine/tests/headless_tools.rs`): `fontaine -p` against the scripted
-  `openai-compatible` endpoint (built with the Phase-1 `common/mod.rs` helper) completes a read-tool round-trip.
+  `openai-compatible` endpoint (built with the Phase-1 `common/mod.rs` helper) completes a read-tool round-trip (passing `--permission-mode manual` explicitly).
 
 ## Definition of done
 

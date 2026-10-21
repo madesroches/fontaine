@@ -210,4 +210,4 @@ only tightens). No key in any scope disables hooks from a higher-trust scope. Bu
 ## Composite guardian (the guardian tree)
 
 Design direction, not a v1 build item: see the Decisions entry "guardian tree accepted as design direction".
-The typed-decision candidate screen tier is covered in the Phase 4 plan (guardian model list).
+The typed-decision candidate screen tier is deferred to the screening-tier roadmap.

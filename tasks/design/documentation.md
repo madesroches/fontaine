@@ -18,15 +18,14 @@ delivered (or extended) by the docs step of the phase named with it — see the 
   (TUI + headless), workspace roots, session ledger vs model context, session persistence/resume/fork
   (skeleton Phase 0; grown in Phases 1, 2, 3, 5).
 - `docs/configuration.md`: every config key, the settings scope stack and per-key scope table,
-  trust asymmetry, workspace trust, account and provider setup examples — seeded from the `config.md` §Config schema (Phase 0) and documenting every key from Phase 0; sections note which phase enables the behavior (Phases 1, 3, 4,
-  5, 6).
+  trust asymmetry, workspace trust, account and provider setup examples — seeded from the `config.md` §Config schema (Phase 0) and documenting every key from Phase 0; a key that is parsed but not yet active says "accepted and validated; not yet active".
 - `docs/tools.md`: built-in tool inventory, risk classes, the containment fast path, shell
   hardening (Phase 2).
 - `docs/permissions.md`: mode table, deterministic floor, the `Tool(specifier)` rule grammar and
   allow rules (incl. suspension in `auto`), Tier-0.5 pre-classifier, `auto` and the `[auto_mode]`
   prose lists (Phases 3–4).
 - `docs/headless.md`: `fontaine -p`, the CLI flag table, exit codes, denial semantics, and the
-  versioned `json`/`stream-json` event schema (Phase 1; grown in Phases 3, 5 as flags land).
+  versioned `json`/`stream-json` event schema (Phase 1; grown in Phases 2–5 as flags land).
 - `docs/telemetry.md`: enabling telemetry (the required ingestion URL and ingestion key — env-var
   name or stored credential, never inline; enabled without either is a config error), both backends
   with recipes for micromegas native (span trees via async span events, queried through
@@ -54,7 +53,8 @@ delivered (or extended) by the docs step of the phase named with it — see the 
 - `evals/README.md`: golden-dataset format + runner usage (Phase 0) — the dataset is a public
   asset, so its format doc ships with it.
 - `CONTRIBUTING.md` (repo root, Phase 0): build/test commands, branch and commit rules, how to submit
-  golden-dataset cases and red-team bypasses.
+  golden-dataset cases; guardian-bypass reports are routed to `SECURITY.md`.
+- `SECURITY.md` (repo root, Phase 0): private reporting via GitHub private vulnerability reporting, 90-day coordinated disclosure window.
 - `CHANGELOG.md`: release notes in Keep a Changelog format — created in Phase 0 with an `## [Unreleased]`
   section; every phase appends an entry there in its docs step (plan/phase citations belong here, not
   in the docs pages); at release, `[Unreleased]` moves under the new version heading.

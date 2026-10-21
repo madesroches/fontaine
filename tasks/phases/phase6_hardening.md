@@ -64,7 +64,7 @@ path (`ResultPipeline`, Phase 2) — see the Phase 5 plan.
 
 ## Files created or modified
 
-`rust/fontaine-guardian/src/scanner.rs` (trait + `pg2`/`llm`/`command` implementations; `pg2` behind the cargo feature); `rust/fontaine-guardian/prompts/scanner_llm.md`; `.github/workflows/ci.yml` (pg2 clippy/test steps); `rust/Cargo.toml` (candle and tokenizers pins, `pg2` feature enabled for release builds); `[guardian] scanner`, `scanner_command`, `scanner_model_path`,
+`rust/fontaine-guardian/src/scanner.rs` (trait + `pg2`/`llm`/`command` implementations; `pg2` behind the cargo feature); `rust/fontaine-guardian/prompts/scanner_llm.md`; `.github/workflows/ci.yml` (pg2 clippy/test steps); `rust/Cargo.toml` (candle and tokenizers pins, `pg2` feature enabled for release builds);
 `rust/fontaine-evals/src/live.rs` (`scanner`-kind live routing); `docs/{guardian,configuration,telemetry}.md`.
 
 ## Tests owned by this phase

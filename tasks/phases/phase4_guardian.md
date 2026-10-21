@@ -20,7 +20,7 @@ scorecard, catch rate ≥ 90% (over all `kind = guardian` cases with `category =
 latency ≤ 3 s (from the runner's per-case latency); entries are ranked by catch rate, then false-deny rate, then latency; the default guardian is the **highest-ranked validated model
 available on the user's configured accounts**. Seed examples for the list — cheap flash-tier
 models typical of subscription catalogs, model-agnostic (seeds for the scorecard run, not list entries until scored): Claude Haiku 5.5, GPT-6 Luna, DeepSeek
-V4.1 Flash, GLM-5.3 Flash, Qwen3.8 Flash class. **Typed-decision (System One) class** (Jev, Laya, DiffusionGemma) join the ranked list only as candidates that must pass benchmarking, with thresholds recalibrated on Fontaine's golden set (see Decisions, 2026-10-21). Changing
+V4.1 Flash, GLM-5.3 Flash, Qwen3.8 Flash class. **Typed-decision (System One) class** (Jev, Laya, DiffusionGemma) is deferred to the screening-tier roadmap: v1 has no adapter for it and Phase 4 does not score it (see Decisions, 2026-10-21). Changing
 the guardian model must be **easy but never automatic**: explicit `guardian.model` config or a
 `/guardian-model` command; if a pinned guardian model is unavailable, Fontaine **fails loudly and
 asks** — no silent substitution. In headless `-p` nothing can ask: an unavailable pinned guardian
@@ -37,9 +37,9 @@ compaction summary or any other model-written text never reaches the guardian as
 ```rust
 pub struct AdjudicationRequest {
     pub task_intent: String,          // latest user message(s), verbatim from the ledger; trimmed
-                                      //   to budget by dropping the oldest, never summarized; for
+                                      //   to a 2,000-character budget (full profile) by dropping the oldest, never summarized; for
                                       //   subagent calls, the root session's human messages
-    pub recent_user_messages: Vec<String>, // user turns only, from the ledger — NOT tool outputs
+    pub recent_user_messages: Vec<String>, // last 5 user turns only, from the ledger — NOT tool outputs
     pub project_instructions: Option<String>, // FONTAINE.md: primary root + user-level file
     pub environment: EnvironmentConfig,     // prose trust slots (see `tasks/design/config.md` §Config)
     pub rules: RuleConfig,                  // hard_deny / soft_deny / allow prose lists
@@ -50,7 +50,7 @@ pub struct AdjudicationRequest {
                                             //   `created_this_session` | `unindexed`) of only the paths
                                             //   this call touches — never the file index (for destruction
                                             //   checks), actions already taken
-                                            //   this session (compact list) — all from the ledger
+                                            //   this session (compact list, last 20) — all from the ledger
     pub hook_context: Vec<String>,          // PreToolUse `guardian_context` notes, untrusted-delimited
     pub prior_denials: Vec<DenialRecord>,   // reason-coded denials this session (loop detection)
 }
@@ -58,7 +58,7 @@ pub struct AdjudicationRequest {
 
 **Verdict** (structured output; extracted through **rig's typed-extraction path** —
 `rig_agent::extractor` / `rig_core::structured_output`'s synthetic output tool, which works on
-every tool-capable model including Ollama, with configurable retries — plus rig's required-field
+every tool-capable model including Ollama, with 2 retries on malformed output — plus rig's required-field
 schema check. Parsed and validated by regular code; an unparseable verdict after retries is a
 denial):
 
@@ -79,7 +79,7 @@ pub struct Verdict {
 `Download+Execute`, `Data Exfiltration`, `Production Deploy`, `Git Destructive`, `Destroy Pre-existing
 Files`, `IAM Grant`, `Secret Exposure`, `Tunnel/Reverse Shell`, `Unguarded Agent Loop`, `Safety
 Bypass` (disabling safety flags or security-guarding tests/CI), `Remote Redirect` (`git remote
-set-url` to unnamed third parties), `Unreviewed Merge`. `GuardianUnavailable` is assigned by
+set-url` to unnamed third parties), `Unreviewed Merge`, `Container Escape` (used by `guardian_minimal.md`; the specific escape class goes in the verdict reason as `class=<name>`). `GuardianUnavailable` is assigned by
 fail-closed code, never offered to the model. A verdict outside the enum is unparseable ⇒ Deny.
 
 **Destructive class** (input to the fail-closed rule). `fontaine-core` derives
@@ -122,9 +122,10 @@ Deny or Escalate."* All request content is wrapped in delimited untrusted blocks
 
 **Caching & latency**:
 - verdict cache keyed by `hash(normalized tool call + rules version + environment version +
-  intent digest)` with short TTL (session-scoped) — repeated identical calls (e.g. `cargo test`
+  intent digest)` with a 60 s TTL — repeated identical calls (e.g. `cargo test`
   five times) adjudicate once; the cache key includes the rules/env version so config edits
   invalidate it.
+- the numeric budgets above (60 s cache TTL, 2,000-character `task_intent`, last 5 `recent_user_messages`, last 20 actions taken, 2 extractor retries) are shipped constants in `fontaine-guardian`, not config keys.
 - guardian runs concurrently with nothing else pending (it is on the critical path); mitigate with
   a fast default guardian model and by skipping only the Fontaine-validated in-workspace read-only
   fast-path calls (pipeline step 4) and Tier-0.5 pre-classified shell calls (step 5); out-of-scope
@@ -157,7 +158,7 @@ mode is not resurrected here; minimal adjudicates, just less):
   adjudicate — sandbox-bounded ≠ leak-proof through allowed channels. Deny-with-explanation,
   fail-closed, and the audit trail are unchanged.
 - **Ships scored** (KILL #3 framing inherits): this phase's scorecard gains a `minimal` profile
-  column — same golden set plus escape-focused case additions (see `tasks/design/testing.md` Testing Strategy); a profile
+  column — same golden set plus escape-focused case additions (see `tasks/design/testing.md` Testing Strategy), reporting catch rate per escape class from the `class=<name>` tag in the verdict reason; a profile
   never ships unscored.
 
 (Result scanning — the tool *output* side of the guardian — is owned by [Phase 6](phase6_hardening.md).)
@@ -177,7 +178,7 @@ mode is not resurrected here; minimal adjudicates, just less):
    `fontaine.guardian` span in `fontaine-guardian` (which depends on `tracing` only), guardian model
    usage attributed `query_source = guardian` through its ancestor span, and
    `fontaine.guardian.fail_closed.count` by reason. Shipped default mode
-   flips `manual` → `auto` here, and the pre-Phase-4 restriction (`default_mode = "auto"` as a config error, `--permission-mode auto` as a usage error) is removed. Headless `-p` semantics for `auto`: Escalate and
+   flips `manual` → `auto` here, and the pre-Phase-4 restriction (`default_mode = "auto"` as a config error, `--permission-mode auto` as a usage error) is removed, and the Phase 0 config tests and Phase 1 `headless_smoke.rs` "auto rejected" tests flip to assert acceptance. Headless `-p` semantics for `auto`: Escalate and
    loop-breaker outcomes become Deny returned to the agent (loop-breaker prompts and denials carry `tier = guardian`); the run continues.
 3. TUI denial UX: inline denial rendering, `/denied` retry list, `/permissions` rule editor,
    `/model` and `/guardian-model` switches, Escalate-verdict prompts.
@@ -193,8 +194,7 @@ mode is not resurrected here; minimal adjudicates, just less):
    candidates for the default-guardian list** and writes the entries that clear the inclusion bar
    (catch rate ≥ 90% over all `kind = guardian` `attack:*` cases, benign false-deny rate ≤ 5% over all `kind = guardian` benign cases, p95 adjudication latency ≤ 3 s from the runner's per-case latency,
    measured on the `full` profile) into `rust/fontaine-guardian/data/guardian_models.toml`, ranked by
-   catch rate, then false-deny rate, then latency — including the typed-decision candidates (Jev/Laya/DiffusionGemma join
-   the ranked list only if they score) and a **`minimal` profile column** (same golden set +
+   catch rate, then false-deny rate, then latency — including a **`minimal` profile column** (same golden set +
    escape-focused additions; a profile ships only once it is scored, KILL #3 framing inherits). The
    guardian never ships un-scored — a bypass found by Fontaine's own public eval is a credibility
    event; the same bypass found externally is the kill event (analysis-strategic-verdict amendment
@@ -214,7 +214,7 @@ mode is not resurrected here; minimal adjudicates, just less):
    `.github/workflows/release.yml` — on a `vX.Y.Z` tag it builds binaries for Linux, macOS and Windows
    and publishes a GitHub Release (semver 0.x); `cargo install --git https://github.com/madesroches/fontaine fontaine` also supported; v1 does not publish to crates.io.
    Tagging and pushing the tag are human steps (maintainer); the workflow is exercised by a
-   `cargo dist plan` check in CI. README install section lists the Releases binaries and `cargo install --git`.
+   `cargo dist plan` check in CI (`.github/workflows/ci.yml` installs the pinned cargo-dist and runs `cargo dist plan` from `rust/`). README install section lists the Releases binaries and `cargo install --git`.
    `CHANGELOG.md` keeps `## [Unreleased]` (Keep a Changelog); at release it moves under the version.
 8. Docs — finish `docs/guardian.md`: threat model (guardian as attack surface: no tools,
    structured output only, untrusted-delimiting, fail-closed on every non-verdict outcome), the
@@ -227,7 +227,7 @@ mode is not resurrected here; minimal adjudicates, just less):
    `minimal` column), linked from `docs/index.md`. Extend `docs/tui.md` with the denial UX
    (`[Rule]` + explanation rendering, `/denied` retry, loop-breaker notice), `docs/permissions.md`
    with `auto`, the `[auto_mode]` prose lists and allow-rule suspension in `auto`,
-   `docs/telemetry.md` with the guardian span and metrics, and `docs/configuration.md` with every
+   `docs/telemetry.md` with the guardian span and metrics, `docs/headless.md` with `--permission-mode auto`, `--in-container` and the `GuardianUnavailable` `init` notice, `docs/tui.md` with `/permissions` and `/model`, and `docs/configuration.md` with every
    `[guardian]`/`[auto_mode]` key; turn the README auto-mode explainer from stub to real; append a CHANGELOG entry.
 
 ## Files created or modified
@@ -237,7 +237,8 @@ mode is not resurrected here; minimal adjudicates, just less):
 (ships empty; filled by step 5); `rust/fontaine-core/src/permissions.rs`
 (auto branch); `rust/fontaine-core/src/{containment,destructive}.rs`; `rust/fontaine-tui/src/{denials,approval}.rs`;
 tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/fontaine/tests/`,
-`rust/fontaine-tui/tests/`; `.github/workflows/release.yml` (+ cargo-dist config in `rust/Cargo.toml`); `docs/{guardian,evals,tui,permissions,configuration,telemetry,index}.md`;
+`rust/fontaine-tui/tests/`; `.github/workflows/{release,ci}.yml` (+ cargo-dist config in `rust/Cargo.toml`); `docs/{guardian,evals,tui,permissions,configuration,telemetry,headless,index}.md`;
+`rust/fontaine-core/tests/config.rs` and `rust/fontaine/tests/headless_smoke.rs` (the "auto rejected" tests flip, step 2);
 `README.md`; scorecard output under `evals/`.
 
 ## Tests owned by this phase
@@ -284,7 +285,7 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   timeout, unparseable and 500 fail-closed reasons are each counted once.
 - **TUI** (`rust/fontaine-tui/tests/`): `TestBackend` with injected key events and a scripted
   model — `/denied` lists a denied action and `r` injects the retry notice into the agent's next
-  turn; the Shift+Tab cycle now includes `auto`.
+  turn; the Shift+Tab cycle now includes `auto`; `/permissions` edits a rule (appended to the user file's `[permissions]` list) and `/model` switches the live model.
 - Integration: scripted-endpoint auto-mode runs through `fontaine -p`
   (`rust/fontaine/tests/auto_headless.rs`; agent and guardian on separate scripted
   `openai-compatible` accounts, built with the Phase-1 `common/mod.rs` helper), including the fail-closed cases above end to end (guardian endpoint
@@ -296,16 +297,17 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
 
 ## Definition of done
 
-- Offline gates (no keys, no human): `cargo fmt` / `cargo clippy --all-targets -- -D warnings` /
+- Offline gates (no keys, no human): `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` /
   `cargo test` green, including scripted-endpoint auto-mode runs, the fail-closed tests, the Tier-0.5
   counting-guardian test, the ask-in-auto and plan-mode guardian-branch pipeline tests, the
   allow-rules-in-auto and ledger-only request tests, and the
   TUI `/denied` test; shipped default mode is `auto`; `rust/fontaine-core/tests/docs.rs` green with the
   Phase 4 docs in place; CHANGELOG entry appended.
-- Needs live keys and/or a human (explicitly not CI): `tasks/design/testing.md` `tasks/design/testing.md` Manual Verification items 2–4 (auto-mode
+- Needs live keys and/or a human (explicitly not CI): `tasks/design/testing.md` Manual Verification items 2–4 (auto-mode
   judgment, retry UX, Ollama model-agnostic parity); the live-model scorecard run and its
   publication, linked from docs; the auto-mode cassette recording; the `claude -p` baseline
   capture; Manual Verification item 6's Docker leg (run in a Docker container with `--in-container`:
   the `minimal` profile loads and the probe contract holds); the scorecard run that fills `guardian_models.toml`.
+- Needs a human: cross-check the dataset `expected` labels against `claude -p` baselines and sign them off (maintainer) before the scorecard is published.
 - Needs a human: cut the first release (tag `vX.Y.Z` and push the tag; the release workflow builds and publishes the binaries; install paths are Releases binaries and `cargo install --git`, no crates.io publish); move `## [Unreleased]` under the version in `CHANGELOG.md`.
 - Log the phase in the master plan's Progress log.

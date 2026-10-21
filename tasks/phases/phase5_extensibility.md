@@ -2,9 +2,6 @@
 
 **Status:** not started · **Depends on:** [Phase 4](phase4_guardian.md) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
 
-Parallel multi-agent management is a **v1 requirement** (user directive 2026-10-21) — this is
-build work, not backlog.
-
 ## Design (excerpt owned by this phase)
 
 ### Parallel agent orchestration (fontaine-agents)
@@ -17,7 +14,7 @@ in the main session, and their results return to the parent as a summary.
 - **The `agent` tool** (Claude Code's `Agent`/`Task` tool): a first-party tool that spawns a subagent. Each subagent is
   a separate **rig-agent** conversation (`AgentBuilder` + `AgentRun`, its own `rig-memory` context), with its own
   selectable model and a **per-agent-type restricted tool registry** drawn from Fontaine's risk registry — a subagent's
-  registry is a subset of the parent's, never a superset. N subagents run concurrently in the background and the parent receives summarized results back. Listing,
+  registry is a subset of the parent's, never a superset. The `agent` tool blocks until the child finishes and returns its report as the tool result (Claude Code parity); with `background: true` it returns `{agent_id}` immediately and the child's report is delivered later as a notification injected into the parent's next turn, passing through `ResultPipeline` like any tool result. With `tool_concurrency = 1`, concurrency comes from background children. Listing,
   status streaming and interrupt/kill/pause are TUI-only user controls (the agents panel), not model tools.
 - **Results re-enter through the gate.** A subagent's report comes back to the parent as an ordinary *tool result*, so
   when a scanner is configured (`[guardian] scanner`, off by default) it passes the tool-result scanner like any other
@@ -40,7 +37,7 @@ in the main session, and their results return to the parent as a summary.
   `recent_user_messages` are built from the root's human messages only. Spawn prompts and `send_message` bodies reach
   the guardian only as untrusted-delimited context, never as intent.
   (iii) **Parent↔child and peer messages** (the `send_message` tool, Claude Code's `SendMessage`-style) go through the same guardian gate — the
-  2026-10-20 decision, which stands and now applies in v1.
+  2026-10-20 decision, which stands and now applies in v1. Addressing: any agent may message its parent, its children, or siblings in the same root tree; `"main"` addresses the root session. Delivery: the message is queued and injected into the recipient's next turn as a notification marked with the sender's agent id, treated as untrusted (it reaches the guardian only as untrusted context); the sender gets `{status: "queued"}`. A target that has finished or been killed returns an error tool result, `agent not running`.
 - **Budgets.** `[agents] max_parallel` (default small, e.g. 4) plus per-subagent token/cost budgets, so fan-out cannot
   silently multiply guardian round-trips and model spend (Claude Code documents that each subagent spends tokens of
   its own and running many multiplies usage). The per-subagent cap **always** binds; a root-of-tree total binds
@@ -79,7 +76,7 @@ narrow matcher skips the guardian, a broad one is suspended. Every subagent tool
 ### Extension files (skills, agent files, output styles)
 
 Layout and scope per `tasks/design/config.md` §Config: `skills/<name>/SKILL.md`, `agents/<name>.md`,
-`output-styles/<name>.md` under `~/.config/fontaine/` and `<root>/.fontaine/`, with Claude
+`output-styles/<name>.md` under `<config dir>/` and `<root>/.fontaine/`, with Claude
 Code-compatible frontmatter (`name`, `description`, `tools`, `model`, `permissionMode` ↦ `mode`
 with `default` ↦ `manual`, `allowed-tools`, `disable-model-invocation`), so `.claude/` skills and
 agents port by copying; `.claude/` is not read directly.
@@ -125,10 +122,10 @@ transcript.
    `fontaine.session.count{start_type=resume}`. (Headless `-p` moved to Phase 1 step 2 — user
    decision 2026-10-21.)
 3. `fontaine-agents`: defines the `ChildRunner` trait (`rust/fontaine-agents/src/runner.rs`: spawn a gated child
-   run from agent type, effective mode, budget and a root-ledger handle; returns a handle for status, kill
+   run from agent type, effective mode, budget and a `LedgerView` handle; returns a handle for status, kill
    and report) which `fontaine-core` implements (`rust/fontaine-core/src/child_runner.rs`) and injects at startup, like
    `ToolGate`; the core impl re-evaluates the child's mode as the tighter of its own and the parent's on every call. `agent` spawn tool over rig-agent — concurrent background subagents with
-   own context/model/per-type restricted registries; list/stream-status/interrupt as TUI-only controls; spawn call
+   own context/model/per-type restricted registries; `LedgerView` is a small trait defined in `fontaine-agents` (`rust/fontaine-agents/src/ledger_view.rs`: read root human messages, append child events) and implemented by `fontaine-core`'s ledger, the same inversion as `ToolGate`/`ChildRunner`; list/stream-status/interrupt as TUI-only controls; spawn call
    gated as a pipeline request; subagent tool calls re-enter the permission pipeline with
    one-way mode inheritance (child mode ≤ parent mode); agent-to-agent messages (`send_message`) through the same
    guardian gate; results returned as ordinary tool results through `ResultPipeline` (Phase 2; the Phase 6 scanner
@@ -145,9 +142,9 @@ transcript.
 
    | Tool | RiskClass | Args |
    |---|---|---|
-   | `agent` | Arbitrary | `agent_type`, `prompt`, optional `model`; withheld from subagents at the depth cap |
+   | `agent` | Arbitrary | `agent_type`, `prompt`, optional `model`, optional `background` (bool, default false: blocks and returns the report; true: returns `{agent_id}` at once, report delivered later as a notification); withheld from subagents at the depth cap |
    | `skill` | ReadOnly | `name` (resolved against the start-time index) |
-   | `send_message` | Arbitrary | `to` (agent id), `message` |
+   | `send_message` | Arbitrary | `to` (agent id of a parent, child or sibling in the same root tree, or `"main"` for the root session), `message`; returns `{status: "queued"}`, or error `agent not running` for a finished or killed target |
 5. Extension files (design above): loader in `fontaine-core/src/extensions.rs`; `skill` tool and
    skill slash commands; agent files into the agent-type registry; output styles.
 6. Docs — `docs/mcp.md`: declaring stdio / streamable-HTTP servers in config, project servers
@@ -180,7 +177,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
 
 ## Files created or modified
 
-`rust/Cargo.toml` (direct `rmcp` pin); `rust/fontaine-mcp/src/{lib,servers,register}.rs`; `rust/fontaine-agents/src/{lib,spawn,registry,budget,runner}.rs`;
+`rust/Cargo.toml` (direct `rmcp` pin); `rust/fontaine-mcp/src/{lib,servers,register}.rs`; `rust/fontaine-agents/src/{lib,spawn,registry,budget,runner,ledger_view}.rs`;
 `rust/fontaine-core/src/{session,user_hooks,extensions,child_runner}.rs`; `rust/fontaine-tools/src/skill.rs`;
 `rust/fontaine-tui/src/{agents_panel,trust_prompt}.rs`;
 `docs/{mcp,agents,hooks,extensions,tui,configuration,architecture,headless,telemetry,index}.md`.
@@ -190,10 +187,9 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
 - **parallel agents** (`tasks/design/testing.md` Testing Strategy; `rust/fontaine/tests/parallel_agents.rs`): spawn-call gating (task × toolset × model
   composite); mode-inheritance invariant (child ≤ parent, never looser), including a test where the
   parent switches mode mid-run and the child's next call follows the tighter mode; a `plan` parent blocks every child edit and drops an `auto`/`acceptEdits` child's non-edit calls to `manual`, including when the parent enters `plan` mid-run; per-type registry
-  is a subset of the parent's; budget caps stop a subagent; subagent reports return as ordinary
-  tool results through `ResultPipeline`; `send_message` peer messages hit the
-  same gate.
-- **ChildRunner seam** (`rust/fontaine-agents/tests/`, fake `ChildRunner`): the spawn tool, registry and budget logic run with no `fontaine-core` dependency; the fake receives type, effective mode, budget and ledger handle; status/kill/report flow through the returned handle.
+  is a subset of the parent's; budget caps stop a subagent; a blocking `agent` call returns the child's report as its tool result through `ResultPipeline`; `background: true` returns `{agent_id}` at once and the report arrives later as a notification in the parent's next turn, passing through `ResultPipeline`; N background children run concurrently; `send_message` hits the
+  same gate; delivery to a parent, a child, a sibling and `"main"` arrives in the recipient's next turn marked with the sender's agent id and appears to the guardian only as untrusted context; the sender gets `{status: "queued"}`; a finished or killed target returns error `agent not running`.
+- **ChildRunner seam** (`rust/fontaine-agents/tests/`, fake `ChildRunner`): the spawn tool, registry and budget logic run with no `fontaine-core` dependency; the fake receives type, effective mode, budget and a fake `LedgerView`; status/kill/report flow through the returned handle.
 - **output styles** (`rust/fontaine-core/tests/`): the guardian's `AdjudicationRequest` and rendered prompt are byte-identical with and without an active output style.
 - **agents panel** (`rust/fontaine-tui/tests/`, ratatui `TestBackend` with a scripted model): a killed subagent's row shows `killed` and its token/cost spend against budget.
 - **subagent intent** (`rust/fontaine/tests/parallel_agents.rs`): an injected spawn prompt claiming user authorization does not appear as `task_intent` or in `recent_user_messages` in any `AdjudicationRequest`; it appears only inside an untrusted-delimited block.

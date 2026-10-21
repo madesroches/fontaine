@@ -10,7 +10,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 ## Steps
 
 1. Cargo workspace (`rust/Cargo.toml`, micromegas layout, `members = ["*"]` with `exclude = ["target", ".*"]` so a second build with `rust/target/` present still resolves; `[workspace.package]` sets `edition = "2024"`
-   and `rust-version = "1.97.1"`, and `rust/rust-toolchain.toml` pins channel ≥ 1.97.1 to match rig
+   and `rust-version = "1.97.1"`, and `rust/rust-toolchain.toml` pins `channel = "1.97.1"` to match rig
    0.45.0; CI installs that toolchain), crate skeletons under `rust/`
    (`fontaine`, `fontaine-core`, `fontaine-tools`, `fontaine-guardian`, `fontaine-agents`,
    `fontaine-mcp`, `fontaine-tui`), `clap` CLI entry (`fontaine`), tracing facade (below), CI
@@ -31,13 +31,16 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    `FONTAINE_DATA_DIR`) and an owner-only file helper (0600 on Unix, current-user-only ACL on Windows).
    Workspace trust store (`fontaine-core/src/trust.rs`): read/write
    `<data dir>/trust.toml` keyed by canonical root, and an `is_trusted(root)` query the
-   Phase-5 loaders of project executables call. Tracing facade
+   Phase-5 loaders of project executables call. Credentials file schema and read-only lookup
+   (`fontaine-core/src/credentials.rs`): `<data dir>/credentials.toml` holds one entry per account
+   name plus the telemetry entry; the lookup returns an account's or the telemetry credential (Phase 1
+   adds the writer, `fontaine auth login`). Tracing facade
    (`rust/fontaine/src/telemetry/mod.rs`): the `tracing_subscriber` registry, the `--debug-file` /
    `FONTAINE_LOG` layer (owner-only), an inert export slot filled in Phase 1, a `fontaine.session` span;
    `[telemetry]` parsed with its scope rule (project scopes may only set `enabled = false`) and its
    required-inputs rule (`enabled = true` needs `endpoint` and an ingestion key — `api_key_env` or a
    stored credential; either missing is a config error, exit 2).
-2. Eval golden-dataset scaffolding + CI runner skeleton (`evals/`): dataset format (~150+ cases:
+2. Eval golden-dataset scaffolding + CI runner skeleton (`evals/`): dataset format (~150+ cases, minimum counts: at least 10 per attack class, 30 benign, 15 ambiguous-intent, plus the tier05-adversarial golden set;
    benign dev commands, each seeded attack class from Claude Code's default-block list, injection
    attempts *inside tool args*, ambiguous intent cases, Tier-0.5 adversarial shell cases — see
    `tasks/design/testing.md` Testing Strategy — and adversarial spawn/injection-propagation cases: a subagent result
@@ -58,21 +61,19 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    all prose, structured one-topic-per-page with relative cross-links so it can be lifted into a
    website later; no site tooling in v1): `docs/index.md` (landing/TOC), `docs/architecture.md`
    seeded with the workspace map + crate responsibilities, and `docs/configuration.md` seeded
-   from the step-1 config schema (every key: meaning, per-scope settability, default), the settings
+   from the step-1 config schema (every key: meaning, per-scope settability, default; a key that is parsed but not yet active says "accepted and validated; not yet active" — docs describe current behavior, phase attribution lives only in `CHANGELOG.md`), the settings
    scope stack and its merge rules, workspace trust, and `[telemetry]` (off by default; enabling
    requires the ingestion URL and key). Also
    `evals/README.md` defining the golden-dataset format — the dataset is a public asset shipping
    with the scorecard, so its format doc lands with it. Root `README.md` stays the thin front
-   door (pitch, install, quickstart — the quickstart leads with a local Ollama agent + guardian
-   setup) linking into `docs/` — not a second copy of it. Add a short root `CONTRIBUTING.md`
-   (build/test commands, branch and commit rules, how to submit golden-dataset cases and red-team
-   bypasses). Create `CHANGELOG.md` (Keep a Changelog format, with an `## [Unreleased]` section) with the first entry. Add the docs check `rust/fontaine-core/tests/docs.rs` (see Tests): it parses and schema-validates `toml` blocks only — no phase-gated value rules, no model resolution/discovery, no env/credential checks.
+   door (pitch, install, build — install/build only; the Ollama agent quickstart lands in Phase 1's docs step and the guardian leg in Phase 4's) linking into `docs/` — not a second copy of it. Add a short root `CONTRIBUTING.md`
+   (build/test commands, branch and commit rules, how to submit golden-dataset cases; guardian-bypass reports go to `SECURITY.md`, and public dataset PRs for a bypass only after a fix ships) and a root `SECURITY.md` (private reporting via GitHub private vulnerability reporting; 90-day coordinated disclosure window). Create `CHANGELOG.md` (Keep a Changelog format, with an `## [Unreleased]` section) with the first entry. Add the docs check `rust/fontaine-core/tests/docs.rs` (see Tests): it parses and schema-validates `toml` blocks only — no phase-gated value rules, no model resolution/discovery, no env/credential checks.
 
 ## Files created or modified
 
 `.gitignore`; `rust/Cargo.toml`; `rust/rust-toolchain.toml`; crate skeletons for every `rust/fontaine-*` crate; `rust/fontaine/src/main.rs`;
-`rust/fontaine/src/telemetry/mod.rs`; `rust/fontaine-core/src/{config,dirs,permission_rules,trust}.rs`; `evals/` (dataset + README.md); `rust/fontaine-evals/` (runner); `CHANGELOG.md`; `CONTRIBUTING.md`;
-`docs/{index,architecture,configuration}.md`; `README.md`; `rust/fontaine-core/tests/docs.rs`; `.github/workflows/ci.yml`.
+`rust/fontaine/src/telemetry/mod.rs`; `rust/fontaine-core/src/{config,dirs,permission_rules,trust,credentials}.rs`; `evals/` (dataset + README.md); `rust/fontaine-evals/` (runner); `CHANGELOG.md`; `CONTRIBUTING.md`; `SECURITY.md`;
+`docs/{index,architecture,configuration}.md`; `README.md`; `rust/fontaine-core/tests/{config,docs}.rs`; `.github/workflows/ci.yml`.
 
 ## Tests owned by this phase
 
@@ -89,6 +90,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
   rejected from project scope; unparseable rule strings rejected; `default_mode = "auto"` rejected (exit 2) from user, project-local and CLI scope too until Phase 4.
 - **dirs**: `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR` override the `dirs` defaults (all tests use temp
   dirs); owner-only files are 0600 on Unix and current-user-only on Windows (`#[cfg(windows)]` ACL test, compile-checked locally with the windows-gnu target and executed in the windows CI job).
+- **credentials lookup**: account entries and the telemetry entry round-trip from a temp `credentials.toml`; a missing file or entry yields no credential; the file is owner-only.
 - **trust store**: trust recorded for one root does not trust another; the record is written under
   the data dir, never inside the workspace.
 - **telemetry config**: every `[telemetry]` key rejected from project and project-local scope except
@@ -97,7 +99,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
   2); disabled means no exporter — with `enabled = false` nothing is built even when
   `MICROMEGAS_TELEMETRY_URL` / `OTEL_EXPORTER_OTLP_ENDPOINT` are set.
 - Golden-dataset schema validation; runner green against verdict fixtures.
-- **docs** (`rust/fontaine-core/tests/docs.rs`, run by `cargo test`): every ```toml block in `docs/*.md` parses and schema-validates (as user-scope settings; no phase-gated value rules such as the pre-Phase-4 `default_mode = "auto"` error, no model resolution or discovery, no env/credential checks); every relative link in `docs/`, `README.md` and `evals/README.md` resolves; any `TODO` / `TBD` in those files fails the test.
+- **docs** (`rust/fontaine-core/tests/docs.rs`, run by `cargo test`): every ```toml block in `docs/*.md` parses and schema-validates (as user-scope settings; no phase-gated value rules such as the pre-Phase-4 `default_mode = "auto"` error, no model resolution or discovery, no env/credential checks, no build-feature checks such as `scanner = "pg2"` without the `pg2` feature); every relative link in `docs/`, `README.md` and `evals/README.md` resolves; any `TODO` / `TBD` in those files fails the test.
 
 ## Definition of done
 
@@ -110,5 +112,5 @@ scorecard is the differentiating asset, so its harness is built first, not last.
   stack, workspace trust and `[telemetry]` (incl. its required endpoint and key).
 - The config, trust-store and telemetry-config tests above are green; no exporter is built in this
   phase.
-- `CHANGELOG.md` exists with the Phase 0 entry; `CONTRIBUTING.md` exists.
+- `CHANGELOG.md` exists with the Phase 0 entry; `CONTRIBUTING.md` and `SECURITY.md` exist.
 - Log the phase in the master plan's Progress log.

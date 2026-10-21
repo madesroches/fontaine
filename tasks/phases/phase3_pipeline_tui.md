@@ -15,7 +15,7 @@ Five modes with the **same semantics as Claude Code**: `manual`, `acceptEdits`, 
 v2.1.283+); during the Phase-3 interim the default is `manual`, because nothing runs `auto` before
 the guardian exists (Phase 4) — no auto without a guardian. **Deliberate subtraction from Claude
 Code**: `bypassPermissions` is not shipped at all in v1 — there is no permission-bypass mode, so
-the deterministic deny → ask → critical-path floor (and, from Phase 4, the guardian) gates every
+the deterministic deny → ask → critical-path → protected-path floor (and, from Phase 4, the guardian) gates every
 call in every mode (reasoning in Decisions). Shift+Tab cycles manual → acceptEdits → plan → auto.
 Keeping the same set so muscle memory transfers; the difference is `auto` is powered by our local
 guardian against any model.
@@ -28,8 +28,8 @@ manual/escalate (allow once / allow session / always allow / deny + feedback): "
 a session-scope grant to `SessionState` (recorded in the ledger); "always allow" shows the exact
 `Tool(specifier)` rule it will write and appends it to the user file's `[permissions] allow`; the
 proposed rule is the narrowest that covers the call (exact argv for `shell`, the resolved path for
-path tools, the host for `webfetch`). `/permissions` edits rules; `/add-dir <path>` adds a
-workspace root; `/model` switches live; Shift+Tab cycles modes. (The denial UX — inline `[Rule]` rendering,
+path tools, the host for `webfetch`). `/add-dir <path>` adds a
+workspace root; Shift+Tab cycles modes. (The denial UX — inline `[Rule]` rendering,
 `/denied`, `/guardian-model` — is designed and built in Phase 4; the background-agents panel in
 Phase 5; see those plans.)
 
@@ -96,9 +96,12 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
    baselines) and run them for manual/acceptEdits/plan/dontAsk over the Tier-0.5 adversarial set and
    the floor/headless cases; also confirm the protected-path list and the allowlist table against
    the captured `claude -p` behavior. Fix or record each divergence.
-4. Docs — `docs/permissions.md`: the mode table (`manual`/`acceptEdits`/`plan`/`dontAsk`, the
-   interim default and its Phase-4 flip to `auto`), the deterministic floor (deny → ask →
-   critical-path with its rm/rmdir list, protected-path with its enumerated list), the
+4. Cassette test (offline build; recording stays the human step): `rust/fontaine/tests/cassettes.rs` with the manual-mode
+   test (in-scope read round-trip) marked `#[ignore = "cassette not recorded"]`, the rig-cassette scrubbing
+   configuration, and the account `base_url` pointed at the cassette proxy.
+5. Docs — `docs/permissions.md`: the mode table (`manual`/`acceptEdits`/`plan`/`dontAsk`; the default is
+   `manual`; `auto` is not yet available), the deterministic floor (deny → ask →
+   critical-path with its rm/rmdir list → protected-path with its enumerated list), the
    `Tool(specifier)` rule grammar and allow rules (sources, step order, session vs always grants,
    suspension of broad rules in `auto`), and the Tier-0.5 pre-classifier (curated set,
    per-command read-only flag allowlist, fail-through rule, `[shell_preclassifier] allow_extra` —
@@ -111,7 +114,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
 ## Files created or modified
 
 `rust/fontaine-core/src/{permissions,permission_rules,audit}.rs`; `rust/fontaine-evals/src/baseline.rs`;
-`rust/fontaine-tools/src/preclassify.rs`; `rust/fontaine/tests/cassettes.rs` (manual-mode cassette; the auto-mode cassette is added in Phase 4);
+`rust/fontaine-tools/src/preclassify.rs`; `rust/fontaine/tests/cassettes.rs` (manual-mode cassette, built in step 4; the auto-mode cassette is added in Phase 4);
 `rust/fontaine-tui/src/{app,transcript,approval,statusbar}.rs`; tests under `rust/fontaine-core/tests/`,
 `rust/fontaine/tests/`, `rust/fontaine-tui/tests/`;
 `rust/fontaine/src/main.rs` (TUI wiring); `docs/{permissions,tui,headless,telemetry}.md`, `docs/architecture.md`,
@@ -155,7 +158,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   positional falls through, an in-scope positional pre-classifies; golden parser cases: `ls;rm x`, `a|b`
   and `ls && rm x` never fast-path and `deny shell(rm)` matches the `rm` segment (floor treats the `rm` as
   critical), while a quoted `';'` argument stays one argument; git config-execution cases (see the golden set): the command does not execute on the fast path.
-- **headless** (`rust/fontaine/tests/pipeline_headless.rs`, scripted `openai-compatible` endpoint via the Phase-1 `common/mod.rs` helper):
+- **headless** (`rust/fontaine/tests/pipeline_headless.rs`, scripted `openai-compatible` endpoint via the Phase-1 `common/mod.rs` helper, passing `--permission-mode manual` explicitly):
   every would-prompt outcome becomes a Deny returned as the tool_result, the run continues, exit
   code 0.
 - **TUI** (`rust/fontaine-tui/tests/`): ratatui `TestBackend` with injected key events and a scripted
@@ -165,7 +168,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
 
 ## Definition of done
 
-- Offline gates (no keys, no human): `cargo fmt` / `cargo clippy --all-targets -- -D warnings` /
+- Offline gates (no keys, no human): `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` /
   `cargo test` green, including the scripted-endpoint headless, pipeline, permission-rule, and TUI tests above; interim default is
   `manual`; no mode or allow rule reaches past the deterministic floor; `docs/permissions.md` + pipeline diagram
   match the shipped step order and `rust/fontaine-core/tests/docs.rs` is green; CHANGELOG entry appended.

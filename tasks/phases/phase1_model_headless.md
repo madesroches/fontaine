@@ -66,9 +66,9 @@ upstream builder knob.
 1. Add rig crates (pinned exact versions): `rig-core`, `rig-agent`, `rig-memory`, `rig-tools`,
    `rig-rmcp`, `rig-cassette` (dev). `fontaine-core/src/models.rs`: map Fontaine config
    accounts → rig provider clients (one per account; Anthropic, OpenAI, Gemini, Ollama, custom
-   OpenAI-compatible base URLs), resolve `<account>/<model>` references (unknown account or model
-   is a config error, exit 2), resolve credentials (env var / stored-credentials file, plus the
-   `fontaine auth login` subcommand), and expose main-model + guardian-model handles. Spike: streaming one prompt to stdout via rig, with
+   OpenAI-compatible base URLs; `kind = "ollama"` uses rig's native Ollama client against Ollama's native API, `base_url` like `http://localhost:11434`; `openai-compatible` is the kind for OpenAI-style endpoints), resolve `<account>/<model>` references (unknown account or model
+   is a config error, exit 2), resolve credentials (env var / the Phase 0 `credentials.rs` lookup, plus the
+   `fontaine auth login` subcommand, the writer), and expose main-model + guardian-model handles. Spike: streaming one prompt to stdout via rig, with
    a tool call round-trip through a side-effect-free, test-only `echo` tool (no gate exists until Phase 2; Phase 2 removes it when it registers the wrapped tool set), to validate rig's ergonomics before building on it.
 2. Headless surface `fontaine -p "task"` on the same core — a non-interactive run driven by the CI
    runner, the Phase-0 golden-dataset eval harness, and the integration tests, so the core is
@@ -122,23 +122,23 @@ upstream builder knob.
    the ingestion URL and the ingestion key, by env-var name or `fontaine auth login --telemetry`,
    never inline, and either missing is a config error; both backends with recipes for micromegas
    native span trees and micromegas over OTLP; the metric/event/span table; privacy defaults and
-   opt-in keys; the scope rule; telemetry vs the audit log); link both from `docs/index.md`; refresh
-   the README quickstart's links into `docs/`; append a CHANGELOG entry.
+   opt-in keys; the scope rule; telemetry vs the audit log); link both from `docs/index.md`; add
+   the README quickstart (a local Ollama agent; the guardian leg lands in Phase 4's docs step) linking into `docs/`; append a CHANGELOG entry.
 
 ## Files created or modified
 
-`rust/Cargo.toml` (rig + telemetry pins); `rust/fontaine-core/src/models.rs` (plus `auth login`); `rust/fontaine/src/{main,headless}.rs`
+`rust/Cargo.toml` (rig + telemetry pins); `rust/fontaine-core/src/models.rs`; `rust/fontaine-core/src/credentials.rs` (adds the writer for `auth login`); `rust/fontaine/src/{main,headless}.rs`
 (`-p` flag wiring, I/O contract); `rust/fontaine/src/telemetry/{micromegas,otlp,span_bridge}.rs`;
 `rust/fontaine/tests/{headless_smoke,headless_contract,telemetry_micromegas,telemetry_otlp}.rs`;
-`rust/fontaine/tests/common/mod.rs` (shared scripted-wiremock helper);
+`rust/fontaine-core/tests/{models,accounts}.rs`; `rust/fontaine/tests/common/mod.rs` (shared scripted-wiremock helper);
 `docs/{configuration,architecture,headless,telemetry,index}.md`, `README.md`.
 
 ## Tests owned by this phase
 
 - **model wiring** (`tasks/design/testing.md` Testing Strategy): config → rig provider-client mapping (provider
   choice, base URLs, env keys, guardian-model override), with one smoke test per provider against
-  a `wiremock` endpoint speaking that provider's wire format (Anthropic, OpenAI, Gemini); the
-  OpenAI-compatible mock serves only openai-compatible/Ollama.
+  a `wiremock` endpoint speaking that provider's wire format (Anthropic, OpenAI, Gemini, and Ollama's native `/api/chat`); the
+  OpenAI-compatible mock serves only `openai-compatible`.
 - **accounts**: config parsing of multiple accounts (incl. two of the same kind); `<account>/<model>`
   resolution with unknown-account and unknown-model errors; two same-kind accounts routed to their
   own `wiremock` endpoints; project-scope `[accounts]` (and `[model]`/`[guardian] model`) rejected;
@@ -149,7 +149,7 @@ upstream builder knob.
   endpoint, built by the shared helper `rust/fontaine/tests/common/mod.rs`: a scripted
   openai-compatible (and catalog-priced `kind = "openai"`, see the telemetry bullet) wiremock builder
   with a turn script, tool-call responses, `usage` fields, a guardian-verdict helper, and temp
-  `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR` setup. Later phases reuse it; `rust/fontaine/tests/headless_smoke.rs` runs `fontaine -p` against it (streamed prompt,
+  `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR` setup. Headless tests written before Phase 4 pass `--permission-mode manual` explicitly, so the Phase 4 default flip does not change them. Later phases reuse it; `rust/fontaine/tests/headless_smoke.rs` runs `fontaine -p` against it (streamed prompt,
   tool-call round-trip, exit codes 0/1/2) and covers CLI parsing (`--permission-mode auto` rejected
   before Phase 4; no bypass value). Library-level tests (`rust/fontaine-core/tests/{models,accounts}.rs`)
   use `rig_core::test_utils` models.

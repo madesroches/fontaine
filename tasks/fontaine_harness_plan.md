@@ -33,12 +33,13 @@ Deliberate design choices and user decisions are recorded in `## Decisions`.
 Repo `/home/mad/fontaine` is on branch `start` (not `main`); its history so far is this plan (and
 its split into per-phase plans), the five analysis docs, the LlamaFirewall deep-dive, and
 review/fact-check passes on this branch. No
-Rust code exists yet — the implementation is greenfield. `research/` holds six companion docs that are this plan's precedent and inputs:
+Rust code exists yet — the implementation is greenfield. `research/` holds seven companion docs that are this plan's precedent and inputs:
 `analysis-competitive-landscape.md` (market/permission-story survey),
 `analysis-guardian-market.md`, `analysis-differentiation.md`,
 `analysis-devils-advocate.md` (kill criteria), `analysis-strategic-verdict.md` (verdict and
 "Required plan amendments" A1–A5, which this plan incorporates: A1 as the public scorecard plus a contributor path for dataset and red-team cases in `CONTRIBUTING.md`, A5 as the local/air-gapped lead in the README quickstart), and
-`research-llamafirewall.md` (deep-dive on the nearest open prior art).
+`research-llamafirewall.md` (deep-dive on the nearest open prior art), and
+`research-claude-code-parity.md` (Claude Code feature matrix and backlog triage).
 
 ## Phase Tracker
 
@@ -52,7 +53,7 @@ product documentation lives under `docs/` (see `design/documentation.md` §Docum
 
 | Phase | Plan | Scope | Status | Exit milestone |
 |-------|------|-------|--------|----------------|
-| 0 — scaffold (eval first) | [phases/phase0_scaffold.md](phases/phase0_scaffold.md) | Cargo workspace, crate skeletons, CLI entry, tracing facade + `[telemetry]` config, CI, settings scope stack + workspace trust store; eval golden-dataset + runner skeleton; `docs/` tree started | not started | CI green; eval runner green against verdict fixtures with no guardian in the tree |
+| 0 — scaffold (eval first) | [phases/phase0_scaffold.md](phases/phase0_scaffold.md) | Cargo workspace, crate skeletons, CLI entry, tracing facade + `[telemetry]` config, CI, settings scope stack + workspace trust store + read-only credentials lookup; eval golden-dataset + runner skeleton; `docs/` tree started | not started | CI green; eval runner green against verdict fixtures with no guardian in the tree |
 | 1 — model layer + headless | [phases/phase1_model_headless.md](phases/phase1_model_headless.md) | rig crates pinned; config → provider mapping; streaming spike; `fontaine -p` with the versioned headless I/O contract; telemetry backends (micromegas/OTLP) + `docs/telemetry.md`; provider docs | not started | `fontaine -p` streams a prompt plus a spike tool round-trip against a mock endpoint |
 | 2 — agent runtime & tools | [phases/phase2_runtime_tools.md](phases/phase2_runtime_tools.md) | RiskClass registry, GuardedTool (gate stubbed), rig-tools built-ins + read tools + webfetch, multi-root scope validator, confined rig tool config; rig-agent session orchestration + session ledger; `docs/tools.md` | not started | agent runs tools end-to-end headless through wrapped registry; choke-point test green |
 | 3 — pipeline & manual TUI | [phases/phase3_pipeline_tui.md](phases/phase3_pipeline_tui.md) | PermissionPipeline (manual/acceptEdits/plan/dontAsk; deterministic floor; `Tool(specifier)` rule grammar + allow rules; user-hook slot; Tier-0.5; audit log); headless `-p` denial semantics for manual/dontAsk; ratatui TUI; `docs/permissions.md` + pipeline diagram | not started | **usable Claude-Code-like agent with manual approvals** |
@@ -89,16 +90,16 @@ Built **on rig**: Fontaine crates are the guardian, the permission pipeline, con
 The model layer, agent runtime, memory/compaction, base tools, and MCP come from rig crates.
 Per the micromegas convention, the Cargo workspace lives at `rust/Cargo.toml` and **every crate
 sits directly under `rust/`** — the root directories are only `rust/`, `evals/`, `docs/`, `tasks/`,
-`research/`, plus root files `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`, `.gitignore`,
+`research/`, plus root files `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `AGENTS.md`, `.gitignore`,
 `.github/workflows/release.yml` (cargo-dist release build; see `design/platforms.md` §Releases) and
 `.github/workflows/ci.yml` (GitHub Actions; matrix `ubuntu-latest`, `macos-latest`, `windows-latest`, each job installs the toolchain pinned in `rust/rust-toolchain.toml` and from `rust/` runs `cargo fmt --check`,
-`cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run (Phase 6 adds `cargo clippy --all-targets --features fontaine-guardian/pg2 -- -D warnings` and `cargo test --features fontaine-guardian/pg2`) — see
+`cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run (Phase 4 adds a `cargo dist plan` step: install the pinned cargo-dist and run it from `rust/`; Phase 6 adds `cargo clippy --all-targets --features fontaine-guardian/pg2 -- -D warnings` and `cargo test --features fontaine-guardian/pg2`) — see
 `design/testing.md` §Testing Strategy).
 
 ```
 fontaine/
 ├── rust/
-│   ├── rust-toolchain.toml     # channel ≥ 1.97.1 (rig 0.45.0 `rust-version`)
+│   ├── rust-toolchain.toml     # channel = "1.97.1" (rig 0.45.0 `rust-version`)
 │   ├── Cargo.toml              # workspace root (`[workspace] members = ["*"]`, `exclude = ["target", ".*"]`, resolver = "2",
 │   │                           #   workspace.package: edition 2024, rust-version 1.97.1); rig crates pinned to exact versions
 │   ├── fontaine/               # thin bin crate: CLI (clap), wires core+tui, `-p` headless from Phase 1,
@@ -122,7 +123,7 @@ fontaine/
 ├── evals/                      # golden dataset (`evals/dataset/*.jsonl`) + README; runner is rust/fontaine-evals
 ├── docs/                       # all product docs — one topic per page, website-ready (see `design/documentation.md` §Documentation)
 ├── tasks/                      # this master plan + design/ (topic design docs) + phases/ (one plan per phase)
-└── research/                   # six analysis/research companion docs
+└── research/                   # seven analysis/research companion docs
 ```
 
 Crate dependency graph (arrows point at dependencies; no cycles):
@@ -150,7 +151,7 @@ user hooks, extension files, session resume/fork (Phase 5), result scanning (Pha
 ## Files to Modify
 
 All new. Workspace-level files: `rust/Cargo.toml` (see Phase 0 step 1), `rust/rust-toolchain.toml`,
-`README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `.github/workflows/*`. Each phase plan lists its own
+`README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `.github/workflows/*`. Each phase plan lists its own
 file slice in dependency order. No `fontaine-llm` crate — the model layer is rig.
 
 ## Trade-offs
@@ -178,10 +179,6 @@ file slice in dependency order. No `fontaine-llm` crate — the model layer is r
   Rejected for the TUI: rig's own Bevy-plugin harness (`rig-harness`/`rig-tui`) — adopting its
   plugin kernel would subordinate the guardian architecture to someone else's app shape; ratatui
   stays ours.
-- **GuardedTool decorator vs rig AgentHook as the gate** — the decorator is the single gate:
-  registry-level wrapping covers built-ins, per-root instances and MCP tools in one place and each
-  wrapper is unit-testable without a run. rig-agent 0.45 `AgentHook::on_dispatch` is not used for
-  permission decisions; hooks stay bookkeeping-only.
 - **Stateless one-shot guardian requests vs persistent guardian conversation** — stateless chosen:
   no context poisoning over a long session, trivially cacheable and parallelizable, and each
   request carries a fresh digest of intent + session facts. Loses "guardian memory" of near-misses;
@@ -240,7 +237,7 @@ carries the reasoning:
   (out-of-scope reads are adjudicated/denied like writes), and third-party/MCP self-declared
   `readOnlyHint` never earns the fast path. (User choice.)
 - 2026-10-20 (amended 2026-10-21: Phase 5 → Phase 1, see below): TUI-first (ratatui), headless
-  `-p` mode in Phase 5 on the same core. (User choice.)
+  `-p` mode in Phase 1 on the same core. (User choice.)
 - 2026-10-20: Guardian is fail-closed on every non-verdict outcome (error, timeout, unparseable
   output; an Allow below the confidence threshold on a destructive class → Deny; Deny verdicts are
   never softened). Adopted from Claude Code's documented behavior.
@@ -330,8 +327,8 @@ carries the reasoning:
   adjudicate; requires Fontaine-verified containment (user-scope `--in-container` + Linux runtime probe in
   Phase 4; srt/bubblewrap launch detection joins with the Phase 5 sandbox slot; probe failure ⇒ fall back to `full`); user trust scopes only (per the config scope table); ships
   with its own scorecard column.
-- 2026-10-21 (user): Jev + open alternatives (Laya, DiffusionGemma) enter the benchmark-validated
-  guardian list as CANDIDATES (screening tier + standalone evaluation); hosted-Jev never the local
+- 2026-10-21 (user): Jev + open alternatives (Laya, DiffusionGemma) are deferred to the screening-tier
+  roadmap — v1 has no adapter for them and Phase 4 does not score them; hosted-Jev never the local
   default; thresholds always recalibrated on Fontaine's golden set (vendor defaults over-escalate —
   measured: 17/21 wrong escalations at the shipped 0.85/0.6 defaults).
 - 2026-10-21 (user): guardian tree accepted as design direction — strictest-wins composition,
@@ -471,7 +468,6 @@ carries the reasoning:
   model key); its reduced ruleset is `rust/fontaine-guardian/prompts/guardian_minimal.md`, versioned
   alongside `guardian_prompt.md`.
 - 2026-10-21: `pg2` flag threshold is the fixed constant 0.9 in `scanner.rs`, LlamaFirewall's `PromptGuardScanner` default `block_threshold` (PurpleLlama `prompt_guard_scanner.py`).
-- 2026-10-21 (user): v1 does not publish to crates.io; install paths are GitHub Releases binaries and `cargo install --git`; crates.io publishing is future work.
 - 2026-10-21 (user): destructive-class word lists ship as constants in Phase 4 (checked against `claude -p` baselines, extended by code change); catch rate is measured over all `kind = guardian` `attack:*` cases, benign false-deny over all `kind = guardian` benign cases, and the eval runner reports per-case latency with p50/p95.
 - 2026-10-21: output styles never alter the guardian's prompt or `AdjudicationRequest` (Phase 5 test).
 - 2026-10-21 (user): releases — semver 0.x, tags `vX.Y.Z`; GitHub Releases with prebuilt Linux, macOS
@@ -482,6 +478,30 @@ carries the reasoning:
 - 2026-10-21 (user): `fontaine-agents` defines a `ChildRunner` trait (spawn a gated child run from agent
   type, effective mode, budget and root-ledger handle; returns a status/kill/report handle) that
   `fontaine-core` implements and injects at startup — same inversion as `ToolGate`, no new crate edge.
+  The root-ledger handle is a small `LedgerView` trait defined in `fontaine-agents` (read root human
+  messages, append child events), implemented by `fontaine-core`'s ledger — the same inversion.
+- 2026-10-21 (user): the `agent` tool blocks until the child finishes and returns its report as the tool
+  result (Claude Code parity); with `background: true` it returns `{agent_id}` immediately and the report
+  is delivered later as a notification injected into the parent's next turn through `ResultPipeline`.
+  With `tool_concurrency = 1`, concurrency comes from background children.
+- 2026-10-21 (user): `send_message` — any agent may message its parent, its children or siblings in the
+  same root tree, and `"main"` addresses the root session; delivery is queued and injected into the
+  recipient's next turn as a notification marked with the sender's agent id, treated as untrusted
+  (guardian sees it only as untrusted context); the sender gets `{status: "queued"}`; a finished or
+  killed target is an error tool result, `agent not running`.
+- 2026-10-21 (user): the RuleLabel enum gains `Container Escape`, used by `guardian_minimal.md`; the
+  specific escape class goes in the verdict reason as `class=<name>`, and the `minimal` scorecard column
+  reports per class from that tag.
+- 2026-10-21 (user): guardian constants shipped in `fontaine-guardian`, not config keys — verdict cache
+  TTL 60 s; full-profile `task_intent` budget 2,000 characters; `recent_user_messages` = last 5;
+  actions-taken compact list = last 20; extractor retries on malformed output = 2.
+- 2026-10-21 (user): root `SECURITY.md` (Phase 0): private reporting via GitHub private vulnerability
+  reporting, 90-day coordinated disclosure window; `CONTRIBUTING.md` routes guardian-bypass reports there,
+  and public dataset PRs for a bypass come only after a fix ships.
+- 2026-10-21 (user): eval dataset minimum case counts — at least 10 per attack class, 30 benign, 15
+  ambiguous-intent, plus the tier05-adversarial golden set; `expected` labels are cross-checked against
+  `claude -p` baselines and signed off by the maintainer (human step) before the Phase 4 scorecard is
+  published.
 - 2026-10-21 (user): PromptGuard 2 runs on `candle` (safetensors weights from the gated HF repo), not
   ONNX/`ort`. Verified: `candle-transformers` 0.11.0 ships `models::debertav2` with
   `DebertaV2SeqClassificationModel` (PG2 86M is mDeBERTa-v3-base). Pins `candle-core`/`candle-nn`/
@@ -496,7 +516,7 @@ carries the reasoning:
   `container=` in PID 1's environment (unreadable ⇒ no signal); container markers in `/proc/1/cgroup`.
   macOS and Windows ⇒ not contained. `minimal` still needs `--in-container` AND a positive probe.
 - 2026-10-21 (user): guardian-list inclusion bar — a model enters `guardian_models.toml` only with
-  destructive-class catch rate ≥ 90%, benign false-deny rate ≤ 5% and p95 adjudication latency ≤ 3 s on
+  catch rate over all `kind = guardian` `attack:*` cases ≥ 90%, benign false-deny rate ≤ 5% and p95 adjudication latency ≤ 3 s on
   the scorecard; ranked by catch rate, then false-deny rate, then latency. Separate from the kill criteria.
 - 2026-10-21: while a parent is in `plan`, every child's edits are structurally blocked (plan's edit block is inherited) and the child's non-edit calls use the tighter of the child's own effective mode and `manual`; re-evaluated per call, including a parent that switches into `plan` mid-run.
 - 2026-10-21: Tier-0.5 pre-classified `git` commands run with forced-safe config via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` (`core.fsmonitor=false`, `log.showSignature=false`, `diff.external=`, `core.pager=cat`) plus `--no-ext-diff --no-textconv`; `GIT_CONFIG_NOSYSTEM` is not used (reason: repo config must not make a read-only subcommand execute a program).
