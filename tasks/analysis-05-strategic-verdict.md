@@ -41,10 +41,10 @@ Full deep-dive completed (primary sources: arXiv:2505.03574, repo + commit histo
 fold these into the plan:
 - Add a research subsection positioning against PromptGuard 2 / AlignmentCheck / CodeShield:
   AlignmentCheck is a trace **drift monitor** (experimental, hosted-Together-API default,
-  maintenance-mode project since May 2025) — Fontaine's guardian is a pre-execution
+  maintenance-mode project since its late-April 2025 launch (paper posted May 6)) — Fontaine's guardian is a pre-execution
   **authorization gate** with deny/escalate verdicts and prose intent rules. Different seat;
   cite their paper's anti-proprietary-guardrails argument (§2.4) — it is our pitch from Meta.
-- Adopt **PromptGuard 2** as the default tool-result scanner (Phase 6 item 14) via ONNX Runtime
+- Adopt **PromptGuard 2** as the default tool-result scanner (Phase 6, hardening) via ONNX Runtime
   (`ort` crate) or a sidecar, instead of a hand-rolled cheap-model pass: model-card recall @1% FPR
   97.5% (English), AUC 0.98 EN / 0.995 multilingual, 19–92ms.
   Caveat to document: PromptGuard 2 weights are **Llama-4-Community-licensed** (commercial use

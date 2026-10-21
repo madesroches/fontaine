@@ -45,7 +45,7 @@ longer novel. What remains unclaimed is the **open, inspectable, model-agnostic*
 
 ### Tier 2 — Open, model-agnostic harnesses (the direct competitors)
 
-**OpenCode** — ~209k GitHub stars, terminal + desktop + IDE, any model. (opencode.ai;
+**OpenCode** — ~219k GitHub stars, terminal + desktop + IDE, any model. (opencode.ai;
 morphllm.com/comparisons/opencode-vs-goose)
 - Permission system is **static config**: `allow` / `deny` / `ask` per tool, plus a newer
   "policies" layer. (opencode.ai/docs — Permissions, Policies)
@@ -67,7 +67,8 @@ embeddable `goosed` server. (developersdigest.tech/blog/github-trending-goose-20
 Code's architecture; one of the fastest repos to ~100k stars (now ~195k, MIT) after Claude Code's
 source leaked via npm; transferred from instructkr to ultraworkers.
 (github.com/ultraworkers/claw-code; thursdai.news/topics/coding; arxiv.org/html/2609.00006v1
-"Harness Engineering" — a source-code study of eleven coding agents including Claw Code)
+"Harness Engineering" — a source-code study of eleven coding agents that also catalogs Claw
+Code in its ecosystem survey)
 - **Retired (per its README, Oct 2026)**: "not the serious production project — closer to a museum
   exhibit", an agent-managed exhibit; its active successors are **LazyCodex**
   (code-yeongyu/lazycodex) and **Gajae-Code** (Yeachan-Heo/gajae-code). The crates.io `claw-code`
@@ -108,7 +109,7 @@ exact pitch Fontaine's model-agnostic story competes with, minus the guardian. D
 
 ## Landscape conclusion
 
-1. **The harness is not the product.** 167 harnesses; OpenCode alone has 209k stars. Competing on
+1. **The harness is not the product.** 167 harnesses; OpenCode alone has 219k stars. Competing on
    "another terminal coding agent in Rust" is competing on zero.
 2. **The guardian pattern is validated but captive.** Both closed platforms run LLM adjudication as
    a default/flag; neither exposes it. Every open harness still uses static allow/deny/ask lists —

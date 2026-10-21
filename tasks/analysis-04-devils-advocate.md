@@ -7,7 +7,7 @@ shipping product or a demonstrated fact, not speculation.
 ## Kill list, ordered by severity
 
 ### KILL #1 — OpenCode + a guardian plugin (probability: high, timeline: months)
-OpenCode: 209k stars, any model, terminal-first, plugin system already used for permission
+OpenCode: 219k stars, any model, terminal-first, plugin system already used for permission
 automation (`opencode-allowlist` auto-approves file access from config; community Claude Code
 plugins already advertise "open source risk classifier + guardrails" — see r/ClaudeAI auto-mode
 thread). Its permission layer (`allow/deny/ask` + policies) is exactly the seam a
@@ -70,7 +70,7 @@ CodeShield) explicitly designed as the final defense layer for *any* agent. Alig
 structurally adjacent to the guardian (audit agent reasoning against user goal), and Meta's
 brand makes it the comparison everyone will reach for.
 - **Deep-research downgrade** (see `research-llamafirewall.md`): the framework has been in
-  **maintenance mode since its May 2025 launch** — commit history is predominantly bot chores
+  **maintenance mode since its late-April 2025 launch (paper posted May 6)** — commit history is predominantly bot chores
   since March 2026 (last functional change Jan 2026; last commit Aug 18, 2026); AlignmentCheck remains "experimental" and defaults to a
   *hosted* Together API; no MCP support, no Rust port, promised roadmap (distillation, unsafe
   tool-use coverage) unshipped in 15+ months. Meta shipped components, not a standard, and
@@ -120,7 +120,9 @@ doesn't stop rig-harness from building on rig's momentum.
   shows where this road ends.
 - **The plan's Open Question #2 admits it**: with no guardian model configured, auto mode is
   either slow (main model) or unusable. First-run experience decides adoption, and this one is
-  currently unresolved.
+  currently unresolved. (RESOLVED 2026-10-21 — guardian default is the top-ranked benchmark-validated
+  model on the configured provider; unset + no catalog match → main model with a one-time notice;
+  recorded in the plan's Decisions, 2026-10-21.)
 - **Name/category confusion**: "guardian agent" overlaps Striker's "Guardian Agents" enterprise
   product and generic AI-security marketing. SEO/discoverability will be a fight.
 

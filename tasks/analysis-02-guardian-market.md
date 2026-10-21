@@ -12,7 +12,7 @@ product be plugged into an existing harness, making a guardian-native harness re
 
 **LlamaFirewall (Meta / Purple Llama)** — the most direct conceptual competitor.
 (Deep-dive with primary sources and all numbers: `research-llamafirewall.md`.)
-- MIT-licensed (code; `Examples/` is CC-BY-NC-4.0) **in-process Python library** (not a proxy, not
+- MIT-licensed (code and examples; the PurpleLlama root license covers model weights only) **in-process Python library** (not a proxy, not
   a harness); used in production at
   Meta. Open-source guardrail system for building secure AI agents; four scanner tiers:
   - **PromptGuard 2** — 86M/22M DeBERTa-family classifiers for explicit jailbreak/injection
@@ -33,8 +33,8 @@ product be plugged into an existing harness, making a guardian-native harness re
   choke point shipped for terminal coding agents. Integrations shipped: OpenAI Agents SDK and
   LangChain only. It guards *your* agent runtime; using it with OpenCode/Goose means writing
   that integration yourself.
-- **Project health (verified Oct 2026 via commit history)**: maintenance mode since the May 2025
-  launch — predominantly bot (`meta-codesync[bot]`) dependency bumps and lint chores since
+- **Project health (verified Oct 2026 via commit history)**: maintenance mode since the late-April 2025
+  launch (paper posted May 6) — predominantly bot (`meta-codesync[bot]`) dependency bumps and lint chores since
   March 2026 (last functional change Jan 2026; last commit Aug 18, 2026). No MCP support, no Rust port, promised future work (distillation, unsafe tool-use
   coverage) not shipped. PromptGuard 2 *the model* became widely-embedded infrastructure;
   LlamaFirewall *the framework* did not become a standard.

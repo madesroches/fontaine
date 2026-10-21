@@ -172,8 +172,10 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   "Built with Llama" notice). Llama Guard 4 12B is under the same license (not Apache-2.0) and
   too heavy for hot-path scanning anyway. Community mirrors and ONNX ports exist but do not
   change the license; the air-gapped / license-clean story is the BYO-scanner interface.
-- **Attribution**: the LlamaFirewall code is MIT-licensed (its `Examples/` dir is CC-BY-NC-4.0;
-  the enclosing PurpleLlama repo is CC-BY-NC-4.0); their AlignmentCheck prompts (paper Appendix
+- **Attribution**: the LlamaFirewall code and its examples are MIT-licensed (examples carry MIT
+  headers; no separate license file in `Examples/`; the enclosing PurpleLlama repo carries the
+  Llama 3.2 Community License for its model weights, and GitHub reports the repo license as
+  NOASSERTION/"Other"); their AlignmentCheck prompts (paper Appendix
   C.6, CC BY 4.0) are reusable, attributed prior art for `guardian_prompt.md`. Cite their
   anti-proprietary-guardrails argument — provider-embedded safety offers "limited visibility,
   auditability, and customizability" (the paper's Introduction §1; §2.4, "Open-Source vs.
@@ -271,8 +273,13 @@ entirely.
               `;`/`&&` chaining, redirections, command substitution, backgrounding, globs —
               anything exotic falls through) AND argv[0]+subcommand ∈ curated read-only set
               (`ls`, `pwd`, `wc`, `file`, `git status|log|diff|show`, `rg`/`grep`,
-              `cat`/`head`/`tail`) AND every path argument passes the step-4 scope validator
-              (symlink-resolved; absolute / out-of-workspace paths never qualify)
+              `cat`/`head`/`tail`) AND every remaining token is either a path argument passing
+              the step-4 scope validator (symlink-resolved; absolute / out-of-workspace paths
+              never qualify) or a flag on a per-command read-only flag allowlist — any flag not
+              explicitly allowlisted for that command, any glob/`~`/wildcard token, or any
+              unparsed construct falls through to the guardian; values of file-opening flags
+              (`--files-from`, `-f`, `-m`, etc.) are themselves treated as path arguments and
+              validated (mirrors Claude Code's documented per-command flag handling)
               → Allow, with an audit-log entry (no guardian)
            6. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
            7. mode == auto → Guardian::adjudicate(request) ──▶ Verdict
@@ -398,7 +405,10 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
   (pipeline step 4), and the system prompt steers the model toward these rather than `shell` for
   reads. The **Tier 0.5 pre-classifier** (pipeline step 5) is the fallback fast path for read-ish
   shell invocations: it is purely *structural* — lex the command line, check `argv[0]`+subcommand
-  against the curated set, validate every path argument with the scope checker — which honors the
+  against the curated set, accept only path arguments that pass the scope checker plus flags on a
+  per-command read-only flag allowlist (values of file-opening flags like `--files-from`/`-f`/`-m`
+  are validated as path arguments; any other flag, glob, or unparsed token falls through) — which
+  honors the
   "no regex matching on arguments anywhere" decision. Lexing uses **`shlex`** (v2.0.1, MIT OR
   Apache-2.0, actively maintained — 2.0.0 shipped 2026-05) for POSIX word splitting; a full bash
   AST via **`tree-sitter-bash`** (v0.25.1, MIT, maintained under the tree-sitter org; pulls in the
@@ -406,12 +416,17 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
   (pipelines, redirections, substitutions) must be *recognized* rather than merely rejected.
   Anything the classifier cannot fully parse **falls through to the guardian** — the same
   fail-through soundness Claude Code documents ("when it can't fully parse a command, it asks for
-  approval instead of treating the command as read-only"). Out-of-workspace reads never
+  approval instead of treating the command as read-only"). Curated set membership alone is
+  unsound: several allowlisted commands carry write/exec-capable or file-opening flags, so the
+  per-command read-only flag allowlist mirrors Claude Code's documented per-command flag handling
+  (its docs prompt on `file -m`/`--magic-file`/`-f`/`--files-from`, and on unquoted globs for
+  `find`/`sort`/`sed`/`git` because of write-capable flags like `sort -o` and `git log --output`). Out-of-workspace reads never
   pre-classify as safe: read-only ≠ safe, per the 2026-10-21 hybrid-gate refinement (Fontaine-
   enforced containment at the execution boundary earns the fast path, never the read-only label),
   so `cat ~/.ssh/id_rsa` is adjudicated like a write. The curated command set ships **opinionated
   and conservative** (`ls`, `pwd`, `wc`, `file`, read-only `git status|log|diff|show`, `rg`/`grep`,
-  `cat`/`head`/`tail`); users may extend it via config `allow` rules (per-mode), and Fontaine
+  `cat`/`head`/`tail`); users may extend it via `[shell_preclassifier]` config keys (`allow_extra`,
+  per-mode `allow_auto`, … — NOT the guardian's `[auto_mode].allow` prose list), and Fontaine
   **never auto-extends** it from observed usage — unlike Claude Code, whose set is fixed and whose
   "don't ask again" grants accumulate prefixes: Fontaine's grants go to explicit config rules only
   (recorded in Decisions as a deviation).
@@ -474,7 +489,11 @@ in the main session, and their results return to the parent as a summary.
 - **Budgets.** `[agents] max_parallel` (default small, e.g. 4) plus per-subagent token/cost budgets, so fan-out cannot
   silently multiply guardian round-trips and model spend (Claude Code documents that each subagent spends tokens of
   its own and running many multiplies usage). The guardian is stateless-per-request, so parallel adjudications scale
-  naturally with no shared mutable state.
+  naturally with no shared mutable state. Nesting is capped and budgets are tree-wide, mirroring Claude Code's
+  documented rules: a subagent may itself spawn subagents up to a default depth of **three layers below the main
+  conversation**, and at the cap the `agent` tool is withheld from further subagents. `max_parallel` bounds concurrent
+  agents across the **whole session tree**, not just the parent's direct children, and per-subagent token/cost budgets
+  count against the tree — so grandchildren cannot slip spend past the caps.
 
 ### Model layer: rig-core providers (replaces fontaine-llm)
 
@@ -586,7 +605,7 @@ audit entries) are listed per row, so a background subagent never hides an appro
 **Phase 3 — permission pipeline & manual TUI**
 6. `PermissionPipeline` with modes `manual`/`acceptEdits`/`plan`/`dontAsk`/`bypass` and the
    step order from the data-flow diagram (steps 4–5: read-only fast path, then the Tier-0.5
-   shell pre-classifier with its curated set + audit log); human-approval callback trait.
+   shell pre-classifier with its curated set + per-command read-only flag allowlist + audit log); human-approval callback trait.
 7. `fontaine-tui`: transcript, streaming render, input, approval prompts, status bar, mode
    cycling. **Milestone: usable Claude-Code-like agent with manual approvals.**
 
@@ -686,7 +705,8 @@ No `fontaine-llm` crate — the model layer is rig.
 - **Read-only fast path (user-approved hybrid) + Tier 0.5 pre-classifier** — skips guardian latency on
   the highest-frequency calls (Claude Code does the same: dedicated Read/Grep/Glob tools and a
   built-in read-only Bash command set). The scope check (workspace containment, symlink resolution)
-  and the pre-classifier (lexer + curated set membership + the same scope validator) are
+  and the pre-classifier (lexer + curated set membership + per-command read-only flag allowlist +
+  the same scope validator) are
   deterministic code enforced by Fontaine at the execution boundary, not regex-on-args and not the
   tool's own declaration; a read that escapes scope, and any command the classifier cannot fully
   parse, goes to the guardian (read ≠ safe — out-of-workspace reads are recon/exfiltration risk),
@@ -766,9 +786,10 @@ carries the reasoning:
   deviation gets a dated line in Decisions with a one-line reason. (User directive.)
 - 2026-10-21: composite tools + Tier 0.5 — dedicated first-party read tools (`ls`/`read`/
   `glob`/`grep`) plus a deterministic, zero-LLM shell pre-classifier (structural: shlex/AST lexing
-  + curated read-only set membership + the step-4 scope validator; never regex-on-args; fail-
-  through on anything unparsed) as a guardian-skipping fast path; curated set ships conservative,
-  user-extensible via per-mode config allow rules (user-scope only), never auto-extended. Mirrors
+  + curated read-only set membership + per-command read-only flag allowlist + the step-4 scope
+  validator; never regex-on-args; fail-through on anything unparsed) as a guardian-skipping fast path; curated set ships conservative,
+  user-extensible via `[shell_preclassifier]` config keys (`allow_extra` + per-mode allow keys,
+  user-scope only; not the guardian's `[auto_mode].allow` prose list), never auto-extended. Mirrors
   Claude Code's read-tool split + built-in read-only Bash command set per the tie-breaker.
   Deviations from Claude Code, recorded per that guideline: we reject unquoted globs in
   pre-classified commands (Claude Code permits them for read-only commands — reason: the glob
@@ -781,6 +802,14 @@ carries the reasoning:
   v1 requirement, Claude Code-style (`fontaine-agents`; spawn/list/stream/interrupt, per-agent
   context + model + restricted toolset, budgets); agent-to-agent messages go through the same
   guardian gate — the 2026-10-20 line stands, now in v1. (User directive 3.)
+- 2026-10-21: deliberate Claude-Code deviation — child mode is never looser than parent's (≤
+  parent); Claude Code lets default/dontAsk/plan parents set child permissionMode including auto;
+  Fontaine hardens it because a child's effective authority must never exceed what the human
+  granted the session.
+- 2026-10-21: subagent nesting mirrors Claude Code's documented rules (per the tie-breaker — not a
+  deviation): default depth cap of three layers below the main conversation, at which the `agent`
+  tool is withheld from subagents; `[agents] max_parallel` bounds concurrent agents across the
+  whole session tree and per-subagent budgets count against the tree.
 
 ## Documentation
 
@@ -809,7 +838,10 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   `$(rm -rf /)` (command substitution), backticked args, `git status` (allow) vs `git clean -fdx`
   (subcommand set membership → guardian), symlink escape (`ls linked/` where `linked` leaves the
   workspace — the step-4 containment validator catches it), glob and `~`-prefixed args (fall
-  through, no shell-side expansion assumed), redirections and backgrounding (`ls > out.txt`,
+  through, no shell-side expansion assumed), `ls *`-style unquoted glob tokens (fall through —
+  never pre-classified), non-allowlisted and write-capable flags (`file -m`/`--magic-file`/`-f`/
+  `--files-from` with their file-opening values validated as path arguments, `sort -o out`,
+  `git log --output` → guardian), redirections and backgrounding (`ls > out.txt`,
   `ls &`).
 - **guardian**: verdict extraction via rig extractor with malformed outputs → retries → Deny;
   timeout → Deny (tokio time-pause); cache key correctness incl. rules-version invalidation;

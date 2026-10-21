@@ -10,7 +10,7 @@ Primary sources: arXiv:2505.03574 (the paper), github.com/meta-llama/PurpleLlama
 
 LlamaFirewall is Meta's **open-source (MIT-licensed code; weight licenses below, §2), in-process
 Python guardrail framework** for LLM
-agents, launched May 2025, used in production at Meta. It is a **policy engine orchestrating
+agents, launched late April 2025 (paper posted May 6), used in production at Meta. It is a **policy engine orchestrating
 four kinds of scanners** over messages/traces: PromptGuard 2 (injection classifier),
 AlignmentCheck (LLM chain-of-thought auditor — the component closest to Fontaine's guardian),
 CodeShield (static analysis of generated code), and regex/custom scanners.
@@ -25,9 +25,12 @@ its AgentDojo numbers; the harness-native adjudication gate remains unclaimed.
 ## 2. Identity and positioning
 
 - Repo: `meta-llama/PurpleLlama` → `LlamaFirewall/` (pip package `llamafirewall`, Python ≥3.10).
-- **Code license: MIT** (verified from LICENSE file — with two precisions: `Examples/` is marked
-  CC-BY-NC-4.0 and the enclosing PurpleLlama repo is CC-BY-NC-4.0, so the *code* vendors cleanly
-  under permissive terms, the *examples and weights* do not). Model weights:
+- **Code license: MIT** (verified from LICENSE file — with one precision: the `examples/` files
+  carry MIT license headers, so the *code and examples* both vendor cleanly under permissive
+  terms. The PurpleLlama root LICENSE is the Llama 3.2 Community License — it covers model
+  weights; GitHub reports the repo license as NOASSERTION/"Other". The community-license
+  encumbrance applies to Meta's model weights (PromptGuard 2 / Llama Guard 4: Llama 4 Community
+  License), not the Python code. Model weights:
   **PromptGuard 2** (`Llama-Prompt-Guard-2-86M/22M`, updated Apr 29, 2025) is under the
   **Llama 4 Community License** — which **permits commercial use** (royalty-free, conditional;
   extra restrictions only above 700M monthly active users) with AUP adherence + a "Built with
@@ -98,14 +101,14 @@ ScanResult(decision=ALLOW|BLOCK, reason="prompt_guard"|"agent_alignment"|..., sc
   only the eval dataset `facebook/llamafirewall-alignmentcheck-evals` (MIT).
 - AgentDojo: AlignmentCheck alone ASR .176 → **.029** (−84%) with utility .477 → .431;
   **combined with PromptGuard 2: ASR → .0175 (−90%), utility .427**. Beats Spotlighting
-  (arXiv:2410.10785, Samuel et al.), paraphrasing, and CaMeL-style defenses on this benchmark.
+  (arXiv:2403.14720, Hines et al., 2024), paraphrasing, and CaMeL-style defenses on this benchmark.
   These numbers are the **LlamaFirewall paper's own runs** (§4.3.2) — the AgentDojo paper
   (arXiv:2406.13352, Debenedetti et al., NeurIPS 2024 Datasets & Benchmarks) never mentions LlamaFirewall or AlignmentCheck, and
   its published table is **task-completion under attack** (defense effectiveness = benign success
-  minus attack success), so the two papers' numbers are not directly comparable. A circulated
-  "ASR <1% with LlamaFirewall" headline (the abstract-level claim) corresponds to Table 6's
-  **0.8% — measured with PromptGuard 2 enabled as an additional layer**, not the alignment check
-  alone.
+  minus attack success), so the two papers' numbers are not directly comparable. The paper's
+  best combined-defense result (§4.3.2) is **ASR reduced to 1.75%** — a >90% reduction from the
+  .176 baseline — with utility dropping to 42.7% (the .0175/.427 figures above); the paper has a
+  single numbered table and makes no "<1% ASR" claim anywhere.
 - Status in docs/paper: explicitly **"experimental"**; latency is acknowledged as the production
   problem (semantic reasoning overhead); planned future work includes distillation.
 
@@ -147,9 +150,12 @@ job — but the public will conflate them, so the plan must articulate this cris
   changes were small (a tokenizer fix and a model addition, Jan 2026); last commit 2026-08-18.
   Last substantive feature work dates to the 2025 launch.
 - Attribution note on "maintenance mode": Meta has **not** said in its own blog that the project
-  is in maintenance mode — no such LlamaFirewall statement exists, and the 2025-04-05 launch blog
-  says the team "will continue to release new defenses". The model cards make no end-of-line
-  declaration either — they say improvements "will be incorporated into future versions" (there
+  is in maintenance mode — no such LlamaFirewall statement exists, and the launch blog (dated
+  April 29, 2025 — *2025-04-05 is the Llama 4 Community License effective date, not the launch*)
+  makes no forward-completeness promise; its framing is "Today, we're releasing new Llama
+  protection tools for the open source AI community". The model cards make no end-of-line
+  declaration either — they say "we will look to incorporate improvements into future versions of
+  Llama Prompt Guard" (there
   is no `meta-llama/PurpleLlama/LlamaGuard4.md`, and PromptGuard's code lives under
   meta-llama/PurpleLlama — there is no facebook/PromptGuard repo). The maintenance-mode reading
   above is *our* commit-history evidence (predominantly bot chores since March 2026; last commit
@@ -159,8 +165,9 @@ job — but the public will conflate them, so the plan must articulate this cris
   own future-work list (multimodal, distillation, broader threat coverage incl. **unsafe
   tool-use**, better agent benchmarks) has not materialized publicly.
 - AlignmentCheck still labeled experimental; still defaults to a hosted API.
-- Ecosystem uptake is real but third-party: ONNX ports (`shisa-ai/promptguard2-onnx`,
-  `gravitee-io/*-onnx`), license-free mirrors (`project-free-llama/Llama-Prompt-Guard-2-86M`),
+- Ecosystem uptake is real but third-party: ONNX ports (`gravitee-io/*-onnx`), ungated mirrors
+  (`project-free-llama/Llama-Prompt-Guard-2-86M` — same Llama 4 Community License, download
+  convenience only),
   Mozilla.ai `any-guardrail` wraps PromptGuard 2, gateway products (Gravitee) embed it.
   **PromptGuard 2 has become infrastructure; LlamaFirewall-the-framework has not.**
 
@@ -199,35 +206,39 @@ a Llama-platform priority.
    baseline to beat. This is the cheapest credibility transfer available to us.
 4. **Prompt mining (legally clean)**: LlamaFirewall code is MIT — their AlignmentCheck
    system/user prompts (paper Appendix C.6; the paper is CC BY 4.0) and few-shot examples are
-   reusable prior art for `guardian_prompt.md` hardening, with attribution. Note `Examples/` in
-   the repo is CC-BY-NC-4.0 — mine the library code and the paper, not the examples.
+   reusable prior art for `guardian_prompt.md` hardening, with attribution. The `examples/`
+   directory is MIT-licensed too — the library code, the examples, and the paper are all fair
+   to mine.
 5. **Don't**: depend on the `llamafirewall` Python package at runtime (maintenance-mode,
    Python-in-Rust-harness, Together-API default). Depend on its *models and numbers*, not its
    framework.
 
 ## 8. Source index
 
-- Paper: arxiv.org/abs/2505.03574 (v1, 2025-05-06; CC BY 4.0) — benchmarks: §4.1–4.4, Tables 2–3.
+- Paper: arxiv.org/abs/2505.03574 (v1, 2025-05-06; CC BY 4.0) — benchmarks: §4.1–4.4 (single numbered table; combined-defense results in §4.3.2).
 - Docs: meta-llama.github.io/PurpleLlama/LlamaFirewall (About; AlignmentCheck scanner page;
   Getting Started — Together API requirement, HF model download flow, OpenAI/LangChain examples).
-- Repo: github.com/meta-llama/PurpleLlama/tree/main/LlamaFirewall (README; LICENSE MIT, with
-  `Examples/` CC-BY-NC-4.0 and the enclosing PurpleLlama repo CC-BY-NC-4.0;
+- Repo: github.com/meta-llama/PurpleLlama/tree/main/LlamaFirewall (README; LICENSE MIT covering
+  code and examples; the PurpleLlama root LICENSE is the Llama 3.2 Community License for model
+  weights — GitHub reports the repo license as NOASSERTION/"Other";
   commit history via api.github.com — predominantly-bot-chores evidence behind §6, latest commits 2026-08-18).
 - Models: huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M and -22M (Llama 4 Community License —
   commercial use permitted; **gated** downloads, `gated: "manual"` license acceptance required;
   model-card recall@1% FPR 97.5% EN, AUC 0.98 EN / 0.995 multilingual;
-  updated Apr 2025; cards say improvements "will be incorporated into future versions");
+  updated Apr 2025; cards say "we will look to incorporate improvements into future versions of
+  Llama Prompt Guard");
   meta-llama/Llama-Guard-4-12B (also Llama 4 Community License per its LICENSE in PurpleLlama,
   also gated — not Apache 2.0);
   AlignmentCheck: no released model — few-shot prompting method only; Meta published the eval
   dataset facebook/llamafirewall-alignmentcheck-evals (MIT);
-  mirrors: project-free-llama/Llama-Prompt-Guard-2-86M, shisa-ai/promptguard2-onnx,
+  mirrors: project-free-llama/Llama-Prompt-Guard-2-86M (ungated, same license),
   gravitee-io/Llama-Prompt-Guard-2-*-onnx; wrapper: docs.mozilla.ai/any-guardrail.
 - Benchmarks compared against: AgentDojo — arXiv:2406.13352 (Debenedetti, Zhang, Balunović,
   Beurer-Kellner, Fischer & Tramèr, ETH Zürich, NeurIPS 2024 Datasets & Benchmarks; its
   published table is task-completion under attack — defense effectiveness = benign success −
-  attack success; it does not mention LlamaFirewall); Spotlighting — arXiv:2410.10785
-  (Samuel et al.).
-- Blog: ai.meta.com/blog/ai-defenders-program-llama-protection-tools/ (launch, "AI Defenders";
-  the Meta blog says the team "will continue to release new defenses" — there is **no**
+  attack success; it does not mention LlamaFirewall); Spotlighting — arXiv:2403.14720
+  ("Defending Against Indirect Prompt Injection Attacks With Spotlighting", Hines et al., 2024).
+- Blog: ai.meta.com/blog/ai-defenders-program-llama-protection-tools/ (launch, April 29, 2025,
+  "AI Defenders"; the blog's framing is "Today, we're releasing new Llama protection tools for
+  the open source AI community" — there is **no**
   "maintenance mode" blog statement; see §6).
