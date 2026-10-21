@@ -49,7 +49,8 @@ all tests pass:
 ## Project layout
 
 - Root directories are only `rust/`, `evals/`, `docs/`, `tasks/`, `research/` (plus `.github/`);
-  root files are `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`.
+  root files are `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`,
+  `.gitignore`.
 - The Cargo workspace lives at `rust/Cargo.toml` (micromegas convention) and **every crate
   sits directly under `rust/`**: `fontaine` (bin), `fontaine-core`, `fontaine-tools`,
   `fontaine-guardian`, `fontaine-agents`, `fontaine-mcp`, `fontaine-tui`, `fontaine-evals`.
@@ -104,5 +105,6 @@ From `rust/`:
 
 - License is Apache-2.0. Rule prose adapted from Anthropic's published documentation gets an
   attribution note in `docs/guardian.md`; same for MIT-licensed LlamaFirewall prompts if
-  mined. Watch the Llama 4 Community License gated-download caveat around PromptGuard 2 (ONNX
-  tool-result scanner) — surface it at first enable and keep the BYO-scanner interface.
+  mined. Watch the Llama 4 Community License gated-download caveat around PromptGuard 2
+  (candle/safetensors tool-result scanner, `[guardian] scanner = "pg2"`) — surface it at first
+  enable and keep the BYO-scanner interface.
