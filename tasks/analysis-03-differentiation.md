@@ -66,7 +66,8 @@ auto mode as an open standard rather than an Anthropic service.**
 
 ### 5. The hybrid gate (deterministic fast path + LLM judgment)
 - Read-only in-workspace calls skip the guardian (deterministic scope/symlink validation — code,
-  not regex-on-args); everything else is adjudicated; fail-closed on every non-verdict outcome
+  not regex-on-args), as do curated in-workspace read-only shell commands via the plan's zero-LLM
+  Tier-0.5 pre-classifier; everything else is adjudicated; fail-closed on every non-verdict outcome
   (error, timeout, unparseable, low-confidence-on-destructive).
 - This combination — deterministic where possible, judgment where necessary, denial where uncertain
   — is not shipped anywhere with an open, user-runnable judge. Claude Code has it, closed; Codex

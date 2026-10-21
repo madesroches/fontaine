@@ -16,7 +16,7 @@ product be plugged into an existing harness, making a guardian-native harness re
   a harness); used in production at
   Meta. Open-source guardrail system for building secure AI agents; four scanner tiers:
   - **PromptGuard 2** — 86M/22M DeBERTa-family classifiers for explicit jailbreak/injection
-    detection (model-card recall @1% FPR **97.5% (English)**, AUC 0.98 EN / 0.995 multilingual;
+    detection (recall @1% FPR **97.5% (English)** per model card + paper §4.1; AUC .98 EN per paper, .998 on card / .995 multilingual;
     19–92ms; weights under the **Llama 4 Community License** — commercial use permitted — with HF
     repos **gated** (license acceptance required); ONNX ports and mirrors exist),
   - **AlignmentCheck** — a few-shot **chain-of-thought auditor** of the agent's reasoning trace:
@@ -76,7 +76,8 @@ product. Already cited in the plan.
 **LiteLLM Proxy guardrails** — free guardrail hooks with providers (Lakera, Aporia, LLM Shield
 PII-masking, etc.) applied to all traffic through the proxy.
 (docs.litellm.ai/docs/guardrail_providers; github.com/BerriAI/litellm/discussions/5321)
-**Kong / TrueFoundry / Portkey AI gateways** — same category, enterprise.
+**Kong / TrueFoundry / Portkey (Palo Alto Networks, closed May 2026) AI gateways** — same
+category, enterprise.
 (pillar.security/blog/ai-gateway-guardrails-litellm-kong-truefoundry-2026; truefoundry.com/guardrail)
 - **Key limitation vs Fontaine**: gateways see **model traffic** (prompts/completions), not
   structured tool-call semantics with workspace state. They can scan text for injection/PII; they

@@ -62,7 +62,8 @@ morphllm.com/comparisons/opencode-vs-goose)
   A "guardian plugin" for OpenCode is a weekend project for someone. ← biggest structural threat,
   expanded in analysis-04.
 - Community friction signal: multiple reports of permissions not behaving as configured
-  (github.com/anomalyco/opencode/issues/45059; reddit r/opencode "Cannot figure out permissions").
+  (github.com/anomalyco/opencode/issues/45059; reddit r/opencodeCLI "Cannot figure out
+  permissions").
 
 **Goose (Block/AAIF)** — Rust, Apache-2.0, 15+ providers, 70+ MCP extensions, CLI + desktop +
 embeddable server (consolidated into `goose serve`). (developersdigest.tech/blog/github-trending-goose-2026-06-07)

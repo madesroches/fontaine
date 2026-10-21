@@ -11,7 +11,8 @@ Primary sources: arXiv:2505.03574 (the paper), github.com/meta-llama/PurpleLlama
 LlamaFirewall is Meta's **open-source (MIT-licensed code; weight licenses below, §2), in-process
 Python guardrail framework** for LLM
 agents, launched late April 2025 (paper posted May 6), used in production at Meta. It is a **policy engine orchestrating
-four kinds of scanners** over messages/traces: PromptGuard 2 (injection classifier),
+four documented scanner families** (six `ScannerType`s ship: the four below plus Hidden-ASCII and
+experimental PIICheck) **over messages/traces**: PromptGuard 2 (injection classifier),
 AlignmentCheck (LLM chain-of-thought auditor — the component closest to Fontaine's guardian),
 CodeShield (static analysis of generated code), and regex/custom scanners.
 
@@ -65,7 +66,7 @@ verdict is only returned; acting on it is the caller's job.
 - `scan_replay(trace)` — full conversation trace scanned incrementally; a trace is flagged if
   any scanner fires at any point (this is also how they simulate real-time deployment for evals).
 - Custom scanners: any developer "who can write a regular expression or an LLM prompt" can add
-  one (docs: Adding a Custom Scanner).
+  one (paper abstract; how-to: docs "Adding a Custom Scanner").
 - Integration examples shipped: **OpenAI Agents SDK guardrails** (`demo_openai_guardrails.py`)
   and **LangChain/LangGraph** (`langchain_agent.py`). No MCP integration, no terminal coding
   agent integration, **no Rust bindings**, not a proxy — it lives in-process in *your* runtime.
@@ -109,8 +110,9 @@ verdict is only returned; acting on it is the caller's job.
   (arXiv:2403.14720, Hines et al., 2024), paraphrasing, and CaMeL-style defenses on this benchmark.
   These numbers are the **LlamaFirewall paper's own runs** (§4.3.2) — the AgentDojo paper
   (arXiv:2406.13352, Debenedetti et al., NeurIPS 2024 Datasets & Benchmarks) never mentions LlamaFirewall or AlignmentCheck, and
-  its published table is **task-completion under attack** (defense effectiveness = benign success
-  minus attack success), so the two papers' numbers are not directly comparable. The paper's
+  its published tables report **benign utility, utility-under-attack, and targeted/untargeted ASR**
+  as separate metrics from live agent runs (paper §3.4), while the LlamaFirewall paper offline-rescores
+  static leaderboard traces — so the two papers' numbers are not directly comparable. The paper's
   best combined-defense result (§4.3.2) is **ASR reduced to 1.75%** — a >90% reduction from the
   .176 baseline — with utility dropping to 42.7% (the .0175/.427 figures above); the paper has a
   single numbered table and makes no "<1% ASR" claim anywhere.
@@ -139,7 +141,7 @@ verdict is only returned; acting on it is the caller's job.
 | Fail-closed | not a framework concept | every non-verdict outcome = Deny (code, not LLM) |
 | Judge model | default **Together-hosted** Llama 4 Maverick (few-shot prompting; no small open AlignCheck model released); small backbones degrade | any rig provider incl. **fully local** Ollama/vLLM, independently configurable |
 | Language | Python, in-process | Rust; harness-native |
-| Modes | none | manual / acceptEdits / plan / auto / dontAsk / bypass |
+| Modes | none | manual / acceptEdits / plan / auto / dontAsk (no bypass in v1 — deliberate subtraction from Claude Code, user decision 2026-10-21) |
 
 **Conceptual takeaway**: AlignmentCheck answers *"has this agent drifted from the user's goal?"*
 (monitoring). Fontaine's guardian answers *"may this specific action run, under these rules, in
@@ -228,7 +230,7 @@ a Llama-platform priority.
 - Repo: github.com/meta-llama/PurpleLlama/tree/main/LlamaFirewall (README; LICENSE MIT covering
   code and examples; the PurpleLlama root LICENSE is the Llama 3.2 Community License for model
   weights — GitHub reports the repo license as NOASSERTION/"Other";
-  commit history via api.github.com — predominantly-bot-chores evidence behind §6, latest commits 2026-08-18).
+  commit history via api.github.com — maintenance-chores evidence behind §6 (human-account `JinpengMiao` dependency bumps + `generatedunixname*` fbcode-sync lint/type commits), latest commits 2026-08-18).
 - Models: huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M and -22M (Llama 4 Community License —
   commercial use permitted; **gated** downloads, `gated: "manual"` license acceptance required;
   model-card recall@1% FPR 97.5% EN, AUC .998 EN / .995 multilingual — the paper's §4.1 table
@@ -243,8 +245,9 @@ a Llama-platform priority.
   gravitee-io/Llama-Prompt-Guard-2-*-onnx; wrapper: docs.mozilla.ai/any-guardrail.
 - Benchmarks compared against: AgentDojo — arXiv:2406.13352 (Debenedetti, Zhang, Balunović,
   Beurer-Kellner, Fischer & Tramèr, ETH Zürich, NeurIPS 2024 Datasets & Benchmarks; its
-  published table is task-completion under attack — defense effectiveness = benign success −
-  attack success; it does not mention LlamaFirewall); Spotlighting — arXiv:2403.14720
+  published tables report benign utility / utility-under-attack / targeted+untargeted ASR separately
+  (§3.4; no effectiveness formula; live runs vs LlamaFirewall's offline trace re-scoring is the real
+  incomparability); it does not mention LlamaFirewall); Spotlighting — arXiv:2403.14720
   ("Defending Against Indirect Prompt Injection Attacks With Spotlighting", Hines et al., 2024).
 - Blog: ai.meta.com/blog/ai-defenders-program-llama-protection-tools/ (launch, April 29, 2025,
   "AI Defenders"; the blog's framing is "Today, we're releasing new Llama protection tools for

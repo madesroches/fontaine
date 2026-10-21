@@ -41,12 +41,12 @@ Full deep-dive completed (primary sources: arXiv:2505.03574, repo + commit histo
 fold these into the plan:
 - Add a research subsection positioning against PromptGuard 2 / AlignmentCheck / CodeShield:
   AlignmentCheck is a trace **drift monitor** (experimental, hosted-Together-API default,
-  maintenance-mode project since its late-April 2025 launch (paper posted May 6)) — Fontaine's guardian is a pre-execution
+  commits predominantly maintenance chores since ~March 2026 — launched late April 2025, paper May 6) — Fontaine's guardian is a pre-execution
   **authorization gate** with deny/escalate verdicts and prose intent rules. Different seat;
   cite their paper's anti-proprietary-guardrails argument (§2.4) — it is our pitch from Meta.
 - Adopt **PromptGuard 2** as the default tool-result scanner (Phase 6, hardening) via ONNX Runtime
-  (`ort` crate) or a sidecar, instead of a hand-rolled cheap-model pass: model-card recall @1% FPR
-  97.5% (English), AUC 0.98 EN / 0.995 multilingual, 19–92ms.
+  (`ort` crate) or a sidecar, instead of a hand-rolled cheap-model pass: recall @1% FPR
+  97.5% (English) per model card + paper §4.1; AUC .98 EN per paper (card prints .998) / .995 multilingual, 19–92ms.
   Caveat to document: PromptGuard 2 weights are **Llama-4-Community-licensed** (commercial use
   permitted; the HF repos *are* gated — license acceptance required) — the air-gapped
   "fully open" story must surface that at first enable and keep a "bring your own scanner model"
@@ -54,10 +54,10 @@ fold these into the plan:
   hot-path scanning; ONNX ports and mirrors exist but don't change the license).
 - Report Fontaine's eval results in **AgentDojo-comparable terms** (ASR × utility) against their
   published baseline: no-defense .176 / PromptGuard .075 / AlignmentCheck .029 / combined .0175.
-- Mine their MIT-licensed AlignmentCheck prompts (paper Appendix C.6) as attributed prior art
-  for `guardian_prompt.md`.
-- Do **not** take a runtime dependency on the `llamafirewall` Python package (maintenance mode,
-  Python-in-Rust, hosted-API default). Depend on its models and numbers, not its framework.
+- Mine their AlignmentCheck prompts (paper Appendix C.6, CC BY 4.0; the repo code+examples are
+  MIT) as attributed prior art for `guardian_prompt.md`.
+- Do **not** take a runtime dependency on the `llamafirewall` Python package (maintenance
+  chores since ~March 2026 — a commit-history reading, not a Meta declaration —, Python-in-Rust, hosted-API default). Depend on its models and numbers, not its framework.
 
 ### A3. Add sandbox interop to the roadmap (not v1 build, but v1.1 slot)
 Guardian-only is half the converged stack (KILL #4). Cheapest credible move: a documented
