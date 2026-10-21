@@ -50,7 +50,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 - **config** (master Testing Strategy): precedence, project-can-only-tighten enforcement —
   including that `[guardian] profile` is rejected from project scope (user-scope only, it is a
   loosening knob) and only `full`/`minimal` validate: no config value disables the guardian. Every user-scope-only key in the master §Config scope
-  table (`[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets,
+  table (`[accounts]`, `[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets,
   `[agents.types]`, …) is rejected from project scope.
 - Golden-dataset schema validation; runner green against verdict fixtures.
 

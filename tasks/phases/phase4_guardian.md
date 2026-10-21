@@ -15,7 +15,7 @@ guardian context to poison). Runs on a **separately configured model** (`guardia
 Fontaine ships an **ordered, benchmark-validated list of guardian models**, built from Fontaine's
 own evals (guardrail accuracy on the golden dataset, latency, robustness to evasion) and
 re-benchmarked each release; the default guardian is the **highest-ranked validated model
-available on the user's configured provider**. Seed examples for the list — cheap flash-tier
+available on the user's configured accounts**. Seed examples for the list — cheap flash-tier
 models typical of subscription catalogs, model-agnostic: Claude Haiku 5.5, GPT-6 Luna, DeepSeek
 V4.1 Flash, GLM-5.3 Flash, Qwen3.8 Flash class. **Typed-decision (System One) class — candidates**:
 Jev (TypeSafe AI's "System One" decision model, docs.typesafe.ai — **hosted, closed weights**: a

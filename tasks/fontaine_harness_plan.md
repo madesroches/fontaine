@@ -243,13 +243,26 @@ trail (per-layer attribution).
 ### Config (`~/.config/fontaine/config.toml` + project `.fontaine/settings.toml`)
 
 ```toml
+[accounts.work]                   # named accounts (opencode-style); several of one kind allowed
+kind = "anthropic"                # "anthropic" | "openai" | "gemini" | "openai-compatible" | "ollama"
+api_key_env = "ANTHROPIC_API_KEY_WORK"   # credential source: env var NAME, or omit to use the
+                                  #   stored-credentials file written by `fontaine auth login <name>`
+                                  #   (user data dir, 0600). Raw keys are never accepted inline.
+# base_url = ""                   # optional; required for openai-compatible (OpenRouter/LM Studio/vLLM/LiteLLM)
+# models = ["claude-sonnet-4-6"]  # optional explicit list; unset ⇒ discovered from the provider
+                                  #   where it supports listing, else the account offers no models
+                                  #   until `models` is set
+
+[accounts.local]
+kind = "ollama"
+base_url = "http://localhost:11434"
+
 [model]
-provider = "anthropic"            # or "openai", "openai-compatible", "gemini"
-model = "claude-sonnet-4-6"
-base_url = ""                     # for openai-compatible: OpenRouter/Ollama/LM Studio URL
+model = "work/claude-sonnet-4-6"  # `<account>/<model>`; the account provides the model
 
 [guardian]
-model = "claude-haiku-5-5"        # optional; unset ⇒ top-ranked validated guardian model available on this provider (see the Phase 4 plan)
+model = "work/claude-haiku-5-5"   # `<account>/<model>`, may be a different account than [model]; optional; unset ⇒ top-ranked
+                                  #   validated guardian model available on any configured account (see the Phase 4 plan)
 profile = "full"                  # "full" | "minimal" — minimal is the container-mode narrowing (never off):
                                   #   escape-class ruleset + reduced context on a cheap validated model; requires
                                   #   Fontaine-verified containment; loosening knob ⇒ user-scope only, never
@@ -319,7 +332,10 @@ allow_extra = []                  # user extensions to the curated read-only com
 Rule-precedence semantics and the `$defaults` splice marker are adopted directly from Claude
 Code's auto-mode config (proven design). Two more splice markers appear in `[agents.types]`:
 `$main` = the session model (`[model]`), `$guardian_default` = the top-ranked validated guardian
-model available on the configured provider (per Decisions). **Trust asymmetry**: project-level settings may only
+model available on the configured accounts (per Decisions). `[accounts]` and every `<account>/<model>`
+reference are user-scope only — a project file must not be able to point the guardian (or the
+session) at another endpoint; a missing or invalid credential for the guardian's account makes the
+guardian unavailable, which fails closed. **Trust asymmetry**: project-level settings may only
 *tighten* (add hard/soft denies and `ask` rules); only user-level config may loosen. Mirroring Claude Code's
 documented semantics (where `defaultMode: "auto"` and `"bypassPermissions"` are ignored in
 project settings — Fontaine ships no `bypass` mode at all), **project-level settings cannot set
@@ -332,7 +348,8 @@ Per-key scope (a project file that sets a user-scope-only key is rejected at loa
 
 | Key | Project scope |
 |-----|---------------|
-| `[model]` `provider`, `model`, `base_url` | no — user only |
+| `[accounts.*]` (`kind`, `base_url`, `api_key_env`, `models`) | no — user only |
+| `[model]` `model` | no — user only |
 | `[guardian]` `model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache`, `scan_tool_results` | no — user only |
 | `[permissions]` `default_mode` | no — user only |
 | `[permissions]` `deny`, `ask` | yes — add only |
@@ -630,6 +647,9 @@ carries the reasoning:
 
 ## Decisions
 
+- 2026-10-21: Multi-account model registry, following opencode: named `[accounts.<name>]`, each
+  providing models addressed `<account>/<model>`, one rig client per account; replaces
+  `[model] provider`/`base_url`. Reason: user requirement; Claude Code has no analogous design point.
 - 2026-10-20: Hybrid gate — tool-declared `read_only` + workspace-scope check skips the guardian;
   everything else is adjudicated. (refined 2026-10-21 — containment enforcement, not the label,
   earns the fast path; see below) (User choice.)
@@ -653,7 +673,7 @@ carries the reasoning:
 - 2026-10-21: "fontaine" is the final product name — binary, crate prefix, config dir
   `~/.config/fontaine`, `FONTAINE.md` convention. (User decision; resolves former Open Question 1.)
 - 2026-10-21: guardian default = top-ranked model on Fontaine's benchmark-validated guardian list
-  that is available on the configured provider; switching easy, explicit, never automatic; unset +
+  that is available on the configured accounts; switching easy, explicit, never automatic; unset +
   no catalog match → main model with one-time notice. (User decision; resolves former Open
   Question 2.)
 - 2026-10-21: default tool-result scanner = PromptGuard 2 (ONNX); cheap-LLM pass fallback;
@@ -774,7 +794,7 @@ delivered (or extended) by the docs step of the phase named with it — see the 
 - `docs/architecture.md`: workspace map, agent-loop and permission-pipeline diagrams, surfaces
   (TUI + headless), session persistence (skeleton Phase 0; grown in Phases 1, 3, 5).
 - `docs/configuration.md`: every config key, trust asymmetry of project vs user settings,
-  provider setup examples — seeded from the §Config schema (Phase 0); grown in Phases 1, 3, 4,
+  account and provider setup examples — seeded from the §Config schema (Phase 0); grown in Phases 1, 3, 4,
   5, 6 as each `[section]` ships.
 - `docs/tools.md`: built-in tool inventory, risk classes, the containment fast path, shell
   hardening (Phase 2).
@@ -801,8 +821,8 @@ delivered (or extended) by the docs step of the phase named with it — see the 
 ## Testing Strategy
 
 Unit tests (using `rig_core::test_utils` deterministic completion models — no live APIs):
-- **model wiring**: config → rig provider-client mapping (provider choice, base URLs, env keys,
-  guardian-model override); rig itself owns and tests SSE parsing/delta accumulation, so we test
+- **model wiring**: config → rig provider-client mapping (accounts, base URLs, env keys,
+  `<account>/<model>` resolution, guardian-model override); rig itself owns and tests SSE parsing/delta accumulation, so we test
   only our mapping layer, with one smoke test per provider against a `wiremock` endpoint speaking that
   provider's wire format (Anthropic, OpenAI, Gemini); the OpenAI-compatible mock serves only the
   openai-compatible/Ollama path — to catch wiring regressions rig's tests can't see.
@@ -848,7 +868,7 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
 - **config**: precedence, project-can-only-tighten enforcement — including that `[guardian] profile`
   is rejected from project scope (user-scope only, it is a loosening knob) and only `full`/`minimal`
   validate: no config value disables the guardian; every user-scope-only key in the §Config scope
-  table (`[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets, `[agents.types]`,
+  table (`[accounts]`, `[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets, `[agents.types]`,
   …) is rejected from project scope.
 - **parallel agents**: spawn-call gating (task × toolset × model composite); mode inheritance
   invariant (child effective mode ≤ parent, never looser), including a parent that switches mode
