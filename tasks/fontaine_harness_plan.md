@@ -149,6 +149,21 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
 - **OPA for agent tool calling**: policy-as-data approach exists but is rule-based; orthogonal —
   our prose `hard_deny`/`allow` lists fill that niche inside the guardian prompt rather than as an
   external policy engine.
+- **Typed decision models as guardrail judges (2026)**: JEV as a judge for agent-trace security
+  (arXiv:2609.34862, Wang & Gao, Sep 28 2026) vs four generative judges over 5,219 trajectories —
+  benchmark-averaged positive-class F1 77.8 vs 74.1 (best generative: GLM-5.2); leads ATBench500 /
+  MCPHunt, trails R-Judge / TraceSafe; median latency 0.99 s, ~$0.000195/valid judgment; authors'
+  own framing: "an economical screening signal, with trade-offs in precision and recall" — and
+  Jev-Guard safety classification + routing over an editable policy tree (arXiv:2610.18326, Hu et
+  al., HKUST/CUHK-Shenzhen et al., Oct 13 2026): over 7,033 cases 93.72% safety accuracy at 58 ms
+  mean latency, 93.10% hierarchical routing accuracy, full pipeline ~240 ms; integrated into the
+  Hermes harness, its permission gate cut mean review time per task 4.80 s → 1.33 s vs an SFT-LLM
+  judge, zero policy violations for either guard. Fast calibrated bounded verdicts beat generative
+  judges on average F1 and 4–6× on review latency; the framing that fits our architecture is
+  **decision-model SCREEN tier + LLM adjudicator, not replacement**. Caveats cited honestly: Jev is
+  hosted and closed-weights; arXiv:2610.04985 ("Hidden Risks of Jev") demonstrates membership /
+  internal-knowledge inference against its outputs — a typed decision model is still an attack
+  surface, which supports fail-closed + audit + BYO-local posture.
 
 ### LlamaFirewall (Meta) — nearest open prior art (full deep-dive: `research-llamafirewall.md`)
 
@@ -349,7 +364,23 @@ own evals (guardrail accuracy on the golden dataset, latency, robustness to evas
 re-benchmarked each release; the default guardian is the **highest-ranked validated model
 available on the user's configured provider**. Seed examples for the list — cheap flash-tier
 models typical of subscription catalogs, model-agnostic: Claude Haiku 5.5, GPT-6 Luna, DeepSeek
-V4.1 Flash, GLM-5.3 Flash, Qwen3.8 Flash class. Changing the guardian model must be **easy but
+V4.1 Flash, GLM-5.3 Flash, Qwen3.8 Flash class. **Typed-decision (System One) class — candidates**:
+Jev (TypeSafe AI's "System One" decision model, docs.typesafe.ai — **hosted, closed weights**: a
+BYO/API path, never the default for the local/air-gapped story) is non-autoregressive — it takes
+state + typed questions (Choice/Score/Noul) and returns bounded decisions with calibrated
+probabilities in ~70–500 ms, with no free text by construction (so no parsing failures and no
+reasoning-token-budget empty-verdict failure mode that generative judges exhibit); its calibrated
+probability maps natively onto the `Verdict` confidence + the APPROVE/DENY/ESCALATE shape via a
+single 3-choice question whose option text IS the rule label, and the explanation gap vs deny-with-
+explanation is filled by the chosen question/option, not prose. Open-source decision-model options
+for the local story: Laya (convaiinnovations/laya, a ModernBERT-based alternative) and vLLM
+DiffusionGemma (Red Hat benchmark, developers.redhat.com, Oct 2 2026). All join the ranked list only
+as **candidates — must pass benchmarking before joining** — and thresholds are always recalibrated
+on Fontaine's golden set, never inherited from vendor defaults (measured: Jev's shipped defaults,
+auto-accept 0.85 / margin 0.6, escalated 17/21 judgments wrongly on real dev traffic —
+typesafe-ai/skills issue #5, the MIT approval-judge-bridge cookbook — while recalibrated 0.65/0.30
+gave 19 APPROVE / 10 DENY / 7 ESCALATE at median 0.18 s, fail-closed on every error path). Changing
+the guardian model must be **easy but
 never automatic**: explicit `guardian.model` config or a `/guardian-model` command; if a pinned
 guardian model is unavailable, Fontaine **fails loudly and asks** — no silent substitution. For
 providers with no catalog match (custom openai-compatible endpoints / Ollama): only models
@@ -429,6 +460,29 @@ LlamaFirewall findings — user decision 2026-10-21); the cheap-LLM pass is the 
 option. PromptGuard 2's HF downloads are gated and Llama 4 Community License-encumbered — that
 caveat is surfaced at first enable; a BYO-scanner interface serves license-clean setups. Off by
 default for latency; configurable.
+
+**Minimal guardian profile (`[guardian] profile = "minimal"`)** — the container-mode narrowing; the
+guardian never goes fully off, it narrows (no zero-guardian mode exists — the dropped `bypass` mode
+is not resurrected here; minimal adjudicates, just less):
+- A **reduced ruleset + reduced adjudication context** (smaller `AdjudicationRequest`: trimmed intent
+  digest + session facts) run on a **cheap validated model**. Permitted **only when containment is
+  Fontaine-verified**: launched under `@anthropic-ai/sandbox-runtime` (srt) / bubblewrap (the Phase-5
+  sandbox-interop path), or an explicit user-scope `--in-container` assertion **backed by an actual
+  runtime probe** (cgroup-namespace check, `/.dockerenv`). A failed or missing probe fails closed —
+  minimal refuses to load and falls back to `full` with a notice. **Default `full`.** Never settable
+  by project settings: profile is a loosening knob, so the existing trust-asymmetry rule extends to
+  it — user-scope only.
+- **What minimal still enforces (its whole reason to exist): containment integrity.** With blast
+  radius sandbox-bounded, escape-class actions are the remaining catastrophic risk. The minimal
+  ruleset denies/escalates: mount/umount; docker-socket access; `/proc/sys` and cgroup control-file
+  writes; privileged namespace operations; raw device access; writes reaching bind-mounted host paths
+  via symlink traversal; network paths that route around the sandbox proxy. On top of that, the
+  deterministic floors (`[permissions] deny`/`ask` + critical-path, pipeline step 2) still gate every
+  profile, and exfiltration-class remote writes still adjudicate — sandbox-bounded ≠ leak-proof
+  through allowed channels. Deny-with-explanation, fail-closed, and the audit trail are unchanged.
+- **Ships scored** (KILL #3 framing inherits): the Phase-4 scorecard gains a `minimal` profile column
+  — same golden set plus escape-focused case additions (see Testing Strategy); a profile never ships
+  unscored.
 
 ### Tools: rig-tools + a risk-metadata registry + GuardedTool wrapper (fontaine-tools)
 
@@ -551,6 +605,35 @@ in the main session, and their results return to the parent as a summary.
   conversation**, and at the cap the `agent` tool is withheld from further subagents. `max_parallel` bounds concurrent
   agents across the **whole session tree**, not just the parent's direct children.
 
+### Composite guardian (the guardian tree)
+
+Design direction (not a v1 build item — scope discipline below): the permission pipeline is **already
+a depth-ordered tree of guardrooms** — deterministic floor (`deny`/`ask`/critical-path) → Tier 0.5 shell
+pre-classifier → [candidate screen tier: typed-decision model, Jev-class — see The guardian agent] →
+LLM guardian → human. **Composition rule: strictest verdict wins** (deny > escalate > allow); any tier
+disagreement, timeout, or error is fail-closed; every tier's verdict + confidence is logged to the audit
+trail (per-layer attribution).
+
+- **Branching by domain** (the Jev-Guard "policy tree" precedent, arXiv:2610.18326): the prose rule sets
+  + typed questions specialize per risk domain (filesystem / shell / network / destructive-class /
+  agent-spawn); a request routes to its domain branch(es). The natural generalization of the single
+  `guardian_prompt.md` → per-domain rule subtrees, still versioned, still user-inspectable, still
+  diffable — preserves the differentiator (compete-with-Codex: our tree is open prose + local options,
+  not a closed vendor policy).
+- **Escalation economics**: cheap deterministic / decision-model tiers resolve the head of the
+  distribution; the expensive generative adjudicator sees only the uncertain tail — Jev-Guard's measured
+  4.80 s → 1.33 s harness review time is the motivating datapoint; Claude Code's own Tier1/Tier2/Tier3
+  classifier ladder is the CC-parity anchor (tie-breaker).
+- **One tree serves the whole session agent tree**: because the guardian is stateless-per-request, a
+  single guardian tree gates all subagents (no per-subagent guardian instances; `[agents]` budgets count
+  the shared tiers).
+- **Scope discipline**: v1 ships the deterministic tiers + a single LLM guardian (+ optional PG2 result
+  scanner) — already a 3-deep tree. The typed-decision screen tier and per-domain policy subtrees are a
+  **roadmap slot (Phase 6+)**, gated by: each tier must score on the golden set before insertion, and the
+  published scorecard must report per-tier precision/recall — never stack unbenchmarked guardians
+  (composite ≠ safety by committee). No new config keys for v1 (roadmap-only; `[guardian] profile`
+  interacts — minimal narrows the ruleset *within* the tree, it never removes the tree).
+
 ### Model layer: rig-core providers (replaces fontaine-llm)
 
 No custom `Provider` trait. `rig_core` supplies provider-neutral messages, completion, streaming,
@@ -573,6 +656,10 @@ base_url = ""                     # for openai-compatible: OpenRouter/Ollama/LM 
 
 [guardian]
 model = "claude-haiku-5-5"        # optional; unset ⇒ top-ranked validated guardian model available on this provider (see The guardian agent)
+profile = "full"                  # "full" | "minimal" — minimal is the container-mode narrowing (never off):
+                                  #   escape-class ruleset + reduced context on a cheap validated model; requires
+                                  #   Fontaine-verified containment; loosening knob ⇒ user-scope only, never
+                                  #   project-settable; see Minimal guardian profile
 timeout_secs = 30
 confidence_threshold = 0.7
 cache = true
@@ -642,7 +729,8 @@ documented semantics (where `defaultMode: "auto"` and `"bypassPermissions"` are 
 project settings — Fontaine ships no `bypass` mode at all), **project-level settings cannot set
 `[permissions] default_mode` to `auto` — that is user-scope only**; a checked-in repo must not be able to disarm its
 own guardian. Tier-0.5 `[shell_preclassifier]` extensions are loosening, so they follow the same
-rule: user-scope config only, never project-scope.
+rule: user-scope config only, never project-scope. `[guardian] profile` follows it too — a loosening
+knob (minimal vs full), user-scope only, and no value of it disables the guardian.
 
 ### TUI (fontaine-tui)
 
@@ -668,7 +756,10 @@ audit entries) are listed per row, so a background subagent never hides an appro
    attempts *inside tool args*, ambiguous intent cases, Tier-0.5 adversarial shell cases — see
    Testing Strategy — and adversarial spawn/injection-propagation cases: a subagent result
    carrying injection text that must hit the tool-result scanner, a README tricking the parent
-   into spawning with an escalated toolset); runner scores any guardian model config;
+   into spawning with an escalated toolset — plus escape-focused container cases for the
+   `[guardian] profile = "minimal"` column: `mount /dev/sda1`, docker.sock write, cgroup
+   `release_agent`, bind-mount symlink escape → deny/escalate; routine in-container workspace ops
+   → proceed); runner scores any guardian model config;
    CI runs it against a mock provider (verdict fixtures) so it is green before the guardian
    exists. Per analysis-05 amendment A1: the public guardian scorecard is the differentiating
    asset — its harness is built first, not last.
@@ -722,7 +813,10 @@ audit entries) are listed per row, so a background subagent never hides an appro
     × per-model results, reported in AgentDojo-comparable terms (ASR × utility) against the
     LlamaFirewall baseline (see Research Findings); the same harness validates and **ranks the
     guardian candidates for the default-guardian list** (guardrail accuracy on the golden dataset
-    × latency × robustness to evasion). The guardian never ships un-scored — a bypass
+    × latency × robustness to evasion) — including the typed-decision candidates (Jev/Laya/
+    DiffusionGemma join the ranked list only if they score) and a **`minimal` profile column**
+    (same golden set + escape-focused additions; a profile ships only once it is scored, KILL #3
+    framing inherits). The guardian never ships un-scored — a bypass
     found by Fontaine's own public eval is a credibility event; the same bypass found externally is
     the kill event (analysis-05 amendment A1, mitigating KILL #3).
 
@@ -742,7 +836,11 @@ audit entries) are listed per row, so a background subagent never hides an appro
 - Roadmap slot (analysis-05 amendments A3–A4, folded into the plan per user decision 2026-10-21):
   a **sandbox-interop spike + `docs/sandboxing.md`** integration path for running Fontaine under
   Anthropic's open-source `@anthropic-ai/sandbox-runtime` (srt) / bubblewrap — complements, does
-  not replace, the guardian (sandbox = blast radius, guardian = intent). And keep
+  not replace, the guardian (sandbox = blast radius, guardian = intent). Fontaine-verified srt/
+  bubblewrap launch is what unlocks `[guardian] profile = "minimal"` (see The guardian agent), and
+  the **escape-detection test suite** (mount/umount, docker.sock, cgroup-control writes, bind-mount
+  symlink escape, proxy bypass → denied even under minimal) is a `docs/sandboxing.md` deliverable.
+  And keep
   `fontaine-guardian` **dependency-light and lift-out-able** as an embeddable crate, so other
   harnesses can embed the adjudicator via adapters (see the rig contingency in Decisions).
 
@@ -814,6 +912,11 @@ No `fontaine-llm` crate — the model layer is rig.
   and token spend (Claude Code documents the same). Mitigated by Tier 0.5 (most read-ish subagent
   calls never reach the guardian), the local PromptGuard 2 result scanner (no per-result LLM call),
   and `[agents]` budget caps; the stateless per-request guardian parallelizes without shared state.
+- **Composite guardian: tier latency/cost stacking vs screening-head economics** — a deeper tree could
+  multiply round-trips per call. Mitigated by tier ordering (deterministic → decision-model screen →
+  LLM adjudicator: each tier only sees what the cheaper one above could not resolve) and confidence-
+  gated escalation — the measured Jev-Guard 4.80 s → 1.33 s review time is the counter-economics;
+  scope discipline (benchmarked tiers only, roadmap-gated) keeps v1 at the deterministic+LLM spine.
 - **Prose rule lists over Rego/OPA-style policy** — prose matches the guardian's medium (it is an
   LLM), is what Claude Code proved works, and stays editable by humans; a deterministic policy
   engine can't express "unless the user specifically asked for it".
@@ -955,6 +1058,22 @@ carries the reasoning:
 - 2026-10-21: deliberate Claude-Code deviation — subagent reports screened by the optional
   (default-off) result scanner, not by the classifier at handoff as Claude Code does — deviation
   recorded; the guardian's no-tool-output rule is why.
+- 2026-10-21 (user): no zero-guardian mode exists — containers get `[guardian] profile="minimal"`,
+  never off; minimal = containment-integrity ruleset (the escape classes enumerated in Minimal
+  guardian profile: mount/umount, docker-socket access, /proc/sys + cgroup control writes,
+  privileged namespace ops, raw device access, bind-mount host writes via symlink traversal,
+  sandbox-proxy bypass) + the deterministic floors; exfiltration-class remote writes still
+  adjudicate; requires Fontaine-verified containment (srt/bubblewrap launch or user-scope
+  `--in-container` + runtime probe; probe failure ⇒ fall back to `full`); user-scope only; ships
+  with its own scorecard column.
+- 2026-10-21 (user): Jev + open alternatives (Laya, DiffusionGemma) enter the benchmark-validated
+  guardian list as CANDIDATES (screening tier + standalone evaluation); hosted-Jev never the local
+  default; thresholds always recalibrated on Fontaine's golden set (vendor defaults over-escalate —
+  measured: 17/21 wrong escalations at the shipped 0.85/0.6 defaults).
+- 2026-10-21 (user): guardian tree accepted as design direction — strictest-wins composition,
+  fail-closed between tiers, per-domain policy subtrees (Jev-Guard precedent), benchmarked tiers
+  only; v1 ships the deterministic+LLM spine, screen tier + subtree specialization are roadmap
+  (Phase 6+); one tree serves the whole session agent tree (no per-subagent guardians).
 
 ## Documentation
 
@@ -966,7 +1085,9 @@ carries the reasoning:
   mined).
 - `docs/configuration.md`: every config key, trust asymmetry of project vs user settings.
 - `docs/sandboxing.md`: sandbox-interop integration path (srt/bubblewrap spike — Phase 5 roadmap
-  slot); sandbox = blast radius, guardian = intent, complementary.
+  slot); sandbox = blast radius, guardian = intent, complementary. Documents the container
+  containment probe (`--in-container` verification) and the escape-detection test suite that gates
+  `[guardian] profile = "minimal"` — the escape classes minimal must still deny.
 
 ## Testing Strategy
 
@@ -999,11 +1120,17 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
 - **guardian**: verdict extraction via rig extractor with malformed outputs → retries → Deny;
   timeout → Deny (tokio time-pause); cache key correctness incl. rules-version invalidation;
   loop breaker after N denials; prompt builder snapshots (defaults spliced, `$defaults` marker,
-  untrusted delimiting present); redaction of credential-shaped strings in adjudication inputs.
+  untrusted delimiting present); redaction of credential-shaped strings in adjudication inputs;
+  minimal-profile resolution is fail-closed — containment probe failure ⇒ `minimal` refuses to
+  load and falls back to `full` with a notice; under `minimal`, in-workspace routine ops skip
+  full-context adjudication but escape primitives (mount, docker.sock write, cgroup control
+  write, proxy bypass) and exfiltration-class remote writes still Deny/Escalate.
 - **tools**: workspace-scope validator (path traversal, absolute paths, symlinks); shell
   hardening wrapper (timeout, output cap); risk-class registration of every built-in and MCP tool
   (a test that fails if any registered tool is missing a risk class — the choke point stays closed).
-- **config**: precedence, project-can-only-tighten enforcement.
+- **config**: precedence, project-can-only-tighten enforcement — including that `[guardian] profile`
+  is rejected from project scope (user-scope only, it is a loosening knob) and only `full`/`minimal`
+  validate: no config value disables the guardian.
 - **parallel agents**: spawn-call gating (task × toolset × model composite); mode inheritance
   invariant (child effective mode ≤ parent, never looser); per-type registry is a subset of the
   parent's; budget caps stop a subagent; subagent results pass the tool-result scanner path;
@@ -1021,6 +1148,10 @@ manually / nightly, not CI-gated on live models): golden dataset scored
 against live guardian models; catches prompt regressions unit fixtures can't — specifically
 guardian *judgment quality* (false-deny rate on benign commands, catch rate per attack class).
 This is the tier where "89% vs 13.6%" style claims get verified for whatever model the user picks.
+Golden-set additions for the `minimal` profile column (scored before it ships, same harness):
+container-mode benign cases — routine workspace ops proceed ungated-ish (no full-context
+adjudication) — and escape-focused cases (`mount /dev/sda1`, docker.sock write, cgroup
+`release_agent`, bind-mount symlink escape to a host path) → DENY/ESCALATE even in minimal.
 
 Manual smoke: real TUI session against Anthropic + one OpenAI-compatible endpoint (Ollama) —
 catches terminal-rendering and streaming-latency issues no unit test can.
@@ -1045,6 +1176,12 @@ catches terminal-rendering and streaming-latency issues no unit test can.
    every surviving subagent tool call shows its own gate decision (Tier-0.5 Allow or guardian
    verdict) in the audit log, keyed per agent; the killed agent's budget accounting is visible in
    the background-agents panel. (Parallel orchestration gates + per-agent audit.)
+8. Run under srt (or bubblewrap) with `[guardian] profile = "minimal"`: `shell("ls")` in the
+   workspace completes via Tier-0.5 Allow with reduced-context adjudication for the rest; an
+   attempted escape (`mount /dev/sda1`, docker.sock write) is **Denied by the minimal guardian**,
+   audit entry naming the escape class; kill the containment probe (run minimal without srt/
+   `--in-container` verification) → minimal refuses to load, falls back to `full` with a notice.
+   (Minimal profile: narrowed, never off.)
 
 ## Open Questions
 
