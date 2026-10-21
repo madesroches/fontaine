@@ -99,13 +99,15 @@ context.
    | Tool | RiskClass | Implementation |
    |---|---|---|
    | `read` | ReadOnly | rig-tools `read`, wrapped, `confine: true` |
-   | `ls` | ReadOnly | new first-party `Tool` (`NAME = "ls"`) delegating to rig `list` |
-   | `glob` | ReadOnly | new first-party `Tool` over rig `search` |
-   | `grep` | ReadOnly | new first-party `Tool` over rig `search` |
+   | `ls` | ReadOnly | new first-party `Tool` (`NAME = "ls"`) delegating to rig `list`; args `path`, optional `ignore` (globs) |
+   | `glob` | ReadOnly | new first-party `Tool` over rig `search`; args `pattern`, optional `path` |
+   | `grep` | ReadOnly | new first-party `Tool` over rig `search`; args `pattern`, optional `path`, `glob`, `type`, `output_mode` (`content` \| `files_with_matches` \| `count`), `-i`, `-n`, context flags (`-A`/`-B`/`-C`) as Claude Code, `head_limit` |
    | `write` | WorkspaceWrite | rig-tools `write`, wrapped, `confine: true` |
    | `edit` | WorkspaceWrite | rig-tools `edit`, wrapped, `confine: true` |
    | `shell` | Arbitrary | rig-tools `shell`, wrapped; `confine: true`, `max_timeout`, output `cut` set |
    | `webfetch` | Arbitrary | new first-party; args `url` only; HTML → markdown via `htmd` (exact-pinned); 10 MB fetch cap, 100,000-character output cap (truncation noted in the result), 30 s timeout; never follows a cross-host redirect (returns the redirect URL to the model, as Claude Code does). No `prompt` argument / small-model post-processing in v1 (backlog) |
+
+   Path rules and the scope check apply to `path` (default: the primary root) and, for `glob`, also to the pattern's anchored base.
 
    Removal and rename go through `shell` (Arbitrary), so the shell-only critical-path check covers
    every removal path. `scope.rs` resolves every path through `rig_tools::fs::place` (base = the

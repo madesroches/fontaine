@@ -95,7 +95,7 @@ Unit tests (using `rig_core::test_utils` deterministic completion models — no 
   `/c/...` argv paths); critical-path drive root and `%USERPROFILE%`; owner-only ACL on credentials,
   trust store and audit log; `dirs` resolution and the `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR`
   overrides on every OS.
-- **docs**: `rust/fontaine-core/tests/docs.rs` (created in Phase 0, run by `cargo test`) parses every ```toml block in `docs/*.md` through the config loader (as user-scope settings), checks that every relative link in `docs/`, `README.md` and `evals/README.md` resolves, and fails on `TODO` / `TBD`; each phase's docs DoD cites it.
+- **docs**: `rust/fontaine-core/tests/docs.rs` (created in Phase 0, run by `cargo test`) parses and schema-validates every ```toml block in `docs/*.md` (as user-scope settings; no phase-gated value rules, no model resolution or discovery, no env/credential checks), checks that every relative link in `docs/`, `README.md` and `evals/README.md` resolves, and fails on `TODO` / `TBD`; each phase's docs DoD cites it.
 - **session ledger**: after a compaction, `AdjudicationRequest` still carries the verbatim user
   messages and no summary text (canary instruction placed in a compaction summary never reaches the
   guardian); the pre-session file index respects `.gitignore`, truncates at the cap and records the
@@ -144,9 +144,11 @@ chat-completion sequences (agent and guardian on separate scripted accounts), ex
 drive the library crates. Fail-closed tests: the guardian endpoint 500s (wiremock), resets the
 connection, or drops mid-stream (see the guardian bullet) and the tool call is denied.
 `rig-cassette` record/replay covers full runs against real provider wire behavior; the harness
-(`rust/fontaine/tests/cassettes.rs`) is built in Phase 3. The first recording (prompt → stream →
-tool call → guardian verdict → execute → result → answer) is a human-plus-live-keys step, never
-CI; once a cassette is committed, replay is the CI default and needs no keys. Cassettes live in
+(`rust/fontaine/tests/cassettes.rs`) is built in Phase 3. Two cassettes, each a human-plus-live-keys recording, never CI: the Phase 3 manual-mode cassette (in-scope
+read round-trip: prompt → stream → tool call → fast-path execute → result → answer; `cassettes.rs` asserts the
+tool executed via the fast path, the `gate_decision` tier, and the final answer) and the Phase 4 auto-mode
+cassette (tool call → guardian verdict → execute → answer; `cassettes.rs` asserts the verdict, the
+`gate_decision` tier, and the audit record, plus the final answer). Once a cassette is committed, replay is the CI default and needs no keys. Cassettes live in
 `rust/fontaine/tests/cassettes/`; recording scrubs API keys, auth headers, and home-directory paths
 through rig-cassette's scrubbing configuration, and runs only via
 `RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes -- --ignored` with the
@@ -216,13 +218,16 @@ End-to-end checks, each owned by the phase's definition of done (owner in parens
 4. Same session against Ollama (local model as both agent and guardian) → checks 2–3 hold.
    (Model-agnostic guarantee.) (Phase 4)
 5. Spawn 4 parallel subagents (the default `max_parallel`), kill one mid-run → the killed one's row
-   shows its state and its budget accounting is visible in the background-agents panel. (Visual
-   panel check only; gating, per-agent audit, and survivor completion are covered by the automated
+   shows its state and its budget accounting is visible in the background-agents panel. (Live
+   look-and-feel only; the killed row's `killed` state and budget accounting are covered by the Phase 5
+   `TestBackend` test, and gating, per-agent audit and survivor completion by the automated
    parallel-agents test.) (Phase 5)
-6. Run under srt (or bubblewrap) with `[guardian] profile = "minimal"`: `shell("ls")` in the
+6. Minimal profile (narrowed, never off), with `[guardian] profile = "minimal"`: `shell("ls")` in the
    workspace completes via Tier-0.5 Allow with reduced-context adjudication for the rest; an
    attempted escape (`mount /dev/sda1`, docker.sock write) is **Denied by the minimal guardian**,
-   audit entry naming the escape class; kill the containment probe (run minimal without srt/
-   `--in-container` verification) → minimal refuses to load, falls back to `full` with a notice.
-   (Minimal profile: narrowed, never off.) (Phase 4 step 5 for the minimal ruleset + probe contract;
-   the srt/bubblewrap leg belongs to the Phase 5 roadmap slot — it does not gate the v1 release)
+   audit entry naming the escape class; run minimal without verified containment → minimal refuses
+   to load, falls back to `full` with a notice.
+   - Docker leg: run in a Docker container with `--in-container` — minimal loads, probe contract
+     holds. (Phase 4 DoD, human step)
+   - srt/bubblewrap leg: same checks under srt or bubblewrap. (Phase 5 roadmap slot — it does not
+     gate the v1 release)

@@ -36,6 +36,9 @@ in the main session, and their results return to the parent as a summary.
   there — so a `manual` parent can never produce a silently-adjudicating `plan` child. The child's mode is
   not fixed at spawn: it is re-evaluated on every call as the tighter of its own setting and the
   parent's current mode.
+  The guardian's intent for every agent in the tree comes from the **root session's ledger**: `task_intent` and
+  `recent_user_messages` are built from the root's human messages only. Spawn prompts and `send_message` bodies reach
+  the guardian only as untrusted-delimited context, never as intent.
   (iii) **Parent↔child and peer messages** (the `send_message` tool, Claude Code's `SendMessage`-style) go through the same guardian gate — the
   2026-10-20 decision, which stands and now applies in v1.
 - **Budgets.** `[agents] max_parallel` (default small, e.g. 4) plus per-subagent token/cost budgets, so fan-out cannot
@@ -166,7 +169,7 @@ Amendments A3–A4 (analysis-strategic-verdict; folded in per user decision 2026
 `--in-container` plus the Linux runtime probe; this slot adds srt/bubblewrap launch detection to that
 probe (`rust/fontaine-core/src/containment.rs`) as a second verification route. When taken, its deliverables:
 the spike, the **escape-detection test suite** (mount/umount, docker.sock, cgroup-control writes,
-bind-mount symlink escape, proxy bypass → denied even under minimal — `tasks/design/testing.md` Manual Verification item 6),
+bind-mount symlink escape, proxy bypass → denied even under minimal — the srt/bubblewrap leg of `tasks/design/testing.md` Manual Verification item 6),
 and **`docs/sandboxing.md`** documenting the integration path, the container containment probe
 (`--in-container` verification), and the escape classes minimal must still deny. And keep
 `fontaine-guardian` **dependency-light and lift-out-able** as an embeddable crate, so other
@@ -187,6 +190,8 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   is a subset of the parent's; budget caps stop a subagent; subagent reports return as ordinary
   tool results through `ResultPipeline`; `send_message` peer messages hit the
   same gate.
+- **agents panel** (`rust/fontaine-tui/tests/`, ratatui `TestBackend` with a scripted model): a killed subagent's row shows `killed` and its token/cost spend against budget.
+- **subagent intent** (`rust/fontaine/tests/parallel_agents.rs`): an injected spawn prompt claiming user authorization does not appear as `task_intent` or in `recent_user_messages` in any `AdjudicationRequest`; it appears only inside an untrusted-delimited block.
 - **choke point** (`rust/fontaine-tools/tests/choke_point.rs`, extended): the exact registered set is the Phase-2 table plus `agent` (Arbitrary), `skill` (ReadOnly) and `send_message` (Arbitrary) — no other names, no duplicates, every one with a `RiskClass`; no list/status/kill tool is registered for the model.
 - Parallel orchestration (deterministic `test_utils` models or cassettes; scripted endpoints via the Phase-1 `common/mod.rs` helper): spawn N subagents, kill
   one, assert the others complete and every tool call has a gate decision in the audit log keyed by
@@ -218,12 +223,12 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   `cargo test` green from `rust/`, including `rust/fontaine/tests/parallel_agents.rs` (parallel-agents and
   parallel-orchestration tests), `rust/fontaine-mcp/tests/mcp_registration.rs` (MCP tests),
   `rust/fontaine-core/tests/user_hooks.rs`, and the trust, persistence, extensions and telemetry tests.
-- `tasks/design/testing.md` Manual Verification item 5 passes (agents-panel visual check; gating and audit are covered by the
+- `tasks/design/testing.md` Manual Verification item 5 passes (live look-and-feel only; the killed-row state and budget display are covered by the agents-panel `TestBackend` test, gating and audit by the
   automated parallel-orchestration test).
-- Needs live keys (not CI): the `claude -p` baseline check that a hook `allow` in `auto` skips the
+- Needs live keys (not CI): the `claude -p` baseline check (`fontaine-evals` `baseline capture` / `diff`) that a hook `allow` in `auto` skips the
   classifier for a narrow matcher and is suspended for a broad one.
-- Item 6 ships **with the sandbox slot when taken** (minimal-profile escape denies + probe
-  fail-closed); the build steps above do not depend on it.
+- Item 6's srt/bubblewrap leg ships **with the sandbox slot when taken** (minimal-profile escape denies + probe
+  fail-closed under srt/bubblewrap); its Docker leg is owned by Phase 4; the build steps above do not depend on it.
 - `rust/fontaine-core/tests/docs.rs` green with `docs/mcp.md`, `docs/agents.md`, `docs/hooks.md`, `docs/extensions.md` in place; every new
   config key documented at ship.
 - Trust, hooks, extensions, persistence and telemetry tests above green.

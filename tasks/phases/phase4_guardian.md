@@ -36,7 +36,8 @@ compaction summary or any other model-written text never reaches the guardian as
 ```rust
 pub struct AdjudicationRequest {
     pub task_intent: String,          // latest user message(s), verbatim from the ledger; trimmed
-                                      //   to budget by dropping the oldest, never summarized
+                                      //   to budget by dropping the oldest, never summarized; for
+                                      //   subagent calls, the root session's human messages
     pub recent_user_messages: Vec<String>, // user turns only, from the ledger — NOT tool outputs
     pub project_instructions: Option<String>, // FONTAINE.md: primary root + user-level file
     pub environment: EnvironmentConfig,     // prose trust slots (see `tasks/design/config.md` §Config)
@@ -173,8 +174,7 @@ mode is not resurrected here; minimal adjudicates, just less):
    guardian never ships un-scored — a bypass found by Fontaine's own public eval is a credibility
    event; the same bypass found externally is the kill event (analysis-strategic-verdict amendment
    A1, mitigating KILL #3). Also run the `fontaine-evals` `baseline capture` / `baseline diff` subcommands with
-   `auto` against the Tier-0.5 adversarial set and the floor/headless cases, plus a PreToolUse hook
-   `allow` in `auto` (narrow matcher skips the classifier; broad matcher suspended) to confirm the
+   `auto` against the Tier-0.5 adversarial set and the floor/headless cases to confirm the
    Claude Code parity (manual/eval-side, never a CI dependency — see AGENTS.md).
 5. Minimal profile implementation: profile resolution (`[guardian] profile`, user-scope only; only
    `full`/`minimal` validate) with the reduced ruleset (`rust/fontaine-guardian/prompts/guardian_minimal.md`, versioned alongside `guardian_prompt.md`) and trimmed `AdjudicationRequest` on the resolved `[guardian] model` (no separate model key; `rust/fontaine-guardian/src/profile.rs`); the runtime containment probe
@@ -252,8 +252,9 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   (`rust/fontaine/tests/auto_headless.rs`; agent and guardian on separate scripted
   `openai-compatible` accounts, built with the Phase-1 `common/mod.rs` helper), including the fail-closed cases above end to end (guardian endpoint
   500s, resets, or drops mid-stream ⇒ tool call denied) and an unavailable pinned guardian in headless
-  `auto` ⇒ every adjudication `Deny GuardianUnavailable`, with the notice in the `init` event and on stderr. The first rig-cassette recording of an
-  auto-mode session needs live keys and a human; once committed, replay runs in CI.
+  `auto` ⇒ every adjudication `Deny GuardianUnavailable`, with the notice in the `init` event and on stderr. The Phase 4 auto-mode rig-cassette (tool call → guardian verdict → execute → answer) needs live keys and a
+  human to record; once committed, replay runs in CI via `rust/fontaine/tests/cassettes.rs`, which asserts the
+  guardian verdict, the `gate_decision` tier and the audit record, plus the tool result and final answer.
 - Eval: golden-set scoring incl. the `minimal` column — run manually/nightly, never CI-gated.
 
 ## Definition of done
@@ -266,7 +267,8 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   Phase 4 docs in place; CHANGELOG entry appended.
 - Needs live keys and/or a human (explicitly not CI): `tasks/design/testing.md` `tasks/design/testing.md` Manual Verification items 2–4 (auto-mode
   judgment, retry UX, Ollama model-agnostic parity); the live-model scorecard run and its
-  publication, linked from docs; the first auto-mode cassette recording; the `claude -p` baseline
-  capture (incl. hook `allow` in `auto`); the scorecard run that fills `guardian_models.toml`.
+  publication, linked from docs; the auto-mode cassette recording; the `claude -p` baseline
+  capture; Manual Verification item 6's Docker leg (run in a Docker container with `--in-container`:
+  the `minimal` profile loads and the probe contract holds); the scorecard run that fills `guardian_models.toml`.
 - Needs a human: cut the first release (tag `vX.Y.Z` and push the tag; the release workflow builds and publishes the binaries); move `## [Unreleased]` under the version in `CHANGELOG.md`.
 - Log the phase in the master plan's Progress log.

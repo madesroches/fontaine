@@ -39,6 +39,8 @@ canonical root path, never in the repo. Tightening keys (deny/ask, soft/hard den
 content (FONTAINE.md, skills, agent files, output styles) load regardless of trust. Trust state is
 a ledger fact passed to the guardian in `session_facts`.
 
+This block is schema-valid but not load-valid before Phase 4 (`default_mode = "auto"`) and names models that need provider discovery; `docs.rs` only parses and schema-validates such blocks.
+
 ```toml
 [accounts.work]                   # named accounts (opencode-style); several of one kind allowed
 kind = "anthropic"                # "anthropic" | "openai" | "gemini" | "openai-compatible" | "ollama"
@@ -114,25 +116,11 @@ hard_deny   = ["$defaults", "Never send repo contents to third-party code-review
 
 [agents]
 max_parallel = 4                  # concurrent subagents (v1 requirement, Claude Code-style)
-subagent_token_budget = 200000    # per-subagent cap; hitting it stops that subagent, result
-                                  #   returned as partial, pending escalation/approval prompts
-                                  #   cancelled as denied — fan-out can't silently multiply cost
-subagent_cost_budget_usd = 2.0    # per-subagent spend cap (same enforcement)
-# session_token_budget / session_cost_budget_usd   # root-of-tree totals, default unset; when set,
-                                  #   every agent in the tree debits them (hard fan-out ceiling);
-                                  #   unset ⇒ tree exposure is structurally bounded by max_parallel
-                                  #   (tree-wide) × per-subagent caps × 3-layer depth
+subagent_token_budget = 200000    # per-subagent cap; semantics in Phase 5 design
+subagent_cost_budget_usd = 2.0    # per-subagent spend cap
+# session_token_budget / session_cost_budget_usd   # root-of-tree totals, default unset
 
-[agents.types]                    # per-agent-type policy: model + restricted toolset + mode
-                                  #   (default `mode = "inherit"`; an EXPLICIT per-type `mode`
-                                  #   may only be `manual` or `dontAsk` — never looser than
-                                  #   inherited, session ladder dontAsk < manual < acceptEdits <
-                                  #   auto; `plan` is a session-root interactive posture, not a
-                                  #   child mode; plan/acceptEdits/auto are reachable for a child
-                                  #   only via `inherit` from a parent already there); a child's
-                                  #   effective mode is re-evaluated on every call as the tighter
-                                  #   of its own setting and the parent's current mode; a type's
-                                  #   toolset is always a subset of the parent's
+[agents.types]                    # per-type model + toolset + mode (default "inherit", never looser than parent)
   explore = { model = "$guardian_default", tools = ["ls", "read", "glob", "grep"] }
   worker  = { model = "$main", tools = ["ls", "read", "glob", "grep", "edit", "write", "shell"] }
 

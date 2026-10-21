@@ -51,8 +51,8 @@ table against `claude -p` baselines (step 3) and record differences in Decisions
 | `head`, `tail` | `-n N -c N -q -v` (`tail -f`/`-F` not allowed) | positionals |
 | `rg` | `-i -s -S -n -N -H -w -x -F -v -c -l -A N -B N -C N -m N -t TYPE -T TYPE --hidden --no-heading` | positionals; `-f`/`--file`, `--ignore-file` values. `--pre`, `--pre-glob`, `--hostname-bin`, `-z`/`--search-zip`, `-L`/`--follow`, `-g`/`--glob` not allowed |
 | `grep` | `-i -n -v -w -x -F -E -c -l -L -H -h -o -q -s -r -A N -B N -C N` | positionals; `-f`/`--file` value. `-R` and `--exclude-from` not allowed |
-| `git status` | `-s --short -b --branch --porcelain` | positionals after `--` |
-| `git log`, `git diff`, `git show` | `--oneline --stat --name-only --name-status --graph --decorate --no-color --cached --staged -n N -U N` | positionals after `--`. Only when `--no-ext-diff --no-textconv` are also present (repo config can name external diff/textconv programs); `--output`, `--ext-diff`, `--textconv` not allowed |
+| `git status` | `-s --short -b --branch --porcelain` | every positional, before or after `--`, validated as a path |
+| `git log`, `git diff`, `git show` | `--oneline --stat --name-only --name-status --graph --decorate --no-color --cached --staged -n N -U N` | every positional, before or after `--`, validated as a path. Only when `--no-ext-diff --no-textconv` are also present (repo config can name external diff/textconv programs); `--output`, `--ext-diff`, `--textconv` not allowed |
 
 `git` must have the subcommand as `argv[1]` (`git -c …` and `git -C …` fall through).
 
@@ -111,7 +111,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
 ## Files created or modified
 
 `rust/fontaine-core/src/{permissions,permission_rules,audit}.rs`; `rust/fontaine-evals/src/baseline.rs`;
-`rust/fontaine-tools/src/preclassify.rs`; `rust/fontaine/tests/cassettes.rs`;
+`rust/fontaine-tools/src/preclassify.rs`; `rust/fontaine/tests/cassettes.rs` (manual-mode cassette; the auto-mode cassette is added in Phase 4);
 `rust/fontaine-tui/src/{app,transcript,approval,statusbar}.rs`; tests under `rust/fontaine-core/tests/`,
 `rust/fontaine/tests/`, `rust/fontaine-tui/tests/`;
 `rust/fontaine/src/main.rs` (TUI wiring); `docs/{permissions,tui,headless,telemetry}.md`, `docs/architecture.md`,
@@ -171,7 +171,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   match the shipped step order and `rust/fontaine-core/tests/docs.rs` is green; CHANGELOG entry appended.
 - Needs a human (the agent cannot push): push the branch and confirm the windows CI job runs the `#[cfg(windows)]` tests green.
 - Needs a human and live keys (not CI): `tasks/design/testing.md` Manual Verification item 1 passes (TUI manual approval
-  flow, end to end); the first rig-cassette recording of a manual-mode session via `cassettes.rs`
+  flow, end to end); the manual-mode rig-cassette (in-scope read round-trip) recorded via `cassettes.rs`
   (`RIG_PROVIDER_TEST_MODE=record`, account `base_url` at the cassette proxy; once committed it
-  replays in CI with no keys); the `claude -p` baseline capture.
+  replays in CI with no keys, and `cassettes.rs` asserts the tool executed via the fast path, the `gate_decision` tier, and the final answer); the `claude -p` baseline capture.
 - Log the phase in the master plan's Progress log.

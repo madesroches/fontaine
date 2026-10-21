@@ -151,7 +151,7 @@ Matching is structured — never regex on raw args.
 | Tool | Specifier | Match |
 |---|---|---|
 | `shell` | words, optional trailing ` *` (`shell(git push)`, `shell(npm run test *)`) | argv from the Tier-0.5 `brush-parser` pass (quoted words stay one argument): exact argv, or argv prefix when the rule ends in ` *`; no wildcard inside a word |
-| `read`, `edit`, `write`, `ls`, `glob`, `grep` | gitignore-style path pattern (`src/**`, `~/.aws/**`, `//etc/hosts`) | relative patterns anchor at each workspace root; the path argument is resolved by the scope validator (symlinks, `..`, the call's `cwd`) and the resolved path is matched |
+| `read`, `edit`, `write`, `ls`, `glob`, `grep` | gitignore-style path pattern (`src/**`, `~/.aws/**`, `//etc/hosts`) | relative patterns anchor at each workspace root; the path argument is resolved by the scope validator (symlinks, `..`, the call's `cwd`) and the resolved path is matched; for `ls`/`glob`/`grep` that is the `path` argument (default: the primary root), and for `glob` also the pattern's anchored base |
 | `webfetch` | `domain:<host>` or `domain:*.<host>` | parsed URL host (lowercased, IDNA-normalized); `*.` matches subdomains only |
 | MCP | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | registered tool name |
 | `agent`, `skill` | agent type / skill name | exact name |

@@ -152,21 +152,10 @@ user hooks, extension files, session resume/fork (Phase 5), result scanning (Pha
 
 ## Files to Modify
 
-All new. Key files: workspace `rust/Cargo.toml` (members = ["*"], exclude = ["target", ".*"], resolver 2,
-workspace.package block with edition 2024 and rust-version 1.97.1; rig crates pinned) and
-`rust/rust-toolchain.toml`;
-`rust/fontaine-core/src/{lib,models,dirs,permissions,permission_rules,destructive,config,trust,session,ledger,hooks,user_hooks,extensions,audit,containment}.rs`;
-`rust/fontaine-tools/src/{lib,gate,guarded,result_pipeline,risk,scope,builtins,webfetch,preclassify,skill}.rs`;
-`rust/fontaine-guardian/src/{lib,verdict,prompt_builder,rules,cache,profile,scanner}.rs` +
-`rust/fontaine-guardian/prompts/{guardian_prompt,guardian_minimal}.md` + `rust/fontaine-guardian/data/guardian_models.toml`;
-`rust/fontaine-mcp/src/{lib,servers,register}.rs`;
-`rust/fontaine-agents/src/{lib,spawn,registry,budget}.rs`;
-`rust/fontaine-tui/src/{app,transcript,approval,denials,statusbar,agents_panel,trust_prompt}.rs`;
-`rust/fontaine/src/{main,headless}.rs` + `rust/fontaine/src/telemetry/{mod,span_bridge,micromegas,otlp}.rs`;
-`docs/{index,architecture,configuration,headless,telemetry,tools,permissions,guardian,evals,tui,mcp,agents,hooks,extensions,sandboxing}.md`;
-`README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`; `evals/` dataset +
-`rust/fontaine-evals/` runner. Each phase plan lists its own file slice in dependency
-order. No `fontaine-llm` crate — the model layer is rig.
+All new. Workspace-level files: `rust/Cargo.toml` (members = ["*"], exclude = ["target", ".*"], resolver 2,
+workspace.package block with edition 2024 and rust-version 1.97.1; rig crates pinned), `rust/rust-toolchain.toml`,
+`README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `.github/workflows/*`. Each phase plan lists its own
+file slice in dependency order. No `fontaine-llm` crate — the model layer is rig.
 
 ## Trade-offs
 
@@ -304,30 +293,13 @@ carries the reasoning:
   v1 requirement, Claude Code-style (`fontaine-agents`; spawn/list/stream/interrupt, per-agent
   context + model + restricted toolset, budgets); agent-to-agent messages go through the same
   guardian gate — the 2026-10-20 line stands, now in v1. (User directive 3.)
-- 2026-10-21: deliberate Claude-Code deviation — child mode is never looser than parent's (≤
-  parent); Claude Code lets default/dontAsk/plan parents set child permissionMode including auto;
-  Fontaine hardens it because a child's effective authority must never exceed what the human
-  granted the session. Mechanism (redesign 2026-10-21 — fixes two-dimensionality: plan's guardian
-  leg was looser than manual on unattended calls, so no total order existed): `[agents.types]`
-  `mode` key, default `"inherit"`; an explicit per-type `mode` may only be `manual` or `dontAsk`
-  (tighten-to-interactive-only); session ladder `dontAsk < manual < acceptEdits < auto` (`plan`
-  removed — a session-root interactive posture, not a child mode); `plan`/`acceptEdits`/`auto`
-  reachable for a child only via `inherit` from a parent already there. A child's effective mode
-  is re-evaluated on every call as the tighter of its own setting and the parent's current mode, so
-  a parent that tightens mid-session tightens its children.
+- 2026-10-21: deliberate Claude-Code deviation — a child's effective mode is never looser than its parent's (Claude Code lets a parent set a child `auto`); mechanism in Phase 5 "Parallel agent orchestration".
 - 2026-10-21: deliberate Claude-Code deviation — `acceptEdits` auto-approves Fontaine's edit-class
   tools only; Claude Code's acceptEdits also auto-approves in-scope filesystem Bash (`mkdir`,
   `touch`, `rm`, `rmdir`, `mv`, `cp`, `sed`), while Fontaine keeps those `Arbitrary`-class shell
   calls behind a prompt (stricter than Claude Code; reason: writes ride the classified edit tools,
   the pre-classifier set is read-only, and a mutating shell must not fast-path).
-- 2026-10-21: subagent nesting mirrors Claude Code's documented rules (per the tie-breaker — not a
-  deviation): default depth cap of three layers below the main conversation, at which the `agent`
-  tool is withheld from subagents; `[agents] max_parallel` bounds concurrent agents across the
-  whole session tree; the per-subagent token/cost cap always binds, and the root session total
-  (`[agents] session_token_budget` / `session_cost_budget_usd`, default unset) binds when set —
-  every agent in the tree debits it; hitting a binding cap stops the subagent with a partial
-  result and its pending prompts cancelled as denied. Unset, tree exposure is structurally
-  bounded by max_parallel (tree-wide) × per-subagent caps × the 3-layer depth cap.
+- 2026-10-21: subagent nesting and budgets mirror Claude Code's documented rules (not a deviation); details in Phase 5 "Parallel agent orchestration".
 - 2026-10-21: plan mode follows Claude Code's default (classifier reviews consequential non-edit
   calls; `useAutoModeDuringPlan` is on by default) — edits structurally blocked regardless of
   verdict.

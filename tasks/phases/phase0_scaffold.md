@@ -66,7 +66,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    door (pitch, install, quickstart — the quickstart leads with a local Ollama agent + guardian
    setup) linking into `docs/` — not a second copy of it. Add a short root `CONTRIBUTING.md`
    (build/test commands, branch and commit rules, how to submit golden-dataset cases and red-team
-   bypasses). Create `CHANGELOG.md` (Keep a Changelog format, with an `## [Unreleased]` section) with the first entry. Add the docs check `rust/fontaine-core/tests/docs.rs` (see Tests).
+   bypasses). Create `CHANGELOG.md` (Keep a Changelog format, with an `## [Unreleased]` section) with the first entry. Add the docs check `rust/fontaine-core/tests/docs.rs` (see Tests): it parses and schema-validates `toml` blocks only — no phase-gated value rules, no model resolution/discovery, no env/credential checks.
 
 ## Files created or modified
 
@@ -97,7 +97,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
   2); disabled means no exporter — with `enabled = false` nothing is built even when
   `MICROMEGAS_TELEMETRY_URL` / `OTEL_EXPORTER_OTLP_ENDPOINT` are set.
 - Golden-dataset schema validation; runner green against verdict fixtures.
-- **docs** (`rust/fontaine-core/tests/docs.rs`, run by `cargo test`): every ```toml block in `docs/*.md` parses through the config loader (as user-scope settings); every relative link in `docs/`, `README.md` and `evals/README.md` resolves; any `TODO` / `TBD` in those files fails the test.
+- **docs** (`rust/fontaine-core/tests/docs.rs`, run by `cargo test`): every ```toml block in `docs/*.md` parses and schema-validates (as user-scope settings; no phase-gated value rules such as the pre-Phase-4 `default_mode = "auto"` error, no model resolution or discovery, no env/credential checks); every relative link in `docs/`, `README.md` and `evals/README.md` resolves; any `TODO` / `TBD` in those files fails the test.
 
 ## Definition of done
 
@@ -106,7 +106,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 - `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` (from `rust/`)
   passes on the fixture set, offline, with no guardian in the tree.
 - `docs/index.md`, `docs/architecture.md`, `docs/configuration.md`, `evals/README.md` exist with
-  real content; `rust/fontaine-core/tests/docs.rs` is green (toml blocks parse, links resolve, no `TODO`/`TBD`); `docs/configuration.md` covers the scope
+  real content; `rust/fontaine-core/tests/docs.rs` is green (toml blocks parse and schema-validate, links resolve, no `TODO`/`TBD`); `docs/configuration.md` covers the scope
   stack, workspace trust and `[telemetry]` (incl. its required endpoint and key).
 - The config, trust-store and telemetry-config tests above are green; no exporter is built in this
   phase.
