@@ -95,7 +95,7 @@ sits directly under `rust/`** — the root directories are only `rust/`, `evals/
 `research/`, plus root files `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `AGENTS.md`, `.gitignore`,
 `.github/workflows/release.yml` (cargo-dist release build; see `design/platforms.md` §Releases) and
 `.github/workflows/ci.yml` (GitHub Actions; matrix `ubuntu-latest`, `macos-latest`, `windows-latest`, each job installs the toolchain pinned in `rust/rust-toolchain.toml` and from `rust/` runs `cargo fmt --check`,
-`cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run (Phase 4 adds a `cargo dist plan` step: install the pinned cargo-dist and run it from `rust/`; Phase 6 adds `cargo clippy --all-targets --features fontaine-guardian/pg2 -- -D warnings` and `cargo test --features fontaine-guardian/pg2`) — see
+`cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run (Phase 3 adds the `--guardian none` eval run: `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none`; Phase 4 adds a `cargo dist plan` step: install the pinned cargo-dist and run it from `rust/`; Phase 6 adds `cargo clippy --all-targets --features fontaine/pg2 -- -D warnings` and `cargo test --features fontaine/pg2`) — see
 `design/testing.md` §Testing Strategy).
 
 ```
@@ -141,6 +141,8 @@ fontaine-guardian     ─▶ (no Fontaine crates)
 fontaine-tools        ─▶ (no Fontaine crates — never fontaine-core)
 ```
 
+Cargo features: `fontaine/pg2 = ["fontaine-core/pg2"]` and `fontaine-core/pg2 = ["fontaine-guardian/pg2"]` forward the optional PromptGuard 2 scanner (Phase 6); CI pg2 steps use `--features fontaine/pg2`.
+
 Phase-owned design sections live in the phase plans: model layer + headless I/O contract (Phase 1),
 tools/risk registry/GuardedTool + multi-root workspace + session ledger (Phase 2), permission modes
 + rule grammar + base TUI (Phase 3), the guardian agent (Phase 4), parallel agents + agents panel,
@@ -183,15 +185,7 @@ file slice in dependency order.
   recovered by passing `prior_denials` explicitly.
 - **Read-only fast path (user-approved hybrid) + Tier 0.5 pre-classifier** — skips guardian latency on
   the highest-frequency calls (Claude Code does the same: dedicated Read/Grep/Glob tools and a
-  built-in read-only Bash command set). The scope check (workspace containment, symlink resolution)
-  and the pre-classifier (`brush-parser` + curated set membership + per-command read-only flag allowlist +
-  the same scope validator) are
-  deterministic code enforced by Fontaine at the execution boundary, not regex-on-args and not the
-  tool's own declaration; a read that escapes scope, and any command the classifier cannot fully
-  parse, goes to the guardian (read ≠ safe — out-of-workspace reads are recon/exfiltration risk),
-  and MCP tools' self-declared `readOnlyHint` never qualifies for a fast path. Explicit allow rules
-  (`design/permissions.md` §Permission rules) are a separate path: a user grant, written by the user, never derived from a
-  tool label or server declaration, and never reaching past the floor.
+  built-in read-only Bash command set).
 - **Parallel agents multiply guardian round-trips and model cost** — N subagents mean N× adjudications
   and token spend (Claude Code documents the same). Mitigated by Tier 0.5 (most read-ish subagent
   calls never reach the guardian), the optional local PromptGuard 2 result scanner (`scanner = "pg2"`; no per-result LLM call),
@@ -248,7 +242,7 @@ carries the reasoning:
 - 2026-10-21: Plan mode follows Claude Code's default (classifier reviews consequential non-edit calls); edits are structurally blocked regardless of verdict.
 - 2026-10-21 (revised): The deterministic floor (deny → ask → critical-path → protected-path) gates every mode and can only prompt or deny, never allow; critical-path never auto-approves and denies in `dontAsk`/headless; protected paths follow Claude Code. Spec: `design/permissions.md` §Core data flow.
 - 2026-10-21: Deviation — config trust asymmetry is looser than Claude Code on the deny side: project repos may add deny/ask rules (Claude Code ignores the project `autoMode` block); reason: deny-side additions can only tighten.
-- 2026-10-21 (user): Bypass mode is not shipped in v1 (deviation from `bypassPermissions`); eval/CI baselines always run with the guardian.
+- 2026-10-21 (user): Bypass mode is not shipped in v1 (deviation from `bypassPermissions`); no eval or CI run bypasses the permission pipeline; `auto` cases always run with a guardian.
 - 2026-10-21: Shipped default mode = auto (Claude Code parity); interim default = manual until the guardian wires in at Phase 4.
 - 2026-10-21 (user): Headless `-p` promoted to Phase 1 so CI and the eval harness drive core headlessly from day one.
 - 2026-10-21: Deviation — subagent reports are screened by the optional (default-off) result scanner, not by the classifier at handoff; reason: the guardian never sees tool output.
@@ -309,6 +303,10 @@ carries the reasoning:
 - 2026-10-21 (user): `/model` and `/guardian-model` switch the live session and persist to the user config file (Claude Code `/model` parity); `/model` moves the guardian only when it is unset and on the main-model fallback; an unavailable pinned guardian in the TUI prompts retry / pick another validated guardian / switch to `manual` (Phase 4 §The guardian agent).
 - 2026-10-21: A cost cap (`subagent_cost_budget_usd`, `session_cost_budget_usd`) on a model with no catalog price is inactive with a one-time notice and the token cap still binds; an explicit `--max-budget-usd` on an unpriced model stays a usage error (exit 2) (Phase 5 Budgets).
 - 2026-10-21: The headless I/O contract is a checked-in JSON Schema per version, `docs/schemas/headless-v1.schema.json`, published with the docs and validated with the exact-pinned `jsonschema` crate (Phase 1).
+- 2026-10-21: Eval `pipeline` cases take an optional `permissions` field (`deny`/`ask`/`allow` in the `Tool(specifier)` grammar, plus `allow_extra`); Phase 0 seeds floor cases and `baseline capture` writes the equivalent `.claude/settings.json` permissions into the scratch workspace.
+- 2026-10-21: Deviation — user-scope agent files accept `permissionMode` only as `inherit`/`default`/`dontAsk`; any other value is a load error (exit 2) naming the file; reason: same mode rule as `[agents.types]`, stricter than Claude Code.
+- 2026-10-21: Dependency policy — exact pins (`=x.y.z`) for rig and every pre-1.0 crate, each new crate listed with its pin in the owning phase's Files line; 1.x crates (clap, tokio, serde, toml) use caret.
+- 2026-10-21: The system prompt is the versioned asset `rust/fontaine-core/prompts/system_prompt.md` layered base → `FONTAINE.md` → skill index → output style → `--append-system-prompt`; `--system-prompt` replaces only the base (Phase 2 step 2).
 
 ## Open Questions
 

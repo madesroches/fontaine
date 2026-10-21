@@ -91,7 +91,7 @@ agents port by copying; `.claude/` is not read directly.
 - **Agent files** load into the step-3 agent-type registry beside `[agents.types]` (project overrides
   user on a name clash); project files only narrow — toolset a subset of the parent's, `mode`
   `manual` (default) or `dontAsk`, no `model` key (session model) — and a project file breaking that
-  is rejected at load (exit 2).
+  is rejected at load (exit 2). User-scope agent files follow the `[agents.types]` mode rule: `permissionMode` is accepted only as `inherit`, `default` (↦ `manual`) or `dontAsk`; any other value (`acceptEdits`, `auto`, `plan`, `bypassPermissions`) is a load error (exit 2) naming the file.
 - **Output styles** are system-prompt overlays selected per session with `/output-style`. Output styles never alter the guardian's prompt or `AdjudicationRequest`.
 
 ### TUI extension — background-agents panel
@@ -190,6 +190,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   same gate; delivery to a parent, a child, a sibling and `"main"` arrives in the recipient's next turn marked with the sender's agent id and appears to the guardian only as untrusted context; the sender gets `{status: "queued"}`; a finished or killed target returns error `agent not running`.
 - **unpriced-model cost cap** (`rust/fontaine/tests/parallel_agents.rs`): a subagent on an `openai-compatible` model with `subagent_cost_budget_usd` set runs with the cost cap inactive and one notice, and the token cap still stops it; explicit `--max-budget-usd` against that model is a usage error (exit 2).
 - **ChildRunner seam** (`rust/fontaine-agents/tests/`, fake `ChildRunner`): the spawn tool, registry and budget logic run with no `fontaine-core` dependency; the fake receives type, effective mode, budget and a fake `LedgerView`; status/kill/report flow through the returned handle.
+- **system prompt** (`rust/fontaine-core/tests/`): the Phase 2 snapshot of the assembled prompt is extended with the skill index and an active output style in the layering order (base → `FONTAINE.md` → skill index → output style → append).
 - **output styles** (`rust/fontaine-core/tests/`): the guardian's `AdjudicationRequest` and rendered prompt are byte-identical with and without an active output style.
 - **agents panel** (`rust/fontaine-tui/tests/`, ratatui `TestBackend` with a scripted model): a killed subagent's row shows `killed` and its token/cost spend against budget.
 - **subagent intent** (`rust/fontaine/tests/parallel_agents.rs`): an injected spawn prompt claiming user authorization does not appear as `task_intent` or in `recent_user_messages` in any `AdjudicationRequest`; it appears only inside an untrusted-delimited block.
@@ -213,7 +214,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
 - **extensions**: frontmatter parsing of Claude Code-style skills and agents; project agent file
   with `model`, `mode = "inherit"`/`auto`, or a tool outside the parent's set is rejected; project
   agent overrides a same-name user agent and stays narrowed; project skill `allowed-tools` ignored;
-  `!cmd` runs through the pipeline as `shell`; `skill` in the choke-point test with its risk class.
+  `!cmd` runs through the pipeline as `shell`; `skill` in the choke-point test with its risk class; a user-scope agent file with `permissionMode` `acceptEdits`, `auto`, `plan` or `bypassPermissions` is rejected at load (exit 2) naming the file, while `inherit` / `default` / `dontAsk` load.
 - **telemetry**: N subagents produce per-agent `tool_decision` events keyed like the audit log;
   MCP names appear only under `log_tool_details`.
 

@@ -148,7 +148,7 @@ files: `<config dir>/` and `<root>/.fontaine/` each hold `skills/<name>/SKILL.md
 `agents/<name>.md` and `output-styles/<name>.md`. Agent files and `[agents.types]` entries feed one
 agent-type registry (project definitions override user ones of the same name, as in Claude Code); a
 project agent file may only narrow — toolset a subset of the parent's, `mode` `manual` (default) or
-`dontAsk` (no `inherit`), no `model` key (it runs on the session model). A skill's `allowed-tools`
+`dontAsk` (no `inherit`), no `model` key (it runs on the session model). A user-scope agent file follows the `[agents.types]` mode rule: `permissionMode` is accepted only as `inherit`, `default` (↦ `manual`) or `dontAsk`; any other value (`acceptEdits`, `auto`, `plan`, `bypassPermissions`) is a load error (exit 2) naming the file (stricter than Claude Code). A skill's `allowed-tools`
 acts as session-scope allow rules while the skill is active when the skill comes from a user trust
 scope, and is ignored from project scope.
 

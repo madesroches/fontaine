@@ -19,7 +19,7 @@ serves license-clean setups. A scanner that errors, times out or prints unparsea
 **flagged** (fail closed: the result is annotated as unscanned-and-suspect, never passed as clean).
 Release builds enable the `pg2` cargo feature; CI lints and tests the feature path.
 
-Context for the choice: `research/research-llamafirewall.md` §7.2 (PG2 recall @ 1% FPR **97.5%**
+Context for the choice: `research/research-llamafirewall.md` — only §7.2's measurements apply (`candle` supersedes its `ort` runtime recommendation, and its AgentDojo reporting (§7.3) is dropped per Decisions) (PG2 recall @ 1% FPR **97.5%**
 English; 19–92 ms — a cheap first layer, not a judge; AgentDojo evidence that small detectors
 catch little beyond explicit jailbreak phrasing, which is why this scans results *for the main
 agent's benefit* and never substitutes for the guardian). Subagent reports flow through this same
@@ -36,10 +36,10 @@ path (`ResultPipeline`, Phase 2) — see the Phase 5 plan.
      `candle-nn`, `candle-transformers` `=0.11.0` and `tokenizers` `=0.23.2` (default features off;
      enable only what `tokenizer.json` loading needs) — confirm they resolve under the workspace toolchain
      when the step lands. All are optional dependencies of `fontaine-guardian` behind the `pg2` cargo
-     feature so the crate stays dependency-light; release builds enable `pg2`; `scanner = "pg2"` in a build
-     without it is a config error (exit 2). A first spike loads the real weights and checks logits against
+     feature so the crate stays dependency-light; forwarding features `fontaine/pg2 = ["fontaine-core/pg2"]` and `fontaine-core/pg2 = ["fontaine-guardian/pg2"]` expose it from the bin; `config.rs` checks `cfg(feature = "pg2")`, so `scanner = "pg2"` in a build
+     without it is a config error (exit 2). The cargo-dist config in `rust/Cargo.toml` builds `fontaine` with `features = ["pg2"]` (updated in this step). A first spike loads the real weights and checks logits against
      the model card's reference outputs before the step builds on it.
-     Add the `pg2` lint/test steps to `.github/workflows/ci.yml` (`cargo clippy --all-targets --features fontaine-guardian/pg2 -- -D warnings`; `cargo test --features fontaine-guardian/pg2`).
+     Add the `pg2` lint/test steps to `.github/workflows/ci.yml` (`cargo clippy --all-targets --features fontaine/pg2 -- -D warnings`; `cargo test --features fontaine/pg2`).
    - `llm`: the cheap-LLM pass on the resolved `[guardian] model` (`query_source = scanner`), prompt in the versioned asset `rust/fontaine-guardian/prompts/scanner_llm.md`; the verdict is extracted via rig's extractor into the same `{verdict: clean|flagged, reason}` shape as the `command` scanner, with the scanned content inside untrusted delimiters; malformed output ⇒ flagged.
    - `command`: `scanner_command` is run directly (no shell) with the hook-style scrubbed environment;
      it receives JSON `{"tool": ..., "content": ...}` on stdin and prints
@@ -64,7 +64,7 @@ path (`ResultPipeline`, Phase 2) — see the Phase 5 plan.
 
 ## Files created or modified
 
-`rust/fontaine-guardian/src/scanner.rs` (trait + `pg2`/`llm`/`command` implementations; `pg2` behind the cargo feature); `rust/fontaine-guardian/prompts/scanner_llm.md` (compiled in via `include_str!`); `rust/fontaine-core/src/scanner_stage.rs` (attaches the configured scanner as the first `ResultPipeline` stage); `rust/fontaine-tools/src/result_pipeline.rs` (only if its stage trait changes); `.github/workflows/ci.yml` (pg2 clippy/test steps); `rust/Cargo.toml` (candle and tokenizers pins, `pg2` feature enabled for release builds);
+`rust/fontaine-guardian/src/scanner.rs` (trait + `pg2`/`llm`/`command` implementations; `pg2` behind the cargo feature); `rust/fontaine-guardian/prompts/scanner_llm.md` (compiled in via `include_str!`); `rust/fontaine-core/src/scanner_stage.rs` (attaches the configured scanner as the first `ResultPipeline` stage); `rust/fontaine-tools/src/result_pipeline.rs` (only if its stage trait changes); `.github/workflows/ci.yml` (pg2 clippy/test steps); the cargo-dist config in `rust/Cargo.toml` (`features = ["pg2"]`); `rust/Cargo.toml` (candle and tokenizers pins, `pg2` feature enabled for release builds);
 `rust/fontaine-evals/src/live.rs` (`scanner`-kind live routing); `docs/{guardian,configuration,telemetry}.md`.
 
 ## Tests owned by this phase
@@ -91,8 +91,8 @@ path (`ResultPipeline`, Phase 2) — see the Phase 5 plan.
   subagent reports, license notice, telemetry) and the default-off test.
 - Needs a human and an HF token (not CI): scanning demonstrable in a live session with `scanner = "pg2"` set, with the license caveat surfaced; the `pg2`-feature PromptGuard 2 inference test run against a
   downloaded model (`FONTAINE_PG2_MODEL`).
-- CI covers the `pg2` feature: `.github/workflows/ci.yml` also runs `cargo clippy --all-targets --features fontaine-guardian/pg2 -- -D warnings` and `cargo test --features fontaine-guardian/pg2` (the real-model test skips without `FONTAINE_PG2_MODEL`; the build must resolve offline-safe).
-- `scanner = "off"` remains the default; the release build enables the `pg2` feature; `ci.yml` clippy (and tests) with `fontaine-guardian/pg2` are green.
+- CI covers the `pg2` feature: `.github/workflows/ci.yml` also runs `cargo clippy --all-targets --features fontaine/pg2 -- -D warnings` and `cargo test --features fontaine/pg2` (the real-model test skips without `FONTAINE_PG2_MODEL`; the build must resolve offline-safe).
+- `scanner = "off"` remains the default; the cargo-dist release build enables the `pg2` feature; `ci.yml` clippy (and tests) with `fontaine/pg2` are green.
 - `rust/fontaine-core/tests/docs.rs` green with the `docs/guardian.md` scanning section in place.
 - CHANGELOG entry appended.
 - Log the phase in the master plan's Progress log.

@@ -13,11 +13,9 @@ with manual approvals.**
 Five modes with the **same semantics as Claude Code**: `manual`, `acceptEdits`, `plan`, `auto`,
 `dontAsk`. The shipped v1 default is `auto` (Claude Code parity — its built-in starting mode since
 v2.1.283+); during the Phase-3 interim the default is `manual`, because nothing runs `auto` before
-the guardian exists (Phase 4) — no auto without a guardian. **Deliberate subtraction from Claude
-Code**: `bypassPermissions` is not shipped at all in v1 — there is no permission-bypass mode, so
+the guardian exists (Phase 4) — no auto without a guardian. `bypassPermissions` is not shipped, so
 the deterministic deny → ask → critical-path → protected-path floor (and, from Phase 4, the guardian) gates every
-call in every mode (reasoning in Decisions). Shift+Tab cycles manual → acceptEdits → plan → auto.
-Keeping the same set so muscle memory transfers; the difference is `auto` is powered by our local
+call in every mode. Shift+Tab cycles manual → acceptEdits → plan → auto. `auto` is powered by our local
 guardian against any model.
 
 ### TUI (fontaine-tui) — base surface
@@ -90,8 +88,8 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
    runner mode `--guardian none` (`tasks/design/testing.md` Testing Strategy, Eval harness: `pipeline` cases through the real `PermissionPipeline` for the non-auto modes) and the
    `baseline capture` / `baseline diff` subcommands (Differential
    baselines; `diff` runs against a `--guardian none --out` file) and run them for manual/acceptEdits/plan/dontAsk over the Tier-0.5 adversarial set and
-   the floor/headless cases; also confirm the protected-path list and the allowlist table against
-   the captured `claude -p` behavior. Fix or record each divergence.
+   the floor/headless cases (the cases' `permissions` field is written as equivalent `.claude/settings.json` permissions in `Tool(specifier)` syntax in the scratch workspace); also confirm the protected-path list and the allowlist table against
+   the captured `claude -p` behavior. Fix or record each divergence. Add `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none` (from `rust/`) to `ci.yml` on all three OSes.
 4. Cassette test (offline build; recording stays the human step): `rust/fontaine/tests/cassettes.rs` with the manual-mode
    test (in-scope read round-trip) marked `#[ignore = "cassette not recorded"]`, the rig-cassette scrubbing
    configuration, and the account `base_url` pointed at the cassette proxy.
@@ -109,7 +107,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
 
 ## Files created or modified
 
-`rust/fontaine-core/src/{permissions,permission_rules,audit}.rs`; `rust/fontaine-evals/src/baseline.rs`; `rust/fontaine-evals/tests/{baseline,none_mode}.rs`;
+`rust/fontaine-core/src/{permissions,permission_rules,audit}.rs`; `.github/workflows/ci.yml` (adds the `--guardian none` eval step on all three OSes); `rust/fontaine-evals/src/baseline.rs`; `rust/fontaine-evals/tests/{baseline,none_mode}.rs`;
 `rust/fontaine-tools/src/preclassify.rs`; `rust/fontaine/tests/cassettes.rs` (manual-mode cassette, built in step 4; the auto-mode cassette is added in Phase 4);
 `rust/fontaine-tui/src/{app,transcript,approval,statusbar}.rs`; tests under `rust/fontaine-core/tests/`,
 `rust/fontaine/tests/`, `rust/fontaine-tui/tests/`;
@@ -154,7 +152,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   through; `allow_extra` — an extra entry given a flag falls through to the guardian, an out-of-scope
   positional falls through, an in-scope positional pre-classifies; golden parser cases: `ls;rm x`, `a|b`
   and `ls && rm x` never fast-path and `deny shell(rm)` matches the `rm` segment (floor treats the `rm` as
-  critical), while a quoted `';'` argument stays one argument; every `git` invocation, including the config-execution cases in the golden set, goes to the guardian and never fast-paths.
+  critical), while a quoted `';'` argument stays one argument; non-literal argument words never fast-path and never match an allow rule (`cat $HOME/.ssh/id_rsa`, `cat {notes.txt,/etc/passwd}` → guardian; `rm -rf {/,x}` → critical-path; brace patterns detected via brush-parser `parse_brace_expansions`); every `git` invocation, including the config-execution cases in the golden set, goes to the guardian and never fast-paths.
 - **headless** (`rust/fontaine/tests/pipeline_headless.rs`, scripted `openai-compatible` endpoint via the Phase-1 `common/mod.rs` helper, passing `--permission-mode manual` explicitly):
   every would-prompt outcome becomes a Deny returned as the tool_result, the run continues, exit
   code 0.
@@ -166,7 +164,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
 ## Definition of done
 
 - Offline gates (no keys, no human): `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` /
-  `cargo test` green, including the scripted-endpoint headless, pipeline, permission-rule, baseline, `none`-mode, and TUI tests above; `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none` (from `rust/`) exits 0; interim default is
+  `cargo test` green, including the scripted-endpoint headless, pipeline, permission-rule, baseline, `none`-mode, and TUI tests above; `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none` (from `rust/`) exits 0, and the same step is added to `ci.yml` on all three OSes; interim default is
   `manual`; no mode or allow rule reaches past the deterministic floor; `docs/permissions.md` + pipeline diagram
   match the shipped step order and `rust/fontaine-core/tests/docs.rs` is green; CHANGELOG entry appended.
 - Needs a human (the agent cannot push): push the branch and confirm the windows CI job runs the `#[cfg(windows)]` tests green.

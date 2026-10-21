@@ -117,8 +117,8 @@ context.
    `OTEL_EXPORTER_OTLP_HEADERS`, every configured `[accounts.*] api_key_env` name and
    `[guardian] scanner_hf_token_env`. `GuardedTool::call` opens a `fontaine.tool` span (beside rig's
    `execute_tool`) and emits the `tool_result` telemetry event (`risk_class`, `tool_source`).
-2. `fontaine-core`: session orchestration on `rig_agent` (`AgentBuilder` + `AgentRun`), system
-   prompt, FONTAINE.md loading (v1 set: `<primary root>/FONTAINE.md` plus the user-level `FONTAINE.md` in the user config dir; no parent-directory hierarchy or imports — backlog GitHub issue #7); `rig-memory` for context windows, compaction,
+2. `fontaine-core`: session orchestration on `rig_agent` (`AgentBuilder` + `AgentRun`), the system
+   prompt (versioned asset `rust/fontaine-core/prompts/system_prompt.md`, compiled in via `include_str!`; it must cover tool steering toward `ls`/`read`/`glob`/`grep` over `shell`, how to handle denials and retries, the workspace roots, and no secrets in output; layering order: base → `FONTAINE.md` → skill index → output style → `--append-system-prompt`, where `--system-prompt` replaces the base only), FONTAINE.md loading (v1 set: `<primary root>/FONTAINE.md` plus the user-level `FONTAINE.md` in the user config dir; no parent-directory hierarchy or imports — backlog GitHub issue #7); `rig-memory` for context windows, compaction,
    and save/resume — no custom agent loop or history management to write; the agent is built with
    `tool_concurrency = 1` (tool calls run one at a time, in order); the session ledger
    (design above) alongside it, keyed by the session id (`--session-id` or a fresh UUID).
@@ -134,7 +134,7 @@ context.
 ## Files created or modified
 
 `rust/fontaine-tools/src/{lib,gate,guarded,result_pipeline,risk,scope,builtins,webfetch,git_bash}.rs`;
-`rust/fontaine-core/src/{lib,session,ledger}.rs`; `rust/fontaine-tools/tests/{scope,choke_point}.rs`; `rust/fontaine-core/tests/{ledger,config}.rs`; `rust/fontaine/tests/{headless_smoke,headless_contract}.rs` (retargeted from `echo` to `read`); `rust/fontaine/tests/headless_tools.rs`; `docs/tools.md`, `docs/architecture.md`,
+`rust/fontaine-core/src/{lib,session,ledger}.rs`; `rust/fontaine-core/prompts/system_prompt.md`; `rust/fontaine-tools/tests/{scope,choke_point}.rs`; `rust/fontaine-core/tests/{ledger,config}.rs`; `rust/fontaine/tests/{headless_smoke,headless_contract}.rs` (retargeted from `echo` to `read`); `rust/fontaine/tests/headless_tools.rs`; `docs/tools.md`, `docs/architecture.md`,
 `docs/configuration.md`, `docs/telemetry.md`, `docs/headless.md`, `docs/index.md`.
 
 ## Tests owned by this phase
@@ -160,6 +160,7 @@ context.
 - **webfetch** (wiremock): HTML converted to markdown; a body over 10 MB is cut at the fetch cap; output
   over 100,000 characters is truncated with the truncation noted; a response slower than 30 s times out;
   a cross-host redirect is returned, not followed; only `url` is accepted.
+- **system prompt** (`rust/fontaine-core/tests/`): snapshot of the assembled prompt (base → `FONTAINE.md` → append; `--system-prompt` replaces only the base); the base contains the required steering content.
 - **session ledger** (`rust/fontaine-core/tests/ledger.rs`): after a forced compaction the ledger
   still holds every user message verbatim and no summary text; the ledger is append-only (no API
   removes a record); the file index respects `.gitignore` and truncates at the cap with the

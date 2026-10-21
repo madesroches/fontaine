@@ -22,7 +22,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    project-local `.fontaine/settings.local.toml` (user trust only while `git` reports it untracked
    or ignored; otherwise project scope), project `.fontaine/settings.toml`, user file; scalars by
    precedence, lists by union; every key a scope may not set (per the `tasks/design/config.md` scope table, incl.
-   project and project-local `default_mode` limited to `manual`/`dontAsk`) rejected at load; `default_mode = "auto"` from any scope is a config error (exit 2) until Phase 4 step 2 lifts it, mirroring the CLI rule. The primary
+   project and project-local `default_mode` limited to `manual`/`dontAsk`) rejected at load; `default_mode = "auto"` is a config error (exit 2) from user and CLI scope until Phase 4 step 2 lifts it, and always from project and project-local scope. The primary
    workspace root is the canonicalized launch cwd; config is read only from it. Rule strings in
    `[permissions] deny`/`ask`/`allow` are parsed into the `Tool(specifier)` grammar at load
    (`fontaine-core/src/permission_rules.rs`; an unparseable rule is a config error, exit 2; matching
@@ -48,15 +48,15 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    into spawning with an escalated toolset — plus escape-focused container cases for the
    `[guardian] profile = "minimal"` column: `mount /dev/sda1`, docker.sock write, cgroup
    `release_agent`, bind-mount symlink escape → deny/escalate; routine in-container workspace ops
-   → proceed); the runner is the bin + lib crate `rust/fontaine-evals` (CLI table in `tasks/design/testing.md` Testing Strategy, Eval harness), reading `evals/dataset/*.jsonl` (one JSON
+   → proceed; `pipeline` floor cases with a `permissions` field: a deny rule, an ask rule, a critical path and a protected path); the runner is the bin + lib crate `rust/fontaine-evals` (CLI table in `tasks/design/testing.md` Testing Strategy, Eval harness), reading `evals/dataset/*.jsonl` (one JSON
    object per case: `id`, `kind`, `category`, `profile`, `task_intent`, `tool`, `args`, `expected`,
    `fixture_verdict`, `mode` (default `manual`), `workspace` (files, symlinks and `cwd` materialized in a
    temp root), plus optional request-context fields; `kind` = `guardian` | `pipeline` |
    `scanner` selects the component a case scores — field list and per-kind scoring in
-   `tasks/design/testing.md` Testing Strategy; `pipeline` `expected` ∈ `allow` | `deny` | `prompt`, `expected_tier` from the tier enum in `tasks/design/permissions.md` §Core data flow) and scoring any guardian model
+   `tasks/design/testing.md` Testing Strategy; `pipeline` `expected` ∈ `allow` | `deny` | `prompt`, `expected_tier` from the tier enum in `tasks/design/permissions.md` §Core data flow, `fixture_verdict` an object `{decision, tier}`; optional `permissions` = `deny` / `ask` / `allow` lists in the `Tool(specifier)` grammar plus `allow_extra`) and scoring any guardian model
    config; CI runs `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture`
    from `rust/` — offline, deterministic verdict fixtures — so it is green before the guardian
-   exists. Fixture mode exits 0 only if every case validates against the schema and `fixture_verdict == expected` (and `expected_tier` where present), else 1; exit 2 on usage or config error (`tasks/design/testing.md` Eval harness).
+   exists. Fixture mode exits 0 only if every case validates against the schema and `fixture_verdict` equals `expected` (for `pipeline` cases `fixture_verdict.decision` vs `expected` and `fixture_verdict.tier` vs `expected_tier`), else 1; exit 2 on usage or config error (`tasks/design/testing.md` Eval harness).
 3. Docs — start the documentation tree under `docs/` (its own directory — the single home for
    all prose, structured one-topic-per-page with relative cross-links so it can be lifted into a
    website later; no site tooling in v1): `docs/index.md` (landing/TOC), `docs/architecture.md`
@@ -71,7 +71,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 
 ## Files created or modified
 
-`.gitignore`; `rust/Cargo.toml`; `rust/rust-toolchain.toml`; crate skeletons for every `rust/fontaine-*` crate; `rust/fontaine/src/{main,lib}.rs` (`lib.rs` holds the logic, `main.rs` is thin);
+`.gitignore`; `rust/Cargo.toml` (new crate: `windows-acl =0.3.0`, target-gated to Windows, for the owner-only ACL helper); `rust/rust-toolchain.toml`; crate skeletons for every `rust/fontaine-*` crate; `rust/fontaine/src/{main,lib}.rs` (`lib.rs` holds the logic, `main.rs` is thin);
 `rust/fontaine/src/telemetry/mod.rs`; `rust/fontaine-core/src/{config,dirs,permission_rules,trust,credentials}.rs`; `evals/` (dataset + README.md); `rust/fontaine-evals/src/{main,lib}.rs` (runner; `lib.rs` holds the logic); `CHANGELOG.md`; `CONTRIBUTING.md`; `SECURITY.md`;
 `docs/{index,architecture,configuration}.md`; `README.md`; `rust/fontaine-core/tests/{config,docs}.rs`; `.github/workflows/ci.yml`.
 
@@ -87,7 +87,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
   > user precedence for scalars and union for lists; a tracked `settings.local.toml` loads as project
   scope; endpoint/credential keys rejected from project-local; project and project-local
   `default_mode` accept only `manual`/`dontAsk` (`"plan"`, `"acceptEdits"`, `"auto"` rejected from both); `[permissions] allow` / `additional_directories`
-  rejected from project scope; unparseable rule strings rejected; `default_mode = "auto"` rejected (exit 2) from user, project-local and CLI scope too until Phase 4.
+  rejected from project scope; unparseable rule strings rejected; `default_mode = "auto"` rejected (exit 2) from user and CLI scope until Phase 4, and always from project and project-local scope.
 - **dirs**: `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR` override the `dirs` defaults (all tests use temp
   dirs); owner-only files are 0600 on Unix and current-user-only on Windows (`#[cfg(windows)]` ACL test, compile-checked locally with the windows-gnu target and executed in the windows CI job).
 - **credentials lookup**: account entries and the telemetry entry round-trip from a temp `credentials.toml`; a missing file or entry yields no credential; the file is owner-only.

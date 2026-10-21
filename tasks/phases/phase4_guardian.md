@@ -178,7 +178,7 @@ mode is not resurrected here; minimal adjudicates, just less):
    `fontaine.guardian` span in `fontaine-guardian` (which depends on `tracing` only), guardian model
    usage attributed `query_source = guardian` through its ancestor span, and
    `fontaine.guardian.fail_closed.count` by reason. Shipped default mode
-   flips `manual` → `auto` here, and the pre-Phase-4 restriction (`default_mode = "auto"` as a config error, `--permission-mode auto` as a usage error) is removed, and the Phase 0 config tests and Phase 1 `headless_smoke.rs` "auto rejected" tests flip to assert acceptance. Headless `-p` semantics for `auto`: `tasks/design/permissions.md` §Headless.
+   flips `manual` → `auto` here, and the pre-Phase-4 restriction on user-scope `default_mode = "auto"` (config error) and on `--permission-mode auto` (usage error) is removed — project and project-local `auto` stay rejected — and only the user and CLI cases of the Phase 0 config tests and Phase 1 `headless_smoke.rs` "auto rejected" tests flip to assert acceptance. Headless `-p` semantics for `auto`: `tasks/design/permissions.md` §Headless.
 3. TUI denial UX: inline denial rendering, `/denied` retry list, `/permissions` rule editor,
    `/model` and `/guardian-model` switches (live session + persisted to the user file via `toml_edit`; unavailable-pinned-guardian prompt — design above), Escalate-verdict prompts.
 4. Eval runner live modes (`rust/fontaine-evals/src/{live,report}.rs`; CLI in `tasks/design/testing.md` Testing Strategy, Eval harness): `--guardian live:<account>/<model>` routes
@@ -191,11 +191,8 @@ mode is not resurrected here; minimal adjudicates, just less):
    with the release: catch rate per attack class × false-deny rate on benign commands × per-model
    results (no ASR × utility / AgentDojo-comparable reporting); the same harness validates and **ranks the guardian
    candidates for the default-guardian list** and writes the entries that clear the inclusion bar
-   (design above, measured on the `full` profile) into `rust/fontaine-guardian/data/guardian_models.toml` — including a **`minimal` profile column** (same golden set +
-   escape-focused additions; a profile ships only once it is scored, KILL #3 framing inherits). The
-   guardian never ships un-scored — a bypass found by Fontaine's own public eval is a credibility
-   event; the same bypass found externally is the kill event (analysis-strategic-verdict amendment
-   A1, mitigating KILL #3). Also run the `fontaine-evals` `baseline capture` / `baseline diff` subcommands with
+   (design above, measured on `--profile full` runs only; a `--profile minimal` run scores every `minimal`-profile case plus all `full`-profile `guardian` cases) into `rust/fontaine-guardian/data/guardian_models.toml` — including a **`minimal` profile column** (same golden set +
+   escape-focused additions; a profile ships only once it is scored, KILL #3 framing inherits). Also run the `fontaine-evals` `baseline capture` (which writes each case's `permissions` as equivalent `.claude/settings.json` permissions in the scratch workspace) / `baseline diff` subcommands with
    `auto` against the Tier-0.5 adversarial set and the floor/headless cases to confirm the
    Claude Code parity (manual/eval-side, never a CI dependency — see AGENTS.md).
 6. Minimal profile implementation: profile resolution (`[guardian] profile`, user trust scopes only per the config scope table; only
@@ -209,7 +206,7 @@ mode is not resurrected here; minimal adjudicates, just less):
    one-time notice.
 7. Release setup: cargo-dist `0.32.0` configured in `rust/Cargo.toml` and
    `.github/workflows/release.yml` — on a `vX.Y.Z` tag it builds binaries for Linux, macOS and Windows
-   and publishes a GitHub Release (semver 0.x); `cargo install --git https://github.com/madesroches/fontaine fontaine` also supported; v1 does not publish to crates.io.
+   and publishes a GitHub Release (semver 0.x; Phase 6 adds `features = ["pg2"]` to the dist config); `cargo install --git https://github.com/madesroches/fontaine fontaine` also supported; v1 does not publish to crates.io.
    Tagging and pushing the tag are human steps (maintainer); the workflow is exercised by a
    `cargo dist plan` check in CI (`.github/workflows/ci.yml` installs the pinned cargo-dist and runs `cargo dist plan` from `rust/`). README install section lists the Releases binaries and `cargo install --git`.
    `CHANGELOG.md` keeps `## [Unreleased]` (Keep a Changelog); at release it moves under the version.
@@ -241,15 +238,15 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
 ## Tests owned by this phase
 
 - **guardian** (`tasks/design/testing.md` Testing Strategy): malformed verdict outputs → retries → Deny; timeout →
-  Deny (tokio time-pause); endpoint 500 (wiremock) → Deny `GuardianUnavailable`; connection reset
-  and mid-stream drop → Deny `GuardianUnavailable`, no hang — driven by `rig_core::test_utils`
+  Deny (tokio time-pause); endpoint 500 (wiremock) → Deny `GuardianUnavailable` (`fail_closed_reason = error`); connection reset
+  and mid-stream drop → Deny `GuardianUnavailable` (`error`), no hang; a missing guardian credential → Deny `GuardianUnavailable` (`unavailable`) — driven by `rig_core::test_utils`
   streaming clients (`HttpErrorStreamingClient`, `NonSuccessStreamingClient`,
   `SequencedStreamingHttpClient`) or a raw `tokio::net::TcpListener` that drops the socket (wiremock
   0.6 has no reset/abort API); an Allow below `confidence_threshold` on a destructive class → Deny,
   and a Deny verdict is never softened; cache-key correctness incl. rules-version invalidation; loop
   breaker (3 consecutive / 20 total denials pause `auto`; approval resumes; headless paused ⇒ Deny); prompt-builder snapshots (defaults spliced, `$defaults` marker, untrusted delimiting
   present); redaction of credential-shaped inputs; minimal-profile resolution fail-closed (probe
-  failure ⇒ fall back to `full`), and under `minimal` in-workspace routine ops skip full-context adjudication while the escape primitives (mount, docker.sock write, cgroup control write, proxy bypass) + exfiltration-class
+  failure ⇒ fall back to `full`), and under `minimal` the guardian receives an `AdjudicationRequest` without `project_instructions`, `hook_context` and `prior_denials`, with `task_intent` ≤ 500 chars and ≤ 3 `recent_user_messages`, rendered from `guardian_minimal.md`, while the escape primitives (mount, docker.sock write, cgroup control write, proxy bypass) + exfiltration-class
   remote writes still Deny/Escalate.
 - **containment probe** (`rust/fontaine-core/tests/containment.rs`, fake root dir): each signal alone
   (`/.dockerenv`, `/run/.containerenv`, `container=` in `/proc/1/environ`, each cgroup marker) ⇒
@@ -279,7 +276,7 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
 - **ledger-only request**: after a compaction whose summary carries a canary instruction, the
   `AdjudicationRequest` holds the verbatim user messages and no canary text.
 - **telemetry**: guardian verdicts match bit-for-bit between telemetry off and a failing exporter;
-  timeout, unparseable and 500 fail-closed reasons are each counted once.
+  timeout (`timeout`), unparseable (`unparseable`), 500 (`error`), missing credential (`unavailable`) and low confidence (`low_confidence`) fail-closed reasons are each counted once under those names, with the audit labels `Timeout` / `Unparseable` / `GuardianUnavailable` / `GuardianUnavailable` / `LowConfidence`.
 - **TUI** (`rust/fontaine-tui/tests/`): `TestBackend` with injected key events and a scripted
   model — `/denied` lists a denied action and `r` injects the retry notice into the agent's next
   turn; the Shift+Tab cycle now includes `auto`; `/permissions` edits a rule (appended to the user file's `[permissions]` list); `/model` switches the live model and persists it to the user file; `/guardian-model` switches the guardian and persists it, and an unavailable pinned guardian offers retry / pick another validated guardian / switch to `manual`.

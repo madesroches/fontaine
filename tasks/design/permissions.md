@@ -34,7 +34,8 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               args. For `shell` calls the critical-path check parses the command with the same
               `brush-parser` pass as Tier 0.5 and inspects the targets of every `rm`/`rmdir` word (exact word
               equality), resolving each against the call's `cwd` argument (the model-supplied
-              `ShellArgs.cwd`, not the process cwd); a target it cannot resolve (command substitution, variable-rooted glob), or
+              `ShellArgs.cwd`, not the process cwd); a target it cannot resolve (command substitution, variable-rooted glob), a target word that is not
+              literal (parameter expansion `$…`/`${…}`, tilde, brace pattern, unquoted glob chars), or
               a command that fails to parse, or parses as anything but one simple command, while
               containing an `rm`/`rmdir` word anywhere (every segment of `;`/`|`/`&&`/`||` lists is
               inspected), is treated as critical.
@@ -56,7 +57,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               `; | & && ||`, redirections, substitutions, subshells, backgrounding, globs —
               anything else falls through) AND argv[0]+subcommand ∈ curated read-only set
               (`ls`, `pwd`, `wc`, `file`, `rg`/`grep`, `cat`/`head`/`tail`; no `git`
-              subcommand — every git invocation goes to the guardian) AND every remaining token is either a path argument passing
+              subcommand — every git invocation goes to the guardian) AND every argument word is literal text only (plain or quoted; no parameter expansion `$…`/`${…}`, no tilde, no brace pattern, no unquoted glob chars — brush-parser brace expansion is detected via `parse_brace_expansions`) AND every remaining token is either a path argument passing
               the step-4 scope validator (symlink-resolved; absolute / out-of-workspace paths
               never qualify) or a flag on a per-command read-only flag allowlist — any flag not
               explicitly allowlisted for that command, any glob/`~`/wildcard token, or any
@@ -114,8 +115,8 @@ plan → not reachable (edit-class is blocked at steps 3/9); dontAsk → Deny; h
 
 **Audit log** (written by the pipeline in every mode; one record per gate decision): JSONL, one
 append-only file per session at `<data dir>/audit/<session-id>.jsonl`, owner-only.
-Fields: `ts` (RFC 3339), `session_id`, `agent_id`, `tool`, `args_digest` (SHA-256 of the
-canonical-JSON args — raw args are never logged; when a hook rewrote the call, `original_args_digest`
+Fields: `ts` (RFC 3339), `session_id`, `agent_id`, `tool`, `args_digest` (SHA-256 over the
+RFC 8785 JSON Canonicalization Scheme serialization of the args — raw args are never logged; when a hook rewrote the call, `original_args_digest`
 too), `tier` (the tier enum below), `decision` (`allow` | `deny` | `prompt`), `rule` (deny/ask/allow rule text and
 its source scope, hook id, floor check, or guardian rule label; null if none), `confidence` and `guardian_model`
 (`<account>/<model>`) for guardian decisions, `latency_ms`. A human answer to a prompt appends a
@@ -167,7 +168,7 @@ and `sudo git push -f` hit `deny shell(git push)`),
 and a command that fails to parse, or puts a substitution or variable in command position, matches every
 deny/ask `shell` rule whose first word appears in it (the critical-path posture). A `shell` allow rule
 matches only a command the Tier-0.5 parser accepts as one simple command (no chaining, pipes,
-redirections, substitution, globs) whose argv matches; anything else falls through. Path deny/ask
+redirections, substitution, globs) whose argument words are all literal and whose argv matches; a non-literal word never matches; anything else falls through. Path deny/ask
 rules match the given path and the resolved path; path allow rules match the resolved path only.
 
 **Where allow acts.** Allow rules are pipeline step 5a: after the floor, never past it — a deny, ask,

@@ -56,7 +56,7 @@ them via `record_content_telemetry`.
   `user_prompt` (length only), `tool_result` (tool_name, risk_class, success, duration, sizes,
   tool_source builtin/mcp), `tool_decision` (CC attributes + `tier` = the `permissions.md` §Core data flow tier enum, `permission_mode`, `headless`, `guardian.{model,profile,verdict,
   confidence,cache_hit,latency_ms}`, `fail_closed_reason` = error | timeout | unparseable |
-  low_confidence | unavailable), `permission_mode_changed`, `mcp_server_connection`, `subagent`
+  low_confidence | unavailable, with the audit label: provider error, stream drop or connection reset → `error` / `GuardianUnavailable`; missing credential or unavailable pinned guardian → `unavailable` / `GuardianUnavailable`; timeout → `timeout` / `Timeout`; unparseable → `unparseable` / `Unparseable`; low confidence → `low_confidence` / `LowConfidence`), `permission_mode_changed`, `mcp_server_connection`, `subagent`
   (spawn | complete | killed | budget_exhausted), `internal_error` (class only).
 - Standard attributes: `session.id`, `agent.id`/`agent.type`, `app.version`; events add
   `prompt.id` and `event.sequence`.
