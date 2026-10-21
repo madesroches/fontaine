@@ -1,0 +1,130 @@
+# Analysis 03 — Differentiation: What Fontaine Is, and Why It's Not Trivial
+
+Date: 2026-10-20. Companion to `tasks/fontaine_harness_plan.md`.
+
+## The one-sentence claim
+
+**Fontaine is the only open, model-agnostic terminal coding agent whose permission engine is an
+LLM guardian the user can inspect, configure in prose, run locally, and audit — i.e., Claude Code's
+auto mode as an open standard rather than an Anthropic service.**
+
+## Differentiation axes (each verified against analysis-competitive-landscape + analysis-guardian-market)
+
+### 1. Open guardian vs closed classifier — the auditability argument
+- Claude Code's classifier and Codex's reviewer are closed-model, server-side, tuned on vendor telemetry.
+  Users cannot see the fixed prompt template — Anthropic states "the classifier's prompt is a fixed
+  template we ship" — cannot run or extend the judge on their own model, and denials return only a
+  rule label, so per-decision adjudication is unauditable locally; only aggregate, vendor-run
+  numbers are published (e.g., 0.4% false-positive and 17% false-negative rates on real actions,
+  5.7% on synthetic-exfil evals).
+- PromptArmor's demonstrations (auto-review approving malicious npm installs; connector data
+  exfiltration) show **closed guardians fail silently and unaccountably**.
+- Per the plan, Fontaine's guardian will be: a versioned `guardian_prompt.md` in the repo, prose
+  rule lists the user owns, a verdict schema with `rule` + `explanation` + `confidence` on every
+  decision, and an eval harness the user can run against *their* guardian model. **Auditable adjudication is a
+  product property no closed classifier can offer** — it's the "Signal vs. SMS" argument applied
+  to agent permissions.
+
+### 2. Model-agnostic judgment (including local/air-gapped)
+- Claude Code auto mode requires Anthropic's servers; Codex's requires OpenAI's.
+- Fontaine runs the guardian on **any rig-supported model** — including Ollama/LM Studio/vLLM.
+  An air-gapped or data-sovereignty-constrained team gets *no* LLM-adjudicated permissions from
+  either major vendor today. This is a segment with real buyers (regulated industries, defense-
+  adjacent, EU public sector) and zero incumbents.
+
+### 3. Prose intent-aware rules vs static allow/deny/ask
+- Open, model-agnostic harnesses gate essentially with **pattern/config lists** (OpenCode, Crush,
+  and the claw-code lineage — Claw Code itself is retired as a museum exhibit, its active successors
+  LazyCodex / Gajae-Code). Goose's `smart_approve` is the nearest prior art but is only a
+  best-effort LLM read/write classification — "uses a risk-based approach to automatically approve
+  low-risk actions", with the classification "interpreted by your LLM provider" — no prose rules,
+  no per-verdict explanation, no fail-closed gate. Codex's Guardian is an LLM reviewer wired into
+  the open repo but runs a closed, OpenAI-only model. What ships nowhere is the
+  *prose-configurable + locally runnable + per-verdict-explaining* combination.
+  Anthropic's own data (Aug 2026 announcement): humans approve 97% of permission prompts, catch 13.6% of dangerous ones —
+  static lists are the same failure mode in config form.
+- Prose rules ("force-push allowed only when the user specifically asked for it"; "never send repo
+  contents to third-party review APIs") express **intent-conditional policy** that regex cannot,
+  and that rule engines (Invariant/Snyk, OPA-style) express only awkwardly. The plan correctly
+  adopts Claude Code's proven precedence semantics (hard_deny > soft_deny > allow > specific
+  user intent) and trust asymmetry (projects may only tighten).
+
+### 4. Guardian-native architecture vs bolted-on guardrail
+- LlamaFirewall et al. are libraries an agent runtime integrates; the integration must be written
+  and maintained per harness — and Meta's own project shows maintenance-mode commit history
+  (maintenance chores since March 2026 — last functional change Jan 2026, last commit
+  Aug 18, 2026; no Meta declaration — see `research-llamafirewall.md` §6). More fundamentally, AlignmentCheck is a trace *drift
+  monitor*: it can halt a run, but it cannot deny one tool call pre-execution, explain the denial
+  to the agent, and keep the session running. Per the plan, Fontaine's choke point is architectural:
+  **every** tool — built-in, Fontaine-added, or MCP-imported — will be registered wrapped in
+  `GuardedTool`, and the plan's test suite will fail if any registered tool lacks a risk class.
+  The gate cannot be forgotten.
+- Proxy/gateway guardrails (LiteLLM+Lakera etc.) see text traffic, not `{tool, args, cwd, git
+  remotes, pre-session files, prior denials}`. The `AdjudicationRequest` is structurally richer
+  than anything a proxy can construct. This is the deepest technical difference: **judgment
+  quality is a function of adjudication context**, and only the harness has it.
+
+### 5. The hybrid gate (deterministic fast path + LLM judgment)
+- Read-only in-workspace calls skip the guardian (deterministic scope/symlink validation — code,
+  not regex-on-args), as do curated in-workspace read-only shell commands via the plan's zero-LLM
+  Tier-0.5 pre-classifier; everything else is adjudicated; fail-closed on every non-verdict outcome
+  (error, timeout, unparseable, low-confidence-on-destructive).
+- This combination — deterministic where possible, judgment where necessary, denial where uncertain
+  — is not shipped anywhere with an open, user-runnable judge. Claude Code has it, closed; Codex
+  has the same layered shape in its open repo — static ExecPolicy → fail-closed Guardian LLM
+  reviewer with a per-turn rejection circuit breaker → OS sandbox (arXiv:2609.00006 §10.2), with
+  the reviewer model and policy prompt closed and OpenAI-only (§13 documents LLM approval
+  classifiers going "from one (Claude Code) to two (Codex's Guardian)").
+
+### 6. Denial UX as a first-class product surface
+- Denial reason fed back to the agent (it adapts), `/denied` retry list, consecutive-denial loop
+  breaker, "teach the classifier" moments surfaced through `/permissions`. Open harnesses treat
+  denial as a dead-end error; Fontaine treats it as a conversation. This is UX depth, and UX depth
+  is why people switch harnesses at all.
+
+## Why it's not trivial (honest engineering assessment)
+
+The loop is easy — Claw Code proved a harness skeleton is weeks of work (the repo has since
+retired as a museum exhibit; the lineage continues as LazyCodex / Gajae-Code). The non-trivial 20%:
+
+1. **Adjudication quality is an empirical problem, not a code problem.** The plan's eval harness
+   (~150+ golden cases across benign/attack/ambiguous classes) *is* the product. Anthropic tuned
+   theirs on fleet telemetry; Fontaine must earn trust via a public, reproducible eval scorecard
+   per guardian model. Nobody open-source has published one for tool-call adjudication. First
+   credible one wins the category's mindshare.
+2. **The guardian is itself an attack surface.** Injection-hardening a judge (no tools, structured
+   output only, untrusted-delimiting, verdict validation by code, tool-result exclusion mirroring
+   Claude Code's classifier inputs) is subtle; PromptArmor-class bypasses are the expected failure
+   mode and the red-team bar is public. Getting this *demonstrably* right is real work with real
+   credibility payoff.
+3. **Fail-closed correctness under concurrency**: batched tool calls adjudicated in parallel with
+   independent tool_results, cache invalidation on rule/version edits, timeout paths, loop
+   breakers — the failure modes are interleaved-state bugs, and the plan's cassette-replay CI is
+   the right (non-obvious) answer.
+4. **Scope validation**: workspace containment with symlink resolution, session-start trust
+   boundary (remotes added mid-session untrusted), pre-session file inventory for destruction
+   checks — deterministic code that must be right, because the read-only fast path's safety rests
+   entirely on it.
+5. **Latency economics**: a guardian on the critical path of every risky call. Cache + fast default
+   model + read-only skip make it tolerable; making it *feel* instant is craft the closed vendors
+   spent a year on.
+
+## What is NOT differentiating (stop claiming these)
+
+- "Rust terminal coding agent" — 167 harnesses; saturated.
+- "Works with any model" — OpenCode/Goose already own this claim at massive scale.
+- "Built on rig / reuses crates" — an implementation virtue, invisible to users.
+- "MCP support" — table stakes.
+- Permission-mode names/UX — deliberately cloned from Claude Code (fine for muscle memory, but
+  it's parity, not differentiation).
+
+## Positioning statement (draft)
+
+> Every closed agent has a secret judge. Fontaine gives you the judge: an open, model-agnostic
+> guardian that reads your task intent and your prose rules, explains every denial, fails closed,
+> and runs on hardware you control — with a public eval scorecard you can verify yourself.
+
+**The moat is thin but real, and it is three things**: (1) the published eval/scorecard + prompt
+asset (community-standard potential), (2) the architectural choke point done rigorously, (3) being
+first open in the cell. None of these survive passive maintenance; all of them compound if the
+eval harness becomes the thing other projects adopt to *test their own* guardians. See analysis-strategic-verdict.
