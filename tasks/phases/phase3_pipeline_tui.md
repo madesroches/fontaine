@@ -54,7 +54,7 @@ No `git` subcommand is in the curated set: every git invocation goes to the guar
 ### Permission rules and allow (pipeline steps 2 and 5a)
 
 The `tasks/design/permissions.md` §Permission rules is the spec: one `Tool(specifier)` grammar (parsed at load since
-Phase 0) for deny/ask/allow; `shell` specifiers matched on the Tier-0.5 `brush-parser` argv — deny/ask
+Phase 0; Phase 0 checks only the outer shape, tool name, `mcp__…` names and `webfetch` `domain:` form, and this phase adds per-kind specifier parsing behind the same load-time error) for deny/ask/allow; `shell` specifiers matched on the Tier-0.5 `brush-parser` argv — deny/ask
 as a prefix anywhere in the word stream and on any unparseable command containing the rule's first
 word, allow only on one simple command; path specifiers gitignore-style (matched with the `ignore` crate, `=0.4.33`) against scope-validator
 resolved paths; `webfetch(domain:)`; MCP names. Allow rules are step 5a, after the floor; the broad

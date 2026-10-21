@@ -156,6 +156,7 @@ Matching is structured — never regex on raw args. A tool that is neither built
 | `webfetch` | `domain:<host>` or `domain:*.<host>` | parsed URL host (lowercased, IDNA-normalized); `*.` matches subdomains only |
 | MCP | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | registered tool name |
 | `agent`, `skill` | agent type / skill name | exact name |
+| `send_message` | none (bare `send_message` only) | tool name |
 
 `webfetch` never follows a cross-host redirect — the redirect URL is returned to the model and a
 follow-up fetch is gated on its own host — so an allowed domain cannot bounce a request to an
