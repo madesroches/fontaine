@@ -13,7 +13,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    and `rust-version = "1.97.1"`, and `rust/rust-toolchain.toml` pins `channel = "1.97.1"` to match rig
    0.45.0; CI installs that toolchain), crate skeletons under `rust/`
    (`fontaine`, `fontaine-core`, `fontaine-tools`, `fontaine-guardian`, `fontaine-agents`,
-   `fontaine-mcp`, `fontaine-tui`), `clap` CLI entry (`fontaine`), tracing facade (below), CI
+   `fontaine-mcp`, `fontaine-tui`, `fontaine-evals`), `clap` CLI entry (`fontaine`), tracing facade (below), CI
    (`.github/workflows/ci.yml`, GitHub Actions, matrix `ubuntu-latest` / `macos-latest` /
    `windows-latest`, each from `rust/`: `cargo fmt --check`,
    `cargo clippy --all-targets -- -D warnings`, `cargo test`, then the offline eval fixture run from
@@ -26,7 +26,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    workspace root is the canonicalized launch cwd; config is read only from it. Rule strings in
    `[permissions] deny`/`ask`/`allow` are parsed into the `Tool(specifier)` grammar at load
    (`fontaine-core/src/permission_rules.rs`; an unparseable rule is a config error, exit 2; matching
-   lands in Phase 3). Directory resolution (`fontaine-core/src/dirs.rs`, `dirs` crate: config dir
+   lands in Phase 3). Directory resolution (`fontaine-core/src/dirs.rs`, `dirs =7.0.0`: config dir
    `dirs::config_dir()/fontaine`, data dir `dirs::data_dir()/fontaine`, overrides `FONTAINE_CONFIG_DIR` /
    `FONTAINE_DATA_DIR`) and an owner-only file helper (0600 on Unix, current-user-only ACL on Windows).
    Workspace trust store (`fontaine-core/src/trust.rs`): read/write
@@ -40,7 +40,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    `[telemetry]` parsed with its scope rule (project scopes may only set `enabled = false`) and its
    required-inputs rule (`enabled = true` needs `endpoint` and an ingestion key — `api_key_env` or a
    stored credential; either missing is a config error, exit 2).
-2. Eval golden-dataset scaffolding + CI runner skeleton (`evals/`): dataset format (~150+ cases; minimum counts per `tasks/design/testing.md` Testing Strategy, Eval harness;
+2. Eval golden-dataset scaffolding + CI runner skeleton (`evals/`): dataset format and seed set (at least the minimum case counts in `tasks/design/testing.md` Testing Strategy, Eval harness; the Phase 4 scorecard is gated on maintainer sign-off of the labels;
    benign dev commands, each seeded attack class from Claude Code's default-block list, injection
    attempts *inside tool args*, ambiguous intent cases, Tier-0.5 adversarial shell cases — see
    `tasks/design/testing.md` Testing Strategy — and adversarial spawn/injection-propagation cases: a subagent result
@@ -56,7 +56,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    `tasks/design/testing.md` Testing Strategy; `pipeline` `expected` ∈ `allow` | `deny` | `prompt`, `expected_tier` from the tier enum in `tasks/design/permissions.md` §Core data flow) and scoring any guardian model
    config; CI runs `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture`
    from `rust/` — offline, deterministic verdict fixtures — so it is green before the guardian
-   exists.
+   exists. Fixture mode exits 0 only if every case validates against the schema and `fixture_verdict == expected` (and `expected_tier` where present), else 1; exit 2 on usage or config error (`tasks/design/testing.md` Eval harness).
 3. Docs — start the documentation tree under `docs/` (its own directory — the single home for
    all prose, structured one-topic-per-page with relative cross-links so it can be lifted into a
    website later; no site tooling in v1): `docs/index.md` (landing/TOC), `docs/architecture.md`
@@ -67,7 +67,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
    `evals/README.md` defining the golden-dataset format — the dataset is a public asset shipping
    with the scorecard, so its format doc lands with it. Root `README.md` stays the thin front
    door (pitch, install, build — install/build only; the Ollama agent quickstart lands in Phase 1's docs step and the guardian leg in Phase 4's) linking into `docs/` — not a second copy of it. Add a short root `CONTRIBUTING.md`
-   (build/test commands, branch and commit rules, how to submit golden-dataset cases; guardian-bypass reports go to `SECURITY.md`, and public dataset PRs for a bypass only after a fix ships) and a root `SECURITY.md` (private reporting via GitHub private vulnerability reporting; 90-day coordinated disclosure window). Create `CHANGELOG.md` (Keep a Changelog format, with an `## [Unreleased]` section) with the first entry. Add the docs check `rust/fontaine-core/tests/docs.rs` (contract: `tasks/design/testing.md` Testing Strategy, docs bullet).
+   (build/test commands, branch and commit rules, how to submit golden-dataset cases; guardian-bypass reports go to `SECURITY.md`, and public dataset PRs for a bypass only after a fix ships) and a root `SECURITY.md` (private reporting via GitHub private vulnerability reporting; 90-day coordinated disclosure window; Needs a human: enable GitHub private vulnerability reporting in the repository settings). Create `CHANGELOG.md` (Keep a Changelog format, with an `## [Unreleased]` section) with the first entry. Add the docs check `rust/fontaine-core/tests/docs.rs` (contract: `tasks/design/testing.md` Testing Strategy, docs bullet).
 
 ## Files created or modified
 
@@ -79,7 +79,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 
 - **config** (`tasks/design/testing.md` Testing Strategy): workspace = canonicalized launch cwd; project config
   discovered only at `<workspace>/.fontaine/settings{,.local}.toml` (a settings file in a parent directory is
-  ignored); precedence, project-can-only-tighten enforcement —
+  ignored); precedence (the managed slot is empty in v1), project-can-only-tighten enforcement —
   including that `[guardian] profile` is rejected from project scope (user trust scopes only, it is a
   loosening knob) and only `full`/`minimal` validate: no config value disables the guardian. Every key `tasks/design/config.md` §Config scope
   table denies to project scope (`[accounts]`, `[model]`, `[guardian]` model/timeout/threshold/cache, `[agents]` budgets,
@@ -98,7 +98,7 @@ scorecard is the differentiating asset, so its harness is built first, not last.
   `api_key_env` and no stored credential, or the named env var unset/empty), is a config error (exit
   2); disabled means no exporter — with `enabled = false` nothing is built even when
   `MICROMEGAS_TELEMETRY_URL` / `OTEL_EXPORTER_OTLP_ENDPOINT` are set.
-- Golden-dataset schema validation; runner green against verdict fixtures.
+- Golden-dataset schema validation; runner green against verdict fixtures; fixture mode exits 1 on a schema-invalid case or a `fixture_verdict` / `expected` mismatch.
 - **docs** (`rust/fontaine-core/tests/docs.rs`, run by `cargo test`): the contract in `tasks/design/testing.md` Testing Strategy, docs bullet.
 
 ## Definition of done
@@ -106,11 +106,12 @@ scorecard is the differentiating asset, so its harness is built first, not last.
 - Local offline gate: `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test` green from `rust/`, plus `cargo clippy --all-targets --target x86_64-pc-windows-gnu` (or `cargo check --all-targets --target x86_64-pc-windows-gnu`) where the toolchain supports it.
 - Needs a human (not runnable by the agent, which cannot push): push the branch and confirm the CI matrix is green on ubuntu, macOS and Windows.
 - `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` (from `rust/`)
-  passes on the fixture set, offline, with no guardian in the tree.
+  exits 0 on the fixture set, offline, with no guardian in the tree.
 - `docs/index.md`, `docs/architecture.md`, `docs/configuration.md`, `evals/README.md` exist with
   real content; `rust/fontaine-core/tests/docs.rs` is green; `docs/configuration.md` covers the scope
   stack, workspace trust and `[telemetry]` (incl. its required endpoint and key).
 - The config, trust-store and telemetry-config tests above are green; no exporter is built in this
   phase.
 - `CHANGELOG.md` exists with the Phase 0 entry; `CONTRIBUTING.md` and `SECURITY.md` exist.
+- Needs a human: enable GitHub private vulnerability reporting on the repository.
 - Log the phase in the master plan's Progress log.

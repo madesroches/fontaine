@@ -48,7 +48,7 @@ in the main session, and their results return to the parent as a summary.
   escalation/approval prompts are **cancelled as denied**. Nesting is capped, mirroring Claude Code's
   documented rules: a subagent may itself spawn subagents up to a default depth of **three layers below the main
   conversation**, and at the cap the `agent` tool is withheld from further subagents. `max_parallel` bounds concurrent
-  agents across the **whole session tree**, not just the parent's direct children.
+  agents across the **whole session tree**, not just the parent's direct children. A cost cap (per-subagent or session) on a model with no catalog price is inactive, with a one-time notice; the token cap still binds. An explicit `--max-budget-usd` on an unpriced model stays a usage error (exit 2).
 
 ### Workspace trust and project executables
 
@@ -112,15 +112,14 @@ transcript.
    refreshed, as a `GuardedTool` (DynamicTool path) with `Arbitrary` risk under the name
    `mcp__<server>__<tool>` (Claude Code naming); the agent's `ToolServerHandle` is never handed to
    rig-rmcp directly. rig-rmcp enables only rmcp's `client` feature, so the transports need a direct
-   `rmcp` dependency, pinned to an exact version inside rig-rmcp 0.45.0's declared 3.5 range
+   `rmcp` dependency, pinned `=3.6.0`, inside rig-rmcp 0.45.0's declared 3.5 range
    (one rmcp in the tree) with the transport features enabled. Server annotations surfaced to the
    guardian as hints.
 2. Session persistence via rig's serializable `AgentRun` + `rig-memory` save/resume, with the
    Phase-2 ledger as the second store (`tasks/design/sessions.md` §Session ledger): `--continue` / `--resume <id>`
    restore context and ledger, start in the resolved default mode and drop session grants;
    `--fork-session` copies both stores under a new session id without session grants;
-   `fontaine.session.count{start_type=resume}`. (Headless `-p` moved to Phase 1 step 2 — user
-   decision 2026-10-21.)
+   `fontaine.session.count{start_type=resume}`.
 3. `fontaine-agents`: defines the `ChildRunner` trait (`rust/fontaine-agents/src/runner.rs`: spawn a gated child
    run from agent type, effective mode, budget and a `LedgerView` handle; returns a handle for status, kill
    and report) which `fontaine-core` implements (`rust/fontaine-core/src/child_runner.rs`) and injects at startup, like
@@ -189,6 +188,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   parent switches mode mid-run and the child's next call follows the tighter mode; a `plan` parent blocks every child edit and drops an `auto`/`acceptEdits` child's non-edit calls to `manual`, including when the parent enters `plan` mid-run; per-type registry
   is a subset of the parent's; budget caps stop a subagent; a blocking `agent` call returns the child's report as its tool result through `ResultPipeline`; `background: true` returns `{agent_id}` at once and the report arrives later as a notification in the parent's next turn, passing through `ResultPipeline`; N background children run concurrently; `send_message` hits the
   same gate; delivery to a parent, a child, a sibling and `"main"` arrives in the recipient's next turn marked with the sender's agent id and appears to the guardian only as untrusted context; the sender gets `{status: "queued"}`; a finished or killed target returns error `agent not running`.
+- **unpriced-model cost cap** (`rust/fontaine/tests/parallel_agents.rs`): a subagent on an `openai-compatible` model with `subagent_cost_budget_usd` set runs with the cost cap inactive and one notice, and the token cap still stops it; explicit `--max-budget-usd` against that model is a usage error (exit 2).
 - **ChildRunner seam** (`rust/fontaine-agents/tests/`, fake `ChildRunner`): the spawn tool, registry and budget logic run with no `fontaine-core` dependency; the fake receives type, effective mode, budget and a fake `LedgerView`; status/kill/report flow through the returned handle.
 - **output styles** (`rust/fontaine-core/tests/`): the guardian's `AdjudicationRequest` and rendered prompt are byte-identical with and without an active output style.
 - **agents panel** (`rust/fontaine-tui/tests/`, ratatui `TestBackend` with a scripted model): a killed subagent's row shows `killed` and its token/cost spend against budget.
@@ -202,15 +202,14 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   replaced by a refresh are registered wrapped as `Arbitrary` under `mcp__<server>__<tool>`, none
   reachable raw).
 - Persistence: save/resume round-trip through `AgentRun` + ledger; resume starts in the default mode
-  without session grants; fork copies both stores under a new id.
+  without session grants; fork copies both stores under a new id; neither carries session grants.
 - **workspace trust** (TUI `TestBackend`): an untrusted root's project and project-local MCP servers and hooks do not
   start before the trust prompt is accepted; declining starts none; a trusted root still asks per
   new project server; headless `-p` loads them, and in both surfaces a project hook's `allow` is
   ignored and a project MCP tool call is gated like any `Arbitrary` call.
-- **user hooks** (`rust/fontaine-core/tests/user_hooks.rs`, script handlers in a temp dir): the
-  `tasks/design/testing.md` Testing Strategy bullet — rewritten input judged everywhere; deny > ask > allow; hook
-  `allow` never passes the floor and is suspended in `auto` for a broad matcher; failure ⇒ no
-  decision; project hook `allow` ignored; scrubbed environment; exit code 2 = deny.
+- **user hooks** (`rust/fontaine-core/tests/user_hooks.rs`, script handlers in a temp dir): `updated_input` is what the floor, Tier 0.5, rules, guardian and audit see; deny > ask > allow; hook
+  `allow` never passes the deny rule or critical path and is suspended in `auto` for a broad matcher; error / timeout / malformed output ⇒ no
+  decision; project hook `allow` ignored; hook children get the scrubbed environment (no configured `api_key_env` variable, `scanner_hf_token_env`, telemetry credential or `MICROMEGAS_*`); exit code 2 = deny.
 - **extensions**: frontmatter parsing of Claude Code-style skills and agents; project agent file
   with `model`, `mode = "inherit"`/`auto`, or a tool outside the parent's set is rejected; project
   agent overrides a same-name user agent and stays narrowed; project skill `allowed-tools` ignored;
@@ -224,7 +223,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
   `cargo test` green from `rust/`, including `rust/fontaine/tests/parallel_agents.rs` (parallel-agents and
   parallel-orchestration tests), `rust/fontaine-mcp/tests/mcp_registration.rs` (MCP tests),
   `rust/fontaine-core/tests/user_hooks.rs`, and the trust, persistence, extensions and telemetry tests.
-- `tasks/design/testing.md` Manual Verification item 5 passes (live look-and-feel only; the killed-row state and budget display are covered by the agents-panel `TestBackend` test, gating and audit by the
+- Needs a human: `tasks/design/testing.md` Manual Verification item 5 passes (live look-and-feel only; the killed-row state and budget display are covered by the agents-panel `TestBackend` test, gating and audit by the
   automated parallel-orchestration test).
 - Needs live keys (not CI): the `claude -p` baseline check (`fontaine-evals` `baseline capture` / `diff`) that a hook `allow` in `auto` skips the
   classifier for a narrow matcher and is suspended for a broad one.

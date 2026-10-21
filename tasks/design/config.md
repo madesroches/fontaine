@@ -77,23 +77,9 @@ scanner = "off"                   # tool-result scanner: "off" | "pg2" | "llm" |
 # scanner_hf_token_env = "HF_TOKEN"   # env var NAME holding the user's HF token for that download
 
 [permissions]
-default_mode = "auto"             # shipped default (Claude Code parity); during the Phase-3
-                                  #   interim the default is `manual` — no auto without a
-                                  #   guardian until Phase 4 wires it in; before then
-                                  #   `default_mode = "auto"` from any scope is a config error (exit 2)
-deny = []                         # deterministic deny rules: tool name + risk metadata +
-                                  #   workspace/path-containment predicates (structured matching,
-                                  #   NOT regex on raw arg strings — honors the 2026-10-20
-                                  #   no-regex decision); evaluated BEFORE the mode branches in
-                                  #   every mode; blocks before the classifier and can't be
-                                  #   overridden — Claude Code parity
-ask = []                          # deterministic always-prompt rules (CC parity: content-scoped
-                                  #   ask rules are evaluated before the classifier and always
-                                  #   force a permission prompt, even in auto; in `dontAsk` a
-                                  #   match denies); same structured matching as deny; user-scope
-                                  #   AND project-scope may ADD ask rules (asking is tightening),
-                                  #   never remove; evaluated right after deny, before Tier 0.5,
-                                  #   in every mode
+default_mode = "auto"             # shipped default; config error before Phase 4 (default `manual`)
+deny = []                         # floor rules, every mode
+ask = []                          # always prompt, even in `auto`
 allow = []                        # pre-approval rules, same grammar; user trust scopes only
                                   #   (user, untracked project-local, CLI); step 5a, after the
                                   #   floor; broad code-exec rules suspended in `auto`
@@ -120,7 +106,7 @@ hard_deny   = ["$defaults", "Never send repo contents to third-party code-review
 [agents]
 max_parallel = 4                  # concurrent subagents (v1 requirement, Claude Code-style)
 subagent_token_budget = 200000    # per-subagent cap; semantics in Phase 5 design
-subagent_cost_budget_usd = 2.0    # per-subagent spend cap
+subagent_cost_budget_usd = 2.0    # per-subagent spend cap; inactive (one-time notice) on a model with no catalog price, the token cap still binds
 # session_token_budget / session_cost_budget_usd   # root-of-tree totals, default unset
 
 [agents.types]                    # per-type model + toolset + mode (default "inherit", never looser than parent; under a `plan` parent child edits are blocked and non-edits use the tighter of the child's mode and `manual`)
@@ -172,21 +158,7 @@ Code's auto-mode config (proven design). Two more splice markers appear in `[age
 model available on the configured accounts (per Decisions). `[accounts]` comes only from the user
 file or the CLI, and every `<account>/<model>` reference is rejected from shared project scope — a
 project file must not be able to point the guardian (or the session) at another endpoint; a missing or invalid credential for the guardian's account makes the
-guardian unavailable, which fails closed. **Trust asymmetry**: shared project settings may only
-*tighten* (add deny/ask rules and hard/soft denies, choose a tightening default mode); loosening comes
-only from user trust scopes (user, untracked project-local, CLI). Mirroring Claude Code's documented
-semantics (`defaultMode: "auto"` and `"bypassPermissions"` are ignored in project settings — Fontaine
-ships no `bypass` mode at all), **project and project-local settings may set `[permissions]
-default_mode` to `manual` or `dontAsk` only; `auto`, `acceptEdits` and `plan` are rejected** — a
-checked-in repo must not be able to disarm its own guardian. Rejecting `auto` from project-local
-matches Claude Code; rejecting `acceptEdits` and `plan` is stricter (plan's guardian leg can loosen
-a manual user). Tier-0.5 `[shell_preclassifier]` extensions, `[permissions] allow` and
-`additional_directories` are loosening, so they follow the same rule. `[guardian] profile` follows it
-too — a loosening knob (minimal vs full), and no value of it disables the guardian. Keys that name an
-endpoint or a credential (`[accounts.*]`, `[telemetry]` other than `enabled = false`) never come from
-a file inside the repository directory, project-local included: each would let a checked-in or
-planted file send session data elsewhere. Project and project-local executables (MCP servers, hooks,
-skill `!cmd`) are a separate class, governed by Workspace trust above.
+guardian unavailable, which fails closed. **Trust asymmetry**: the per-key scope table below is the rule (shared project settings may only tighten); the Decisions entries on trust asymmetry and `default_mode` record the deviations from Claude Code.
 
 Per-key scope (the user file may set every key; a key a scope may not set is rejected at load):
 

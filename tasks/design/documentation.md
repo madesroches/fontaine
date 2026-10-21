@@ -54,7 +54,7 @@ delivered (or extended) by the docs step of the phase named with it — see the 
   asset, so its format doc ships with it.
 - `CONTRIBUTING.md` (repo root, Phase 0): build/test commands, branch and commit rules, how to submit
   golden-dataset cases; guardian-bypass reports are routed to `SECURITY.md`.
-- `SECURITY.md` (repo root, Phase 0): private reporting via GitHub private vulnerability reporting, 90-day coordinated disclosure window.
+- `SECURITY.md` (repo root, Phase 0): private reporting via GitHub private vulnerability reporting (Needs a human: enable it in the repository settings), 90-day coordinated disclosure window.
 - `CHANGELOG.md`: release notes in Keep a Changelog format — created in Phase 0 with an `## [Unreleased]`
   section; every phase appends an entry there in its docs step (plan/phase citations belong here, not
   in the docs pages); at release, `[Unreleased]` moves under the new version heading.

@@ -61,6 +61,8 @@ product documentation lives under `docs/` (see `design/documentation.md` §Docum
 | 5 — extensibility | [phases/phase5_extensibility.md](phases/phase5_extensibility.md) | MCP (user + trust-gated project servers); session resume/fork; user hooks; skills/agent files/output styles; parallel subagents (v1) + budgets + agents panel; `docs/{mcp,agents,hooks,extensions}.md`; sandbox/sandboxing.md = **roadmap slot** | not started | gated background subagents live in one session |
 | 6 — guardian hardening | [phases/phase6_hardening.md](phases/phase6_hardening.md) | tool-result scanner (`[guardian] scanner` = off/pg2/llm/command; PromptGuard 2 via candle, BYO command, cheap-LLM); scanner docs | not started | scanning demonstrable behind config, license caveat surfaced |
 
+GitHub `phase-N` labels mean "earliest phase after which the issue can be taken; not part of that phase's definition of done; Decisions win over issue text".
+
 ### Progress log
 
 Append one dated line as each phase's definition of done is met (local commits referencing the
@@ -139,10 +141,6 @@ fontaine-guardian     ─▶ (no Fontaine crates)
 fontaine-tools        ─▶ (no Fontaine crates — never fontaine-core)
 ```
 
-`fontaine-llm` from the first draft is **gone** — rig-core's provider layer (20+ providers,
-streaming, OpenAI-compatible custom endpoints for OpenRouter/LM Studio/vLLM/LiteLLM) replaces it
-entirely.
-
 Phase-owned design sections live in the phase plans: model layer + headless I/O contract (Phase 1),
 tools/risk registry/GuardedTool + multi-root workspace + session ledger (Phase 2), permission modes
 + rule grammar + base TUI (Phase 3), the guardian agent (Phase 4), parallel agents + agents panel,
@@ -152,7 +150,7 @@ user hooks, extension files, session resume/fork (Phase 5), result scanning (Pha
 
 All new. Workspace-level files: `rust/Cargo.toml` (see Phase 0 step 1), `rust/rust-toolchain.toml`,
 `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `.github/workflows/*`. Each phase plan lists its own
-file slice in dependency order. No `fontaine-llm` crate — the model layer is rig.
+file slice in dependency order.
 
 ## Trade-offs
 
@@ -236,7 +234,7 @@ carries the reasoning:
 - 2026-10-20: License is Apache-2.0 (verbatim `LICENSE`); adapted Anthropic rule prose is attributed in `docs/guardian.md`.
 - 2026-10-21: "fontaine" is the final product name — binary, crate prefix, config dir, `FONTAINE.md`. (User decision.)
 - 2026-10-21: Guardian default = top-ranked benchmark-validated model available on the configured accounts; switching is easy, explicit, never automatic; no catalog match ⇒ main model with a one-time notice. (User decision.)
-- 2026-10-21: Default tool-result scanner = PromptGuard 2 with a cheap-LLM fallback; the Llama 4 Community License caveat is surfaced at first enable; BYO-scanner interface for license-clean setups. (User decision.)
+- 2026-10-21: `pg2` (PromptGuard 2) is the recommended tool-result scanner; `llm` and `command` are alternatives; default `off`; scanner errors fail closed (flagged) with no fallback; the Llama 4 Community License caveat is surfaced at first enable; BYO-scanner interface for license-clean setups. (User decision.)
 - 2026-10-21: Fold strategic-verdict amendments A3 (sandbox interop, Phase 5 roadmap slot) and A4 (dependency-light, lift-out-able `fontaine-guardian`) into the roadmap. (User decision.)
 - 2026-10-21: Revisit the core-vs-rig split if rig ships a permission-adjudication API.
 - 2026-10-21: Design tie-breaker — when in doubt, do as Claude Code does; every deviation gets a dated line here with a one-line reason. (User directive.)
@@ -280,7 +278,7 @@ carries the reasoning:
 - 2026-10-21: The pre-session file index is gitignore-respecting, capped at 50,000 paths; the guardian request carries only the touched paths' pre-existence status.
 - 2026-10-21: Directories come from the `dirs` crate, overridable by `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR`; credentials at `<data dir>/credentials.toml`, owner-only (`design/platforms.md`).
 - 2026-10-21: The eval dataset gains `mode` and `workspace` fields so `pipeline` cases are reproducible.
-- 2026-10-21: The default guardian list is the data file `rust/fontaine-guardian/data/guardian_models.toml`; it ships empty (fallback to the main model) and the Phase 4 scorecard run fills it.
+- 2026-10-21: The default guardian list is the data file `rust/fontaine-guardian/data/guardian_models.toml` (entry keys `kind`, `model`, `catch_rate`, `false_deny_rate`, `p95_ms`, `scored_on`, `dataset_version`); it and the prompt assets (`guardian_prompt.md`, `guardian_minimal.md`, `scanner_llm.md`) are compiled into `fontaine-guardian` via `include_str!`; it ships empty (fallback to the main model) and the Phase 4 scorecard run fills it, so a scorecard update ships with a release.
 - 2026-10-21: v1 supports Linux, macOS and Windows; every CI step runs on all three OSes. Windows runs `shell` through Git Bash (Claude Code parity; PowerShell tool is backlog issue #28); details in `design/platforms.md`.
 - 2026-10-21: Deviation — provider and telemetry credential variables are scrubbed from the `shell` and hook child environment (list: Phase 2 step 1); reason: a model-run command must not read provider keys.
 - 2026-10-21: AgentDojo-comparable (ASR × utility) reporting is dropped; the scorecard reports per-class catch rate and false-deny rate.
@@ -309,6 +307,8 @@ carries the reasoning:
 - 2026-10-21 (user): The guardian-list inclusion bar and ranking are defined in Phase 4 §The guardian agent; separate from the kill criteria.
 - 2026-10-21: While a parent is in `plan`, every child's edits are blocked and its non-edit calls use the tighter of its own mode and `manual` (Phase 5).
 - 2026-10-21 (user): `/model` and `/guardian-model` switch the live session and persist to the user config file (Claude Code `/model` parity); `/model` moves the guardian only when it is unset and on the main-model fallback; an unavailable pinned guardian in the TUI prompts retry / pick another validated guardian / switch to `manual` (Phase 4 §The guardian agent).
+- 2026-10-21: A cost cap (`subagent_cost_budget_usd`, `session_cost_budget_usd`) on a model with no catalog price is inactive with a one-time notice and the token cap still binds; an explicit `--max-budget-usd` on an unpriced model stays a usage error (exit 2) (Phase 5 Budgets).
+- 2026-10-21: The headless I/O contract is a checked-in JSON Schema per version, `docs/schemas/headless-v1.schema.json`, published with the docs and validated with the exact-pinned `jsonschema` crate (Phase 1).
 
 ## Open Questions
 

@@ -27,16 +27,11 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
   registration (rig's registry supports ordered registrations). This is the deterministic,
   non-LLM half of the hybrid gate: `ReadOnly` + args validated within workspace scope (a
   `fontaine-tools` scope/symlink validator, deterministic code — not regex-on-args) ⇒ pipeline
-  auto-allows without a guardian call. Two clarifications: **read ≠ safe** — a read outside the
+  auto-allows without a guardian call. **Read ≠ safe**: a read outside the
   workspace (`~/.ssh/*`, cloud credential files, `.env`, browser cookie stores, metadata
   endpoints) is a classic recon/exfiltration step, so containment inside the workspace is what
-  earns the fast path, never the read-only label; and **declaration ≠ authorization** — risk
-  metadata from third-party (MCP) servers is untrusted input (a malicious server will happily
-  label a write/network-capable tool with `readOnlyHint: true`), so the fast path applies only
-  where *Fontaine itself* enforces containment at the execution boundary (built-in tools and
-  wrapped paths validated by the scope checker). MCP tools default to full adjudication; their
-  declared `readOnlyHint` is an optimization hint surfaced to the guardian, never an
-  authorization token.
+  earns the fast path, never the read-only label; only Fontaine-enforced containment earns
+  the fast path; MCP tools register `Arbitrary`.
 - **GuardedTool**: a decorator implementing `rig_core::tool::Tool` that wraps any inner tool and,
   in its `call`, asks the injected `ToolGate` (`fontaine-tools/src/gate.rs`; implemented by
   `fontaine-core`'s `PermissionPipeline` — floor → mode check → read-only fast path → Tier-0.5 shell
@@ -63,10 +58,7 @@ Reuse rather than rewrite. Fontaine does **not** define its own `Tool` trait —
 `WorkspaceWrite` (write/edit within workdir) is auto-allowed only in `acceptEdits`/`auto`(guardian)
 per mode. `Arbitrary` (shell, webfetch, MCP tools) always hits the guardian in `auto` (shell calls
 may be pre-classified safe at Tier 0.5 first — pipeline step 5 precedes the mode branches, matching Claude
-Code's read-only Bash set prompting in no mode), prompts in `manual`. MCP tools arrive via
-`fontaine-mcp` (rig-rmcp) and are registered `RiskClass::Arbitrary` (never trusted as safe
-regardless of server `readOnlyHint` annotations — annotations are claims, surfaced to the
-guardian as hints, not as gates).
+Code's read-only Bash set prompting in no mode), prompts in `manual`.
 
 ### Workspace roots
 
@@ -82,7 +74,7 @@ the rig-tools 0.45 constructor shape when the step lands). `--add-dir` roots are
 
 `fontaine-core/src/ledger.rs`: the append-only per-session record from `tasks/design/sessions.md` §Session
 ledger (verbatim user messages, mode changes, approvals and session grants, denials, actions taken,
-roots, trust state, git remotes and the pre-session file index captured at start — gitignore-respecting,
+roots, trust state, git remotes and the pre-session file index captured at start — gitignore-respecting via the `ignore` crate (`=0.4.33`; already transitive via rig-tools — align the pin with the version rig-tools resolves),
 capped at 50,000 paths with overflow recorded as truncated), persisted as
 JSONL beside rig-memory's context under `<data dir>/sessions/<session-id>/` (owner-only).
 It is written by the session orchestrator and the pipeline, never by the model, and it is the only
@@ -105,7 +97,7 @@ context.
    | `write` | WorkspaceWrite | rig-tools `write`, wrapped, `confine: true` |
    | `edit` | WorkspaceWrite | rig-tools `edit`, wrapped, `confine: true` |
    | `shell` | Arbitrary | rig-tools `shell`, wrapped; `confine: true`, `max_timeout`, output `cut` set |
-   | `webfetch` | Arbitrary | new first-party; args `url` only; HTML → markdown via `htmd` (exact-pinned); 10 MB fetch cap, 100,000-character output cap (truncation noted in the result), 30 s timeout; never follows a cross-host redirect (returns the redirect URL to the model, as Claude Code does). No `prompt` argument / small-model post-processing in v1 (backlog) |
+   | `webfetch` | Arbitrary | new first-party; args `url` only; HTML → markdown via `htmd =0.5.6`; 10 MB fetch cap, 100,000-character output cap (truncation noted in the result), 30 s timeout; never follows a cross-host redirect (returns the redirect URL to the model, as Claude Code does). No `prompt` argument / small-model post-processing in v1 (backlog) |
 
    Path rules and the scope check apply to `path` (default: the primary root) and, for `glob`, also to the pattern's anchored base.
 
@@ -149,7 +141,7 @@ context.
 
 - **tools** (`tasks/design/testing.md` Testing Strategy; `rust/fontaine-tools/tests/{scope,choke_point}.rs` — `choke_point.rs` here is the builtins-only check; the full exact-set + risk-class test over every registered tool lives in `rust/fontaine-core/tests/choke_point.rs` from Phase 5):
   workspace-scope validator over `fs::place` (path traversal, absolute paths, symlinks, out-of-scope
-  `cwd`); rig tool configuration (`confine: true`, `max_timeout` clamps `timeout_secs`, output
+  `cwd`; the model-supplied `shell` `cwd` is itself resolved through `fs::place`); rig tool configuration (`confine: true`, `max_timeout` clamps `timeout_secs`, output
   `cut`); the exact registered tool set from the step-1 table (no duplicate names, `delete`/`move`
   absent); risk-class registration of every built-in tool — the choke-point test that fails
   if any registered built-in is missing a risk class.
@@ -159,7 +151,7 @@ context.
 - **workspace roots** (`rust/fontaine-tools/tests/scope.rs`): a path in an `--add-dir` root is in
   scope and reaches that root's confined instance; a `shell` call whose `cwd` is in an added root
   reaches that root's `Shell` instance and is not refused by rig; a symlink from one root into another stays in
-  scope, out of every root falls out.
+  scope, out of every root falls out; no registered tool can add a root.
 - **added-root settings** (`rust/fontaine-core/tests/config.rs`): settings in an added root are not loaded.
 - **windows** (`#[cfg(windows)]`; compile-checked locally with `cargo check --all-targets --target x86_64-pc-windows-gnu`, executed in the windows CI job): scope validator over drive letters, UNC
   paths, case-insensitive comparison, junction and symlink escape, and MSYS-style `/c/...` paths

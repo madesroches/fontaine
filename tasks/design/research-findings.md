@@ -132,11 +132,11 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   environment?" — a pre-execution **authorization gate** with Allow/Deny/Escalate verdicts, prose
   intent rules, and deny-reason feedback. Different seat; the public will conflate them, so the
   distinction must stay crisp in docs.
-- **PromptGuard 2 as the tool-result scanner** (default — user decision 2026-10-21): adopt as the
-  default for the result-scanning slot (recall @ 1% FPR **97.5% (English)** per both the HF model
+- **PromptGuard 2 as the tool-result scanner** (recommended, `scanner = "pg2"` — user decision 2026-10-21; the default is `off`): adopt as the
+  recommended scanner for the result-scanning slot (recall @ 1% FPR **97.5% (English)** per both the HF model
   card and the paper's §4.1 table; EN AUC differs — .998 on the card vs .98 in the paper's table;
   0.995 multilingual AUC; 19–92ms) via `candle` (DeBERTa-v2
-  sequence classification over the repo's safetensors weights), with the cheap-LLM pass as the fallback / bring-your-own option. Caveat: the
+  sequence classification over the repo's safetensors weights), with the cheap-LLM pass (`llm`) and bring-your-own (`command`) as alternatives; a scanner error fails closed (flagged) with no fallback. Caveat: the
   PromptGuard 2 HF repos are **gated downloads** (`gated: "manual"` — license acceptance required)
   and the weights carry the **Llama 4 Community License**, which **permits commercial use**
   (royalty-free, conditional; extra restrictions only above 700M monthly active users; AUP +
