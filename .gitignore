@@ -13,6 +13,9 @@ rust/target/
 auto-save-list/
 tramp
 flycheck_*.el
+*_flymake.*
+*.~undo-tree~
+.emacs.desktop*
 .projectile
 .dir-locals-2.el
 TAGS
