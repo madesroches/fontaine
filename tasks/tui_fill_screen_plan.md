@@ -79,6 +79,12 @@ draw
   exists and lines commit (the first screenful, and after a panel closes).
 - When `content == H` and lines commit, ratatui's full-height path pushes them straight into
   history; nothing changes there.
+- A rebuild clears from the frontier down and ratatui flushes before the redraw, so a committing
+  render while padding exists would otherwise flash blank rows. `run` (`lib.rs`) wraps each
+  `screen.render(app)` call in crossterm's `BeginSynchronizedUpdate` / `EndSynchronizedUpdate`
+  (DEC mode 2026; terminals without it ignore the sequences), sending the end even when the render
+  fails, so the clear and redraw show as one frame. `Screen` itself is unchanged, so
+  `TestBackend` tests see no extra output.
 
 **View.** No change: `view::draw` already gives extra rows to the transcript tail area. `view::height`
 keeps returning the content height.
@@ -101,10 +107,13 @@ included, into history before Fontaine sees the resize, so blank rows can enter 
      state the bottom-row rule.
 2. Update `screen.rs` unit tests whose expectations assumed a content-height live area (see
    Testing Strategy) and add the new ones.
-3. Check the integration harness (`tests/common/mod.rs`) and `tests/tui.rs` still pass; `Ui::live`
+3. `fontaine-tui/src/lib.rs` `run`: in the render closure, `execute!` `BeginSynchronizedUpdate`
+   on stdout before `screen.render(app)` and `EndSynchronizedUpdate` after it (regardless of the
+   render result).
+4. Check the integration harness (`tests/common/mod.rs`) and `tests/tui.rs` still pass; `Ui::live`
    now includes padding rows, which the existing `contains` assertions tolerate.
-4. Docs: `docs/tui.md` (see Documentation).
-5. Master plan: add this line to `tasks/fontaine_harness_plan.md` `## Decisions`: "- 2026-10-22: The
+5. Docs: `docs/tui.md` (see Documentation).
+6. Master plan: add this line to `tasks/fontaine_harness_plan.md` `## Decisions`: "- 2026-10-22: The
    TUI takes the whole terminal at startup (earlier shell output scrolls into the terminal's
    history) and keeps the input box and status bar on the bottom rows; Claude Code renders from the
    cursor row. Reason: a full-screen layout was requested (#74)."
@@ -112,6 +121,7 @@ included, into history before Fontaine sees the resize, so blank rows can enter 
 ## Files to Modify
 
 - `rust/fontaine-tui/src/screen.rs`
+- `rust/fontaine-tui/src/lib.rs`
 - `docs/tui.md`
 - `tasks/fontaine_harness_plan.md`
 
@@ -133,6 +143,9 @@ included, into history before Fontaine sees the resize, so blank rows can enter 
 
 - 2026-10-22: Accepted: shrinking the terminal while padding is on screen can leave blank rows in
   scrollback; the emulator moves them before Fontaine sees the resize.
+- 2026-10-22: AFK: Committing renders while padding exists rebuild (clear + redraw) every time, so
+  each render in `run` is wrapped in a synchronized update (DEC 2026, ignored where unsupported) to
+  avoid flicker, rather than accepting it; `Screen` and `TestBackend` tests are untouched.
 
 ## Documentation
 
@@ -175,8 +188,8 @@ not model.
 1. In tmux with `mouse on`, run some shell commands, then `cargo run -p fontaine`: the screen is
    blank except the input box and status bar on the bottom rows; scrolling up (wheel / copy mode)
    shows the earlier shell output.
-2. Send a message: the reply starts on the top row and grows downward; once the screen is full,
-   it scrolls; mouse selection works.
+2. Send a message: the reply starts on the top row and grows downward without flicker while it
+   streams in the first screenful; once the screen is full, it scrolls; mouse selection works.
 3. Trigger an approval prompt and answer it: the panel opens above the input box and closes
    without leaving blank rows in the transcript when scrolled back.
 4. Make the pane taller and shorter (`tmux resize-pane`): the input box stays on the bottom row.
