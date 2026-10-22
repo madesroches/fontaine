@@ -100,6 +100,8 @@ struct FakeRunner {
     /// Finish a child at once with this text, instead of leaving it running.
     answer: Mutex<Option<(ChildStatus, String)>>,
     fail: Mutex<Option<String>>,
+    /// Never finish starting a child, as when resolving its model takes long.
+    hang: Mutex<bool>,
 }
 
 impl FakeRunner {
@@ -118,6 +120,9 @@ impl ChildRunner for FakeRunner {
         request: SpawnRequest,
     ) -> BoxFuture<'a, Result<Arc<dyn ChildHandle>, String>> {
         Box::pin(async move {
+            if *self.hang.lock().unwrap() {
+                std::future::pending::<()>().await;
+            }
             if let Some(why) = self.fail.lock().unwrap().clone() {
                 return Err(why);
             }
@@ -630,4 +635,36 @@ async fn send_message_queues_for_the_recipients_next_turn_and_names_the_sender()
     assert!(rig.ledger.events.lock().unwrap().iter().any(
         |e| matches!(e, AgentEvent::Message { from, to } if from == "agent-1" && to == "agent-2")
     ));
+}
+
+#[tokio::test]
+async fn dropping_a_spawn_that_is_still_starting_gives_back_its_slot() {
+    let rig = rig();
+    *rig.runner.hang.lock().unwrap() = true;
+    let started = tokio::time::timeout(
+        Duration::from_millis(50),
+        spawn(&rig, args("explore", "slow")),
+    )
+    .await;
+    assert!(started.is_err());
+    assert!(rig.tree.running_ids().is_empty());
+    assert!(!rig.tree.background_running());
+}
+
+#[tokio::test]
+async fn a_kill_that_lands_before_the_handle_attaches_still_stops_the_child() {
+    let rig = rig();
+    let id = rig
+        .tree
+        .reserve(ROOT_AGENT, "explore", "m", vec![], Ladder::Manual, false)
+        .unwrap();
+    assert!(rig.tree.kill(&id));
+    let (report, _) = watch::channel(None);
+    let child = Arc::new(FakeChild {
+        status: Mutex::new(ChildStatus::Running),
+        report,
+        killed: Mutex::new(false),
+    });
+    rig.tree.attach(&id, child.clone());
+    assert!(*child.killed.lock().unwrap());
 }

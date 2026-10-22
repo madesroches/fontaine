@@ -172,6 +172,16 @@ impl SkillRuntime {
         if skill.scope == Scope::Project && !self.project_commands {
             return "[command not run: this project's executables are not trusted]".to_string();
         }
+        if agent != fontaine_tools::gate::ROOT_AGENT
+            && !self
+                .state
+                .agents()
+                .tools_of(agent)
+                .iter()
+                .any(|tool| tool == "shell")
+        {
+            return "[command not run: this agent has no shell tool]".to_string();
+        }
         let shell = self.shell.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let Some(shell) = shell else {
             return "[command not run: the shell tool is not available]".to_string();

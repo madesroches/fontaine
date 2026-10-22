@@ -360,6 +360,33 @@ async fn a_skills_command_runs_through_the_pipeline_as_a_shell_call() {
 }
 
 #[tokio::test]
+async fn a_subagent_without_a_shell_cannot_run_a_skills_commands() {
+    let s = skills(|w| {
+        user_skill(
+            w,
+            "status",
+            "---\ndescription: s\n---\nOutput: !`echo hello`\n",
+        )
+    });
+    let child = s
+        .rig
+        .state
+        .agents()
+        .reserve(
+            ROOT_AGENT,
+            "reader",
+            "m",
+            vec!["read".into(), "skill".into()],
+            fontaine_agents::mode::Ladder::Manual,
+            false,
+        )
+        .unwrap();
+    let text = s.runtime.expand("status", "", &child, false).await.unwrap();
+    assert!(text.contains("[command not run:"), "{text}");
+    assert_eq!(s.rig.approver.asked(), 0);
+}
+
+#[tokio::test]
 async fn a_denied_skill_command_is_replaced_by_the_denial_and_the_skill_still_loads() {
     let s = skills(|w| {
         user_skill(

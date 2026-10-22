@@ -364,8 +364,20 @@ impl AgentTree {
     }
 
     pub fn attach(&self, id: &str, handle: Arc<dyn ChildHandle>) {
-        if let Some(node) = self.lock().nodes.get_mut(id) {
-            node.handle = Some(handle);
+        // A kill can land while the runner is still starting the child, when there was no
+        // handle to stop; honour it now.
+        let already_killed = {
+            let mut inner = self.lock();
+            match inner.nodes.get_mut(id) {
+                Some(node) => {
+                    node.handle = Some(handle.clone());
+                    node.status == ChildStatus::Killed
+                }
+                None => false,
+            }
+        };
+        if already_killed {
+            handle.kill();
         }
         self.changed.notify_waiters();
     }

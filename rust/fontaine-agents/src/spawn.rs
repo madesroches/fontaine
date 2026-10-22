@@ -60,6 +60,22 @@ impl Drop for KillOnDrop {
     }
 }
 
+/// Gives back a reservation if the call is dropped (the turn was interrupted) before the child
+/// has a handle, which would otherwise hold a parallel slot forever.
+struct ReleaseOnDrop {
+    tree: Arc<AgentTree>,
+    id: String,
+    armed: bool,
+}
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.tree.release(&self.id);
+        }
+    }
+}
+
 fn subagent_event(event: &str, id: &str, agent_type: &str) {
     tracing::info!(
         target: TARGET,
@@ -201,6 +217,11 @@ impl Tool for AgentTool {
                 )),
             })?;
 
+        let mut reservation = ReleaseOnDrop {
+            tree: self.tree.clone(),
+            id: id.clone(),
+            armed: true,
+        };
         let request = SpawnRequest {
             id: id.clone(),
             parent: caller.clone(),
@@ -224,6 +245,7 @@ impl Tool for AgentTool {
             }
         };
         self.tree.attach(&id, handle.clone());
+        reservation.armed = false;
         self.ledger.append_event(AgentEvent::Spawned {
             agent: id.clone(),
             parent: caller.clone(),
