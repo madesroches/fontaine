@@ -483,10 +483,14 @@ impl App {
         if !self.queued.is_empty() && !self.shell_running {
             return Action::EditQueued;
         }
+        self.recall_older();
+        Action::None
+    }
+
+    pub(crate) fn recall_older(&mut self) {
         if let Some(text) = self.history.older(&self.input.text()) {
             self.input.set_text(&text);
         }
-        Action::None
     }
 
     fn enter(&mut self, newline: bool) -> Action {

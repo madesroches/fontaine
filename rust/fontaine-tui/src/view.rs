@@ -63,12 +63,15 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let (title, body, footer) = overlay(app, inner_width);
     let view = input_view(&app.input, inner_width);
     let input_height = view.rows.len() as u16 + 2;
+    let queued = queued_lines(app, inner_width);
     let approval_height = if body.is_empty() {
         0
     } else {
-        ((body.len() + footer.len()) as u16 + 2).min(area.height.saturating_sub(input_height + 1))
+        ((body.len() + footer.len()) as u16 + 2).min(
+            area.height
+                .saturating_sub(input_height + queued.len() as u16 + 1),
+        )
     };
-    let queued = queued_lines(app, inner_width);
     let [transcript, approval, queued_area, input, status] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(approval_height),

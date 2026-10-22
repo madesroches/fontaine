@@ -295,7 +295,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// Up with messages queued: they come back into the input to be edited.
     fn edit_queued(&mut self, runtime: &AgentRuntime) {
         let messages = runtime.steering.retract();
-        if !messages.is_empty() {
+        if messages.is_empty() {
+            // The hook delivered them since the last draw, so the display is stale.
+            self.app.queued.clear();
+            self.app.recall_older();
+        } else {
             self.app.restore_to_input(&messages.join("\n\n"));
         }
     }

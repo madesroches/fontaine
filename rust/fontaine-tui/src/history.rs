@@ -63,7 +63,8 @@ impl History {
             .filter(|(entry_project, _)| entry_project == project)
             .map(|(_, text)| text)
             .collect();
-        let error = if lines.len() > HISTORY_CAP {
+        // Slack before rewriting keeps a file at the cap from being rewritten on every start.
+        let error = if lines.len() > HISTORY_CAP + HISTORY_CAP / 5 {
             rewrite(path, kept).err().map(|e| unusable(path, &e))
         } else {
             None
@@ -173,7 +174,7 @@ fn unusable(path: &Path, error: &io::Error) -> String {
 /// Replaces `path` with `lines` through an owner-only temp file in the same directory, so a
 /// crash cannot leave a truncated history.
 fn rewrite(path: &Path, lines: &[&str]) -> io::Result<()> {
-    let tmp = path.with_extension("jsonl.tmp");
+    let tmp = path.with_extension(format!("jsonl.{}.tmp", std::process::id()));
     let mut body = lines.join("\n");
     body.push('\n');
     owner_only::write(&tmp, body.as_bytes())?;
@@ -227,18 +228,25 @@ mod tests {
     #[test]
     fn a_long_file_is_rewritten_with_the_newest_entries() {
         let (_dir, path) = file();
-        let body: String = (0..HISTORY_CAP + 3)
+        let body: String = (0..HISTORY_CAP + HISTORY_CAP / 5 + 3)
             .map(|i| format!("{{\"ts_ms\":0,\"project\":\"p\",\"text\":\"m{i}\"}}\n"))
             .collect();
         std::fs::write(&path, body).unwrap();
         let (history, error) = History::load(&path, "p");
         assert!(error.is_none());
         assert_eq!(history.len(), HISTORY_CAP);
-        assert_eq!(history.entries[0], "m3");
+        let dropped = HISTORY_CAP / 5 + 3;
+        assert_eq!(history.entries[0], format!("m{dropped}"));
         let rewritten = std::fs::read_to_string(&path).unwrap();
         assert_eq!(rewritten.lines().count(), HISTORY_CAP);
-        assert!(rewritten.starts_with("{\"ts_ms\":0,\"project\":\"p\",\"text\":\"m3\"}"));
-        assert!(!path.with_extension("jsonl.tmp").exists());
+        assert!(rewritten.starts_with(&format!(
+            "{{\"ts_ms\":0,\"project\":\"p\",\"text\":\"m{dropped}\"}}"
+        )));
+        assert!(
+            !path
+                .with_extension(format!("jsonl.{}.tmp", std::process::id()))
+                .exists()
+        );
     }
 
     #[test]
