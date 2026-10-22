@@ -3,12 +3,13 @@
 //! keys directly.
 
 use fontaine_core::config::PermissionMode;
-use fontaine_core::permissions::{Answer, ApprovalRequest};
+use fontaine_core::permissions::{Answer, ApprovalRequest, UnavailableChoice};
 use fontaine_core::turn::SessionEvent;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::oneshot;
 
 use crate::approval::Approval;
+use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt};
 use crate::input::InputBuffer;
 use crate::transcript::Transcript;
 
@@ -27,12 +28,19 @@ pub enum Action {
     CycleMode,
     Interrupt,
     Quit,
+    /// The human approved denied call `n` (as `/denied` lists it) for one retry.
+    RetryDenied(usize),
+    /// The human answered the unavailable-guardian prompt.
+    Guardian(UnavailableAnswer),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Exit,
     AddDir(String),
+    Denied,
+    Model(String),
+    GuardianModel(String),
     Unknown(String),
 }
 
@@ -44,6 +52,9 @@ pub fn parse_command(text: &str) -> Option<Command> {
     Some(match name {
         "exit" | "quit" => Command::Exit,
         "add-dir" => Command::AddDir(argument.trim().to_string()),
+        "denied" => Command::Denied,
+        "model" => Command::Model(argument.trim().to_string()),
+        "guardian-model" => Command::GuardianModel(argument.trim().to_string()),
         _ => Command::Unknown(name.to_string()),
     })
 }
@@ -55,6 +66,13 @@ pub struct App {
     pub model: String,
     pub running: bool,
     pub approval: Option<Approval>,
+    /// `/denied` while it is open.
+    pub denied: Option<DeniedList>,
+    /// The pinned guardian cannot be used, and the human has to say what to do.
+    pub unavailable: Option<UnavailablePrompt>,
+    /// Harness notes the next message to the agent carries, such as a retry the human approved.
+    /// They are not the user's words and never enter the ledger as such.
+    pub pending_notices: Vec<String>,
     /// Lines the transcript is scrolled up from its end.
     pub scroll: usize,
 }
@@ -76,6 +94,9 @@ impl App {
             model,
             running: false,
             approval: None,
+            denied: None,
+            unavailable: None,
+            pending_notices: Vec::new(),
             scroll: 0,
         }
     }
@@ -88,10 +109,24 @@ impl App {
         self.approval = Some(Approval::new(request, reply));
     }
 
-    /// Answers the open prompt with a denial, as when its turn is interrupted.
+    pub fn begin_unavailable(&mut self, prompt: UnavailablePrompt) {
+        self.unavailable = Some(prompt);
+    }
+
+    /// Answers the open prompts with a denial, as when their turn is interrupted.
     pub fn deny_pending(&mut self) {
         if let Some(mut approval) = self.approval.take() {
             approval.reply(Answer::Deny { feedback: None });
+        }
+        if let Some(mut prompt) = self.unavailable.take() {
+            prompt.reply(UnavailableChoice::Deny);
+        }
+    }
+
+    /// Tells the waiting pipeline what the human chose about the unavailable guardian.
+    pub fn finish_unavailable(&mut self, choice: UnavailableChoice) {
+        if let Some(mut prompt) = self.unavailable.take() {
+            prompt.reply(choice);
         }
     }
 
@@ -99,7 +134,7 @@ impl App {
         match input {
             Input::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
             Input::Paste(text) => {
-                if self.approval.is_none() {
+                if self.approval.is_none() && self.denied.is_none() && self.unavailable.is_none() {
                     self.input.insert_str(&text);
                 }
                 Action::None
@@ -124,6 +159,22 @@ impl App {
             .approval
             .as_ref()
             .is_some_and(Approval::is_typing_feedback);
+        if let Some(list) = &mut self.denied {
+            return match list.handle_key(key) {
+                DeniedKey::None => Action::None,
+                DeniedKey::Close => {
+                    self.denied = None;
+                    Action::None
+                }
+                DeniedKey::Retry(index) => Action::RetryDenied(index),
+            };
+        }
+        if let Some(prompt) = &mut self.unavailable {
+            return match prompt.handle_key(key) {
+                Some(answer) => Action::Guardian(answer),
+                None => Action::None,
+            };
+        }
         if key.code == KeyCode::Esc && self.running && !typing_reason {
             return Action::Interrupt;
         }
@@ -231,6 +282,16 @@ mod tests {
         assert_eq!(
             parse_command("/nope"),
             Some(Command::Unknown("nope".into()))
+        );
+        assert_eq!(parse_command("/denied"), Some(Command::Denied));
+        assert_eq!(
+            parse_command("/model  work/claude-sonnet-4-6 "),
+            Some(Command::Model("work/claude-sonnet-4-6".into()))
+        );
+        assert_eq!(parse_command("/model"), Some(Command::Model(String::new())));
+        assert_eq!(
+            parse_command("/guardian-model a/b"),
+            Some(Command::GuardianModel("a/b".into()))
         );
     }
 

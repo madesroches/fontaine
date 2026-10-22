@@ -168,6 +168,17 @@ impl Transcript {
         }
     }
 
+    /// The guardian refused call `id`: shown with its rule label and its own explanation, not the
+    /// words the agent is told.
+    pub fn guardian_denied(&mut self, id: &str, tool: &str, rule: &str, explanation: &str) {
+        let at = self.find_tool(id, tool);
+        if let Some(i) = at
+            && let Entry::Tool { status, .. } = &mut self.entries[i]
+        {
+            *status = ToolStatus::Denied(first_line(&format!("[{rule}] {explanation}")));
+        }
+    }
+
     /// Calls that never produced a result because the turn was cut short.
     pub fn interrupt_pending(&mut self) {
         self.finish_streaming();
@@ -246,6 +257,15 @@ fn entry_lines(entry: &Entry, width: usize, out: &mut Vec<Line<'static>>) {
                 ToolStatus::Interrupted => ("−", dim, " interrupted".to_string()),
             };
             let line = truncate(&format!("• {tool} {summary}"), width.saturating_sub(2));
+            if let ToolStatus::Denied(why) = status {
+                // A denial is the part the human has to read, so it gets its own wrapped lines.
+                out.push(Line::from(vec![
+                    Span::styled(line, dim),
+                    Span::styled(format!(" {mark}"), style),
+                ]));
+                prefixed(&format!("denied: {why}"), width, "    ", style, out);
+                return;
+            }
             let detail = truncate(&detail, width.saturating_sub(line.chars().count() + 3));
             out.push(Line::from(vec![
                 Span::styled(line, dim),
