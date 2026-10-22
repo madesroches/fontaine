@@ -33,6 +33,14 @@ pub enum ConfigError {
         reason: String,
         hint: Option<String>,
     },
+    /// A credentials file that does not match the schema. Carries no source text: toml quotes
+    /// the offending line, which here would be the key.
+    Credentials {
+        path: PathBuf,
+        line: usize,
+        column: usize,
+        message: String,
+    },
     /// A value that parses but is not acceptable.
     Invalid {
         path: PathBuf,
@@ -73,6 +81,16 @@ impl fmt::Display for ConfigError {
             ConfigError::Parse { path, message } => {
                 write!(f, "invalid settings in {}: {message}", path.display())
             }
+            ConfigError::Credentials {
+                path,
+                line,
+                column,
+                message,
+            } => write!(
+                f,
+                "invalid credentials file {}:{line}:{column}: {message}",
+                path.display()
+            ),
             ConfigError::Scope {
                 path,
                 column,
@@ -633,6 +651,19 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
     if let Some(a) = &s.agents {
         if a.max_parallel == Some(0) {
             return bad("agents.max_parallel", "must be at least 1");
+        }
+        for (key, v) in [
+            (
+                "agents.subagent_cost_budget_usd",
+                a.subagent_cost_budget_usd,
+            ),
+            ("agents.session_cost_budget_usd", a.session_cost_budget_usd),
+        ] {
+            if let Some(v) = v
+                && !(v.is_finite() && v >= 0.0)
+            {
+                return bad(key, "must be a finite number, zero or more");
+            }
         }
         for (name, ty) in a.types.iter().flatten() {
             let key = format!("agents.types.{name}");

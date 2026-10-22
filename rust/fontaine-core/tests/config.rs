@@ -325,6 +325,24 @@ fn guardian_profile_only_validates_as_full_or_minimal() {
 }
 
 #[test]
+fn agent_cost_budgets_must_be_finite_and_non_negative() {
+    for bad in [
+        "subagent_cost_budget_usd = -1.0",
+        "subagent_cost_budget_usd = nan",
+        "session_cost_budget_usd = inf",
+        "session_cost_budget_usd = -0.5",
+    ] {
+        let text = format!("[agents]\n{bad}\n");
+        assert!(
+            parse_settings(&text, Path::new("u.toml"), Column::User).is_err(),
+            "{bad}"
+        );
+    }
+    let ok = "[agents]\nsubagent_cost_budget_usd = 0.0\nsession_cost_budget_usd = 5.0\n";
+    assert!(parse_settings(ok, Path::new("u.toml"), Column::User).is_ok());
+}
+
+#[test]
 fn guardian_values_are_range_checked() {
     for bad in [
         "timeout_secs = 0",
@@ -871,5 +889,5 @@ fn an_unparseable_credentials_file_fails_telemetry_resolution() {
     w.user_file("[telemetry]\nenabled = true\nendpoint = \"https://t.example.com\"\n");
     write(&w.data.join("credentials.toml"), "not toml [");
     let err = w.load().unwrap_err();
-    assert!(matches!(err, ConfigError::Parse { .. }), "{err:?}");
+    assert!(matches!(err, ConfigError::Credentials { .. }), "{err:?}");
 }

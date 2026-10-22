@@ -61,7 +61,7 @@ fn an_unparseable_file_is_a_config_error_naming_the_path() {
     let w = World::new();
     write(&w.data.join("credentials.toml"), "[accounts.x\n");
     let err = Credentials::load(&w.data).err().unwrap();
-    assert!(matches!(err, ConfigError::Parse { .. }), "{err:?}");
+    assert!(matches!(err, ConfigError::Credentials { .. }), "{err:?}");
     assert!(err.to_string().contains("credentials.toml"));
     assert_eq!(err.exit_code(), 2);
 
@@ -71,7 +71,7 @@ fn an_unparseable_file_is_a_config_error_naming_the_path() {
     );
     assert!(matches!(
         Credentials::load(&w.data).err().unwrap(),
-        ConfigError::Parse { .. }
+        ConfigError::Credentials { .. }
     ));
 }
 
@@ -83,4 +83,25 @@ fn a_non_not_found_io_error_is_a_config_error_naming_the_path() {
     assert!(matches!(err, ConfigError::Io { .. }), "{err:?}");
     assert!(err.to_string().contains("credentials.toml"));
     assert_eq!(err.exit_code(), 2);
+}
+
+#[test]
+fn a_malformed_file_never_echoes_the_secret() {
+    for body in [
+        "[accounts.work]\napi_key = sk-abc123\n",
+        "[accounts.work]\napikey = \"sk-abc123\"\n",
+        "[accounts.work]\napi_key = \"sk-abc123\" sk-abc123\n",
+        "[accounts.work]\napi_key = \"sk-abc123\"\nextra = sk-abc123\n",
+    ] {
+        let w = World::new();
+        write(&w.data.join("credentials.toml"), body);
+        let err = match Credentials::load(&w.data) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("{body}"),
+        };
+        assert!(!err.contains("sk-abc123"), "{err}");
+        assert!(err.contains("credentials.toml"), "{err}");
+        let err = fontaine_core::credentials::validate_credentials_toml(body).unwrap_err();
+        assert!(!err.contains("sk-abc123"), "{err}");
+    }
 }

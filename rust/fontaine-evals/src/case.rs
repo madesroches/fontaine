@@ -294,7 +294,7 @@ pub fn validate_case(case: &Case) -> Vec<String> {
             .chain(ws.symlinks.keys())
             .chain(ws.cwd.iter())
         {
-            if path.starts_with('/') || path.split('/').any(|c| c == "..") {
+            if !workspace_path_ok(path) {
                 err(format!(
                     "workspace path `{path}` must be relative and inside the root"
                 ));
@@ -302,6 +302,13 @@ pub fn validate_case(case: &Case) -> Vec<String> {
         }
     }
     errors
+}
+
+/// Checked on both separators so a case that is safe on Linux cannot escape the root on Windows.
+fn workspace_path_ok(path: &str) -> bool {
+    let mut segments = path.split(['/', '\\']);
+    let first = segments.next().unwrap_or("");
+    !first.is_empty() && !first.ends_with(':') && !path.split(['/', '\\']).any(|c| c == "..")
 }
 
 /// Loads and validates every `*.jsonl` file in `dir`, in file-name order. On failure returns

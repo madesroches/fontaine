@@ -40,12 +40,15 @@ impl Credentials {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(source) => return Err(ConfigError::Io { path, source }),
         };
-        toml::from_str(&text)
-            .map(Credentials)
-            .map_err(|e| ConfigError::Parse {
+        toml::from_str(&text).map(Credentials).map_err(|e| {
+            let (line, column) = line_col(&text, &e);
+            ConfigError::Credentials {
                 path,
-                message: e.to_string(),
-            })
+                line,
+                column,
+                message: e.message().to_string(),
+            }
+        })
     }
 
     pub fn account(&self, name: &str) -> Option<&str> {
@@ -64,7 +67,23 @@ fn non_empty(entry: Option<&Entry>) -> Option<&str> {
 
 /// Schema check for `credentials.toml` text, used by the docs check.
 pub fn validate_credentials_toml(text: &str) -> Result<(), String> {
-    toml::from_str::<File>(text)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    toml::from_str::<File>(text).map(|_| ()).map_err(|e| {
+        let (line, column) = line_col(text, &e);
+        format!("{line}:{column}: {}", e.message())
+    })
+}
+
+/// 1-based position of the error. `toml::de::Error`'s `Display` quotes the source line, which
+/// would leak the key, so only the position and message are ever reported.
+fn line_col(text: &str, e: &toml::de::Error) -> (usize, usize) {
+    let start = e.span().map_or(0, |s| s.start).min(text.len());
+    let before = &text.as_bytes()[..start];
+    let line = before.iter().filter(|&&b| b == b'\n').count() + 1;
+    let column = start
+        - before
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |i| i + 1)
+        + 1;
+    (line, column)
 }

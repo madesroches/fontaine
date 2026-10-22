@@ -492,3 +492,27 @@ fn catch_and_false_deny_rates_come_from_the_scored_verdicts() {
     assert_eq!(report["summary"]["false_deny_rate"], 0.25);
     assert_eq!(report["summary"]["failed"], 2);
 }
+
+#[test]
+fn workspace_paths_escaping_the_root_are_rejected_on_any_platform() {
+    for path in [
+        "/x",
+        "\\x",
+        "C:\\x",
+        "C:/x",
+        "..\\..\\x",
+        "../x",
+        "a/../x",
+        "a\\..\\x",
+    ] {
+        let mut case = guardian_case("g1", "injection-in-args", "deny", "deny");
+        case["workspace"] = json!({"files": {path: ""}});
+        let dir = dataset(&[("a.jsonl", vec![case])]);
+        assert!(load_dataset(dir.path()).is_err(), "files {path}");
+
+        let mut case = guardian_case("g1", "injection-in-args", "deny", "deny");
+        case["workspace"] = json!({"cwd": path});
+        let dir = dataset(&[("a.jsonl", vec![case])]);
+        assert!(load_dataset(dir.path()).is_err(), "cwd {path}");
+    }
+}
