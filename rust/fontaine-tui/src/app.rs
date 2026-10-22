@@ -73,12 +73,7 @@ pub struct App {
     /// Harness notes the next message to the agent carries, such as a retry the human approved.
     /// They are not the user's words and never enter the ledger as such.
     pub pending_notices: Vec<String>,
-    /// Lines the transcript is scrolled up from its end.
-    pub scroll: usize,
 }
-
-const SCROLL_STEP: usize = 10;
-const SCROLL_CAP: usize = 100_000;
 
 fn is_cycle_key(key: &KeyEvent) -> bool {
     key.code == KeyCode::BackTab
@@ -97,7 +92,6 @@ impl App {
             denied: None,
             unavailable: None,
             pending_notices: Vec::new(),
-            scroll: 0,
         }
     }
 
@@ -216,8 +210,6 @@ impl App {
 
     fn message_key(&mut self, key: KeyEvent) -> Action {
         match key.code {
-            KeyCode::PageUp => self.scroll = (self.scroll + SCROLL_STEP).min(SCROLL_CAP),
-            KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(SCROLL_STEP),
             KeyCode::Enter => {
                 let newline = key
                     .modifiers
@@ -253,7 +245,6 @@ impl App {
                 .notice("a turn is running; wait for it or press Esc to interrupt");
             return Action::None;
         }
-        self.scroll = 0;
         let text = self.input.take();
         Action::Submit(text.trim().to_string())
     }

@@ -620,3 +620,24 @@ async fn switching_to_manual_from_the_unavailable_prompt_asks_the_human_instead(
     .await;
     assert!(w.work.join("m.txt").exists());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn finished_replies_scroll_above_the_live_area() {
+    let w = World::new(vec![text_turn("first reply"), text_turn("second reply")]);
+    w.run(|ui| async move {
+        ui.send("one");
+        ui.wait_for("first reply").await;
+        idle(&ui).await;
+        ui.send("two");
+        ui.wait_for("second reply").await;
+        idle(&ui).await;
+        let screen = ui.screen();
+        let first = screen.find("first reply").unwrap();
+        let second = screen.find("second reply").unwrap();
+        assert!(first < second, "{screen}");
+        let live = ui.live();
+        assert!(!live.contains("reply"), "{live}");
+        assert!(live.contains("shift+tab mode"), "{live}");
+    })
+    .await;
+}
