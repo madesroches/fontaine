@@ -133,7 +133,7 @@ context.
 
 ## Files created or modified
 
-`rust/Cargo.toml` (new crates: `reqwest =0.13.5` (webfetch; the version rig-core 0.45's `rig-reqwest` resolves), `htmd =0.5.6`, `ignore =0.4.33`, `url` 2.x caret (IDNA host normalization), `insta` 1.x caret (dev; system-prompt snapshot)); `rust/fontaine-tools/src/{lib,gate,guarded,result_pipeline,risk,scope,builtins,webfetch,git_bash}.rs`;
+`rust/Cargo.toml` (new crates: `rig-tools =0.45.0`, `rig-memory =0.45.0`, `reqwest =0.13.5` (webfetch; the version rig-core 0.45's `rig-reqwest` resolves), `htmd =0.5.6`, `ignore =0.4.33`, `url` 2.x caret (IDNA host normalization), `insta` 1.x caret (dev; system-prompt snapshot)); `rust/fontaine-tools/src/{lib,gate,guarded,result_pipeline,risk,scope,builtins,webfetch,git_bash}.rs`;
 `rust/fontaine-core/src/{lib,session,ledger}.rs`; `rust/fontaine-core/prompts/system_prompt.md`; `rust/fontaine-tools/tests/{scope,choke_point}.rs`; `rust/fontaine-core/tests/{ledger,config}.rs`; `rust/fontaine/tests/{headless_smoke,headless_contract}.rs` (retargeted from `echo` to `read`); `rust/fontaine/tests/headless_tools.rs`; `docs/tools.md`, `docs/architecture.md`,
 `docs/configuration.md`, `docs/telemetry.md`, `docs/headless.md`, `docs/index.md`.
 

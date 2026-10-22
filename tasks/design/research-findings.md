@@ -195,7 +195,7 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
     `TracingRuntimeExt`) + `micromegas-telemetry-sink =0.32.0`; move the pins to the micromegas
     release that ships the upstream items below as each lands.
   - OTLP backend: `opentelemetry =0.33.1`, `opentelemetry_sdk =0.33.1`,
-    `opentelemetry-otlp =0.33.1` (`default-features = false`, `http-proto`, `reqwest-client`;
+    `opentelemetry-otlp =0.33.1` (`default-features = false`, `http-proto`, `reqwest-blocking-client`;
     shares rig's reqwest 0.13), `tracing-opentelemetry =0.34.0` and
     `opentelemetry-appender-tracing =0.33.1`.
   - Both backends are compiled in by default, behind the bin crate's features

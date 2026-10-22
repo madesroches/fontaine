@@ -30,12 +30,16 @@ Deliberate design choices and user decisions are recorded in `## Decisions`.
 
 ## Current State
 
-Repo `/home/mad/fontaine` is on branch `phase0-scaffold` (not `main`). The Rust workspace under
-`rust/` now exists with all eight crate skeletons, the settings scope stack, workspace trust store,
+Repo `/home/mad/fontaine` is on branch `phase1-model-headless` (not `main`). The Rust workspace under
+`rust/` has all eight crates. Phase 0 delivered the settings scope stack, workspace trust store,
 credentials lookup, tracing facade and the eval runner (`rust/fontaine-evals`) with its seed dataset
-in `evals/dataset/`; the `docs/` tree, `README.md`, `CONTRIBUTING.md`, `SECURITY.md` and
-`CHANGELOG.md` are started. The agent itself (model layer, tools, permission pipeline, guardian,
-TUI) is not built yet — Phase 1 is next. `research/` holds seven companion docs that are this plan's precedent and inputs:
+in `evals/dataset/`. Phase 1 added the model layer (`fontaine-core/src/models.rs`: config accounts →
+rig provider clients, `<account>/<model>` resolution and discovery), the credentials writer
+(`fontaine auth login`), the headless surface `fontaine -p` with its versioned output contract
+(`docs/schemas/headless-v1.schema.json`) driven by a minimal rig-agent loop with a test-only `echo`
+tool, and the micromegas and OTLP telemetry backends (`rust/fontaine/src/telemetry/`). The `docs/`
+tree covers configuration, architecture, headless runs and telemetry. Tools, the permission
+pipeline, the guardian and the TUI are not built yet — Phase 2 is next. `research/` holds seven companion docs that are this plan's precedent and inputs:
 `analysis-competitive-landscape.md` (market/permission-story survey),
 `analysis-guardian-market.md`, `analysis-differentiation.md`,
 `analysis-devils-advocate.md` (kill criteria), `analysis-strategic-verdict.md` (verdict and
@@ -56,7 +60,7 @@ product documentation lives under `docs/` (see `design/documentation.md` §Docum
 | Phase | Plan | Scope | Status | Exit milestone |
 |-------|------|-------|--------|----------------|
 | 0 — scaffold (eval first) | [phases/phase0_scaffold.md](phases/phase0_scaffold.md) | Cargo workspace, crate skeletons, CLI entry, tracing facade + `[telemetry]` config, CI, settings scope stack + workspace trust store + read-only credentials lookup; eval golden-dataset + runner skeleton; `docs/` tree started | done | CI green; eval runner green against verdict fixtures with no guardian in the tree |
-| 1 — model layer + headless | [phases/phase1_model_headless.md](phases/phase1_model_headless.md) | rig crates pinned; config → provider mapping; streaming spike; `fontaine -p` with the versioned headless I/O contract; telemetry backends (micromegas/OTLP) + `docs/telemetry.md`; provider docs | not started | `fontaine -p` streams a prompt plus a spike tool round-trip against a mock endpoint |
+| 1 — model layer + headless | [phases/phase1_model_headless.md](phases/phase1_model_headless.md) | rig crates pinned; config → provider mapping; streaming spike; `fontaine -p` with the versioned headless I/O contract; telemetry backends (micromegas/OTLP) + `docs/telemetry.md`; provider docs | done | `fontaine -p` streams a prompt plus a spike tool round-trip against a mock endpoint |
 | 2 — agent runtime & tools | [phases/phase2_runtime_tools.md](phases/phase2_runtime_tools.md) | RiskClass registry, GuardedTool (gate stubbed), rig-tools built-ins + read tools + webfetch, multi-root scope validator, confined rig tool config; rig-agent session orchestration + session ledger; `docs/tools.md` | not started | agent runs tools end-to-end headless through wrapped registry; choke-point test green |
 | 3 — pipeline & manual TUI | [phases/phase3_pipeline_tui.md](phases/phase3_pipeline_tui.md) | PermissionPipeline (manual/acceptEdits/plan/dontAsk; deterministic floor; `Tool(specifier)` rule grammar + allow rules; user-hook slot; Tier-0.5; audit log); headless `-p` denial semantics for manual/dontAsk; ratatui TUI; `docs/permissions.md` + pipeline diagram | not started | **usable Claude-Code-like agent with manual approvals** |
 | 4 — guardian + scorecard | [phases/phase4_guardian.md](phases/phase4_guardian.md) | fontaine-guardian; `auto` wired into pipeline (incl. headless `-p` semantics for auto); denial UX; live evals; **published scorecard**; `docs/guardian.md` + `docs/evals.md` | not started | shipped default flips `manual` → `auto`; scorecard public with the release |
@@ -71,6 +75,7 @@ Append one dated line as each phase's definition of done is met (local commits r
 phase plan are the work trail).
 
 - 2026-10-21: Phase 0 (scaffold) definition of done met locally: workspace, config scope stack, trust store, credentials lookup, tracing facade, eval runner and seed dataset, docs tree; the CI matrix run and private vulnerability reporting are human steps.
+- 2026-10-21: Phase 1 (model layer + headless) definition of done met locally: rig pinned, config accounts → provider clients with `<account>/<model>` resolution and discovery, `fontaine auth login`, `fontaine -p` with the versioned headless contract and JSON Schema, micromegas and OTLP telemetry backends, provider/headless/telemetry docs; the offline gates (fmt, clippy, tests, deny, eval fixture runs) are green.
 
 ## Design docs
 
@@ -220,6 +225,8 @@ carries the reasoning:
 
 ## Decisions
 
+- 2026-10-21: Headless `stream-json` event names (`init`, `assistant`, `assistant_delta`, `tool_call`, `gate_decision`, `tool_result`, `result`) are Fontaine's own versioned schema — flat typed events — not Claude Code's SDK message shape; flags and `result` subtypes match Claude Code. Reason: one flat, JSON-Schema-validated contract consumed by the eval runner.
+- 2026-10-21: No external approval delegate (`--permission-prompt-tool`) in v1; every headless would-prompt outcome is Deny (Claude Code supports the delegate). Reason: an external delegate would be a second, ungated approval path around the deterministic floor and guardian.
 - 2026-10-21: Multi-account model registry, following opencode: named `[accounts.<name>]`, models addressed `<account>/<model>`, one rig client per account; replaces `[model] provider`/`base_url`. Reason: user requirement; Claude Code has no analogous design point.
 - 2026-10-21: Unknown config keys and sections are a config error (exit 2) (Claude Code ignores them): a misspelled `[permisions]` must not silently drop deny rules.
 - 2026-10-21: Permission rules naming an unknown tool are a config error (exit 2), not a warning (Claude Code warns): a mistyped deny rule must fail loudly rather than silently protect nothing.
@@ -255,6 +262,9 @@ carries the reasoning:
 - 2026-10-21 (user): Typed-decision screeners (Jev, Laya, DiffusionGemma) are deferred to the screening-tier roadmap; thresholds are always recalibrated on Fontaine's golden set (vendor defaults over-escalate: 17/21 wrong escalations at 0.85/0.6).
 - 2026-10-21 (user): Guardian tree accepted as design direction — strictest-wins composition, fail-closed between tiers, per-domain subtrees, benchmarked tiers only; v1 ships the deterministic+LLM spine; one tree serves the whole agent tree.
 - 2026-10-21 (user): The plan is split into this master tracker plus one plan per phase under `tasks/phases/`, each ending in a docs step; all documentation lives under `docs/`.
+- 2026-10-21: Phase 1 implementation choices that refine the design docs: the OTLP backend uses `opentelemetry-otlp`'s `reqwest-blocking-client` (the SDK's batch processors run on their own threads, outside tokio; exporters are built before the runtime); the micromegas span bridge never calls `init_thread_stream` itself, since micromegas keeps a raw pointer to every thread stream and a thread that exits without unregistering would leave it dangling for its flush monitor — the runtime callbacks and the main-thread guard supply the streams; events are exported from the `fontaine::telemetry` target only (rig's event targets carry request and response bodies at trace level) while spans are exported from all four allowlisted targets; the `fontaine.interaction` span is adopted by rig as the agent span, so no separate `invoke_agent` span appears; exported span fields outside a fixed content-free set are treated as content (unknown `gen_ai.*`/`rig.*` fields are dropped unless their opt-in key covers them) and source locations and thread names are not exported; the micromegas sink is built without its host-identifying default properties.
+- 2026-10-21: Deviation — without `--max-turns` a headless turn is capped at 1000 model calls (Claude Code is unbounded); reason: rig requires a bound and a looping model should not run forever. `--max-budget-usd` is checked between model calls: the call that crosses the cap stops the run before its tool calls execute, and an answer already complete is kept.
+- 2026-10-21: An `openai-compatible` account with no credential source sends no `Authorization` header (the gateway dialect uses optional bearer auth), so local servers that reject a bare `Bearer` header work.
 - 2026-10-21: The eval runner is the workspace bin + lib crate `rust/fontaine-evals` (like `fontaine`: logic in `src/lib.rs`, thin `src/main.rs`, so integration tests can import it); the dataset stays in `evals/dataset/` as JSONL.
 - 2026-10-21: Fontaine never spawns `git` for project-local trust classification or ledger capture; `gix` (exact pin, default features off) reads tracked/ignored status and remotes, and no `.git` or a `gix` error ⇒ project scope and no remotes; reason: repo-controlled git config can execute commands.
 - 2026-10-21: Audit `args_digest` canonicalizes with exact-pinned `serde_jcs` (RFC 8785).

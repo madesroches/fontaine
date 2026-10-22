@@ -107,7 +107,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
 
 ## Files created or modified
 
-`rust/Cargo.toml` (new crates: `ratatui =0.30.2`, `crossterm =0.29.0`, `brush-parser =0.4.0`, `toml_edit =0.25.17`, `sha2 =0.11.1` (audit `args_digest`), `serde_jcs =0.2.0` (args canonicalization)); `rust/fontaine-core/src/{permissions,permission_rules,audit}.rs`; `.github/workflows/ci.yml` (adds the `--guardian none` eval step on all three OSes); `rust/fontaine-evals/src/baseline.rs`; `rust/fontaine-evals/tests/{baseline,none_mode}.rs`;
+`rust/Cargo.toml` (new crates: dev `rig-cassette =0.45.0` (features `http`, `agent`), `ratatui =0.30.2`, `crossterm =0.29.0`, `brush-parser =0.4.0`, `toml_edit =0.25.17`, `sha2 =0.11.1` (audit `args_digest`), `serde_jcs =0.2.0` (args canonicalization)); `rust/fontaine-core/src/{permissions,permission_rules,audit}.rs`; `.github/workflows/ci.yml` (adds the `--guardian none` eval step on all three OSes); `rust/fontaine-evals/src/baseline.rs`; `rust/fontaine-evals/tests/{baseline,none_mode}.rs`;
 `rust/fontaine-tools/src/preclassify.rs`; `rust/fontaine/tests/cassettes.rs` (manual-mode cassette, built in step 4; the auto-mode cassette is added in Phase 4);
 `rust/fontaine-tui/src/{app,transcript,approval,statusbar}.rs`; tests under `rust/fontaine-core/tests/`,
 `rust/fontaine/tests/`, `rust/fontaine-tui/tests/`;

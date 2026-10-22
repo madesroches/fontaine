@@ -56,11 +56,32 @@ pub enum ConfigError {
     Telemetry {
         message: String,
     },
+    /// A model reference or account that cannot be resolved: unknown account or model, no
+    /// main model, a missing credential.
+    Model {
+        message: String,
+    },
+    /// A command line or input that cannot be acted on.
+    Usage {
+        message: String,
+    },
 }
 
 impl ConfigError {
     pub fn exit_code(&self) -> u8 {
         CONFIG_EXIT_CODE
+    }
+
+    pub fn model(message: impl Into<String>) -> Self {
+        ConfigError::Model {
+            message: message.into(),
+        }
+    }
+
+    pub fn usage(message: impl Into<String>) -> Self {
+        ConfigError::Usage {
+            message: message.into(),
+        }
     }
 
     pub(crate) fn invalid(path: &Path, key: impl Into<String>, message: impl Into<String>) -> Self {
@@ -117,6 +138,7 @@ impl fmt::Display for ConfigError {
                 "cannot determine the {what} directory; set {var} to a directory"
             ),
             ConfigError::Telemetry { message } => write!(f, "invalid [telemetry]: {message}"),
+            ConfigError::Model { message } | ConfigError::Usage { message } => f.write_str(message),
         }
     }
 }
@@ -1075,6 +1097,14 @@ struct Layer {
 }
 
 pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
+    let config = load_unresolved(params)?;
+    resolve_telemetry(&config.telemetry, params)?;
+    Ok(config)
+}
+
+/// Every check `load` makes except the telemetry ingestion key, which `auth login --telemetry`
+/// must be able to supply.
+pub fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
     let workspace = std::fs::canonicalize(params.launch_dir).map_err(|source| ConfigError::Io {
         path: params.launch_dir.to_path_buf(),
         source,
@@ -1173,7 +1203,6 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
         config.apply(settings);
     }
 
-    resolve_telemetry(&config.telemetry, params)?;
     Ok(config)
 }
 

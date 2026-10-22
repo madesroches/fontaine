@@ -175,7 +175,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
 
 ## Files created or modified
 
-`rust/Cargo.toml` (direct `rmcp` pin); `rust/fontaine-mcp/src/{lib,servers,register}.rs`; `rust/fontaine-agents/src/{lib,spawn,registry,budget,runner,ledger_view}.rs`;
+`rust/Cargo.toml` (`rig-rmcp =0.45.0`; direct `rmcp` pin); `rust/fontaine-mcp/src/{lib,servers,register}.rs`; `rust/fontaine-agents/src/{lib,spawn,registry,budget,runner,ledger_view}.rs`;
 `rust/fontaine-core/src/{session,user_hooks,extensions,child_runner}.rs`; `rust/fontaine-tools/src/skill.rs`;
 `rust/fontaine-tui/src/{agents_panel,trust_prompt}.rs`;
 `docs/{mcp,agents,hooks,extensions,tui,configuration,architecture,headless,telemetry,index}.md`.

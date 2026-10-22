@@ -6,13 +6,56 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+default = ["telemetry-micromegas", "telemetry-otlp"]
+telemetry-micromegas = ["dep:micromegas-tracing", "dep:micromegas-telemetry-sink"]
+telemetry-otlp = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry-appender-tracing",
+    "dep:tracing-opentelemetry",
+]
+
 [dependencies]
 clap.workspace = true
 dirs.workspace = true
 fontaine-core.workspace = true
 fontaine-tui.workspace = true
+futures.workspace = true
+micromegas-telemetry-sink = { workspace = true, optional = true }
+micromegas-tracing = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry-appender-tracing = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+rig-agent.workspace = true
+rig-core.workspace = true
+rpassword.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
 tracing.workspace = true
+tracing-opentelemetry = { workspace = true, optional = true }
 tracing-subscriber.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
+jsonschema.workspace = true
+micromegas-tracing.workspace = true
+micromegas-transit.workspace = true
+opentelemetry-proto.workspace = true
+prost.workspace = true
+rig-core = { workspace = true, features = ["test-utils"] }
+rig-agent = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true
+tokio.workspace = true
+wiremock.workspace = true
+
+[[test]]
+name = "telemetry_micromegas"
+required-features = ["telemetry-micromegas"]
+
+[[test]]
+name = "telemetry_otlp"
+required-features = ["telemetry-otlp"]

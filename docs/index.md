@@ -8,7 +8,12 @@ describe what the current build does; each page covers one topic.
 - [Architecture](architecture.md): the workspace layout, what each crate is responsible for, and
   how the pieces depend on each other.
 - [Configuration](configuration.md): every settings key, the settings scope stack and its merge
-  rules, workspace trust, where files live, and the command-line flags that affect configuration.
+  rules, workspace trust, model accounts, where files live, and the command-line flags that affect
+  configuration.
+- [Headless runs](headless.md): `fontaine -p`, its flags, exit codes, and the versioned JSON output
+  that CI and the eval runner consume.
+- [Telemetry](telemetry.md): enabling export, the micromegas and OTLP backends, what is exported,
+  and the privacy defaults.
 
 ## Evaluating the guardian
 

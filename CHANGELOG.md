@@ -20,3 +20,17 @@ All notable changes are recorded here. The format follows
 - Documentation tree under `docs/`, root README, contributing guide and security policy.
 - GitHub Actions CI on Linux, macOS and Windows: format, clippy, tests, `cargo deny` and the offline
   eval runs.
+- Model layer: `[accounts.<name>]` mapped to rig provider clients (Anthropic, OpenAI, Gemini,
+  Ollama, OpenAI-compatible endpoints), `<account>/<model>` resolution with model discovery,
+  credentials from an environment variable or the stored-credentials file, and
+  `fontaine auth login [--telemetry]`.
+- Headless surface `fontaine -p` with `--output-format text|json|stream-json`,
+  `--input-format stream-json`, `--include-partial-messages`, `--max-turns`, `--max-budget-usd`,
+  `--json-schema`, `--system-prompt`, `--append-system-prompt`, `--model` and `--permission-mode`;
+  exit codes 0, 1 and 2; the output is a versioned contract with a JSON Schema in
+  `docs/schemas/headless-v1.schema.json`.
+- Telemetry backends: micromegas (native span trees) and OTLP/HTTP, with token and cost metrics,
+  an `api_request` event, a target allowlist, opt-in content that is redacted and truncated, and a
+  capped flush on exit.
+- Documentation: model accounts and provider examples, headless runs, telemetry, and a README
+  quickstart.
