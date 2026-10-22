@@ -59,6 +59,10 @@ pub enum Record {
         tool: String,
         agent: String,
     },
+    /// A directory added to the workspace roots after the session started.
+    AddDir {
+        root: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

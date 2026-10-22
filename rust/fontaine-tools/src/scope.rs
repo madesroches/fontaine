@@ -81,6 +81,30 @@ impl Scope {
         &self.roots
     }
 
+    /// This scope with one more root; `root` must already be canonical.
+    pub fn with_root(&self, root: PathBuf) -> Scope {
+        Scope::new(
+            self.roots[0].clone(),
+            self.roots[1..].iter().cloned().chain([root]),
+        )
+    }
+
+    /// `path` resolved the way the file tools open it (symlinks followed, `..` folded), whether
+    /// or not it lies inside a root. A path with no meaning on this platform stays as written.
+    pub fn resolved(&self, path: &str) -> PathBuf {
+        match translate(path, cfg!(windows)) {
+            Some(translated) => resolve(Some(self.primary()), &translated),
+            None => PathBuf::from(path),
+        }
+    }
+
+    /// `path` joined to the primary root and folded lexically, without following symlinks: the
+    /// path as the model wrote it.
+    pub fn written(&self, path: &str) -> PathBuf {
+        let translated = translate(path, cfg!(windows)).unwrap_or_else(|| path.to_string());
+        fold(&self.primary().join(translated))
+    }
+
     /// The root that holds `path`, and the path resolved the way the file tools open it.
     pub fn find(&self, path: &str) -> Result<(usize, PathBuf), ScopeError> {
         let out = || ScopeError::OutOfScope(path.to_string());
@@ -157,6 +181,24 @@ impl Scope {
         };
         Ok(Located { root, args })
     }
+}
+
+/// `.` and `..` components folded away without touching the file system.
+pub fn fold(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(component);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// A path the primary root's instance would read differently from the way it was resolved:

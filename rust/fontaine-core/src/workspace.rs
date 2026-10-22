@@ -14,6 +14,8 @@ pub struct Roots {
 pub enum RootSource {
     Flag,
     Settings,
+    /// `/add-dir` in the TUI.
+    Command,
 }
 
 impl RootSource {
@@ -21,6 +23,7 @@ impl RootSource {
         match self {
             RootSource::Flag => "--add-dir",
             RootSource::Settings => "[permissions] additional_directories in the settings",
+            RootSource::Command => "/add-dir",
         }
     }
 }

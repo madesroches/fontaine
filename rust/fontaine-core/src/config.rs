@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::credentials;
-use crate::permission_rules::{Rule, RuleError, parse_rule, validate_mcp_name};
+use crate::permission_rules::{RuleError, RuleSource, SourcedRule, parse_rule, validate_mcp_name};
 use crate::trust::{self, LocalClassification, ProjectDemotion};
 use fontaine_tools::names::{is_builtin, is_mcp};
 
@@ -188,6 +188,19 @@ pub enum PermissionMode {
     DontAsk,
     #[serde(rename = "auto")]
     Auto,
+}
+
+impl PermissionMode {
+    /// The name the mode has in settings, on the command line and in every event.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PermissionMode::Manual => "manual",
+            PermissionMode::AcceptEdits => "acceptEdits",
+            PermissionMode::Plan => "plan",
+            PermissionMode::DontAsk => "dontAsk",
+            PermissionMode::Auto => "auto",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -756,9 +769,9 @@ pub struct Guardian {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Permissions {
     pub default_mode: PermissionMode,
-    pub deny: Vec<Rule>,
-    pub ask: Vec<Rule>,
-    pub allow: Vec<Rule>,
+    pub deny: Vec<SourcedRule>,
+    pub ask: Vec<SourcedRule>,
+    pub allow: Vec<SourcedRule>,
     pub additional_directories: Vec<String>,
 }
 
@@ -921,7 +934,7 @@ impl Config {
 
     /// Applies one layer on top of what is already merged: scalars override, lists union,
     /// named table entries are replaced whole, map-valued keys merge per key.
-    fn apply(&mut self, s: &Settings) {
+    fn apply(&mut self, s: &Settings, slot: Slot) {
         for (name, account) in s.accounts.iter().flatten() {
             self.accounts.insert(name.clone(), account.clone());
         }
@@ -963,9 +976,10 @@ impl Config {
             if let Some(v) = p.default_mode {
                 t.default_mode = v;
             }
-            union_rules(&mut t.deny, p.deny.as_deref());
-            union_rules(&mut t.ask, p.ask.as_deref());
-            union_rules(&mut t.allow, p.allow.as_deref());
+            let source = RuleSource::Config(slot);
+            union_rules(&mut t.deny, p.deny.as_deref(), source);
+            union_rules(&mut t.ask, p.ask.as_deref(), source);
+            union_rules(&mut t.allow, p.allow.as_deref(), source);
             union(
                 &mut t.additional_directories,
                 p.additional_directories.as_deref(),
@@ -1063,10 +1077,13 @@ fn union<T: PartialEq + Clone>(target: &mut Vec<T>, items: Option<&[T]>) {
     }
 }
 
-fn union_rules(target: &mut Vec<Rule>, items: Option<&[String]>) {
+fn union_rules(target: &mut Vec<SourcedRule>, items: Option<&[String]>, source: RuleSource) {
     for text in items.unwrap_or_default() {
         // `validate_values` already parsed every rule of every layer before any is applied.
-        let rule = parse_rule(text).expect("rule validated before merge");
+        let rule = SourcedRule::new(
+            parse_rule(text).expect("rule validated before merge"),
+            source,
+        );
         if !target.contains(&rule) {
             target.push(rule);
         }
@@ -1076,11 +1093,20 @@ fn union_rules(target: &mut Vec<Rule>, items: Option<&[String]>) {
 /// Looks up an environment variable by name; only the binary reads the real environment.
 pub type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<OsString>;
 
+/// Permission rules given on the command line (`--allowed-tools`, `--disallowed-tools`). They
+/// load as the CLI scope's `permissions.allow` and `permissions.deny`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CliRules<'a> {
+    pub allow: &'a [String],
+    pub deny: &'a [String],
+}
+
 pub struct LoadParams<'a> {
     pub launch_dir: &'a Path,
     pub config_dir: &'a Path,
     pub data_dir: &'a Path,
     pub settings_file: Option<&'a Path>,
+    pub cli_rules: CliRules<'a>,
     pub env: EnvLookup<'a>,
 }
 
@@ -1148,6 +1174,31 @@ pub fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
             Some(parse_settings(&text, path, Column::Cli)?)
         }
     };
+    let flag_rules = !params.cli_rules.allow.is_empty() || !params.cli_rules.deny.is_empty();
+    let cli = if flag_rules {
+        let mut settings = cli.unwrap_or_default();
+        let permissions = settings.permissions.get_or_insert_with(Default::default);
+        for (flag, from, into) in [
+            (
+                "--allowed-tools",
+                params.cli_rules.allow,
+                &mut permissions.allow,
+            ),
+            (
+                "--disallowed-tools",
+                params.cli_rules.deny,
+                &mut permissions.deny,
+            ),
+        ] {
+            for text in from {
+                parse_rule(text).map_err(|e| ConfigError::usage(format!("{flag}: {e}")))?;
+                into.get_or_insert_with(Vec::new).push(text.clone());
+            }
+        }
+        Some(settings)
+    } else {
+        cli
+    };
 
     let layers = [
         Layer {
@@ -1184,13 +1235,14 @@ pub fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
         loaded: false,
     });
     for layer in &layers {
-        if layer.slot == Slot::Cli && cli_path.is_none() {
+        let flags_only = layer.slot == Slot::Cli && cli_path.is_none();
+        if flags_only && !flag_rules {
             continue;
         }
         config.scopes.push(ScopeEntry {
             slot: layer.slot,
             column: Some(layer.column),
-            path: Some(layer.path.clone()),
+            path: (!flags_only).then(|| layer.path.clone()),
             loaded: layer.settings.is_some(),
         });
     }
@@ -1200,7 +1252,7 @@ pub fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
             continue;
         };
         phase_gate(settings, layer)?;
-        config.apply(settings);
+        config.apply(settings, layer.slot);
     }
 
     Ok(config)

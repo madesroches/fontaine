@@ -65,6 +65,7 @@ pub fn scope(primary: &Path, added: &[&Path]) -> Arc<Scope> {
 pub fn env_with(scope: Arc<Scope>, gate: Arc<dyn ToolGate>) -> BuiltinEnv {
     BuiltinEnv {
         scope,
+        seen: Default::default(),
         guard: Guard {
             gate,
             results: Arc::new(ResultPipeline::new()),

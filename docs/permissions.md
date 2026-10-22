@@ -1,0 +1,157 @@
+# Permissions
+
+Every tool call crosses one permission pipeline before the tool runs. The pipeline decides from
+structured facts about the call (the tool, its risk class, the parsed shell command, the resolved
+paths), never from a pattern over raw arguments. A denial goes back to the model as the tool
+result and the run goes on.
+
+## Modes
+
+The session mode is set by `[permissions] default_mode` or `--permission-mode`, and in the
+terminal UI Shift+Tab cycles it. The default is `manual`.
+
+| Mode | What happens to a call nothing pre-approved |
+|---|---|
+| `manual` | The human is asked. |
+| `acceptEdits` | `write` and `edit` inside the workspace roots run; everything else asks. |
+| `plan` | No edit ever runs: `write` and `edit` are blocked outright. Other consequential calls ask. |
+| `dontAsk` | Denied. Only calls that are pre-approved run. |
+| `auto` | Not available yet. Selecting it, by flag or setting, is a usage error (exit code 2). |
+
+There is no bypass mode. The deterministic floor below applies in every mode, and no mode, flag or
+allow rule reaches past it. In a headless run (`fontaine -p`) nothing can ask, so every call that
+would ask is denied instead; see [Headless runs](headless.md#denials).
+
+## The pipeline
+
+A call goes through these steps in order and the first one that decides wins.
+
+1. **Hooks.** Pre-tool-use hooks may deny, ask, allow or rewrite the call's arguments; every later
+   step judges the rewritten call. Deny beats ask beats allow. A hook that fails, times out or
+   answers something unreadable decides nothing. No hook is configurable in this build; the slot
+   exists and is tested.
+2. **The deterministic floor**, in this order:
+   - a `[permissions] deny` rule: denied.
+   - in `plan`, an edit tool: blocked.
+   - an `ask` rule (or a hook's ask): asks.
+   - **critical path**: a `shell` command that removes the file system root, a top-level
+     directory, your home directory, a workspace root or a parent of one asks. The command is
+     parsed with a real shell parser, and every `rm` and `rmdir` word in any segment of a list,
+     pipe or substitution is inspected. A target that cannot be resolved (a variable, a glob, a
+     tilde, a brace pattern), a command that does not parse, and an `rm` inside a command that is
+     not one simple command all count as critical.
+   - **protected path**: `write` and `edit` on a path with a component named `.git`, `.vscode`,
+     `.idea`, `.husky` or `.fontaine`, or whose file name is `.gitconfig`, `.gitmodules`,
+     `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc` or `.mcp.json`,
+     in any workspace root or the home directory, asks. Matching is on resolved path components,
+     so separators and, on Windows, case do not matter.
+
+   A floor outcome that asks is a denial in `dontAsk` and in headless runs.
+3. **Read-only fast path.** A read-only tool (`read`, `ls`, `glob`, `grep`) whose paths all
+   resolve inside a workspace root runs. Symlinks are resolved first. The label alone earns
+   nothing: a path outside the roots does not qualify.
+4. **Shell pre-classifier**, below.
+5. **Allow rules**, below.
+6. **The mode**, as in the table above.
+
+Every decision is appended to the audit log (`<data dir>/audit/<session id>.jsonl`, readable by
+the current user only) before anything else sees it: the time, session, agent and tool-call ids,
+the tool, a SHA-256 digest of the arguments (never the arguments), the `tier` that decided, the
+`decision` (`allow`, `deny` or `prompt`), the rule and its source, and the latency. A human's
+answer to a prompt adds a second record with `tier = human`. The same record is projected to the
+`tool_decision` telemetry event and to the headless `gate_decision` event, so the three agree.
+The `tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
+`read_only_fast_path`, `tier05`, `allow_rule`, `mode`, `guardian`, `dont_ask`, `plan_block` and
+`human`.
+
+## Rules
+
+`[permissions] deny`, `ask` and `allow` (and `--disallowed-tools` / `--allowed-tools`) share one
+grammar: `Tool` or `Tool(specifier)`. A bare tool name matches every call of the tool.
+
+| Tool | Specifier | Matches |
+|---|---|---|
+| `shell` | words, optionally ending in ` *`: `shell(git push)`, `shell(npm run test *)` | the parsed command line; quoting keeps a word whole; no wildcard inside a word |
+| `read`, `edit`, `write`, `ls`, `glob`, `grep` | a gitignore-style path pattern: `src/**`, `~/.aws/**`, `//etc/hosts` | the resolved path; relative patterns anchor at each workspace root, `~/` at your home, `//` at the file system root |
+| `webfetch` | `domain:example.com` or `domain:*.example.com` | the URL's host; `*.` matches subdomains only |
+| `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | none | the registered tool name |
+| `agent`, `skill` | the agent type or skill name | exact name |
+| `send_message` | none | the tool name |
+
+Deny and ask rules fail toward matching; allow rules fail toward not matching:
+
+- A `shell` deny or ask rule matches when its words appear contiguously anywhere in the parsed
+  command, so `shell(git push)` also stops `ls && git push` and `sudo git push -f`. A command that
+  does not parse, or that puts an expansion where the command name goes, matches every rule whose
+  first word it contains.
+- A `shell` allow rule matches only one simple command whose words are all literal and whose words
+  equal the rule (or start with it, for a trailing ` *`). Chains, pipes, redirections,
+  substitutions, globs and variables never match. Per-subcommand rules as Claude Code has them are
+  not offered.
+- Path deny and ask rules match the path as written and the resolved path, so a symlink into a
+  denied path is denied. Path allow rules match only the resolved path, so an allow on a symlinked
+  alias does not apply.
+- A `webfetch` never follows a redirect to another host: the redirect is returned to the model and
+  a follow-up fetch is judged on its own host.
+
+An invalid rule is a configuration error (exit code 2) naming the file and key. Rules from the
+shared project file may only tighten (`deny`, `ask`); `allow` comes from the user file, an
+untracked `settings.local.toml` and the command line. The audit log and the `gate_decision` event
+name the scope that contributed a rule, for example `shell(rm) [user]`.
+
+### Allow rules
+
+An allow rule acts after the floor and never past it: a deny, ask, critical-path or protected-path
+outcome stands whatever allow says, and `plan` still blocks edits. A matching allow rule skips the
+prompt in `manual` and `acceptEdits` and pre-approves in `dontAsk`. When `auto` ships it will
+suspend broad code-execution allow rules (a bare `shell` or `agent`, and `shell(<entry>)` or
+`shell(<entry> *)` for `sh`, `bash`, `zsh`, `python`, `python3`, `node`, `ruby`, `perl`, `deno`,
+`bun`, `cargo run`, `npm run`, `npx`, `pnpm`, `yarn`, `make`, `eval`, `exec`, `xargs`, `env` and
+`sudo`) while it is on; narrower rules such as `shell(npm test)` stay.
+
+The approval prompt can create allow rules:
+
+- **Allow once** runs this call.
+- **Allow session** adds the rule shown in the prompt for the rest of the session. It is recorded
+  in the session ledger and never written to disk.
+- **Always allow** appends the same rule to `[permissions] allow` in your user settings file,
+  keeping the file's comments and layout, and applies it at once.
+
+The proposed rule is the narrowest that covers the call: the exact command words for `shell`, the
+resolved absolute path for a file tool, the host for `webfetch`. Prompts that the floor forced, and
+`shell` calls that are not one literal simple command, offer only allow once and deny, because no
+allow rule can act there.
+
+## The shell pre-classifier
+
+A small set of read-only commands runs without a prompt when the call is one simple command made of
+literal words, parsed by a real shell parser, with every path inside the workspace roots. The
+call's `cwd` is resolved first, and a `cwd` outside the roots disqualifies the call. Anything not
+fully understood falls through to the next step: a chain, pipe, redirection, background marker,
+substitution, variable, tilde, glob, brace pattern or assignment prefix.
+
+| Command | Allowed flags | Values checked as in-scope paths |
+|---|---|---|
+| `ls` | `-a -A -l -h -1 -d -t -r -S -F` | positionals |
+| `pwd` | none | |
+| `wc` | `-l -w -c -m` | positionals |
+| `file` | `-b -i --mime --mime-type --brief -m FILE --magic-file FILE` | positionals and the `-m` value |
+| `cat` | `-n -b -s` | positionals |
+| `head`, `tail` | `-n N -c N -q -v` | positionals |
+| `rg` | `-i -s -S -n -N -H -w -x -F -v -c -l -A N -B N -C N -m N -t TYPE -T TYPE --hidden --no-heading -f FILE --file FILE --ignore-file FILE` | positionals and file values |
+| `grep` | `-i -n -v -w -x -F -E -c -l -L -H -h -o -q -s -r -A N -B N -C N -f FILE --file FILE` | positionals and file values |
+
+Any other flag, any `--flag=value` whose flag is not listed, and any short-flag cluster with an
+unlisted letter falls through. `ls -la` is accepted as `-l -a`. A value-taking short flag takes an
+attached value (`-n5`) or, as the last letter of a cluster, the next word (`-nA 3`). Numbers must
+parse as integers. Excluded on purpose: `tail -f`, `file -f`, `rg --pre`, `rg -z`, `rg -L`,
+`rg -g`, `grep -R` and `grep --exclude-from`, because they run programs, follow links or read
+indirectly. No `git` subcommand is in the set, because repository configuration can make a
+read-only subcommand run a program.
+
+`[shell_preclassifier] allow_extra` adds commands to the set: a command (`make`) or a `command
+subcommand` pair (`cargo metadata`). It is accepted from user-trust scopes only, an extra entry
+takes no flags (any flag falls through), and its positional words must be in-scope paths. A grant
+from the prompt never extends the set.
+
+A pre-classified call is audited with `tier = tier05`.

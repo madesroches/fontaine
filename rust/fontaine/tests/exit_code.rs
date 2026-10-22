@@ -48,20 +48,47 @@ fn stderr(out: &Output) -> String {
 }
 
 #[test]
-fn a_clean_start_exits_zero() {
+fn an_interactive_start_with_no_terminal_is_a_usage_error() {
     let s = Sandbox::new();
     let out = s.run(&[]);
-    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    assert!(out.stdout.is_empty() && out.stderr.is_empty());
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(out.stdout.is_empty());
+    assert!(
+        stderr(&out).contains("needs a terminal"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 #[test]
-fn a_valid_settings_overlay_exits_zero() {
+fn a_valid_settings_overlay_is_accepted() {
     let s = Sandbox::new();
     let file = s.work.join("extra.toml");
     write(&file, "[permissions]\ndefault_mode = \"plan\"\n");
     let out = s.run(&["--settings", file.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    // Past config loading, the start ends at the missing terminal.
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("needs a terminal"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn auto_is_refused_by_the_interactive_start_as_it_is_by_print() {
+    let s = Sandbox::new();
+    let interactive = s.run(&["--permission-mode", "auto"]);
+    let headless = s.run(&["-p", "--permission-mode", "auto", "hello"]);
+    for out in [&interactive, &headless] {
+        assert_eq!(out.status.code(), Some(2), "{}", stderr(out));
+        assert!(
+            stderr(out).contains("`--permission-mode auto` is not available"),
+            "{}",
+            stderr(out)
+        );
+    }
+    assert_eq!(stderr(&interactive), stderr(&headless));
 }
 
 #[test]

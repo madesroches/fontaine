@@ -51,3 +51,6 @@ jobs:
 
       - name: Eval fixture run (minimal profile)
         run: cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture --profile minimal
+
+      - name: Eval pipeline run (no guardian)
+        run: cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none

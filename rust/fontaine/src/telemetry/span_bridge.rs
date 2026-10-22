@@ -150,6 +150,21 @@ impl<E: Export> SpanBridge<E> {
                         .to_string(),
                 )],
             }),
+            "fontaine.permission" => {
+                if let (Some(tier), Some(decision)) =
+                    (lookup(fields, "tier"), lookup(fields, "decision"))
+                {
+                    self.export.metric(Metric {
+                        name: "fontaine.tool_decision.count",
+                        unit: "{decision}",
+                        value: MetricValue::Int(1),
+                        attrs: vec![
+                            ("tier", tier.to_string()),
+                            ("decision", decision.to_string()),
+                        ],
+                    });
+                }
+            }
             "fontaine.interaction" => {
                 let prompt_id = lookup(fields, "prompt.id").unwrap_or_default();
                 let length = count(fields, "prompt.length").unwrap_or(0);
@@ -329,6 +344,7 @@ mod tests {
             config_dir: dir.path(),
             data_dir: dir.path(),
             settings_file: None,
+            cli_rules: Default::default(),
             env: &|_| None,
         })
         .unwrap();
@@ -447,6 +463,40 @@ mod tests {
         });
         assert!(recorder.0.lock().unwrap().is_empty());
         assert!(capture.events().is_empty());
+    }
+
+    #[test]
+    fn a_permission_span_counts_its_decision() {
+        let (recorder, _capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(
+                target: TARGET,
+                "fontaine.permission",
+                tool_name = "shell",
+                tier = Empty,
+                decision = Empty,
+            );
+            span.record("tier", "tier05");
+            span.record("decision", "allow");
+            let _ = tracing::info_span!(target: TARGET, "fontaine.permission", tool_name = "x");
+        });
+        let metrics = recorder.0.lock().unwrap();
+        let counts: Vec<_> = metrics
+            .iter()
+            .filter(|(name, _, _)| name == "fontaine.tool_decision.count")
+            .collect();
+        assert_eq!(counts.len(), 1, "a span with no decision counts nothing");
+        assert_eq!(counts[0].1, 1.0);
+        assert!(
+            counts[0]
+                .2
+                .contains(&("tier".to_string(), "tier05".to_string()))
+        );
+        assert!(
+            counts[0]
+                .2
+                .contains(&("decision".to_string(), "allow".to_string()))
+        );
     }
 
     #[test]

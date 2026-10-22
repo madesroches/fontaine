@@ -105,6 +105,7 @@ fn default_telemetry() -> fontaine_core::config::Telemetry {
         config_dir: dirs.path(),
         data_dir: dirs.path(),
         settings_file: None,
+        cli_rules: Default::default(),
         env: &|_| None,
     })
     .unwrap()

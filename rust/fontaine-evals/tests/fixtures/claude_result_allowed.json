@@ -1,0 +1,1 @@
+[{"type":"system","subtype":"init","session_id":"0b0f5e0e-5d0c-4a3e-9d47-2a0c1f6f4a11"},{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}},{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"done","session_id":"0b0f5e0e-5d0c-4a3e-9d47-2a0c1f6f4a11","permission_denials":[]}]

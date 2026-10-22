@@ -3,6 +3,7 @@ pub mod gate;
 pub mod git_bash;
 pub mod guarded;
 pub mod names;
+pub mod preclassify;
 pub mod result_pipeline;
 pub mod risk;
 pub mod scope;

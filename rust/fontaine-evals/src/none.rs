@@ -1,0 +1,104 @@
+//! `--guardian none`: pipeline cases through the real `PermissionPipeline`, with nobody to ask.
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use fontaine_core::audit::AuditLog;
+use fontaine_core::config::{PermissionMode, Slot};
+use fontaine_core::gate::{SessionState, StateParams};
+use fontaine_core::ledger::Ledger;
+use fontaine_core::permission_rules::{RuleSource, SourcedRule, parse_rule};
+use fontaine_core::permissions::{DenyAll, PermissionPipeline, PipelineParams};
+use fontaine_tools::gate::{CallView, ROOT_AGENT, ToolGate};
+use fontaine_tools::risk::{RiskClass, builtin_risk};
+
+use crate::case::{Case, MaterializeError, materialize};
+
+/// What the pipeline decided first for one case.
+pub enum Outcome {
+    Decided {
+        decision: String,
+        tier: String,
+        latency_ms: u64,
+    },
+    Skipped(String),
+}
+
+fn sourced(rules: &[String]) -> Result<Vec<SourcedRule>, String> {
+    rules
+        .iter()
+        .map(|r| {
+            parse_rule(r)
+                .map(|rule| SourcedRule::new(rule, RuleSource::Config(Slot::User)))
+                .map_err(|e| e.to_string())
+        })
+        .collect()
+}
+
+/// The first decision record is the one scored: a prompt scores `prompt` even though the
+/// approver then answers deny.
+pub async fn decide(case: &Case) -> Result<Outcome, String> {
+    let scratch = tempfile::tempdir().map_err(|e| format!("scratch directory: {e}"))?;
+    let base = scratch
+        .path()
+        .canonicalize()
+        .map_err(|e| format!("scratch directory: {e}"))?;
+    let root = base.join("workspace");
+    let home = base.join("home");
+    let data = base.join("data");
+    for dir in [&root, &home, &data] {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let cwd = match materialize(case.workspace.as_ref(), &root) {
+        Ok(cwd) => cwd,
+        Err(MaterializeError::Skip(why)) => return Ok(Outcome::Skipped(why)),
+        Err(MaterializeError::Io(e)) => return Err(e),
+    };
+    let cwd = cwd.canonicalize().map_err(|e| e.to_string())?;
+
+    let permissions = case.permissions.clone().unwrap_or_default();
+    let session_id = format!("eval-{}", case.id);
+    let ledger = Ledger::create(&data).map_err(|e| format!("ledger: {e}"))?;
+    let audit = AuditLog::create(&data, &session_id).map_err(|e| format!("audit log: {e}"))?;
+    let state = Arc::new(SessionState::new(StateParams {
+        session_id,
+        mode: case.mode.unwrap_or(PermissionMode::Manual),
+        scope: Arc::new(fontaine_tools::scope::Scope::new(cwd, [])),
+        deny: sourced(&permissions.deny)?,
+        ask: sourced(&permissions.ask)?,
+        allow: sourced(&permissions.allow)?,
+        ledger: Arc::new(ledger),
+        audit: Arc::new(audit),
+        home: Some(home),
+    }));
+    let pipeline = PermissionPipeline::new(PipelineParams {
+        state: state.clone(),
+        approver: Arc::new(DenyAll),
+        headless: false,
+        hooks: Vec::new(),
+        allow_extra: permissions.allow_extra,
+        user_config: None,
+    });
+
+    let risk = builtin_risk(&case.tool).unwrap_or(RiskClass::Arbitrary);
+    let started = Instant::now();
+    pipeline
+        .check(CallView {
+            tool: &case.tool,
+            risk,
+            args: &case.args,
+            agent: ROOT_AGENT,
+        })
+        .await;
+    let latency_ms = started.elapsed().as_millis() as u64;
+    let first = state
+        .feed()
+        .await
+        .try_next()
+        .ok_or("the pipeline recorded no decision")?;
+    Ok(Outcome::Decided {
+        decision: first.decision.as_str().to_string(),
+        tier: first.tier.as_str().to_string(),
+        latency_ms,
+    })
+}

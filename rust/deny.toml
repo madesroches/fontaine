@@ -1,5 +1,9 @@
 [advisories]
 version = 2
+ignore = [
+    # Reached only through rig-cassette's test-only replay server (httpmock); never in the shipped binary.
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml via httpmock in dev-only rig-cassette" },
+]
 
 [licenses]
 version = 2

@@ -7,10 +7,11 @@ use std::sync::Arc;
 
 use rig_core::completion::ToolAnnotations;
 use rig_core::tool::{DynamicTool, Tool, ToolContext, ToolExecutionError, args_schema};
+pub use rig_tools::Seen;
 use rig_tools::process::Launcher;
 use rig_tools::{
-    Edit, List, ListArgs, MAX_FILES, MAX_MATCHES, OutputLimit, Read, Search, SearchArgs, Seen,
-    Shell, Write,
+    Edit, List, ListArgs, MAX_FILES, MAX_MATCHES, OutputLimit, Read, Search, SearchArgs, Shell,
+    Write,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -238,6 +239,9 @@ pub fn shell_for(root: &Path, settings: &ShellSettings) -> Shell {
 
 pub struct BuiltinEnv {
     pub scope: Arc<Scope>,
+    /// Read-before-edit tracking shared by every `read` and `edit` instance. Passing the same
+    /// one again when the registry is rebuilt keeps what the model has already read.
+    pub seen: Seen,
     pub guard: Guard,
     pub shell: ShellSettings,
     pub webfetch: WebfetchConfig,
@@ -270,7 +274,7 @@ fn register<T: Tool + 'static>(guarded: GuardedTool<T>) -> Registered {
 pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, reqwest::Error> {
     let scope = &env.scope;
     let guard = &env.guard;
-    let seen = Seen::default();
+    let seen = env.seen.clone();
     Ok(vec![
         register(GuardedTool::per_root(
             scope.clone(),

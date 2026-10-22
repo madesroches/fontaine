@@ -105,6 +105,7 @@ pub struct OtlpExport {
     tokens: Counter<u64>,
     cost: Counter<f64>,
     sessions: Counter<u64>,
+    decisions: Counter<u64>,
 }
 
 impl Export for OtlpExport {
@@ -118,6 +119,7 @@ impl Export for OtlpExport {
             ("fontaine.token.usage", MetricValue::Int(v)) => self.tokens.add(v, &attrs),
             ("fontaine.cost.usage", MetricValue::Float(v)) => self.cost.add(v, &attrs),
             ("fontaine.session.count", MetricValue::Int(v)) => self.sessions.add(v, &attrs),
+            ("fontaine.tool_decision.count", MetricValue::Int(v)) => self.decisions.add(v, &attrs),
             _ => {}
         }
     }
@@ -203,6 +205,10 @@ where
         sessions: meter
             .u64_counter("fontaine.session.count")
             .with_unit("{session}")
+            .build(),
+        decisions: meter
+            .u64_counter("fontaine.tool_decision.count")
+            .with_unit("{decision}")
             .build(),
     };
 

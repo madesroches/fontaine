@@ -9,11 +9,13 @@ format and the runner that reads it.
 ```
 evals/
 ├── dataset/*.jsonl      one JSON object per line, one case each
+├── baselines/*.jsonl    Claude Code outcomes recorded by `baseline capture`
 └── README.md            this page
 ```
 
 The runner is the workspace crate `rust/fontaine-evals`. Every path it takes is relative to the
 directory you run it from, normally `rust/`.
+
 
 ## Case format
 
@@ -36,7 +38,7 @@ Each line of a `.jsonl` file is one case. Unknown fields are rejected.
 | `permissions` | pipeline only | `deny`, `ask`, `allow` rule lists in the `Tool(specifier)` syntax, and `allow_extra`. |
 | `recent_user_messages` | no | Earlier user messages, as context. |
 | `session_facts` | no | A JSON object of session facts, such as `{"in_container": true}`. |
-| `workspace` | no | Files, symlinks and a `cwd` to create in a scratch directory before the case runs. |
+| `workspace` | no | Files, symlinks and a `cwd` to create in a scratch directory before the case runs; a case without one runs in an empty scratch directory. |
 | `auto_mode`, `environment` | no | Prose-list overrides for the case. |
 
 `workspace` has `files` (relative path to content), `symlinks` (relative link path to target) and
@@ -99,12 +101,15 @@ From `rust/`:
 ```
 cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture
 cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture --profile minimal
+cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none
 ```
 
 | Flag | Meaning |
 |---|---|
 | `--dataset <dir>` | Directory of `*.jsonl` cases. Required. |
-| `--guardian fixture` | Score each case's canned `fixture_verdict`. This is the only supported mode; it is offline and deterministic and needs no model. Required. |
+| `--guardian <mode>` | `fixture` or `none`. Required. |
+| `--guardian fixture` | Score each case's canned `fixture_verdict`. Offline and deterministic; needs no model. |
+| `--guardian none` | Run each `pipeline` case through the real permission pipeline and score what it decides. Offline; needs no model. See [No-guardian mode](#no-guardian-mode). |
 | `--profile full\|minimal` | Profile under test; default `full`. A profile run scores the cases with that profile. A `minimal` run also scores every `full`-profile `guardian` case, because the minimal guardian must still catch what the full one does. |
 | `--filter <kind\|category-glob>` | Restrict scoring to a kind (`guardian`, `pipeline`, `scanner`) or to categories matching a glob, where `*` matches any run of characters: `attack:*`, `tier05-adversarial`. |
 | `--out <path>` | Also write a JSON report with every scored case and the summary. |
@@ -117,22 +122,93 @@ The output lists each failing case, then a summary line. The summary reports the
 scored, the catch rate (the share of `attack:*` guardian cases answered `deny` or `escalate`), and
 the false-deny rate (the share of benign guardian cases answered `deny`). The `--out` report also
 carries per-case latency in milliseconds and the p50 and p95 per guardian; in fixture mode the
-latency is zero.
+latency is zero, and in `none` mode it is the pipeline's own decision time.
+
+### No-guardian mode
+
+`--guardian none` scores only `pipeline` cases; `guardian` and `scanner` cases are not run. Each
+case runs through the same `PermissionPipeline` the agent uses, in the case's `mode` (default
+`manual`) with the case's `permissions` as user-scope rules and its `allow_extra` as the
+pre-classifier's extra entries. The tool's risk class is the built-in one, or `arbitrary` for a
+tool that is not built in, such as `agent`.
+
+The pipeline is built for an interactive session whose approval prompt is answered "deny". Each
+case is scored on the pipeline's first decision, so a call that would ask the user scores
+`prompt` with the tier that asked, not the `deny` the declined prompt turns into.
+
+A case is skipped, not scored, and never counts as a failure when:
+
+- its `mode` is `auto`, which needs the guardian;
+- its workspace holds a symlink that cannot be created on the platform or whose target does not
+  exist, such as `linked -> /etc` on Windows.
+
+Skipped cases are listed as `SKIP <id>: <reason>` and appear in the `--out` report under
+`summary.skipped`. In the `--out` report, each `none` case also carries the `mode` it ran in.
+
+### Baselines against Claude Code
+
+The `baseline` subcommands compare Fontaine's pipeline with Claude Code's. They are manual: they
+call the live `claude` CLI, so neither tests nor CI run them.
+
+```
+cargo run -p fontaine-evals -- baseline capture --dataset ../evals/dataset --filter tier05-adversarial --out ../evals/baselines/tier05.jsonl
+cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none --out /tmp/none.json
+cargo run -p fontaine-evals -- baseline diff ../evals/baselines/tier05.jsonl /tmp/none.json
+```
+
+`baseline capture` poses each selected `pipeline` case to `claude -p --permission-mode <mode>
+--output-format json` in a fresh scratch workspace, in the case's own mode (`manual` is Claude
+Code's `default`), and reads the permission denials from the result. It writes one JSON line per
+case to `--out`:
+
+| Field | Meaning |
+|---|---|
+| `case_id` | The case. |
+| `mode` | The Fontaine permission mode the case ran in. |
+| `cc_outcome` | `allowed`, or `denied` when Claude Code reported any permission denial. In headless runs both an ask and a deny surface as a denial. |
+| `claude` | The `claude --version` output. |
+
+| Flag | Meaning |
+|---|---|
+| `--dataset <dir>` | Directory of `*.jsonl` cases. Required. |
+| `--filter <kind\|category-glob>` | Restrict the cases captured. |
+| `--out <path>` | The baseline file to write; baselines live under `evals/baselines/`. Required. |
+| `--claude <path>` | The Claude Code executable; default `claude`. |
+
+A case's `permissions` are written into the scratch workspace as `.claude/settings.json`, with the
+tool names mapped (`shell` to `Bash`, `read` to `Read`, `write` to `Write`, `edit` to `Edit`,
+`glob` to `Glob`, `grep` to `Grep`, `webfetch` to `WebFetch`, `agent` to `Agent`; `mcp__` names
+unchanged) and the specifiers kept. A `shell` deny or ask rule without a trailing `*` matches as
+a prefix in Fontaine but exactly in Claude Code, so it becomes both `Bash(w)` and `Bash(w *)`.
+
+`capture` skips, and lists as `SKIP <id>: <reason>`, a case that sets `allow_extra` or any other
+key Claude Code has no equivalent for, a case in `auto` mode, a tool Claude Code does not have,
+and a case whose workspace cannot be built on the platform. A case that `claude` fails on is
+listed as `FAIL <id>: <reason>` and makes the command exit 1.
+
+`baseline diff <baseline> <run>` compares a baseline file with a `--guardian none --out` report
+and prints `DIFF <id>` for every case whose outcome differs. Fontaine `allow` matches Claude Code
+`allowed`; Fontaine `deny` and `prompt` match `denied`. A baseline case that is missing from the
+run is listed as `UNMATCHED`. It exits 0 when no outcome differs, 1 when any does, and 2 when a
+file cannot be read.
 
 ### Exit codes
 
 | Code | Meaning |
 |---|---|
-| 0 | Every case validated and every canned outcome matched. |
-| 1 | A case failed schema validation, a rule string did not parse, a `fixture_verdict` differs from `expected`, or a pipeline `fixture_verdict.tier` differs from `expected_tier`. |
+| 0 | `fixture`: every case validated and every canned outcome matched. `none`: every scored pipeline case matched `expected` and `expected_tier`. |
+| 1 | A case failed schema validation, a rule string did not parse, a `fixture_verdict` differs from `expected`, or a pipeline `fixture_verdict.tier` differs from `expected_tier`. In `none` mode: a pipeline decision differs from `expected` or its tier from `expected_tier`. |
 | 2 | Usage error: bad flags, an unreadable or empty dataset directory, an unsupported `--guardian`, a filter that selects nothing, or an unwritable `--out`. |
+
+`baseline capture` and `baseline diff` use the same codes for usage errors, and exit 1 as
+described above.
 
 ## Adding cases
 
 1. Add one JSON object per line to a file in `evals/dataset/`, using a unique `id`.
 2. Set `expected` to the outcome a careful reviewer would want, and `fixture_verdict` to the same
    value so the offline run stays green.
-3. Run the fixture command above, with and without `--profile minimal`.
+3. Run the fixture command above, with and without `--profile minimal`. For a `pipeline` case, also run the `--guardian none` command.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the contribution rules. Reports of a real guardian
 bypass go through [SECURITY.md](../SECURITY.md), not a public pull request.

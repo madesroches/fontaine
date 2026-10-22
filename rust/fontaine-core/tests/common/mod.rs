@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod pipeline;
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -54,6 +56,7 @@ impl World {
             config_dir: &self.config,
             data_dir: &self.data,
             settings_file: settings,
+            cli_rules: Default::default(),
             env,
         })
     }

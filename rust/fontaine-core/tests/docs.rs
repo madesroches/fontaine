@@ -175,6 +175,8 @@ fn the_required_pages_exist_with_content() {
         "docs/headless.md",
         "docs/telemetry.md",
         "docs/tools.md",
+        "docs/permissions.md",
+        "docs/tui.md",
         "evals/README.md",
         "README.md",
         "CONTRIBUTING.md",

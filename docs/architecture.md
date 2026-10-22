@@ -10,12 +10,12 @@ directly under `rust/`. The repository root holds only `rust/`, `evals/`, `docs/
 fontaine/
 ├── rust/
 │   ├── fontaine/            binary and library: command line, headless runs, tracing and telemetry export
-│   ├── fontaine-core/       configuration, trust, credentials, model accounts, permission rules, sessions, session ledger, system prompt
-│   ├── fontaine-tools/      built-in tools, risk classes, workspace scope check, the gate seam and tool wrapper
+│   ├── fontaine-core/       configuration, trust, credentials, model accounts, the permission pipeline and rules, audit log, agent setup and turn runner, sessions, session ledger, system prompt
+│   ├── fontaine-tools/      built-in tools, risk classes, workspace scope check, shell parsing and pre-classifier (preclassify), the gate seam and tool wrapper
 │   ├── fontaine-guardian/   guardian vocabulary; kept free of Fontaine dependencies
 │   ├── fontaine-agents/     subagent orchestration (skeleton)
 │   ├── fontaine-mcp/        MCP server wiring (skeleton)
-│   ├── fontaine-tui/        terminal UI (skeleton)
+│   ├── fontaine-tui/        terminal UI
 │   └── fontaine-evals/      eval runner: binary and library
 ├── evals/                   golden dataset (JSONL) and its format documentation
 ├── docs/                    product documentation, one topic per page
@@ -27,18 +27,19 @@ fontaine/
 
 | Crate | Responsibility today |
 |---|---|
-| `fontaine` | The `fontaine` binary. `main.rs` is thin; `lib.rs` parses the command line, resolves the directories, loads configuration, installs the tracing subscriber and opens the `fontaine.session` span. `headless.rs` runs `fontaine -p`, drives the agent and prints the versioned output described in [Headless runs](headless.md); `auth.rs` is `fontaine auth login`. `src/telemetry/` is the only place a subscriber is built, and holds the two export backends described in [Telemetry](telemetry.md). |
-| `fontaine-core` | The settings scope stack (`config`), config and data directory resolution (`dirs`), the `Tool(specifier)` permission rule syntax (`permission_rules`), the workspace trust store (`trust`), the credentials file (`credentials`: lookup and the `auth login` writer), owner-only file creation (`owner_only`), the permission decision tier enum (`tier`), and the model layer (`models`): config accounts mapped to provider clients and `<account>/<model>` references resolved to model handles. It also holds the session (`session`: the model context store and its compaction), the session ledger (`ledger`), the system prompt (`prompt`), the workspace roots (`workspace`), the permission gate (`gate`) and the wrapped tool registry (`tools`). |
-| `fontaine-tools` | The built-in tools and their risk classes, the workspace scope check, the gate interface and the wrapper that puts every tool behind it, the result pipeline and the built-in tool names that rules and agent toolsets may refer to. It depends on no other Fontaine crate. |
+| `fontaine` | The `fontaine` binary. `main.rs` is thin; `lib.rs` parses the command line, resolves the directories, loads configuration, installs the tracing subscriber and opens the `fontaine.session` span. `headless.rs` maps the core turn runner's events to the versioned output described in [Headless runs](headless.md) for `fontaine -p`; `auth.rs` is `fontaine auth login`. `src/telemetry/` is the only place a subscriber is built, and holds the two export backends described in [Telemetry](telemetry.md). |
+| `fontaine-core` | The settings scope stack (`config`), config and data directory resolution (`dirs`), the `Tool(specifier)` permission rule syntax (`permission_rules`), the workspace trust store (`trust`), the credentials file (`credentials`: lookup and the `auth login` writer), owner-only file creation (`owner_only`), the permission decision tier enum (`tier`), and the model layer (`models`): config accounts mapped to provider clients and `<account>/<model>` references resolved to model handles. It also holds the permission pipeline (`permissions`, with the floor checks in `floor`), the audit log (`audit`), the shared session state (`gate`), the session (`session`: the model context store and its compaction), the session ledger (`ledger`), the system prompt (`prompt`), the workspace roots (`workspace`), the wrapped tool registry (`tools`), and the agent setup and turn runner that headless and the terminal UI share (`agent`, `turn`). |
+| `fontaine-tools` | The built-in tools and their risk classes, the workspace scope check, shell parsing and the Tier-0.5 pre-classifier (`preclassify`), the gate interface and the wrapper that puts every tool behind it, the result pipeline and the built-in tool names that rules and agent toolsets may refer to. It depends on no other Fontaine crate. |
 | `fontaine-guardian` | The `RuleLabel` enum: the fixed label set a guardian verdict can carry. It has no dependencies, so other harnesses can embed it. |
-| `fontaine-agents`, `fontaine-mcp`, `fontaine-tui` | Skeleton crates that reserve their place in the dependency graph. |
-| `fontaine-evals` | Loads and validates the golden dataset and scores canned verdicts against the expected outcomes. |
+| `fontaine-tui` | The terminal UI: transcript, input, approval prompts and the status bar, driven by the core turn runner. See [The terminal UI](tui.md). |
+| `fontaine-agents`, `fontaine-mcp` | Skeleton crates that reserve their place in the dependency graph. |
+| `fontaine-evals` | Loads and validates the golden dataset, scores canned verdicts, runs `pipeline` cases through the real permission pipeline, and captures and diffs Claude Code baselines. |
 
 ## Dependencies between crates
 
 ```
 fontaine          -> fontaine-core, fontaine-tools, fontaine-tui
-fontaine-evals    -> fontaine-core, fontaine-guardian
+fontaine-evals    -> fontaine-core, fontaine-guardian, fontaine-tools
 fontaine-tui      -> fontaine-core
 fontaine-core     -> fontaine-tools, fontaine-guardian, fontaine-mcp, fontaine-agents
 fontaine-mcp      -> fontaine-tools
@@ -55,8 +56,7 @@ There are no cycles. `fontaine-tools` never depends on `fontaine-core`.
 
 - `fontaine auth login` stores a credential and exits.
 - `fontaine -p "task"` runs the task headless; see [Headless runs](headless.md).
-- Without `-p` it starts and exits with code 0; the interactive terminal UI is not part of this
-  build.
+- Without `-p` it starts the terminal UI; see [The terminal UI](tui.md).
 
 The steps of a run:
 
@@ -108,9 +108,42 @@ pipeline before the model sees it:
    ls  read  glob  grep  write  edit  shell  webfetch
 ```
 
-A deny goes back to the model as the tool result and the run goes on. The registry is built once
-per session; each file tool and `shell` has one confined instance per workspace root, and
-`webfetch` has one. See [Tools](tools.md).
+A deny goes back to the model as the tool result and the run goes on. The registry is built at
+session start (and rebuilt between turns by `/add-dir`); each file tool and `shell` has one confined
+instance per workspace root, and `webfetch` has one. See [Tools](tools.md).
+
+## The permission pipeline
+
+The gate is the permission pipeline. It reads the session state (mode, workspace scope, rules and
+grants, which the terminal UI can change between calls), decides, and writes one audit record per
+decision before anything else sees it:
+
+```
+ tool call
+    |
+    v
+ 1. hooks (deny / ask / allow / rewrite the arguments)
+ 2. floor: deny rule -> [plan: block edits] -> ask rule -> critical path -> protected path
+    |
+    v   (the floor can only ask or deny, in every mode)
+ 3. read-only fast path: read-only tool, every path inside a workspace root -> allow
+ 4. shell pre-classifier: one literal simple command of the curated set -> allow
+ 5. allow rules (user trust scopes, session grants, always-allow rules) -> allow
+ 6. the mode: manual / acceptEdits / plan ask, dontAsk denies
+    |
+    v
+ audit log -> tool_decision event -> gate_decision event / transcript
+```
+
+Asking is a call into an approval callback; headless runs and `dontAsk` turn every ask into a
+denial. [Permissions](permissions.md) describes each step.
+
+## Runs and the turn runner
+
+`fontaine-core` builds the agent for both surfaces (`agent`) and runs one user message to its end
+(`turn`), yielding typed events (assistant text, tool call, gate decision, tool result, usage) to
+a callback that may stop the run between model calls. Headless prints the events as JSON lines; the
+terminal UI renders them and answers approval prompts concurrently with the run.
 
 ## The session ledger
 
@@ -146,10 +179,12 @@ and `telemetry-otlp` features, both on by default.
 
 ## The eval runner
 
-`fontaine-evals` reads `evals/dataset/*.jsonl`, validates every case against the schema, and scores
-the canned `fixture_verdict` of each selected case against its `expected` outcome. It runs offline
-and needs no model and no guardian. The case format and the runner flags are documented in
-[evals/README.md](../evals/README.md).
+`fontaine-evals` reads `evals/dataset/*.jsonl` and validates every case against the schema. With
+`--guardian fixture` it scores the canned `fixture_verdict` of each selected case against its
+`expected` outcome; with `--guardian none` it runs the `pipeline` cases through the real permission
+pipeline (no guardian, non-`auto` modes) and scores the first decision. Both run offline. The
+`baseline capture` and `baseline diff` subcommands compare the pipeline with Claude Code. The case
+format and the runner flags are documented in [evals/README.md](../evals/README.md).
 
 ## Platforms
 

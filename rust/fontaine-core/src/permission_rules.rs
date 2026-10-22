@@ -1,9 +1,22 @@
+//! The `Tool(specifier)` rule grammar behind `[permissions] deny`, `ask` and `allow`: parsing,
+//! matching, and the narrowest rule that covers a call.
+//!
+//! Matching is structured and never a regex over raw arguments. Deny and ask fail toward
+//! matching, allow fails toward not matching.
+
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use fontaine_tools::names::{is_builtin, is_mcp};
+use fontaine_tools::preclassify::{ShellAnalysis, analyze};
+use fontaine_tools::scope::{Scope, glob_target};
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use serde_json::Value;
 
-/// A parsed `Tool` / `Tool(specifier)` rule. Specifier parsing and matching are not
-/// implemented here: apart from the shapes validated at parse time, a specifier is kept raw.
+use crate::config::Slot;
+
+/// A parsed `Tool` / `Tool(specifier)` rule. The specifier is kept as written; it is parsed
+/// again, per tool kind, wherever it is matched.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rule {
     pub tool: String,
@@ -16,6 +29,48 @@ impl fmt::Display for Rule {
             Some(spec) => write!(f, "{}({spec})", self.tool),
             None => f.write_str(&self.tool),
         }
+    }
+}
+
+/// Where a rule came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuleSource {
+    Config(Slot),
+    /// An "allow session" answer at an approval prompt.
+    Session,
+}
+
+impl RuleSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            RuleSource::Config(slot) => slot.label(),
+            RuleSource::Session => "session",
+        }
+    }
+}
+
+/// A rule together with the scope that contributed it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourcedRule {
+    pub rule: Rule,
+    pub source: RuleSource,
+}
+
+impl SourcedRule {
+    pub fn new(rule: Rule, source: RuleSource) -> SourcedRule {
+        SourcedRule { rule, source }
+    }
+
+    /// The rule text and its source, as the audit log records it: `shell(rm) [user]`.
+    pub fn label(&self) -> String {
+        format!("{} [{}]", self.rule, self.source.label())
+    }
+}
+
+/// Displays as the bare rule text.
+impl fmt::Display for SourcedRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.rule.fmt(f)
     }
 }
 
@@ -36,6 +91,8 @@ impl fmt::Display for RuleError {
 }
 
 impl std::error::Error for RuleError {}
+
+const PATH_TOOLS: [&str; 6] = ["read", "edit", "write", "ls", "glob", "grep"];
 
 pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
     let fail = |reason: &str| RuleError {
@@ -80,16 +137,31 @@ pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
         ));
     }
 
-    if tool == "webfetch"
-        && let Some(spec) = specifier
-    {
-        validate_domain_specifier(spec).map_err(|reason| fail(&reason))?;
+    if let Some(spec) = specifier {
+        validate_specifier(tool, spec).map_err(|reason| fail(&reason))?;
     }
 
     Ok(Rule {
         tool: tool.to_string(),
         specifier: specifier.map(str::to_string),
     })
+}
+
+fn validate_specifier(tool: &str, spec: &str) -> Result<(), String> {
+    match tool {
+        "shell" => shell_spec(spec).map(drop),
+        "webfetch" => validate_domain_specifier(spec),
+        "agent" | "skill" => {
+            if spec.trim() != spec || spec.contains(char::is_whitespace) {
+                Err(format!("`{tool}` rules take one name"))
+            } else {
+                Ok(())
+            }
+        }
+        "send_message" => Err("`send_message` rules take no specifier".to_string()),
+        _ if PATH_TOOLS.contains(&tool) => path_spec(spec).map(drop),
+        _ => Ok(()),
+    }
 }
 
 pub(crate) fn validate_mcp_name(name: &str) -> Result<(), String> {
@@ -118,17 +190,473 @@ pub(crate) fn validate_mcp_name(name: &str) -> Result<(), String> {
 }
 
 fn validate_domain_specifier(spec: &str) -> Result<(), String> {
+    domain_spec(spec).map(drop)
+}
+
+enum Domain<'a> {
+    Exact(&'a str),
+    Subdomains(&'a str),
+}
+
+fn domain_spec(spec: &str) -> Result<Domain<'_>, String> {
     let form = "webfetch rules take `domain:<host>` or `domain:*.<host>`".to_string();
     let Some(host) = spec.strip_prefix("domain:") else {
         return Err(form);
     };
-    let host = host.strip_prefix("*.").unwrap_or(host);
+    let (wild, host) = match host.strip_prefix("*.") {
+        Some(rest) => (true, rest),
+        None => (false, host),
+    };
     if host.is_empty()
         || host.contains(|c: char| c.is_whitespace() || matches!(c, '/' | ':' | '*' | '@'))
     {
         return Err(form);
     }
-    Ok(())
+    Ok(if wild {
+        Domain::Subdomains(host)
+    } else {
+        Domain::Exact(host)
+    })
+}
+
+struct ShellSpec {
+    words: Vec<String>,
+    /// A trailing ` *`: the rule matches any command that starts with `words`.
+    wildcard: bool,
+}
+
+fn shell_spec(spec: &str) -> Result<ShellSpec, String> {
+    if spec.trim() == "*" {
+        return Err("write the bare tool name `shell` to match every command".to_string());
+    }
+    let (body, wildcard) = match spec.strip_suffix(" *") {
+        Some(body) => (body, true),
+        None => (spec, false),
+    };
+    let words = analyze(body).simple.ok_or_else(|| {
+        "`shell` rules are one simple command of literal words, optionally ending in ` *`; \
+         quote a word to make a glob character literal"
+            .to_string()
+    })?;
+    Ok(ShellSpec { words, wildcard })
+}
+
+/// How a path pattern is anchored.
+#[derive(Debug, PartialEq, Eq)]
+enum Anchor {
+    /// Each workspace root.
+    Roots,
+    Home,
+    /// The file system root, or the drive named in the pattern.
+    Fs(Option<char>),
+}
+
+struct PathSpec {
+    anchor: Anchor,
+    matcher: Gitignore,
+}
+
+fn gitignore(line: &str) -> Result<Gitignore, String> {
+    let mut builder = GitignoreBuilder::new(".");
+    builder
+        .case_insensitive(cfg!(windows))
+        .map_err(|e| e.to_string())?;
+    builder.add_line(None, line).map_err(|e| e.to_string())?;
+    let matcher = builder.build().map_err(|e| e.to_string())?;
+    if matcher.num_ignores() != 1 {
+        return Err(
+            "the pattern matches nothing (a comment or a `!` negation); escape a leading `#` or `!` with `\\`"
+                .to_string(),
+        );
+    }
+    Ok(matcher)
+}
+
+fn path_spec(spec: &str) -> Result<PathSpec, String> {
+    let (anchor, line) = if let Some(rest) = spec.strip_prefix("//") {
+        let bytes = rest.as_bytes();
+        if bytes.len() >= 3
+            && bytes[1] == b':'
+            && bytes[0].is_ascii_alphabetic()
+            && matches!(bytes[2], b'/' | b'\\')
+        {
+            (
+                Anchor::Fs(Some(
+                    rest[..1].to_ascii_uppercase().chars().next().unwrap_or('C'),
+                )),
+                format!("/{}", &rest[3..]),
+            )
+        } else {
+            (Anchor::Fs(None), format!("/{rest}"))
+        }
+    } else if let Some(rest) = spec.strip_prefix("~/") {
+        (Anchor::Home, format!("/{rest}"))
+    } else {
+        (Anchor::Roots, spec.to_string())
+    };
+    Ok(PathSpec {
+        anchor,
+        matcher: gitignore(&line)?,
+    })
+}
+
+fn drive_of(path: &Path) -> Option<char> {
+    use std::path::{Component, Prefix};
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                Some((letter as char).to_ascii_uppercase())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn strip_root(path: &Path, root: &Path) -> Option<PathBuf> {
+    if cfg!(windows) {
+        let mut p = path.components();
+        for r in root.components() {
+            let c = p.next()?;
+            if !c
+                .as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&r.as_os_str().to_string_lossy())
+            {
+                return None;
+            }
+        }
+        Some(p.as_path().to_path_buf())
+    } else {
+        path.strip_prefix(root).ok().map(Path::to_path_buf)
+    }
+}
+
+impl PathSpec {
+    fn hits(&self, path: &Path, roots: &[PathBuf], home: Option<&Path>) -> bool {
+        let is_dir = path.is_dir();
+        let test = |rel: &Path| {
+            !rel.as_os_str().is_empty()
+                && self
+                    .matcher
+                    .matched_path_or_any_parents(rel, is_dir)
+                    .is_ignore()
+        };
+        match &self.anchor {
+            Anchor::Roots => roots
+                .iter()
+                .filter_map(|root| strip_root(path, root))
+                .any(|rel| test(&rel)),
+            Anchor::Home => home
+                .and_then(|home| strip_root(path, home))
+                .is_some_and(|rel| test(&rel)),
+            Anchor::Fs(drive) => {
+                let Some(root) = path.ancestors().last() else {
+                    return false;
+                };
+                if let Some(drive) = drive
+                    && drive_of(path) != Some(*drive)
+                {
+                    return false;
+                }
+                strip_root(path, root).is_some_and(|rel| test(&rel))
+            }
+        }
+    }
+}
+
+/// How a rule list is being used: deny and ask fail toward matching, allow toward not matching.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Posture {
+    Deny,
+    Ask,
+    Allow,
+}
+
+impl Posture {
+    fn lenient(self) -> bool {
+        self != Posture::Allow
+    }
+}
+
+/// What rule matching needs to know about a call.
+pub struct CallContext<'a> {
+    pub tool: &'a str,
+    pub args: &'a Value,
+    pub scope: &'a Scope,
+    pub home: Option<&'a Path>,
+}
+
+fn tool_matches(rule_tool: &str, name: &str) -> bool {
+    if rule_tool == name {
+        return true;
+    }
+    if !is_mcp(rule_tool) || !is_mcp(name) {
+        return false;
+    }
+    let rule_server = &rule_tool[fontaine_tools::names::MCP_TOOL_PREFIX.len()..];
+    let (server, tool) = match rule_server.split_once("__") {
+        Some((server, tool)) => (server, Some(tool)),
+        None => (rule_server, None),
+    };
+    let prefix = format!("{}{server}__", fontaine_tools::names::MCP_TOOL_PREFIX);
+    match tool {
+        None | Some("*") => name.starts_with(&prefix),
+        Some(_) => false,
+    }
+}
+
+/// Whether `rule` covers the call.
+pub fn matches(rule: &Rule, call: &CallContext<'_>, posture: Posture) -> bool {
+    if !tool_matches(&rule.tool, call.tool) {
+        return false;
+    }
+    let Some(spec) = rule.specifier.as_deref() else {
+        return true;
+    };
+    match call.tool {
+        "shell" => shell_matches(spec, call, posture),
+        "webfetch" => webfetch_matches(spec, call.args, posture),
+        "agent" => string_arg(call.args, "agent_type").is_some_and(|name| name == spec),
+        "skill" => string_arg(call.args, "name").is_some_and(|name| name == spec),
+        tool if PATH_TOOLS.contains(&tool) => path_matches(spec, call, posture),
+        _ => false,
+    }
+}
+
+fn string_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
+    args.get(key).and_then(Value::as_str)
+}
+
+fn shell_matches(spec: &str, call: &CallContext<'_>, posture: Posture) -> bool {
+    let Ok(spec) = shell_spec(spec) else {
+        return false;
+    };
+    let Some(command) = string_arg(call.args, "command") else {
+        // Nothing to compare: a deny/ask rule fails toward matching.
+        return posture.lenient();
+    };
+    let analysis = analyze(command);
+    if posture == Posture::Allow {
+        return analysis.simple.as_ref().is_some_and(|argv| {
+            if spec.wildcard {
+                argv.starts_with(&spec.words)
+            } else {
+                *argv == spec.words
+            }
+        });
+    }
+    prefix_anywhere(&analysis, &spec.words) || cannot_tell(&analysis, command, &spec.words)
+}
+
+/// The rule's words appear contiguously in some command's word stream. A word the shell
+/// expands never equals a rule word.
+fn prefix_anywhere(analysis: &ShellAnalysis, words: &[String]) -> bool {
+    analysis.commands.iter().any(|command| {
+        let literal: Vec<Option<&str>> =
+            command.words.iter().map(|w| w.literal.as_deref()).collect();
+        literal.windows(words.len()).any(|window| {
+            window
+                .iter()
+                .zip(words)
+                .all(|(have, want)| *have == Some(want.as_str()))
+        })
+    })
+}
+
+/// A command that cannot be read as a plain word stream (it failed to parse, hides something
+/// from the walk, or has an expanded word where the command name goes) matches every rule
+/// whose first word it contains.
+fn cannot_tell(analysis: &ShellAnalysis, command: &str, words: &[String]) -> bool {
+    let opaque = !analysis.parsed
+        || analysis.unanalyzed
+        || analysis
+            .commands
+            .iter()
+            .any(|c| c.words.first().is_some_and(|w| w.literal.is_none()));
+    opaque
+        && words
+            .first()
+            .is_some_and(|first| command.contains(first.as_str()))
+}
+
+fn webfetch_matches(spec: &str, args: &Value, posture: Posture) -> bool {
+    let Ok(domain) = domain_spec(spec) else {
+        return false;
+    };
+    let host = string_arg(args, "url")
+        .and_then(|url| url::Url::parse(url).ok())
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase));
+    let Some(host) = host else {
+        return posture.lenient();
+    };
+    match domain {
+        Domain::Exact(want) => host == want.to_ascii_lowercase(),
+        Domain::Subdomains(base) => {
+            let base = base.to_ascii_lowercase();
+            host.len() > base.len() + 1 && host.ends_with(&format!(".{base}"))
+        }
+    }
+}
+
+/// The path arguments of a file-tool call: the path as written and as the tool would open it,
+/// plus whether the tool works on a directory tree.
+struct PathArgs {
+    written: PathBuf,
+    resolved: PathBuf,
+    tree: bool,
+}
+
+fn path_args(call: &CallContext<'_>) -> Option<PathArgs> {
+    let scope = call.scope;
+    let from = |path: &str, tree: bool| PathArgs {
+        written: scope.written(path),
+        resolved: scope.resolved(path),
+        tree,
+    };
+    match call.tool {
+        "read" | "write" | "edit" => Some(from(string_arg(call.args, "path")?, false)),
+        "ls" | "grep" => Some(from(string_arg(call.args, "path").unwrap_or("."), true)),
+        "glob" => {
+            let pattern = string_arg(call.args, "pattern")?;
+            let (base, _) = glob_target(string_arg(call.args, "path"), pattern);
+            Some(from(&base, true))
+        }
+        _ => None,
+    }
+}
+
+fn path_matches(spec: &str, call: &CallContext<'_>, posture: Posture) -> bool {
+    let Ok(spec) = path_spec(spec) else {
+        return false;
+    };
+    let Some(paths) = path_args(call) else {
+        return posture.lenient();
+    };
+    let roots = call.scope.roots();
+    let test = |path: &Path| {
+        spec.hits(path, roots, call.home)
+            // A rule for `secrets/**` covers searching `secrets` itself.
+            || (paths.tree && spec.hits(&path.join("x"), roots, call.home))
+    };
+    match posture {
+        Posture::Allow => test(&paths.resolved),
+        _ => test(&paths.written) || test(&paths.resolved),
+    }
+}
+
+/// The rule that lets this one call run again and nothing wider, or `None` when no rule can
+/// say it (a shell command that is not one literal simple command).
+pub fn propose(call: &CallContext<'_>) -> Option<Rule> {
+    let spec = match call.tool {
+        "shell" => {
+            let argv = analyze(string_arg(call.args, "command")?).simple?;
+            Some(
+                argv.iter()
+                    .map(|word| shell_quote(word))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+        }
+        "webfetch" => {
+            let url = url::Url::parse(string_arg(call.args, "url")?).ok()?;
+            Some(format!("domain:{}", url.host_str()?.to_ascii_lowercase()))
+        }
+        "agent" => Some(string_arg(call.args, "agent_type")?.to_string()),
+        "skill" => Some(string_arg(call.args, "name")?.to_string()),
+        tool if PATH_TOOLS.contains(&tool) => Some(path_pattern(&path_args(call)?.resolved)),
+        tool if is_mcp(tool) || tool == "send_message" => None,
+        _ => return None,
+    };
+    let rule = Rule {
+        tool: call.tool.to_string(),
+        specifier: spec,
+    };
+    // Whatever is shown must parse back and cover the call it was proposed for.
+    let parsed = parse_rule(&rule.to_string()).ok()?;
+    matches(&parsed, call, Posture::Allow).then_some(parsed)
+}
+
+/// An absolute path as a pattern that matches exactly it: `//` for the file system root and
+/// gitignore escapes for characters that would otherwise be wildcards.
+fn path_pattern(path: &Path) -> String {
+    let text = if cfg!(windows) {
+        path.to_string_lossy().replace('\\', "/")
+    } else {
+        path.to_string_lossy().into_owned()
+    };
+    // Windows canonical paths are verbatim (`\\?\C:\...`).
+    let text = text.strip_prefix("//?/").unwrap_or(&text);
+    let body = text.strip_prefix('/').unwrap_or(text);
+    let mut out = String::from("//");
+    for c in body.chars() {
+        if matches!(c, '*' | '?' | '[' | ']' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    let trailing = out.len() - out.trim_end_matches(' ').len();
+    out.truncate(out.len() - trailing);
+    for _ in 0..trailing {
+        out.push_str("\\ ");
+    }
+    out
+}
+
+/// A word quoted so the shell reads it back as the same single word.
+fn shell_quote(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '_' | '-' | '.' | '/' | ',' | ':' | '@' | '%' | '+')
+        });
+    if plain {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
+/// Entries whose bare form, or form with more arguments (`<entry> *`), runs arbitrary code.
+/// `auto` suspends allow rules of this shape for as long as it is on; narrower rules such as
+/// `shell(npm test)` stay.
+pub const BROAD_CODE_EXECUTION: [&str; 21] = [
+    "sh",
+    "bash",
+    "zsh",
+    "python",
+    "python3",
+    "node",
+    "ruby",
+    "perl",
+    "deno",
+    "bun",
+    "cargo run",
+    "npm run",
+    "npx",
+    "pnpm",
+    "yarn",
+    "make",
+    "eval",
+    "exec",
+    "xargs",
+    "env",
+    "sudo",
+];
+
+/// Whether an allow rule is one `auto` suspends.
+pub fn is_broad_code_execution(rule: &Rule) -> bool {
+    match (rule.tool.as_str(), rule.specifier.as_deref()) {
+        ("shell" | "agent", None) => true,
+        ("shell", Some(spec)) => {
+            let body = spec.strip_suffix(" *").unwrap_or(spec);
+            let words: Vec<&str> = body.split_whitespace().collect();
+            BROAD_CODE_EXECUTION
+                .iter()
+                .any(|entry| entry.split(' ').eq(words.iter().copied()))
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -157,8 +685,8 @@ mod tests {
             Some("~/.aws/**")
         );
         assert_eq!(
-            ok("shell(echo (nested))").specifier.as_deref(),
-            Some("echo (nested)")
+            ok("shell(echo '(nested)')").specifier.as_deref(),
+            Some("echo '(nested)'")
         );
         assert_eq!(ok("shell(rm)").to_string(), "shell(rm)");
     }
@@ -203,6 +731,73 @@ mod tests {
             "shell)(",
         ] {
             assert!(parse_rule(rule).is_err(), "{rule:?}");
+        }
+    }
+
+    #[test]
+    fn specifiers_are_checked_per_tool() {
+        for rule in [
+            "shell(*)",
+            "shell(rm *.o)",
+            "shell(a; b)",
+            "shell(a | b)",
+            "shell($HOME/bin)",
+            "read(#comment)",
+            "read(!negated)",
+            "send_message(x)",
+            "agent(two words)",
+        ] {
+            assert!(parse_rule(rule).is_err(), "{rule}");
+        }
+        for rule in [
+            "shell(npm run test *)",
+            "shell(rm '*.o')",
+            "read(src/**)",
+            "read(//etc/hosts)",
+            "read(\\#literal)",
+            "edit(~/notes/*.md)",
+            "agent(worker)",
+            "skill(review)",
+            "send_message",
+        ] {
+            ok(rule);
+        }
+    }
+
+    #[test]
+    fn broad_code_execution_rules_are_recognized() {
+        for rule in [
+            "shell",
+            "agent",
+            "shell(bash)",
+            "shell(python *)",
+            "shell(cargo run *)",
+            "shell(sudo)",
+        ] {
+            assert!(is_broad_code_execution(&ok(rule)), "{rule}");
+        }
+        for rule in [
+            "shell(npm test)",
+            "shell(python script.py)",
+            "shell(cargo build)",
+            "read",
+            "shell(cargo run --release)",
+        ] {
+            assert!(!is_broad_code_execution(&ok(rule)), "{rule}");
+        }
+    }
+
+    #[test]
+    fn quoting_round_trips_through_the_shell_parser() {
+        for word in [
+            "plain", "a b", "it's", "*.rs", "$HOME", "", "a;b", "x=y", "~", "{a,b}",
+        ] {
+            let quoted = shell_quote(word);
+            assert_eq!(
+                analyze(&quoted).simple,
+                Some(vec![word.to_string()]),
+                "{word} -> {quoted}"
+            );
         }
     }
 }

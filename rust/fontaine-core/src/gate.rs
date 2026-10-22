@@ -1,95 +1,191 @@
-//! The permission decision for a tool call. This build ships a deny-by-default stub: it allows
-//! only a read-only call whose paths all lie inside the workspace roots, and only when no
-//! `deny` or `ask` rule names the tool. It matches no specifiers, so it over-denies rather than
-//! guess.
+//! What the permission pipeline knows about the session, shared by every wrapped tool and
+//! changed by the surfaces: the mode, the workspace scope, the rules and the grants live behind
+//! a lock so a change takes effect on the very next call.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, RwLock};
 
-use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
-use fontaine_tools::risk::RiskClass;
 use fontaine_tools::scope::Scope;
-use futures::future::BoxFuture;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::config::PermissionMode;
+use crate::audit::{AuditLog, DecisionRecord};
+use crate::config::{PermissionMode, Slot};
 use crate::ledger::{Ledger, Record};
-use crate::permission_rules::Rule;
+use crate::permission_rules::{Rule, RuleSource, SourcedRule};
 
-/// What the gate needs to know about the session, shared by every wrapped tool.
-pub struct SessionState {
+const TARGET: &str = "fontaine::telemetry";
+
+pub struct StateParams {
+    pub session_id: String,
     pub mode: PermissionMode,
     pub scope: Arc<Scope>,
-    pub deny: Vec<Rule>,
-    pub ask: Vec<Rule>,
-    pub allow: Vec<Rule>,
+    pub deny: Vec<SourcedRule>,
+    pub ask: Vec<SourcedRule>,
+    pub allow: Vec<SourcedRule>,
     pub ledger: Arc<Ledger>,
+    pub audit: Arc<AuditLog>,
+    /// The user's home directory, for `~/` rules and the critical-path check.
+    pub home: Option<PathBuf>,
 }
 
-pub struct StubGate {
-    state: Arc<SessionState>,
+/// The rules in force, as they stand now.
+#[derive(Clone, Debug, Default)]
+pub struct Rules {
+    pub deny: Vec<SourcedRule>,
+    pub ask: Vec<SourcedRule>,
+    /// Configured allow rules followed by the grants made during the session.
+    pub allow: Vec<SourcedRule>,
 }
 
-impl StubGate {
-    pub fn new(state: Arc<SessionState>) -> StubGate {
-        StubGate { state }
+struct Inner {
+    mode: PermissionMode,
+    scope: Arc<Scope>,
+    deny: Vec<SourcedRule>,
+    ask: Vec<SourcedRule>,
+    allow: Vec<SourcedRule>,
+}
+
+/// The receiving end of the decisions the pipeline makes; the turn runner drains it into its
+/// event stream.
+pub struct DecisionFeed {
+    rx: UnboundedReceiver<DecisionRecord>,
+}
+
+impl DecisionFeed {
+    pub async fn next(&mut self) -> Option<DecisionRecord> {
+        self.rx.recv().await
     }
 
-    fn named_by_a_rule(&self, tool: &str) -> bool {
-        self.state
-            .deny
-            .iter()
-            .chain(&self.state.ask)
-            .any(|rule| rule.tool == tool)
-    }
-
-    fn decide(&self, call: &CallView<'_>) -> GateDecision {
-        let tool = call.tool;
-        if self.named_by_a_rule(tool) {
-            return deny(format!(
-                "`{tool}` was denied: a permission rule in the settings names it. Do not retry \
-                 it; tell the user what you could not do."
-            ));
-        }
-        if call.risk != RiskClass::ReadOnly {
-            return deny(format!(
-                "`{tool}` was denied: only read-only tools inside the workspace roots can run \
-                 right now. Do not retry it or look for another route to the same effect; tell \
-                 the user what you could not do."
-            ));
-        }
-        match self.state.scope.locate(tool, call.args) {
-            Ok(_) => GateDecision::Allow {
-                args: call.args.clone(),
-            },
-            Err(e) => deny(format!(
-                "`{tool}` was denied: {e}. Read-only tools work inside the workspace roots only."
-            )),
-        }
+    pub fn try_next(&mut self) -> Option<DecisionRecord> {
+        self.rx.try_recv().ok()
     }
 }
 
-fn deny(message: String) -> GateDecision {
-    GateDecision::Deny { message }
+pub struct SessionState {
+    pub session_id: String,
+    pub ledger: Arc<Ledger>,
+    pub audit: Arc<AuditLog>,
+    pub home: Option<PathBuf>,
+    inner: RwLock<Inner>,
+    current_calls: Mutex<HashMap<String, String>>,
+    decisions: UnboundedSender<DecisionRecord>,
+    feed: tokio::sync::Mutex<DecisionFeed>,
 }
 
-impl ToolGate for StubGate {
-    fn check<'a>(&'a self, call: CallView<'a>) -> BoxFuture<'a, GateDecision> {
-        Box::pin(async move {
-            let decision = self.decide(&call);
-            let record = match &decision {
-                GateDecision::Allow { .. } => Record::Action {
-                    tool: call.tool.to_string(),
-                    agent: call.agent.to_string(),
-                },
-                GateDecision::Deny { message } => Record::Denial {
-                    tool: call.tool.to_string(),
-                    agent: call.agent.to_string(),
-                    reason: message.clone(),
-                },
-            };
-            if let Err(e) = self.state.ledger.append(record) {
-                tracing::warn!(error = %e, "the session ledger could not be written");
-            }
-            decision
-        })
+impl SessionState {
+    pub fn new(params: StateParams) -> SessionState {
+        let (decisions, rx) = unbounded_channel();
+        SessionState {
+            session_id: params.session_id,
+            ledger: params.ledger,
+            audit: params.audit,
+            home: params.home,
+            inner: RwLock::new(Inner {
+                mode: params.mode,
+                scope: params.scope,
+                deny: params.deny,
+                ask: params.ask,
+                allow: params.allow,
+            }),
+            current_calls: Mutex::new(HashMap::new()),
+            decisions,
+            feed: tokio::sync::Mutex::new(DecisionFeed { rx }),
+        }
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, Inner> {
+        self.inner.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, Inner> {
+        self.inner.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn mode(&self) -> PermissionMode {
+        self.read().mode
+    }
+
+    /// Switches the mode for the next call. The change is recorded in the ledger and reported
+    /// as a `permission_mode_changed` event; setting the mode it already has does neither.
+    pub fn set_mode(&self, to: PermissionMode) {
+        let from = std::mem::replace(&mut self.write().mode, to);
+        if from == to {
+            return;
+        }
+        self.append(Record::ModeChange {
+            from: from.as_str().to_string(),
+            to: to.as_str().to_string(),
+        });
+        tracing::info!(
+            target: TARGET,
+            from = from.as_str(),
+            to = to.as_str(),
+            "permission_mode_changed"
+        );
+    }
+
+    pub fn scope(&self) -> Arc<Scope> {
+        self.read().scope.clone()
+    }
+
+    pub fn set_scope(&self, scope: Arc<Scope>) {
+        self.write().scope = scope;
+    }
+
+    pub fn rules(&self) -> Rules {
+        let inner = self.read();
+        Rules {
+            deny: inner.deny.clone(),
+            ask: inner.ask.clone(),
+            allow: inner.allow.clone(),
+        }
+    }
+
+    /// Adds an allow rule that holds from the next call. An "allow session" answer uses
+    /// [`RuleSource::Session`]; an "always allow" answer, which is also written to the user's
+    /// settings file, the user scope.
+    pub fn grant(&self, rule: Rule, source: RuleSource) {
+        let rule = SourcedRule::new(rule, source);
+        let mut inner = self.write();
+        if !inner.allow.contains(&rule) {
+            inner.allow.push(rule);
+        }
+    }
+
+    /// The user-scope source a persisted "always allow" rule is labelled with.
+    pub const ALWAYS: RuleSource = RuleSource::Config(Slot::User);
+
+    pub fn append(&self, record: Record) {
+        if let Err(e) = self.ledger.append(record) {
+            tracing::warn!(error = %e, "the session ledger could not be written");
+        }
+    }
+
+    /// Notes which model tool call `agent` is executing, for the audit record. Tool calls run
+    /// one at a time, so one slot per agent is enough.
+    pub fn set_current_call(&self, agent: &str, call_id: String) {
+        self.current_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(agent.to_string(), call_id);
+    }
+
+    pub fn current_call(&self, agent: &str) -> Option<String> {
+        self.current_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(agent)
+            .cloned()
+    }
+
+    pub fn publish(&self, record: DecisionRecord) {
+        // No consumer is not an error: the audit log already holds the record.
+        let _ = self.decisions.send(record);
+    }
+
+    /// The decision feed. One consumer at a time holds it.
+    pub async fn feed(&self) -> tokio::sync::MutexGuard<'_, DecisionFeed> {
+        self.feed.lock().await
     }
 }

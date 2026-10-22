@@ -31,7 +31,7 @@ fn ledger(s: &Sandbox, session: &str) -> Vec<Value> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn write_and_shell_calls_come_back_as_denials_and_the_run_still_exits_zero() {
+async fn calls_that_would_prompt_come_back_as_denials_and_the_run_still_exits_zero() {
     let endpoint = Endpoint::start(
         Wire::Chat,
         vec![
@@ -61,8 +61,19 @@ async fn write_and_shell_calls_come_back_as_denials_and_the_run_still_exits_zero
 
     let last = result_of(&lines);
     assert_eq!(last["subtype"], "success");
-    assert_eq!(last["denials"], json!([]));
-    assert!(lines.iter().all(|l| l["type"] != "gate_decision"));
+    let denials = last["denials"].as_array().unwrap();
+    assert_eq!(denials.len(), 2);
+    assert_eq!(denials[0]["tool"], "write");
+    assert_eq!(denials[1]["tool"], "shell");
+    for denial in denials {
+        assert_eq!(denial["tier"], "mode");
+    }
+    let decisions: Vec<_> = lines
+        .iter()
+        .filter(|l| l["type"] == "gate_decision")
+        .collect();
+    assert_eq!(decisions.len(), 2);
+    assert!(decisions.iter().all(|d| d["decision"] == "deny"));
 
     // The model is told why, as the tool result.
     let requests = endpoint.requests().await;
