@@ -182,8 +182,8 @@ fn denied(tool: &str, why: &str) -> String {
     )
 }
 
-/// The file-tool calls a read-only shell command stands for: every word that could be a path
-/// (a flag's attached value too) as a `read` of it, and as the matching `ls`/`grep` when the
+/// The file-tool calls a read-only shell command stands for: every path the pre-classifier
+/// validated as a `read` of it, and as the matching `ls`/`grep` when the
 /// command is one. Words that are not paths only cause an extra look at the rules.
 fn ruled_hit<'a>(
     list: &'a [SourcedRule],
@@ -205,7 +205,12 @@ fn ruled_hit<'a>(
     })
 }
 
-fn ruled_read_calls(command: &str, cwd: Option<&str>, scope: &Scope) -> Vec<(&'static str, Value)> {
+fn ruled_read_calls(
+    command: &str,
+    paths: &[String],
+    cwd: Option<&str>,
+    scope: &Scope,
+) -> Vec<(&'static str, Value)> {
     let Some(argv) = analyze(command).simple else {
         return Vec::new();
     };
@@ -219,14 +224,7 @@ fn ruled_read_calls(command: &str, cwd: Option<&str>, scope: &Scope) -> Vec<(&'s
         _ => &["read"],
     };
     let mut calls = Vec::new();
-    for word in &argv[1..] {
-        let candidate = match word.strip_prefix("--").and_then(|w| w.split_once('=')) {
-            Some((_, value)) => value,
-            None => word,
-        };
-        if candidate.is_empty() || (candidate.starts_with('-') && candidate != "-") {
-            continue;
-        }
+    for candidate in paths {
         let path = base.join(candidate).to_string_lossy().into_owned();
         for tool in tools {
             calls.push((*tool, serde_json::json!({ "path": path })));
@@ -408,10 +406,10 @@ impl PermissionPipeline {
                 scope: &scope,
                 cwd: args.get("cwd").and_then(Value::as_str),
             };
-            if self.preclassifier.is_read_only(command, &env) {
+            if let Some(paths) = self.preclassifier.read_paths(command, &env) {
                 // The read-only commands read the paths they are given, so the file-read rules
                 // apply to those paths as they would to the read tool.
-                let reads = ruled_read_calls(command, env.cwd, &scope);
+                let reads = ruled_read_calls(command, &paths, env.cwd, &scope);
                 if let Some(rule) = ruled_hit(&rules.deny, &reads, &scope, home, Posture::Deny) {
                     return Verdict::Deny {
                         tier: Tier::DenyRule,

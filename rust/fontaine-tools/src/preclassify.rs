@@ -399,11 +399,27 @@ const RUNNERS: &[&str] = &[
     "watch", "flock", "script", "ssh",
 ];
 
+/// The program a command word names: directory (either separator) and a trailing `.exe` are
+/// dropped. A model can send Windows-style names to any host, so this never depends on the OS.
+/// An `.exe` name is also lowercased, since Windows resolves it case-insensitively.
+pub fn program_name(word: &str) -> std::borrow::Cow<'_, str> {
+    let name = word.rsplit(['/', '\\']).next().unwrap_or(word);
+    let stem_len = name.len().saturating_sub(4);
+    if name.len() > 4
+        && name.is_char_boundary(stem_len)
+        && name[stem_len..].eq_ignore_ascii_case(".exe")
+    {
+        std::borrow::Cow::Owned(name[..stem_len].to_ascii_lowercase())
+    } else {
+        std::borrow::Cow::Borrowed(name)
+    }
+}
+
 fn is_runner(words: &[ShellWord], at: usize) -> bool {
     let Some(text) = words[at].literal.as_deref() else {
         return false;
     };
-    let name = text.rsplit('/').next().unwrap_or(text);
+    let name = program_name(text);
     if name == "env" {
         // Only `env -S 'cmd args'` splits a string into a command; plain `env` takes an argv.
         return words[at + 1..].iter().any(|w| {
@@ -412,7 +428,7 @@ fn is_runner(words: &[ShellWord], at: usize) -> bool {
                 .is_some_and(|a| a.starts_with("-S") || a.starts_with("--split-string"))
         });
     }
-    RUNNERS.contains(&name)
+    RUNNERS.contains(&&*name)
 }
 
 fn has_brace_pattern(raw: &str) -> bool {
@@ -672,18 +688,22 @@ impl Preclassifier {
     /// Whether `command` is one simple command of the curated set (or an extra entry) that
     /// reads only inside the workspace roots. Anything not fully understood is `false`.
     pub fn is_read_only(&self, command: &str, env: &Environment<'_>) -> bool {
+        self.read_paths(command, env).is_some()
+    }
+
+    /// The path operands (positionals and path-valued flags, however attached) that
+    /// `is_read_only` checked against the workspace, as the command wrote them; `None` when the
+    /// command is not read-only.
+    pub fn read_paths(&self, command: &str, env: &Environment<'_>) -> Option<Vec<String>> {
         let analysis = analyze(command);
-        let Some(argv) = &analysis.simple else {
-            return false;
-        };
-        let Some(base) = env.base() else {
-            return false;
-        };
+        let argv = analysis.simple.as_ref()?;
+        let base = env.base()?;
         let name = argv[0].as_str();
+        let mut paths = Vec::new();
         if let Some(spec) = SPECS.iter().find(|s| s.command == name) {
-            return curated(spec, &argv[1..], env, &base);
+            return curated(spec, &argv[1..], env, &base, &mut paths).then_some(paths);
         }
-        self.extra.iter().any(|entry| {
+        let allowed = self.extra.iter().any(|entry| {
             if entry[0] != name {
                 return false;
             }
@@ -695,17 +715,35 @@ impl Preclassifier {
                 },
                 None => rest,
             };
-            rest.iter()
-                .all(|arg| !arg.starts_with('-') && env.in_scope(&base, arg))
-        })
+            let ok = rest
+                .iter()
+                .all(|arg| !arg.starts_with('-') && env.in_scope(&base, arg));
+            if ok {
+                paths.extend(rest.iter().cloned());
+            }
+            ok
+        });
+        allowed.then_some(paths)
     }
 }
 
-fn value_ok(kind: Val, value: &str, env: &Environment<'_>, base: &Path) -> bool {
+fn value_ok(
+    kind: Val,
+    value: &str,
+    env: &Environment<'_>,
+    base: &Path,
+    paths: &mut Vec<String>,
+) -> bool {
     match kind {
         Val::None => false,
         Val::Int => value.parse::<i64>().is_ok(),
-        Val::Path => !value.starts_with('-') && env.in_scope(base, value),
+        Val::Path => {
+            let ok = !value.starts_with('-') && env.in_scope(base, value);
+            if ok {
+                paths.push(value.to_string());
+            }
+            ok
+        }
         Val::Word => {
             !value.is_empty()
                 && value
@@ -716,7 +754,13 @@ fn value_ok(kind: Val, value: &str, env: &Environment<'_>, base: &Path) -> bool 
     }
 }
 
-fn curated(spec: &Spec, args: &[String], env: &Environment<'_>, base: &Path) -> bool {
+fn curated(
+    spec: &Spec,
+    args: &[String],
+    env: &Environment<'_>,
+    base: &Path,
+    paths: &mut Vec<String>,
+) -> bool {
     let mut i = 0;
     while i < args.len() {
         let arg = args[i].as_str();
@@ -725,6 +769,7 @@ fn curated(spec: &Spec, args: &[String], env: &Environment<'_>, base: &Path) -> 
             if !env.in_scope(base, arg) {
                 return false;
             }
+            paths.push(arg.to_string());
             continue;
         }
         if let Some(long) = arg.strip_prefix("--") {
@@ -742,7 +787,7 @@ fn curated(spec: &Spec, args: &[String], env: &Environment<'_>, base: &Path) -> 
                 (Val::None, None) => {}
                 (Val::None, Some(_)) => return false,
                 (kind, Some(value)) => {
-                    if !value_ok(kind, value, env, base) {
+                    if !value_ok(kind, value, env, base, paths) {
                         return false;
                     }
                 }
@@ -751,7 +796,7 @@ fn curated(spec: &Spec, args: &[String], env: &Environment<'_>, base: &Path) -> 
                         return false;
                     };
                     i += 1;
-                    if !value_ok(kind, value, env, base) {
+                    if !value_ok(kind, value, env, base, paths) {
                         return false;
                     }
                 }
@@ -768,7 +813,7 @@ fn curated(spec: &Spec, args: &[String], env: &Environment<'_>, base: &Path) -> 
             }
             let rest = &arg[at + letter.len_utf8()..];
             if !rest.is_empty() {
-                if !value_ok(*kind, rest, env, base) {
+                if !value_ok(*kind, rest, env, base, paths) {
                     return false;
                 }
             } else {
@@ -777,7 +822,7 @@ fn curated(spec: &Spec, args: &[String], env: &Environment<'_>, base: &Path) -> 
                     return false;
                 };
                 i += 1;
-                if !value_ok(*kind, value, env, base) {
+                if !value_ok(*kind, value, env, base, paths) {
                     return false;
                 }
             }

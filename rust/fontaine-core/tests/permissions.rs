@@ -575,6 +575,12 @@ async fn read_rules_cover_the_paths_of_read_only_shell_commands() {
             "cat .env",
             "head -n 3 ./.env",
             "grep --file=.env x",
+            "grep -f.env -r .",
+            "grep -o -f.env -r src",
+            "grep -of.env -r src",
+            "grep -f .env x",
+            "rg -f.env x",
+            "file -m.env x",
             "cat sub/../.env",
         ] {
             assert_eq!(

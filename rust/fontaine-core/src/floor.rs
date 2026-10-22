@@ -4,7 +4,9 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use fontaine_tools::preclassify::{ShellAnalysis, ShellWord, analyze, raw_mentions_word};
+use fontaine_tools::preclassify::{
+    ShellAnalysis, ShellWord, analyze, program_name, raw_mentions_word,
+};
 use fontaine_tools::scope::{Scope, fold};
 use serde_json::Value;
 
@@ -145,23 +147,18 @@ fn scan(analysis: &ShellAnalysis, base: &Path, env: &CriticalEnv<'_>) -> Option<
 }
 
 fn is_deleter(word: &ShellWord) -> bool {
-    word.literal.as_deref().is_some_and(|text| {
-        let name = text.rsplit(['/', '\\']).next().unwrap_or(text);
-        DELETERS.contains(&name)
-    })
+    word.literal
+        .as_deref()
+        .is_some_and(|text| DELETERS.contains(&&*program_name(text)))
 }
 
 /// Whether a launcher before the deleter supplies its operands at run time.
 fn launches_targets(before: &[ShellWord]) -> bool {
-    let names: Vec<Option<&str>> = before
+    let names: Vec<Option<String>> = before
         .iter()
-        .map(|w| {
-            w.literal
-                .as_deref()
-                .map(|t| t.rsplit(['/', '\\']).next().unwrap_or(t))
-        })
+        .map(|w| w.literal.as_deref().map(|t| program_name(t).into_owned()))
         .collect();
-    let has = |n: &str| names.contains(&Some(n));
+    let has = |n: &str| names.iter().any(|name| name.as_deref() == Some(n));
     has("xargs")
         || has("parallel")
         || (has("find")
@@ -318,6 +315,11 @@ mod tests {
             "$(printf r)m -rf ~",
             "bash -c 'cd / && rm -rf usr'",
             "sh -c 'ls; rm x'",
+            "rm.exe -rf ~",
+            "RM.EXE -rf ~",
+            r"'C:\Program Files\Git\usr\bin\rm.exe' -rf ~",
+            "bash.exe -c 'rm -rf ~'",
+            "xargs.exe rm -rf",
         ] {
             assert!(critical_shell(cmd, None, &env).is_some(), "{cmd}");
         }

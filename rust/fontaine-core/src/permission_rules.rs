@@ -8,7 +8,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use fontaine_tools::names::{is_builtin, is_mcp};
-use fontaine_tools::preclassify::{ShellAnalysis, analyze, raw_mentions_word};
+use fontaine_tools::preclassify::{ShellAnalysis, analyze, program_name, raw_mentions_word};
 use fontaine_tools::scope::{Scope, glob_target};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde_json::Value;
@@ -468,11 +468,6 @@ fn shell_matches(spec: &str, call: &CallContext<'_>, posture: Posture) -> bool {
     prefix_anywhere(&analysis, &spec.words) || cannot_tell(&analysis, command, &spec.words)
 }
 
-fn basename(word: &str) -> &str {
-    let name = word.rsplit(['/', '\\']).next().unwrap_or(word);
-    name.strip_suffix(".exe").unwrap_or(name)
-}
-
 /// The rule's words appear contiguously in some command's word stream. A word the shell
 /// expands never equals a rule word.
 fn prefix_anywhere(analysis: &ShellAnalysis, words: &[String]) -> bool {
@@ -487,7 +482,7 @@ fn prefix_anywhere(analysis: &ShellAnalysis, words: &[String]) -> bool {
                 .all(|(i, (have, want))| {
                     *have == Some(want.as_str())
                     // `/bin/rm` is `rm`; only a program name carries a directory.
-                    || (i == 0 && have.is_some_and(|h| basename(h) == want))
+                    || (i == 0 && have.is_some_and(|h| program_name(h) == want.as_str()))
                 })
         })
     })
