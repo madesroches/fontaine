@@ -72,6 +72,14 @@ All notable changes are recorded here. The format follows
 ### Changed
 
 - `fontaine` without `-p` starts the terminal UI and exits with code 2 when there is no terminal.
+- A file-tool call outside the workspace roots is denied with an `/add-dir` hint instead of
+  prompting; Fontaine's own config and data directories are protected paths; path case is folded
+  on macOS as well as Windows.
+- The critical-path check also covers `rm` reached through shell runners and launchers
+  (`bash -c`, `su -c`, `env -S`, …), `find -exec`/`xargs`, full-path and `.exe` program names,
+  command names built from expansions, and MSYS-style `/c/...` targets.
+- Approval prompts show the full call, scrollable, and ignore answer keys for a moment after they
+  open so type-ahead cannot answer them.
 - Permission rules now carry their source scope, and a rule listed in two scopes is kept once per
   scope.
 
