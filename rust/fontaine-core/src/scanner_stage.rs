@@ -3,7 +3,7 @@
 //! reads as suspect.
 
 use std::ffi::OsString;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use fontaine_guardian::{CommandScanner, LlmScanner, Scan, Scanner};
@@ -33,12 +33,34 @@ pub struct ScannerStart {
 }
 
 pub struct ScannerStage {
-    backend: Backend,
+    backend: Arc<RwLock<Backend>>,
 }
 
 impl ScannerStage {
     pub fn new(backend: Backend) -> ScannerStage {
-        ScannerStage { backend }
+        ScannerStage {
+            backend: Arc::new(RwLock::new(backend)),
+        }
+    }
+
+    /// The slot the stage reads on every scan, for a scanner that must follow a model the
+    /// session can change.
+    pub fn handle(&self) -> Arc<RwLock<Backend>> {
+        self.backend.clone()
+    }
+}
+
+/// The `llm` scanner on the guardian's current model.
+pub fn llm_backend(guardian: Option<&GuardianModel>, timeout: Duration) -> Backend {
+    match guardian {
+        Some(GuardianModel::Ready(handle)) => Backend::Ready(Arc::new(LlmScanner::new(
+            handle.completion.clone(),
+            timeout,
+        ))),
+        Some(GuardianModel::Unavailable { reference, reason }) => Backend::Unavailable(format!(
+            "the scanner model {reference} is unavailable: {reason}"
+        )),
+        None => Backend::Unavailable("there is no model for the scanner".into()),
     }
 }
 
@@ -77,7 +99,12 @@ impl ResultStage for ScannerStage {
     ) -> BoxFuture<'a, (ToolOutcome, Option<ScanRecord>)> {
         Box::pin(async move {
             let started = Instant::now();
-            let scan = match &self.backend {
+            let backend = self
+                .backend
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let scan = match &backend {
                 Backend::Unavailable(reason) => Scan::Failed {
                     reason: reason.clone(),
                 },
@@ -139,15 +166,12 @@ pub async fn start(params: &StartParams<'_>) -> ScannerStart {
             let scanner = CommandScanner::new(program, params.scrub_env.to_vec(), timeout);
             ready(Arc::new(scanner))
         }
-        ScannerKind::Llm => match params.guardian {
-            Some(GuardianModel::Ready(handle)) => ready(Arc::new(LlmScanner::new(
-                handle.completion.clone(),
-                timeout,
-            ))),
-            Some(GuardianModel::Unavailable { reference, reason }) => unavailable(format!(
-                "the scanner model {reference} is unavailable: {reason}"
-            )),
-            None => unavailable("there is no model for the scanner".into()),
+        ScannerKind::Llm => match llm_backend(params.guardian, timeout) {
+            Backend::Unavailable(reason) => unavailable(reason),
+            backend => ScannerStart {
+                backend: Some(backend),
+                notices: Vec::new(),
+            },
         },
         ScannerKind::Pg2 => start_pg2(params, timeout).await,
     }

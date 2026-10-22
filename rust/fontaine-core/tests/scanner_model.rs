@@ -36,13 +36,14 @@ async fn serve_files(server: &MockServer, status: u16) {
     }
 }
 
+/// Anything in `dir` that is not a finished model file: a download left behind.
 fn parts_in(dir: &std::path::Path) -> Vec<String> {
     std::fs::read_dir(dir)
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
                 .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|name| name.ends_with(".part"))
+                .filter(|name| !FILES.contains(&name.as_str()))
                 .collect()
         })
         .unwrap_or_default()
@@ -295,4 +296,27 @@ async fn the_license_notice_is_given_on_every_startup_with_pg2() {
         "{:?}",
         off.notices
     );
+}
+
+#[tokio::test]
+async fn two_sessions_downloading_at_once_both_succeed_and_leave_complete_files() {
+    let server = MockServer::start().await;
+    serve_files(&server, 200).await;
+    let w = World::new();
+    let dir = scanner_model::default_dir(&w.data);
+    let url = server.uri();
+
+    let (a, b) = tokio::join!(
+        scanner_model::ensure(&dir, &url, Some("tok")),
+        scanner_model::ensure(&dir, &url, Some("tok")),
+    );
+    a.unwrap();
+    b.unwrap();
+    for name in FILES {
+        assert_eq!(
+            std::fs::read_to_string(dir.join(name)).unwrap(),
+            format!("contents of {name}")
+        );
+    }
+    assert!(parts_in(&dir).is_empty(), "{:?}", parts_in(&dir));
 }

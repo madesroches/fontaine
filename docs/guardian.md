@@ -212,7 +212,7 @@ records the verdict and the latency, never the content.
 |---|---|
 | `off` | Nothing. The default. |
 | `pg2` | PromptGuard 2 (86M), a small classifier run locally. A result is tokenized in full and scored in windows of 512 tokens at a stride of 256; it is flagged if any window scores 0.9 or more. |
-| `llm` | The guardian's model, in a short separate conversation with its own prompt. The result sits inside an untrusted block. A malformed answer, an error or a timeout counts as flagged. |
+| `llm` | The guardian's model, in a short separate conversation with its own prompt. The result sits inside an untrusted block. A malformed answer, an error or a timeout leaves the result unscanned and suspect. |
 | `command` | A program of your own (`scanner_command`). See [the contract](configuration.md#bring-your-own-scanner). |
 
 Each scan is bounded by `[guardian] timeout_secs`. `pg2` is in the release binaries; a source build

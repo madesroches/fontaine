@@ -42,12 +42,6 @@ impl std::fmt::Display for FetchError {
     }
 }
 
-fn part_of(path: &Path) -> PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".part");
-    path.with_file_name(name)
-}
-
 /// Downloads the files of `dir` that are missing from `base_url`. A file lands under its final
 /// name only after a complete, successful response; an interrupted one leaves nothing behind.
 /// With every file present, no token is needed and nothing is requested.
@@ -72,16 +66,18 @@ pub async fn ensure(dir: &Path, base_url: &str, token: Option<&str>) -> Result<(
         .map_err(|e| FetchError::Failed(e.to_string()))?;
     for name in missing {
         let target = dir.join(name);
-        let part = part_of(&target);
-        let result = fetch_one(&client, &format!("{base_url}/{name}"), token, &part).await;
-        match result {
-            Ok(()) => tokio::fs::rename(&part, &target).await.map_err(|e| {
-                FetchError::Failed(format!("cannot place {}: {e}", target.display()))
-            })?,
-            Err(e) => {
-                let _ = tokio::fs::remove_file(&part).await;
-                return Err(e);
-            }
+        // A temp file of its own, so a second session fetching the same files never writes
+        // into this one's; a failed fetch drops it.
+        let part = fetch_one(&client, &format!("{base_url}/{name}"), token, dir).await?;
+        // Another session may have finished first; its complete file stays.
+        if let Err(e) = part.persist_noclobber(&target)
+            && !target.is_file()
+        {
+            return Err(FetchError::Failed(format!(
+                "cannot place {}: {}",
+                target.display(),
+                e.error
+            )));
         }
     }
     Ok(())
@@ -91,8 +87,8 @@ async fn fetch_one(
     client: &reqwest::Client,
     url: &str,
     token: &str,
-    part: &Path,
-) -> Result<(), FetchError> {
+    dir: &Path,
+) -> Result<tempfile::TempPath, FetchError> {
     use tokio::io::AsyncWriteExt;
 
     // The error text of a failed request can echo the URL; the token is in a header, never in it.
@@ -111,21 +107,20 @@ async fn fetch_one(
         return Err(FetchError::Failed(format!("HTTP {}", status.as_u16())));
     }
     let expected = response.content_length();
-    let mut file = tokio::fs::File::create(part)
-        .await
-        .map_err(|e| FetchError::Failed(format!("cannot write {}: {e}", part.display())))?;
+    let cannot_write =
+        |e: std::io::Error| FetchError::Failed(format!("cannot write in {}: {e}", dir.display()));
+    let (file, part) = tempfile::NamedTempFile::new_in(dir)
+        .map_err(cannot_write)?
+        .into_parts();
+    let mut file = tokio::fs::File::from_std(file);
     let mut written: u64 = 0;
     while let Some(chunk) = response.chunk().await.map_err(failed)? {
         written += chunk.len() as u64;
-        file.write_all(&chunk)
-            .await
-            .map_err(|e| FetchError::Failed(format!("cannot write {}: {e}", part.display())))?;
+        file.write_all(&chunk).await.map_err(cannot_write)?;
     }
-    file.flush()
-        .await
-        .map_err(|e| FetchError::Failed(format!("cannot write {}: {e}", part.display())))?;
+    file.flush().await.map_err(cannot_write)?;
     if expected.is_some_and(|expected| expected != written) {
         return Err(FetchError::Failed("the response ended early".into()));
     }
-    Ok(())
+    Ok(part)
 }

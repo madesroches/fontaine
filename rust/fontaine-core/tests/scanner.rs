@@ -240,3 +240,36 @@ async fn with_the_scanner_off_a_report_is_delivered_as_it_was() {
     assert!(!prompt.contains("Fontaine scanner"), "{prompt}");
     assert!(built.runtime.scanner_notices.is_empty());
 }
+
+#[tokio::test]
+async fn the_llm_scanner_follows_a_guardian_installed_after_startup() {
+    use fontaine_core::config::AccountKind;
+    use fontaine_core::models::{GuardianModel, ModelHandle, ModelRef};
+    use rig_core::test_utils::{MockCompletionModel, MockTurn};
+
+    let world = World::new();
+    world.user_file("[guardian]\nscanner = \"llm\"\n");
+    let start = ScannerStart {
+        backend: Some(Backend::Unavailable(
+            "the scanner model test/gone is unavailable: no credential".into(),
+        )),
+        notices: Vec::new(),
+    };
+    let built = build_with_scanner(&world, Manual, Vec::new(), false, start);
+    queue_report(&built.runtime);
+    let before = built.runtime.notification_prompt().await.unwrap();
+    assert!(before.contains("test/gone is unavailable"), "{before}");
+
+    let model = MockCompletionModel::from_turns(vec![MockTurn::text("not a verdict"); 4]);
+    built
+        .runtime
+        .install_guardian(&GuardianModel::Ready(ModelHandle::new(
+            ModelRef::parse("test/fixed").unwrap(),
+            AccountKind::OpenAiCompatible,
+            model.into(),
+        )));
+    queue_report(&built.runtime);
+    let after = built.runtime.notification_prompt().await.unwrap();
+    assert!(!after.contains("test/gone is unavailable"), "{after}");
+    assert!(after.contains("no usable verdict"), "{after}");
+}
