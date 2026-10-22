@@ -221,6 +221,7 @@ carries the reasoning:
 - 2026-10-21: Multi-account model registry, following opencode: named `[accounts.<name>]`, models addressed `<account>/<model>`, one rig client per account; replaces `[model] provider`/`base_url`. Reason: user requirement; Claude Code has no analogous design point.
 - 2026-10-21: Unknown config keys and sections are a config error (exit 2) (Claude Code ignores them): a misspelled `[permisions]` must not silently drop deny rules.
 - 2026-10-21: Permission rules naming an unknown tool are a config error (exit 2), not a warning (Claude Code warns): a mistyped deny rule must fail loudly rather than silently protect nothing.
+- 2026-10-21: `--settings` takes a TOML file path only (Claude Code also accepts an inline JSON string): TOML has no unambiguous inline top-level form.
 - 2026-10-20: Hybrid gate — tool-declared `read_only` + workspace-scope check skips the guardian; everything else is adjudicated. (User choice.)
 - 2026-10-21: Hybrid-gate refinement — the fast path is earned by Fontaine-enforced workspace containment, not the tool's label; read-only ≠ safe, and MCP `readOnlyHint` never earns it. (User choice.)
 - 2026-10-20 (amended 2026-10-21: headless to Phase 1): TUI-first (ratatui), headless `-p` on the same core. (User choice.)
