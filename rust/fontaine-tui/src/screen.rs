@@ -172,16 +172,15 @@ impl<B: Backend + Anchor> Screen<B> {
         backend.clear_region(ClearType::AfterCursor)?;
         let mut real = mem::replace(backend, (self.placeholder)());
         real.arm(top);
-        let mut terminal = Terminal::with_options(
+        let terminal = Terminal::with_options(
             real,
             TerminalOptions {
                 viewport: Viewport::Inline(height),
             },
         )?;
-        // The terminal being replaced shows a hidden cursor when it drops; hiding it here keeps
-        // that from flashing a cursor between frames.
-        terminal.hide_cursor()?;
+        // The replaced terminal shows the cursor when it drops, so hide it only after the swap.
         self.terminal = terminal;
+        self.terminal.hide_cursor()?;
         self.height = height;
         Ok(())
     }

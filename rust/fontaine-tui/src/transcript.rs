@@ -198,6 +198,7 @@ impl Transcript {
         }
     }
 
+    #[cfg(test)]
     pub fn lines(&self, width: usize) -> Vec<Line<'static>> {
         let mut out = Vec::new();
         for entry in &self.entries {
