@@ -119,6 +119,8 @@ All notable changes are recorded here. The format follows
   open so type-ahead cannot answer them.
 - Permission rules now carry their source scope, and a rule listed in two scopes is kept once per
   scope.
+- Update the pinned Rust toolchain and minimum `rust-version` to 1.99.1, and fix the clippy
+  lints it adds.
 
 ### Removed
 
