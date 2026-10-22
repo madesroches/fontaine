@@ -244,6 +244,14 @@ struct Outcome {
     denials: Vec<Value>,
 }
 
+/// Session spend: the main model plus the guardian. Null only when neither is priced.
+fn session_cost(main: Option<f64>, guardian: Option<f64>) -> Option<f64> {
+    match (main, guardian) {
+        (None, None) => None,
+        (m, g) => Some(m.unwrap_or(0.0) + g.unwrap_or(0.0)),
+    }
+}
+
 fn result_event(
     session_id: &str,
     outcome: &Outcome,
@@ -257,7 +265,7 @@ fn result_event(
         "error": outcome.error,
         "num_turns": totals.model_calls,
         "duration_ms": outcome.started.elapsed().as_millis() as u64,
-        "total_cost_usd": totals.cost_usd,
+        "total_cost_usd": session_cost(totals.cost_usd, guardian.cost_usd),
         "usage": {
             "main": {
                 "input_tokens": totals.input_tokens,
@@ -406,7 +414,10 @@ async fn run_one(
                 // The cap is checked between turns: a spent budget stops the run before its
                 // tool calls run, but never discards an answer already complete.
                 if calls_tool
-                    && let (Some(cap), Some(spent)) = (options.max_budget_usd, totals.cost_usd)
+                    && let (Some(cap), Some(spent)) = (
+                        options.max_budget_usd,
+                        session_cost(totals.cost_usd, runtime.state.guardian_usage().cost_usd),
+                    )
                     && spent > cap
                 {
                     return Flow::Stop;
@@ -515,7 +526,10 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
         // precede a turn is paid too, so the cap is checked again after it.
         let over_cap = |totals: &Totals| {
             matches!(
-                (options.max_budget_usd, totals.cost_usd),
+                (
+                    options.max_budget_usd,
+                    session_cost(totals.cost_usd, runtime.state.guardian_usage().cost_usd)
+                ),
                 (Some(cap), Some(spent)) if spent > cap
             )
         };
@@ -580,4 +594,17 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
         }
     }
     code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_cost;
+
+    #[test]
+    fn session_cost_adds_the_guardian_and_is_null_only_when_neither_is_priced() {
+        assert_eq!(session_cost(None, None), None);
+        assert_eq!(session_cost(Some(0.5), None), Some(0.5));
+        assert_eq!(session_cost(None, Some(0.25)), Some(0.25));
+        assert_eq!(session_cost(Some(0.5), Some(0.25)), Some(0.75));
+    }
 }

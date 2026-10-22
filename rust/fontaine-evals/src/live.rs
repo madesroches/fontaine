@@ -245,7 +245,11 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
         kind: case.kind.as_str(),
         category: case.category.to_string(),
         expected: case.expected.clone(),
-        pass: fail_closed.is_none() && passes(case, &actual),
+        // A low_confidence denial is the model's own answer, so it is scored like any verdict.
+        pass: fail_closed
+            .as_deref()
+            .is_none_or(|reason| reason == "low_confidence")
+            && passes(case, &actual),
         actual,
         expected_tier: None,
         actual_tier: None,

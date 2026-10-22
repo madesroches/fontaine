@@ -29,7 +29,7 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `--input-format text\|stream-json` | `stream-json` reads user messages as JSON lines on stdin. A prompt argument together with `stream-json` input is a usage error. |
 | `--include-partial-messages` | With `stream-json` output, also emits `assistant_delta` events. |
 | `--max-turns <n>` | Stops each turn after `n` model calls with `error_max_turns` (exit code 1). Without it a turn is capped at 1000 calls. |
-| `--max-budget-usd <x>` | Stops the run once the main model's spend exceeds `x` with `error_max_budget_usd` (exit code 1). A model with no known price makes this a usage error (exit code 2). Only the main model's spend counts today. |
+| `--max-budget-usd <x>` | Stops the run once the session's spend, the main model plus the guardian, exceeds `x` with `error_max_budget_usd` (exit code 1). A model with no known price makes this a usage error (exit code 2). |
 | `--json-schema <schema>` | An inline JSON Schema the final answer must follow. The parsed answer is returned in `result.structured_output`. A schema that is not a JSON object is a usage error. |
 | `--allowed-tools <rule>` | Adds an allow rule in `Tool(specifier)` syntax for this session, such as `shell(npm test)`. Repeatable. Loaded as the CLI scope's `[permissions] allow`; an invalid rule is a usage error. |
 | `--disallowed-tools <rule>` | Adds a deny rule for this session, such as `read(.env)`. Repeatable. See [Permissions](permissions.md#rules). |
@@ -118,7 +118,7 @@ The `result` object:
 | `structured_output` | With `--json-schema`, the answer parsed as JSON |
 | `num_turns` | Model calls made so far in the session |
 | `duration_ms` | Wall time of the turn |
-| `total_cost_usd` | Spend so far, or null when no price is known |
+| `total_cost_usd` | Spend so far, main model plus guardian, or null when neither is priced |
 | `usage` | `main`, `guardian` and `subagents`, each with `input_tokens`, `output_tokens` and `cost_usd`; `guardian` totals every adjudication that reached the model (cached verdicts cost nothing) |
 | `denials` | One entry per denied call: `tool`, `tier`, `rule`, `explanation` |
 

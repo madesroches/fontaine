@@ -693,3 +693,20 @@ async fn a_file_the_session_created_is_not_destructive_to_write_again() {
     std::fs::write(rig.work().join("new.txt"), "x").unwrap();
     assert!(allowed(&rig.check("write", write_args("new.txt")).await));
 }
+
+#[tokio::test]
+async fn a_shell_command_that_only_names_a_missing_path_does_not_make_it_session_created() {
+    let fake = fake_guardian(verdict_json("allow", "allow", 0.5));
+    let rig = auto_rig(&fake, "");
+    rig.check("shell", shell("cat ./notes.txt")).await;
+    std::fs::write(rig.work().join("notes.txt"), "k").unwrap();
+    let d = rig.check("write", write_args("notes.txt")).await;
+    assert!(denied_message(&d).contains("[LowConfidence]"), "{d:?}");
+    let sent: String = fake
+        .mock
+        .requests()
+        .iter()
+        .map(|r| format!("{r:?}"))
+        .collect();
+    assert!(!sent.contains("notes.txt [created_this_session]"), "{sent}");
+}
