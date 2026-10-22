@@ -54,6 +54,10 @@ impl Approver for ChannelApprover {
     fn notice(&self, message: &str) {
         let _ = self.tx.send(Prompt::Notice(message.to_string()));
     }
+
+    fn warn(&self, message: &str) {
+        self.notice(message);
+    }
 }
 
 /// How a turn ended from the interface's side.

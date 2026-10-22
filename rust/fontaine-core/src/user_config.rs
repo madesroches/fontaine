@@ -55,6 +55,9 @@ pub fn append_allow_rule(path: &Path, rule: &str) -> io::Result<()> {
 /// settings file truncated, which would parse as valid TOML and silently drop its deny rules.
 fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
+    // Rename onto the link's target, or the link itself would be replaced by a regular file.
+    let resolved = std::fs::canonicalize(path).ok();
+    let path = resolved.as_deref().unwrap_or(path);
     let dir = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
@@ -89,6 +92,23 @@ mod tests {
         assert!(text.contains("deny = [\"shell(rm)\"]"));
         assert_eq!(text.matches("read(//tmp/x)").count(), 1);
         assert!(text.contains("allow = [\"read(//tmp/x)\"]"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_settings_file_stays_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.toml");
+        let link = dir.path().join("config.toml");
+        std::fs::write(&target, "[model]\nmodel = \"a/b\"\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        append_allow_rule(&link, "shell(ls)").unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert!(
+            std::fs::read_to_string(&target)
+                .unwrap()
+                .contains("shell(ls)")
+        );
     }
 
     #[test]

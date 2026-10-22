@@ -221,7 +221,7 @@ fn string_field(map: &Map<String, Value>, key: &str) -> Result<Option<String>, S
 
 /// MSYS-style `/c/...` paths name Windows drives; any other path rooted at `/` has no Windows
 /// meaning here and is out of scope.
-fn translate(path: &str, windows: bool) -> Option<String> {
+pub fn translate(path: &str, windows: bool) -> Option<String> {
     if !windows || path.starts_with("//") {
         return Some(path.to_string());
     }

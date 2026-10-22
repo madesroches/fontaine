@@ -80,6 +80,7 @@ pub struct AgentRuntime {
     pub roots: Vec<PathBuf>,
     pub mode: PermissionMode,
     pipeline: Arc<PermissionPipeline>,
+    approver: Arc<dyn Approver>,
     seen: Seen,
     setup: Setup,
 }
@@ -119,7 +120,7 @@ impl AgentRuntime {
         }));
         let pipeline = Arc::new(PermissionPipeline::new(PipelineParams {
             state: state.clone(),
-            approver: setup.approver,
+            approver: setup.approver.clone(),
             headless: setup.headless,
             hooks: Vec::new(),
             allow_extra: setup.config.shell_preclassifier_allow_extra.clone(),
@@ -155,6 +156,7 @@ impl AgentRuntime {
             roots: setup.roots,
             mode: setup.mode,
             pipeline,
+            approver: setup.approver,
             seen,
             setup: setup_rest,
         })
@@ -252,7 +254,8 @@ impl AgentRuntime {
     pub fn append(&self, record: Record) {
         if let Err(e) = self.session.ledger.append(record) {
             tracing::warn!(error = %e, "the session ledger could not be written");
-            eprintln!("fontaine: warning: the session ledger could not be written: {e}");
+            self.approver
+                .warn(&format!("the session ledger could not be written: {e}"));
         }
     }
 }

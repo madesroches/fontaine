@@ -69,6 +69,12 @@ pub trait Approver: Send + Sync {
     /// Something the human should know that is not an answer to a prompt, such as a settings
     /// file that could not be written.
     fn notice(&self, _message: &str) {}
+
+    /// A warning about the session itself. Defaults to stderr; a full-screen frontend must
+    /// override it, since a stray line corrupts the screen.
+    fn warn(&self, message: &str) {
+        eprintln!("fontaine: warning: {message}");
+    }
 }
 
 /// An approver that denies everything, for runs where nobody can answer.
@@ -682,6 +688,7 @@ impl PermissionPipeline {
                         .map_err(|e| format!("{}: {e}", path.display())),
                     None => Err("no user settings file".to_string()),
                 };
+                let saved = written.is_ok();
                 let source = match written {
                     Ok(()) => SessionState::ALWAYS,
                     Err(e) => {
@@ -701,7 +708,7 @@ impl PermissionPipeline {
                     rule: rule.to_string(),
                 });
                 self.state.grant(rule, source);
-                approved("always");
+                approved(if saved { "always" } else { "session" });
                 GateDecision::Allow { args }
             }
             // A grant the prompt did not offer is only the one call.

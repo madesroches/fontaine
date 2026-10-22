@@ -47,7 +47,7 @@ A call goes through these steps in order and the first one that decides wins.
      `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc` or `.mcp.json`,
      in any workspace root or the home directory, asks; so does any path under Fontaine's own
      config or data directory. Matching is on resolved path components, so separators and, on
-     on Windows and macOS, case do not matter.
+     Windows and macOS, case do not matter.
 
    A floor outcome that asks is a denial in `dontAsk` and in headless runs.
 3. **Read-only fast path.** A read-only tool (`read`, `ls`, `glob`, `grep`) whose paths all

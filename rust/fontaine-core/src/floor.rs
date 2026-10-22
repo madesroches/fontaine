@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use fontaine_tools::preclassify::{
     ShellAnalysis, ShellWord, analyze, program_name, raw_mentions_word,
 };
-use fontaine_tools::scope::{Scope, fold};
+use fontaine_tools::scope::{Scope, fold, translate};
 use serde_json::Value;
 
 /// Directories whose contents `edit` and `write` never touch without a prompt.
@@ -221,7 +221,14 @@ fn check_targets(
     None
 }
 
+/// An rm operand as the Windows file system sees it: `/c/...` names a drive under MSYS.
+fn native_operand(target: &str, windows: bool) -> String {
+    translate(target, windows).unwrap_or_else(|| target.to_string())
+}
+
 fn is_critical_target(target: &str, base: &Path, env: &CriticalEnv<'_>) -> bool {
+    let target = native_operand(target, cfg!(windows));
+    let target = target.as_str();
     let absolute = Path::new(target).is_absolute() || target.starts_with(['/', '\\']);
     let joined = if absolute {
         PathBuf::from(target)
@@ -289,10 +296,21 @@ mod tests {
             r"rm -rf 'C:\Users\me'",
             r"rm -rf 'C:\Users\me\proj'",
             r"rm -rf 'C:\Users'",
+            "rm -rf /c/Users/me",
+            "rm -rf /c/Users/me/proj",
+            "rm -rf /c/Users",
         ] {
             assert!(critical_shell(cmd, None, &env).is_some(), "{cmd}");
         }
         assert!(critical_shell(r"rm -rf 'C:\Users\me\proj\target'", None, &env).is_none());
+    }
+
+    #[test]
+    fn msys_operands_translate_only_when_asked() {
+        assert_eq!(native_operand("/c/Users/me", true), r"C:\Users\me");
+        assert_eq!(native_operand("/c/Users/me", false), "/c/Users/me");
+        assert_eq!(native_operand("/etc", true), "/etc");
+        assert_eq!(native_operand("rel/x", true), "rel/x");
     }
 
     #[cfg(unix)]
