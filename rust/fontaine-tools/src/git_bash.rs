@@ -1,7 +1,7 @@
 //! Git Bash discovery for the `shell` tool on Windows. Git for Windows is a prerequisite: its
 //! `usr\bin` and `bin` directories go in front of the shell launcher's PATH so `sh` resolves.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -98,19 +98,14 @@ pub fn discover(probe: &Probe<'_>) -> Result<GitBash, GitBashError> {
         .unwrap_or_default()
         .into_iter()
         .map(|dir| dir.join("git.exe"));
-    let installs = ["ProgramFiles", "ProgramFiles(x86)", "LocalAppData"]
-        .iter()
-        .filter_map(|var| (probe.env)(var))
-        .map(PathBuf::from)
-        .flat_map(|base| {
-            let git = if base.file_name() == Some(OsStr::new("LocalAppData")) {
-                base.join("Programs").join("Git")
-            } else {
-                base.join("Git")
-            };
-            [git.clone(), git.join("..").join("Programs").join("Git")]
-        })
-        .map(|git| git.join("cmd").join("git.exe"));
+    let installs = [
+        ("ProgramFiles", "Git"),
+        ("ProgramFiles(x86)", "Git"),
+        ("LocalAppData", "Programs/Git"),
+    ]
+    .into_iter()
+    .filter_map(|(var, git)| (probe.env)(var).map(|base| PathBuf::from(base).join(git)))
+    .map(|git| git.join("cmd").join("git.exe"));
     for candidate in on_path.chain(installs) {
         if (probe.is_file)(&candidate)
             && let Some(found) = GitBash::from_executable(&candidate)
@@ -220,5 +215,14 @@ mod tests {
         let found = probe_with(&["/pf/Git/cmd/git.exe"], &[("ProgramFiles", "/pf")]);
         assert_eq!(found, Ok(bash("/pf/Git")));
         assert_eq!(probe_with(&[], &[]), Err(GitBashError::NotFound));
+    }
+
+    #[test]
+    fn the_per_user_install_location_is_searched() {
+        let found = probe_with(
+            &["/local/Programs/Git/cmd/git.exe"],
+            &[("LocalAppData", "/local")],
+        );
+        assert_eq!(found, Ok(bash("/local/Programs/Git")));
     }
 }

@@ -187,6 +187,36 @@ async fn a_same_host_redirect_is_followed() {
 }
 
 #[tokio::test]
+async fn a_same_host_redirect_loop_stops_at_the_limit() {
+    let server = serve(
+        "/loop",
+        ResponseTemplate::new(302).insert_header("location", "/loop"),
+    )
+    .await;
+    let error = fetch(config(), &format!("{}/loop", server.uri()))
+        .await
+        .unwrap_err();
+    assert!(
+        error.message().contains("redirected more than"),
+        "{}",
+        error.message()
+    );
+}
+
+#[tokio::test]
+async fn a_redirect_without_a_location_is_an_error() {
+    let server = serve("/bare", ResponseTemplate::new(302)).await;
+    let error = fetch(config(), &format!("{}/bare", server.uri()))
+        .await
+        .unwrap_err();
+    assert!(
+        error.message().contains("no usable Location header"),
+        "{}",
+        error.message()
+    );
+}
+
+#[tokio::test]
 async fn failures_are_errors_the_model_can_read() {
     let server = serve("/missing", ResponseTemplate::new(404)).await;
     let error = fetch(config(), &format!("{}/missing", server.uri()))

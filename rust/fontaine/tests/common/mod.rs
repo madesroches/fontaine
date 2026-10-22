@@ -221,15 +221,40 @@ fn responses_response(turn: &Turn, usage: Usage, id: usize) -> ResponseTemplate 
     sse(frames)
 }
 
+/// The reply to a request that did not ask for a stream, such as the compaction summarizer's.
+fn responses_json(turn: &Turn, usage: Usage, id: usize) -> ResponseTemplate {
+    let Turn::Text(text) = turn else {
+        return ResponseTemplate::new(500).set_body_string("only text answers are scripted here");
+    };
+    ResponseTemplate::new(200).set_body_json(json!({
+        "id": format!("resp_{id}"),
+        "object": "response",
+        "created_at": 1,
+        "status": "completed",
+        "model": "scripted",
+        "output": [{"type": "message", "id": format!("msg_{id}"), "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": text, "annotations": []}]}],
+        "usage": {
+            "input_tokens": usage.input,
+            "output_tokens": usage.output,
+            "total_tokens": usage.input + usage.output,
+        },
+    }))
+}
+
 impl Respond for Scripted {
-    fn respond(&self, _request: &Request) -> ResponseTemplate {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
         let at = self.next.fetch_add(1, Ordering::SeqCst);
         // Past the end of the script the last turn repeats, so a runaway loop is still served.
         let Some(turn) = self.turns.get(at).or(self.turns.last()) else {
             return ResponseTemplate::new(500).set_body_string("empty script");
         };
+        let streamed = serde_json::from_slice::<Value>(&request.body)
+            .is_ok_and(|body| body["stream"] == json!(true));
         match self.wire {
             Wire::Chat => chat_response(turn, self.usage),
+            Wire::Responses if !streamed => responses_json(turn, self.usage, at),
             Wire::Responses => responses_response(turn, self.usage, at),
         }
     }

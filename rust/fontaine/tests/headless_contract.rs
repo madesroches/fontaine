@@ -2,7 +2,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{Endpoint, Sandbox, Turn, Usage, Wire};
+use common::{Endpoint, Output, Sandbox, Turn, Usage, Wire};
 use serde_json::{Value, json};
 
 fn validator() -> jsonschema::Validator {
@@ -529,4 +529,74 @@ async fn a_session_id_is_normalized_to_its_hyphenated_form() {
         out.lines()[0]["session_id"],
         "0b9c2a3e-9f5d-4c6e-8a11-2f3d4e5a6b7c"
     );
+}
+
+/// Four large prompts that together outgrow the model's window, then a short one that is
+/// preceded by a summarizing call.
+fn compacting_input() -> String {
+    let big = "lorem ipsum dolor sit amet ".repeat(5_500);
+    let mut prompts = vec![big; 4];
+    prompts.push("last".to_string());
+    prompts
+        .iter()
+        .map(|text| json!({"type": "user", "message": {"role": "user", "content": text}}))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+async fn run_compacting(budget: Option<&str>) -> (Output, Endpoint) {
+    let endpoint = Endpoint::start(
+        Wire::Responses,
+        vec![
+            Turn::text("a1"),
+            Turn::text("a2"),
+            Turn::text("a3"),
+            Turn::text("a4"),
+            Turn::text("the summary"),
+            Turn::text("final answer"),
+        ],
+    )
+    .await;
+    let s = Sandbox::priced(&endpoint.url());
+    let mut args = vec![
+        "-p",
+        "--permission-mode",
+        "manual",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+    ];
+    if let Some(budget) = budget {
+        args.extend(["--max-budget-usd", budget]);
+    }
+    let out = s.run_with_stdin(&args, &compacting_input()).await;
+    (out, endpoint)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_summarizing_call_is_counted_in_the_totals() {
+    let (out, endpoint) = run_compacting(None).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert_eq!(endpoint.requests().await.len(), 6);
+    let lines = out.lines();
+    let result = result_of(&lines);
+    assert_eq!(result["subtype"], "success");
+    assert_eq!(result["num_turns"], json!(6));
+    let spent = result["total_cost_usd"].as_f64().unwrap();
+    assert!((spent - 6.0 * 0.00045).abs() < 1e-9, "{spent}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_budget_the_summarizing_call_crosses_ends_the_run() {
+    let (out, endpoint) = run_compacting(Some("0.002")).await;
+    assert_eq!(out.code, Some(1), "{}", out.stderr);
+    let lines = out.lines();
+    let results: Vec<&Value> = lines.iter().filter(|l| l["type"] == "result").collect();
+    assert_eq!(results.len(), 5);
+    assert_eq!(results[3]["subtype"], "success");
+    assert_eq!(results[4]["subtype"], "error_max_budget_usd");
+    // Four answers and the summarizer ran; the last prompt's turn did not.
+    assert_eq!(endpoint.requests().await.len(), 5);
+    assert_eq!(results[4]["num_turns"], json!(5));
 }

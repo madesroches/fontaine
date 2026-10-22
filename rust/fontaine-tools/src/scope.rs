@@ -89,10 +89,7 @@ impl Scope {
         let text = resolved.to_string_lossy();
         self.roots
             .iter()
-            .position(|root| {
-                place(Some(root), true, &text).is_ok()
-                    || (cfg!(windows) && contains_ignoring_case(root, &resolved))
-            })
+            .position(|root| place(Some(root), true, &text).is_ok())
             .map(|root| (root, resolved))
             .ok_or_else(out)
     }
@@ -201,17 +198,6 @@ fn translate(path: &str, windows: bool) -> Option<String> {
     }
 }
 
-fn contains_ignoring_case(root: &Path, path: &Path) -> bool {
-    let fold = |p: &Path| {
-        p.components()
-            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
-            .collect::<Vec<_>>()
-    };
-    let root = fold(root);
-    let path = fold(path);
-    path.len() >= root.len() && path[..root.len()] == root[..]
-}
-
 /// A glob pattern split into its literal leading directory and the rest.
 fn split_glob(pattern: &str) -> (String, String) {
     let is_meta = |c: char| matches!(c, '*' | '?' | '[' | ']' | '{' | '}');
@@ -294,17 +280,5 @@ mod tests {
             translate("/etc/passwd", false).as_deref(),
             Some("/etc/passwd")
         );
-    }
-
-    #[test]
-    fn containment_ignoring_case_compares_whole_components() {
-        assert!(contains_ignoring_case(
-            Path::new("/Work/Proj"),
-            Path::new("/work/proj/a.rs")
-        ));
-        assert!(!contains_ignoring_case(
-            Path::new("/work/proj"),
-            Path::new("/work/project/a.rs")
-        ));
     }
 }
