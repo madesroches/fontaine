@@ -9,11 +9,14 @@ use std::sync::{Arc, Mutex};
 
 use fontaine_core::audit::DecisionRecord;
 use fontaine_core::config::PermissionMode;
-use fontaine_core::gate::{SessionState, StateParams};
+use fontaine_core::gate::{AutoContext, SessionState, StateParams};
 use fontaine_core::permissions::{
-    Answer, ApprovalRequest, Approver, PermissionPipeline, PipelineParams, PreToolUseHook,
+    Answer, ApprovalRequest, Approver, GuardianUnavailable, PermissionPipeline, PipelineParams,
+    PreToolUseHook, UnavailableChoice,
 };
 use fontaine_core::session::Session;
+use fontaine_guardian::{Guardian, Settings};
+use rig_core::test_utils::{MockCompletionModel, MockTurn};
 
 use fontaine_tools::gate::{CallView, GateDecision, ROOT_AGENT, ToolGate};
 use fontaine_tools::risk::{RiskClass, builtin_risk};
@@ -27,8 +30,10 @@ use super::World;
 #[derive(Default)]
 pub struct Scripted {
     answers: Mutex<VecDeque<Answer>>,
+    unavailable: Mutex<VecDeque<UnavailableChoice>>,
     pub requests: Mutex<Vec<ApprovalRequest>>,
     pub notices: Mutex<Vec<String>>,
+    pub unavailable_asked: Mutex<Vec<GuardianUnavailable>>,
 }
 
 impl Scripted {
@@ -38,6 +43,20 @@ impl Scripted {
 
     pub fn asked(&self) -> usize {
         self.requests.lock().unwrap().len()
+    }
+
+    /// The next answer to "the guardian is unavailable"; an empty queue leaves the call denied.
+    pub fn when_unavailable(&self, choice: UnavailableChoice) {
+        self.unavailable.lock().unwrap().push_back(choice);
+    }
+
+    pub fn last_request(&self) -> ApprovalRequest {
+        self.requests
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("a prompt")
     }
 }
 
@@ -56,6 +75,20 @@ impl Approver for Scripted {
     fn notice(&self, message: &str) {
         self.notices.lock().unwrap().push(message.to_string());
     }
+
+    fn guardian_unavailable<'a>(
+        &'a self,
+        info: GuardianUnavailable,
+    ) -> BoxFuture<'a, UnavailableChoice> {
+        Box::pin(async move {
+            self.unavailable_asked.lock().unwrap().push(info);
+            self.unavailable
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(UnavailableChoice::Deny)
+        })
+    }
 }
 
 pub struct Options {
@@ -66,6 +99,7 @@ pub struct Options {
     pub home: Option<PathBuf>,
     pub hooks: Vec<Arc<dyn PreToolUseHook>>,
     pub always_allow_file: bool,
+    pub guardian: Option<Arc<Guardian>>,
 }
 
 impl Options {
@@ -78,6 +112,7 @@ impl Options {
             home: None,
             hooks: Vec::new(),
             always_allow_file: true,
+            guardian: None,
         }
     }
 
@@ -88,6 +123,11 @@ impl Options {
 
     pub fn headless(mut self) -> Options {
         self.headless = true;
+        self
+    }
+
+    pub fn guardian(mut self, guardian: Arc<Guardian>) -> Options {
+        self.guardian = Some(guardian);
         self
     }
 }
@@ -124,6 +164,11 @@ impl Rig {
             audit: session.audit.clone(),
             home: options.home.clone(),
             protected_dirs: vec![world.config.clone(), world.data.clone()],
+            guardian: options
+                .guardian
+                .clone()
+                .unwrap_or_else(fontaine_core::gate::no_guardian),
+            auto: AutoContext::default(),
         }));
         let approver = Arc::new(Scripted::default());
         let user_config = world.config.join("config.toml");
@@ -187,4 +232,50 @@ pub fn denied_message(decision: &GateDecision) -> &str {
         GateDecision::Deny { message } => message,
         other => panic!("expected a denial, got {other:?}"),
     }
+}
+
+/// A guardian over a scripted model that answers every adjudication with the same verdict, and
+/// counts how often it was asked.
+pub struct Fake {
+    pub mock: MockCompletionModel,
+    pub guardian: Arc<Guardian>,
+}
+
+impl Fake {
+    pub fn calls(&self) -> usize {
+        self.mock.request_count()
+    }
+}
+
+pub fn allow_verdict() -> Value {
+    verdict_json("allow", "allow", 0.95)
+}
+
+pub fn verdict_json(decision: &str, rule: &str, confidence: f64) -> Value {
+    serde_json::json!({
+        "decision": decision,
+        "rule": rule,
+        "explanation": format!("{decision}: {rule}"),
+        "confidence": confidence,
+    })
+}
+
+pub fn fake_guardian(verdict: Value) -> Fake {
+    fake_guardian_turns(vec![verdict], Settings::default())
+}
+
+/// The guardian answers `verdicts` in order and repeats the last one.
+pub fn fake_guardian_turns(verdicts: Vec<Value>, settings: Settings) -> Fake {
+    let last = verdicts.last().cloned().expect("a verdict");
+    let turns = verdicts
+        .into_iter()
+        .chain(std::iter::repeat_n(last, 200))
+        .map(|v| MockTurn::tool_call("call_1", "submit", v));
+    let mock = MockCompletionModel::from_turns(turns);
+    let guardian = Arc::new(Guardian::new(
+        mock.clone().into(),
+        "test/guardian",
+        settings,
+    ));
+    Fake { mock, guardian }
 }

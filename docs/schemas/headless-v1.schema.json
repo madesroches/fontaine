@@ -156,7 +156,10 @@
             "rule": { "type": ["string", "null"] },
             "explanation": { "type": ["string", "null"] },
             "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
-            "guardian_model": { "type": ["string", "null"] }
+            "guardian_model": { "type": ["string", "null"] },
+            "fail_closed_reason": {
+              "enum": ["error", "timeout", "unparseable", "low_confidence", "unavailable", null]
+            }
           }
         }
       ]

@@ -62,6 +62,7 @@ fn hook(id: &'static str, permission: Option<HookPermission>, input: Option<Valu
             permission,
             updated_input: input,
             reason: None,
+            guardian_context: None,
         }),
     })
 }

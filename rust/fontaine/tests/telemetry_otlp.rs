@@ -228,6 +228,103 @@ async fn a_run_exports_spans_metrics_and_the_api_request_event() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn guardian_metrics_and_spans_reach_the_collector_attributed_to_the_guardian() {
+    use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+
+    let judge = Endpoint::start(
+        Wire::Chat,
+        vec![Turn::tool(
+            "g1",
+            "submit",
+            json!({"decision": "allow", "rule": "allow", "explanation": "fine", "confidence": 0.9}),
+        )],
+    )
+    .await;
+    let broken = Endpoint::start(Wire::Chat, vec![Turn::Fail(500)]).await;
+    let collector = collector().await;
+    for guardian in [&judge, &broken] {
+        let agent = Endpoint::start(
+            Wire::Chat,
+            vec![
+                Turn::tool("c1", "shell", json!({"command": "echo hi > out.txt"})),
+                Turn::text("done"),
+            ],
+        )
+        .await;
+        let mut s = Sandbox::new();
+        s.user_config(&format!(
+            "[accounts.agent]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"scripted\"]\n\n[accounts.judge]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"scripted\"]\n\n[model]\nmodel = \"agent/scripted\"\n\n[guardian]\nmodel = \"judge/scripted\"\n\n[telemetry]\nenabled = true\nbackend = \"otlp\"\nendpoint = \"{}\"\napi_key_env = \"INGEST_KEY\"\n",
+            agent.url(),
+            guardian.url(),
+            collector.uri()
+        ));
+        s.set_env("INGEST_KEY", "ingest-secret");
+        let out = s.run(&["-p", "--permission-mode", "auto", "go"]).await;
+        assert_eq!(out.code, Some(0), "{}", out.stderr);
+    }
+
+    let all_metrics: Vec<_> = bodies(&collector, "/v1/metrics")
+        .await
+        .iter()
+        .flat_map(|body| {
+            ExportMetricsServiceRequest::decode(&body[..])
+                .unwrap()
+                .resource_metrics
+        })
+        .flat_map(|r| r.scope_metrics)
+        .flat_map(|s| s.metrics)
+        .collect();
+    let names: Vec<&str> = all_metrics.iter().map(|m| m.name.as_str()).collect();
+    for name in [
+        "fontaine.guardian.latency",
+        "fontaine.guardian.fail_closed.count",
+    ] {
+        assert!(names.contains(&name), "{name} in {names:?}");
+    }
+    let failed = all_metrics
+        .iter()
+        .find(|m| m.name == "fontaine.guardian.fail_closed.count")
+        .unwrap();
+    let Some(Data::Sum(sum)) = &failed.data else {
+        panic!("a counter: {failed:?}");
+    };
+    assert!(sum.data_points.iter().any(|p| matches!(
+        attr(&p.attributes, "reason"),
+        Some(AnyValue::StringValue(reason)) if reason == "error"
+    )));
+    // The guardian's own model calls are told apart from the agent's.
+    let tokens = all_metrics
+        .iter()
+        .find(|m| m.name == "fontaine.token.usage")
+        .unwrap();
+    let Some(Data::Sum(sum)) = &tokens.data else {
+        panic!("a counter: {tokens:?}");
+    };
+    let sources: Vec<String> = sum
+        .data_points
+        .iter()
+        .filter_map(|p| match attr(&p.attributes, "query_source") {
+            Some(AnyValue::StringValue(source)) => Some(source.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(sources.contains(&"guardian".to_string()), "{sources:?}");
+    assert!(sources.contains(&"main".to_string()), "{sources:?}");
+
+    // The guardian span sits under the permission span and carries no content.
+    let spans = spans(&collector).await;
+    let guardian = spans
+        .iter()
+        .find(|s| s.name == "fontaine.guardian")
+        .expect("a guardian span");
+    let permission = spans
+        .iter()
+        .find(|s| s.span_id == guardian.parent_span_id)
+        .expect("its parent");
+    assert_eq!(permission.name, "fontaine.permission");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn traces_can_be_switched_off_while_metrics_and_events_stay() {
     let model = Endpoint::start(Wire::Responses, vec![Turn::text("done")]).await;
     let collector = collector().await;

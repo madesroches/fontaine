@@ -20,12 +20,12 @@ pub fn mode_label(mode: PermissionMode) -> &'static str {
     }
 }
 
-/// The modes Shift+Tab walks through, in order. `auto` joins the end of this list once it can
-/// run in the interactive UI.
+/// The modes Shift+Tab walks through, in order.
 const CYCLE: &[PermissionMode] = &[
     PermissionMode::Manual,
     PermissionMode::AcceptEdits,
     PermissionMode::Plan,
+    PermissionMode::Auto,
 ];
 
 /// The mode after `mode` in the Shift+Tab cycle; a mode outside the cycle returns to the first.
@@ -51,7 +51,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let hint = if app.running {
         "working · esc to interrupt · shift+tab mode"
     } else {
-        "shift+tab mode · /add-dir · /exit"
+        "shift+tab mode · /add-dir · /denied · /model · /exit"
     };
     let line = Line::from(vec![
         Span::styled(format!(" {} ", mode_label(app.mode)), mode_style(app.mode)),
@@ -65,10 +65,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_cycle_wraps_without_auto() {
+    fn the_cycle_includes_auto_and_wraps() {
         let mut mode = PermissionMode::Manual;
         let mut seen = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..5 {
             mode = next_mode(mode);
             seen.push(mode);
         }
@@ -77,6 +77,7 @@ mod tests {
             [
                 PermissionMode::AcceptEdits,
                 PermissionMode::Plan,
+                PermissionMode::Auto,
                 PermissionMode::Manual,
                 PermissionMode::AcceptEdits
             ]

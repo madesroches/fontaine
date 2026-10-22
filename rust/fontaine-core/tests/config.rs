@@ -6,7 +6,6 @@ use std::path::Path;
 use common::{World, write};
 use fontaine_core::config::{
     AccountKind, Column, ConfigError, GuardianProfile, PermissionMode, parse_settings,
-    validate_settings,
 };
 use fontaine_core::permission_rules::SourcedRule;
 
@@ -19,7 +18,7 @@ fn user_ok(text: &str) {
 fn defaults_with_no_files() {
     let w = World::new();
     let c = w.load().unwrap();
-    assert_eq!(c.permissions.default_mode, PermissionMode::Manual);
+    assert_eq!(c.permissions.default_mode, None);
     assert_eq!(c.guardian.profile, GuardianProfile::Full);
     assert_eq!(c.guardian.timeout_secs, 30);
     assert_eq!(c.agents.max_parallel, 4);
@@ -80,21 +79,21 @@ fn scalar_precedence_is_cli_then_project_local_then_project_then_user() {
 
     assert_eq!(
         w.load_with_settings(&cli).unwrap().permissions.default_mode,
-        PermissionMode::Plan
+        Some(PermissionMode::Plan)
     );
     assert_eq!(
         w.load().unwrap().permissions.default_mode,
-        PermissionMode::Manual
+        Some(PermissionMode::Manual)
     );
     std::fs::remove_file(w.work.join(".fontaine/settings.local.toml")).unwrap();
     assert_eq!(
         w.load().unwrap().permissions.default_mode,
-        PermissionMode::DontAsk
+        Some(PermissionMode::DontAsk)
     );
     std::fs::remove_file(w.work.join(".fontaine/settings.toml")).unwrap();
     assert_eq!(
         w.load().unwrap().permissions.default_mode,
-        PermissionMode::AcceptEdits
+        Some(PermissionMode::AcceptEdits)
     );
 }
 
@@ -368,25 +367,36 @@ fn guardian_values_are_range_checked() {
 }
 
 #[test]
-fn default_mode_auto_is_a_load_error_from_user_and_cli_scope() {
+fn default_mode_auto_loads_from_user_and_cli_scope_and_is_unset_by_default() {
     let w = World::new();
+    assert_eq!(w.load().unwrap().permissions.default_mode, None);
+
     w.user_file("[permissions]\ndefault_mode = \"auto\"\n");
-    let err = w.load().unwrap_err();
-    assert!(matches!(err, ConfigError::Invalid { .. }), "{err:?}");
-    assert_eq!(err.exit_code(), 2);
+    assert_eq!(
+        w.load().unwrap().permissions.default_mode,
+        Some(PermissionMode::Auto)
+    );
     std::fs::remove_file(w.config.join("config.toml")).unwrap();
 
     let cli = w.cli_file("[permissions]\ndefault_mode = \"auto\"\n");
-    let err = w.load_with_settings(&cli).unwrap_err();
-    assert!(matches!(err, ConfigError::Invalid { .. }), "{err:?}");
+    assert_eq!(
+        w.load_with_settings(&cli).unwrap().permissions.default_mode,
+        Some(PermissionMode::Auto)
+    );
+}
 
-    // Schema validation alone accepts it: the rule is phase-gated, not structural.
-    validate_settings(
-        "[permissions]\ndefault_mode = \"auto\"\n",
-        Path::new("u.toml"),
-        Column::User,
-    )
-    .unwrap();
+#[test]
+fn default_mode_auto_is_refused_from_every_project_scope() {
+    let w = World::new();
+    w.project_file("[permissions]\ndefault_mode = \"auto\"\n");
+    let err = w.load().unwrap_err();
+    assert!(matches!(err, ConfigError::Scope { .. }), "{err:?}");
+    assert_eq!(err.exit_code(), 2);
+    std::fs::remove_file(w.work.join(".fontaine/settings.toml")).unwrap();
+
+    w.local_file("[permissions]\ndefault_mode = \"auto\"\n");
+    let err = w.load().unwrap_err();
+    assert!(matches!(err, ConfigError::Scope { .. }), "{err:?}");
 }
 
 #[test]
@@ -704,7 +714,7 @@ command = "srv"
 "#,
     );
     let c = w.load().unwrap();
-    assert_eq!(c.permissions.default_mode, PermissionMode::DontAsk);
+    assert_eq!(c.permissions.default_mode, Some(PermissionMode::DontAsk));
     assert_eq!(c.permissions.deny.len(), 1);
     assert_eq!(c.hooks.pre_tool_use.len(), 1);
     assert!(c.mcp_servers.contains_key("s"));
@@ -712,7 +722,7 @@ command = "srv"
     w.project_file("[permissions]\ndefault_mode = \"manual\"\n");
     assert_eq!(
         w.load().unwrap().permissions.default_mode,
-        PermissionMode::Manual
+        Some(PermissionMode::Manual)
     );
 }
 
@@ -801,7 +811,7 @@ allow_extra = ["tree"]
 "#,
     );
     let c = w.load_with_settings(&cli).unwrap();
-    assert_eq!(c.permissions.default_mode, PermissionMode::Plan);
+    assert_eq!(c.permissions.default_mode, Some(PermissionMode::Plan));
     assert_eq!(c.guardian.model.as_deref(), Some("a/g"));
 }
 

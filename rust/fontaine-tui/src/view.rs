@@ -44,9 +44,7 @@ fn input_view(buffer: &InputBuffer, width: usize) -> InputView {
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let inner_width = usize::from(area.width.saturating_sub(2)).max(1);
-    let (body, footer) = app.approval.as_ref().map_or_else(Default::default, |a| {
-        (a.body(inner_width), a.footer(inner_width))
-    });
+    let (title, body, footer) = overlay(app, inner_width);
     let approval_height = if body.is_empty() {
         0
     } else {
@@ -64,10 +62,50 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     draw_transcript(frame, transcript, app);
     if approval_height > 0 {
-        draw_approval(frame, approval, app, body, footer);
+        if app.approval.is_some() {
+            draw_approval(frame, approval, app, body, footer);
+        } else {
+            draw_overlay(frame, approval, title, body, footer);
+        }
     }
     draw_input(frame, input, app, &view);
     statusbar::render(frame, status, app);
+}
+
+/// What sits above the message box, if anything: the approval prompt, the denied list or the
+/// unavailable-guardian prompt, in that order of precedence.
+fn overlay(app: &App, width: usize) -> (&'static str, Vec<Line<'static>>, Vec<Line<'static>>) {
+    if let Some(approval) = &app.approval {
+        return ("approval", approval.body(width), approval.footer(width));
+    }
+    if let Some(prompt) = &app.unavailable {
+        return ("guardian unavailable", prompt.body(width), prompt.footer());
+    }
+    if let Some(list) = &app.denied {
+        return ("denied", list.body(width), list.footer());
+    }
+    ("", Vec::new(), Vec::new())
+}
+
+fn draw_overlay(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    body: Vec<Line<'static>>,
+    footer: Vec<Line<'static>>,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {title} "));
+    let inner = block.inner(area);
+    let [body_area, footer_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(footer.len() as u16)])
+            .areas(inner);
+    frame.render_widget(block, area);
+    // A long list shows its tail, where the newest entry and the selection start out.
+    let hidden = body.len().saturating_sub(usize::from(body_area.height));
+    frame.render_widget(Paragraph::new(body).scroll((hidden as u16, 0)), body_area);
+    frame.render_widget(Paragraph::new(footer), footer_area);
 }
 
 fn draw_transcript(frame: &mut Frame, area: Rect, app: &App) {
@@ -118,7 +156,7 @@ fn draw_approval(
 }
 
 fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
-    let covered = app.approval.is_some();
+    let covered = app.approval.is_some() || app.denied.is_some() || app.unavailable.is_some();
     let style = if covered {
         Style::default().add_modifier(Modifier::DIM)
     } else {

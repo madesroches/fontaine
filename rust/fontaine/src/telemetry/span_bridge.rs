@@ -142,9 +142,15 @@ impl<E: Export> SpanBridge<E> {
         SpanBridge { export, policy }
     }
 
-    fn derive(&self, name: &str, fields: &[(String, String)], elapsed: std::time::Duration) {
+    fn derive(
+        &self,
+        name: &str,
+        fields: &[(String, String)],
+        elapsed: std::time::Duration,
+        query_source: &'static str,
+    ) {
         match name {
-            "chat" | "generate_content" => self.completion(fields, elapsed),
+            "chat" | "generate_content" => self.completion(fields, elapsed, query_source),
             "fontaine.session" => self.export.metric(Metric {
                 name: "fontaine.session.count",
                 unit: "{session}",
@@ -165,7 +171,12 @@ impl<E: Export> SpanBridge<E> {
         }
     }
 
-    fn completion(&self, fields: &[(String, String)], elapsed: std::time::Duration) {
+    fn completion(
+        &self,
+        fields: &[(String, String)],
+        elapsed: std::time::Duration,
+        query_source: &'static str,
+    ) {
         let input = count(fields, "gen_ai.usage.input_tokens");
         let output = count(fields, "gen_ai.usage.output_tokens");
         if input.is_none() && output.is_none() {
@@ -178,7 +189,6 @@ impl<E: Export> SpanBridge<E> {
         let cache_read = count(fields, "gen_ai.usage.cache_read.input_tokens");
         let cache_write = count(fields, "gen_ai.usage.cache_creation.input_tokens");
         let reasoning = count(fields, "gen_ai.usage.reasoning_tokens");
-        let query_source = "main";
 
         let usage = Usage::new()
             .input_tokens(input)
@@ -256,6 +266,28 @@ where
         if lookup(&fields, "message") != Some("tool_decision") {
             return;
         }
+        // The guardian's part of the decision: how long it took, and why it failed closed.
+        if let Some(latency) = count(&fields, "guardian.latency_ms") {
+            let attrs = ["guardian.model", "guardian.profile", "guardian.cache_hit"]
+                .into_iter()
+                .zip(["model", "profile", "cache_hit"])
+                .filter_map(|(field, name)| Some((name, lookup(&fields, field)?.to_string())))
+                .collect();
+            self.export.metric(Metric {
+                name: "fontaine.guardian.latency",
+                unit: "ms",
+                value: MetricValue::Int(latency),
+                attrs,
+            });
+        }
+        if let Some(reason) = lookup(&fields, "fail_closed_reason") {
+            self.export.metric(Metric {
+                name: "fontaine.guardian.fail_closed.count",
+                unit: "{denial}",
+                value: MetricValue::Int(1),
+                attrs: vec![("reason", reason.to_string())],
+            });
+        }
         if let (Some(tier), Some(decision)) = (lookup(&fields, "tier"), lookup(&fields, "decision"))
         {
             self.export.metric(Metric {
@@ -306,7 +338,22 @@ where
         let Some(bridge) = span.extensions_mut().remove::<BridgeSpan>() else {
             return;
         };
-        self.derive(span.name(), &bridge.fields, bridge.started.elapsed());
+        // A model call made while a guardian adjudication is open is the guardian's own.
+        let query_source = if span
+            .scope()
+            .skip(1)
+            .any(|p| p.name() == "fontaine.guardian")
+        {
+            "guardian"
+        } else {
+            "main"
+        };
+        self.derive(
+            span.name(),
+            &bridge.fields,
+            bridge.started.elapsed(),
+            query_source,
+        );
         let fields = self.policy.export_fields(&bridge.fields);
         self.export.span_end(SpanEnd {
             name: span.name(),
@@ -505,6 +552,81 @@ mod tests {
                         .contains(&("decision".to_string(), decision.to_string()))
             }));
         }
+    }
+
+    #[test]
+    fn a_model_call_under_a_guardian_span_is_attributed_to_the_guardian() {
+        let (recorder, capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            completion("openai", "gpt-4o-mini");
+            let guardian = tracing::info_span!(target: TARGET, "fontaine.guardian");
+            guardian.in_scope(|| {
+                let agent = tracing::info_span!(target: "rig::agent_chat", "invoke_agent");
+                agent.in_scope(|| completion("openai", "gpt-4o-mini"));
+            });
+        });
+        let metrics = recorder.0.lock().unwrap();
+        let sources: Vec<&str> = metrics
+            .iter()
+            .filter(|(name, _, _)| name == "fontaine.token.usage")
+            .filter_map(|(_, _, attrs)| {
+                attrs
+                    .iter()
+                    .find(|(k, _)| k == "query_source")
+                    .map(|(_, v)| v.as_str())
+            })
+            .collect();
+        assert_eq!(sources.iter().filter(|s| **s == "main").count(), 2);
+        assert_eq!(sources.iter().filter(|s| **s == "guardian").count(), 2);
+        let events = capture.events();
+        let sources: Vec<_> = events
+            .iter()
+            .filter(|e| e.message() == "api_request")
+            .map(|e| e.fields["query_source"].clone())
+            .collect();
+        assert_eq!(sources, ["main", "guardian"]);
+    }
+
+    #[test]
+    fn guardian_latency_and_fail_closed_reasons_come_from_the_decision_event() {
+        let (recorder, _capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                target: TARGET,
+                tier = "guardian",
+                decision = "deny",
+                guardian.model = "a/b",
+                guardian.profile = "full",
+                guardian.cache_hit = false,
+                guardian.latency_ms = 812u64,
+                fail_closed_reason = "timeout",
+                "tool_decision"
+            );
+            // A decision that never reached the guardian carries neither.
+            tracing::info!(target: TARGET, tier = "tier05", decision = "allow", "tool_decision");
+        });
+        let metrics = recorder.0.lock().unwrap();
+        let latency: Vec<_> = metrics
+            .iter()
+            .filter(|(n, _, _)| n == "fontaine.guardian.latency")
+            .collect();
+        assert_eq!(latency.len(), 1);
+        assert_eq!(latency[0].1, 812.0);
+        assert!(
+            latency[0]
+                .2
+                .contains(&("model".to_string(), "a/b".to_string()))
+        );
+        let failed: Vec<_> = metrics
+            .iter()
+            .filter(|(n, _, _)| n == "fontaine.guardian.fail_closed.count")
+            .collect();
+        assert_eq!(failed.len(), 1);
+        assert!(
+            failed[0]
+                .2
+                .contains(&("reason".to_string(), "timeout".to_string()))
+        );
     }
 
     #[test]

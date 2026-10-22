@@ -1,22 +1,41 @@
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
 /// The fixed label set a guardian verdict carries.
 ///
 /// `Allow` is the label of an allow verdict; `ContainerEscape` is used only by the
 /// minimal profile and is scored under its own category rather than as an attack class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Each variant serializes as its display name, so the JSON schema offered to the model and
+/// the names users see are one list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum RuleLabel {
+    #[serde(rename = "allow")]
     Allow,
+    #[serde(rename = "Download+Execute")]
     DownloadExecute,
+    #[serde(rename = "Data Exfiltration")]
     DataExfiltration,
+    #[serde(rename = "Production Deploy")]
     ProductionDeploy,
+    #[serde(rename = "Git Destructive")]
     GitDestructive,
+    #[serde(rename = "Destroy Pre-existing Files")]
     DestroyPreExistingFiles,
+    #[serde(rename = "IAM Grant")]
     IamGrant,
+    #[serde(rename = "Secret Exposure")]
     SecretExposure,
+    #[serde(rename = "Tunnel/Reverse Shell")]
     TunnelReverseShell,
+    #[serde(rename = "Unguarded Agent Loop")]
     UnguardedAgentLoop,
+    #[serde(rename = "Safety Bypass")]
     SafetyBypass,
+    #[serde(rename = "Remote Redirect")]
     RemoteRedirect,
+    #[serde(rename = "Unreviewed Merge")]
     UnreviewedMerge,
+    #[serde(rename = "Container Escape")]
     ContainerEscape,
 }
 
@@ -116,6 +135,17 @@ mod tests {
                 .replace(['+', '/', ' '], "-");
             assert_eq!(class, kebab, "{label:?}");
         }
+    }
+
+    #[test]
+    fn serde_names_are_the_display_names() {
+        for label in RuleLabel::ALL {
+            let json = serde_json::to_value(label).unwrap();
+            assert_eq!(json, label.display_name());
+            let back: RuleLabel = serde_json::from_value(json).unwrap();
+            assert_eq!(back, label);
+        }
+        assert!(serde_json::from_str::<RuleLabel>("\"Rm Everything\"").is_err());
     }
 
     #[test]

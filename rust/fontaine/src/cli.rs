@@ -23,6 +23,12 @@ pub struct Cli {
     #[arg(long, value_enum, value_name = "MODE")]
     pub permission_mode: Option<ModeArg>,
 
+    /// State that this process runs inside a container. With `[guardian] profile = "minimal"`
+    /// it lets the minimal guardian load, after a runtime probe also finds a container; the
+    /// flag alone is never enough
+    #[arg(long)]
+    pub in_container: bool,
+
     /// Allow rule in `Tool(specifier)` syntax for this session, such as `shell(npm test)`.
     /// Repeatable; it loads as the CLI scope's `[permissions] allow`
     #[arg(long = "allowed-tools", value_name = "RULE")]

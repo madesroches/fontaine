@@ -170,6 +170,13 @@ The model of `[guardian] model` is checked the same way when its account has a `
 shares the main model's account. Otherwise Fontaine makes no call with the guardian's credentials
 at startup. An unknown account in `[guardian] model` is always a configuration error.
 
+With no `[guardian] model`, the guardian is the highest-ranked benchmark-validated model that one
+of your accounts offers (see [The guardian](guardian.md#choosing-the-guardian-model)). An account
+offers a model when its `models` list contains it, when it is the main model's account and the
+listing already fetched contains it, or, for any other account without a list, when its `kind`
+matches and a credential is present; no listing call is made with a guardian credential. When no
+account qualifies, the main model is the guardian and the start prints a notice.
+
 #### Worked examples
 
 Anthropic, with the key in an environment variable:
@@ -290,20 +297,22 @@ model = "litellm/gpt-4o-mini"
 
 ### `[guardian]`
 
-`model` is resolved at startup (see [Model discovery](#model-discovery)). The other keys are
-accepted and validated; not yet active.
+Keys of the guardian that judges tool calls in `auto` mode and in the consequential branch of
+`plan` mode. [The guardian](guardian.md) explains what they do.
 
 | Key | Meaning | Default |
 |---|---|---|
-| `model` | The guardian model as `<account>/<model>`; it may use a different account than `[model]`. | unset |
-| `profile` | `full` or `minimal`. `minimal` narrows the guardian for containers; it never turns it off. | `full` |
-| `timeout_secs` | Time allowed for one verdict; at least 1. | `30` |
-| `confidence_threshold` | Between 0 and 1. | `0.7` |
-| `cache` | Whether verdicts are cached. | `true` |
+| `model` | The guardian model as `<account>/<model>`; it may use a different account than `[model]`. A model named here is pinned: it is never substituted when it is unavailable. | unset: the top-ranked validated model your accounts offer, else the main model |
+| `profile` | `full` or `minimal`. `minimal` narrows the guardian for containers and only loads when `--in-container` is given and a runtime probe finds a container; otherwise `full` runs, with a notice. It never turns the guardian off. | `full` |
+| `timeout_secs` | Time allowed for one verdict, retries included; at least 1. On expiry the call is denied. | `30` |
+| `confidence_threshold` | Between 0 and 1. An allow below it on a destructive call is turned into a deny. | `0.7` |
+| `cache` | Whether verdicts are cached for 60 seconds. | `true` |
 | `scanner` | Tool-result scanner: `off`, `pg2`, `llm` or `command`. User file only. | `off` |
 | `scanner_command` | Program used by the `command` scanner. User file only. | unset |
 | `scanner_model_path` | Model directory for the `pg2` scanner. User file only. | unset |
 | `scanner_hf_token_env` | Name of the environment variable holding a Hugging Face token. User file only. | unset |
+
+The scanner keys are accepted and validated; they take effect when the scanner ships.
 
 ```toml
 [guardian]
@@ -314,6 +323,9 @@ confidence_threshold = 0.7
 cache = true
 scanner = "off"
 ```
+
+`/model` and `/guardian-model` in the terminal UI write `[model] model` and `[guardian] model` to
+the user file for you.
 
 ### `[permissions]`
 
@@ -327,14 +339,15 @@ tool (a `shell` specifier is literal command words, a path specifier a gitignore
 
 | Key | Meaning | Default |
 |---|---|---|
-| `default_mode` | `manual`, `acceptEdits`, `plan`, `dontAsk` or `auto`. | `manual` |
+| `default_mode` | `manual`, `acceptEdits`, `plan`, `dontAsk` or `auto`. Applies to both surfaces. | unset: the terminal UI starts in `auto`, a headless run in `manual` |
 | `deny` | Rules that always deny. | `[]` |
 | `ask` | Rules that always prompt. | `[]` |
 | `allow` | Pre-approval rules. User-trust scopes only. | `[]` |
 | `additional_directories` | Extra workspace roots. User-trust scopes only. See [Workspace roots](#workspace-roots). | `[]` |
 
-`default_mode = "auto"` is rejected at load from the user file and from `--settings`, because auto
-mode is not available yet. It is also never accepted from project scopes.
+`default_mode = "auto"` loads only from the user file and `--settings`. It is rejected from the shared
+project file and from `settings.local.toml`, trusted or not, because it loosens: those scopes accept
+only `manual` and `dontAsk`.
 
 ```toml
 [permissions]
@@ -392,12 +405,24 @@ url = "https://mcp.example.com/docs"
 
 ### `[auto_mode]`
 
-Prose lists for the guardian: `environment`, `allow`, `soft_deny`, `hard_deny`. The marker
-`$defaults` splices in the shipped defaults. Accepted and validated; not yet active.
+Prose lists for the guardian: `environment` (what is trusted and sensitive in your setup),
+`allow` (exceptions that clear a soft-deny match), `soft_deny` and `hard_deny` (see
+[rule precedence](guardian.md#rule-precedence)). The marker `$defaults` splices the shipped
+defaults in where it stands.
+
+- `environment` and `allow`: unset or empty gives the shipped defaults; a list with `$defaults`
+  has them spliced in at that position; any other list replaces them.
+- `soft_deny` and `hard_deny`: the shipped entries are always present, because a shared project
+  file may add to these lists and must not be able to replace the defaults by adding. A list
+  without `$defaults` has them placed first.
+
+`environment` and `allow` loosen, so they come from user-trust scopes only; `soft_deny` and
+`hard_deny` can be added to from any scope. Under the `minimal` profile only `environment` is used.
 
 ```toml
 [auto_mode]
 environment = ["$defaults", "Source control: github.com/myorg"]
+allow = ["$defaults", "Deploying to the staging namespace is allowed: it resets nightly"]
 hard_deny = ["$defaults", "Never send repo contents to third-party code-review APIs"]
 ```
 
@@ -528,7 +553,8 @@ for any reason other than not existing, is a configuration error naming the path
 | `--settings <file>` | Layers a TOML file over the project and user settings for this session (CLI scope). |
 | `--debug-file <path>` | Writes debug-level diagnostics to the file, which is created readable by the current user only. The `config loaded` event, which carries the resolved scope stack, is written here. |
 | `--model <account>/<model>` | Overrides `[model] model`. |
-| `--permission-mode <mode>` | Overrides `[permissions] default_mode`. |
+| `--permission-mode <mode>` | Overrides `[permissions] default_mode`. `auto` is accepted. |
+| `--in-container` | States that the process runs inside a container. With `[guardian] profile = "minimal"` it lets the minimal guardian load, after a runtime probe also finds a container; the flag alone is never enough. |
 | `--allowed-tools <rule>`, `--disallowed-tools <rule>` | Adds an allow or deny rule for the session (CLI scope). Repeatable. |
 | `fontaine auth login` | Stores a credential; see [Credentials](#credentials). |
 | `FONTAINE_LOG` | An `EnvFilter` directive that replaces the default `debug` filter of the debug file. On its own it creates no file and prints nothing. |

@@ -1398,18 +1398,33 @@ name = "fontaine-evals"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "dirs",
  "fontaine-core",
  "fontaine-guardian",
  "fontaine-tools",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
+ "toml",
+ "wiremock",
 ]
 
 [[package]]
 name = "fontaine-guardian"
 version = "0.1.0"
+dependencies = [
+ "insta",
+ "rig-agent",
+ "rig-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
 
 [[package]]
 name = "fontaine-mcp"
@@ -1443,6 +1458,7 @@ name = "fontaine-tui"
 version = "0.1.0"
 dependencies = [
  "fontaine-core",
+ "fontaine-guardian",
  "fontaine-tools",
  "futures",
  "ratatui",
@@ -1451,6 +1467,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "wiremock",
 ]
 
 [[package]]

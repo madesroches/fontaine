@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod approval;
+pub mod denials;
 pub mod input;
 pub mod statusbar;
 pub mod transcript;
@@ -15,8 +16,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use fontaine_core::agent::{AgentRuntime, AgentSetup};
+use fontaine_core::audit::Decision;
+use fontaine_core::config::PermissionMode;
 use fontaine_core::ledger::Record;
-use fontaine_core::permissions::{Answer, ApprovalRequest, Approver};
+use fontaine_core::permissions::{
+    Answer, ApprovalRequest, Approver, GuardianUnavailable, UnavailableChoice,
+};
+use fontaine_core::tier::Tier;
 use fontaine_core::turn::{
     DEFAULT_MAX_TURNS, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
 };
@@ -26,10 +32,15 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 
 pub use app::{Action, App, Command, Input, parse_command};
+pub use denials::UnavailableAnswer;
+
+use denials::{DeniedList, UnavailablePrompt};
 
 /// What the permission pipeline sends to the interface.
 enum Prompt {
     Ask(Box<ApprovalRequest>, oneshot::Sender<Answer>),
+    /// The pinned guardian cannot be used and the human has to decide what to do.
+    Unavailable(Box<GuardianUnavailable>, oneshot::Sender<UnavailableChoice>),
     Notice(String),
 }
 
@@ -58,6 +69,23 @@ impl Approver for ChannelApprover {
     fn warn(&self, message: &str) {
         self.notice(message);
     }
+
+    fn guardian_unavailable<'a>(
+        &'a self,
+        info: GuardianUnavailable,
+    ) -> BoxFuture<'a, UnavailableChoice> {
+        Box::pin(async move {
+            let (reply, answer) = oneshot::channel();
+            if self
+                .tx
+                .send(Prompt::Unavailable(Box::new(info), reply))
+                .is_err()
+            {
+                return UnavailableChoice::Deny;
+            }
+            answer.await.unwrap_or(UnavailableChoice::Deny)
+        })
+    }
 }
 
 /// How a turn ended from the interface's side.
@@ -77,14 +105,21 @@ struct Ui<R> {
 impl<R: FnMut(&App)> Ui<R> {
     fn draw(&mut self, runtime: &AgentRuntime) {
         self.app.mode = runtime.state.mode();
+        self.app.model = runtime.models.main.reference.to_string();
         (self.render)(&self.app);
     }
 
-    fn on_prompt(&mut self, prompt: Prompt) {
+    fn on_prompt(&mut self, runtime: Option<&AgentRuntime>, prompt: Prompt) {
         match prompt {
             // The call's turn was cut short while the prompt sat in the queue.
             Prompt::Ask(_, reply) if reply.is_closed() => {}
+            Prompt::Unavailable(_, reply) if reply.is_closed() => {}
             Prompt::Ask(request, reply) => self.app.begin_approval(*request, reply),
+            Prompt::Unavailable(info, reply) => {
+                let candidates = runtime.map_or_else(Vec::new, AgentRuntime::guardian_candidates);
+                self.app
+                    .begin_unavailable(UnavailablePrompt::new(*info, candidates, reply));
+            }
             Prompt::Notice(message) => self.app.transcript.notice(message),
         }
     }
@@ -102,6 +137,28 @@ impl<R: FnMut(&App)> Ui<R> {
     fn cycle_mode(&mut self, runtime: &AgentRuntime) {
         let state = &runtime.state;
         state.set_mode(statusbar::next_mode(state.mode()));
+        if state.mode() == PermissionMode::Auto {
+            self.announce_auto(runtime);
+        }
+    }
+
+    /// What the human should know on entering `auto`: the allow rules it sets aside, and a
+    /// guardian that cannot be asked.
+    fn announce_auto(&mut self, runtime: &AgentRuntime) {
+        let suspended = runtime.state.suspended_allow_rules();
+        if !suspended.is_empty() {
+            self.app.transcript.notice(format!(
+                "auto mode sets aside these broad allow rules while it is on: {}",
+                suspended.join(", ")
+            ));
+        }
+        let guardian = runtime.state.guardian();
+        if let Some(reason) = guardian.unavailable_reason() {
+            self.app.transcript.error(format!(
+                "the guardian model {} is unavailable ({reason}); calls that need it are denied until you fix it with /guardian-model",
+                guardian.label()
+            ));
+        }
     }
 
     async fn run(&mut self, runtime: &mut AgentRuntime, launch_dir: &Path) {
@@ -113,7 +170,7 @@ impl<R: FnMut(&App)> Ui<R> {
                     None => return,
                 },
                 Some(prompt) = self.prompts.recv() => {
-                    self.on_prompt(prompt);
+                    self.on_prompt(Some(runtime), prompt);
                     Action::None
                 }
             };
@@ -125,6 +182,8 @@ impl<R: FnMut(&App)> Ui<R> {
                         return;
                     }
                 }
+                Action::RetryDenied(index) => self.retry_denied(runtime, index),
+                Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
                 Action::None | Action::Interrupt => {}
             }
         }
@@ -140,8 +199,13 @@ impl<R: FnMut(&App)> Ui<R> {
         match parse_command(&text) {
             Some(Command::Exit) => return Break(()),
             Some(Command::AddDir(path)) => self.add_dir(runtime, launch_dir, &path),
+            Some(Command::Denied) => {
+                self.app.denied = Some(DeniedList::new(runtime.state.denied_calls()));
+            }
+            Some(Command::Model(reference)) => self.model(runtime, &reference).await,
+            Some(Command::GuardianModel(reference)) => self.guardian_model(runtime, &reference),
             Some(Command::Unknown(name)) => self.app.transcript.error(format!(
-                "unknown command /{name}; try /add-dir <path> or /exit"
+                "unknown command /{name}; try /add-dir <path>, /denied, /model [account/model], /guardian-model [account/model] or /exit"
             )),
             None => {
                 self.app.transcript.user(text.clone());
@@ -168,9 +232,152 @@ impl<R: FnMut(&App)> Ui<R> {
         }
     }
 
+    /// `/model`: shows the model, or switches the live session to another and saves the choice.
+    async fn model(&mut self, runtime: &mut AgentRuntime, reference: &str) {
+        if reference.is_empty() {
+            self.app.transcript.notice(format!(
+                "model {} · guardian {}",
+                runtime.models.main.reference,
+                runtime.state.guardian().label()
+            ));
+            return;
+        }
+        match runtime.switch_main_model(reference).await {
+            Ok(switched) => {
+                let mut message = format!("model is now {}", switched.reference);
+                if switched.guardian_followed {
+                    message.push_str("; the guardian runs on it too");
+                }
+                self.finish_switch(message, switched.persist_error);
+            }
+            Err(e) => self.app.transcript.error(format!("/model: {e}")),
+        }
+    }
+
+    /// `/guardian-model`: shows the guardian and the models it could be, or pins it to one.
+    fn guardian_model(&mut self, runtime: &mut AgentRuntime, reference: &str) {
+        if reference.is_empty() {
+            let guardian = runtime.state.guardian();
+            let others: Vec<String> = runtime
+                .guardian_candidates()
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            let mut message = format!("guardian {}", guardian.label());
+            if let Some(reason) = guardian.unavailable_reason() {
+                message.push_str(&format!(" (unavailable: {reason})"));
+            }
+            if !others.is_empty() {
+                message.push_str(&format!(" · available: {}", others.join(", ")));
+            }
+            self.app.transcript.notice(message);
+            return;
+        }
+        match runtime.set_guardian_model(reference) {
+            Ok(switched) => {
+                let guardian = runtime.state.guardian();
+                match guardian.unavailable_reason() {
+                    Some(reason) => self.app.transcript.error(format!(
+                        "guardian is now {}, but it is unavailable: {reason}",
+                        switched.reference
+                    )),
+                    None => self.finish_switch(
+                        format!("guardian is now {}", switched.reference),
+                        switched.persist_error,
+                    ),
+                }
+            }
+            Err(e) => self.app.transcript.error(format!("/guardian-model: {e}")),
+        }
+    }
+
+    fn finish_switch(&mut self, message: String, persist_error: Option<String>) {
+        match persist_error {
+            None => self
+                .app
+                .transcript
+                .notice(format!("{message} (saved to your settings)")),
+            Some(why) => self
+                .app
+                .transcript
+                .notice(format!("{message} for this session only: {why}")),
+        }
+    }
+
+    /// `r` in `/denied`: a human approval of that call, once, and a note to the agent.
+    fn retry_denied(&mut self, runtime: &AgentRuntime, index: usize) {
+        let Some(call) = runtime.state.approve_retry(index) else {
+            return;
+        };
+        if let Some(list) = &mut self.app.denied {
+            list.mark_retried(index);
+        }
+        self.app.pending_notices.push(format!(
+            "[Harness note, not the user's words: the user reviewed your denied `{}` call ({}) and approved it once. You may retry exactly that call.]",
+            call.tool, call.summary
+        ));
+        self.app.transcript.notice(format!(
+            "approved once: {} {}; the agent is told it may retry",
+            call.tool, call.summary
+        ));
+    }
+
+    /// The human's answer to an unavailable guardian: the session is changed first, then the
+    /// waiting call is told what to do.
+    fn answer_unavailable(&mut self, runtime: &AgentRuntime, answer: UnavailableAnswer) {
+        let choice = match answer {
+            UnavailableAnswer::Retry => match runtime.retry_guardian() {
+                Ok(true) => UnavailableChoice::Retry,
+                Ok(false) => {
+                    self.app
+                        .transcript
+                        .error("the guardian model is still unavailable");
+                    UnavailableChoice::Deny
+                }
+                Err(e) => {
+                    self.app.transcript.error(e);
+                    UnavailableChoice::Deny
+                }
+            },
+            UnavailableAnswer::Pick(reference) => match runtime.use_guardian(&reference) {
+                Ok(true) => {
+                    self.app
+                        .transcript
+                        .notice(format!("guardian is now {reference} for this session"));
+                    UnavailableChoice::Retry
+                }
+                Ok(false) => {
+                    self.app
+                        .transcript
+                        .error(format!("{reference} is unavailable too"));
+                    UnavailableChoice::Deny
+                }
+                Err(e) => {
+                    self.app.transcript.error(e);
+                    UnavailableChoice::Deny
+                }
+            },
+            UnavailableAnswer::Manual => {
+                self.app
+                    .transcript
+                    .notice("switched this session to manual mode");
+                UnavailableChoice::Manual
+            }
+            UnavailableAnswer::Deny => UnavailableChoice::Deny,
+        };
+        self.app.finish_unavailable(choice);
+    }
+
     /// Runs one user message while still serving keys and prompts.
     async fn turn(&mut self, runtime: &AgentRuntime, text: String) -> TurnEnd {
         runtime.append(Record::UserMessage { text: text.clone() });
+        // What the agent reads is the user's words behind any note the harness owes it.
+        let mut prompt = String::new();
+        for note in self.app.pending_notices.drain(..) {
+            prompt.push_str(&note);
+            prompt.push_str("\n\n");
+        }
+        prompt.push_str(&text);
         self.app.running = true;
         let (events, mut seen) = unbounded_channel();
         let mut on_event = move |event: SessionEvent| {
@@ -186,7 +393,7 @@ impl<R: FnMut(&App)> Ui<R> {
                 TurnParams {
                     agent: &runtime.agent,
                     state: &runtime.state,
-                    prompt: text,
+                    prompt,
                     max_turns: DEFAULT_MAX_TURNS,
                 },
                 &mut on_event,
@@ -198,10 +405,10 @@ impl<R: FnMut(&App)> Ui<R> {
             tokio::select! {
                 biased;
                 Some(event) = seen.recv() => {
-                    self.app.on_event(event);
+                    self.on_event(runtime, event);
                     // One redraw for everything already queued, not one per streamed delta.
                     while let Ok(event) = seen.try_recv() {
-                        self.app.on_event(event);
+                        self.on_event(runtime, event);
                     }
                 }
                 outcome = &mut run => break TurnEnd::Finished(outcome),
@@ -210,18 +417,47 @@ impl<R: FnMut(&App)> Ui<R> {
                     Some(input) => match self.app.handle_input(input) {
                         Action::Interrupt | Action::Quit => break TurnEnd::Interrupted,
                         Action::CycleMode => self.cycle_mode(runtime),
+                        Action::RetryDenied(index) => self.retry_denied(runtime, index),
+                        Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
                         Action::None | Action::Submit(_) => {}
                     },
                 },
-                Some(prompt) = self.prompts.recv() => self.on_prompt(prompt),
+                Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
             }
         };
         drop(run);
         while let Ok(event) = seen.try_recv() {
-            self.app.on_event(event);
+            self.on_event(runtime, event);
         }
         self.finish_turn(runtime, &end).await;
         end
+    }
+
+    /// Shows an event. A call the guardian refused is shown with its rule label and its own
+    /// words rather than the note the agent is given.
+    fn on_event(&mut self, runtime: &AgentRuntime, event: SessionEvent) {
+        let denial = match &event {
+            SessionEvent::Decision(record)
+                if record.tier == Tier::Guardian && record.decision == Decision::Deny =>
+            {
+                runtime
+                    .state
+                    .denied_calls()
+                    .into_iter()
+                    .rev()
+                    .find(|call| call.tool_use_id == record.tool_use_id)
+            }
+            _ => None,
+        };
+        self.app.on_event(event);
+        if let Some(call) = denial {
+            self.app.transcript.guardian_denied(
+                call.tool_use_id.as_deref().unwrap_or(""),
+                &call.tool,
+                &call.rule,
+                &call.explanation,
+            );
+        }
     }
 
     async fn finish_turn(&mut self, runtime: &AgentRuntime, end: &TurnEnd) {
@@ -267,6 +503,12 @@ pub async fn drive(
         prompts,
         render,
     };
+    for notice in runtime.notices.clone() {
+        ui.app.transcript.notice(notice);
+    }
+    if mode == PermissionMode::Auto {
+        ui.announce_auto(&runtime);
+    }
     ui.run(&mut runtime, &launch_dir).await;
     Ok(())
 }
@@ -373,7 +615,7 @@ mod tests {
         let mut ui = ui(rx);
         let (prompt, answer) = ask();
         drop(answer);
-        ui.on_prompt(prompt);
+        ui.on_prompt(None, prompt);
         assert!(ui.app.approval.is_none());
     }
 }

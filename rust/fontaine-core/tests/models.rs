@@ -8,7 +8,10 @@ use std::ffi::OsString;
 
 use common::World;
 use fontaine_core::config::AccountKind;
-use fontaine_core::models::{self, GuardianModel, ModelHandle, ModelRef, ResolveParams};
+use fontaine_core::models::{
+    self, GuardianChoice, GuardianModel, ModelHandle, ModelRef, ResolveParams, Switcher,
+};
+use fontaine_guardian::models::ModelEntry;
 use rig_core::completion::CompletionRequest;
 use rig_core::test_utils::MockCompletionModel;
 use serde_json::json;
@@ -241,22 +244,231 @@ async fn the_guardian_model_may_sit_on_another_account() {
     assert_eq!(guardian.reference.to_string(), "safety/claude-haiku-4-5");
 }
 
-#[tokio::test]
-async fn no_guardian_model_means_no_guardian_handle() {
-    let w = World::new();
-    w.user_file(
-        "[accounts.main]\nkind = \"ollama\"\nmodels = [\"qwen3:4b\"]\n\n[model]\nmodel = \"main/qwen3:4b\"\n",
-    );
+fn entry(kind: &str, model: &str, catch: f64) -> ModelEntry {
+    ModelEntry {
+        kind: kind.into(),
+        model: model.into(),
+        catch_rate: catch,
+        false_deny_rate: 0.01,
+        p95_ms: 900,
+        scored_on: "2026-01-01".into(),
+        dataset_version: "abc".into(),
+    }
+}
+
+async fn resolve_listed(
+    w: &World,
+    env: &dyn Fn(&str) -> Option<OsString>,
+    list: &[ModelEntry],
+) -> models::Models {
     let config = w.load().unwrap();
-    let resolved = models::resolve(&ResolveParams {
-        config: &config,
-        data_dir: &w.data,
-        env: &env_of(&[]),
-        model_override: None,
-    })
+    models::resolve_with(
+        &ResolveParams {
+            config: &config,
+            data_dir: &w.data,
+            env,
+            model_override: None,
+        },
+        list,
+    )
     .await
-    .unwrap();
-    assert!(resolved.guardian.is_none());
+    .unwrap()
+}
+
+const MAIN: &str = "[accounts.main]\nkind = \"ollama\"\nmodels = [\"qwen3:4b\"]\n\n[model]\nmodel = \"main/qwen3:4b\"\n";
+
+#[tokio::test]
+async fn an_empty_list_means_the_main_model_judges_with_a_one_time_notice() {
+    let w = World::new();
+    w.user_file(MAIN);
+    for resolved in [
+        resolve_listed(&w, &env_of(&[]), &[]).await,
+        // The shipped list is empty until a scorecard run fills it.
+        {
+            let config = w.load().unwrap();
+            models::resolve(&ResolveParams {
+                config: &config,
+                data_dir: &w.data,
+                env: &env_of(&[]),
+                model_override: None,
+            })
+            .await
+            .unwrap()
+        },
+    ] {
+        assert_eq!(resolved.guardian_choice, GuardianChoice::MainFallback);
+        let Some(GuardianModel::Ready(guardian)) = resolved.guardian else {
+            panic!("the main model is the guardian");
+        };
+        assert_eq!(guardian.reference.to_string(), "main/qwen3:4b");
+        assert_eq!(resolved.notices.len(), 1);
+        assert!(resolved.notices[0].contains("main/qwen3:4b"));
+    }
+}
+
+#[tokio::test]
+async fn a_list_with_no_match_on_any_account_falls_back_to_the_main_model() {
+    let w = World::new();
+    w.user_file(MAIN);
+    let list = [entry("anthropic", "claude-haiku-5-5", 0.99)];
+    let resolved = resolve_listed(&w, &env_of(&[]), &list).await;
+    assert_eq!(resolved.guardian_choice, GuardianChoice::MainFallback);
+    assert_eq!(resolved.notices.len(), 1);
+}
+
+#[tokio::test]
+async fn the_top_entry_on_an_unconfigured_account_is_skipped_for_the_next() {
+    let w = World::new();
+    w.user_file(&format!(
+        "{MAIN}\n[accounts.cloud]\nkind = \"anthropic\"\napi_key_env = \"CLOUD_KEY\"\n\n[accounts.oa]\nkind = \"openai\"\nmodels = [\"gpt-flash\"]\napi_key_env = \"OA_KEY\"\n"
+    ));
+    // `cloud` holds no credential in this environment, so its entry cannot be used.
+    let list = [
+        entry("anthropic", "claude-haiku-5-5", 0.99),
+        entry("openai", "gpt-flash", 0.95),
+    ];
+    let resolved = resolve_listed(&w, &env_of(&[("OA_KEY", "k")]), &list).await;
+    assert_eq!(resolved.guardian_choice, GuardianChoice::Default);
+    assert!(resolved.notices.is_empty());
+    assert_eq!(
+        resolved.guardian.unwrap().reference().to_string(),
+        "oa/gpt-flash"
+    );
+}
+
+#[tokio::test]
+async fn a_list_less_account_counts_with_a_credential_and_is_never_listed() {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let w = World::new();
+    w.user_file(&format!(
+        "{MAIN}\n[accounts.cloud]\nkind = \"anthropic\"\nbase_url = \"{}\"\napi_key_env = \"CLOUD_KEY\"\n",
+        server.uri()
+    ));
+    let list = [entry("anthropic", "claude-haiku-5-5", 0.99)];
+    let resolved = resolve_listed(&w, &env_of(&[("CLOUD_KEY", "k")]), &list).await;
+    assert_eq!(resolved.guardian_choice, GuardianChoice::Default);
+    assert_eq!(
+        resolved.guardian.unwrap().reference().to_string(),
+        "cloud/claude-haiku-5-5"
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_main_account_is_judged_by_the_listing_already_fetched() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "claude-sonnet-4-6", "type": "model", "display_name": "s", "created_at": "2025-01-01T00:00:00Z"},
+                     {"id": "claude-haiku-5-5", "type": "model", "display_name": "h", "created_at": "2025-01-01T00:00:00Z"}],
+            "has_more": false, "first_id": "a", "last_id": "b"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let w = World::new();
+    w.user_file(&format!(
+        "[accounts.work]\nkind = \"anthropic\"\nbase_url = \"{}\"\napi_key_env = \"K\"\n\n[model]\nmodel = \"work/claude-sonnet-4-6\"\n",
+        server.uri()
+    ));
+    let list = [
+        entry("anthropic", "claude-unlisted", 0.99),
+        entry("anthropic", "claude-haiku-5-5", 0.95),
+    ];
+    let resolved = resolve_listed(&w, &env_of(&[("K", "k")]), &list).await;
+    assert_eq!(
+        resolved.guardian.unwrap().reference().to_string(),
+        "work/claude-haiku-5-5"
+    );
+    assert_eq!(resolved.main_listing.len(), 2);
+}
+
+#[tokio::test]
+async fn a_pinned_guardian_is_never_substituted() {
+    let w = World::new();
+    w.user_file(&format!(
+        "{MAIN}\n[accounts.cloud]\nkind = \"anthropic\"\napi_key_env = \"CLOUD_KEY\"\nmodels = [\"claude-haiku-5-5\"]\n\n[accounts.other]\nkind = \"openai\"\napi_key_env = \"OA_KEY\"\nmodels = [\"gpt-flash\"]\n\n[guardian]\nmodel = \"cloud/claude-haiku-5-5\"\n"
+    ));
+    // The pinned model has no credential; the list holds a model that would work.
+    let list = [entry("openai", "gpt-flash", 0.99)];
+    let resolved = resolve_listed(&w, &env_of(&[("OA_KEY", "k")]), &list).await;
+    assert_eq!(resolved.guardian_choice, GuardianChoice::Pinned);
+    assert!(resolved.notices.is_empty());
+    let Some(GuardianModel::Unavailable { reference, reason }) = resolved.guardian else {
+        panic!("unavailable");
+    };
+    assert_eq!(reference.to_string(), "cloud/claude-haiku-5-5");
+    assert!(reason.contains("CLOUD_KEY"), "{reason}");
+}
+
+#[tokio::test]
+async fn a_validated_model_on_an_account_without_its_credential_is_not_picked() {
+    let w = World::new();
+    w.user_file(&format!(
+        "{MAIN}\n[accounts.nokey]\nkind = \"openai\"\napi_key_env = \"MISSING\"\nmodels = [\"gpt-flash\"]\n\n[accounts.oa]\nkind = \"openai\"\napi_key_env = \"OA_KEY\"\nmodels = [\"gpt-flash\"]\n"
+    ));
+    let list = [entry("openai", "gpt-flash", 0.99)];
+    let resolved = resolve_listed(&w, &env_of(&[("OA_KEY", "k")]), &list).await;
+    let Some(GuardianModel::Ready(handle)) = resolved.guardian else {
+        panic!("ready");
+    };
+    assert_eq!(handle.reference.to_string(), "oa/gpt-flash");
+
+    let resolved = resolve_listed(&w, &env_of(&[]), &list).await;
+    let Some(GuardianModel::Ready(handle)) = resolved.guardian else {
+        panic!("falls back to the main model");
+    };
+    assert_eq!(handle.reference.to_string(), "main/qwen3:4b");
+}
+
+#[test]
+fn the_switcher_offers_the_validated_and_the_explicit_models_the_accounts_have() {
+    let w = World::new();
+    w.user_file(&format!(
+        "{MAIN}\n[accounts.cloud]\nkind = \"anthropic\"\napi_key_env = \"CLOUD_KEY\"\nmodels = [\"claude-haiku-5-5\", \"claude-sonnet-4-6\"]\n\n[accounts.nokey]\nkind = \"openai\"\napi_key_env = \"MISSING\"\nmodels = [\"gpt-flash\"]\n"
+    ));
+    let switcher = Switcher::new(
+        w.load().unwrap(),
+        w.data.clone(),
+        std::sync::Arc::new(|name: &str| (name == "CLOUD_KEY").then(|| OsString::from("k"))),
+    );
+    let main = ModelRef::parse("main/qwen3:4b").unwrap();
+    let names: Vec<String> = switcher
+        .candidates(&main, &["qwen3:4b".to_string()])
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "cloud/claude-haiku-5-5",
+            "cloud/claude-sonnet-4-6",
+            "main/qwen3:4b"
+        ]
+    );
+    // An account without its credential gives an unavailable guardian, not an error.
+    let nokey = switcher.guardian("nokey/gpt-flash", None).unwrap();
+    assert!(matches!(nokey, GuardianModel::Unavailable { .. }));
+    assert!(matches!(
+        switcher.guardian("cloud/claude-haiku-5-5", None).unwrap(),
+        GuardianModel::Ready(_)
+    ));
+    assert!(switcher.guardian("cloud/not-offered", None).is_err());
+
+    // A guardian on the main model's account is checked against that account's listing.
+    let listing = ["qwen3:4b".to_string()];
+    let with_main = Some((&main, &listing[..]));
+    assert!(matches!(
+        switcher.guardian("main/qwen3:4b", with_main).unwrap(),
+        GuardianModel::Ready(_)
+    ));
+    assert!(switcher.guardian("main/typo", with_main).is_err());
 }
 
 #[test]
@@ -280,4 +492,18 @@ async fn a_handle_over_a_scripted_model_answers_without_any_endpoint() {
     );
     assert!(!handle.priced());
     assert_eq!(handle.reference.model, "scripted");
+}
+
+#[test]
+fn the_shipped_model_list_parses_and_every_entry_clears_the_bar() {
+    use fontaine_guardian::models::{MODELS_TOML, ModelsFile, clears_bar};
+    let file: ModelsFile = toml::from_str(MODELS_TOML).expect("the shipped list parses");
+    for e in &file.models {
+        assert!(
+            clears_bar(e.catch_rate, e.false_deny_rate, e.p95_ms),
+            "{}/{}",
+            e.kind,
+            e.model
+        );
+    }
 }

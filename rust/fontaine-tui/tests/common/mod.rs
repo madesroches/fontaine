@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use fontaine_core::agent::AgentSetup;
 use fontaine_core::config::{self, AccountKind, LoadParams, PermissionMode};
-use fontaine_core::models::{ModelHandle, ModelRef, Models};
+use fontaine_core::models::{
+    GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models, Switcher,
+};
 use fontaine_core::permissions::DenyAll;
 use fontaine_core::session::Session;
 use fontaine_tui::{Input, drive, view};
@@ -17,7 +19,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rig_core::completion::{CompletionRequest, Usage};
-use rig_core::test_utils::{MockCompletionModel, MockStreamEvent, mock_final};
+use rig_core::test_utils::{MockCompletionModel, MockStreamEvent, MockTurn, mock_final};
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -48,9 +50,28 @@ pub struct World {
     pub extra: PathBuf,
     pub user_config: PathBuf,
     config_dir: PathBuf,
-    data: PathBuf,
+    pub data: PathBuf,
     home: PathBuf,
     pub mock: MockCompletionModel,
+    pub mode: PermissionMode,
+    /// The scripted guardian, when the world has one.
+    pub guardian: Option<MockCompletionModel>,
+    guardian_unavailable: Option<String>,
+    guardian_on_main: bool,
+    /// Environment variables the switcher resolves models with.
+    pub env: Vec<(String, String)>,
+}
+
+pub const SESSION_ID: &str = "00000000-0000-4000-8000-000000000001";
+
+/// A verdict the scripted guardian answers with.
+pub fn verdict(decision: &str, rule: &str, confidence: f64) -> Value {
+    serde_json::json!({
+        "decision": decision,
+        "rule": rule,
+        "explanation": format!("{decision} because of {rule}"),
+        "confidence": confidence,
+    })
 }
 
 impl World {
@@ -77,9 +98,64 @@ impl World {
             config_dir,
             _tmp: tmp,
             mock: MockCompletionModel::from_stream_turns(Vec::<Vec<MockStreamEvent>>::new()),
+            mode: PermissionMode::Manual,
+            guardian: None,
+            guardian_unavailable: None,
+            guardian_on_main: false,
+            env: Vec::new(),
         };
         world.mock = MockCompletionModel::from_stream_turns(turns(&world));
         world
+    }
+
+    /// Starts the session in `mode`.
+    pub fn in_mode(mut self, mode: PermissionMode) -> World {
+        self.mode = mode;
+        self
+    }
+
+    /// A guardian that answers `verdicts` in order and repeats the last one.
+    pub fn with_guardian(mut self, verdicts: Vec<Value>) -> World {
+        let last = verdicts.last().cloned().expect("a verdict");
+        let turns = verdicts
+            .into_iter()
+            .chain(std::iter::repeat_n(last, 50))
+            .map(|v| MockTurn::tool_call("g1", "submit", v));
+        self.guardian = Some(MockCompletionModel::from_turns(turns));
+        self
+    }
+
+    /// A pinned guardian whose account has no credential.
+    pub fn with_unavailable_guardian(mut self, reference: &str, reason: &str) -> World {
+        self.guardian_unavailable = Some(format!("{reference}\n{reason}"));
+        self
+    }
+
+    pub fn with_config(self, text: &str) -> World {
+        std::fs::write(&self.user_config, text).unwrap();
+        self
+    }
+
+    /// The guardian is the main model, as when no validated guardian is available.
+    pub fn guardian_follows_main(mut self) -> World {
+        self.guardian_on_main = true;
+        self
+    }
+
+    pub fn guardian_calls(&self) -> usize {
+        self.guardian
+            .as_ref()
+            .map_or(0, MockCompletionModel::request_count)
+    }
+
+    /// The audit records of the session, in order.
+    pub fn audit(&self) -> Vec<Value> {
+        let path = self.data.join("audit").join(format!("{SESSION_ID}.jsonl"));
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
     }
 
     fn setup(&self) -> AgentSetup {
@@ -97,17 +173,51 @@ impl World {
             AccountKind::OpenAiCompatible,
             self.mock.clone().into(),
         );
+        let guardian = if self.guardian_on_main {
+            Some(GuardianModel::Ready(model.clone()))
+        } else if let Some(spec) = &self.guardian_unavailable {
+            let (reference, reason) = spec.split_once('\n').unwrap();
+            Some(GuardianModel::Unavailable {
+                reference: ModelRef::parse(reference).unwrap(),
+                reason: reason.to_string(),
+            })
+        } else {
+            self.guardian.as_ref().map(|mock| {
+                GuardianModel::Ready(ModelHandle::new(
+                    ModelRef::parse("judge/mock").unwrap(),
+                    AccountKind::OpenAiCompatible,
+                    mock.clone().into(),
+                ))
+            })
+        };
+        let env: std::collections::HashMap<String, std::ffi::OsString> = self
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.into()))
+            .collect();
+        let switcher = Switcher::new(
+            config.clone(),
+            self.data.clone(),
+            Arc::new(move |name: &str| env.get(name).cloned()),
+        );
         AgentSetup {
             config,
             config_dir: self.config_dir.clone(),
             data_dir: self.data.clone(),
             models: Models {
                 main: model,
-                guardian: None,
+                main_listing: Vec::new(),
+                guardian,
+                guardian_choice: if self.guardian_on_main {
+                    GuardianChoice::MainFallback
+                } else {
+                    GuardianChoice::Pinned
+                },
+                notices: Vec::new(),
             },
-            session: Session::create(&self.data, "00000000-0000-4000-8000-000000000001").unwrap(),
+            session: Session::create(&self.data, SESSION_ID).unwrap(),
             roots: vec![self.work.clone()],
-            mode: PermissionMode::Manual,
+            mode: self.mode,
             scrub_env: vec![],
             git_bash: None,
             system_prompt: None,
@@ -117,6 +227,9 @@ impl World {
             approver: Arc::new(DenyAll),
             home: Some(self.home.clone()),
             user_config: Some(self.user_config.clone()),
+            guardian_profile: fontaine_guardian::Profile::Full,
+            notices: Vec::new(),
+            switcher: Some(switcher),
         }
     }
 
@@ -211,4 +324,23 @@ impl Ui {
         self.wait_for(text).await;
         tokio::time::sleep(Duration::from_millis(450)).await;
     }
+}
+
+/// A chat-completions endpoint whose every answer is the guardian verdict `verdict`.
+pub async fn verdict_endpoint(verdict: Value) -> wiremock::MockServer {
+    use wiremock::matchers::any;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::builder().start().await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "c1", "object": "chat.completion", "created": 1, "model": "m",
+            "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": null,
+                "tool_calls": [{"id": "g1", "type": "function",
+                                "function": {"name": "submit", "arguments": verdict.to_string()}}]}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        })))
+        .mount(&server)
+        .await;
+    server
 }

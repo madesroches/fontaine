@@ -6,8 +6,9 @@ use std::path::Path;
 
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::{Decision, DecisionRecord};
+use fontaine_core::config::PermissionMode;
+use fontaine_core::gate::GuardianUsage;
 use fontaine_core::ledger::Record;
-use fontaine_core::models::GuardianModel;
 use fontaine_core::trust;
 use fontaine_core::turn::{
     DEFAULT_MAX_TURNS, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
@@ -243,7 +244,20 @@ struct Outcome {
     denials: Vec<Value>,
 }
 
-fn result_event(session_id: &str, outcome: &Outcome, totals: &Totals) -> Value {
+/// Session spend: the main model plus the guardian. Null only when neither is priced.
+fn session_cost(main: Option<f64>, guardian: Option<f64>) -> Option<f64> {
+    match (main, guardian) {
+        (None, None) => None,
+        (m, g) => Some(m.unwrap_or(0.0) + g.unwrap_or(0.0)),
+    }
+}
+
+fn result_event(
+    session_id: &str,
+    outcome: &Outcome,
+    totals: &Totals,
+    guardian: &GuardianUsage,
+) -> Value {
     let mut fields = json!({
         "subtype": outcome.subtype.name(),
         "is_error": outcome.subtype != Subtype::Success,
@@ -251,14 +265,18 @@ fn result_event(session_id: &str, outcome: &Outcome, totals: &Totals) -> Value {
         "error": outcome.error,
         "num_turns": totals.model_calls,
         "duration_ms": outcome.started.elapsed().as_millis() as u64,
-        "total_cost_usd": totals.cost_usd,
+        "total_cost_usd": session_cost(totals.cost_usd, guardian.cost_usd),
         "usage": {
             "main": {
                 "input_tokens": totals.input_tokens,
                 "output_tokens": totals.output_tokens,
                 "cost_usd": totals.cost_usd,
             },
-            "guardian": { "input_tokens": 0, "output_tokens": 0, "cost_usd": null },
+            "guardian": {
+                "input_tokens": guardian.input_tokens,
+                "output_tokens": guardian.output_tokens,
+                "cost_usd": guardian.cost_usd,
+            },
             "subagents": { "input_tokens": 0, "output_tokens": 0, "cost_usd": null },
         },
         "denials": outcome.denials,
@@ -271,12 +289,16 @@ fn result_event(session_id: &str, outcome: &Outcome, totals: &Totals) -> Value {
 
 fn init_event(runtime: &AgentRuntime, data_dir: &Path) -> Value {
     let config = &runtime.config;
-    let (guardian_model, guardian_available) = match &runtime.models.guardian {
-        None => (Value::Null, Value::Null),
-        Some(g) => (
-            json!(g.reference().to_string()),
-            json!(matches!(g, GuardianModel::Ready(_))),
-        ),
+    // What is in force, not what was configured: the guardian may be the default pick or the
+    // main model, and the profile may have fallen back to `full`.
+    let guardian = runtime.state.guardian();
+    let (guardian_model, guardian_available) = if runtime.models.guardian.is_none() {
+        (Value::Null, Value::Null)
+    } else {
+        (
+            json!(guardian.label()),
+            json!(guardian.unavailable_reason().is_none()),
+        )
     };
     let roots: Vec<String> = runtime
         .roots
@@ -302,15 +324,16 @@ fn init_event(runtime: &AgentRuntime, data_dir: &Path) -> Value {
             "model": runtime.models.main.reference.to_string(),
             "guardian_model": guardian_model,
             "guardian_available": guardian_available,
-            "guardian_profile": match config.guardian.profile {
-                fontaine_core::config::GuardianProfile::Full => "full",
-                fontaine_core::config::GuardianProfile::Minimal => "minimal",
-            },
+            "guardian_profile": runtime.guardian_profile.as_str(),
             "permission_mode": runtime.mode.as_str(),
             "workspace_roots": roots,
             "config_sources": sources,
             "workspace_trust": if trusted { "trusted" } else { "untrusted" },
-            "suspended_allow_rules": [],
+            "suspended_allow_rules": if runtime.mode == PermissionMode::Auto {
+                runtime.state.suspended_allow_rules()
+            } else {
+                Vec::new()
+            },
             "tools": runtime.tool_names,
         }),
     )
@@ -329,6 +352,7 @@ fn gate_decision_event(session_id: &str, record: &DecisionRecord) -> Value {
             "explanation": record.explanation,
             "confidence": record.confidence,
             "guardian_model": record.guardian_model,
+            "fail_closed_reason": record.fail_closed_reason,
         }),
     )
 }
@@ -390,7 +414,10 @@ async fn run_one(
                 // The cap is checked between turns: a spent budget stops the run before its
                 // tool calls run, but never discards an answer already complete.
                 if calls_tool
-                    && let (Some(cap), Some(spent)) = (options.max_budget_usd, totals.cost_usd)
+                    && let (Some(cap), Some(spent)) = (
+                        options.max_budget_usd,
+                        session_cost(totals.cost_usd, runtime.state.guardian_usage().cost_usd),
+                    )
                     && spent > cap
                 {
                     return Flow::Stop;
@@ -441,6 +468,27 @@ async fn run_one(
     outcome
 }
 
+/// Startup notices that matter to a run that can reach the guardian: one stderr line each, and
+/// one more when the guardian cannot be asked at all, since every adjudication then fails
+/// closed.
+fn announce(runtime: &AgentRuntime) {
+    if !matches!(runtime.mode, PermissionMode::Auto | PermissionMode::Plan) {
+        return;
+    }
+    for notice in &runtime.notices {
+        eprintln!("fontaine: {notice}");
+    }
+    let guardian = runtime.state.guardian();
+    if runtime.models.guardian.is_some()
+        && let Some(reason) = guardian.unavailable_reason()
+    {
+        eprintln!(
+            "fontaine: the guardian model {} is unavailable ({reason}); every call that needs it is denied with GuardianUnavailable",
+            guardian.label()
+        );
+    }
+}
+
 /// Runs the headless session and returns the process exit code: 0 completed, 1 run error,
 /// 2 usage error.
 pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -> u8 {
@@ -454,6 +502,7 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
 
     let session_id = runtime.session.id.clone();
     runtime.record_session_start().await;
+    announce(&runtime);
     let stream_events = options.output_format == OutputFormat::StreamJson;
     if stream_events {
         emit_line(&init_event(&runtime, data_dir));
@@ -477,7 +526,10 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
         // precede a turn is paid too, so the cap is checked again after it.
         let over_cap = |totals: &Totals| {
             matches!(
-                (options.max_budget_usd, totals.cost_usd),
+                (
+                    options.max_budget_usd,
+                    session_cost(totals.cost_usd, runtime.state.guardian_usage().cost_usd)
+                ),
                 (Some(cap), Some(spent)) if spent > cap
             )
         };
@@ -507,7 +559,12 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
         };
         let failed = outcome.subtype != Subtype::Success;
         if stream_events {
-            emit_line(&result_event(&session_id, &outcome, &totals));
+            emit_line(&result_event(
+                &session_id,
+                &outcome,
+                &totals,
+                &runtime.state.guardian_usage(),
+            ));
         }
         last = Some(outcome);
         if failed {
@@ -522,7 +579,12 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
     };
     match options.output_format {
         OutputFormat::StreamJson => {}
-        OutputFormat::Json => emit_line(&result_event(&session_id, &last, &totals)),
+        OutputFormat::Json => emit_line(&result_event(
+            &session_id,
+            &last,
+            &totals,
+            &runtime.state.guardian_usage(),
+        )),
         OutputFormat::Text => {
             if let Some(error) = &last.error {
                 eprintln!("fontaine: {error}");
@@ -532,4 +594,17 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
         }
     }
     code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_cost;
+
+    #[test]
+    fn session_cost_adds_the_guardian_and_is_null_only_when_neither_is_priced() {
+        assert_eq!(session_cost(None, None), None);
+        assert_eq!(session_cost(Some(0.5), None), Some(0.5));
+        assert_eq!(session_cost(None, Some(0.25)), Some(0.25));
+        assert_eq!(session_cost(Some(0.5), Some(0.25)), Some(0.75));
+    }
 }

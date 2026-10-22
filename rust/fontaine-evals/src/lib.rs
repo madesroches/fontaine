@@ -3,7 +3,9 @@
 
 pub mod baseline;
 mod case;
+pub mod live;
 mod none;
+pub mod report;
 mod runner;
 
 pub use case::{

@@ -104,9 +104,6 @@ pub fn capture_skip_reason(case: &Case) -> Option<String> {
     if case.kind != Kind::Pipeline {
         return Some("not a pipeline case".into());
     }
-    if case.mode == Some(PermissionMode::Auto) {
-        return Some("auto mode has no baseline here".into());
-    }
     if case
         .permissions
         .as_ref()

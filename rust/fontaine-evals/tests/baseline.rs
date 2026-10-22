@@ -140,8 +140,9 @@ fn capture_skips_what_claude_code_cannot_express() {
             .unwrap()
             .contains("no Claude Code equivalent")
     );
+    // `auto` is posed to `claude -p --permission-mode auto`.
     let auto = case(json!({"mode": "auto"}));
-    assert!(capture_skip_reason(&auto).is_some());
+    assert_eq!(capture_skip_reason(&auto), None);
 }
 
 fn record(id: &str, outcome: CcOutcome) -> BaselineRecord {

@@ -2,6 +2,7 @@
 //! kept apart from the model context that compaction rewrites. Only the harness writes it,
 //! never the model, and nothing here removes or edits a record.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -54,10 +55,26 @@ pub enum Record {
         tool: String,
         agent: String,
         reason: String,
+        /// The audit rule label the denial carried, such as `Git Destructive` or `deny_rule`.
+        #[serde(default)]
+        rule: Option<String>,
+        /// A compact, credential-redacted summary of the call.
+        #[serde(default)]
+        summary: String,
     },
     Action {
         tool: String,
         agent: String,
+        /// The absolute paths the call touches, as the scope validator resolved them.
+        #[serde(default)]
+        paths: Vec<String>,
+        /// The subset of `paths` that was absent on disk when the call was allowed, so a call
+        /// that touches an existing file never marks it as made by this session.
+        #[serde(default)]
+        created: Vec<String>,
+        /// A compact, credential-redacted summary of the arguments.
+        #[serde(default)]
+        summary: String,
     },
     /// A directory added to the workspace roots after the session started.
     AddDir {
@@ -78,9 +95,126 @@ struct Tail {
     next_seq: u64,
 }
 
+/// A path as the ledger compares it: the same file spelled with or without a Windows verbatim
+/// prefix, or in another letter case on Windows, is one path.
+pub fn path_key(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        path.trim_start_matches(r"\\?\")
+            .replace('/', "\\")
+            .to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_string()
+    }
+}
+
+/// What the ledger's records add up to, kept beside the file so the guardian's request is built
+/// from the ledger without re-reading it for every call.
+#[derive(Debug, Default)]
+pub struct LedgerView {
+    pub workspace_roots: Vec<String>,
+    pub workspace_trust: String,
+    pub git_remotes: Vec<String>,
+    index: HashSet<String>,
+    pub index_truncated: bool,
+    /// Every human message, verbatim, oldest first.
+    pub user_messages: Vec<String>,
+    pub actions: Vec<ActionEntry>,
+    pub denials: Vec<DenialEntry>,
+    touched: HashSet<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionEntry {
+    pub tool: String,
+    pub agent: String,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DenialEntry {
+    pub tool: String,
+    pub rule: String,
+    pub summary: String,
+}
+
+/// Whether a path was there before the session began.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Existence {
+    /// In the file index taken at session start.
+    PreExisting,
+    /// Not indexed, and an earlier action of this session created it.
+    CreatedThisSession,
+    /// Not indexed and untouched so far.
+    Unindexed,
+}
+
+impl LedgerView {
+    pub fn existence(&self, path: &str) -> Existence {
+        let key = path_key(path);
+        if self.index.contains(&key) {
+            Existence::PreExisting
+        } else if self.touched.contains(&key) {
+            Existence::CreatedThisSession
+        } else {
+            Existence::Unindexed
+        }
+    }
+
+    fn apply(&mut self, record: &Record) {
+        match record {
+            Record::SessionStart {
+                workspace_roots,
+                workspace_trust,
+                git_remotes,
+                ..
+            } => {
+                self.workspace_roots = workspace_roots.clone();
+                self.workspace_trust = workspace_trust.clone();
+                self.git_remotes = git_remotes.clone();
+            }
+            Record::FileIndex { paths, truncated } => {
+                self.index = paths.iter().map(|p| path_key(p)).collect();
+                self.index_truncated = *truncated;
+            }
+            Record::UserMessage { text } => self.user_messages.push(text.clone()),
+            Record::Action {
+                tool,
+                agent,
+                created,
+                summary,
+                ..
+            } => {
+                self.touched.extend(created.iter().map(|p| path_key(p)));
+                self.actions.push(ActionEntry {
+                    tool: tool.clone(),
+                    agent: agent.clone(),
+                    summary: summary.clone(),
+                });
+            }
+            Record::Denial {
+                tool,
+                rule,
+                summary,
+                reason,
+                ..
+            } => self.denials.push(DenialEntry {
+                tool: tool.clone(),
+                rule: rule.clone().unwrap_or_else(|| reason.clone()),
+                summary: summary.clone(),
+            }),
+            Record::AddDir { root } => self.workspace_roots.push(root.clone()),
+            Record::ModeChange { .. } | Record::Approval { .. } | Record::Grant { .. } => {}
+        }
+    }
+}
+
 pub struct Ledger {
     path: PathBuf,
     tail: Mutex<Tail>,
+    view: Mutex<LedgerView>,
 }
 
 impl Ledger {
@@ -93,6 +227,7 @@ impl Ledger {
         Ok(Ledger {
             path,
             tail: Mutex::new(Tail { file, next_seq: 0 }),
+            view: Mutex::new(LedgerView::default()),
         })
     }
 
@@ -114,7 +249,16 @@ impl Ledger {
         tail.file.write_all(&line)?;
         tail.file.flush()?;
         tail.next_seq += 1;
+        self.view
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .apply(&entry.record);
         Ok(())
+    }
+
+    /// What the records so far add up to.
+    pub fn view(&self) -> std::sync::MutexGuard<'_, LedgerView> {
+        self.view.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Every record written so far, in order.

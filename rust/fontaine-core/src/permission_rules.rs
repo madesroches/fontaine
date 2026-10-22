@@ -634,32 +634,11 @@ fn shell_quote(word: &str) -> String {
     }
 }
 
-/// Entries whose bare form, or form with more arguments (`<entry> *`), runs arbitrary code.
-/// `auto` suspends allow rules of this shape for as long as it is on; narrower rules such as
-/// `shell(npm test)` stay.
-pub const BROAD_CODE_EXECUTION: [&str; 21] = [
-    "sh",
-    "bash",
-    "zsh",
-    "python",
-    "python3",
-    "node",
-    "ruby",
-    "perl",
-    "deno",
-    "bun",
-    "cargo run",
-    "npm run",
-    "npx",
-    "pnpm",
-    "yarn",
-    "make",
-    "eval",
-    "exec",
-    "xargs",
-    "env",
-    "sudo",
-];
+/// A ` *` rule matches any argv that starts with its words, so `python -c *` runs whatever
+/// code the model writes: only the program counts, not the words after it.
+fn wildcard_is_broad(words: &[String]) -> bool {
+    crate::code_execution::wildcard_overlaps_entry(words)
+}
 
 /// Whether an allow rule is one `auto` suspends.
 pub fn is_broad_code_execution(rule: &Rule) -> bool {
@@ -669,9 +648,10 @@ pub fn is_broad_code_execution(rule: &Rule) -> bool {
             let Ok(spec) = shell_spec(spec) else {
                 return false;
             };
-            BROAD_CODE_EXECUTION
-                .iter()
-                .any(|entry| entry.split(' ').eq(spec.words.iter().map(String::as_str)))
+            if spec.wildcard {
+                return wildcard_is_broad(&spec.words);
+            }
+            crate::code_execution::is_exactly_entry(&spec.words)
         }
         _ => false,
     }
@@ -886,6 +866,22 @@ mod tests {
             "shell(sudo)",
             "shell('bash' *)",
             "shell(\"python\")",
+            "shell(python -c *)",
+            "shell(node -e *)",
+            "shell(/bin/bash *)",
+            "shell(/usr/bin/python3 *)",
+            "shell(python3.12 *)",
+            "shell(cargo run --release *)",
+            "shell(cargo *)",
+            "shell(npm *)",
+            "shell(npm exec *)",
+            "shell(bunx *)",
+            "shell(doas *)",
+            "shell(php *)",
+            "shell(timeout *)",
+            "shell(pwsh *)",
+            "shell(cmd *)",
+            "shell(/usr/bin/powershell.exe *)",
         ] {
             assert!(is_broad_code_execution(&ok(rule)), "{rule}");
         }
@@ -895,6 +891,8 @@ mod tests {
             "shell(cargo build)",
             "read",
             "shell(cargo run --release)",
+            "shell(cargo test *)",
+            "shell(cargo build *)",
         ] {
             assert!(!is_broad_code_execution(&ok(rule)), "{rule}");
         }

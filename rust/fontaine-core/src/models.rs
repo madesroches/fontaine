@@ -16,6 +16,7 @@ use rig_core::providers::openai::{OpenAI, OpenAIConfig};
 
 use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup};
 use crate::credentials::Credentials;
+use fontaine_guardian::models::{ModelEntry, ModelsFile};
 
 /// The one gateway dialect every `openai-compatible` account speaks. Its name is the vendor
 /// rig prices by, so it is the kind name and never an account name: such endpoints are unpriced.
@@ -112,9 +113,8 @@ impl ModelHandle {
     }
 }
 
-/// The guardian's model, when `[guardian] model` is set. A missing or invalid credential on its
-/// account never stops startup: the guardian is then unavailable and every adjudication that
-/// needs it fails closed.
+/// The guardian's model. A missing or invalid credential on its account never stops startup:
+/// the guardian is then unavailable and every adjudication that needs it fails closed.
 #[derive(Clone, Debug)]
 pub enum GuardianModel {
     Ready(ModelHandle),
@@ -130,10 +130,27 @@ impl GuardianModel {
     }
 }
 
+/// How the guardian's model was chosen. Only an explicit choice is ever pinned; the other two
+/// follow the configured accounts and the main model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuardianChoice {
+    /// `[guardian] model` or `/guardian-model` named it. It is never substituted.
+    Pinned,
+    /// The highest-ranked benchmark-validated model an account offers.
+    Default,
+    /// Nothing validated is available, so the main model judges.
+    MainFallback,
+}
+
 #[derive(Debug)]
 pub struct Models {
     pub main: ModelHandle,
+    /// The model ids the main model's account listed when it was resolved.
+    pub main_listing: Vec<String>,
     pub guardian: Option<GuardianModel>,
+    pub guardian_choice: GuardianChoice,
+    /// Things the user should be told once at startup.
+    pub notices: Vec<String>,
 }
 
 pub struct ResolveParams<'a> {
@@ -334,26 +351,18 @@ fn unknown_model(reference: &ModelRef, available: &[String]) -> ModelError {
     ))
 }
 
-/// Resolves the main model and, when `[guardian] model` is set, the guardian model.
-///
-/// An account without a `models` list is listed through the provider, lazily and only for the
-/// main model's account. The guardian's model is checked against a list only when that list is
-/// known without a call to the guardian's own credentials; its availability is otherwise the
-/// guardian's startup concern and fails closed.
-pub async fn resolve(params: &ResolveParams<'_>) -> Result<Models, ModelError> {
-    let config = params.config;
-    let main_text = params
-        .model_override
-        .or(config.model.as_deref())
-        .ok_or_else(|| {
-            config_error("no main model: set `[model] model` in the settings or pass `--model <account>/<model>`")
-        })?;
-    let main_ref = parse_reference(main_text, "model")?;
-    let main_account = account_of(config, &main_ref, "model")?;
-    let stored = Credentials::load(params.data_dir)?;
-
+/// The main model's client, its model ids and its handle.
+async fn resolve_main_model(
+    config: &Config,
+    stored: &Credentials,
+    env: EnvLookup<'_>,
+    text: &str,
+    what: &str,
+) -> Result<(ModelRef, Client, Vec<String>, ModelHandle), ModelError> {
+    let main_ref = parse_reference(text, what)?;
+    let main_account = account_of(config, &main_ref, what)?;
     let main_client =
-        client_for(&main_ref.account, main_account, params.env, &stored).map_err(config_error)?;
+        client_for(&main_ref.account, main_account, env, stored).map_err(config_error)?;
     let main_models = match &main_account.models {
         Some(list) => list.clone(),
         None => main_client.list().await.map_err(|e| {
@@ -371,36 +380,113 @@ pub async fn resolve(params: &ResolveParams<'_>) -> Result<Models, ModelError> {
         main_account.kind,
         main_client.completion(&main_ref.model),
     );
-
-    let guardian = match config.guardian.model.as_deref() {
-        None => None,
-        Some(text) => Some(
-            resolve_guardian(
-                params,
-                &stored,
-                text,
-                (&main_ref, &main_client, &main_models),
-            )
-            .await?,
-        ),
-    };
-    Ok(Models { main, guardian })
+    Ok((main_ref, main_client, main_models, main))
 }
 
-async fn resolve_guardian(
+/// Resolves the main model and the guardian model.
+///
+/// An account without a `models` list is listed through the provider, lazily and only for the
+/// main model's account. The guardian's model is checked against a list only when that list is
+/// known without a call to the guardian's own credentials; its availability is otherwise the
+/// guardian's startup concern and fails closed. With no `[guardian] model`, the default is the
+/// highest-ranked validated model an account offers, and the main model when none does.
+pub async fn resolve(params: &ResolveParams<'_>) -> Result<Models, ModelError> {
+    resolve_with(params, &validated_models()).await
+}
+
+/// [`resolve`] against a given ranked list of validated guardian models instead of the shipped
+/// one.
+pub async fn resolve_with(
     params: &ResolveParams<'_>,
+    validated: &[ModelEntry],
+) -> Result<Models, ModelError> {
+    let config = params.config;
+    let main_text = params
+        .model_override
+        .or(config.model.as_deref())
+        .ok_or_else(|| {
+            config_error("no main model: set `[model] model` in the settings or pass `--model <account>/<model>`")
+        })?;
+    let stored = Credentials::load(params.data_dir)?;
+    let (main_ref, main_client, main_models, main) =
+        resolve_main_model(config, &stored, params.env, main_text, "model").await?;
+
+    let mut notices = Vec::new();
+    let (guardian, guardian_choice) = match config.guardian.model.as_deref() {
+        Some(text) => (
+            resolve_guardian(
+                config,
+                &stored,
+                params.env,
+                text,
+                (&main_ref, &main_client, &main_models),
+            )?,
+            GuardianChoice::Pinned,
+        ),
+        None => match default_guardian(
+            validated,
+            config,
+            &stored,
+            params.env,
+            (&main_ref, &main_client, &main_models),
+        ) {
+            Some(guardian) => (guardian, GuardianChoice::Default),
+            None => {
+                notices.push(format!(
+                    "no benchmark-validated guardian model is available on your accounts, so the guardian runs on your main model `{main_ref}`; set `[guardian] model` or use /guardian-model to choose one"
+                ));
+                (
+                    GuardianModel::Ready(main.clone()),
+                    GuardianChoice::MainFallback,
+                )
+            }
+        },
+    };
+    Ok(Models {
+        main,
+        main_listing: main_models,
+        guardian: Some(guardian),
+        guardian_choice,
+        notices,
+    })
+}
+
+fn resolve_guardian(
+    config: &Config,
     stored: &Credentials,
+    env: EnvLookup<'_>,
     text: &str,
     main: (&ModelRef, &Client, &[String]),
 ) -> Result<GuardianModel, ModelError> {
     let (main_ref, main_client, main_models) = main;
-    let reference = parse_reference(text, "guardian model")?;
-    let account = account_of(params.config, &reference, "guardian model")?;
+    build_guardian(
+        config,
+        stored,
+        env,
+        text,
+        Some((main_ref, main_models)),
+        Some(main_client),
+    )
+}
 
-    let known: Option<&[String]> = match &account.models {
-        Some(list) => Some(list),
-        None if reference.account == main_ref.account => Some(main_models),
-        None => None,
+/// The guardian `text` names. The main model's account listing vouches for a guardian on that
+/// account, and reuses the main client rather than building another.
+fn build_guardian(
+    config: &Config,
+    stored: &Credentials,
+    env: EnvLookup<'_>,
+    text: &str,
+    main: Option<(&ModelRef, &[String])>,
+    main_client: Option<&Client>,
+) -> Result<GuardianModel, ModelError> {
+    let reference = parse_reference(text, "guardian model")?;
+    let account = account_of(config, &reference, "guardian model")?;
+    let same_account = main.is_some_and(|(main_ref, _)| reference.account == main_ref.account);
+
+    let known: Option<&[String]> = match (&account.models, main) {
+        (Some(list), _) => Some(list),
+        (None, Some((_, listing))) if same_account => Some(listing),
+        _ => None,
     };
     if let Some(list) = known
         && !lists(account.kind, list, &reference.model)
@@ -408,10 +494,9 @@ async fn resolve_guardian(
         return Err(unknown_model(&reference, list));
     }
 
-    let client = if reference.account == main_ref.account {
-        Ok(main_client.clone())
-    } else {
-        client_for(&reference.account, account, params.env, stored)
+    let client = match main_client {
+        Some(client) if same_account => Ok(client.clone()),
+        _ => client_for(&reference.account, account, env, stored),
     };
     Ok(match client {
         Ok(client) => {
@@ -420,4 +505,154 @@ async fn resolve_guardian(
         }
         Err(reason) => GuardianModel::Unavailable { reference, reason },
     })
+}
+
+/// The shipped list of validated guardian models, best first.
+pub fn validated_models() -> Vec<ModelEntry> {
+    let file: ModelsFile =
+        toml::from_str(fontaine_guardian::models::MODELS_TOML).unwrap_or_else(|e| {
+            tracing::warn!("the shipped guardian model list does not parse: {e}");
+            ModelsFile::default()
+        });
+    fontaine_guardian::models::ranked(&file.models)
+}
+
+/// Whether `account` offers `model`, judged without a call to a guardian account: by its
+/// explicit `models` list, by the listing already fetched for the main account, or, for any
+/// other account that lists nothing, by its kind matching and a credential being present.
+fn account_has(
+    name: &str,
+    account: &Account,
+    model: &str,
+    main: (&ModelRef, &[String]),
+    env: EnvLookup<'_>,
+    stored: &Credentials,
+) -> bool {
+    if needs_credential(account.kind)
+        && !matches!(credential(name, account, env, stored), Credential::Found(_))
+    {
+        return false;
+    }
+    match &account.models {
+        Some(list) => lists(account.kind, list, model),
+        None if name == main.0.account => lists(account.kind, main.1, model),
+        None => matches!(credential(name, account, env, stored), Credential::Found(_)),
+    }
+}
+
+/// The validated guardian models the configured accounts offer, best first.
+fn available_validated(
+    validated: &[ModelEntry],
+    config: &Config,
+    stored: &Credentials,
+    env: EnvLookup<'_>,
+    main: (&ModelRef, &[String]),
+) -> Vec<ModelRef> {
+    let mut out = Vec::new();
+    for entry in validated {
+        for (name, account) in &config.accounts {
+            if account.kind.as_str() == entry.kind
+                && account_has(name, account, &entry.model, main, env, stored)
+            {
+                out.push(ModelRef {
+                    account: name.clone(),
+                    model: entry.model.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
+fn default_guardian(
+    validated: &[ModelEntry],
+    config: &Config,
+    stored: &Credentials,
+    env: EnvLookup<'_>,
+    main: (&ModelRef, &Client, &[String]),
+) -> Option<GuardianModel> {
+    available_validated(validated, config, stored, env, (main.0, main.2))
+        .into_iter()
+        .find_map(|reference| {
+            let text = reference.to_string();
+            match resolve_guardian(config, stored, env, &text, main) {
+                Ok(ready @ GuardianModel::Ready(_)) => Some(ready),
+                _ => None,
+            }
+        })
+}
+
+/// Resolves models again while a session runs, for `/model` and `/guardian-model`. It owns what
+/// it needs, so it can be used from an interface that holds no borrow of the startup state.
+#[derive(Clone)]
+pub struct Switcher {
+    pub config: Config,
+    pub data_dir: std::path::PathBuf,
+    pub env: SharedEnv,
+}
+
+pub type SharedEnv = std::sync::Arc<dyn Fn(&str) -> Option<std::ffi::OsString> + Send + Sync>;
+
+impl Switcher {
+    pub fn new(config: Config, data_dir: std::path::PathBuf, env: SharedEnv) -> Switcher {
+        Switcher {
+            config,
+            data_dir,
+            env,
+        }
+    }
+
+    /// The main model `text` names, checked against what its account offers, and that listing.
+    pub async fn main(&self, text: &str) -> Result<(ModelHandle, Vec<String>), ModelError> {
+        let stored = Credentials::load(&self.data_dir)?;
+        let (_, _, listing, handle) =
+            resolve_main_model(&self.config, &stored, &*self.env, text, "model").await?;
+        Ok((handle, listing))
+    }
+
+    /// The guardian model `text` names. An account without a credential gives an unavailable
+    /// guardian, not an error: it fails closed and the user is asked what to do. `main` is the
+    /// main model and the listing of its account, which vouches for a guardian on that account.
+    pub fn guardian(
+        &self,
+        text: &str,
+        main: Option<(&ModelRef, &[String])>,
+    ) -> Result<GuardianModel, ModelError> {
+        let stored = Credentials::load(&self.data_dir)?;
+        build_guardian(&self.config, &stored, &*self.env, text, main, None)
+    }
+
+    /// Guardian models to offer when the pinned one is unavailable: the validated list entries
+    /// the accounts offer, then every model an account lists explicitly.
+    pub fn candidates(&self, main: &ModelRef, main_models: &[String]) -> Vec<ModelRef> {
+        let Ok(stored) = Credentials::load(&self.data_dir) else {
+            return Vec::new();
+        };
+        let mut out = available_validated(
+            &validated_models(),
+            &self.config,
+            &stored,
+            &*self.env,
+            (main, main_models),
+        );
+        for (name, account) in &self.config.accounts {
+            if !matches!(
+                credential(name, account, &*self.env, &stored),
+                Credential::Found(_)
+            ) && needs_credential(account.kind)
+            {
+                continue;
+            }
+            for model in account.models.iter().flatten() {
+                let reference = ModelRef {
+                    account: name.clone(),
+                    model: model.clone(),
+                };
+                if !out.contains(&reference) {
+                    out.push(reference);
+                }
+            }
+        }
+        out
+    }
 }

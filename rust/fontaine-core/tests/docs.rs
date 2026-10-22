@@ -173,6 +173,8 @@ fn the_required_pages_exist_with_content() {
         "docs/architecture.md",
         "docs/configuration.md",
         "docs/headless.md",
+        "docs/guardian.md",
+        "docs/evals.md",
         "docs/telemetry.md",
         "docs/tools.md",
         "docs/permissions.md",

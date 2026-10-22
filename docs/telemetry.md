@@ -95,7 +95,10 @@ Both backends export the same tree: `fontaine.session` contains one `fontaine.in
 user message, and below it the model calls (`chat`) and tool executions (`execute_tool`). Each
 tool call also has a `fontaine.tool` span, with `tool_name`, `risk_class` (`read_only`,
 `workspace_write` or `arbitrary`), `tool_source` (`builtin` or `mcp`) and `success`.
-`fontaine.interaction` carries `prompt.id` and `prompt.length`. Each tool call also has a `fontaine.permission` child span with `tool_name`, `permission_mode`, and the `tier` and `decision` of the pipeline's decision; while a human is asked, a `fontaine.tool.blocked_on_user` span below it measures the wait. Model-call spans carry the
+`fontaine.interaction` carries `prompt.id` and `prompt.length`. Each tool call also has a `fontaine.permission` child span with `tool_name`, `permission_mode`, and the `tier` and `decision` of the pipeline's decision; while a human is asked, a `fontaine.tool.blocked_on_user` span below it measures the wait. Calls that reach the guardian add a `fontaine.guardian` span below `fontaine.permission` with
+`tool_name`, `guardian_model`, `guardian_profile`, the `decision`, whether it was a `cache_hit` and
+the `fail_closed_reason` when it failed closed; the guardian's own model call sits under it.
+Model-call spans carry the
 provider, the model, the response id and the token counts. Source file paths and thread names are
 not exported.
 
@@ -107,10 +110,14 @@ not exported.
 | `fontaine.token.usage` | `{token}` | `type` (`input`, `output`, `cacheRead`, `cacheCreation`, `reasoning`), `model`, `query_source` |
 | `fontaine.cost.usage` | USD | `model`, `query_source` |
 | `fontaine.tool_decision.count` | `{decision}` | `tier`, `decision` |
+| `fontaine.guardian.latency` | ms | `model`, `profile`, `cache_hit` |
+| `fontaine.guardian.fail_closed.count` | `{denial}` | `reason` (`error`, `timeout`, `unparseable`, `low_confidence`, `unavailable`) |
 
 `fontaine.cost.usage` is priced from the model catalog and is absent when the catalog has no price,
 which is always the case for an `openai-compatible` endpoint. `query_source` is `main` for the
-session model. No metric carries a prompt or tool-call id.
+session model and `guardian` for the model calls made while a guardian adjudication is open.
+Both guardian metrics are derived from the guardian attributes of the decision event. No metric
+carries a prompt or tool-call id.
 
 ### Events
 
@@ -118,6 +125,7 @@ session model. No metric carries a prompt or tool-call id.
 |---|---|
 | `api_request` | `model`, `provider`, `input_tokens`, `output_tokens`, `cost_usd` (when priced), `duration_ms`, `query_source` |
 | `user_prompt` | `prompt_id`, `prompt_length` (the length only) |
+| `tool_decision` | `tool_name`, `tool_use_id`, `tier`, `decision`, `permission_mode`, `headless`, `latency_ms`; for guardian decisions also `guardian.model`, `guardian.profile`, `guardian.confidence`, `guardian.cache_hit`, `guardian.latency_ms` and, when it failed closed, `fail_closed_reason`. The rule label and explanation are not exported; they are in the audit log. |
 | `tool_result` | `tool_name`, `risk_class`, `tool_source`, `success`, `duration_ms`, `args_bytes`, `result_bytes` (sizes only: no arguments and no output). Emitted for every call, including a denied one. |
 
 ## Privacy

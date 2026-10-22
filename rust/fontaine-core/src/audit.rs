@@ -66,6 +66,21 @@ pub struct DecisionRecord {
     pub confidence: Option<f64>,
     pub guardian_model: Option<String>,
     pub latency_ms: u64,
+    /// `full` or `minimal`, for guardian decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian_profile: Option<String>,
+    /// What the guardian's adjudication came to: `allow`, `deny` or `escalate`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian_verdict: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian_cache_hit: Option<bool>,
+    /// How long the guardian took, apart from the rest of the pipeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian_latency_ms: Option<u64>,
+    /// `error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`, when the guardian
+    /// failed closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fail_closed_reason: Option<String>,
     pub permission_mode: String,
     pub headless: bool,
     /// What the model was told for a denial.

@@ -6,6 +6,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use fontaine_guardian::{Guardian, Profile, Settings as GuardianSettings};
 use fontaine_tools::builtins::Seen;
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::git_bash::GitBash;
@@ -14,15 +15,17 @@ use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext};
 use rig_agent::prelude::*;
 use rig_core::schemars::Schema;
 
+use crate::adjudication::project_instructions;
 use crate::config::{Config, PermissionMode};
-use crate::gate::{SessionState, StateParams};
+use crate::gate::{AutoContext, SessionState, StateParams, no_guardian};
 use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
-use crate::models::Models;
+use crate::models::{GuardianChoice, GuardianModel, ModelRef, Models, Switcher};
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
 use crate::session::{CONVERSATION_LOG, Session};
 use crate::tools::{self, RegistryParams};
 use crate::trust;
+use crate::user_config;
 use crate::workspace::{self, RootSource};
 
 /// Everything a session needs that does not depend on which surface runs it.
@@ -46,8 +49,50 @@ pub struct AgentSetup {
     pub headless: bool,
     pub approver: Arc<dyn Approver>,
     pub home: Option<PathBuf>,
-    /// The user settings file "always allow" appends to.
+    /// The user settings file "always allow" appends to, and `/model` and `/guardian-model`
+    /// write to.
     pub user_config: Option<PathBuf>,
+    /// The guardian profile that is actually in force, after the containment check.
+    pub guardian_profile: Profile,
+    /// What to tell the user once at startup.
+    pub notices: Vec<String>,
+    /// Resolves models again for `/model` and `/guardian-model`.
+    pub switcher: Option<Switcher>,
+}
+
+/// The guardian a session runs with, from the model that was resolved for it.
+pub fn build_guardian(
+    model: Option<&GuardianModel>,
+    config: &Config,
+    profile: Profile,
+) -> Guardian {
+    let settings = GuardianSettings {
+        timeout: std::time::Duration::from_secs(config.guardian.timeout_secs),
+        confidence_threshold: config.guardian.confidence_threshold,
+        cache: config.guardian.cache,
+        profile,
+    };
+    match model {
+        Some(GuardianModel::Ready(handle)) => Guardian::new(
+            handle.completion.clone(),
+            handle.reference.to_string(),
+            settings,
+        ),
+        Some(GuardianModel::Unavailable { reference, reason }) => {
+            Guardian::unavailable(reference.to_string(), reason, settings)
+        }
+        None => {
+            let guardian = no_guardian();
+            Guardian::unavailable(
+                guardian.label().to_string(),
+                guardian
+                    .unavailable_reason()
+                    .unwrap_or_default()
+                    .to_string(),
+                settings,
+            )
+        }
+    }
 }
 
 /// Tells the permission state which model tool call a tool is serving.
@@ -70,6 +115,16 @@ impl AgentHook for CurrentCall {
     }
 }
 
+/// What a model switch did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Switched {
+    pub reference: String,
+    /// The guardian moved with the main model because it was on the main-model fallback.
+    pub guardian_followed: bool,
+    /// Why the choice could not be saved, when it could not.
+    pub persist_error: Option<String>,
+}
+
 pub struct AgentRuntime {
     pub agent: Agent,
     pub tool_names: Vec<&'static str>,
@@ -79,6 +134,8 @@ pub struct AgentRuntime {
     pub config: Config,
     pub roots: Vec<PathBuf>,
     pub mode: PermissionMode,
+    pub guardian_profile: Profile,
+    pub notices: Vec<String>,
     pipeline: Arc<PermissionPipeline>,
     approver: Arc<dyn Approver>,
     seen: Seen,
@@ -94,6 +151,8 @@ struct Setup {
     system_prompt: Option<String>,
     append_system_prompt: Option<String>,
     json_schema: Option<Schema>,
+    user_config: Option<PathBuf>,
+    switcher: Option<Switcher>,
 }
 
 impl AgentRuntime {
@@ -103,6 +162,8 @@ impl AgentRuntime {
             setup.roots[1..].iter().cloned(),
         ));
         let permissions = &setup.config.permissions;
+        let auto_mode = &setup.config.auto_mode;
+        let instructions = prompt::load_instructions(&setup.config_dir, &setup.roots[0]);
         let state = Arc::new(SessionState::new(StateParams {
             session_id: setup.session.id.clone(),
             mode: setup.mode,
@@ -117,6 +178,20 @@ impl AgentRuntime {
                 .into_iter()
                 .map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.clone()))
                 .collect(),
+            guardian: Arc::new(build_guardian(
+                setup.models.guardian.as_ref(),
+                &setup.config,
+                setup.guardian_profile,
+            )),
+            auto: AutoContext {
+                environment: fontaine_guardian::EnvironmentConfig::expand(&auto_mode.environment),
+                rules: fontaine_guardian::RuleConfig::expand(
+                    &auto_mode.hard_deny,
+                    &auto_mode.soft_deny,
+                    &auto_mode.allow,
+                ),
+                project_instructions: project_instructions(&instructions),
+            },
         }));
         let pipeline = Arc::new(PermissionPipeline::new(PipelineParams {
             state: state.clone(),
@@ -124,7 +199,7 @@ impl AgentRuntime {
             headless: setup.headless,
             hooks: Vec::new(),
             allow_extra: setup.config.shell_preclassifier_allow_extra.clone(),
-            user_config: setup.user_config,
+            user_config: setup.user_config.clone(),
         }));
         let setup_rest = Setup {
             config_dir: setup.config_dir,
@@ -134,6 +209,8 @@ impl AgentRuntime {
             system_prompt: setup.system_prompt,
             append_system_prompt: setup.append_system_prompt,
             json_schema: setup.json_schema,
+            user_config: setup.user_config,
+            switcher: setup.switcher,
         };
         let seen = Seen::default();
         let (agent, tool_names) = build_agent(&Parts {
@@ -155,6 +232,8 @@ impl AgentRuntime {
             config: setup.config,
             roots: setup.roots,
             mode: setup.mode,
+            guardian_profile: setup.guardian_profile,
+            notices: setup.notices,
             pipeline,
             approver: setup.approver,
             seen,
@@ -217,6 +296,114 @@ impl AgentRuntime {
             root: root.display().to_string(),
         });
         Ok(root)
+    }
+
+    /// Makes `model` the guardian from the next adjudication on. Its verdict cache starts empty.
+    pub fn install_guardian(&self, model: &GuardianModel) {
+        self.state.set_guardian(Arc::new(build_guardian(
+            Some(model),
+            &self.config,
+            self.guardian_profile,
+        )));
+    }
+
+    fn switcher(&self) -> Result<&Switcher, String> {
+        self.setup
+            .switcher
+            .as_ref()
+            .ok_or_else(|| "models cannot be switched in this session".to_string())
+    }
+
+    fn guardian_for(&self, text: &str) -> Result<GuardianModel, String> {
+        self.switcher()?
+            .guardian(
+                text,
+                Some((&self.models.main.reference, &self.models.main_listing)),
+            )
+            .map_err(|e| e.to_string())
+    }
+
+    fn persist(&self, write: impl FnOnce(&Path) -> std::io::Result<()>) -> Option<String> {
+        match &self.setup.user_config {
+            Some(path) => write(path)
+                .err()
+                .map(|e| format!("could not save it to {}: {e}", path.display())),
+            None => Some("there is no user settings file to save it to".to_string()),
+        }
+    }
+
+    /// `/model`: switches the live session's model, rebuilds the agent on it and saves the
+    /// choice as `[model] model`. The guardian follows only when it is on the main-model
+    /// fallback; a pinned or validated guardian stays where it is.
+    pub async fn switch_main_model(&mut self, text: &str) -> Result<Switched, String> {
+        let (handle, listing) = self
+            .switcher()?
+            .clone()
+            .main(text)
+            .await
+            .map_err(|e| e.to_string())?;
+        let previous = std::mem::replace(&mut self.models.main, handle);
+        let previous_listing = std::mem::replace(&mut self.models.main_listing, listing);
+        if let Err(e) = self.rebuild() {
+            self.models.main = previous;
+            self.models.main_listing = previous_listing;
+            return Err(e);
+        }
+        let guardian_followed = self.models.guardian_choice == GuardianChoice::MainFallback;
+        if guardian_followed {
+            let model = GuardianModel::Ready(self.models.main.clone());
+            self.install_guardian(&model);
+            self.models.guardian = Some(model);
+        }
+        let reference = self.models.main.reference.to_string();
+        let persist_error = self.persist(|path| user_config::set_model(path, &reference));
+        Ok(Switched {
+            reference,
+            guardian_followed,
+            persist_error,
+        })
+    }
+
+    /// `/guardian-model`: pins the guardian to `text` for the live session and saves it as
+    /// `[guardian] model`. An account with no credential gives an unavailable guardian rather
+    /// than an error, which the next adjudication reports.
+    pub fn set_guardian_model(&mut self, text: &str) -> Result<Switched, String> {
+        let model = self.guardian_for(text)?;
+        self.install_guardian(&model);
+        let reference = model.reference().to_string();
+        self.models.guardian = Some(model);
+        self.models.guardian_choice = GuardianChoice::Pinned;
+        let persist_error = self.persist(|path| user_config::set_guardian_model(path, &reference));
+        Ok(Switched {
+            reference,
+            guardian_followed: false,
+            persist_error,
+        })
+    }
+
+    /// Tries the guardian model again, for when its credential has appeared since startup.
+    /// Returns whether it can be asked now.
+    pub fn retry_guardian(&self) -> Result<bool, String> {
+        let current = self.state.guardian();
+        let model = self.guardian_for(current.label())?;
+        self.install_guardian(&model);
+        Ok(matches!(model, GuardianModel::Ready(_)))
+    }
+
+    /// Switches the guardian for this session only, without saving it: the "pick another"
+    /// answer to an unavailable guardian.
+    pub fn use_guardian(&self, text: &str) -> Result<bool, String> {
+        let model = self.guardian_for(text)?;
+        self.install_guardian(&model);
+        Ok(matches!(model, GuardianModel::Ready(_)))
+    }
+
+    /// Guardian models to offer in place of an unavailable one.
+    pub fn guardian_candidates(&self) -> Vec<ModelRef> {
+        self.switcher().map_or_else(
+            |_| Vec::new(),
+            |switcher| switcher.candidates(&self.models.main.reference, &self.models.main_listing),
+        )
     }
 
     /// The facts the ledger opens with: the roots, trust, git remotes and the pre-session file

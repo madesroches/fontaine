@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 fontaine-core.workspace = true
+fontaine-guardian.workspace = true
 fontaine-tools.workspace = true
 futures.workspace = true
 ratatui.workspace = true
@@ -19,3 +20,4 @@ tokio.workspace = true
 rig-agent = { workspace = true, features = ["test-utils"] }
 rig-core = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true
+wiremock.workspace = true

@@ -1,6 +1,6 @@
 mod common;
 
-use common::pipeline::{Options, Rig, allowed, denied_message};
+use common::pipeline::{Options, Rig, allow_verdict, allowed, denied_message, fake_guardian};
 use fontaine_core::audit::Decision;
 use fontaine_core::config::PermissionMode::{self, AcceptEdits, DontAsk, Manual, Plan};
 use fontaine_core::permissions::Answer;
@@ -32,7 +32,7 @@ async fn first(rig: &Rig, tool: &str, args: Value) -> (Decision, Tier) {
 #[tokio::test]
 async fn the_mode_and_risk_class_matrix() {
     use Decision::{Allow, Deny, Prompt};
-    use Tier::{DontAsk as Dont, Mode, PlanBlock, ReadOnlyFastPath, Tier05};
+    use Tier::{DontAsk as Dont, Guardian, Mode, PlanBlock, ReadOnlyFastPath, Tier05};
     type Row = (&'static str, Value, [(Decision, Tier); 4]);
     let rows: Vec<Row> = vec![
         (
@@ -73,13 +73,23 @@ async fn the_mode_and_risk_class_matrix() {
         (
             "shell",
             shell("touch x"),
-            [(Prompt, Mode), (Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, Guardian),
+                (Deny, Dont),
+            ],
         ),
         ("shell", shell("ls"), [(Allow, Tier05); 4]),
         (
             "webfetch",
             json!({"url": "https://example.com/"}),
-            [(Prompt, Mode), (Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, Guardian),
+                (Deny, Dont),
+            ],
         ),
     ];
     for (tool, args, expected) in rows {
@@ -94,7 +104,7 @@ async fn the_mode_and_risk_class_matrix() {
 
 #[tokio::test]
 async fn headless_turns_every_prompt_into_a_denial() {
-    for mode in [Manual, AcceptEdits, Plan] {
+    for mode in [Manual, AcceptEdits] {
         let rig = Rig::with(Options::new(mode).headless());
         let d = rig.check("shell", shell("touch x")).await;
         assert!(denied_message(&d).contains("denied"));
@@ -113,17 +123,21 @@ async fn headless_turns_every_prompt_into_a_denial() {
 }
 
 #[tokio::test]
-async fn plan_mode_blocks_edits_outright_and_sends_the_rest_to_the_interim_prompt() {
-    let rig = Rig::new(Plan);
+async fn plan_mode_blocks_edits_outright_and_sends_the_rest_to_the_guardian() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(Options::new(Plan).guardian(fake.guardian.clone()));
     let d = rig.check("write", write_args("n.txt")).await;
     assert!(denied_message(&d).contains("plan mode"));
     assert_eq!(rig.approver.asked(), 0, "an edit is never put to the human");
     assert_eq!(rig.audit()[0].tier, Tier::PlanBlock);
+    assert_eq!(fake.calls(), 0, "no verdict can reach past the edit block");
 
-    // The same in a headless run, and an allow rule does not let an edit run.
+    // The same in a headless run, and an allow rule does not let an edit run, whatever the
+    // guardian would say.
     let headless = Rig::with(
         Options::new(Plan)
             .headless()
+            .guardian(fake.guardian.clone())
             .settings("[permissions]\nallow = [\"write\", \"edit\"]\n"),
     );
     for (tool, args) in [("write", write_args("n.txt")), ("edit", edit_args("n.txt"))] {
@@ -131,24 +145,33 @@ async fn plan_mode_blocks_edits_outright_and_sends_the_rest_to_the_interim_promp
         assert!(!allowed(&d));
     }
     assert!(headless.audit().iter().all(|r| r.tier == Tier::PlanBlock));
+    assert_eq!(fake.calls(), 0);
 
-    // A consequential non-edit call reaches the prompt in the guardian's place.
-    rig.approver.answer(Answer::AllowOnce);
-    let d = rig.check("shell", shell("touch x")).await;
-    assert!(allowed(&d));
-    let records = rig.audit();
-    assert_eq!(
-        (records[1].decision, records[1].tier),
-        (Decision::Prompt, Tier::Mode)
-    );
-    assert_eq!(
-        (records[2].decision, records[2].tier),
-        (Decision::Allow, Tier::Human)
-    );
+    // Every other consequential call goes to the guardian, as in auto: write-capable shell,
+    // webfetch and MCP, and out-of-scope shell reads.
+    for (tool, args) in [
+        ("shell", shell("touch x")),
+        ("webfetch", json!({"url": "https://example.com/"})),
+        ("mcp__srv__tool", json!({})),
+        ("shell", shell("ls ../")),
+    ] {
+        let before = fake.calls();
+        let d = rig.check(tool, args.clone()).await;
+        assert!(allowed(&d), "{tool} {args}");
+        assert_eq!(fake.calls(), before + 1, "{tool} {args}");
+        let record = rig.audit().last().cloned().unwrap();
+        assert_eq!(
+            (record.decision, record.tier),
+            (Decision::Allow, Tier::Guardian)
+        );
+    }
+    assert_eq!(rig.approver.asked(), 0);
 
-    // In-scope `ls` proceeds through the pre-classifier.
+    // In-scope `ls` proceeds through the pre-classifier without the guardian.
+    let before = fake.calls();
     assert!(allowed(&rig.check("shell", shell("ls")).await));
     assert_eq!(rig.audit().last().unwrap().tier, Tier::Tier05);
+    assert_eq!(fake.calls(), before);
 }
 
 #[tokio::test]
@@ -515,7 +538,7 @@ async fn the_ledger_gets_an_action_or_denial_for_every_decision() {
         .map(|e| e.record)
         .collect();
     assert!(
-        matches!(&records[0], Record::Action { tool, agent } if tool == "read" && agent == "root")
+        matches!(&records[0], Record::Action { tool, agent, .. } if tool == "read" && agent == "root")
     );
     assert!(matches!(&records[1], Record::Denial { tool, .. } if tool == "shell"));
 }

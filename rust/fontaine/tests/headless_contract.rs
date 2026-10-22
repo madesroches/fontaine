@@ -89,8 +89,11 @@ async fn stream_json_events_match_the_schema_and_init_reports_the_session() {
     let init = &lines[0];
     assert_eq!(init["type"], "init");
     assert_eq!(init["model"], "mock/scripted");
-    assert_eq!(init["guardian_model"], Value::Null);
+    // No guardian is configured and no validated one is listed, so the main model judges.
+    assert_eq!(init["guardian_model"], "mock/scripted");
+    assert_eq!(init["guardian_available"], json!(true));
     assert_eq!(init["guardian_profile"], "full");
+    assert_eq!(init["suspended_allow_rules"], json!([]));
     assert_eq!(init["permission_mode"], "manual");
     assert_eq!(init["workspace_trust"], "untrusted");
     let roots = init["workspace_roots"].as_array().unwrap();
@@ -129,7 +132,8 @@ async fn a_configured_guardian_model_is_reported_by_init() {
     let init = &out.lines()[0];
     assert_eq!(init["guardian_model"], "keyed/claude-haiku-5");
     assert_eq!(init["guardian_available"], json!(false));
-    assert_eq!(init["guardian_profile"], "minimal");
+    // `minimal` was configured, but nothing asserted or verified a container: `full` is in force.
+    assert_eq!(init["guardian_profile"], "full");
     assert_valid(&validator(), init);
 }
 

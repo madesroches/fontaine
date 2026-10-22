@@ -14,7 +14,10 @@ describe what the current build does; each page covers one topic.
   read-only fast path, the shell and web fetch settings.
 - [Permissions](permissions.md): the modes, the deterministic floor, the `Tool(specifier)` rules and
   allow rules, and the shell pre-classifier.
-- [The terminal UI](tui.md): keys, the status bar, approval prompts and `/add-dir`.
+- [The guardian](guardian.md): what `auto` mode asks a separate model, what it sees, how every
+  failure becomes a denial, how to choose the guardian model, and the container-mode profile.
+- [The terminal UI](tui.md): keys, the status bar, approval prompts, the guardian's denials,
+  `/denied`, `/model` and `/guardian-model`, and `/add-dir`.
 - [Headless runs](headless.md): `fontaine -p`, its flags, exit codes, and the versioned JSON output
   that CI and the eval runner consume.
 - [Telemetry](telemetry.md): enabling export, the micromegas and OTLP backends, what is exported,
@@ -22,8 +25,10 @@ describe what the current build does; each page covers one topic.
 
 ## Evaluating the guardian
 
+- [Guardian scorecard](evals.md): catch rate, false-deny rate and latency per guardian model, and
+  the inclusion bar for the default-guardian list.
 - [Golden dataset and eval runner](../evals/README.md): the case format, the categories, and how to
-  run the offline fixture scoring.
+  run the offline scoring and the live guardian mode.
 
 ## Project
 
