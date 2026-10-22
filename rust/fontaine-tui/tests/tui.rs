@@ -166,7 +166,7 @@ async fn a_write_prompt_shows_the_exact_rule_for_the_lasting_answers() {
         ),
         text_turn("ok"),
     ]);
-    let rule = format!("write(/{})", w.work.join("notes.txt").display());
+    let rule = absolute_rule("write", &w.work.join("notes.txt"));
     w.run(|ui| async move {
         ui.send("make a note");
         ui.wait_for_prompt("Allow write?").await;
@@ -214,7 +214,7 @@ async fn always_allow_writes_the_rule_to_the_user_file_and_covers_the_next_call(
         "# keep me\n[permissions]\ndeny = [\"shell(sudo)\"]\n",
     )
     .unwrap();
-    let rule = format!("write(/{})", w.work.join("notes.txt").display());
+    let rule = absolute_rule("write", &w.work.join("notes.txt"));
     w.run(|ui| async move {
         ui.send("make a note");
         ui.wait_for_prompt("Allow write?").await;
@@ -255,4 +255,16 @@ async fn interrupting_a_pending_prompt_denies_it_and_keeps_the_session_usable() 
     assert_eq!(requests.len(), 2);
     assert!(!requests[1].contains("c1"), "{}", requests[1]);
     assert!(requests[1].contains("are you there"));
+}
+
+/// The rule an approval offers for an absolute path: `//` plus the path, which on Windows drops
+/// the verbatim prefix and uses `/` separators (`//C:/...`).
+fn absolute_rule(tool: &str, path: &std::path::Path) -> String {
+    let text = path.display().to_string();
+    let text = if cfg!(windows) {
+        text.trim_start_matches(r"\\?\").replace('\\', "/")
+    } else {
+        text.trim_start_matches('/').to_string()
+    };
+    format!("{tool}(//{text})")
 }
