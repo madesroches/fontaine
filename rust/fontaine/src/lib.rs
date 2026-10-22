@@ -408,12 +408,6 @@ async fn run_interactive(
     dirs: &Dirs,
     host: &Host,
 ) -> u8 {
-    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        eprintln!(
-            "fontaine: the interactive UI needs a terminal; use `fontaine -p` for scripted runs"
-        );
-        return EXIT_CONFIG;
-    }
     let models = match resolve_models(cli, config, dirs, host).await {
         Ok(models) => models,
         Err(code) => return code,

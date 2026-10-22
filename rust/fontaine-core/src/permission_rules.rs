@@ -8,7 +8,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use fontaine_tools::names::{is_builtin, is_mcp};
-use fontaine_tools::preclassify::{ShellAnalysis, analyze};
+use fontaine_tools::preclassify::{ShellAnalysis, analyze, raw_mentions_word};
 use fontaine_tools::scope::{Scope, glob_target};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde_json::Value;
@@ -193,12 +193,22 @@ fn validate_domain_specifier(spec: &str) -> Result<(), String> {
     domain_spec(spec).map(drop)
 }
 
-enum Domain<'a> {
-    Exact(&'a str),
-    Subdomains(&'a str),
+enum Domain {
+    Exact(String),
+    Subdomains(String),
 }
 
-fn domain_spec(spec: &str) -> Result<Domain<'_>, String> {
+/// Lowercased, punycode form of a host with one trailing root dot dropped, so a rule and a URL
+/// compare equal however each spells the same name.
+fn normalize_host(host: &str) -> Option<String> {
+    let host = host.strip_suffix('.').unwrap_or(host);
+    match url::Host::parse(host).ok()? {
+        url::Host::Domain(name) => Some(name.strip_suffix('.').unwrap_or(&name).to_string()),
+        other => Some(other.to_string()),
+    }
+}
+
+fn domain_spec(spec: &str) -> Result<Domain, String> {
     let form = "webfetch rules take `domain:<host>` or `domain:*.<host>`".to_string();
     let Some(host) = spec.strip_prefix("domain:") else {
         return Err(form);
@@ -212,6 +222,7 @@ fn domain_spec(spec: &str) -> Result<Domain<'_>, String> {
     {
         return Err(form);
     }
+    let host = normalize_host(host).ok_or(form)?;
     Ok(if wild {
         Domain::Subdomains(host)
     } else {
@@ -466,7 +477,7 @@ fn prefix_anywhere(analysis: &ShellAnalysis, words: &[String]) -> bool {
 
 /// A command that cannot be read as a plain word stream (it failed to parse, hides something
 /// from the walk, or has an expanded word where the command name goes) matches every rule
-/// whose first word it contains.
+/// whose first word it contains as a whole word.
 fn cannot_tell(analysis: &ShellAnalysis, command: &str, words: &[String]) -> bool {
     let opaque = !analysis.parsed
         || analysis.unanalyzed
@@ -475,9 +486,16 @@ fn cannot_tell(analysis: &ShellAnalysis, command: &str, words: &[String]) -> boo
             .iter()
             .any(|c| c.words.first().is_some_and(|w| w.literal.is_none()));
     opaque
-        && words
-            .first()
-            .is_some_and(|first| command.contains(first.as_str()))
+        && words.first().is_some_and(|first| {
+            let plain = first
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-' | '+'));
+            if plain {
+                raw_mentions_word(command, &[first.as_str()])
+            } else {
+                command.contains(first.as_str())
+            }
+        })
 }
 
 fn webfetch_matches(spec: &str, args: &Value, posture: Posture) -> bool {
@@ -486,14 +504,13 @@ fn webfetch_matches(spec: &str, args: &Value, posture: Posture) -> bool {
     };
     let host = string_arg(args, "url")
         .and_then(|url| url::Url::parse(url).ok())
-        .and_then(|url| url.host_str().map(str::to_ascii_lowercase));
+        .and_then(|url| url.host_str().and_then(normalize_host));
     let Some(host) = host else {
         return posture.lenient();
     };
     match domain {
-        Domain::Exact(want) => host == want.to_ascii_lowercase(),
+        Domain::Exact(want) => host == want,
         Domain::Subdomains(base) => {
-            let base = base.to_ascii_lowercase();
             host.len() > base.len() + 1 && host.ends_with(&format!(".{base}"))
         }
     }
@@ -665,6 +682,63 @@ mod tests {
 
     fn ok(text: &str) -> Rule {
         parse_rule(text).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    fn denied(rule: &str, tool: &str, args: Value) -> bool {
+        let scope = Scope::new(PathBuf::from("/home/me/proj"), []);
+        let call = CallContext {
+            tool,
+            args: &args,
+            scope: &scope,
+            home: None,
+        };
+        matches(&ok(rule), &call, Posture::Deny)
+    }
+
+    #[test]
+    fn quoted_prose_is_not_a_command() {
+        let shell = |rule: &str, command: &str| {
+            denied(rule, "shell", serde_json::json!({ "command": command }))
+        };
+        assert!(!shell(
+            "shell(git push)",
+            "git commit -m \"Fix user's bug\""
+        ));
+        assert!(!shell("shell(rm)", "git commit -m \"it's a format fix\""));
+        assert!(!shell("shell(git push)", "git commit -m 'fix git push'"));
+        assert!(shell("shell(git push)", "git push origin"));
+        assert!(shell("shell(rm)", "sh -c 'rm x'"));
+        assert!(shell("shell(rm)", "echo 'unterminated; rm x"));
+    }
+
+    #[test]
+    fn webfetch_hosts_are_normalized() {
+        let fetch =
+            |rule: &str, url: &str| denied(rule, "webfetch", serde_json::json!({ "url": url }));
+        assert!(fetch(
+            "webfetch(domain:example.com)",
+            "https://example.com./secret"
+        ));
+        assert!(fetch(
+            "webfetch(domain:example.com.)",
+            "https://example.com/secret"
+        ));
+        assert!(fetch(
+            "webfetch(domain:*.example.com)",
+            "https://a.example.com./x"
+        ));
+        assert!(fetch(
+            "webfetch(domain:bücher.de)",
+            "https://xn--bcher-kva.de/x"
+        ));
+        assert!(fetch(
+            "webfetch(domain:Example.COM)",
+            "https://EXAMPLE.com/x"
+        ));
+        assert!(!fetch(
+            "webfetch(domain:example.com)",
+            "https://example.org/"
+        ));
     }
 
     #[test]

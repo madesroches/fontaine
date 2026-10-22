@@ -33,7 +33,7 @@ pub struct ApprovalRequest {
     pub agent: String,
     pub tool_use_id: Option<String>,
     pub args: Value,
-    /// The call in one line: the command, the path or the URL.
+    /// The call: the full command, path or URL.
     pub summary: String,
     /// Which part of the pipeline asked.
     pub tier: Tier,
@@ -670,7 +670,7 @@ impl PermissionPipeline {
     }
 }
 
-/// The call in one line for the human.
+/// The call as the human is shown it: the whole command, path or URL, never cut short.
 pub fn summarize(tool: &str, args: &Value) -> String {
     let text = |key: &str| args.get(key).and_then(Value::as_str);
     let line = match tool {
@@ -682,14 +682,7 @@ pub fn summarize(tool: &str, args: &Value) -> String {
         "ls" => Some(text("path").unwrap_or(".").to_string()),
         _ => None,
     };
-    let line = line.unwrap_or_else(|| args.to_string());
-    const MAX: usize = 400;
-    if line.chars().count() > MAX {
-        let cut: String = line.chars().take(MAX).collect();
-        format!("{cut}...")
-    } else {
-        line
-    }
+    line.unwrap_or_else(|| args.to_string())
 }
 
 impl ToolGate for PermissionPipeline {

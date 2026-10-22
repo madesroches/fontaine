@@ -229,13 +229,17 @@ impl Walk<'_> {
         for item in suffix {
             self.item(item, &mut Some(&mut words));
         }
-        for word in &words {
-            self.nested(word);
+        // Only the arguments of a command runner hold a command line; any other quoted text
+        // with spaces is data.
+        if let Some(runner) = words.iter().position(is_runner) {
+            for word in &words[runner + 1..] {
+                self.nested(word);
+            }
         }
         self.out.commands.push(SimpleCommand { words });
     }
 
-    /// A literal word that holds a command line (`sh -c 'rm -rf /'`) is read as one too.
+    /// A literal word that a runner executes (`sh -c 'rm -rf /'`) is read as a command line too.
     fn nested(&mut self, word: &ShellWord) {
         let Some(text) = &word.literal else { return };
         if !text.contains(char::is_whitespace) {
@@ -382,6 +386,17 @@ impl Walk<'_> {
 }
 
 /// Brace expansion (`{a,b}`, `{1..3}`) turns one word into several.
+const RUNNERS: &[&str] = &[
+    "sh", "bash", "zsh", "dash", "ash", "ksh", "csh", "tcsh", "fish", "eval",
+];
+
+fn is_runner(word: &ShellWord) -> bool {
+    word.literal.as_deref().is_some_and(|text| {
+        let name = text.rsplit('/').next().unwrap_or(text);
+        RUNNERS.contains(&name)
+    })
+}
+
 fn has_brace_pattern(raw: &str) -> bool {
     if !raw.contains('{') {
         return false;
@@ -826,6 +841,16 @@ mod tests {
         assert_eq!(names("(a; b)"), ["a", "b"]);
         assert_eq!(names("for f in $(x); do y; done"), ["x", "y"]);
         assert_eq!(names("ls ; rm x"), ["ls", "rm"]);
+    }
+
+    #[test]
+    fn only_runner_arguments_are_read_as_command_lines() {
+        let count = |text: &str| analyze(text).commands.len();
+        assert_eq!(count("git commit -m 'fix git push'"), 1);
+        assert_eq!(count("sh -c 'rm x'"), 2);
+        assert_eq!(count("sudo bash -c 'rm x'"), 2);
+        assert!(analyze("git commit -m \"don't rm this\"").parsed);
+        assert!(!analyze("git commit -m \"don't rm this\"").unanalyzed);
     }
 
     #[test]

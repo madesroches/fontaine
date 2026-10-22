@@ -181,7 +181,13 @@ impl<R: FnMut(&App)> Ui<R> {
             self.draw(runtime);
             tokio::select! {
                 biased;
-                Some(event) = seen.recv() => self.app.on_event(event),
+                Some(event) = seen.recv() => {
+                    self.app.on_event(event);
+                    // One redraw for everything already queued, not one per streamed delta.
+                    while let Ok(event) = seen.try_recv() {
+                        self.app.on_event(event);
+                    }
+                }
                 outcome = &mut run => break TurnEnd::Finished(outcome),
                 input = self.input.recv() => match input {
                     None => break TurnEnd::InputClosed,

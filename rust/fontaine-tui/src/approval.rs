@@ -1,6 +1,8 @@
 //! The approval prompt: what the pipeline asked, the answers it allows, and the exact rule the
 //! lasting answers would add.
 
+use std::cell::Cell;
+
 use fontaine_core::permissions::{Answer, ApprovalRequest, Offers};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
@@ -59,7 +61,13 @@ pub struct Approval {
     selected: usize,
     /// Set while the human types a reason for a denial.
     feedback: Option<InputBuffer>,
+    /// First visible row of the call text when it is taller than the box.
+    scroll: usize,
+    /// How far the call text can scroll, as last drawn.
+    max_scroll: Cell<usize>,
 }
+
+const SCROLL_STEP: usize = 5;
 
 impl Approval {
     pub fn new(request: ApprovalRequest, reply: oneshot::Sender<Answer>) -> Approval {
@@ -69,7 +77,17 @@ impl Approval {
             reply: Some(reply),
             selected: 0,
             feedback: None,
+            scroll: 0,
+            max_scroll: Cell::new(0),
         }
+    }
+
+    pub fn scroll(&self) -> usize {
+        self.scroll.min(self.max_scroll.get())
+    }
+
+    pub fn set_max_scroll(&self, max: usize) {
+        self.max_scroll.set(max);
     }
 
     pub fn is_typing_feedback(&self) -> bool {
@@ -102,6 +120,17 @@ impl Approval {
 
     /// Handles a key; an answer comes back once the human has given one.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Answer> {
+        match key.code {
+            KeyCode::PageUp => {
+                self.scroll = self.scroll().saturating_sub(SCROLL_STEP);
+                return None;
+            }
+            KeyCode::PageDown => {
+                self.scroll = (self.scroll() + SCROLL_STEP).min(self.max_scroll.get());
+                return None;
+            }
+            _ => {}
+        }
         if let Some(feedback) = &mut self.feedback {
             match key.code {
                 KeyCode::Enter => {
@@ -156,9 +185,9 @@ impl Approval {
         }
     }
 
-    pub fn lines(&self, width: usize) -> Vec<Line<'static>> {
+    /// The question and the whole call, wrapped; the part that scrolls.
+    pub fn body(&self, width: usize) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
-        let dim = Style::default().add_modifier(Modifier::DIM);
         let mut out = vec![Line::styled(
             format!("Allow {}?", self.request.tool),
             bold.fg(Color::Yellow),
@@ -170,6 +199,14 @@ impl Approval {
                 }
             }
         }
+        out
+    }
+
+    /// The choices and hints; always visible.
+    pub fn footer(&self, width: usize) -> Vec<Line<'static>> {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        let mut out = Vec::new();
         for (i, choice) in self.choices.iter().enumerate() {
             let marker = if i == self.selected { ">" } else { " " };
             let text = format!("{marker} [{}] {}", choice.key(), choice.label());

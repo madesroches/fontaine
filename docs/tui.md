@@ -20,9 +20,9 @@ The bar shows the permission mode, the model and a key hint. The mode labels are
 |---|---|
 | Enter | Submit. Alt+Enter, Shift+Enter or Ctrl+J insert a newline; a trailing `\` before Enter also continues the line. |
 | Shift+Tab | Cycle the mode: manual, accept edits, plan, and back to manual (`auto` joins the cycle when it ships). It takes effect on the next tool call, even mid-turn. |
-| Esc, Ctrl-C while a turn runs | Interrupt the turn. The conversation is kept and an open prompt is answered with deny. |
+| Esc, Ctrl-C while a turn runs | Interrupt the turn. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. |
 | Ctrl-C, or Ctrl-D on an empty input, when idle | Quit. |
-| PageUp, PageDown | Scroll the transcript. |
+| PageUp, PageDown | Scroll the transcript, or the command in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/U/K/W/B/F | Edit the input. |
 
 ## Approval prompts

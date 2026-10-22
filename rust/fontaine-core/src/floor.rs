@@ -264,6 +264,8 @@ mod tests {
             "rm",
             "echo format",
             "git rm src/a.rs",
+            "git commit -m \"don't rm this\"",
+            "git commit -m \"it's a format fix\"",
         ] {
             assert!(critical_shell(cmd, None, &env).is_none(), "{cmd}");
         }
