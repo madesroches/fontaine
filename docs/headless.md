@@ -22,7 +22,8 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 |---|---|
 | `fontaine` | Starts the terminal UI; see [The terminal UI](tui.md). |
 | `fontaine -p "task"` | Runs the task headless and prints the result on stdout. |
-| `--permission-mode <manual\|acceptEdits\|plan\|auto\|dontAsk>` | Session mode, overriding `[permissions] default_mode`. There is no bypass mode. `auto` is a usage error (exit code 2), as is `default_mode = "auto"`, until the guardian ships. |
+| `--permission-mode <manual\|acceptEdits\|plan\|auto\|dontAsk>` | Session mode, overriding `[permissions] default_mode`. There is no bypass mode. A headless run starts in `manual` unless one of the two says otherwise; `auto` sends calls nothing pre-approved to the [guardian](guardian.md). |
+| `--in-container` | States that the process runs inside a container; with `[guardian] profile = "minimal"` it lets the minimal guardian load when a runtime probe agrees. See [The guardian](guardian.md#the-minimal-profile). |
 | `--model <account>/<model>` | Overrides `[model] model`. See [Configuration](configuration.md#accountsname). |
 | `--output-format text\|json\|stream-json` | `text` prints the final answer, `json` one `result` object, `stream-json` one JSON object per line. |
 | `--input-format text\|stream-json` | `stream-json` reads user messages as JSON lines on stdin. A prompt argument together with `stream-json` input is a usage error. |
@@ -72,6 +73,14 @@ that is returned to the model as the tool result; the run continues and exits 0.
 delegates are not supported: there is no second approval path around the permission rules. See
 [Permissions](permissions.md).
 
+In `auto` the guardian answers instead, and a deny comes back to the model as
+`Denied by guardian: [Rule] explanation`. An `escalate` verdict is a denial, and so is every
+adjudication after three denials in a row or twenty in the session (the pause that a person would
+resolve by approving a prompt). When the guardian model cannot be used at all, every adjudication
+is a denial with the rule `GuardianUnavailable`; the `init` event reports `guardian_available:
+false` and a line on stderr names the model and the reason, so the run does not look like a
+guardian that judged everything unsafe.
+
 Every adjudicated call emits a `gate_decision` event, and the `result` event's `denials` lists each
 denied call as `{tool, tier, rule, explanation}`, where `rule` names the rule and the scope it came
 from when a rule decided and `explanation` is what the model was told.
@@ -86,11 +95,11 @@ these is one line, in this order:
 
 | `type` | When | Main fields |
 |---|---|---|
-| `init` | Once, first | `model`, `guardian_model` (null when unset), `guardian_available`, `guardian_profile`, `permission_mode`, `workspace_roots`, `config_sources` (scope, path, whether loaded), `workspace_trust`, `suspended_allow_rules`, `tools` |
+| `init` | Once, first | `model`, `guardian_model` and `guardian_profile` (the guardian and profile in force, which may differ from the configured ones: a default pick, the main model, or `full` after a failed containment check), `guardian_available`, `permission_mode`, `workspace_roots`, `config_sources` (scope, path, whether loaded), `workspace_trust`, `suspended_allow_rules` (the broad allow rules `auto` sets aside; empty outside `auto`), `tools` |
 | `assistant` | A complete assistant message | `text` |
 | `assistant_delta` | With `--include-partial-messages`, for each text fragment | `text` |
 | `tool_call` | The model called a tool | `tool_use_id`, `tool`, `args` |
-| `gate_decision` | A tool call was adjudicated | `tool_use_id`, `tier`, `decision`, `rule`; for guardian decisions also `explanation`, `confidence`, `guardian_model` |
+| `gate_decision` | A tool call was adjudicated | `tool_use_id`, `tier`, `decision`, `rule`; for guardian decisions also `explanation`, `confidence`, `guardian_model` and, when the guardian failed closed, `fail_closed_reason` (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`) |
 | `tool_result` | A tool answered | `tool_use_id`, `tool`, `success`, `text` (what the model received) |
 | `result` | At the end of every turn | see below |
 
@@ -110,7 +119,7 @@ The `result` object:
 | `num_turns` | Model calls made so far in the session |
 | `duration_ms` | Wall time of the turn |
 | `total_cost_usd` | Spend so far, or null when no price is known |
-| `usage` | `main`, `guardian` and `subagents`, each with `input_tokens`, `output_tokens` and `cost_usd` |
+| `usage` | `main`, `guardian` and `subagents`, each with `input_tokens`, `output_tokens` and `cost_usd`; `guardian` totals every adjudication that reached the model (cached verdicts cost nothing) |
 | `denials` | One entry per denied call: `tool`, `tier`, `rule`, `explanation` |
 
 Usage and cost accumulate over the session, so each turn's `result` reports the totals so far.

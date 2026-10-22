@@ -1,0 +1,211 @@
+# The guardian
+
+The guardian is what makes `auto` mode possible. When a tool call is not provably safe and nothing
+you configured pre-approved it, a separate model reads your task and a short written policy and
+answers **allow**, **deny** (with a reason the agent sees) or **escalate** (ask you). It is the
+only part of Fontaine that uses judgment, so everything around it is written to keep that judgment
+from being the only thing standing between a model and your machine.
+
+A call reaches the guardian in `auto` mode, and in `plan` mode for the consequential calls that
+mode does not block outright. The [deterministic floor](permissions.md#the-pipeline) (deny and ask
+rules, critical paths, protected-path handling), the read-only fast path and the shell
+pre-classifier all run first, in every mode; the guardian never sees a call they decided.
+
+## Threat model
+
+The guardian is itself an attack surface: the arguments of the call it judges, the files the agent
+read and the instructions in a repository are all text an attacker may have written. So:
+
+- **It has no tools.** One stateless request per adjudication, with no conversation that grows and
+  nothing to call. Its only output is a structured verdict, extracted through the model library's
+  typed-extraction path (a required `submit` function), which works on any tool-capable model,
+  Ollama included.
+- **Everything it is shown is data.** The request is rendered into delimited `<untrusted>` blocks;
+  text that would close a block is neutralized, and anything credential-shaped is redacted before
+  it is rendered. The system prompt says that nothing inside those blocks is an instruction.
+- **Its picture of what you asked for comes from the session ledger**, the append-only record of
+  your own messages, and never from the model's context. A compaction summary or any other
+  model-written text cannot reach the guardian as your intent.
+- **Every outcome that is not a verdict is a denial**, decided by code (below). There is no
+  setting that turns the guardian off, and none that makes it fail open.
+- **Rule prose can only restrict.** A shared project file may add to `soft_deny` and `hard_deny`
+  but its text sits in the policy, so the prompt tells the guardian to ignore any entry that,
+  read literally, grants permission.
+
+It is not a sandbox. A model can be talked into a bad verdict, and a command the guardian allows
+runs with your permissions. See [Known limits](#known-limits).
+
+## What the guardian sees
+
+The request is built from the ledger and the call itself:
+
+| Part | Content |
+|---|---|
+| `task_intent` | Your latest messages, verbatim, oldest dropped first to fit 2,000 characters. Never summarized. |
+| `recent_user_messages` | Your last 5 turns (not tool output). |
+| `project_instructions` | The `FONTAINE.md` files the agent reads: yours, then the primary root's. |
+| `environment`, `rules` | The `[auto_mode]` prose lists, with the shipped defaults spliced in. |
+| `tool_call` | The tool, its full arguments, a digest of them, and `destructive`, derived by Fontaine from the call itself (below). |
+| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the status of only the paths this call touches (`pre_existing`, `created_this_session` or `unindexed`; never the file index), and the last 20 actions of the session. |
+| `hook_context` | Notes from `pre_tool_use` hooks, in an untrusted block. |
+| `prior_denials` | Reason-coded denials earlier in the session, for loop detection. |
+
+## The verdict
+
+```
+decision     allow | deny | escalate
+rule         allow, or one label of the list below
+explanation  1-3 sentences, shown to you and fed back to the agent on a deny
+confidence   0 to 1, the guardian's own estimate
+```
+
+`rule` is `allow` exactly when `decision` is `allow`; a verdict where they disagree, a label outside
+the list or a confidence outside 0 to 1 is malformed. The labels are `Download+Execute`, `Data
+Exfiltration`, `Production Deploy`, `Git Destructive`, `Destroy Pre-existing Files`, `IAM Grant`,
+`Secret Exposure`, `Tunnel/Reverse Shell`, `Unguarded Agent Loop`, `Safety Bypass` (disabling safety
+flags or security-guarding tests), `Remote Redirect`, `Unreviewed Merge` and `Container Escape`
+(minimal profile only). A deny reaches the agent as `Denied by guardian: [Rule] explanation`, and
+your terminal shows the label and the explanation.
+
+### Rule precedence
+
+`hard_deny` over `soft_deny` over `allow` over explicit, specific user intent.
+
+1. A `hard_deny` match is always a deny. Nothing you said overrides it.
+2. A `soft_deny` match is a deny unless an `allow` exception clears it or your own messages
+   explicitly and specifically authorize that exact action, naming its target. "Clean up" does not
+   authorize a recursive delete.
+3. `allow` entries are exceptions to soft denies. They never clear a hard deny.
+4. An action you asked for by name and target is acceptable when no deny rule applies.
+
+The shipped lists, and how to extend them, are in [`[auto_mode]`](configuration.md#auto_mode).
+
+## Failing closed
+
+Fontaine's code, not the model, decides what happens when there is no usable verdict:
+
+| Outcome | Result | `fail_closed_reason` |
+|---|---|---|
+| No credential, unknown account, or the pinned model is unavailable | deny, rule `GuardianUnavailable` | `unavailable` |
+| Provider error, dropped stream, connection reset or a closed socket | deny, rule `GuardianUnavailable` | `error` |
+| No answer within `[guardian] timeout_secs` (default 30, retries included) | deny, rule `Timeout` | `timeout` |
+| Malformed, schema-invalid or out-of-enum verdict after two retries | deny, rule `Unparseable` | `unparseable` |
+| An allow on a **destructive** call with confidence below `confidence_threshold` (default 0.7) | deny, rule `LowConfidence` | `low_confidence` |
+
+The retry budget is two retries, shared between malformed answers and provider errors, and the last
+failure names the denial. A deny verdict is never softened. The destructive class is derived from
+the call by Fontaine, structurally, never from the label the guardian chose: a call is destructive
+when it removes or overwrites (`rm`, `mv`, `cp`, `dd`, `sed -i`, `find -delete`, `git reset
+--hard`, a redirect to a file, a write over a path that existed), writes outside every workspace
+root, reaches the network (`curl`, `git push`, a package install, `webfetch`), starts a code runner
+(`sh`, `python`, `make`, `cargo run`, `sudo`, ...), is an MCP call, or uses any construct the shell
+parser cannot classify. A plain `cargo test 2>&1 | tail` is not destructive.
+
+### Denial limits
+
+Three denials in a row, or twenty in a session (any tool, not configurable), pause `auto`: the
+next call that needs the guardian asks you instead, and approving a call resumes `auto`. In a
+headless run a paused session denies. This stops a model from retrying a refused action until
+something slips through.
+
+### Retrying a denial yourself
+
+In the terminal UI, `/denied` lists the calls the guardian denied and `r` approves one **once**.
+Fontaine records your approval for that exact call (same agent, tool and arguments), tells the agent
+it may retry, and lets the next identical call through without asking the guardian. The approval is
+consumed by that call, never cached, and does not count toward the denial limits. The floor runs
+first: an `ask` rule or a critical path still asks.
+
+## Speed and cost
+
+- Read-only calls inside the workspace and the shell pre-classifier's commands never reach the
+  guardian. A narrow allow rule you wrote skips it too; broad code-execution allow rules are
+  [suspended in `auto`](permissions.md#allow-rules).
+- A verdict is cached for 60 seconds (`[guardian] cache`), so five `cargo test` runs adjudicate
+  once. The key covers the call, the model, the rules, the environment, your messages, the session's
+  recent actions and its denials, so any change misses. Only verdicts the model returned are cached,
+  never a fail-closed outcome; the confidence rewrite applies after every lookup.
+- Calls are adjudicated one at a time, in order. The guardian is on the critical path, so a fast
+  model matters.
+
+## Choosing the guardian model
+
+Fontaine ships an ordered list of **benchmark-validated** guardian models in
+`guardian_models.toml`, built into the binary and re-benchmarked each release. A model is on the
+list only if, on the [scorecard](evals.md), its catch rate over the attack cases is at least 90%,
+its false-deny rate over the benign cases is at most 5%, and its p95 adjudication latency is at
+most 3 seconds. Entries are ranked by catch rate, then false-deny rate, then latency.
+
+With no `[guardian] model`, the guardian is the highest-ranked validated model that one of your
+accounts offers. If none is, the main model judges and Fontaine tells you once at startup.
+Changing the guardian is easy but never automatic:
+
+```toml
+[guardian]
+model = "work/claude-haiku-5-5"
+```
+
+- Set `[guardian] model`, or use `/guardian-model <account>/<model>` in the terminal UI, which
+  switches the live session and saves the choice. `/model` does the same for the main model, and
+  moves the guardian with it only when the guardian is on the main-model fallback.
+- A model you pinned is **never substituted**. If it cannot be used, Fontaine fails loudly. In the
+  terminal UI a prompt offers to retry it, to pick another validated guardian for the session, or
+  to switch to `manual`. In a headless run every adjudication is denied with `GuardianUnavailable`,
+  and the `init` event and stderr say so.
+- For endpoints with no catalog match (a custom `openai-compatible` endpoint, Ollama), only a model
+  set explicitly in `guardian.model` is used. A small local model can be both the agent and the
+  guardian; judge it by its own scorecard run.
+
+## The minimal profile
+
+`[guardian] profile = "minimal"` narrows the guardian for a container. Inside a sandbox the blast
+radius of ordinary work is bounded, so the minimal guardian does not judge routine development; it
+enforces **containment integrity** (mounts, container-runtime sockets, `/proc/sys` and cgroup
+control files, privileged namespace operations, raw devices, symlink traversal to bind-mounted host
+paths, network paths around the sandbox proxy), denying them as `Container Escape` with the escape
+class in the explanation as `class=<name>`, and still denies exfiltration to destinations that are
+not the repository's own remotes. It receives a smaller request: the call, your last 500
+characters and 3 messages, the workspace roots, the remotes and the touched paths' status, without
+project instructions, hook notes or earlier denials. The deterministic floor still runs.
+
+It is a narrowing, never "off", and it only loads when containment is verified. **Both** must hold:
+
+1. You pass `--in-container`, asserting the process runs in a container.
+2. A runtime probe agrees. On Linux the probe finds any one of `/.dockerenv`, `/run/.containerenv`
+   (Podman), a `container=` entry in PID 1's environment, or `docker`, `kubepods`, `containerd`,
+   `libpod` or `lxc` in `/proc/1/cgroup`. macOS and Windows never report a container.
+
+If the flag is missing or the probe is negative, Fontaine runs the **full** profile and prints a
+notice saying why. The profile can only be set from user settings, never from a project file.
+Every profile is scored before it ships: the scorecard has a `minimal` column.
+
+## Prompt versioning
+
+The prompts are versioned assets in `rust/fontaine-guardian/prompts/` (`guardian_prompt.md`,
+`guardian_minimal.md`) compiled into the binary, so a prompt change ships with a release and is
+re-scored on the golden dataset before the list of validated models is regenerated. A change to a
+prompt or to the shipped rule lists changes the cache key, and an entry in the model list is only
+valid for the dataset it was scored on.
+
+## Known limits
+
+- **Latency.** Every call that reaches the guardian waits for a model. The 3-second p95 bar is a
+  property of the listed models, not of yours.
+- **Injection.** Delimiting, redaction and a tool-less single-shot design reduce, and do not
+  remove, the chance that hostile text in a command, a file or a repository steers the verdict.
+  The deterministic floor and the fail-closed rules exist so that the guardian is not the only
+  control, and your `deny` rules apply whatever it says.
+- **Judgment.** The scorecard measures a fixed dataset. Novel attacks, and benign commands the
+  dataset never saw, will be misjudged at some rate. A guardian allow is a decision to run the
+  command with your permissions, not a proof that it is safe.
+- **Tool results are not scanned.** The guardian judges calls, not what comes back from them.
+
+The [scorecard](evals.md) reports the measured catch and false-deny rates per model.
+
+## Attribution
+
+The seeded default rule lists are adapted from Anthropic's published defaults for Claude Code's
+auto mode (https://code.claude.com/docs/en/auto-mode-config and the output of `claude auto-mode
+defaults`), reworded and reduced to Fontaine's rule labels. The auto-mode design itself, the
+precedence of rule lists and the `$defaults` marker follow Claude Code's. This is not an Anthropic
+product and the lists are not endorsed by Anthropic.

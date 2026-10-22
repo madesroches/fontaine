@@ -8,15 +8,16 @@ result and the run goes on.
 ## Modes
 
 The session mode is set by `[permissions] default_mode` or `--permission-mode`, and in the
-terminal UI Shift+Tab cycles it. The default is `manual`.
+terminal UI Shift+Tab cycles it. With neither set, the terminal UI starts in `auto` and a headless
+run (`fontaine -p`) starts in `manual`, as Claude Code's `-p` starts in `default`.
 
 | Mode | What happens to a call nothing pre-approved |
 |---|---|
 | `manual` | The human is asked. |
 | `acceptEdits` | `write` and `edit` inside the workspace roots run; everything else asks. |
-| `plan` | No edit ever runs: `write` and `edit` are blocked outright. Other consequential calls ask. |
+| `plan` | No edit ever runs: `write` and `edit` are blocked outright. Other consequential calls (write-capable or unparsed `shell`, `webfetch`, every MCP call, shell reads outside the roots) go to the guardian, as in `auto`. |
 | `dontAsk` | Denied. Only calls that are pre-approved run. |
-| `auto` | Not available yet. Selecting it, by flag or setting, is a usage error (exit code 2). |
+| `auto` | The [guardian](guardian.md) decides: allow, deny with a reason, or ask you. |
 
 There is no bypass mode. The deterministic floor below applies in every mode, and no mode, flag or
 allow rule reaches past it. In a headless run (`fontaine -p`) nothing can ask, so every call that
@@ -47,9 +48,11 @@ A call goes through these steps in order and the first one that decides wins.
      `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc` or `.mcp.json`,
      in any workspace root or the home directory, asks; so does any path under Fontaine's own
      config or data directory. Matching is on resolved path components, so separators and, on
-     Windows and macOS, case do not matter.
+     Windows and macOS, case do not matter. In `auto` the guardian takes the place of the
+     prompt, for a path the file tools can reach.
 
-   A floor outcome that asks is a denial in `dontAsk` and in headless runs.
+   A floor outcome that asks is a denial in `dontAsk` and in headless runs. In `auto` an `ask`
+   rule and a critical path still ask you: no verdict approves them.
 3. **Read-only fast path.** A read-only tool (`read`, `ls`, `glob`, `grep`) whose paths all
    resolve inside a workspace root runs. Symlinks are resolved first. The label alone earns
    nothing: a path outside the roots does not qualify.
@@ -58,7 +61,11 @@ A call goes through these steps in order and the first one that decides wins.
    confined to the roots, so an approval could never make the call run.
 4. **Shell pre-classifier**, below.
 5. **Allow rules**, below.
-6. **The mode**, as in the table above.
+6. **The mode**, as in the table above. In `auto`, and for the consequential calls of `plan`,
+   this is the guardian: it answers allow, deny or escalate. An allow runs the call; a deny comes
+   back to the agent as `Denied by guardian: [Rule] explanation`; an escalate asks you with the
+   guardian's explanation (and is a denial in a headless run). Three denials in a row, or twenty
+   in a session, pause `auto` and prompting resumes until you approve a call.
 
 Every decision is appended to the audit log (`<data dir>/audit/<session id>.jsonl`, readable by
 the current user only) before anything else sees it: the time, session, agent and tool-call ids,
@@ -68,7 +75,9 @@ answer to a prompt adds a second record with `tier = human`. The same record is 
 `tool_decision` telemetry event and to the headless `gate_decision` event, so the three agree.
 The `tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
 `read_only_fast_path`, `tier05`, `allow_rule`, `mode`, `guardian`, `dont_ask`, `plan_block` and
-`human`.
+`human`. A guardian decision also records the guardian model and profile, its verdict, confidence,
+whether the verdict came from the cache, how long the guardian took, and, when it failed closed,
+the reason (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`).
 
 ## Rules
 
@@ -109,11 +118,15 @@ name the scope that contributed a rule, for example `shell(rm) [user]`.
 
 An allow rule acts after the floor and never past it: a deny, ask, critical-path or protected-path
 outcome stands whatever allow says, and `plan` still blocks edits. A matching allow rule skips the
-prompt in `manual` and `acceptEdits` and pre-approves in `dontAsk`. When `auto` ships it will
-suspend broad code-execution allow rules (a bare `shell` or `agent`, and `shell(<entry>)` or
-`shell(<entry> *)` for `sh`, `bash`, `zsh`, `python`, `python3`, `node`, `ruby`, `perl`, `deno`,
-`bun`, `cargo run`, `npm run`, `npx`, `pnpm`, `yarn`, `make`, `eval`, `exec`, `xargs`, `env` and
-`sudo`) while it is on; narrower rules such as `shell(npm test)` stay.
+prompt in `manual` and `acceptEdits`, pre-approves in `dontAsk`, and skips the guardian in `auto`.
+
+While `auto` is on, **broad code-execution allow rules are suspended**: a bare `shell` or `agent`,
+and `shell(<entry>)` or `shell(<entry> *)` for `sh`, `bash`, `zsh`, `python`, `python3`, `node`,
+`ruby`, `perl`, `deno`, `bun`, `cargo run`, `npm run`, `npx`, `pnpm`, `yarn`, `make`, `eval`,
+`exec`, `xargs`, `env` and `sudo`. A call they would have approved goes to the guardian instead.
+Narrower rules such as `shell(npm test)` stay. The terminal UI lists the suspended rules when you
+enter `auto`, and a headless run lists them in the `init` event; leaving `auto` restores them. A
+`pre_tool_use` hook's `allow` follows the same test on the hook's matcher.
 
 The approval prompt can create allow rules:
 
@@ -168,4 +181,6 @@ checked: files a recursive search reaches under a directory (`grep -r KEY .`) ar
 one by one. `read` deny rules are not a containment boundary for shell; use a `shell` deny or
 ask rule, or the protected paths.
 
-A pre-classified call is audited with `tier = tier05`.
+A pre-classified call is audited with `tier = tier05`. In `auto` these calls and the read-only
+fast path are the only guardian skips earned without a grant of yours; an out-of-scope read such
+as `ls ../`, anything the pre-classifier cannot fully parse, and every MCP tool go to the guardian.

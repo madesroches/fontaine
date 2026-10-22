@@ -11,6 +11,19 @@ beneath every mode and cannot be argued with.
 
 This repository is under construction. The documentation describes what the current build does.
 
+## Install
+
+Binaries for Linux, macOS and Windows are attached to each
+[GitHub Release](https://github.com/madesroches/fontaine/releases). Unpack the archive for your
+platform and put `fontaine` on your `PATH`. With the Rust toolchain you can instead install from
+source:
+
+```
+cargo install --git https://github.com/madesroches/fontaine fontaine
+```
+
+Fontaine is not published to crates.io.
+
 ## Build from source
 
 You need the Rust toolchain; `rust/rust-toolchain.toml` pins the version and `rustup` installs it
@@ -57,19 +70,37 @@ in every mode.
 
 | Mode | Behavior |
 |---|---|
-| `manual` (default) | Asks you. |
+| `manual` | Asks you. The headless default. |
 | `acceptEdits` | Runs edits inside the workspace; asks for the rest. |
-| `plan` | Never edits; asks for other consequential calls. |
+| `plan` | Never edits; the guardian judges other consequential calls. |
 | `dontAsk` | Denies anything not pre-approved. |
-| `auto` | Not available yet. |
+| `auto` | The guardian decides. The terminal UI's default. |
 
 Run `fontaine` for the terminal UI (Shift+Tab cycles the mode) or `fontaine -p` for a headless run.
+
+## Auto mode
+
+In `auto` a call is judged by the guardian only after everything that can be decided without a
+model has been: your deny and ask rules, the critical and protected paths, the read-only fast path
+inside your workspace, and a small set of read-only shell commands never reach it. For the rest,
+the guardian is a separate model with no tools. It reads what you asked for (your own messages,
+taken from a record the agent cannot edit), the call and a short written policy, and answers
+**allow**, **deny** with a reason the agent sees, or **escalate** to ask you.
+
+If it cannot answer, the call is denied: no credential, a provider error, a timeout, a malformed
+verdict, or an allow it is not confident about on a destructive call. Repeated denials hand the
+session back to you, and `/denied` lets you approve one refused call yourself. By default the
+guardian is the best benchmark-validated model your accounts offer; `/guardian-model` changes it.
+The [guardian page](docs/guardian.md) has the threat model and the details, and the
+[scorecard](docs/evals.md) has the numbers.
 
 ## Documentation
 
 - [Documentation index](docs/index.md)
 - [Configuration](docs/configuration.md)
 - [Permissions](docs/permissions.md)
+- [The guardian](docs/guardian.md)
+- [Guardian scorecard](docs/evals.md)
 - [The terminal UI](docs/tui.md)
 - [Headless runs](docs/headless.md)
 - [Telemetry](docs/telemetry.md)

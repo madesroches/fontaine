@@ -69,8 +69,40 @@ All notable changes are recorded here. The format follows
   `baseline capture` / `baseline diff` compare it with `claude -p`; CI runs the `none` mode.
 - `docs/permissions.md`, `docs/tui.md` and a manual-mode cassette test (not yet recorded).
 
+- Phase 4, the guardian: `auto` mode. A separate, tool-less model judges each call that nothing
+  pre-approved and answers allow, deny with a labelled reason, or escalate to the human; the
+  verdict is a typed extraction validated by code, and every outcome that is not a verdict
+  (missing credential, provider error, timeout, malformed or out-of-enum verdict, a low-confidence
+  allow on a destructive call) is a denial. Its request is built from the session ledger only, with
+  a structurally derived destructive class, delimited untrusted blocks and redaction; a 60-second
+  verdict cache, a loop breaker (3 in a row, 20 in total) and the seeded default rule lists
+  adapted from Claude Code's auto-mode defaults.
+- The `minimal` guardian profile for containers, loaded only with `--in-container` and a positive
+  runtime probe.
+- The terminal UI: `auto` joins the Shift+Tab cycle and is the default mode, guardian denials
+  render as `[Rule] explanation`, `/denied` with a one-shot retry approval, `/model` and
+  `/guardian-model` (live switch, saved to the user file), and a prompt for an unavailable pinned
+  guardian (retry, pick another, or manual).
+- Default guardian selection from the ranked list of validated models (`guardian_models.toml`,
+  empty until a scorecard run fills it), with a main-model fallback and a one-time notice.
+- Telemetry: the `fontaine.guardian` span, `query_source = guardian` on the guardian's model
+  calls, and the `fontaine.guardian.latency` and `fontaine.guardian.fail_closed.count` metrics;
+  audit and `gate_decision` records carry the guardian's model, profile, verdict, confidence,
+  cache hit, latency and fail-closed reason; `result.usage.guardian` totals its tokens and cost.
+- `fontaine-evals`: `--guardian live:<account>/<model>` scores a live guardian, records latency,
+  and writes the models that clear the inclusion bar (catch rate 90%, false-deny rate 5%, p95 3 s)
+  to `--models-file`; `baseline capture` now poses `auto` cases to `claude -p`.
+- Release setup: cargo-dist builds and publishes binaries for Linux, macOS and Windows on a
+  `vX.Y.Z` tag, and CI runs `cargo dist plan`.
+- `docs/guardian.md` and the scorecard page `docs/evals.md`.
+
 ### Changed
 
+- `[permissions] default_mode` is optional: the terminal UI starts in `auto` and a headless run in
+  `manual`. `auto` is now accepted from the user file, `--settings` and `--permission-mode`; shared
+  project settings still cannot set it.
+- In `plan` mode, consequential non-edit calls go to the guardian instead of the prompt; edits stay
+  blocked whatever it says.
 - `fontaine` without `-p` starts the terminal UI and exits with code 2 when there is no terminal.
 - A file-tool call outside the workspace roots is denied with an `/add-dir` hint instead of
   prompting; Fontaine's own config and data directories are protected paths; path case is folded

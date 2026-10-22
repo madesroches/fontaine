@@ -12,7 +12,7 @@ fontaine/
 │   ├── fontaine/            binary and library: command line, headless runs, tracing and telemetry export
 │   ├── fontaine-core/       configuration, trust, credentials, model accounts, the permission pipeline and rules, audit log, agent setup and turn runner, sessions, session ledger, system prompt
 │   ├── fontaine-tools/      built-in tools, risk classes, workspace scope check, shell parsing and pre-classifier (preclassify), the gate seam and tool wrapper
-│   ├── fontaine-guardian/   guardian vocabulary; kept free of Fontaine dependencies
+│   ├── fontaine-guardian/   the guardian: request and verdict types, prompt builder, verdict cache, loop breaker; kept free of Fontaine dependencies
 │   ├── fontaine-agents/     subagent orchestration (skeleton)
 │   ├── fontaine-mcp/        MCP server wiring (skeleton)
 │   ├── fontaine-tui/        terminal UI
@@ -28,19 +28,19 @@ fontaine/
 | Crate | Responsibility today |
 |---|---|
 | `fontaine` | The `fontaine` binary. `main.rs` is thin; `lib.rs` parses the command line, resolves the directories, loads configuration, installs the tracing subscriber and opens the `fontaine.session` span. `headless.rs` maps the core turn runner's events to the versioned output described in [Headless runs](headless.md) for `fontaine -p`; `auth.rs` is `fontaine auth login`. `src/telemetry/` is the only place a subscriber is built, and holds the two export backends described in [Telemetry](telemetry.md). |
-| `fontaine-core` | The settings scope stack (`config`), config and data directory resolution (`dirs`), the `Tool(specifier)` permission rule syntax (`permission_rules`), the workspace trust store (`trust`), the credentials file (`credentials`: lookup and the `auth login` writer), owner-only file creation (`owner_only`), the permission decision tier enum (`tier`), and the model layer (`models`): config accounts mapped to provider clients and `<account>/<model>` references resolved to model handles. It also holds the permission pipeline (`permissions`, with the floor checks in `floor`), the audit log (`audit`), the shared session state (`gate`), the session (`session`: the model context store and its compaction), the session ledger (`ledger`), the system prompt (`prompt`), the workspace roots (`workspace`), the wrapped tool registry (`tools`), and the agent setup and turn runner that headless and the terminal UI share (`agent`, `turn`). |
+| `fontaine-core` | The settings scope stack (`config`), config and data directory resolution (`dirs`), the `Tool(specifier)` permission rule syntax (`permission_rules`), the workspace trust store (`trust`), the credentials file (`credentials`: lookup and the `auth login` writer), owner-only file creation (`owner_only`), the permission decision tier enum (`tier`), and the model layer (`models`): config accounts mapped to provider clients and `<account>/<model>` references resolved to model handles. It also holds the permission pipeline (`permissions`, with the floor checks in `floor`), the audit log (`audit`), the shared session state (`gate`), the session (`session`: the model context store and its compaction), the session ledger (`ledger`), the system prompt (`prompt`), the workspace roots (`workspace`), the wrapped tool registry (`tools`), and the agent setup and turn runner that headless and the terminal UI share (`agent`, `turn`). The guardian's side of the core is the request builder that reads only the ledger (`adjudication`), the structural destructive-class derivation (`destructive`), the container probe (`containment`), and default-guardian selection and live model switching in `models`. |
 | `fontaine-tools` | The built-in tools and their risk classes, the workspace scope check, shell parsing and the Tier-0.5 pre-classifier (`preclassify`), the gate interface and the wrapper that puts every tool behind it, the result pipeline and the built-in tool names that rules and agent toolsets may refer to. It depends on no other Fontaine crate. |
-| `fontaine-guardian` | The `RuleLabel` enum: the fixed label set a guardian verdict can carry. It has no dependencies, so other harnesses can embed it. |
+| `fontaine-guardian` | The guardian: a separate, tool-less model conversation that judges one tool call and answers with a typed verdict. It holds the `AdjudicationRequest` and `Verdict` types, the `RuleLabel` enum, the prompt assets and the prompt builder, the shipped default rule lists, the verdict cache, the loop breaker, the minimal profile and the ranked model list types. It depends on rig and `serde` but on no other Fontaine crate, so other harnesses can embed it; see [The guardian](guardian.md). |
 | `fontaine-tui` | The terminal UI: transcript, input, approval prompts and the status bar, driven by the core turn runner. See [The terminal UI](tui.md). |
 | `fontaine-agents`, `fontaine-mcp` | Skeleton crates that reserve their place in the dependency graph. |
-| `fontaine-evals` | Loads and validates the golden dataset, scores canned verdicts, runs `pipeline` cases through the real permission pipeline, and captures and diffs Claude Code baselines. |
+| `fontaine-evals` | Loads and validates the golden dataset, scores canned verdicts, runs `pipeline` cases through the real permission pipeline, scores a live guardian model and writes the models that clear the inclusion bar, and captures and diffs Claude Code baselines. |
 
 ## Dependencies between crates
 
 ```
 fontaine          -> fontaine-core, fontaine-tools, fontaine-tui
 fontaine-evals    -> fontaine-core, fontaine-guardian, fontaine-tools
-fontaine-tui      -> fontaine-core
+fontaine-tui      -> fontaine-core, fontaine-guardian, fontaine-tools
 fontaine-core     -> fontaine-tools, fontaine-guardian, fontaine-mcp, fontaine-agents
 fontaine-mcp      -> fontaine-tools
 fontaine-agents   -> fontaine-tools
@@ -182,7 +182,11 @@ and `telemetry-otlp` features, both on by default.
 `fontaine-evals` reads `evals/dataset/*.jsonl` and validates every case against the schema. With
 `--guardian fixture` it scores the canned `fixture_verdict` of each selected case against its
 `expected` outcome; with `--guardian none` it runs the `pipeline` cases through the real permission
-pipeline (no guardian, non-`auto` modes) and scores the first decision. Both run offline. The
+pipeline (no guardian, non-`auto` modes) and scores the first decision. Both run offline. With
+`--guardian live:<account>/<model>` it resolves the account through the same configuration and
+credential loading as `fontaine -p`, routes `guardian` cases to the guardian and `pipeline` cases to
+the pipeline under the case's mode, records each case's latency, and writes the models that clear
+the inclusion bar to the shipped model list; see [the scorecard](evals.md). The
 `baseline capture` and `baseline diff` subcommands compare the pipeline with Claude Code. The case
 format and the runner flags are documented in [evals/README.md](../evals/README.md).
 

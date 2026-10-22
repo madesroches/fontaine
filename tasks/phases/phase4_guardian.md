@@ -1,6 +1,6 @@
 # Phase 4 — The guardian (the feature) + its published scorecard
 
-**Status:** not started · **Depends on:** [Phase 3](phase3_pipeline_tui.md) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
+**Status:** done · **Depends on:** [Phase 3](phase3_pipeline_tui.md) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
 
 This is the product. Guardian grounding is in `tasks/design/research-findings.md` §Research Findings (GuardAgent,
 Dual-LLM/CaMeL, AgentDojo, typed-decision judges); the pipeline legs it fills are in
@@ -318,3 +318,11 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
 - 2026-10-22 AFK: Default-guardian selection lives in `fontaine-core` `models.rs` over a pure ranking accessor and the compiled TOML text from `fontaine-guardian` (core parses it); an account has a model by its `models` list, the main account's existing listing, or for another list-less account by matching `kind` plus a present credential, with no listing call — core depends on the guardian crate, and Phase 1 forbids guardian-credential calls at startup.
 - 2026-10-22 AFK: `ToolCallSummary` carries `args_digest`, filled by core from `audit::args_digest` — keeps `serde_jcs`/`sha2` out of the dependency-light guardian crate.
 - 2026-10-22 AFK: `ShellAnalysis` gains `output_redirect: bool` (file-target `>`/`>>`/`>|`/`<>`/`&>`, not fd duplications) rather than treating every non-simple command as destructive — the latter would mark every pipeline destructive and inflate low-confidence false denies.
+- 2026-10-22 AFK: `RuleConfig::expand` keeps the shipped `hard_deny` and `soft_deny` entries whatever is configured (a list without `$defaults` has them placed first); only `environment` and `allow` follow Claude Code's replace-unless-`$defaults` rule — a shared project file may add to the deny lists, and a list that replaced the defaults on addition would loosen the policy.
+- 2026-10-22 AFK: the `minimal` request keeps `git_remotes` as well as the workspace roots and the touched paths' status, and the minimal ruleset is carried by `guardian_minimal.md` itself (the `[auto_mode]` rule lists are not sent) — exfiltration is judged against the session-start remotes, which the plan's "roots" wording cannot do without them.
+- 2026-10-22 AFK: every guardian-tier denial feeds the loop breaker (fail-closed ones and a headless escalate included), an allow ends the consecutive run, and a human approval resumes `auto` with both counts reset — the plan fixes the thresholds but not what a resume leaves behind.
+- 2026-10-22 AFK: the unavailable-guardian prompt fires for `unavailable` (no credential, unknown account) only; a provider error or timeout is a plain fail-closed denial, because the model exists and may answer the next call. `Pick` is session-only; `/guardian-model` saves.
+- 2026-10-22 AFK: a `pre_tool_use` hook with no declared matcher is treated as broad, so its `allow` is suspended in `auto` (`PreToolUseHook::matcher` defaults to `None`); Phase 5's handlers supply the matcher.
+- 2026-10-22 AFK: `/denied` `r` puts the harness note in the next turn's prompt text only, never in the ledger as a user message, and the audit `rule` text is not exported as telemetry (only the guardian model, profile, verdict, confidence, cache hit, latency and the fail-closed reason ride the `tool_decision` event).
+- 2026-10-22 AFK: `fontaine-evals` live mode skips `scanner` cases (Phase 6), scores an attack or escape case as passing on `deny` or `escalate`, and reports guardian latency over the adjudicated `guardian` cases only; the PreToolUse-hook `allow` coverage of the `auto` baseline capture waits for Phase 5 hooks.
+

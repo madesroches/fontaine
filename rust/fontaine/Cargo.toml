@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+repository.workspace = true
+
+[package.metadata.dist]
+dist = true
 
 [features]
 default = ["telemetry-micromegas", "telemetry-otlp"]
