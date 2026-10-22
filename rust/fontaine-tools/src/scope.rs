@@ -198,25 +198,36 @@ fn translate(path: &str, windows: bool) -> Option<String> {
     }
 }
 
-/// A glob pattern split into its literal leading directory and the rest.
-fn split_glob(pattern: &str) -> (String, String) {
+/// A glob pattern split into its literal leading directory and the rest. The pattern is cut,
+/// never re-joined: a Windows verbatim path (`\\?\C:\...`) does not accept `/` separators.
+fn split_glob(pattern: &str, windows: bool) -> (String, String) {
     let is_meta = |c: char| matches!(c, '*' | '?' | '[' | ']' | '{' | '}');
-    let parts: Vec<&str> = pattern.split('/').collect();
-    let literal = match parts.iter().position(|part| part.chars().any(is_meta)) {
-        Some(first_meta) => first_meta,
-        None => parts.len().saturating_sub(1),
+    let is_sep = |c: char| c == '/' || (windows && c == '\\');
+    // Canonical roots on Windows are verbatim paths, whose prefix carries a literal `?`.
+    let start = if windows && pattern.starts_with(r"\\?\") {
+        4
+    } else {
+        0
     };
-    let mut dir = parts[..literal].join("/");
-    if dir.is_empty() && pattern.starts_with('/') {
-        dir.push('/');
-    }
-    (dir, parts[literal..].join("/"))
+    let body = &pattern[start..];
+    let literal_end = body.find(is_meta).unwrap_or(body.len());
+    let Some(cut) = body[..literal_end].rfind(is_sep).map(|at| at + start) else {
+        return (String::new(), pattern.to_string());
+    };
+    // `/` and `C:\` keep their separator: without it they name no directory or the drive's cwd.
+    let keep_sep = cut == 0 || (windows && pattern[..cut].ends_with(':'));
+    let dir = if keep_sep {
+        &pattern[..=cut]
+    } else {
+        &pattern[..cut]
+    };
+    (dir.to_string(), pattern[cut + 1..].to_string())
 }
 
 /// Where a `glob` call searches and the pattern left to match there: the pattern's literal
 /// leading directory under `path` (or the working root), and the non-literal tail.
 pub fn glob_target(path: Option<&str>, pattern: &str) -> (String, String) {
-    let (dir, tail) = split_glob(pattern);
+    let (dir, tail) = split_glob(pattern, cfg!(windows));
     let base = match (path, dir.as_str()) {
         (None, "") => ".".to_string(),
         (None, dir) => dir.to_string(),
@@ -232,13 +243,46 @@ mod tests {
 
     #[test]
     fn globs_split_at_the_first_non_literal_component() {
-        assert_eq!(split_glob("src/**/*.rs"), ("src".into(), "**/*.rs".into()));
-        assert_eq!(split_glob("*.rs"), (String::new(), "*.rs".into()));
-        assert_eq!(split_glob("/abs/x/*.rs"), ("/abs/x".into(), "*.rs".into()));
-        assert_eq!(split_glob("/*.rs"), ("/".into(), "*.rs".into()));
-        assert_eq!(split_glob("a/b/c.txt"), ("a/b".into(), "c.txt".into()));
-        assert_eq!(split_glob("c.txt"), (String::new(), "c.txt".into()));
-        assert_eq!(split_glob("a/**"), ("a".into(), "**".into()));
+        assert_eq!(
+            split_glob("src/**/*.rs", false),
+            ("src".into(), "**/*.rs".into())
+        );
+        assert_eq!(split_glob("*.rs", false), (String::new(), "*.rs".into()));
+        assert_eq!(
+            split_glob("/abs/x/*.rs", false),
+            ("/abs/x".into(), "*.rs".into())
+        );
+        assert_eq!(split_glob("/*.rs", false), ("/".into(), "*.rs".into()));
+        assert_eq!(
+            split_glob("a/b/c.txt", false),
+            ("a/b".into(), "c.txt".into())
+        );
+        assert_eq!(split_glob("c.txt", false), (String::new(), "c.txt".into()));
+        assert_eq!(split_glob("a/**", false), ("a".into(), "**".into()));
+    }
+
+    #[test]
+    fn windows_globs_split_at_either_separator_and_keep_the_verbatim_prefix() {
+        assert_eq!(
+            split_glob(r"\\?\C:\work\extra/**/*.rs", true),
+            (r"\\?\C:\work\extra".into(), "**/*.rs".into())
+        );
+        assert_eq!(
+            split_glob(r"C:\work\src\*.rs", true),
+            (r"C:\work\src".into(), "*.rs".into())
+        );
+        assert_eq!(
+            split_glob(r"\\?\C:\*", true),
+            (r"\\?\C:\".into(), "*".into())
+        );
+        assert_eq!(
+            split_glob(r"C:\*.ini", true),
+            (r"C:\".into(), "*.ini".into())
+        );
+        assert_eq!(
+            split_glob(r"src\*.rs", false),
+            (String::new(), r"src\*.rs".into())
+        );
     }
 
     #[test]
