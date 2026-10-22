@@ -103,6 +103,11 @@ All notable changes are recorded here. The format follows
   project settings still cannot set it.
 - In `plan` mode, consequential non-edit calls go to the guardian instead of the prompt; edits stay
   blocked whatever it says.
+- In `auto`, broad allow rules are suspended by program: interpreters, shells (including `pwsh`,
+  `powershell`, `cmd`), `sudo`/`doas` and argv launchers, versioned names (`python3.12`) and
+  wildcard rules that cover them (`shell(cargo *)`, `shell(npm *)`).
+- Headless `total_cost_usd` and `--max-budget-usd` include guardian spend, retried and fail-closed
+  adjudications included.
 - `fontaine` without `-p` starts the terminal UI and exits with code 2 when there is no terminal.
 - A file-tool call outside the workspace roots is denied with an `/add-dir` hint instead of
   prompting; Fontaine's own config and data directories are protected paths; path case is folded
