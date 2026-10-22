@@ -237,7 +237,8 @@ fn a_launch_from_a_git_worktree_classifies_an_untracked_file_as_user_trust() {
     git_init(&w.work);
     git(&w.work, &["commit", "-q", "--allow-empty", "-m", "init"]);
     let wt = w.root.join("wt");
-    git(&w.work, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+    // Relative, because git can't create a worktree at a Windows `\\?\` verbatim path.
+    git(&w.work, &["worktree", "add", "-q", "../wt"]);
     assert!(wt.join(".git").is_file(), "a worktree has a .git file");
     let wt = std::fs::canonicalize(&wt).unwrap();
     trust::record(&w.data, &wt).unwrap();
