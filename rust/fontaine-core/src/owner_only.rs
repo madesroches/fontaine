@@ -87,12 +87,15 @@ mod imp {
             let result = (|| {
                 let mut len = 0u32;
                 GetTokenInformation(token, TokenUser, null_mut(), 0, &mut len);
-                let mut buf = vec![0u8; len as usize];
+                // u64 backing gives the 8-byte alignment TOKEN_USER requires.
+                let mut buf = vec![0u64; (len as usize).div_ceil(8)];
                 if GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len)
                     == 0
                 {
                     return Err(io::Error::last_os_error());
                 }
+                // SAFETY: the buffer is 8-byte aligned and was filled with a TOKEN_USER by the
+                // successful GetTokenInformation call above; it outlives this borrow.
                 let user = &*(buf.as_ptr().cast::<TOKEN_USER>());
                 let mut sid_str: *mut u16 = null_mut();
                 if ConvertSidToStringSidW(user.User.Sid, &mut sid_str) == 0 {

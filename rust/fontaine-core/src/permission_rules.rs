@@ -94,6 +94,14 @@ pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
 
 pub(crate) fn validate_mcp_name(name: &str) -> Result<(), String> {
     let rest = &name[fontaine_tools::names::MCP_TOOL_PREFIX.len()..];
+    if !rest
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '*')
+    {
+        return Err(
+            "MCP names contain only letters, digits, `_`, `-` and a trailing `*`".to_string(),
+        );
+    }
     let (server, tool) = match rest.split_once("__") {
         Some((server, tool)) => (server, Some(tool)),
         None => (rest, None),

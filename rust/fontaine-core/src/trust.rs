@@ -244,7 +244,8 @@ pub fn classify_project_local(
     };
     let lookup = index.prepare_icase_backing();
     // A submodule or sparse directory is one index entry for its whole subtree, so an ancestor
-    // entry covers files the index does not list individually.
+    // entry covers files the index does not list individually; sparse directories are stored
+    // with a trailing `/`.
     let in_index = |path: &[u8]| {
         index
             .entry_by_path_icase(BStr::new(path), true, &lookup)
@@ -256,7 +257,7 @@ pub fn classify_project_local(
                 || bytes
                     .iter()
                     .enumerate()
-                    .any(|(i, &b)| b == b'/' && in_index(&bytes[..i])))
+                    .any(|(i, &b)| b == b'/' && (in_index(&bytes[..i]) || in_index(&bytes[..=i]))))
     };
     if tracked(resolved.as_ref()) || tracked(literal.as_ref()) {
         return Project(Tracked);

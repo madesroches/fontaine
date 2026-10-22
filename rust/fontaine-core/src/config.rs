@@ -628,8 +628,15 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
     for (name, server) in s.mcp.iter().flat_map(|m| m.servers.iter().flatten()) {
         let key = format!("mcp.servers.{name}");
         match (&server.command, &server.url) {
-            (Some(_), None) => {}
-            (None, Some(_)) => {
+            (Some(command), None) => {
+                if command.is_empty() {
+                    return bad(&key, "`command` must not be empty");
+                }
+            }
+            (None, Some(url)) => {
+                if url.is_empty() {
+                    return bad(&key, "`url` must not be empty");
+                }
                 if server.args.is_some() || server.env_vars.is_some() {
                     return bad(&key, "`args` and `env_vars` apply to stdio servers only");
                 }
@@ -638,13 +645,15 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         }
         if name.is_empty()
             || name.contains("__")
+            || name.starts_with('_')
+            || name.ends_with('_')
             || !name
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         {
             return bad(
                 &key,
-                "server names are non-empty, contain no `__`, and use only letters, digits, `_` and `-`",
+                "server names are non-empty, contain no `__`, neither start nor end with `_`, and use only letters, digits, `_` and `-`",
             );
         }
     }

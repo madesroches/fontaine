@@ -289,6 +289,28 @@ fn a_file_under_a_submodule_gitlink_loads_as_project_scope() {
     );
 }
 
+#[test]
+fn a_workspace_under_a_sparse_directory_entry_loads_as_project_scope() {
+    let w = World::new();
+    git_init(&w.work);
+    write(&w.work.join("sub/f.txt"), "x");
+    write(&w.work.join("other/g.txt"), "y");
+    git(&w.work, &["add", "."]);
+    git(&w.work, &["commit", "-q", "-m", "init"]);
+    git(&w.work, &["sparse-checkout", "set", "--cone", "other"]);
+    git(&w.work, &["config", "index.sparse", "true"]);
+    git(&w.work, &["sparse-checkout", "reapply"]);
+    let index = std::fs::read(w.work.join(".git/index")).unwrap();
+    assert!(index.windows(4).any(|x| x == b"sub/"), "no sparse entry");
+    let sub = w.work.join("sub");
+    trust::record(&w.data, &w.work).unwrap();
+    write(&local_path(&sub), LOOSE);
+    assert_eq!(
+        classify_project_local(&sub, &local_path(&sub), &w.data),
+        LocalClassification::Project(ProjectDemotion::Tracked)
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn a_tracked_symlink_to_an_ignored_in_tree_file_loads_as_project_scope() {
