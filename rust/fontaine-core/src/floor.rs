@@ -121,7 +121,8 @@ fn scan(analysis: &ShellAnalysis, base: &Path, env: &CriticalEnv<'_>) -> Option<
         for (at, word) in command.words.iter().enumerate() {
             if is_deleter(word) {
                 mentions_deleter = true;
-                if let Some(found) = check_targets(&command.words[at + 1..], base, env) {
+                let launched = launches_targets(&command.words[..at]);
+                if let Some(found) = check_targets(&command.words[at + 1..], launched, base, env) {
                     return Some(found);
                 }
             }
@@ -141,7 +142,35 @@ fn is_deleter(word: &ShellWord) -> bool {
     })
 }
 
-fn check_targets(rest: &[ShellWord], base: &Path, env: &CriticalEnv<'_>) -> Option<String> {
+/// Whether a launcher before the deleter supplies its operands at run time.
+fn launches_targets(before: &[ShellWord]) -> bool {
+    let names: Vec<Option<&str>> = before
+        .iter()
+        .map(|w| {
+            w.literal
+                .as_deref()
+                .map(|t| t.rsplit(['/', '\\']).next().unwrap_or(t))
+        })
+        .collect();
+    let has = |n: &str| names.contains(&Some(n));
+    has("xargs")
+        || has("parallel")
+        || (has("find")
+            && ["-exec", "-execdir", "-ok", "-okdir"]
+                .iter()
+                .any(|flag| has(flag)))
+}
+
+fn check_targets(
+    rest: &[ShellWord],
+    launched: bool,
+    base: &Path,
+    env: &CriticalEnv<'_>,
+) -> Option<String> {
+    if launched {
+        return Some("rm run by a launcher that supplies its targets".to_string());
+    }
+    let mut operands = 0;
     let mut options_ended = false;
     for word in rest {
         let Some(text) = &word.literal else {
@@ -154,9 +183,13 @@ fn check_targets(rest: &[ShellWord], base: &Path, env: &CriticalEnv<'_>) -> Opti
         if !options_ended && text.starts_with('-') {
             continue;
         }
-        if is_critical_target(text, base, env) {
+        operands += 1;
+        if text == "{}" || is_critical_target(text, base, env) {
             return Some(format!("rm target `{text}`"));
         }
+    }
+    if operands == 0 {
+        return Some("rm with no target word; its targets are unknown".to_string());
     }
     None
 }
@@ -258,6 +291,12 @@ mod tests {
             "echo $(rm -rf /)",
             "sh -c 'rm -rf /'",
             "rm -rf -- /",
+            "find / -exec rm -rf '{}' +",
+            "find . -exec rm {} \\;",
+            "xargs -a list rm -rf",
+            "ls | xargs rm -rf",
+            "rm",
+            "rm -rf",
             "rm -r 'unterminated",
             "su -c 'rm -rf /'",
             "watch 'rm -rf ~'",
@@ -279,7 +318,6 @@ mod tests {
             "rm -rf /home/me/proj/target",
             "rm -rf ./a/b",
             "ls /",
-            "rm",
             "echo format",
             "git rm src/a.rs",
             "git commit -m \"don't rm this\"",

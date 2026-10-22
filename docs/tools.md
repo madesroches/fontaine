@@ -43,6 +43,8 @@ inside a workspace root after symlinks are resolved. The label alone earns nothi
 `~/.ssh/id_rsa`, a cloud credential file or a browser cookie store is a classic reconnaissance
 step, and it is read-only too. A call whose path arguments cannot be read, or that names a path
 outside every root, is outside the fast path.
+File-tool calls on such a path are denied with a hint to add the directory with `/add-dir` or
+`--add-dir`; they are never offered for approval.
 
 ## Workspace roots
 

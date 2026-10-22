@@ -460,6 +460,11 @@ fn shell_matches(spec: &str, call: &CallContext<'_>, posture: Posture) -> bool {
     prefix_anywhere(&analysis, &spec.words) || cannot_tell(&analysis, command, &spec.words)
 }
 
+fn basename(word: &str) -> &str {
+    let name = word.rsplit(['/', '\\']).next().unwrap_or(word);
+    name.strip_suffix(".exe").unwrap_or(name)
+}
+
 /// The rule's words appear contiguously in some command's word stream. A word the shell
 /// expands never equals a rule word.
 fn prefix_anywhere(analysis: &ShellAnalysis, words: &[String]) -> bool {
@@ -470,7 +475,12 @@ fn prefix_anywhere(analysis: &ShellAnalysis, words: &[String]) -> bool {
             window
                 .iter()
                 .zip(words)
-                .all(|(have, want)| *have == Some(want.as_str()))
+                .enumerate()
+                .all(|(i, (have, want))| {
+                    *have == Some(want.as_str())
+                    // `/bin/rm` is `rm`; only a program name carries a directory.
+                    || (i == 0 && have.is_some_and(|h| basename(h) == want))
+                })
         })
     })
 }
@@ -712,6 +722,31 @@ mod tests {
         assert!(shell("shell(git push)", "git push origin"));
         assert!(shell("shell(rm)", "sh -c 'rm x'"));
         assert!(shell("shell(rm)", "echo 'unterminated; rm x"));
+    }
+
+    #[test]
+    fn a_full_path_program_matches_deny_but_not_allow() {
+        let cmd = |c: &str| serde_json::json!({ "command": c });
+        assert!(denied("shell(rm)", "shell", cmd("/bin/rm -rf build")));
+        assert!(denied(
+            "shell(git push)",
+            "shell",
+            cmd("/usr/bin/git push -f")
+        ));
+        assert!(!denied(
+            "shell(git push)",
+            "shell",
+            cmd("/usr/bin/git status")
+        ));
+        let scope = Scope::new(PathBuf::from("/home/me/proj"), []);
+        let args = cmd("/tmp/evil/git status");
+        let call = CallContext {
+            tool: "shell",
+            args: &args,
+            scope: &scope,
+            home: None,
+        };
+        assert!(!matches(&ok("shell(git status)"), &call, Posture::Allow));
     }
 
     #[test]

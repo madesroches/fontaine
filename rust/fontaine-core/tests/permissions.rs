@@ -160,14 +160,16 @@ async fn a_symlink_out_of_the_workspace_is_not_read_only_in_scope() {
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("secret.txt"), "s").unwrap();
         std::os::unix::fs::symlink(&outside, rig.work().join("linked")).unwrap();
-        for (tool, args) in [
-            ("read", json!({"path": "linked/secret.txt"})),
-            ("ls", json!({"path": "linked"})),
-            ("shell", shell("ls linked/")),
-            ("shell", shell("cat linked/secret.txt")),
+        // File tools are confined to the roots, so an escape is denied outright; the shell
+        // has no such confinement and still asks.
+        for (tool, args, decision) in [
+            ("read", json!({"path": "linked/secret.txt"}), Decision::Deny),
+            ("ls", json!({"path": "linked"}), Decision::Deny),
+            ("shell", shell("ls linked/"), Decision::Prompt),
+            ("shell", shell("cat linked/secret.txt"), Decision::Prompt),
         ] {
             let got = first(&rig, tool, args.clone()).await;
-            assert_eq!(got, (Decision::Prompt, Tier::Mode), "{tool} {args}");
+            assert_eq!(got, (decision, Tier::Mode), "{tool} {args}");
         }
     }
 }

@@ -44,5 +44,5 @@ only allow once and deny. See [Permissions](permissions.md) for what each answer
 
 | Command | Action |
 |---|---|
-| `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Only between turns. |
+| `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Until then a file-tool call outside the roots is denied with a hint naming this command. Only between turns. |
 | `/exit`, `/quit` | Leave. |

@@ -52,6 +52,9 @@ A call goes through these steps in order and the first one that decides wins.
 3. **Read-only fast path.** A read-only tool (`read`, `ls`, `glob`, `grep`) whose paths all
    resolve inside a workspace root runs. Symlinks are resolved first. The label alone earns
    nothing: a path outside the roots does not qualify.
+   A file-tool call (`read`, `ls`, `glob`, `grep`, `write`, `edit`) that names a path outside
+   every root is denied, with a hint to add the directory with `/add-dir`: the file tools are
+   confined to the roots, so an approval could never make the call run.
 4. **Shell pre-classifier**, below.
 5. **Allow rules**, below.
 6. **The mode**, as in the table above.

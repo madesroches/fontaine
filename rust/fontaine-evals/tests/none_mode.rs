@@ -255,7 +255,7 @@ fn the_workspace_is_materialized() {
         "manual",
         "read",
         json!({"path": "linked/passwd"}),
-        "prompt",
+        "deny",
         "mode",
     );
     escape["workspace"] = json!({"symlinks": {"linked": "/etc"}});

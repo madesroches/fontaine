@@ -74,13 +74,16 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               PreToolUse hook `allow` → Allow (no guardian), audit `tier = allow_rule` / `hook`;
               in `auto`, broad code-execution rules and hooks are suspended (§Permission rules);
               in `plan`, edit-class calls never get here
+           5b. file tool (read/ls/glob/grep/write/edit) with a path outside every root → Deny with
+              the `/add-dir` hint (file tools are confined to the roots, so an approved call
+              would still be refused); never reaches the prompt
            6. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
            7. mode == auto → Guardian::adjudicate(request) ──▶ Verdict
            8. mode == dontAsk → anything not pre-allowed is Denied (pre-allowed = steps 4, 5, 5a)
            9. mode == plan (not allowed by steps 4–5a): WorkspaceWrite / edit-class → BLOCKED
               outright (structural; no verdict or escalation can override the edit block while
               plan mode is on); every other consequential call — write-capable or unparsed shell,
-              webfetch, out-of-scope reads, ALL MCP calls (anything non-shell `Arbitrary`) →
+              webfetch, ALL MCP calls (anything non-shell `Arbitrary`) →
               Guardian::adjudicate as in auto (CC parity: plan mode routes consequential calls
               through the classifier by default; never edits). Until the guardian ships (Phase 4),
               these step-9 calls fall through to the human prompt.

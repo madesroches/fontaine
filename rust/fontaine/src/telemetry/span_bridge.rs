@@ -35,6 +35,12 @@ pub fn is_exported_event(meta: &Metadata<'_>) -> bool {
     meta.is_event() && meta.target() == TARGET
 }
 
+/// What the bridge itself observes: the allowlisted spans, plus Fontaine's events (the
+/// decision event is counted from the event, not from a span).
+pub fn is_bridged(meta: &Metadata<'_>) -> bool {
+    is_exported_span(meta) || is_exported_event(meta)
+}
+
 pub enum MetricValue {
     Int(u64),
     Float(f64),
