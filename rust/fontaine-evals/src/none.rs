@@ -70,6 +70,7 @@ pub async fn decide(case: &Case) -> Result<Outcome, String> {
         ledger: Arc::new(ledger),
         audit: Arc::new(audit),
         home: Some(home),
+        protected_dirs: Vec::new(),
     }));
     let pipeline = PermissionPipeline::new(PipelineParams {
         state: state.clone(),

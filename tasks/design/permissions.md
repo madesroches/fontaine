@@ -51,7 +51,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
                MCP-declared readOnlyHint does not qualify — such tools register as Arbitrary;
                the `skill` tool qualifies: its only argument is a skill name resolved against the
                start-time index, and it loads skill text into context)
-           5. Tier 0.5 — deterministic shell pre-classifier (zero-LLM), `shell` calls only:
+           5. Tier 0.5 — (after the parse below, every path-valued word, including `--flag=value` values, is also checked as a `read` call — and as `ls`/`grep` for those commands — against the deny and ask rules: a deny match is a Deny, an ask match a prompt; the pre-classifier never skips file-read rules) deterministic shell pre-classifier (zero-LLM), `shell` calls only:
               parsed by `brush-parser` (a real POSIX shell parser, pinned to an exact version — NOT
               regex, no hand-rolled lexer) into exactly ONE simple command (no control operators
               `; | & && ||`, redirections, substitutions, subshells, backgrounding, globs —
@@ -109,7 +109,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 — the only registered tools that write structurally (`delete`/`move` are not registered; shell writes
 are not structurally detectable without regex on args, so they take the ordinary shell path: guardian
 in `auto`, prompt in manual/acceptEdits). Matched on resolved path components, in any workspace root or
-the home directory. Directories: `.git`, `.vscode`, `.idea`, `.husky`, `.fontaine`. Files: `.gitconfig`,
+the home directory, plus any path under Fontaine's own config and data directories. Directories: `.git`, `.vscode`, `.idea`, `.husky`, `.fontaine`. Files: `.gitconfig`,
 `.gitmodules`, `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc`,
 `.mcp.json`. This follows Claude Code's documented protected-paths list (`.fontaine` in place of
 `.claude`); confirm it against a `claude -p` baseline in Phase 3 and record any difference in Decisions.

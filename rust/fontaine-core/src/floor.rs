@@ -55,10 +55,19 @@ fn under(path: &Path, root: &Path) -> Option<PathBuf> {
 }
 
 /// Whether a write to `path` (as written and as resolved) lands in a protected location, in
-/// any workspace root or the home directory.
-pub fn protected_path(scope: &Scope, home: Option<&Path>, args: &Value) -> Option<String> {
+/// any workspace root or the home directory, or under one of Fontaine's own `owned` directories
+/// (config and data), which a session rooted at or above them could otherwise rewrite.
+pub fn protected_path(
+    scope: &Scope,
+    home: Option<&Path>,
+    owned: &[PathBuf],
+    args: &Value,
+) -> Option<String> {
     let given = args.get("path")?.as_str()?;
     for path in [scope.written(given), scope.resolved(given)] {
+        if owned.iter().any(|dir| under(&path, dir).is_some()) {
+            return Some("Fontaine's own config or data directory".to_string());
+        }
         let relative = scope
             .roots()
             .iter()
@@ -339,7 +348,7 @@ mod tests {
         let root = std::fs::canonicalize(root).unwrap();
         let scope = Scope::new(root.clone(), []);
         let hit = |path: &str| {
-            protected_path(&scope, None, &serde_json::json!({ "path": path })).is_some()
+            protected_path(&scope, None, &[], &serde_json::json!({ "path": path })).is_some()
         };
         for path in [
             ".git/config",
@@ -356,5 +365,19 @@ mod tests {
         for path in ["src/main.rs", "gitconfig", ".github/ci.yml", "x/.gitignore"] {
             assert!(!hit(path), "{path}");
         }
+    }
+
+    #[test]
+    fn owned_directories_are_protected() {
+        let root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let scope = Scope::new(root.clone(), []);
+        let owned = [root.join("cfg/fontaine"), root.join("data/fontaine")];
+        let hit = |path: &str| {
+            protected_path(&scope, None, &owned, &serde_json::json!({ "path": path })).is_some()
+        };
+        assert!(hit("cfg/fontaine/settings.toml"));
+        assert!(hit("data/fontaine/audit/x.jsonl"));
+        assert!(hit(root.join("cfg/fontaine/trust.toml").to_str().unwrap()));
+        assert!(!hit("cfg/other/settings.toml"));
     }
 }

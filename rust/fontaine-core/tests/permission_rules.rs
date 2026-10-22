@@ -240,7 +240,10 @@ fn a_home_relative_pattern_anchors_at_the_home_directory() {
     assert!(matches(&rule("read(~/.aws/**)"), &ctx, Posture::Deny));
     assert!(!matches(&rule("read(~/.ssh/**)"), &ctx, Posture::Deny));
     let ctx = CallContext { home: None, ..ctx };
-    assert!(!matches(&rule("read(~/.aws/**)"), &ctx, Posture::Deny));
+    // With no home to anchor it, a deny or ask rule still matches; an allow rule does not.
+    assert!(matches(&rule("read(~/.aws/**)"), &ctx, Posture::Deny));
+    assert!(matches(&rule("read(~/.aws/**)"), &ctx, Posture::Ask));
+    assert!(!matches(&rule("read(~/.aws/**)"), &ctx, Posture::Allow));
 }
 
 #[test]

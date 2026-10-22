@@ -205,4 +205,10 @@ impl Ui {
         self.wait_until(&format!("`{text}`"), |s| s.contains(text))
             .await;
     }
+
+    /// Waits for an approval prompt and for its answer keys to start counting.
+    pub async fn wait_for_prompt(&self, text: &str) {
+        self.wait_for(text).await;
+        tokio::time::sleep(Duration::from_millis(450)).await;
+    }
 }

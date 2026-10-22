@@ -565,3 +565,56 @@ async fn a_mode_change_takes_effect_on_the_next_call() {
         ]
     );
 }
+
+#[tokio::test]
+async fn read_rules_cover_the_paths_of_read_only_shell_commands() {
+    for mode in [Manual, AcceptEdits, Plan, DontAsk] {
+        let rig =
+            Rig::with(Options::new(mode).settings("[permissions]\ndeny = [\"read(.env)\"]\n"));
+        for command in [
+            "cat .env",
+            "head -n 3 ./.env",
+            "grep --file=.env x",
+            "cat sub/../.env",
+        ] {
+            assert_eq!(
+                first(&rig, "shell", shell(command)).await,
+                (Decision::Deny, Tier::DenyRule),
+                "{command} {mode:?}"
+            );
+        }
+    }
+    let rig =
+        Rig::with(Options::new(Manual).settings("[permissions]\nask = [\"read(secrets/**)\"]\n"));
+    assert_eq!(
+        first(&rig, "shell", shell("grep x secrets/a")).await,
+        (Decision::Prompt, Tier::AskRule)
+    );
+    assert_eq!(
+        first(&rig, "shell", shell("cat README.md")).await,
+        (Decision::Allow, Tier::Tier05)
+    );
+    let rig = Rig::with(Options::new(Manual).settings("[permissions]\ndeny = [\"read(.env)\"]\n"));
+    assert_eq!(
+        first(&rig, "shell", shell("cat README.md")).await,
+        (Decision::Allow, Tier::Tier05)
+    );
+}
+
+#[tokio::test]
+async fn fontaines_own_directories_are_protected() {
+    for mode in [Manual, AcceptEdits] {
+        let rig = Rig::with(
+            Options::new(mode).settings("[permissions]\nallow = [\"write\", \"edit\"]\n"),
+        );
+        for dir in [&rig.world.config, &rig.world.data] {
+            let path = dir.join("settings.toml");
+            let path = path.to_str().unwrap();
+            assert_eq!(
+                first(&rig, "write", write_args(path)).await,
+                (Decision::Prompt, Tier::ProtectedPath),
+                "{path} {mode:?}"
+            );
+        }
+    }
+}

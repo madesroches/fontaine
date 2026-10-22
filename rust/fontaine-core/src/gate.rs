@@ -27,6 +27,8 @@ pub struct StateParams {
     pub audit: Arc<AuditLog>,
     /// The user's home directory, for `~/` rules and the critical-path check.
     pub home: Option<PathBuf>,
+    /// Fontaine's own config and data directories, which file writes never reach unprompted.
+    pub protected_dirs: Vec<PathBuf>,
 }
 
 /// The rules in force, as they stand now.
@@ -67,6 +69,7 @@ pub struct SessionState {
     pub ledger: Arc<Ledger>,
     pub audit: Arc<AuditLog>,
     pub home: Option<PathBuf>,
+    pub protected_dirs: Vec<PathBuf>,
     inner: RwLock<Inner>,
     current_calls: Mutex<HashMap<String, String>>,
     decisions: UnboundedSender<DecisionRecord>,
@@ -81,6 +84,7 @@ impl SessionState {
             ledger: params.ledger,
             audit: params.audit,
             home: params.home,
+            protected_dirs: params.protected_dirs,
             inner: RwLock::new(Inner {
                 mode: params.mode,
                 scope: params.scope,

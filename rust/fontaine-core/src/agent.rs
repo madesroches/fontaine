@@ -112,6 +112,10 @@ impl AgentRuntime {
             ledger: setup.session.ledger.clone(),
             audit: setup.session.audit.clone(),
             home: setup.home,
+            protected_dirs: [&setup.config_dir, &setup.data_dir]
+                .into_iter()
+                .map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.clone()))
+                .collect(),
         }));
         let pipeline = Arc::new(PermissionPipeline::new(PipelineParams {
             state: state.clone(),

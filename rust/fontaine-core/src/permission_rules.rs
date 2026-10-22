@@ -344,7 +344,14 @@ fn strip_root(path: &Path, root: &Path) -> Option<PathBuf> {
 }
 
 impl PathSpec {
-    fn hits(&self, path: &Path, roots: &[PathBuf], home: Option<&Path>) -> bool {
+    /// `unknown_home` is what a `~/` rule answers when there is no home directory to anchor it.
+    fn hits(
+        &self,
+        path: &Path,
+        roots: &[PathBuf],
+        home: Option<&Path>,
+        unknown_home: bool,
+    ) -> bool {
         let is_dir = path.is_dir();
         let test = |rel: &Path| {
             !rel.as_os_str().is_empty()
@@ -358,9 +365,10 @@ impl PathSpec {
                 .iter()
                 .filter_map(|root| strip_root(path, root))
                 .any(|rel| test(&rel)),
-            Anchor::Home => home
-                .and_then(|home| strip_root(path, home))
-                .is_some_and(|rel| test(&rel)),
+            Anchor::Home => match home {
+                Some(home) => strip_root(path, home).is_some_and(|rel| test(&rel)),
+                None => unknown_home,
+            },
             Anchor::Fs(drive) => {
                 let Some(root) = path.ancestors().last() else {
                     return false;
@@ -564,9 +572,9 @@ fn path_matches(spec: &str, call: &CallContext<'_>, posture: Posture) -> bool {
     };
     let roots = call.scope.roots();
     let test = |path: &Path| {
-        spec.hits(path, roots, call.home)
+        spec.hits(path, roots, call.home, posture.lenient())
             // A rule for `secrets/**` covers searching `secrets` itself.
-            || (paths.tree && spec.hits(&path.join("x"), roots, call.home))
+            || (paths.tree && spec.hits(&path.join("x"), roots, call.home, posture.lenient()))
     };
     match posture {
         Posture::Allow => test(&paths.resolved),

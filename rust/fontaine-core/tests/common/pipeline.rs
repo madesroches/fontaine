@@ -123,6 +123,7 @@ impl Rig {
             ledger: session.ledger.clone(),
             audit: session.audit.clone(),
             home: options.home.clone(),
+            protected_dirs: vec![world.config.clone(), world.data.clone()],
         }));
         let approver = Arc::new(Scripted::default());
         let user_config = world.config.join("config.toml");

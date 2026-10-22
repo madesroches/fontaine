@@ -2,9 +2,10 @@
 //! lasting answers would add.
 
 use std::cell::Cell;
+use std::time::{Duration, Instant};
 
 use fontaine_core::permissions::{Answer, ApprovalRequest, Offers};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use tokio::sync::oneshot;
@@ -65,9 +66,13 @@ pub struct Approval {
     scroll: usize,
     /// How far the call text can scroll, as last drawn.
     max_scroll: Cell<usize>,
+    opened: Instant,
 }
 
 const SCROLL_STEP: usize = 5;
+
+/// Keys typed ahead during the turn must not answer a prompt that appears under them.
+const ANSWER_GRACE: Duration = Duration::from_millis(400);
 
 impl Approval {
     pub fn new(request: ApprovalRequest, reply: oneshot::Sender<Answer>) -> Approval {
@@ -79,6 +84,7 @@ impl Approval {
             feedback: None,
             scroll: 0,
             max_scroll: Cell::new(0),
+            opened: Instant::now(),
         }
     }
 
@@ -120,6 +126,11 @@ impl Approval {
 
     /// Handles a key; an answer comes back once the human has given one.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Answer> {
+        self.handle_key_at(key, Instant::now())
+    }
+
+    /// `handle_key` with the clock supplied.
+    pub fn handle_key_at(&mut self, key: KeyEvent, now: Instant) -> Option<Answer> {
         match key.code {
             KeyCode::PageUp => {
                 self.scroll = self.scroll().saturating_sub(SCROLL_STEP);
@@ -144,6 +155,14 @@ impl Approval {
                     feedback.handle_key(key);
                 }
             }
+            return None;
+        }
+        // Navigation and scrolling work at once; only the keys that answer wait.
+        let answers = matches!(key.code, KeyCode::Enter | KeyCode::Char(_));
+        if answers
+            && (key.kind == KeyEventKind::Repeat
+                || now.saturating_duration_since(self.opened) < ANSWER_GRACE)
+        {
             return None;
         }
         let n = self.choices.len();
@@ -244,6 +263,39 @@ impl Approval {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn request() -> ApprovalRequest {
+        ApprovalRequest {
+            tool: "shell".into(),
+            agent: String::new(),
+            tool_use_id: None,
+            args: serde_json::Value::Null,
+            summary: "ls".into(),
+            tier: fontaine_core::tier::Tier::Mode,
+            reason: "r".into(),
+            offers: Offers::default(),
+            proposed_rule: None,
+        }
+    }
+
+    #[test]
+    fn keys_inside_the_grace_period_do_not_answer() {
+        let (tx, _rx) = oneshot::channel();
+        let mut approval = Approval::new(request(), tx);
+        let y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let opened = approval.opened;
+        assert_eq!(approval.handle_key_at(y, opened), None);
+        assert_eq!(approval.handle_key_at(enter, opened), None);
+        let later = opened + ANSWER_GRACE;
+        let mut repeat = y;
+        repeat.kind = KeyEventKind::Repeat;
+        assert_eq!(approval.handle_key_at(repeat, later), None);
+        assert!(matches!(
+            approval.handle_key_at(y, later),
+            Some(Answer::AllowOnce)
+        ));
+    }
 
     #[test]
     fn only_offered_answers_are_choices() {

@@ -9,8 +9,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
-use fontaine_tools::preclassify::{Environment, Preclassifier};
+use fontaine_tools::preclassify::{Environment, Preclassifier, analyze};
 use fontaine_tools::risk::RiskClass;
+use fontaine_tools::scope::Scope;
 use futures::future::BoxFuture;
 use serde_json::Value;
 use tracing::Instrument;
@@ -20,7 +21,7 @@ use crate::config::PermissionMode;
 use crate::floor::{self, CriticalEnv};
 use crate::gate::SessionState;
 use crate::ledger::Record;
-use crate::permission_rules::{CallContext, Posture, RuleSource, matches, propose};
+use crate::permission_rules::{CallContext, Posture, RuleSource, SourcedRule, matches, propose};
 use crate::tier::Tier;
 use crate::user_config;
 
@@ -181,6 +182,59 @@ fn denied(tool: &str, why: &str) -> String {
     )
 }
 
+/// The file-tool calls a read-only shell command stands for: every word that could be a path
+/// (a flag's attached value too) as a `read` of it, and as the matching `ls`/`grep` when the
+/// command is one. Words that are not paths only cause an extra look at the rules.
+fn ruled_hit<'a>(
+    list: &'a [SourcedRule],
+    reads: &[(&'static str, Value)],
+    scope: &Scope,
+    home: Option<&std::path::Path>,
+    posture: Posture,
+) -> Option<&'a SourcedRule> {
+    list.iter().find(|r| {
+        reads.iter().any(|(tool, args)| {
+            let ctx = CallContext {
+                tool,
+                args,
+                scope,
+                home,
+            };
+            matches(&r.rule, &ctx, posture)
+        })
+    })
+}
+
+fn ruled_read_calls(command: &str, cwd: Option<&str>, scope: &Scope) -> Vec<(&'static str, Value)> {
+    let Some(argv) = analyze(command).simple else {
+        return Vec::new();
+    };
+    let base = match cwd {
+        Some(cwd) => scope.resolved(cwd),
+        None => scope.primary().to_path_buf(),
+    };
+    let tools: &[&'static str] = match argv[0].rsplit(['/', '\\']).next().unwrap_or("") {
+        "ls" => &["read", "ls"],
+        "grep" | "rg" => &["read", "grep"],
+        _ => &["read"],
+    };
+    let mut calls = Vec::new();
+    for word in &argv[1..] {
+        let candidate = match word.strip_prefix("--").and_then(|w| w.split_once('=')) {
+            Some((_, value)) => value,
+            None => word,
+        };
+        if candidate.is_empty() || (candidate.starts_with('-') && candidate != "-") {
+            continue;
+        }
+        let path = base.join(candidate).to_string_lossy().into_owned();
+        for tool in tools {
+            calls.push((*tool, serde_json::json!({ "path": path })));
+        }
+    }
+    calls
+}
+
 impl PermissionPipeline {
     pub fn new(params: PipelineParams) -> PermissionPipeline {
         PermissionPipeline {
@@ -326,7 +380,8 @@ impl PermissionPipeline {
             }
         }
         if matches!(tool, "edit" | "write")
-            && let Some(found) = floor::protected_path(&scope, home, args)
+            && let Some(found) =
+                floor::protected_path(&scope, home, &self.state.protected_dirs, args)
         {
             return self.would_prompt(
                 mode,
@@ -354,6 +409,28 @@ impl PermissionPipeline {
                 cwd: args.get("cwd").and_then(Value::as_str),
             };
             if self.preclassifier.is_read_only(command, &env) {
+                // The read-only commands read the paths they are given, so the file-read rules
+                // apply to those paths as they would to the read tool.
+                let reads = ruled_read_calls(command, env.cwd, &scope);
+                if let Some(rule) = ruled_hit(&rules.deny, &reads, &scope, home, Posture::Deny) {
+                    return Verdict::Deny {
+                        tier: Tier::DenyRule,
+                        rule: Some(rule.label()),
+                        why: format!("the permission rule `{}` forbids it", rule.label()),
+                    };
+                }
+                if let Some(rule) = ruled_hit(&rules.ask, &reads, &scope, home, Posture::Ask) {
+                    let rule = rule.label();
+                    return self.would_prompt(
+                        mode,
+                        Prompt {
+                            tier: Tier::AskRule,
+                            reason: format!("`{rule}` asks for approval before this runs"),
+                            rule: Some(rule),
+                            forced: true,
+                        },
+                    );
+                }
                 return Verdict::Allow {
                     tier: Tier::Tier05,
                     rule: None,

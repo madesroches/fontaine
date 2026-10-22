@@ -23,7 +23,7 @@ async fn allowing_a_write_runs_the_tool() {
     ]);
     w.run(|ui| async move {
         ui.send("make a note");
-        ui.wait_for("Allow write?").await;
+        ui.wait_for_prompt("Allow write?").await;
         ui.press(KeyCode::Char('y'));
         ui.wait_for("all done").await;
         idle(&ui).await;
@@ -47,7 +47,7 @@ async fn denying_a_write_tells_the_model_and_writes_nothing() {
     ]);
     w.run(|ui| async move {
         ui.send("make a note");
-        ui.wait_for("Allow write?").await;
+        ui.wait_for_prompt("Allow write?").await;
         ui.press(KeyCode::Char('n'));
         ui.wait_for("understood").await;
         let screen = ui.screen();
@@ -73,7 +73,7 @@ async fn a_denial_reason_reaches_the_model() {
     ]);
     w.run(|ui| async move {
         ui.send("make a note");
-        ui.wait_for("Allow write?").await;
+        ui.wait_for_prompt("Allow write?").await;
         for _ in 0..3 {
             ui.press(KeyCode::Down);
         }
@@ -144,7 +144,7 @@ async fn a_shell_command_that_is_not_one_simple_command_offers_only_once_or_deny
     ]);
     w.run(|ui| async move {
         ui.send("list things");
-        ui.wait_for("Allow shell?").await;
+        ui.wait_for_prompt("Allow shell?").await;
         let screen = ui.screen();
         assert!(screen.contains("allow once"), "{screen}");
         assert!(screen.contains("deny"), "{screen}");
@@ -169,7 +169,7 @@ async fn a_write_prompt_shows_the_exact_rule_for_the_lasting_answers() {
     let rule = format!("write(/{})", w.work.join("notes.txt").display());
     w.run(|ui| async move {
         ui.send("make a note");
-        ui.wait_for("Allow write?").await;
+        ui.wait_for_prompt("Allow write?").await;
         let screen = ui.screen();
         assert!(screen.contains("allow session"), "{screen}");
         assert!(screen.contains("always allow"), "{screen}");
@@ -190,7 +190,7 @@ async fn allow_session_covers_the_next_identical_call() {
     ]);
     w.run(|ui| async move {
         ui.send("make a note");
-        ui.wait_for("Allow write?").await;
+        ui.wait_for_prompt("Allow write?").await;
         ui.press(KeyCode::Char('s'));
         ui.wait_for("finished").await;
         assert!(!ui.screen().contains("Allow write?"));
@@ -215,7 +215,7 @@ async fn always_allow_writes_the_rule_to_the_user_file_and_covers_the_next_call(
     let rule = format!("write(/{})", w.work.join("notes.txt").display());
     w.run(|ui| async move {
         ui.send("make a note");
-        ui.wait_for("Allow write?").await;
+        ui.wait_for_prompt("Allow write?").await;
         ui.press(KeyCode::Char('a'));
         ui.wait_for("finished").await;
         assert!(!ui.screen().contains("Allow write?"));
@@ -239,7 +239,7 @@ async fn interrupting_a_pending_prompt_denies_it_and_keeps_the_session_usable() 
     ]);
     w.run(|ui| async move {
         ui.send("make a note");
-        ui.wait_for("Allow write?").await;
+        ui.wait_for_prompt("Allow write?").await;
         ui.press(KeyCode::Esc);
         ui.wait_for("interrupted").await;
         idle(&ui).await;

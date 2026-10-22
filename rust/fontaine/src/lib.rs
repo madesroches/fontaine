@@ -287,6 +287,7 @@ fn prepare_session(
     let home = (host.env)(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+        .or_else(::dirs::home_dir)
         .map(|path| std::fs::canonicalize(&path).unwrap_or(path));
     Ok(SessionPrep {
         session,

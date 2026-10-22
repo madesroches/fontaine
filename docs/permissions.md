@@ -45,8 +45,9 @@ A call goes through these steps in order and the first one that decides wins.
    - **protected path**: `write` and `edit` on a path with a component named `.git`, `.vscode`,
      `.idea`, `.husky` or `.fontaine`, or whose file name is `.gitconfig`, `.gitmodules`,
      `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc` or `.mcp.json`,
-     in any workspace root or the home directory, asks. Matching is on resolved path components,
-     so separators and, on Windows, case do not matter.
+     in any workspace root or the home directory, asks; so does any path under Fontaine's own
+     config or data directory. Matching is on resolved path components, so separators and, on
+     Windows, case do not matter.
 
    A floor outcome that asks is a denial in `dontAsk` and in headless runs.
 3. **Read-only fast path.** A read-only tool (`read`, `ls`, `glob`, `grep`) whose paths all
@@ -77,7 +78,7 @@ grammar: `Tool` or `Tool(specifier)`. A bare tool name matches every call of the
 | Tool | Specifier | Matches |
 |---|---|---|
 | `shell` | words, optionally ending in ` *`: `shell(git push)`, `shell(npm run test *)` | the parsed command line; quoting keeps a word whole; no wildcard inside a word |
-| `read`, `edit`, `write`, `ls`, `glob`, `grep` | a gitignore-style path pattern: `src/**`, `~/.aws/**`, `//etc/hosts` | the resolved path; relative patterns anchor at each workspace root, `~/` at your home, `//` at the file system root |
+| `read`, `edit`, `write`, `ls`, `glob`, `grep` | a gitignore-style path pattern: `src/**`, `~/.aws/**`, `//etc/hosts` | the resolved path; relative patterns anchor at each workspace root, `~/` at your home (a deny or ask rule with `~/` matches everything when no home directory can be found; an allow rule matches nothing), `//` at the file system root |
 | `webfetch` | `domain:example.com` or `domain:*.example.com` | the URL's host; `*.` matches subdomains only |
 | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | none | the registered tool name |
 | `agent`, `skill` | the agent type or skill name | exact name |
@@ -158,5 +159,10 @@ read-only subcommand run a program.
 subcommand` pair (`cargo metadata`). It is accepted from user-trust scopes only, an extra entry
 takes no flags (any flag falls through), and its positional words must be in-scope paths. A grant
 from the prompt never extends the set.
+
+The pre-classifier does not skip your `read` rules. Each word of the command that could be a path
+(including the value of `--flag=value`), as written and resolved against the `cwd`, is checked
+against the `read` deny and ask rules, and against the `ls` or `grep` rules for those commands. A
+deny match denies the call and an ask match asks, so `deny = ["read(.env)"]` also stops `cat .env`.
 
 A pre-classified call is audited with `tier = tier05`.

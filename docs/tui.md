@@ -38,7 +38,8 @@ When a call needs approval, a prompt lists the call and why it asked:
 
 Up, Down and Tab move the highlight, Enter confirms. Prompts forced by the floor (an `ask` rule, a
 critical path, a protected path) and shell calls that are not one literal simple command offer
-only allow once and deny. See [Permissions](permissions.md) for what each answer does.
+only allow once and deny. Enter and the letter keys are ignored for the first 400 ms after a prompt
+opens, and key repeats never answer, so text typed ahead during a turn cannot approve a call. See [Permissions](permissions.md) for what each answer does.
 
 ## Commands
 
