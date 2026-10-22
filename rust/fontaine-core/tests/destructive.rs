@@ -5,7 +5,7 @@ use fontaine_core::destructive::{
     Facts, GIT_NETWORK_SUBCOMMANDS, INSTALLERS, NETWORK_CLIENT_WORDS, NETWORK_CLIENT_WORDS_EXTRA,
     REMOVAL_OVERWRITE_WORDS, derive, touched_paths,
 };
-use fontaine_core::ledger::LedgerView;
+use fontaine_core::ledger::{LedgerView, path_key};
 use fontaine_core::permission_rules::BROAD_CODE_EXECUTION;
 use fontaine_tools::scope::Scope;
 use serde_json::json;
@@ -267,13 +267,16 @@ fn touched_paths_are_resolved_by_the_scope() {
     let root = scope.primary().to_path_buf();
     std::fs::write(root.join("a.txt"), "x").unwrap();
     let paths = touched_paths("write", &json!({"path": "a.txt"}), &scope);
-    assert_eq!(paths, [root.join("a.txt").to_string_lossy().into_owned()]);
+    // A Windows path may or may not carry the verbatim prefix; the ledger compares without it.
+    let keys: Vec<String> = paths.iter().map(|p| path_key(p)).collect();
+    assert_eq!(keys, [path_key(&root.join("a.txt").to_string_lossy())]);
     let shell = touched_paths(
         "shell",
         &json!({"command": "rm -rf a.txt ./sub echo nothing"}),
         &scope,
     );
-    assert!(shell.contains(&root.join("a.txt").to_string_lossy().into_owned()));
+    let shell_keys: Vec<String> = shell.iter().map(|p| path_key(p)).collect();
+    assert!(shell_keys.contains(&path_key(&root.join("a.txt").to_string_lossy())));
     assert!(shell.iter().any(|p| p.ends_with("sub")));
     assert!(!shell.iter().any(|p| p.ends_with("nothing")));
     assert!(touched_paths("webfetch", &json!({"url": "https://a.example"}), &scope).is_empty());

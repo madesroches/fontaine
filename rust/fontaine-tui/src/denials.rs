@@ -61,9 +61,7 @@ impl DeniedList {
             KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab if n > 0 => {
                 self.selected = (self.selected + 1) % n;
             }
-            KeyCode::Char('r') | KeyCode::Enter
-                if n > 0 && !key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
+            KeyCode::Char('r') if n > 0 && !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return DeniedKey::Retry(self.selected);
             }
             _ => {}

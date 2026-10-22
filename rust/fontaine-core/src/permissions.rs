@@ -897,7 +897,7 @@ impl PermissionPipeline {
                     "Denied by guardian: [{rule}] {why}. Do not retry it or look for another route to the same effect; tell the user what you could not do."
                 );
                 Self::note(Tier::Guardian, Decision::Deny);
-                self.emit(Self::with_guardian(
+                let record = Self::with_guardian(
                     self.record(
                         cx,
                         Tier::Guardian,
@@ -906,7 +906,7 @@ impl PermissionPipeline {
                         Some(message.clone()),
                     ),
                     &adjudication,
-                ));
+                );
                 self.state
                     .append(self.denial(cx, Tier::Guardian, Some(&rule), &message));
                 self.state.record_denied(DeniedCall {
@@ -920,6 +920,8 @@ impl PermissionPipeline {
                     explanation: adjudication.explanation,
                     retried: false,
                 });
+                // The list a surface reads when it sees this event is complete before the event.
+                self.emit(record);
                 if self.state.guardian_denied() {
                     self.approver.notice(
                         "auto mode paused after repeated guardian denials: the next call that needs the guardian asks you, and approving it resumes auto mode",

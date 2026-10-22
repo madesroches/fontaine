@@ -162,17 +162,23 @@ async fn protected_paths_go_to_the_guardian_in_auto_and_prompt_elsewhere() {
 }
 
 #[tokio::test]
-async fn a_protected_path_the_file_tool_cannot_reach_is_refused_not_adjudicated() {
+async fn a_protected_path_outside_the_roots_keeps_its_prompt_in_auto() {
     let fake = fake_guardian(allow_verdict());
     let home = tempfile::tempdir().unwrap();
+    let home = std::fs::canonicalize(home.path()).unwrap();
     let mut options = Options::new(Auto).guardian(fake.guardian.clone());
-    options.home = Some(std::fs::canonicalize(home.path()).unwrap());
+    options.home = Some(home.clone());
     let rig = Rig::with(options);
-    let target = rig.world.root.join("outside").join(".bashrc");
+    // `~/.bashrc` is protected and outside every workspace root. The guardian takes the place of
+    // the prompt only where the file tools could act on its answer.
     let d = rig
-        .check("write", write_args(&target.display().to_string()))
+        .check(
+            "write",
+            write_args(&home.join(".bashrc").display().to_string()),
+        )
         .await;
     assert!(!allowed(&d));
+    assert_eq!(rig.approver.last_request().tier, Tier::ProtectedPath);
     assert_eq!(fake.calls(), 0);
 }
 
