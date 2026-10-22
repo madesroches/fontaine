@@ -152,12 +152,22 @@ impl Loaded {
             let score = self
                 .window_score(&window)
                 .map_err(|e| format!("inference failed: {e}"))?;
-            highest = highest.max(score);
+            highest = highest.max(finite_score(score)?);
             if highest >= FLAG_THRESHOLD {
                 break;
             }
         }
         Ok(highest)
+    }
+}
+
+/// `f64::max` ignores NaN and NaN never reaches the threshold, so a non-finite score would
+/// read as clean; it has to fail the scan instead.
+fn finite_score(score: f64) -> Result<f64, String> {
+    if score.is_finite() {
+        Ok(score)
+    } else {
+        Err(format!("inference produced a non-finite score ({score})"))
     }
 }
 
@@ -214,6 +224,14 @@ impl Scanner for Pg2Scanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_non_finite_score_fails_the_scan() {
+        assert_eq!(finite_score(0.25), Ok(0.25));
+        assert!(finite_score(f64::NAN).is_err());
+        assert!(finite_score(f64::INFINITY).is_err());
+        assert!(finite_score(f64::NEG_INFINITY).is_err());
+    }
 
     #[test]
     fn short_content_is_one_window() {
