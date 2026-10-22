@@ -152,6 +152,9 @@ All notable changes are recorded here. The format follows
   unless `log_tool_details` is on.
 - Notices (for example the pause of `auto`) go to stderr in a headless run instead of being
   dropped.
+- The terminal UI draws inline instead of on the alternate screen: finished output goes into the
+  terminal's own scrollback, so mouse selection and wheel scrolling work, including under tmux.
+  PageUp/PageDown now only scroll an open approval prompt (#70).
 
 ### Removed
 

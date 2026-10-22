@@ -1,0 +1,343 @@
+# TUI Inline Viewport Plan
+
+**GitHub Issue**: https://github.com/madesroches/fontaine/issues/70
+
+## Overview
+
+The TUI draws on the alternate screen, so inside tmux (default mouse bindings) drags and wheel
+events are forwarded to Fontaine, which does not capture the mouse. Text selection fails and so
+does wheel scrolling. This plan moves the TUI to an inline viewport, as Claude Code does. Only the
+live area (the unsettled transcript tail, any open panel, the input box and the status bar) is
+redrawn. Settled transcript lines are written once into the terminal's real scrollback with
+`Terminal::insert_before`. tmux then sees `alternate_on = 0`, and its own selection, wheel
+scrolling and search work. The change stays inside `fontaine-tui`, plus one workspace feature flag
+and the docs.
+
+## Current State
+
+- `fontaine-tui/src/lib.rs:546` `run` calls `ratatui::try_init()`, which enables raw mode, enters
+  the alternate screen and installs ratatui's panic hook. `TerminalGuard` (`lib.rs:517`) disables
+  bracketed paste and calls `ratatui::restore()`, which also leaves the alternate screen.
+- `drive` (`lib.rs:488`) takes a `render: impl FnMut(&App)`. `Ui::draw` (`lib.rs:106`) calls it
+  after every change. `run` passes a closure that calls `terminal.draw(|f| view::draw(f, app))`.
+- `view::draw` (`view.rs:44`) splits the full frame into transcript (`Min(1)`), overlay
+  (approval / guardian-unavailable / `/denied`, capped at `area.height - 4`), input (wrapped rows
+  up to `MAX_INPUT_ROWS = 6`, plus a border) and a one-row status bar. `draw_transcript`
+  (`view.rs:111`) re-wraps every entry each frame and shows a window offset by `App::scroll`.
+- `Transcript` (`transcript.rs`) is a `Vec<Entry>`. Its entries are user messages, assistant text
+  with a `streaming` flag, tool calls whose `ToolStatus` starts as `Pending`, notices and errors.
+  Events mutate entries in place: deltas extend the last streaming assistant entry, and
+  `find_tool` locates a call by id (falling back to the latest pending call of the same tool
+  name) to set its result or denial. `Ui::on_event` (`lib.rs:438`) calls `guardian_denied`
+  right after the `Decision` event that denied the call.
+- `input::wrap` (`input.rs:173`) is a hard character-chunk wrap, so a wrapped row is final as
+  soon as a later row exists.
+- `App::scroll` and PgUp/PgDn in `App::message_key` (`app.rs:219`) scroll the transcript.
+  Approval-panel scrolling is separate (`approval.rs:135`, `Approval::scroll`/`set_max_scroll`).
+- Tests: `view.rs` has one full-frame test (long-command scrolling in the approval panel). The
+  integration harness `tests/common/mod.rs:238` renders into `Terminal::new(TestBackend::new(120,
+  40))` and exposes the frame as `Ui::screen()`, which every `tests/tui.rs` test polls.
+- ratatui is pinned at `=0.30.2` with default features (`rust/Cargo.toml:71`). `Viewport::Inline(h)`
+  is fixed when the `Terminal` is constructed; there is no way to change its height and no
+  `into_backend`. `Terminal::with_options` for an inline viewport calls
+  `backend.get_cursor_position()`, which on crossterm is a DSR round trip through stdin.
+  `insert_before` without the `scrolling-regions` feature clears and redraws the viewport.
+
+## Design
+
+### Transcript commit cursor
+
+`Transcript` keeps its `entries` (so `find_tool`, whose name fallback would match the wrong call
+once the right one left the vector, `set_status` and `guardian_denied` keep working on calls
+already in scrollback) and gains a commit cursor:
+
+```rust
+pub struct Transcript {
+    pub entries: Vec<Entry>,
+    /// Entries fully written to scrollback.
+    committed: usize,
+    /// Chars of `entries[committed]`'s text already written, when it is a streaming reply.
+    committed_chars: usize,
+}
+```
+
+- An entry is **settled** when it is not `Assistant { streaming: true }` and not a `Tool` with
+  `ToolStatus::Pending`.
+- `pub fn commit(&mut self, width) -> Vec<Line<'static>>` walks from `committed`. A settled entry
+  emits all of its lines (minus the rows already committed for a reply that just finished) and
+  advances the cursor. For a streaming reply, it emits every wrapped row except the last, records
+  in `committed_chars` the char offset just past those rows (including a `'\n'` that ends a
+  committed line), and stops. It also stops at a pending tool call. Order is preserved, so
+  anything after an unsettled entry stays live until that entry settles.
+- `pub fn live_lines(&self, width) -> Vec<Line<'static>>` renders `entries[committed..]`, with
+  the first entry's text starting at `committed_chars`.
+- Rows are counted by char offset, not row index. A resize mid-stream then re-wraps only the
+  uncommitted remainder at the new width, and no text is dropped or repeated. Assistant text has
+  an empty prefix, so continuing it from a row boundary renders the same as wrapping it whole.
+- Pushing any non-delta entry (`user`, `notice`, `error`, `ToolCall`) first finishes the streaming
+  entry, so at most one streaming entry exists and it is always the last. Otherwise a notice
+  pushed mid-turn would leave the earlier entry `streaming: true` forever and block every later
+  commit.
+- The existing `lines(width)` stays for tests and is the reference the commit property is checked
+  against.
+- Once committed, a status change (for example a late `ToolResult` on a call already shown as
+  denied) is not redrawn. `set_status` already never overwrites `Denied`, and `guardian_denied`
+  runs in the same `on_event` call as the `Decision`, before any render. No committed entry
+  changes after it is written. The `Decision` deny arm writes `Denied` without `set_status`'s guard,
+  but it only reaches a still-`Pending`, uncommitted call, because fontaine-core's turn loop passes
+  each decision on before that call's result.
+
+### Turn end settles the tail
+
+`Ui::finish_turn` runs `transcript.interrupt_pending()` (finish streaming, mark `Pending` calls
+`Interrupted`) on every turn end, not only on interrupt. A call that never got a result would
+otherwise hold the live region, and every later line behind it, until the session ends.
+
+### Live area layout and height
+
+`view` gains `pub fn height(app, width, max_height) -> u16`. It returns the live rows the next
+frame needs: `live_lines` + overlay (body + footer + 2 borders when open) + input rows + 2 + 1
+status row, clamped to `max_height` (the terminal height). `view::draw` keeps its layout with the
+transcript slot holding `live_lines` (tail shown when clipped). The overlay cap changes from
+`area.height - 4` to `area.height - input_height - 1`, so the input box and status bar always
+fit. The transcript constraint changes from `Constraint::Min(1)` to `Constraint::Min(0)` so an
+empty live tail does not make the exactly-sized viewport one row short. Approval-body scrolling (`set_max_scroll`) is unchanged.
+
+`App::scroll`, `SCROLL_STEP`, `SCROLL_CAP` and the transcript PgUp/PgDn arms are removed. PgUp
+and PgDn now only scroll an open approval prompt. The terminal's own scrollback (tmux copy mode,
+the terminal emulator's wheel) replaces transcript scrolling.
+
+### `Screen<B>`: inline terminal with a resizable live area
+
+New module `fontaine-tui/src/screen.rs`. It is generic over `ratatui::backend::Backend` so tests
+drive it with `TestBackend`:
+
+```rust
+pub struct Screen<B: Backend + Anchor> {
+    terminal: Terminal<B>,
+    height: u16,
+    /// A stand-in left in the old `Terminal` while its backend moves to the new one.
+    placeholder: fn() -> B,
+}
+
+impl<B: Backend + Anchor> Screen<B> {
+    pub fn new(backend: B, placeholder: fn() -> B) -> Result<Self, B::Error>;
+    /// Commit settled lines, fit the live area, draw it.
+    pub fn render(&mut self, app: &mut App) -> Result<(), B::Error>;
+    /// Clear the live area and leave the cursor at its top, for exit.
+    pub fn clear_live(&mut self) -> Result<(), B::Error>;
+    pub fn backend(&self) -> &B;
+    /// The viewport rect.
+    pub fn area(&mut self) -> Rect; // self.terminal.get_frame().area()
+}
+```
+
+`render` does, in order:
+0. `self.terminal.autoresize()?`, then `width` = `get_frame().area().width` and `term_height` =
+   `size()?.height` from the resized terminal.
+1. `lines = app.transcript.commit(width)`.
+2. `h = view::height(app, width, term_height)`. If `h != self.height`, rebuild (below).
+3. If `lines` is non-empty, call `terminal.insert_before(n, ...)` on the current terminal, which
+   renders `Paragraph::new(lines)` into the buffer. The lines are already wrapped at `width`.
+   The rebuild runs first so that a shrink leaves the viewport above the bottom: ratatui's
+   `insert_before` then takes its "viewport isn't yet at the bottom" branch, which fills the freed
+   rows and returns the viewport to the bottom. In the other order a bottom-anchored viewport
+   would stay put and leave blank rows under the status bar.
+4. `terminal.draw(|f| view::draw(f, app))`.
+
+An `insert_before` or draw error is returned from `render`. The render closure in `run` holds a
+clone of `stop` and sets it on `Err`; the reader exits, the input channel closes, and the session
+ends through the existing `InputClosed` path. A write error means stdout is dead.
+
+**Height change = rebuild the `Terminal`** (the issue's open point, decided here). ratatui 0.30.2
+cannot resize an inline viewport, so the rebuild:
+1. moves the cursor to the viewport's top row, read from `self.terminal.get_frame().area().y` at
+   rebuild time (before the step 3 insert), and `clear_region(ClearType::AfterCursor)`;
+2. takes the real backend out with
+   `std::mem::replace(self.terminal.backend_mut(), (self.placeholder)())`;
+3. builds `Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(h) })`.
+   ratatui anchors the viewport at the cursor row. When it grows, ratatui appends lines and
+   scrolls the screen, pushing older lines into scrollback. When it shrinks, the area below is
+   already clear and the step 3 insert in the same render, or a later one, fills it.
+4. calls `hide_cursor()` on the new terminal, so the old terminal's drop (which shows a hidden cursor) leaves nothing stray; the next draw places the cursor.
+
+`Terminal::with_options` asks the backend for the cursor position. On crossterm that is a DSR
+round trip: a network round trip over ssh, and a 2 s timeout on terminals that do not answer,
+waiting on the input reader thread's hold on crossterm's event-reader lock (up to 100 ms per poll). To avoid it on a rebuild, `run` uses a thin backend wrapper, `Anchored<B>`, in
+`screen.rs`, holding a one-shot `Option<Position>` anchor. `Screen<B>` requires
+`B: Backend + Anchor`, where `trait Anchor { fn arm(&mut self, at: Position); }` is implemented
+by `Anchored<B>` (stores the anchor) and as a no-op for `TestBackend` (which answers the query
+from its own cursor). The rebuild calls `arm(top)` on the taken-out backend just before
+`Terminal::with_options`, with the row it moved the cursor to in step 1. `get_cursor_position`
+`take()`s the anchor if set and otherwise asks the inner backend, so only that one query is
+answered locally; every other query (startup, `autoresize` after a terminal resize,
+`Terminal::clear`) asks the real terminal. It delegates every other `Backend` method
+explicitly, including the defaulted `append_lines` (a no-op by default, so growth breaks
+otherwise) and the scroll-region methods.
+
+**Terminal resize**: `autoresize` re-anchors an inline viewport and clears the screen on a horizontal shrink. Lines already in scrollback keep the width
+they were wrapped at, as in Claude Code.
+
+### Driver signature
+
+`drive(..., render: impl FnMut(&mut App))`: the render callback needs `&mut App` to advance the
+commit cursor. `Ui<R: FnMut(&mut App)>` and `Ui::draw` pass `&mut self.app`. `App` itself stays
+terminal-free.
+
+### Startup and exit
+
+`run` no longer calls `ratatui::try_init()`/`ratatui::restore()`: both touch the alternate screen,
+and a stray `ESC[?1049l` restores a saved cursor position on xterm-likes. Instead:
+- startup: `enable_raw_mode`, `EnableBracketedPaste`, install a panic hook that runs the same
+  restore before chaining to the previous hook, then
+  `Screen::new(Anchored::new(CrosstermBackend::new(stdout())), ...)`, then spawn the reader
+  thread;
+- `TerminalGuard` (Drop, so panics unwind through it) owns the `Screen` and holds the restore:
+  `clear_live` (so the input box and status bar do not stay in scrollback), then
+  `DisableBracketedPaste`, `Show` cursor and `disable_raw_mode`. When `std::thread::panicking()`
+  it skips `clear_live`: the panic hook has already restored the terminal and printed the message
+  inside the live area, and clearing would erase it.
+- the restore steps live in one function used by the guard, the panic hook and the `Screen::new`
+  error path: when `Screen::new` returns Err (inline `Terminal::with_options` does a DSR cursor query
+  that errors after 2 s on a terminal that does not answer) no guard exists yet, so `run` runs
+  `DisableBracketedPaste`, `Show` cursor and `disable_raw_mode` before returning the error.
+
+### Feature flag
+
+`rust/Cargo.toml`:
+`ratatui = { version = "=0.30.2", features = ["scrolling-regions"] }`. This makes `insert_before`
+scroll a region (DECSTBM) instead of clearing and redrawing the viewport on every commit, so the
+live area does not flicker. Windows 10+ consoles support DECSTBM through crossterm's VT mode.
+
+## Implementation Steps
+
+1. **Feature flag.** Add `scrolling-regions` to the workspace `ratatui` dependency.
+2. **Transcript commit cursor** (`transcript.rs`): add `committed`/`committed_chars`, `commit`,
+   `live_lines` and an `is_settled` helper. Factor `entry_lines` so an assistant entry can be
+   rendered from a char offset. `user`, `notice` and `error` call `self.finish_streaming()` before
+   pushing, as the ToolCall handling already does. Unit tests below.
+3. **Turn end** (`lib.rs`): `finish_turn` calls `interrupt_pending` on every end. Keep the
+   `"interrupted"` notice and the feed drain only for `TurnEnd::Interrupted`. Move the
+   runtime-free part (running=false, deny_pending, drain_prompts, interrupt_pending, outcome
+   notices) into a sync `Ui` method that the `lib.rs` unit test calls; only the feed drain stays
+   in the async path that needs `&AgentRuntime`.
+4. **App** (`app.rs`): remove `scroll`, `SCROLL_STEP`, `SCROLL_CAP`, the PgUp/PgDn arms and
+   `self.scroll = 0` in `enter`.
+5. **View** (`view.rs`): add `height`. `draw_transcript` renders `live_lines` showing the tail.
+   Change the overlay cap to `area.height - input_height - 1` and the transcript constraint from
+   `Constraint::Min(1)` to `Constraint::Min(0)`.
+6. **Screen** (new `screen.rs`, `pub mod screen` in `lib.rs`): `Screen<B>` with `render`, the
+   rebuild, `clear_live`, and the `Anchored<B>` backend wrapper. `Screen::new` builds
+   `Viewport::Inline(0)` with `height: 0`, so the first `render` rebuilds to the real height.
+7. **Driver** (`lib.rs`): `render: impl FnMut(&mut App)`, `Ui<R: FnMut(&mut App)>`, `Ui::draw`
+   passes `&mut self.app`. Update the unit-test `ui()` helper.
+8. **run / exit** (`lib.rs`): raw mode + bracketed paste + panic hook. `Screen` over
+   `Anchored<CrosstermBackend<Stdout>>`. The render closure calls `screen.render(app)` and, on `Err`, sets a
+   clone of `run`'s `stop` flag so the session ends via `InputClosed`.
+   `TerminalGuard` owns the `Screen`, clears the live area (except when panicking) and restores,
+   with no alternate-screen calls. One restore function serves the guard, the panic hook and a
+   failed `Screen::new` (which runs it before returning the error).
+9. **Test harness** (`tests/common/mod.rs`): build `Screen::new(TestBackend::new(120, 40), ||
+   TestBackend::new(1, 1))`. After each render, `Ui::screen()` is the backend's scrollback rows
+   followed by its buffer rows, so `wait_for("all done")` finds text whether it is in scrollback
+   or live. The harness also exposes `Ui::live()`, a string built from the `backend().buffer()` rows
+   `area.top()..area.bottom()`, with `area` from `Screen::area()`. Existing `tests/tui.rs` assertions should keep passing unchanged.
+10. **Docs** (`docs/tui.md`, master plan): see Documentation.
+
+## Files to Modify
+
+- `rust/Cargo.toml`: `scrolling-regions` feature on `ratatui`
+- `rust/fontaine-tui/src/transcript.rs`: commit cursor, `commit`, `live_lines`
+- `rust/fontaine-tui/src/app.rs`: drop transcript scrolling
+- `rust/fontaine-tui/src/view.rs`: `height`, live-tail transcript, overlay cap, tests
+- `rust/fontaine-tui/src/screen.rs` (new): `Screen<B>`, `Anchored<B>`
+- `rust/fontaine-tui/src/lib.rs`: `drive`/`Ui` signature, `finish_turn`, `run`, `TerminalGuard`
+- `rust/fontaine-tui/tests/common/mod.rs`: harness over `Screen<TestBackend>`
+- `docs/tui.md`
+- `tasks/fontaine_harness_plan.md`: `## Decisions` line
+- `CHANGELOG.md` (via the PR step)
+
+## Trade-offs
+
+- **Inline viewport vs. mouse capture with our own selection and OSC 52 copy:** capture is far
+  more work and would break native selection where it works today. Inline matches Claude Code.
+
+## Decisions
+
+- 2026-10-22: Height changes rebuild the inline `Terminal` (with a cursor-anchored backend
+  wrapper) rather than vendoring a custom terminal (Codex CLI's approach: several hundred lines tracking
+  ratatui internals); resolves the issue's open technical point.
+- 2026-10-22: Every turn end marks still-pending tool calls `Interrupted`, so an orphaned call
+  cannot hold the live region open.
+- 2026-10-22: AFK: `Anchored<B>` uses a one-shot anchor armed by the rebuild just before `Terminal::with_options` instead of a remembered position with a forget-on-cursor-move list and size tracking; only the query the rebuild itself set up is answered locally, so a missed cursor-moving method cannot yield a stale position.
+- 2026-10-22: AFK: Keep `Screen::area()` (viewport rect from `get_frame().area()`) in the Screen API, already present in the plan; the test harness needs it to build `Ui::live()`.
+
+## Documentation
+
+- `docs/tui.md`: describe the layout. Finished output goes into the terminal's normal scrollback
+  and the live area at the bottom holds the input box, status bar, open prompts and the unfinished
+  tail. Scroll back with the terminal or tmux copy mode. Mouse selection works as in any shell
+  program. Change the PageUp/PageDown row to "Scroll the command in an open approval prompt".
+  Note that narrowing the terminal clears the visible screen and redraws the live area at the
+  top. Output already scrolled off is kept; lines still on screen at the narrowing are kept only
+  where clearing the screen saves it to history (tmux by default) and may be lost elsewhere.
+- `tasks/fontaine_harness_plan.md` `## Decisions`: `2026-10-22: The TUI draws inline (live area
+  plus terminal scrollback) instead of on the alternate screen, matching Claude Code; reason:
+  alternate-screen apps lose mouse selection and wheel scrolling under tmux (#70).`
+
+## Testing Strategy
+
+Unit tests (`transcript.rs`):
+- A delta, then a notice, then more deltas, then the turn ends: everything commits.
+- Streaming commit property: for a reply fed in arbitrary delta chunks (including `'\n'`
+  boundaries and lines exactly `width` chars), concatenate every `commit` output and the final
+  `commit` after `Assistant(full)`. The result equals `lines(width)` of the same transcript, with
+  no row repeated or missing.
+- The same property when `width` changes between deltas: committed text plus the remainder
+  equals the full text (compare the concatenated row strings with the newlines removed).
+- A pending tool call blocks commits of entries after it. Once it settles, they commit in order.
+- `live_lines` holds the partial last row of a streaming reply and nothing already committed.
+- `guardian_denied` and a late `ToolResult` still find a call whose entry is already committed
+  (by id), and do not change a different pending call of the same tool.
+
+Unit tests (`lib.rs`): a finished turn with a call that never got a result leaves no `Pending`
+entry.
+
+Unit tests (`view.rs` / `screen.rs`, `TestBackend` with scrollback):
+- `Screen::render` writes a user message and a finished reply into `backend().scrollback()` and
+  buffer rows above the viewport, not into the live area. The live area shows input + status only.
+- Streaming: after a partial delta, nothing of the reply is in scrollback. After more text that
+  completes a row, exactly that row is.
+- Opening an approval prompt grows the live area. Closing it shrinks the area, and the rows it
+  freed hold no stale panel text.
+- The existing long-command approval test is ported to `Screen` and keeps passing: the tail is
+  reachable with PgDn inside a viewport that fits the terminal.
+- Bottom-anchored paths on a small `TestBackend` (e.g. 30x10): commit enough notices to push the
+  viewport to the bottom, open an approval (grow), then in one render close it and add 1-2 notices
+  (shrink + commit). Scrollback plus the buffer rows above `area().top()` hold each notice exactly
+  once, in order, and `area().bottom()` equals the backend height.
+- `Anchored`: after `arm(p)`, the next `get_cursor_position` returns `p` and the one after it
+  asks the inner backend; unarmed, it always asks the inner backend.
+- `clear_live` leaves the scrollback intact and the live rows blank.
+
+Integration (`tests/tui.rs` through the harness): the whole existing suite runs on the inline
+screen. Add one test: a session with two turns shows both replies in order above the live area
+(in `Ui::screen()`), and `Ui::live()` shows only the idle prompt.
+
+## Manual Verification
+
+These steps check real terminal and tmux behaviour, which `TestBackend` cannot reproduce. Any
+breakage is obvious on the next interactive run.
+
+1. `tmux new -s t` with `set -g mouse on`, then `cargo run -p fontaine` from `rust/`, send a
+   message that produces a long reply. Expected: the reply scrolls into the pane's history; a
+   mouse drag enters tmux copy mode and selects text; the wheel scrolls back through the
+   transcript.
+2. Type a message long enough to wrap to several rows, then trigger an approval prompt.
+   Expected: the live area grows and shrinks without flicker or leftover rows.
+3. Quit with Ctrl-C. Expected: the shell prompt appears right under the transcript with no input
+   box or status bar left behind.
+4. Resize the terminal narrower mid-session. Expected: the visible screen is cleared
+   and the live area redraws at the top at the new width; output already scrolled off remains in the
+   scrollback, and lines that were on screen are kept only where clearing saves to history (tmux
+   by default).

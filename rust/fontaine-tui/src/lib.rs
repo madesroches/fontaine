@@ -7,15 +7,17 @@ pub mod app;
 pub mod approval;
 pub mod denials;
 pub mod input;
+pub mod screen;
 pub mod server_prompt;
 pub mod statusbar;
 pub mod transcript;
 pub mod trust_prompt;
 pub mod view;
 
+use std::io::Stdout;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fontaine_core::agent::{AgentRuntime, AgentSetup};
@@ -31,7 +33,10 @@ use fontaine_core::turn::{
 };
 use fontaine_tools::gate::ROOT_AGENT;
 use futures::future::BoxFuture;
+use ratatui::backend::CrosstermBackend;
+use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
+use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 
@@ -40,6 +45,7 @@ pub use denials::UnavailableAnswer;
 
 use agents_panel::{AgentsPanel, Detail, PanelRow};
 use denials::{DeniedList, UnavailablePrompt};
+use screen::{Anchored, Screen};
 use server_prompt::ServerPrompt;
 
 /// What the permission pipeline sends to the interface.
@@ -108,7 +114,7 @@ struct Ui<R> {
     render: R,
 }
 
-impl<R: FnMut(&App)> Ui<R> {
+impl<R: FnMut(&mut App)> Ui<R> {
     fn draw(&mut self, runtime: &AgentRuntime) {
         self.app.mode = runtime.state.mode();
         self.app.model = runtime.models.main.reference.to_string();
@@ -118,7 +124,7 @@ impl<R: FnMut(&App)> Ui<R> {
         if self.app.agents.is_some() {
             self.refresh_panel(runtime, &rows);
         }
-        (self.render)(&self.app);
+        (self.render)(&mut self.app);
     }
 
     /// Brings the agents panel up to date with the tree, the decisions and the queue.
@@ -728,9 +734,21 @@ impl<R: FnMut(&App)> Ui<R> {
     }
 
     async fn finish_turn(&mut self, runtime: &AgentRuntime, end: &TurnEnd) {
+        self.settle_turn(end);
+        if matches!(end, TurnEnd::Interrupted) {
+            // Decisions the cut-short calls already made belong to this turn, not the next.
+            let mut feed = runtime.state.feed().await;
+            while feed.try_next().is_some() {}
+        }
+    }
+
+    /// Leaves nothing of the turn open: a call without a result would otherwise hold the live
+    /// area, and every line behind it, until the session ends.
+    fn settle_turn(&mut self, end: &TurnEnd) {
         self.app.running = false;
         self.app.deny_pending();
         self.drain_prompts();
+        self.app.transcript.interrupt_pending();
         match end {
             TurnEnd::Finished(TurnOutcome::Failed(message)) => {
                 self.app.transcript.error(message.clone());
@@ -739,24 +757,18 @@ impl<R: FnMut(&App)> Ui<R> {
                 self.app.transcript.notice(message.clone());
             }
             TurnEnd::Finished(_) | TurnEnd::InputClosed => {}
-            TurnEnd::Interrupted => {
-                self.app.transcript.interrupt_pending();
-                self.app.transcript.notice("interrupted");
-                // Decisions the cut-short calls already made belong to this turn, not the next.
-                let mut feed = runtime.state.feed().await;
-                while feed.try_next().is_some() {}
-            }
+            TurnEnd::Interrupted => self.app.transcript.notice("interrupted"),
         }
     }
 }
 
 /// Runs the interface until the user quits or `input` closes. `render` is called with the
-/// interface state after every change.
+/// interface state after every change; it may advance the transcript's commit cursor.
 pub async fn drive(
     mut setup: AgentSetup,
     launch_dir: PathBuf,
     input: UnboundedReceiver<Input>,
-    render: impl FnMut(&App),
+    render: impl FnMut(&mut App),
 ) -> Result<(), String> {
     let (tx, prompts) = unbounded_channel();
     setup.approver = Arc::new(ChannelApprover { tx });
@@ -798,13 +810,29 @@ pub async fn drive(
     Ok(())
 }
 
+type LiveScreen = Screen<Anchored<CrosstermBackend<Stdout>>>;
+
+/// Undoes what `run` set up, apart from the live area.
+fn restore_terminal() {
+    let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableBracketedPaste, Show);
+    let _ = disable_raw_mode();
+}
+
 /// Puts the terminal back however the interface exits, panics included.
-struct TerminalGuard;
+struct TerminalGuard {
+    screen: Arc<Mutex<LiveScreen>>,
+}
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
-        ratatui::restore();
+        // After a panic the hook has already restored the terminal and printed its message in
+        // the live area, which clearing would erase.
+        if !std::thread::panicking()
+            && let Ok(mut screen) = self.screen.lock()
+        {
+            let _ = screen.clear_live();
+        }
+        restore_terminal();
     }
 }
 
@@ -829,10 +857,26 @@ fn read_terminal(tx: &UnboundedSender<Input>, stop: &AtomicBool) {
 }
 
 pub async fn run(setup: AgentSetup, launch_dir: PathBuf) -> Result<(), String> {
-    let mut terminal =
-        ratatui::try_init().map_err(|e| format!("could not start the terminal UI: {e}"))?;
-    let _guard = TerminalGuard;
+    enable_raw_mode().map_err(|e| format!("could not start the terminal UI: {e}"))?;
     let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        previous_hook(info);
+    }));
+    let screen = match Screen::new(
+        Anchored::new(CrosstermBackend::new(std::io::stdout())),
+        || Anchored::new(CrosstermBackend::new(std::io::stdout())),
+    ) {
+        Ok(screen) => Arc::new(Mutex::new(screen)),
+        Err(e) => {
+            restore_terminal();
+            return Err(format!("could not start the terminal UI: {e}"));
+        }
+    };
+    let _guard = TerminalGuard {
+        screen: screen.clone(),
+    };
 
     let (tx, rx) = unbounded_channel();
     let stop = Arc::new(AtomicBool::new(false));
@@ -840,8 +884,17 @@ pub async fn run(setup: AgentSetup, launch_dir: PathBuf) -> Result<(), String> {
         let stop = stop.clone();
         tokio::task::spawn_blocking(move || read_terminal(&tx, &stop))
     };
-    let result = drive(setup, launch_dir, rx, |app| {
-        let _ = terminal.draw(|frame| view::draw(frame, app));
+    // A failed write means stdout is gone: ending the reader closes the input and the session
+    // ends the way it does when the terminal closes.
+    let on_error = stop.clone();
+    let result = drive(setup, launch_dir, rx, move |app| {
+        let rendered = match screen.lock() {
+            Ok(mut screen) => screen.render(app).is_ok(),
+            Err(_) => false,
+        };
+        if !rendered {
+            on_error.store(true, Ordering::Relaxed);
+        }
     })
     .await;
     stop.store(true, Ordering::Relaxed);
@@ -856,12 +909,12 @@ mod tests {
     use fontaine_core::permissions::Offers;
     use fontaine_core::tier::Tier;
 
-    fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&App)> {
+    fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         Ui {
             app: App::new(PermissionMode::Manual, "m".into()),
             input: unbounded_channel().1,
             prompts,
-            render: |_: &App| {},
+            render: |_: &mut App| {},
         }
     }
 
@@ -902,5 +955,24 @@ mod tests {
         drop(answer);
         ui.on_prompt(None, prompt);
         assert!(ui.app.approval.is_none());
+    }
+
+    #[test]
+    fn a_finished_turn_leaves_no_call_pending() {
+        let (_tx, rx) = unbounded_channel();
+        let mut ui = ui(rx);
+        ui.app.on_event(SessionEvent::ToolCall {
+            id: "c1".into(),
+            tool: "shell".into(),
+            args: serde_json::json!({ "command": "ls" }),
+        });
+        ui.settle_turn(&TurnEnd::Finished(TurnOutcome::Answer("done".into())));
+        assert!(ui.app.transcript.entries.iter().all(|e| !matches!(
+            e,
+            transcript::Entry::Tool {
+                status: transcript::ToolStatus::Pending,
+                ..
+            }
+        )));
     }
 }
