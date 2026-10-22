@@ -19,7 +19,7 @@ credentials and endpoints. Each account provides models: an explicit `models` li
 from the provider where rig supports listing. Models are addressed `<account>/<model>` in `[model]`,
 `[guardian] model`, and `[agents.types]`, so main agent and guardian may sit on different accounts.
 Credentials come from a named env var or the stored-credentials file (`fontaine auth login`,
-`<data dir>/credentials.toml`, owner-only); raw keys are never read from config files. Accounts and all account/model/endpoint
+`<data dir>/credentials.toml` with `[accounts.<name>]` / `[telemetry]` tables, owner-only); raw keys are never read from config files. Accounts and all account/model/endpoint
 keys follow the `tasks/design/config.md` scope table (`[accounts]` only from the user file or CLI; no
 account/model/endpoint reference from shared project scope — rejected at load); a missing or invalid credential on
 the guardian's account makes the guardian unavailable and fails closed. The "any model I like"
@@ -51,7 +51,7 @@ would-prompt outcome stays a Deny.
 
 ### Telemetry backends
 
-The export slot from Phase 0 gets both backends from `tasks/design/observability.md` §Observability: the
+The `Option` export layer from Phase 0 is built from loaded config at install time with both backends from `tasks/design/observability.md` §Observability: the
 micromegas sink guard (local sink, global capture and system monitor off; explicit endpoint +
 `ApiKeyRequestDecorator` from the configured key) with `TracingCaptureLayer` composed into
 Fontaine's registry and the `SpanBridge` mapping allowlisted spans to micromegas async span events
@@ -92,8 +92,8 @@ upstream builder knob.
    | `--max-turns <n>` / `--max-budget-usd <x>` | stop the run with `result.subtype` `error_max_turns` / `error_max_budget`, exit 1; a budget with no known price for a configured model is a usage error (exit 2) | 1 |
    | `--json-schema <file>` | structured final output via rig `structured_output`, in `result.structured_output` | 1 |
    | `--system-prompt <text>` / `--append-system-prompt <text>` | replace the base system prompt / append after all other layers (layering in Phase 2 step 2) | 1 |
-   | `--settings <file>` | CLI-scope settings overlay (`tasks/design/config.md` §Config scope stack) | 1 |
-   | `--debug-file <path>` | local debug log (owner-only), `FONTAINE_LOG` filter | 1 |
+   | `--settings <file>` | CLI-scope settings overlay (`tasks/design/config.md` §Config scope stack) | 0 |
+   | `--debug-file <path>` | local debug log (owner-only), `FONTAINE_LOG` filter | 0 |
    | `--add-dir <path>` | extra workspace root | 2 |
    | `--allowed-tools <rule>…` / `--disallowed-tools <rule>…` | CLI-scope `[permissions] allow` / `deny` rules in the `Tool(specifier)` grammar | 3 |
    | `--session-id <uuid>` | use this session id (ledger, audit log, telemetry) | 2 |
@@ -123,7 +123,7 @@ upstream builder knob.
 
 ## Files created or modified
 
-`rust/Cargo.toml` (rig + telemetry pins — `rig-core` with `reqwest`, dev `rig-core`/`rig-agent` with `test-utils`, dev `rig-cassette` with `http`; `jsonschema` and `serial_test` dev-dependencies; new crates: `wiremock =0.6.5` (dev), `rpassword 7.5.4` (hidden `auth login` prompt), `uuid 1.28.0` with the `v4` feature (session ids); clap/tokio/serde/toml are 1.x and use caret); `rust/fontaine-core/src/models.rs`; `rust/fontaine-core/src/credentials.rs` (adds the writer for `auth login`); `rust/fontaine/src/{main,lib,headless}.rs`
+`rust/Cargo.toml` (rig + telemetry pins — `rig-core` with `reqwest`, dev `rig-core`/`rig-agent` with `test-utils`, dev `rig-cassette` with `http`; `jsonschema` dev-dependency; new crates: `tokio` (caret), `wiremock =0.6.5` (dev), `serial_test 4.0.1` (caret, dev), `rpassword 7.5.4` (hidden `auth login` prompt), `uuid 1.28.0` with the `v4` feature (session ids)); `rust/fontaine-core/src/models.rs`; `rust/fontaine-core/src/credentials.rs` (adds the writer for `auth login`); `rust/fontaine/src/{main,lib,headless}.rs`
 (`main.rs` thin; `lib.rs` holds the logic the integration tests import; `-p` flag wiring, I/O contract); `rust/fontaine/src/telemetry/{micromegas,otlp,span_bridge}.rs`;
 `rust/fontaine/tests/{headless_smoke,headless_contract,telemetry_micromegas,telemetry_otlp}.rs`;
 `docs/schemas/headless-v1.schema.json`; `rust/fontaine-core/tests/{models,accounts}.rs`; `rust/fontaine/tests/common/mod.rs` (shared scripted-wiremock helper);
@@ -155,13 +155,13 @@ upstream builder knob.
   `--max-turns` / `--max-budget-usd` stop with the matching subtype and exit 1 (the budget test uses a catalog-priced account, see the telemetry bullet; `--max-budget-usd` against an unpriced `openai-compatible` model is a usage error, exit 2); `--input-format
   stream-json` drives a two-turn run; `--json-schema` fills `result.structured_output`.
 - **telemetry**: `-p` against the scripted `wiremock` endpoint returning `usage` yields `api_request` with tokens and cost — cost and budget tests use an account of `kind = "openai"` (or `anthropic`) whose `base_url` points at the wiremock server and whose model id is in rig's price catalog, because rig 0.45's `Catalog` prices by provider vendor and model id and a custom `openai-compatible` endpoint has no price; **span tree
-  round-trip** (`telemetry_micromegas.rs`, its own test binary, `serial_test =4.0.1`): a nested span tree,
+  round-trip** (`telemetry_micromegas.rs`, its own test binary, `serial_test 4.0.1`): a nested span tree,
   inner spans closed on a different tokio worker than they opened on, passes through the `SpanBridge`
   into micromegas `InMemorySink`, and decoding the thread blocks gives one begin/end async span event
   pair per span with `parent_span_id` equal to the parent's `span_id` (0 at the root), `depth` + 1 per
   level, and the span fields as end-event properties; a wiremock OTLP endpoint receives protobuf on
   `/v1/traces` (parentage intact) and `/v1/metrics`; the canary test (prompt and response legs: no
-  content without the opt-in keys, and credential-shaped strings redacted even with them); a black-hole exporter: `-p` exits within the flush cap with the
+  content without the opt-in keys, and credential-shaped strings redacted even with them); with `enabled = false` nothing is built even when `MICROMEGAS_TELEMETRY_URL` / `OTEL_EXPORTER_OTLP_ENDPOINT` are set; a black-hole exporter: `-p` exits within the flush cap with the
   same result as telemetry off.
 
 ## Definition of done

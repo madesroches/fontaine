@@ -94,14 +94,17 @@ all tests pass:
 From `rust/`:
 
 - `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test` /
-  `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` — the core CI
-  steps, on Linux, macOS and Windows. Later phases add steps (`--guardian none` eval run,
-  `cargo dist plan`, `--features fontaine/pg2` builds); the master plan's workspace layout lists
-  the full `ci.yml` step set.
+  `cargo deny check` /
+  `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` and the same with
+  `--profile minimal` — the core CI steps, on Linux, macOS and Windows. Later phases add steps
+  (`--guardian none` eval run, `cargo dist plan`, `--features fontaine/pg2` builds); the master
+  plan's workspace layout lists the full `ci.yml` step set.
+- `cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings` — local compile check
+  of the Windows code (the toolchain file installs the target).
 - `RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes` —
   re-record cassettes (needs live provider keys; a human step).
-- `cargo run` — interactive TUI (`fontaine`).
-- `cargo run -- -p "task"` — headless non-interactive run (CI/eval driver).
+- `cargo run -p fontaine` — interactive TUI (`fontaine`); two bin crates, so `-p` is required.
+- `cargo run -p fontaine -- -p "task"` — headless non-interactive run (CI/eval driver).
 - `cargo run -p <crate> --example ...` — per-crate spikes.
 
 ## Other

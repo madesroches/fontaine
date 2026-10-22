@@ -143,7 +143,7 @@ context.
   workspace-scope validator over `fs::place` (path traversal, absolute paths, symlinks, out-of-scope
   `cwd`; the model-supplied `shell` `cwd` is itself resolved through `fs::place`); rig tool configuration (`confine: true`, `max_timeout` clamps `timeout_secs`, output
   `cut`); the exact registered tool set from the step-1 table (no duplicate names, `delete`/`move`
-  absent); risk-class registration of every built-in tool — the choke-point test that fails
+  absent; registered names are a subset of `BUILTIN_TOOL_NAMES` from `fontaine-tools` (`src/names.rs`)); risk-class registration of every built-in tool — the choke-point test that fails
   if any registered built-in is missing a risk class.
 - **ResultPipeline** (`rust/fontaine-tools/tests/`): every tool result passes through it after the inner tool returns and before the caller sees it; with test-double stages attached in the wrong registration order, they still run scanner first, then `post_tool_use`; with no stages it is the identity.
 - GuardedTool delegation (against a fake `ToolGate`): inner tool runs exactly once, only after the gate allows; under the stub,

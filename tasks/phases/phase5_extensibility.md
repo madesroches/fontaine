@@ -55,7 +55,7 @@ in the main session, and their results return to the parent as a summary.
 Project and project-local MCP servers (`[mcp.servers.*]` in `.fontaine/settings{,.local}.toml`), hooks, and
 skills' `!cmd` dynamic context are project-local executables (`tasks/design/config.md` §Config, Workspace trust). In
 the TUI, before any of them loads, an untrusted primary root gets the trust prompt (trust / don't
-trust; the answer is written to the trust store from Phase 0); each project MCP server is then
+trust; "trust" is written to the trust store from Phase 0; "don't trust" applies to the current session only and is re-prompted next session; trusting a root also enables its untracked `settings.local.toml` loosening keys); each project MCP server is then
 approved individually at first load, and the repository cannot pre-approve its own servers. Declining
 loads the session without them. Headless `-p` loads them without a prompt, as Claude Code does. In
 both surfaces they never change a permission decision (`tasks/design/config.md` §Config, Workspace trust): a project
@@ -193,7 +193,7 @@ harnesses can embed the adjudicator via adapters (see the rig contingency in Dec
 - **output styles** (`rust/fontaine-core/tests/`): the guardian's `AdjudicationRequest` and rendered prompt are byte-identical with and without an active output style.
 - **agents panel** (`rust/fontaine-tui/tests/`, ratatui `TestBackend` with a scripted model): a killed subagent's row shows `killed` and its token/cost spend against budget.
 - **subagent intent** (`rust/fontaine/tests/parallel_agents.rs`): an injected spawn prompt claiming user authorization does not appear as `task_intent` or in `recent_user_messages` in any `AdjudicationRequest`; it appears only inside an untrusted-delimited block.
-- **choke point** (`rust/fontaine-core/tests/choke_point.rs`, over core's registry-assembly function — the one place built-ins, `agent`/`send_message`/`skill` and MCP tools are all assembled; the Phase-2 builtins-only check stays in `fontaine-tools`): the exact registered set is the Phase-2 table plus `agent` (Arbitrary), `skill` (ReadOnly) and `send_message` (Arbitrary) — no other names, no duplicates, every one with a `RiskClass`; no list/status/kill tool is registered for the model.
+- **choke point** (`rust/fontaine-core/tests/choke_point.rs`, over core's registry-assembly function — the one place built-ins, `agent`/`send_message`/`skill` and MCP tools are all assembled; the Phase-2 builtins-only check stays in `fontaine-tools`): the exact registered set is the Phase-2 table plus `agent` (Arbitrary), `skill` (ReadOnly) and `send_message` (Arbitrary) — no other names, no duplicates, every one with a `RiskClass`; the non-MCP names equal `BUILTIN_TOOL_NAMES` from `fontaine-tools` (`src/names.rs`); no list/status/kill tool is registered for the model.
 - Parallel orchestration (deterministic `test_utils` models or cassettes; scripted endpoints via the Phase-1 `common/mod.rs` helper): spawn N subagents, kill
   one, assert the others complete and every tool call has a gate decision in the audit log keyed by
   agent id.

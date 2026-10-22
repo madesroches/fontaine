@@ -30,10 +30,12 @@ Deliberate design choices and user decisions are recorded in `## Decisions`.
 
 ## Current State
 
-Repo `/home/mad/fontaine` is on branch `start` (not `main`); its history so far is this plan (and
-its split into per-phase plans), the five analysis docs, the LlamaFirewall deep-dive, and
-review/fact-check passes on this branch. No
-Rust code exists yet — the implementation is greenfield. `research/` holds seven companion docs that are this plan's precedent and inputs:
+Repo `/home/mad/fontaine` is on branch `phase0-scaffold` (not `main`). The Rust workspace under
+`rust/` now exists with all eight crate skeletons, the settings scope stack, workspace trust store,
+credentials lookup, tracing facade and the eval runner (`rust/fontaine-evals`) with its seed dataset
+in `evals/dataset/`; the `docs/` tree, `README.md`, `CONTRIBUTING.md`, `SECURITY.md` and
+`CHANGELOG.md` are started. The agent itself (model layer, tools, permission pipeline, guardian,
+TUI) is not built yet — Phase 1 is next. `research/` holds seven companion docs that are this plan's precedent and inputs:
 `analysis-competitive-landscape.md` (market/permission-story survey),
 `analysis-guardian-market.md`, `analysis-differentiation.md`,
 `analysis-devils-advocate.md` (kill criteria), `analysis-strategic-verdict.md` (verdict and
@@ -53,7 +55,7 @@ product documentation lives under `docs/` (see `design/documentation.md` §Docum
 
 | Phase | Plan | Scope | Status | Exit milestone |
 |-------|------|-------|--------|----------------|
-| 0 — scaffold (eval first) | [phases/phase0_scaffold.md](phases/phase0_scaffold.md) | Cargo workspace, crate skeletons, CLI entry, tracing facade + `[telemetry]` config, CI, settings scope stack + workspace trust store + read-only credentials lookup; eval golden-dataset + runner skeleton; `docs/` tree started | not started | CI green; eval runner green against verdict fixtures with no guardian in the tree |
+| 0 — scaffold (eval first) | [phases/phase0_scaffold.md](phases/phase0_scaffold.md) | Cargo workspace, crate skeletons, CLI entry, tracing facade + `[telemetry]` config, CI, settings scope stack + workspace trust store + read-only credentials lookup; eval golden-dataset + runner skeleton; `docs/` tree started | done | CI green; eval runner green against verdict fixtures with no guardian in the tree |
 | 1 — model layer + headless | [phases/phase1_model_headless.md](phases/phase1_model_headless.md) | rig crates pinned; config → provider mapping; streaming spike; `fontaine -p` with the versioned headless I/O contract; telemetry backends (micromegas/OTLP) + `docs/telemetry.md`; provider docs | not started | `fontaine -p` streams a prompt plus a spike tool round-trip against a mock endpoint |
 | 2 — agent runtime & tools | [phases/phase2_runtime_tools.md](phases/phase2_runtime_tools.md) | RiskClass registry, GuardedTool (gate stubbed), rig-tools built-ins + read tools + webfetch, multi-root scope validator, confined rig tool config; rig-agent session orchestration + session ledger; `docs/tools.md` | not started | agent runs tools end-to-end headless through wrapped registry; choke-point test green |
 | 3 — pipeline & manual TUI | [phases/phase3_pipeline_tui.md](phases/phase3_pipeline_tui.md) | PermissionPipeline (manual/acceptEdits/plan/dontAsk; deterministic floor; `Tool(specifier)` rule grammar + allow rules; user-hook slot; Tier-0.5; audit log); headless `-p` denial semantics for manual/dontAsk; ratatui TUI; `docs/permissions.md` + pipeline diagram | not started | **usable Claude-Code-like agent with manual approvals** |
@@ -68,7 +70,7 @@ GitHub `phase-N` labels mean "earliest phase after which the issue can be taken;
 Append one dated line as each phase's definition of done is met (local commits referencing the
 phase plan are the work trail).
 
-- (none yet)
+- 2026-10-21: Phase 0 (scaffold) definition of done met locally: workspace, config scope stack, trust store, credentials lookup, tracing facade, eval runner and seed dataset, docs tree; the CI matrix run and private vulnerability reporting are human steps.
 
 ## Design docs
 
@@ -102,7 +104,7 @@ sits directly under `rust/`** — the root directories are only `rust/`, `evals/
 fontaine/
 ├── rust/
 │   ├── rust-toolchain.toml     # channel = "1.97.1" (rig 0.45.0 `rust-version`)
-│   ├── Cargo.toml              # workspace root (`[workspace] members = ["*"]`, `exclude = ["target", ".*"]`, resolver = "2",
+│   ├── Cargo.toml              # workspace root (`[workspace] members = ["*"]`, `exclude = ["target", ".cargo", ".fontaine", ".config", ".claude"]`, resolver = "2",
 │   │                           #   workspace.package: edition 2024, rust-version 1.97.1); rig crates pinned to exact versions
 │   ├── fontaine/               # bin + lib crate (logic in `src/lib.rs`, thin `src/main.rs`): CLI (clap), wires core+tui, `-p` headless from Phase 1,
 │   │                           #   owns the tracing subscriber + telemetry export (`src/telemetry/`)
@@ -219,6 +221,9 @@ carries the reasoning:
 ## Decisions
 
 - 2026-10-21: Multi-account model registry, following opencode: named `[accounts.<name>]`, models addressed `<account>/<model>`, one rig client per account; replaces `[model] provider`/`base_url`. Reason: user requirement; Claude Code has no analogous design point.
+- 2026-10-21: Unknown config keys and sections are a config error (exit 2) (Claude Code ignores them): a misspelled `[permisions]` must not silently drop deny rules.
+- 2026-10-21: Permission rules naming an unknown tool are a config error (exit 2), not a warning (Claude Code warns): a mistyped deny rule must fail loudly rather than silently protect nothing.
+- 2026-10-21: `--settings` takes a TOML file path only (Claude Code also accepts an inline JSON string): TOML has no unambiguous inline top-level form.
 - 2026-10-20: Hybrid gate — tool-declared `read_only` + workspace-scope check skips the guardian; everything else is adjudicated. (User choice.)
 - 2026-10-21: Hybrid-gate refinement — the fast path is earned by Fontaine-enforced workspace containment, not the tool's label; read-only ≠ safe, and MCP `readOnlyHint` never earns it. (User choice.)
 - 2026-10-20 (amended 2026-10-21: headless to Phase 1): TUI-first (ratatui), headless `-p` on the same core. (User choice.)
@@ -280,7 +285,7 @@ carries the reasoning:
 - 2026-10-21: v1 supports Linux, macOS and Windows; every CI step runs on all three OSes. Windows runs `shell` through Git Bash (Claude Code parity; PowerShell tool is backlog issue #28); details in `design/platforms.md`.
 - 2026-10-21: Deviation — provider and telemetry credential variables are scrubbed from the `shell` and hook child environment (list: Phase 2 step 1); reason: a model-run command must not read provider keys.
 - 2026-10-21: AgentDojo-comparable (ASR × utility) reporting is dropped; the scorecard reports per-class catch rate and false-deny rate.
-- 2026-10-21: Workspace trust (Claude Code parity: folder trust covers the whole folder) — in the TUI, project and project-local executables (hooks, MCP servers, skill `!cmd`) load only after the trust prompt; headless loads them without one; they never change a permission decision (`design/config.md` §Config, Workspace trust).
+- 2026-10-21: Workspace trust (Claude Code parity: folder trust covers the whole folder — bounded at the enclosing git work-tree root, as in Claude Code; unbounded outside a repo) — in the TUI, project and project-local executables (hooks, MCP servers, skill `!cmd`) load only after the trust prompt; headless loads them without one; they never change a permission decision (`design/config.md` §Config, Workspace trust).
 - 2026-10-21: A user-scope hook `allow` in `auto` follows Claude Code (like an allow rule; broad matchers suspended); the `claude -p` baseline confirms it.
 - 2026-10-21: The `skill` tool stays `ReadOnly` on the fast path; a skill's `!cmd` is gated as a `shell` call.
 - 2026-10-21 (user): Shell parsing uses exact-pinned `brush-parser` for Tier 0.5, critical-path and rule matching; no hand-rolled lexer, no `shlex`; anything not exactly one simple command falls through.
@@ -311,6 +316,7 @@ carries the reasoning:
 - 2026-10-21: Deviation — user-scope agent files accept `permissionMode` only as `inherit`/`default`/`dontAsk`; any other value is a load error (exit 2) naming the file; reason: same mode rule as `[agents.types]`, stricter than Claude Code.
 - 2026-10-21: Dependency policy — exact pins (`=x.y.z`) for rig and every pre-1.0 crate, each new crate listed with its pin in the owning phase's Files line; 1.x crates (clap, tokio, serde, toml) use caret.
 - 2026-10-21: The system prompt is the versioned asset `rust/fontaine-core/prompts/system_prompt.md` layered base → `FONTAINE.md` → skill index → output style → `--append-system-prompt`; `--system-prompt` replaces only the base (Phase 2 step 2).
+- 2026-10-21: Project-local `settings.local.toml` gets user trust only when untracked AND its root is trusted (Claude Code trusts `settings.local.json` unconditionally): a shipped `.git` skeleton or an enclosing repo can make a hostile file look untracked.
 
 ## Open Questions
 

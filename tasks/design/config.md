@@ -20,13 +20,13 @@ load from the primary root only. The guardian's `session_facts` and trust bounda
 2. **CLI** — `--settings <file>` plus the flag forms (`--permission-mode`, `--model`,
    `--allowed-tools`, `--disallowed-tools`, `--add-dir`); one session; user trust.
 3. **project-local** — `<root>/.fontaine/settings.local.toml`; user trust only while `gix` reports it
-   untracked or ignored in a git work tree; otherwise (tracked, no `.git`, or a `gix` error) it loads as project scope. Fontaine never spawns `git` for this.
+   untracked or ignored in a git work tree (a missing index counts as empty; the symlink-resolved path is looked up case-insensitively) AND the primary root is trusted; otherwise (tracked, untrusted root, no `.git`, or a `gix` error) it loads as project scope. Fontaine never spawns `git` for this.
 4. **project** — `<root>/.fontaine/settings.toml`; may only tighten.
 5. **user** — `<config dir>/config.toml`.
 
 (`<root>` is the primary root — no parent-directory walk, no nested settings files.) Scalars: the
 highest-precedence scope that sets a key wins. Lists merge as a union across scopes; a scope may add
-only to the lists the scope table lets it set. A key a scope may not set is rejected at load (exit 2).
+only to the lists the scope table lets it set. A named table entry (`[accounts.<name>]`, `[mcp.servers.<name>]`, `[agents.types.<name>]`) is replaced whole by the highest-precedence scope defining that name; map-valued keys merge per key, the higher-precedence scope winning; `[[hooks.*]]` arrays merge by union. A key a scope may not set, and any unknown key or section in any scope, is rejected at load (exit 2).
 
 **Workspace trust** (Claude Code parity: folder trust covers the whole folder). Project and
 project-local executables — MCP servers, hooks, skills' `!cmd` dynamic context — load in the TUI only
@@ -35,7 +35,7 @@ server is also approved individually, and a repository cannot pre-approve its ow
 `-p` loads them without a prompt, as Claude Code does. In both surfaces a project hook's `allow` is
 ignored, project MCP tools are gated like any MCP tool (`Arbitrary`), and `!cmd` runs as a gated
 `shell` call; a project-local (user-trust) hook's `allow` counts as a user grant. The trust record lives in `<data dir>/trust.toml`, keyed by
-canonical root path, never in the repo. Tightening keys (deny/ask, soft/hard deny) and prompt
+canonical root path (a trusted ancestor covers subdirectories, bounded at the enclosing git work-tree root as in Claude Code, unbounded outside a repo; hand-editable), never in the repo. Tightening keys (deny/ask, soft/hard deny) and prompt
 content (FONTAINE.md, skills, agent files, output styles) load regardless of trust. Trust state is
 a ledger fact passed to the guardian in `session_facts`.
 
@@ -109,7 +109,7 @@ subagent_token_budget = 200000    # per-subagent cap; semantics in Phase 5 desig
 subagent_cost_budget_usd = 2.0    # per-subagent spend cap; inactive (one-time notice) on a model with no catalog price, the token cap still binds
 # session_token_budget / session_cost_budget_usd   # root-of-tree totals, default unset
 
-[agents.types]                    # per-type model + toolset + mode (default "inherit", never looser than parent; under a `plan` parent child edits are blocked and non-edits use the tighter of the child's mode and `manual`)
+[agents.types]                    # per-type model + toolset + mode (`mode` accepts only `inherit`/`manual`/`dontAsk`, else load error (exit 2); default "inherit", never looser than parent; under a `plan` parent child edits are blocked and non-edits use the tighter of the child's mode and `manual`)
   explore = { model = "$guardian_default", tools = ["ls", "read", "glob", "grep"] }
   worker  = { model = "$main", tools = ["ls", "read", "glob", "grep", "edit", "write", "shell"] }
 
