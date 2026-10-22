@@ -1,0 +1,5 @@
+# Benchmark-validated guardian models, best first. Written by the eval runner's live mode
+# (`fontaine-evals --guardian live:<account>/<model>`); entries clear the inclusion bar on the
+# dataset named by `dataset_version`. Empty until a scorecard run fills it, in which case the
+# guardian falls back to the main model.
+models = []

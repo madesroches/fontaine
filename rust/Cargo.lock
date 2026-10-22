@@ -1410,6 +1410,17 @@ dependencies = [
 [[package]]
 name = "fontaine-guardian"
 version = "0.1.0"
+dependencies = [
+ "insta",
+ "rig-agent",
+ "rig-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
 
 [[package]]
 name = "fontaine-mcp"
