@@ -1,0 +1,18 @@
+[package]
+name = "fontaine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap.workspace = true
+dirs.workspace = true
+fontaine-core.workspace = true
+fontaine-tui.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

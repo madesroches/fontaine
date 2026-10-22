@@ -1,6 +1,6 @@
 # Phase 0 — Scaffold (eval first — it is the product)
 
-**Status:** not started · **Depends on:** — · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
+**Status:** done · **Depends on:** — · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
 
 Read the master plan's Overview, Design (master §Workspace layout, `tasks/design/config.md` §Config), Decisions, and
 `tasks/design/testing.md` Testing Strategy before implementing. This phase builds the eval harness **before** the

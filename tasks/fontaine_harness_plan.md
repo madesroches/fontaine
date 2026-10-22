@@ -30,10 +30,12 @@ Deliberate design choices and user decisions are recorded in `## Decisions`.
 
 ## Current State
 
-Repo `/home/mad/fontaine` is on branch `start` (not `main`); its history so far is this plan (and
-its split into per-phase plans), the five analysis docs, the LlamaFirewall deep-dive, and
-review/fact-check passes on this branch. No
-Rust code exists yet — the implementation is greenfield. `research/` holds seven companion docs that are this plan's precedent and inputs:
+Repo `/home/mad/fontaine` is on branch `phase0-scaffold` (not `main`). The Rust workspace under
+`rust/` now exists with all eight crate skeletons, the settings scope stack, workspace trust store,
+credentials lookup, tracing facade and the eval runner (`rust/fontaine-evals`) with its seed dataset
+in `evals/dataset/`; the `docs/` tree, `README.md`, `CONTRIBUTING.md`, `SECURITY.md` and
+`CHANGELOG.md` are started. The agent itself (model layer, tools, permission pipeline, guardian,
+TUI) is not built yet — Phase 1 is next. `research/` holds seven companion docs that are this plan's precedent and inputs:
 `analysis-competitive-landscape.md` (market/permission-story survey),
 `analysis-guardian-market.md`, `analysis-differentiation.md`,
 `analysis-devils-advocate.md` (kill criteria), `analysis-strategic-verdict.md` (verdict and
@@ -53,7 +55,7 @@ product documentation lives under `docs/` (see `design/documentation.md` §Docum
 
 | Phase | Plan | Scope | Status | Exit milestone |
 |-------|------|-------|--------|----------------|
-| 0 — scaffold (eval first) | [phases/phase0_scaffold.md](phases/phase0_scaffold.md) | Cargo workspace, crate skeletons, CLI entry, tracing facade + `[telemetry]` config, CI, settings scope stack + workspace trust store + read-only credentials lookup; eval golden-dataset + runner skeleton; `docs/` tree started | not started | CI green; eval runner green against verdict fixtures with no guardian in the tree |
+| 0 — scaffold (eval first) | [phases/phase0_scaffold.md](phases/phase0_scaffold.md) | Cargo workspace, crate skeletons, CLI entry, tracing facade + `[telemetry]` config, CI, settings scope stack + workspace trust store + read-only credentials lookup; eval golden-dataset + runner skeleton; `docs/` tree started | done | CI green; eval runner green against verdict fixtures with no guardian in the tree |
 | 1 — model layer + headless | [phases/phase1_model_headless.md](phases/phase1_model_headless.md) | rig crates pinned; config → provider mapping; streaming spike; `fontaine -p` with the versioned headless I/O contract; telemetry backends (micromegas/OTLP) + `docs/telemetry.md`; provider docs | not started | `fontaine -p` streams a prompt plus a spike tool round-trip against a mock endpoint |
 | 2 — agent runtime & tools | [phases/phase2_runtime_tools.md](phases/phase2_runtime_tools.md) | RiskClass registry, GuardedTool (gate stubbed), rig-tools built-ins + read tools + webfetch, multi-root scope validator, confined rig tool config; rig-agent session orchestration + session ledger; `docs/tools.md` | not started | agent runs tools end-to-end headless through wrapped registry; choke-point test green |
 | 3 — pipeline & manual TUI | [phases/phase3_pipeline_tui.md](phases/phase3_pipeline_tui.md) | PermissionPipeline (manual/acceptEdits/plan/dontAsk; deterministic floor; `Tool(specifier)` rule grammar + allow rules; user-hook slot; Tier-0.5; audit log); headless `-p` denial semantics for manual/dontAsk; ratatui TUI; `docs/permissions.md` + pipeline diagram | not started | **usable Claude-Code-like agent with manual approvals** |
@@ -68,7 +70,7 @@ GitHub `phase-N` labels mean "earliest phase after which the issue can be taken;
 Append one dated line as each phase's definition of done is met (local commits referencing the
 phase plan are the work trail).
 
-- (none yet)
+- 2026-10-21: Phase 0 (scaffold) definition of done met locally: workspace, config scope stack, trust store, credentials lookup, tracing facade, eval runner and seed dataset, docs tree; the CI matrix run and private vulnerability reporting are human steps.
 
 ## Design docs
 
