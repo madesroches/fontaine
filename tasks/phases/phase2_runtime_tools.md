@@ -66,7 +66,7 @@ scope when `rig_tools::fs::place(Some(root), true, path)` accepts it for some ro
 against the call's `cwd`. rig file tools and `shell` take one confinement base (`shell` places its `cwd` against a single launcher dir), so each root gets its own
 confined instance of each rig file tool and of `shell` (`launcher.in_dir(root)`) and the wrapper dispatches a call to the instance of the root
 that contains the resolved path (for `shell`, the resolved `cwd`) — rig's confinement and Fontaine's scope check always agree (confirm
-the rig-tools 0.45 constructor shape when the step lands). One session-wide rig-tools `Seen` is cloned into every `Read`/`Edit` instance across all roots, so read-before-edit tracking holds regardless of which root serves a call. `--add-dir` roots are added at start;
+the rig-tools 0.45 constructor shape when the step lands). One session-wide rig-tools `Seen` is cloned into every `Read`/`Edit` instance across all roots, so read-before-edit tracking holds regardless of which root serves a call. `--add-dir` roots and the canonicalized `[permissions] additional_directories` entries from the merged config are added at start (feeding `scope.rs`, the per-root tool instances and `init.workspace_roots`);
 `/add-dir` (Phase 3 TUI) adds one at runtime; no tool can add a root.
 
 ### Session ledger
@@ -107,16 +107,15 @@ context.
    `ToolGate` implementation is a deny-by-default stub this phase: it allows only in-scope `ReadOnly`
    calls (scope check via `scope.rs`) and denies everything else, so the always-on floor holds from
    the first commit. Stub denials return to the model as the tool result; no `gate_decision` event is emitted and `result.denials` stays empty until Phase 3; the real `PermissionPipeline` lands in Phase 3 and replaces the stub. `scope.rs`
-   and the per-root tool instances are multi-root from the start (design above); `--add-dir` wires in: this step adds the repeatable `--add-dir <path>` flag to `rust/fontaine/src/cli.rs`, threaded through `lib.rs` into `headless::Options` and feeding `init.workspace_roots`.
+   and the per-root tool instances are multi-root from the start (design above); `--add-dir` wires in: this step adds the repeatable `--add-dir <path>` flag to `rust/fontaine/src/cli.rs`, threaded through `lib.rs` into `headless::Options` and feeding `init.workspace_roots`; the merged config's `additional_directories` entries join the `--add-dir` roots here.
    On Windows the `shell` tool runs through Git Bash, discovered per `tasks/design/platforms.md` §Platforms and directories (`git_bash.rs`); `scope.rs` handles the Windows path forms listed there.
    The `shell` tool's child environment drops the telemetry credential variables, `MICROMEGAS_*`,
    `OTEL_EXPORTER_OTLP_HEADERS`, every configured `[accounts.*] api_key_env` name and
    `[guardian] scanner_hf_token_env`. `GuardedTool::call` opens a `fontaine.tool` span (beside rig's
    `execute_tool`) and emits the `tool_result` telemetry event (`risk_class`, `tool_source`).
 2. `fontaine-core`: session orchestration on `rig_agent` (`AgentBuilder` + `AgentRun`), the system
-   prompt (versioned asset `rust/fontaine-core/prompts/system_prompt.md`, compiled in via `include_str!`; it must cover tool steering toward `ls`/`read`/`glob`/`grep` over `shell`, how to handle denials and retries, the workspace roots, and no secrets in output; layering order: base → `FONTAINE.md` → skill index → output style → `--append-system-prompt`, where `--system-prompt` replaces the base only), FONTAINE.md loading (v1 set: `<primary root>/FONTAINE.md` plus the user-level `FONTAINE.md` in the user config dir; no parent-directory hierarchy or imports — backlog GitHub issue #7); `rig-memory` for context windows, compaction,
-   and persisting (saving) the context — resume/fork land in Phase 5; no custom agent loop or history management to write; runs keep `AgentRunner`'s default `tool_concurrency` of 1 (tool calls run one at a time, in order); the session ledger
-   (design above) alongside it, keyed by the session id (`--session-id` or a fresh UUID). This step adds `--session-id <uuid>` to `cli.rs`, threaded through `lib.rs` into `headless::Options` (replacing the hard-coded `Uuid::new_v4()` in `headless.rs`); it is parsed as a UUID (parse failure → usage error, exit 2) and fails with exit 2 ("session ID … is already in use") when `<data dir>/sessions/<id>/` already exists, so a reused id can never append to another session's ledger.
+   prompt (versioned asset `rust/fontaine-core/prompts/system_prompt.md`, compiled in via `include_str!`; it must cover tool steering toward `ls`/`read`/`glob`/`grep` over `shell`, how to handle denials and retries, the workspace roots, and no secrets in output; layering order: base → `FONTAINE.md` → skill index → output style → `--append-system-prompt`, where `--system-prompt` replaces the base only), FONTAINE.md loading (v1 set: `<primary root>/FONTAINE.md` plus the user-level `FONTAINE.md` in the user config dir; no parent-directory hierarchy or imports — backlog GitHub issue #7); `rig-memory` persists the context — resume/fork land in Phase 5: `headless.rs` drops its manual `history` Vec for `AgentBuilder::memory(DirStore::open(<data dir>/sessions/<id>/))`. rig-agent only loads/saves the store at run boundaries, so Fontaine owns a small between-runs compaction step: when `CompactionPolicy::over_threshold` (estimated tokens against the model's `ModelSpec` window) holds, `plan_summary` (`CompactReason::Threshold`), one summarizer completion through the main model, `Summarizer::summary_text`, `apply_summary`, then save. No custom agent loop; runs keep `AgentRunner`'s default `tool_concurrency` of 1 (tool calls run one at a time, in order); the session ledger
+   (design above) alongside it, keyed by the session id (`--session-id` or a fresh UUID). This step adds `--session-id <uuid>` to `cli.rs`, threaded through `lib.rs` into `headless::Options` (replacing the hard-coded `Uuid::new_v4()` in `headless.rs`); it is parsed as a UUID (parse failure → usage error, exit 2) and fails with exit 2 ("session ID … is already in use") when creating `<data dir>/sessions/<id>/` fails: the dir is created with a single owner-only `std::fs::create_dir` and `AlreadyExists` maps to that error (no separate exists-check), so a reused id can never append to another session's ledger.
 3. Docs — `docs/tools.md`: the built-in tool inventory (`ls`/`read`/`glob`/`grep`/`edit`/`write`/
    `shell`/`webfetch`), each tool's `RiskClass`, what earns the read-only fast path
    (Fontaine-enforced workspace containment — never the label), and the shell configuration (confinement,
@@ -129,7 +128,7 @@ context.
 ## Files created or modified
 
 `rust/Cargo.toml` (new crates: `rig-tools =0.45.0`, `rig-memory = { version = "=0.45.0", features = ["fs"] }` (`DirStore` needs `fs`), `reqwest =0.13.5` (webfetch; the version rig-core 0.45's `rig-reqwest` resolves), `htmd =0.5.6`, `ignore =0.4.33`, `url` 2.x caret (IDNA host normalization), `insta` 1.x caret (dev; system-prompt snapshot)); `rust/fontaine-tools/Cargo.toml` (rig-core, rig-tools, reqwest, htmd, url, serde; wiremock dev-dep); `rust/fontaine-tools/src/{lib,names,gate,guarded,result_pipeline,risk,scope,builtins,webfetch,git_bash}.rs`;
-`rust/fontaine-core/Cargo.toml` (rig-agent and rig-memory as normal deps, ignore, uuid; insta dev-dep); `rust/fontaine-core/src/{lib,session,ledger}.rs`; `rust/fontaine/src/{cli,lib,headless}.rs`; delete `rust/fontaine/src/echo.rs`; `rust/fontaine-core/prompts/system_prompt.md`; `rust/fontaine-tools/tests/{scope,choke_point,result_pipeline,guarded,webfetch}.rs`; `rust/fontaine-core/tests/{ledger,config,system_prompt,docs}.rs`; `rust/fontaine/tests/{headless_smoke,headless_contract,telemetry_otlp}.rs` and `rust/fontaine/tests/common/mod.rs` (retargeted from `echo` to `read`; `headless_with_echo` helper deleted); `rust/fontaine/tests/headless_tools.rs`; `docs/tools.md`, `docs/architecture.md`,
+`rust/fontaine-core/Cargo.toml` (rig-agent and rig-memory as normal deps, ignore, uuid; insta dev-dep); `rust/fontaine-core/src/{lib,session,ledger}.rs`; `rust/fontaine/src/{cli,lib,headless}.rs`; delete `rust/fontaine/src/echo.rs`; `rust/fontaine-core/prompts/system_prompt.md`; `rust/fontaine-tools/tests/{scope,choke_point,result_pipeline,guarded,webfetch}.rs`; `rust/fontaine-core/tests/{ledger,config,gate_stub,system_prompt,docs}.rs`; `rust/fontaine/tests/{headless_smoke,headless_contract,telemetry_otlp}.rs` and `rust/fontaine/tests/common/mod.rs` (retargeted from `echo` to `read`; `headless_with_echo` helper deleted); `rust/fontaine/tests/headless_tools.rs`; `docs/tools.md`, `docs/architecture.md`,
 `docs/configuration.md`, `docs/telemetry.md`, `docs/headless.md`, `docs/index.md`.
 
 ## Tests owned by this phase
@@ -141,9 +140,9 @@ context.
   absent; registered names are a subset of `BUILTIN_TOOL_NAMES` from `fontaine-tools` (`src/names.rs`)); risk-class registration of every built-in tool — the choke-point test that fails
   if any registered built-in is missing a risk class.
 - **ResultPipeline** (`rust/fontaine-tools/tests/`): every tool result passes through it after the inner tool returns and before the caller sees it; with test-double stages attached in the wrong registration order, they still run scanner first, then `post_tool_use`; with no stages it is the identity.
-- GuardedTool delegation (against a fake `ToolGate`): inner tool runs exactly once, only after the gate allows; under the stub,
-  an in-scope `read` is allowed, an out-of-scope `read` and every `write`/`edit`/`shell` call is denied.
-- **workspace roots** (`rust/fontaine-tools/tests/scope.rs`): a path in an `--add-dir` root is in
+- GuardedTool delegation (`rust/fontaine-tools/tests/guarded.rs`, against a fake `ToolGate`): inner tool runs exactly once, only after the gate allows; a wrapped `DynamicTool` is checked the same way (callback runs exactly once and only after Allow, never on Deny, result passes through `ResultPipeline`).
+- **stub gate** (`rust/fontaine-core/tests/gate_stub.rs`): under the stub, an in-scope `read` is allowed, an out-of-scope `read` and every `write`/`edit`/`shell` call is denied.
+- **workspace roots** (`rust/fontaine-tools/tests/scope.rs`): a path in an `--add-dir` root, or in a root sourced from config `additional_directories`, is in
   scope and reaches that root's confined instance; a `shell` call whose `cwd` is in an added root
   reaches that root's `Shell` instance and is not refused by rig; a symlink from one root into another stays in
   scope, out of every root falls out; no registered tool can add a root.
@@ -157,23 +156,23 @@ context.
   a cross-host redirect is returned, not followed; only `url` is accepted.
 - **system prompt** (`rust/fontaine-core/tests/`): `insta` snapshot of the assembled prompt (base → `FONTAINE.md` → append; `--system-prompt` replaces only the base); the base contains the required steering content.
 - **session id** (`rust/fontaine/tests/headless_contract.rs`): a non-UUID `--session-id` exits 2 as a usage error; a `--session-id` whose `<data dir>/sessions/<id>/` already exists exits 2 with "session ID … is already in use".
-- **session ledger** (`rust/fontaine-core/tests/ledger.rs`): after a forced compaction the ledger
+- **session ledger** (`rust/fontaine-core/tests/ledger.rs`): after a compaction forced with `CompactReason::Asked` (summarizer a `MockCompletionModel`) the ledger
   still holds every user message verbatim and no summary text; the ledger is append-only (no API
   removes a record); the file index respects `.gitignore` and truncates at the cap with the
   truncation recorded.
-- **telemetry**: canary test for tool args and output (absent without `log_tool_details` /
-  `log_tool_content`); the `shell` child environment has no telemetry credential, `MICROMEGAS_*`
+- **telemetry**: canary test for tool args and output (`rust/fontaine/tests/telemetry_otlp.rs`; absent without `log_tool_details` /
+  `log_tool_content`); the `shell` child environment (`rust/fontaine-tools/tests/guarded.rs`) has no telemetry credential, `MICROMEGAS_*`
   variable, configured `api_key_env` variable or `scanner_hf_token_env` variable.
 - Integration (`rust/fontaine/tests/headless_tools.rs`): `fontaine -p` against the scripted
-  `openai-compatible` endpoint (built with the Phase-1 `common/mod.rs` helper) completes a read-tool round-trip (passing `--permission-mode manual` explicitly).
+  `openai-compatible` endpoint (built with the Phase-1 `common/mod.rs` helper): scripted `write` and `shell` calls each come back as a denial tool result with the run exiting 0; an out-of-scope `read` is denied; a `read` in an `--add-dir` root is allowed.
 
 ## Definition of done
 
 - Offline gates (no keys, no human): `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` /
   `cargo test` green from `rust/`, including `rust/fontaine-tools/tests/{scope,choke_point}.rs`,
   `rust/fontaine-core/tests/ledger.rs`, `rust/fontaine/tests/headless_tools.rs`.
-- A headless `-p` run against the scripted endpoint completes a read-tool round-trip through the
-  wrapped registry (in-scope `read` allowed by the deny-by-default stub; `write`/`shell` denied —
+- Headless `-p` runs against the scripted endpoint go through the
+  wrapped registry (in-scope `read` allowed by the deny-by-default stub, covered by the retargeted `headless_smoke.rs`; `write`/`shell` denied in `headless_tools.rs` —
   nothing executes past the stub until Phase 3).
 - Choke-point test green: every registered built-in tool has a `RiskClass`.
 - Needs a human (the agent cannot push): push the branch and confirm the windows CI job runs the `#[cfg(windows)]` tests green.
