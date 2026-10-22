@@ -37,7 +37,7 @@ Code's `--debug-file` analog), and (b) when `[telemetry] enabled`, one export ba
   OTel `Meter`.
 
 Both backends sit behind a per-layer **target allowlist** (`fontaine::telemetry`, `rig::completions`,
-`rig::agent_chat`): nothing else rig or a dependency logs is exported (it reaches only the
+`rig::agent_chat`, `rig_agent::agent::telemetry`): nothing else rig or a dependency logs is exported (it reaches only the
 opt-in local debug file). Fontaine's own telemetry fields are content-free by construction;
 content fields exist only behind the opt-in keys below, and rig's content recording follows
 them via `record_content_telemetry`.

@@ -138,7 +138,7 @@ the guardian never goes fully off, it narrows (no zero-guardian mode exists — 
 mode is not resurrected here; minimal adjudicates, just less):
 - A **reduced ruleset + reduced adjudication context** (smaller `AdjudicationRequest`, below) run on the **resolved `[guardian] model`** (no separate model key). Permitted **only when
   containment is Fontaine-verified**: an explicit `--in-container` CLI flag (a user
-  assertion — Phase 1 CLI table) **backed by an actual runtime probe** (Linux signals in step 6; macOS and Windows always report "not contained", so minimal falls back to `full` there). Detecting an srt/bubblewrap launch (`@anthropic-ai/sandbox-runtime`) belongs to the Phase 5 sandbox roadmap slot. A
+  assertion; the clap flag lands in step 6) **backed by an actual runtime probe** (Linux signals in step 6; macOS and Windows always report "not contained", so minimal falls back to `full` there). Detecting an srt/bubblewrap launch (`@anthropic-ai/sandbox-runtime`) belongs to the Phase 5 sandbox roadmap slot. A
   failed or missing probe fails closed — minimal refuses to load and falls back to `full` with a
   notice. **Default `full`.** Never settable by project settings: profile is a loosening knob, so
   the existing trust-asymmetry rule extends to it — user trust scopes only (per the config scope table).
@@ -201,7 +201,7 @@ mode is not resurrected here; minimal adjudicates, just less):
    environment has `container=` (read `/proc/1/environ`; unreadable ⇒ no signal), or `/proc/1/cgroup`
    contains `docker`, `kubepods`, `containerd`, `libpod` or `lxc`; macOS and Windows always report "not
    contained"; srt/bubblewrap launch detection is deferred to the Phase 5 roadmap slot) in
-   `rust/fontaine-core/src/containment.rs`, reading through an injectable root path so tests use a fake root, with the `--in-container` CLI flag as an input that is
+   `rust/fontaine-core/src/containment.rs`, reading through an injectable root path so tests use a fake root, with the `--in-container` clap flag (added here) as an input that is
    never sufficient alone; on probe failure or missing verification, resolve to `full` and emit a
    one-time notice.
 7. Release setup: cargo-dist `0.32.0` configured in `rust/Cargo.toml` and
