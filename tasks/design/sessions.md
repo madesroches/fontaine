@@ -15,5 +15,7 @@ model-written text. In a subagent tree there is one intent source, the root sess
 drops session-scope grants; fork (`--fork-session`) copies both stores under a new session id, also
 without session grants; a rewind of the conversation (rig-memory `as_of`) truncates the context and
 appends to the ledger — denial and approval history is never removed. Both stores persist as JSONL
-under `<data dir>/sessions/<session-id>/` (owner-only). Ledger in Phase 2; guardian
+under `<data dir>/sessions/<session-id>/` (owner-only); the ledger is `ledger/ledger.jsonl` there,
+outside the `logs/` and `files/` folders rig-memory's store reads (a top-level `*.jsonl` would make
+it refuse the dir). Ledger in Phase 2; guardian
 reads it in Phase 4; resume/fork in Phase 5.
