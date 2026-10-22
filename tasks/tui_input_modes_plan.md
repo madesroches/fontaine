@@ -59,7 +59,8 @@ at the moment the model receives it, not before.
 - Navigation: `History` keeps a cursor and the draft that was in the input when navigation began.
   `older()` / `newer()` return the entry to show; going newer past the newest restores the draft.
   Consecutive duplicates are stored once. A queued message (Enter while running) is appended when
-  it is queued; the end-of-turn auto-submit and a resend after `EditQueued` add no second entry.
+  it is queued; the end-of-turn auto-submit adds no second entry. A resend after `EditQueued` is an
+  ordinary submit (an unchanged resend collapses as a consecutive duplicate).
 - Search: `search(query, before) -> Option<(index, &str)>` finds the newest entry older than
   `before` that contains `query`, case-insensitively.
 
@@ -108,7 +109,10 @@ Keys (in `App::message_key`):
   shows as a transcript error with no ledger or audit record and no harness note. It runs as the user with no gate: no permission pipeline,
   no guardian, not counted in the denial counters. The scrubbed environment and the output cut
   are the same as the agent's shell tool, because the output goes to the model.
-- The driver runs it like a turn: `running = true`, keys still served, Esc or Ctrl-C drops the
+- The driver runs it like a turn: `running = true` plus `App::shell_running = true`, keys still
+  served. While `shell_running`, Enter on any input shows "a shell command is running; wait for it
+  or press Esc to interrupt" and keeps the input, and Up never returns `EditQueued`, so nothing is
+  queued during a `!` run. Esc or Ctrl-C drops the
   future (which kills the process group) and shows "interrupted". The driver, not `run_user_shell`,
   writes the ledger and audit records, so an interrupted command (which may already have had side
   effects) is still recorded: `Record::UserShell` with `exit_code: None` and the audit record with
@@ -170,11 +174,13 @@ TUI:
   calls `retract()` and puts the messages, joined by blank lines, in front of the current input.
 - In the turn loop the driver drains `take_delivered()` with the session events and writes each
   as a `>` user entry, so the transcript shows the message where the model received it.
-- When the turn ends:
-  - `Answer` with messages still queued (the model finished without another tool result): the
-    driver retracts them and submits them, joined by blank lines, as the next turn, as Claude Code
+- When the turn ends, `Ui::run` (after `turn` returns) retracts the undelivered messages and calls
+  a pure `end_of_turn(outcome, retracted) -> EndOfTurn::{Submit(text), RestoreToInput(text),
+  Nothing}`, then submits `Submit` as the next turn without a history append:
+  - `Answer` with messages still queued (the model finished without another tool result): they
+    are submitted, joined by blank lines, as the next turn, as Claude Code
     sends a queued message once the agent is idle.
-  - Interrupted, failed, or max turns: the driver retracts them into the input, so nothing the
+  - Interrupted, failed, or max turns: they go back, joined by blank lines, in front of the input, so nothing the
     user typed is sent without them seeing it again. Messages already delivered in such a turn are
     discarded with it like its prompt (rig saves only on completion) and must be resent; their
     ledger records stay.
@@ -200,8 +206,8 @@ while an approval, `/denied` or the unavailable prompt is open and cannot captur
 3. **File index snapshot.** Keep `files` on `AgentRuntime` as a shared slot; add `refresh_files()` (detached background task writes the slot; the driver reads it before each draw and passes the `Arc` to `App`).
 4. **History.** Add `fontaine-tui/src/history.rs`; load it in `drive` from `setup.data_dir` and the
    primary root, before `AgentRuntime::new(setup)` moves `setup` (the runtime's `Setup.data_dir`
-   is private, so clone both first); append on every submit in `Ui::run` and on every queued message (an auto-submitted or
-   re-edited queued message is not appended again).
+   is private, so clone both first); append on every submit in `Ui::run` and on every queued message (an auto-submitted queued message is not
+   appended again).
 5. **Completion.** Add `fontaine-tui/src/complete.rs`; completion state on `App`; drawing in
    `view.rs` (an overlay above the input, like the other overlays; `view::height` counts it).
 6. **App keys and actions.** `Action::{Queue, EditQueued, Shell}`, `!` detection and input title,
@@ -250,6 +256,9 @@ while an approval, `/denied` or the unavailable prompt is open and cannot captur
   `!` run widen what the agent may do.
 - 2026-10-22: `!` commands run only between turns. Reason: a user command racing the agent's own
   calls would interleave side effects the guardian is judging.
+- 2026-10-22: AFK: During a `!` run the TUI queues nothing: Enter on any input shows a notice and keeps the input, and Up does not retract. Reason: no agent run consumes the queue then, so a queued message would land in the next turn's tool result or be dropped.
+- 2026-10-22: AFK: A resend after `EditQueued` is an ordinary submit that may add a second history entry (consecutive duplicates still collapse). Reason: it needs no extra "came from the queue" state.
+- 2026-10-22: AFK: The end-of-turn rule for queued messages is a pure `end_of_turn` function called from `Ui::run` after `turn` returns, and is unit-tested directly. Reason: submitting a turn needs a runtime that `src/` unit tests cannot build.
 - 2026-10-22: Queued messages become guardian intent when the model receives them, not when
   typed. Reason: at queue time the guardian would judge calls using words the model never read.
 
@@ -287,6 +296,8 @@ Unit tests:
   left the token; ranking order (basename prefix, then substring, then length) and the cap of 8;
   relative display under the primary root.
 - `app.rs`: Enter while running returns `Queue` for a message and the notice for `/` and `!`;
+  with `shell_running`, Enter on a message, `/` or `!` shows the shell notice and keeps the input,
+  and Up does not return `EditQueued`;
   Up with queued messages returns `EditQueued`; Up/Down on first/last line walk history,
   elsewhere move the cursor; `!` input gives `Shell` and the shell title; Ctrl-R search flow
   (type, Ctrl-R again, Enter fills without sending, Esc restores); completion list Tab/Enter
@@ -298,9 +309,9 @@ Unit tests:
   nothing is queued, for an `Err` outcome, and for a non-root agent; `retract` returns only undelivered messages.
 - `ledger.rs`: `UserShell` round-trips and does not reach `user_messages`.
 
-Driver unit test (`fontaine-tui/src/lib.rs` tests): seed `Steering` with a queued message, settle
-the turn with `TurnOutcome::Answer`, and assert the message is submitted as the next turn with no
-second history entry. (Not an integration test: mock stream events have no delay and the turn
+Driver unit test (`fontaine-tui/src/lib.rs` tests): `end_of_turn` returns `Submit` with the
+messages joined by blank lines for `Answer`, `RestoreToInput` for interrupted, failed and max
+turns, and `Nothing` when no messages were retracted. (Not an integration test: mock stream events have no delay and the turn
 loop polls the run before input, so queueing during a text-only answer is not deterministic.)
 
 Integration tests (`fontaine-tui/tests/tui.rs`, mock model through `World`):
