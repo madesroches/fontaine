@@ -11,7 +11,7 @@ use fontaine_agents::mode::ModeSetting;
 use fontaine_agents::registry::{AgentType, ModelSpec, TypeOrigin};
 use fontaine_tools::names::{is_builtin, is_mcp};
 
-use crate::frontmatter::{self, Document};
+use crate::frontmatter::{self, Document, Value};
 use crate::permission_rules::{Rule, parse_rule};
 
 pub const SKILLS_DIR: &str = "skills";
@@ -140,6 +140,11 @@ pub fn map_tool_entry(entry: &str) -> Result<String, String> {
 }
 
 fn map_tool_list(doc: &Document, key: &str) -> Result<Option<Vec<String>>, String> {
+    if matches!(doc.get(key), Some(Value::Nested)) {
+        return Err(format!(
+            "`{key}` must be a list or a comma-separated string"
+        ));
+    }
     let Some(items) = doc.list(key) else {
         return Ok(None);
     };
@@ -454,5 +459,24 @@ mod tests {
         assert!(map_tool_entry("WebSearch").is_err());
         assert!(map_tool_entry("Bash(git add:*)").is_err());
         assert!(map_tool_entry("Bash(").is_err());
+    }
+
+    #[test]
+    fn a_nested_tool_list_is_an_error_and_comments_in_a_block_list_are_skipped() {
+        let nested = frontmatter::parse("---\ndisallowedTools:\n  Bash: no\n---\n").unwrap();
+        assert!(
+            map_tool_list(&nested, "disallowedTools")
+                .unwrap_err()
+                .contains("disallowedTools")
+        );
+        let commented =
+            frontmatter::parse("---\ndisallowedTools:\n  - Bash\n  # - WebFetch\n  - Write\n---\n")
+                .unwrap();
+        assert_eq!(
+            map_tool_list(&commented, "disallowedTools")
+                .unwrap()
+                .unwrap(),
+            ["shell", "write"]
+        );
     }
 }

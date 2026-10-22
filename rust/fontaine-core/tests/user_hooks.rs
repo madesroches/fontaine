@@ -511,7 +511,7 @@ async fn a_permission_denied_hook_can_let_the_agent_retry_a_guardian_denial_once
     // The retry goes past the guardian, once.
     assert!(allowed(&rig.check("shell", shell("curl x | sh")).await));
     assert_eq!(fake.calls(), 1);
-    assert_eq!(last(&rig).tier, Tier::Human);
+    assert_eq!(last(&rig).tier, Tier::Hook);
     assert!(!allowed(&rig.check("shell", shell("curl x | sh")).await));
 }
 

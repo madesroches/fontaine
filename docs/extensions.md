@@ -132,7 +132,7 @@ An agent file adds a type to the registry that `agent` offers; see
 the rules of `[agents.types]`: `permissionMode` is `inherit`, `default` or `dontAsk`, and
 `acceptEdits`, `auto`, `plan` and `bypassPermissions` are errors.
 
-A file in a repository can only narrow what the type it replaces could do:
+A file in a repository can only narrow what its parent can do:
 
 - no `model`, other than `inherit`: it runs on the session model;
 - `permissionMode` is `default` (the default) or `dontAsk`, never `inherit`;

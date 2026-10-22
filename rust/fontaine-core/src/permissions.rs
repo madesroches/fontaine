@@ -22,7 +22,7 @@ use crate::audit::{Decision, DecisionRecord, args_digest, now_rfc3339};
 use crate::config::PermissionMode;
 use crate::destructive::touched_paths;
 use crate::floor::{self, CriticalEnv};
-use crate::gate::{DeniedCall, SessionState, permission_mode};
+use crate::gate::{DeniedCall, RetrySource, SessionState, permission_mode};
 use crate::ledger::Record;
 use crate::permission_rules::{
     CallContext, Posture, RuleSource, SourcedRule, is_broad_code_execution, matches, parse_rule,
@@ -866,14 +866,14 @@ impl PermissionPipeline {
     }
 
     /// Tells the `permission_denied` hooks about a denial. Returns whether one of them, one the
-    /// user defined, says the agent may retry exactly this call.
-    async fn denied_hooks(&self, cx: &CallCtx<'_>, tier: Tier, reason: &str) -> bool {
+    /// user defined, says the agent may retry exactly this call; names that hook.
+    async fn denied_hooks(&self, cx: &CallCtx<'_>, tier: Tier, reason: &str) -> Option<String> {
         if self.denied_hooks.is_empty() {
-            return false;
+            return None;
         }
         let scope = self.state.scope();
         let (cwd, roots) = self.workspace_view();
-        let mut retry = false;
+        let mut retry = None;
         for hook in &self.denied_hooks {
             let covered = match hook.matcher().and_then(|text| parse_rule(&text).ok()) {
                 Some(rule) => matches(
@@ -905,7 +905,7 @@ impl PermissionPipeline {
             };
             let id = hook.id();
             match tokio::time::timeout(hook.timeout(), hook.run(event)).await {
-                Ok(Ok(true)) if hook.can_retry() => retry = true,
+                Ok(Ok(true)) if hook.can_retry() => retry = retry.or(Some(id.to_string())),
                 Ok(Ok(true)) => {
                     tracing::debug!(hook = %id, "a project hook's retry is ignored");
                 }
@@ -982,16 +982,33 @@ impl PermissionPipeline {
         // `/denied` then `r`: the human approved this exact call once. The floor has already
         // run; the guardian is not asked and the approval never enters the cache or the
         // breaker.
-        if self.state.take_retry(call.agent, call.tool, &cx.digest) {
-            Self::note(Tier::Human, Decision::Allow);
-            self.emit(self.record(
-                cx,
-                Tier::Human,
-                Decision::Allow,
-                Some("retry approved by the user".to_string()),
-                None,
-            ));
-            self.approved(cx, Tier::Human, "once");
+        if let Some(source) = self.state.take_retry(call.agent, call.tool, &cx.digest) {
+            match source {
+                RetrySource::Human => {
+                    Self::note(Tier::Human, Decision::Allow);
+                    self.emit(self.record(
+                        cx,
+                        Tier::Human,
+                        Decision::Allow,
+                        Some("retry approved by the user".to_string()),
+                        None,
+                    ));
+                    self.approved(cx, Tier::Human, "once");
+                }
+                // A hook's grant is not a human's answer: it must not resume paused auto mode
+                // or reset the guardian breaker.
+                RetrySource::Hook(id) => {
+                    Self::note(Tier::Hook, Decision::Allow);
+                    self.emit(self.record(
+                        cx,
+                        Tier::Hook,
+                        Decision::Allow,
+                        Some(id),
+                        Some("retry approved by a permission_denied hook".to_string()),
+                    ));
+                    self.state.append(self.action(cx, Tier::Hook));
+                }
+            }
             return GateDecision::Allow {
                 args: cx.args.clone(),
             };
@@ -1116,11 +1133,16 @@ impl PermissionPipeline {
                 let retry = self
                     .denied_hooks(cx, Tier::Guardian, &adjudication.explanation)
                     .await;
-                if retry {
+                if let Some(hook_id) = &retry {
                     message = format!(
                         "Denied by guardian: [{rule}] {why}. A permission_denied hook approved one retry of exactly this call: you may run it again once, unchanged."
                     );
-                    self.state.grant_retry(call.agent, call.tool, &cx.digest);
+                    self.state.grant_retry(
+                        RetrySource::Hook(hook_id.clone()),
+                        call.agent,
+                        call.tool,
+                        &cx.digest,
+                    );
                 }
                 Self::note(Tier::Guardian, Decision::Deny);
                 let record = Self::with_guardian(
@@ -1144,7 +1166,7 @@ impl PermissionPipeline {
                     summary: action_summary(call.tool, &cx.args),
                     rule,
                     explanation: adjudication.explanation,
-                    retried: retry,
+                    retried: retry.is_some(),
                 });
                 // The list a surface reads when it sees this event is complete before the event.
                 self.emit(record);
@@ -1344,7 +1366,7 @@ impl ToolGate for PermissionPipeline {
             target: TARGET,
             "fontaine.permission",
             tool_name = self.state.telemetry_tool_name(call.tool),
-            permission_mode = self.state.mode().as_str(),
+            permission_mode = self.posture_of(call.agent).0.as_str(),
             tier = tracing::field::Empty,
             decision = tracing::field::Empty,
         );

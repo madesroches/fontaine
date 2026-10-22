@@ -209,6 +209,8 @@ pub fn parse(text: &str) -> Result<Document, String> {
                 lines.join("\n").trim_end().to_string()
             })
         } else if rest.is_empty() {
+            // YAML ignores comment lines, so one inside a block list does not make it a mapping.
+            block.retain(|l| !l.trim_start().starts_with('#'));
             if block
                 .iter()
                 .all(|l| l.trim_start().starts_with("- ") || l.trim().is_empty())
@@ -263,6 +265,12 @@ mod tests {
         assert_eq!(doc.list("argument-hint").unwrap(), ["issue-number"]);
         assert_eq!(doc.flag("disable-model-invocation"), Ok(Some(true)));
         assert_eq!(doc.list("tools").unwrap(), ["Read", "Grep"]);
+        let commented =
+            parse("---\ndisallowedTools:\n  - Bash\n  # - WebFetch\n  - Write\n---\n").unwrap();
+        assert_eq!(
+            commented.list("disallowedTools").unwrap(),
+            ["Bash", "Write"]
+        );
         assert_eq!(doc.body, "Body text\n");
     }
 

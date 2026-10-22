@@ -3,7 +3,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -11,6 +11,8 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+
+use crate::server_prompt::ANSWER_GRACE;
 
 /// What the workspace holds that would run, for the prompt to name.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -35,6 +37,7 @@ pub struct TrustPrompt {
     root: PathBuf,
     summary: Summary,
     selected: Choice,
+    opened: Instant,
 }
 
 impl TrustPrompt {
@@ -43,6 +46,7 @@ impl TrustPrompt {
             root: root.to_path_buf(),
             summary: summary.clone(),
             selected: Choice::DontTrust,
+            opened: Instant::now(),
         }
     }
 
@@ -53,12 +57,31 @@ impl TrustPrompt {
     /// Handles a key; the choice comes back once the human has made one. Nothing is chosen
     /// by default: Enter acts on the highlighted answer, which starts on "don't trust".
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Choice> {
+        self.handle_key_at(key, Instant::now())
+    }
+
+    /// Keys typed ahead must not answer a prompt that appears under them, and trusting
+    /// persists: answer keys wait out the grace period and ignore auto-repeat. Ctrl-C
+    /// declines at any time.
+    pub fn handle_key_at(&mut self, key: KeyEvent, now: Instant) -> Option<Choice> {
         if key.kind == KeyEventKind::Release {
             return None;
         }
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        if matches!(key.code, KeyCode::Char('c')) && control {
+            return Some(Choice::DontTrust);
+        }
+        let answering = matches!(
+            key.code,
+            KeyCode::Char('y' | 't' | 'n' | 'd') | KeyCode::Esc | KeyCode::Enter
+        );
+        if answering
+            && (key.kind != KeyEventKind::Press
+                || now.saturating_duration_since(self.opened) < ANSWER_GRACE)
+        {
+            return None;
+        }
         match key.code {
-            KeyCode::Char('c') if control => Some(Choice::DontTrust),
             KeyCode::Char('y' | 't') if !control => Some(Choice::Trust),
             KeyCode::Char('n' | 'd') | KeyCode::Esc if !control => Some(Choice::DontTrust),
             KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::Char('j' | 'k') => {
@@ -194,8 +217,23 @@ mod tests {
     }
 
     #[test]
+    fn typed_ahead_keys_do_not_answer() {
+        let mut prompt = TrustPrompt::new(Path::new("/work/repo"), &summary());
+        let opened = prompt.opened;
+        let y = key(KeyCode::Char('y'));
+        assert_eq!(prompt.handle_key_at(y, opened), None);
+        assert_eq!(prompt.handle_key_at(key(KeyCode::Enter), opened), None);
+        let later = opened + ANSWER_GRACE;
+        let mut repeat = y;
+        repeat.kind = KeyEventKind::Repeat;
+        assert_eq!(prompt.handle_key_at(repeat, later), None);
+        assert_eq!(prompt.handle_key_at(y, later), Some(Choice::Trust));
+    }
+
+    #[test]
     fn nothing_is_trusted_until_the_human_says_so() {
         let mut prompt = TrustPrompt::new(Path::new("/work/repo"), &summary());
+        prompt.opened -= ANSWER_GRACE;
         assert_eq!(prompt.selected(), Choice::DontTrust);
         assert_eq!(
             prompt.handle_key(key(KeyCode::Enter)),

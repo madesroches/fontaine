@@ -134,10 +134,20 @@ pub struct DeniedCall {
     pub retried: bool,
 }
 
-/// A one-shot human approval of a call the guardian denied: the same agent, tool and
+/// Who granted a one-shot retry. The audit record names it, and only a human's grant counts as a
+/// human approval.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RetrySource {
+    Human,
+    /// A user `permission_denied` hook, by id.
+    Hook(String),
+}
+
+/// A one-shot approval of a call the guardian denied: the same agent, tool and
 /// arguments, consumed by the next matching call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RetryApproval {
+    source: RetrySource,
     agent: String,
     tool: String,
     args_digest: String,
@@ -365,6 +375,7 @@ impl SessionState {
         }
         call.retried = true;
         let approval = RetryApproval {
+            source: RetrySource::Human,
             agent: call.agent.clone(),
             tool: call.tool.clone(),
             args_digest: call.args_digest.clone(),
@@ -380,11 +391,12 @@ impl SessionState {
 
     /// Queues a one-shot retry approval for a call by `agent` with this tool and arguments digest,
     /// the same grant `/denied` then `r` makes, without a list entry to point at.
-    pub fn grant_retry(&self, agent: &str, tool: &str, args_digest: &str) {
+    pub fn grant_retry(&self, source: RetrySource, agent: &str, tool: &str, args_digest: &str) {
         self.retries
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(RetryApproval {
+                source,
                 agent: agent.to_string(),
                 tool: tool.to_string(),
                 args_digest: args_digest.to_string(),
@@ -392,18 +404,12 @@ impl SessionState {
     }
 
     /// Consumes the retry approval matching this call, if there is one.
-    pub fn take_retry(&self, agent: &str, tool: &str, args_digest: &str) -> bool {
+    pub fn take_retry(&self, agent: &str, tool: &str, args_digest: &str) -> Option<RetrySource> {
         let mut retries = self.retries.lock().unwrap_or_else(|e| e.into_inner());
-        match retries
+        retries
             .iter()
             .position(|r| r.agent == agent && r.tool == tool && r.args_digest == args_digest)
-        {
-            Some(at) => {
-                retries.remove(at);
-                true
-            }
-            None => false,
-        }
+            .map(|at| retries.remove(at).source)
     }
 
     /// Counts a guardian call made for `agent`: in the session total, in the agent's own tally

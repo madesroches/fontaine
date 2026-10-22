@@ -413,20 +413,40 @@ impl AgentTree {
         self.lock().nodes.get(id).and_then(|n| n.report.clone())
     }
 
-    /// Stops a running child. Returns whether it was running.
+    /// Stops a running child and every running descendant. Returns whether it was running.
     pub fn kill(&self, id: &str) -> bool {
-        let handle = {
+        let handles = {
             let mut inner = self.lock();
-            let Some(node) = inner.nodes.get_mut(id) else {
+            let Some(node) = inner.nodes.get(id) else {
                 return false;
             };
             if id == ROOT_AGENT || !node.status.is_running() {
                 return false;
             }
-            node.status = ChildStatus::Killed;
-            node.handle.clone()
+            let mut doomed = vec![id.to_string()];
+            let mut at = 0;
+            while at < doomed.len() {
+                let parent = doomed[at].clone();
+                at += 1;
+                for (child, n) in &inner.nodes {
+                    if n.info.parent.as_deref() == Some(parent.as_str())
+                        && n.status.is_running()
+                        && !doomed.contains(child)
+                    {
+                        doomed.push(child.clone());
+                    }
+                }
+            }
+            let mut handles = Vec::new();
+            for doomed_id in &doomed {
+                if let Some(node) = inner.nodes.get_mut(doomed_id) {
+                    node.status = ChildStatus::Killed;
+                    handles.extend(node.handle.clone());
+                }
+            }
+            handles
         };
-        if let Some(handle) = handle {
+        for handle in handles {
             handle.kill();
         }
         self.changed.notify_waiters();
@@ -542,13 +562,20 @@ impl AgentTree {
 
     /// Queues a background child's report for its parent.
     pub fn notify_report(&self, parent: &str, from: &str, text: String) {
-        if let Some(node) = self.lock().nodes.get_mut(parent) {
+        // A killed parent never drains its inbox; the report would only keep waiters blocked.
+        let mut inner = self.lock();
+        if let Some(node) = inner
+            .nodes
+            .get_mut(parent)
+            .filter(|n| parent == ROOT_AGENT || n.status.is_running())
+        {
             node.inbox.push_back(Notification {
                 from: from.to_string(),
                 kind: NotificationKind::Report,
                 text,
             });
         }
+        drop(inner);
         self.changed.notify_waiters();
     }
 
@@ -655,6 +682,22 @@ mod tests {
         let _b = reserve(&tree, &a).unwrap();
         assert_eq!(reserve(&tree, ROOT_AGENT), Err(Refusal::Parallel(2)));
         assert_eq!(reserve(&tree, &a), Err(Refusal::Parallel(2)));
+    }
+
+    #[test]
+    fn killing_an_agent_kills_its_running_descendants_and_drops_reports_to_it() {
+        let tree = tree(5);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        let b = reserve(&tree, &a).unwrap();
+        let c = reserve(&tree, ROOT_AGENT).unwrap();
+        assert!(tree.kill(&a));
+        assert!(tree.was_killed(&b));
+        assert!(!tree.is_running(&b));
+        assert!(tree.is_running(&c));
+        tree.notify_report(&a, &b, "late".into());
+        assert!(!tree.has_notifications(&a));
+        tree.notify_report(ROOT_AGENT, &c, "ok".into());
+        assert!(tree.has_notifications(ROOT_AGENT));
     }
 
     #[test]

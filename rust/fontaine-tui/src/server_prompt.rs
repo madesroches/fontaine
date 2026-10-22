@@ -10,7 +10,7 @@ use ratatui::text::Line;
 use crate::input::wrap;
 
 /// Keys typed ahead must not answer a prompt that appears under them.
-const ANSWER_GRACE: Duration = Duration::from_millis(400);
+pub(crate) const ANSWER_GRACE: Duration = Duration::from_millis(400);
 
 pub struct ServerPrompt {
     pub name: String,
