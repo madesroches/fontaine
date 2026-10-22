@@ -41,6 +41,7 @@ fn result(id: &str, actual: &str) -> CaseResult {
         latency_ms: 0,
         explanation: None,
         escape_class: None,
+        fail_closed: None,
     }
 }
 

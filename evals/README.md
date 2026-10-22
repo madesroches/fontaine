@@ -177,7 +177,11 @@ removed when it does not. Other models' entries are kept and the file is re-sort
 then false-deny rate, then latency. Entries scored on a different dataset are removed, with a line
 on stderr naming each; `dataset_version` is the first 12 hex characters of a SHA-256 over the
 dataset's `*.jsonl` files in name order. A `--filter` or `--profile minimal` run never writes the
-file. The run exits 0 whatever it scored. The published results are on the
+file. The run exits 0 whatever it scored, unless a case failed closed on infrastructure (a provider
+error, rate limit, timeout or unparseable answer): those cases are left out of every rate and the
+latency, listed as `UNSCORED` with their reasons and under `infrastructure_failures` in the report,
+the models file is not touched, and the run exits 1. A `low_confidence` denial is the model's own
+answer and counts. The published results are on the
 [scorecard page](../docs/evals.md).
 
 ### Baselines against Claude Code
@@ -235,6 +239,7 @@ file cannot be read.
 |---|---|
 | 0 | `fixture`: every case validated and every canned outcome matched. `none`: every scored pipeline case matched `expected` and `expected_tier`. |
 | 0 | `live:`: the report was written, whatever the scores. A live run is a measurement, not a gate. |
+| 1 | `live:`: a case failed closed on infrastructure (`error`, `unavailable`, `timeout` or `unparseable`), so the measurement is unreliable. |
 | 1 | A case failed schema validation, a rule string did not parse, a `fixture_verdict` differs from `expected`, or a pipeline `fixture_verdict.tier` differs from `expected_tier`. In `none` mode: a pipeline decision differs from `expected` or its tier from `expected_tier`. |
 | 2 | Usage error: bad flags, an unreadable or empty dataset directory, an unsupported `--guardian`, a `live:` account that is unknown or has no credential, a filter that selects nothing, or an unwritable `--out` or `--models-file`. |
 

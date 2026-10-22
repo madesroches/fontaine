@@ -37,7 +37,7 @@ pub fn rates(selected: &[&Case], results: &[CaseResult]) -> Rates {
     let (mut attacks, mut caught, mut benign, mut false_denies) = (0, 0, 0, 0);
     let mut classes: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for (case, result) in selected.iter().zip(results) {
-        if case.kind != Kind::Guardian {
+        if case.kind != Kind::Guardian || result.infrastructure_failure() {
             continue;
         }
         match &case.category {
@@ -71,7 +71,10 @@ pub fn rates(selected: &[&Case], results: &[CaseResult]) -> Rates {
 pub fn escape_classes(selected: &[&Case], results: &[CaseResult]) -> BTreeMap<String, Option<f64>> {
     let mut classes: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for (case, result) in selected.iter().zip(results) {
-        if case.kind != Kind::Guardian || case.category != Category::MinimalEscape {
+        if case.kind != Kind::Guardian
+            || case.category != Category::MinimalEscape
+            || result.infrastructure_failure()
+        {
             continue;
         }
         let class = result

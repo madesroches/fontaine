@@ -45,6 +45,32 @@ pub const INSTALLERS: [(&str, &[&str]); 11] = [
 /// Installers that take a bare `install` subcommand, so they need no entry in the table above.
 const MORE_INSTALLERS: [&str; 2] = ["dnf", "yum"];
 
+/// Interpreters that run a program given as an argument, which can do anything.
+const INTERPRETERS: [&str; 9] = [
+    "awk", "gawk", "mawk", "nawk", "php", "lua", "luajit", "tclsh", "wish",
+];
+
+/// Argv launchers: the options that take a separate value, and how many operands precede the
+/// wrapped program.
+const LAUNCHERS: [(&str, &[&str], usize); 12] = [
+    ("timeout", &["-s", "--signal", "-k", "--kill-after"], 1),
+    ("nice", &["-n", "--adjustment"], 0),
+    ("nohup", &[], 0),
+    ("setsid", &[], 0),
+    ("stdbuf", &["-i", "-o", "-e"], 0),
+    ("chroot", &["--userspec", "--groups"], 1),
+    ("command", &[], 0),
+    ("doas", &["-u", "-C"], 0),
+    ("busybox", &[], 0),
+    ("ionice", &["-c", "-n", "-p", "-P", "-u"], 0),
+    ("watch", &["-n", "--interval"], 0),
+    (
+        "flock",
+        &["-w", "--timeout", "-E", "--conflict-exit-code"],
+        1,
+    ),
+];
+
 const FIND_DESTRUCTIVE_FLAGS: [&str; 5] = ["-delete", "-exec", "-execdir", "-ok", "-okdir"];
 
 /// What the derivation reads besides the call.
@@ -190,7 +216,6 @@ fn destructive_command(command: &SimpleCommand) -> bool {
     let Some(first) = first.literal.as_deref() else {
         return true;
     };
-    let program = program_name(first).into_owned();
     let args: Vec<String> = match words(command) {
         Some(all) => all[1..].to_vec(),
         // Expanding arguments of a program are still judged by what the program is.
@@ -199,14 +224,55 @@ fn destructive_command(command: &SimpleCommand) -> bool {
             .map(|w| w.literal.clone().unwrap_or_else(|| w.raw.clone()))
             .collect(),
     };
-    let program = program.as_str();
+    destructive_argv(&program_name(first), &args, 0)
+}
 
-    if REMOVAL_OVERWRITE_WORDS.contains(&program) || NETWORK_CLIENT_WORDS.contains(&program) {
+/// The program a launcher runs, as an index into `args`; `None` when it cannot be located.
+fn wrapped_program(options_with_value: &[&str], operands: usize, args: &[String]) -> Option<usize> {
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        if arg == "--" {
+            at += 1;
+            break;
+        }
+        if !arg.starts_with('-') || arg == "-" {
+            break;
+        }
+        at += if options_with_value.contains(&arg.as_str()) {
+            2
+        } else {
+            1
+        };
+    }
+    let at = at + operands;
+    (at < args.len()).then_some(at)
+}
+
+fn destructive_argv(program: &str, args: &[String], depth: usize) -> bool {
+    if let Some((_, options, operands)) = LAUNCHERS.iter().find(|(name, ..)| *name == program) {
+        // Nesting past a few levels is not a command anyone means to run.
+        if depth >= 8 {
+            return true;
+        }
+        let Some(at) = wrapped_program(options, *operands, args) else {
+            return true;
+        };
+        let wrapped = &args[at];
+        if wrapped.contains(['$', '`']) {
+            return true;
+        }
+        return destructive_argv(&program_name(wrapped), &args[at + 1..], depth + 1);
+    }
+
+    if REMOVAL_OVERWRITE_WORDS.contains(&program)
+        || NETWORK_CLIENT_WORDS.contains(&program)
+        || INTERPRETERS.contains(&program)
+    {
         return true;
     }
     match program {
-        "sed" if has_flag(&args, &["--in-place"], &['i']) => return true,
-        "perl" if has_flag(&args, &[], &['i']) => return true,
+        "sed" if has_flag(args, &["--in-place"], &['i']) => return true,
+        "perl" if has_flag(args, &[], &['i']) => return true,
         "find"
             if args
                 .iter()
@@ -214,10 +280,10 @@ fn destructive_command(command: &SimpleCommand) -> bool {
         {
             return true;
         }
-        "git" if git_destructive(&args) || git_network(&args) => return true,
+        "git" if git_destructive(args) || git_network(args) => return true,
         _ => {}
     }
-    installer(program, &args) || broad_code_execution(program, &args)
+    installer(program, args) || broad_code_execution(program, args)
 }
 
 /// The absolute paths a call touches, as the scope validator resolves them. A file tool names

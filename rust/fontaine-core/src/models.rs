@@ -490,7 +490,10 @@ fn resolve_guardian(
 /// The shipped list of validated guardian models, best first.
 pub fn validated_models() -> Vec<ModelEntry> {
     let file: ModelsFile =
-        toml::from_str(fontaine_guardian::models::MODELS_TOML).unwrap_or_default();
+        toml::from_str(fontaine_guardian::models::MODELS_TOML).unwrap_or_else(|e| {
+            tracing::warn!("the shipped guardian model list does not parse: {e}");
+            ModelsFile::default()
+        });
     fontaine_guardian::models::ranked(&file.models)
 }
 
@@ -505,6 +508,11 @@ fn account_has(
     env: EnvLookup<'_>,
     stored: &Credentials,
 ) -> bool {
+    if needs_credential(account.kind)
+        && !matches!(credential(name, account, env, stored), Credential::Found(_))
+    {
+        return false;
+    }
     match &account.models {
         Some(list) => lists(account.kind, list, model),
         None if name == main.0.account => lists(account.kind, main.1, model),
@@ -530,7 +538,6 @@ fn available_validated(
                     account: name.clone(),
                     model: entry.model.clone(),
                 });
-                break;
             }
         }
     }
@@ -544,11 +551,15 @@ fn default_guardian(
     env: EnvLookup<'_>,
     main: (&ModelRef, &Client, &[String]),
 ) -> Option<GuardianModel> {
-    let reference = available_validated(validated, config, stored, env, (main.0, main.2))
+    available_validated(validated, config, stored, env, (main.0, main.2))
         .into_iter()
-        .next()?;
-    let text = reference.to_string();
-    resolve_guardian(config, stored, env, &text, main).ok()
+        .find_map(|reference| {
+            let text = reference.to_string();
+            match resolve_guardian(config, stored, env, &text, main) {
+                Ok(ready @ GuardianModel::Ready(_)) => Some(ready),
+                _ => None,
+            }
+        })
 }
 
 /// Resolves models again while a session runs, for `/model` and `/guardian-model`. It owns what

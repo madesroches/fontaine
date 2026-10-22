@@ -327,7 +327,7 @@ async fn the_top_entry_on_an_unconfigured_account_is_skipped_for_the_next() {
         entry("anthropic", "claude-haiku-5-5", 0.99),
         entry("openai", "gpt-flash", 0.95),
     ];
-    let resolved = resolve_listed(&w, &env_of(&[]), &list).await;
+    let resolved = resolve_listed(&w, &env_of(&[("OA_KEY", "k")]), &list).await;
     assert_eq!(resolved.guardian_choice, GuardianChoice::Default);
     assert!(resolved.notices.is_empty());
     assert_eq!(
@@ -407,6 +407,26 @@ async fn a_pinned_guardian_is_never_substituted() {
     assert!(reason.contains("CLOUD_KEY"), "{reason}");
 }
 
+#[tokio::test]
+async fn a_validated_model_on_an_account_without_its_credential_is_not_picked() {
+    let w = World::new();
+    w.user_file(&format!(
+        "{MAIN}\n[accounts.nokey]\nkind = \"openai\"\napi_key_env = \"MISSING\"\nmodels = [\"gpt-flash\"]\n\n[accounts.oa]\nkind = \"openai\"\napi_key_env = \"OA_KEY\"\nmodels = [\"gpt-flash\"]\n"
+    ));
+    let list = [entry("openai", "gpt-flash", 0.99)];
+    let resolved = resolve_listed(&w, &env_of(&[("OA_KEY", "k")]), &list).await;
+    let Some(GuardianModel::Ready(handle)) = resolved.guardian else {
+        panic!("ready");
+    };
+    assert_eq!(handle.reference.to_string(), "oa/gpt-flash");
+
+    let resolved = resolve_listed(&w, &env_of(&[]), &list).await;
+    let Some(GuardianModel::Ready(handle)) = resolved.guardian else {
+        panic!("falls back to the main model");
+    };
+    assert_eq!(handle.reference.to_string(), "main/qwen3:4b");
+}
+
 #[test]
 fn the_switcher_offers_the_validated_and_the_explicit_models_the_accounts_have() {
     let w = World::new();
@@ -472,4 +492,18 @@ async fn a_handle_over_a_scripted_model_answers_without_any_endpoint() {
     );
     assert!(!handle.priced());
     assert_eq!(handle.reference.model, "scripted");
+}
+
+#[test]
+fn the_shipped_model_list_parses_and_every_entry_clears_the_bar() {
+    use fontaine_guardian::models::{MODELS_TOML, ModelsFile, clears_bar};
+    let file: ModelsFile = toml::from_str(MODELS_TOML).expect("the shipped list parses");
+    for e in &file.models {
+        assert!(
+            clears_bar(e.catch_rate, e.false_deny_rate, e.p95_ms),
+            "{}/{}",
+            e.kind,
+            e.model
+        );
+    }
 }

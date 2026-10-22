@@ -125,6 +125,19 @@ pub struct CaseResult {
     /// The `class=<name>` tag of a `minimal-escape` verdict.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub escape_class: Option<String>,
+    /// Why a live adjudication did not end in a verdict the model gave.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fail_closed: Option<String>,
+}
+
+impl CaseResult {
+    /// A fail-closed outcome that says nothing about the model: the provider, the network or the
+    /// parser failed. A `low_confidence` denial is the model's own answer and still counts.
+    pub fn infrastructure_failure(&self) -> bool {
+        self.fail_closed
+            .as_deref()
+            .is_some_and(|reason| reason != "low_confidence")
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -153,6 +166,10 @@ pub struct Summary {
     pub latency_ms: BTreeMap<String, Latency>,
     /// Cases selected but not scored, with the reason.
     pub skipped: Vec<Skipped>,
+    /// Live cases whose adjudication failed closed on infrastructure (the reason). They are left
+    /// out of every rate and of the latency.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub infrastructure_failures: Vec<Skipped>,
 }
 
 #[derive(Debug, Serialize)]
@@ -345,8 +362,9 @@ fn run_score(args: &RunArgs) -> u8 {
             return usage(&format!("cannot write {}: {e}", out.display()));
         }
     }
-    // A live run reports and exits 0 whatever it scored: it is a measurement, not a gate.
-    if live_run.is_none() && summary.failed > 0 {
+    // A live run reports and exits 0 whatever it scored: it is a measurement, not a gate. Only an
+    // unreliable measurement fails it.
+    if !summary.infrastructure_failures.is_empty() || (live_run.is_none() && summary.failed > 0) {
         EXIT_FAIL
     } else {
         0
@@ -410,6 +428,13 @@ fn dataset_version_and_models(
     if profile != Profile::Full || args.filter.is_some() {
         return Ok(version);
     }
+    if !summary.infrastructure_failures.is_empty() {
+        eprintln!(
+            "fontaine-evals: {} case(s) failed closed on infrastructure; the models file is left as it was",
+            summary.infrastructure_failures.len()
+        );
+        return Ok(version);
+    }
     let p95 = summary
         .latency_ms
         .get(&summary.guardian)
@@ -469,6 +494,7 @@ fn score_pipeline(case: &Case, decision: String, tier: String, latency_ms: u64) 
         latency_ms,
         explanation: None,
         escape_class: None,
+        fail_closed: None,
     }
 }
 
@@ -618,6 +644,7 @@ fn score_fixture(case: &Case) -> CaseResult {
         latency_ms: 0,
         explanation: None,
         escape_class: None,
+        fail_closed: None,
     }
 }
 
@@ -656,17 +683,26 @@ fn summarize(params: SummaryParams<'_>) -> Summary {
         *by_category.entry(case.category.to_string()).or_insert(0) += 1;
     }
     let rates = report::rates(selected, results);
+    let infrastructure_failures: Vec<Skipped> = results
+        .iter()
+        .filter(|r| r.infrastructure_failure())
+        .map(|r| Skipped {
+            id: r.id.clone(),
+            reason: r.fail_closed.clone().unwrap_or_default(),
+        })
+        .collect();
 
     // The latency a live scorecard reports is the guardian's: the cases that were adjudicated.
     let mut latencies: Vec<u64> = selected
         .iter()
         .zip(results)
-        .filter(|(case, _)| !live || case.kind == Kind::Guardian)
+        .filter(|(case, r)| (!live || case.kind == Kind::Guardian) && !r.infrastructure_failure())
         .map(|(_, r)| r.latency_ms)
         .collect();
     latencies.sort_unstable();
     let passed = results.iter().filter(|r| r.pass).count();
     Summary {
+        infrastructure_failures,
         guardian: guardian.to_string(),
         profile: match profile {
             Profile::Full => "full",
@@ -715,6 +751,15 @@ fn print_summary(summary: &Summary, results: &[CaseResult]) {
     }
     for s in &summary.skipped {
         println!("SKIP {}: {}", s.id, s.reason);
+    }
+    if !summary.infrastructure_failures.is_empty() {
+        println!(
+            "UNSCORED {} case(s) failed closed on infrastructure:",
+            summary.infrastructure_failures.len()
+        );
+        for s in &summary.infrastructure_failures {
+            println!("  {} ({})", s.id, s.reason);
+        }
     }
     println!(
         "guardian={} profile={} scored={}/{} passed={} failed={}",

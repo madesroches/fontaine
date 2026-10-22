@@ -299,3 +299,43 @@ fn a_ledger_written_before_paths_and_summaries_existed_still_loads() {
     let entry: Entry = serde_json::from_str(old).unwrap();
     assert!(matches!(entry.record, Record::Denial { rule: None, .. }));
 }
+
+#[test]
+fn launched_and_scripted_programs_are_judged_by_what_they_run() {
+    for command in [
+        "timeout 5 rm -rf build",
+        "timeout -s KILL 5 rm x",
+        "nice rm x",
+        "nice -n 5 rm x",
+        "nohup rm -rf src",
+        "setsid rm x",
+        "stdbuf -oL rm x",
+        "chroot / rm x",
+        "command rm x",
+        "doas rm x",
+        "doas -u root rm x",
+        "busybox rm x",
+        "ionice -c3 rm x",
+        "watch rm x",
+        "flock f rm x",
+        "nice nohup timeout 5 rm x",
+        "timeout 5",
+        "nice",
+        "awk 'BEGIN{system(\"rm -rf ~\")}'",
+        "gawk 'BEGIN{}'",
+        "mawk 1 f",
+        "php -r 'x();'",
+        "lua -e 'x()'",
+        "tclsh script.tcl",
+    ] {
+        assert!(shell_is(command), "{command}");
+    }
+    for command in [
+        "timeout 5 ls",
+        "nice cargo test",
+        "nohup cargo build",
+        "flock f ls",
+    ] {
+        assert!(!shell_is(command), "{command}");
+    }
+}
