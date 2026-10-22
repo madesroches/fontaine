@@ -14,9 +14,10 @@ use fontaine_core::models::{
 };
 use fontaine_core::permissions::DenyAll;
 use fontaine_core::session::Session;
-use fontaine_tui::{Input, drive, view};
-use ratatui::Terminal;
+use fontaine_tui::screen::Screen;
+use fontaine_tui::{Input, drive};
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rig_core::completion::{CompletionRequest, Usage};
 use rig_core::test_utils::{MockCompletionModel, MockStreamEvent, MockTurn, mock_final};
@@ -242,20 +243,21 @@ impl World {
     {
         let (keys, rx) = unbounded_channel();
         let screen = Rc::new(RefCell::new(String::new()));
-        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        let shown = screen.clone();
-        let render = move |app: &fontaine_tui::App| {
-            let done = terminal.draw(|frame| view::draw(frame, app)).unwrap();
-            let buffer = done.buffer;
-            let width = usize::from(buffer.area.width);
-            let rows: Vec<String> = buffer
-                .content()
-                .chunks(width)
-                .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
-                .collect();
+        let live = Rc::new(RefCell::new(String::new()));
+        let mut inline = Screen::new(TestBackend::new(120, 40), || TestBackend::new(1, 1)).unwrap();
+        let (shown, shown_live) = (screen.clone(), live.clone());
+        let render = move |app: &mut fontaine_tui::App| {
+            inline.render(app).unwrap();
+            let area = inline.area();
+            let backend = inline.backend();
+            let mut rows = text_rows(backend.scrollback());
+            let visible = text_rows(backend.buffer());
+            rows.extend(visible.iter().cloned());
             *shown.borrow_mut() = rows.join("\n");
+            let top = usize::from(area.top());
+            *shown_live.borrow_mut() = visible[top..usize::from(area.bottom())].join("\n");
         };
-        let ui = Ui { keys, screen };
+        let ui = Ui { keys, screen, live };
         let (result, ()) = tokio::join!(
             drive(self.setup(), self.work.clone(), rx, render),
             script(ui)
@@ -272,9 +274,19 @@ impl World {
     }
 }
 
+fn text_rows(buffer: &Buffer) -> Vec<String> {
+    let width = usize::from(buffer.area.width);
+    buffer
+        .content()
+        .chunks(width)
+        .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+        .collect()
+}
+
 pub struct Ui {
     keys: UnboundedSender<Input>,
     screen: Rc<RefCell<String>>,
+    live: Rc<RefCell<String>>,
 }
 
 impl Ui {
@@ -299,6 +311,11 @@ impl Ui {
 
     pub fn screen(&self) -> String {
         self.screen.borrow().clone()
+    }
+
+    /// Only the live area: what the next frame redraws.
+    pub fn live(&self) -> String {
+        self.live.borrow().clone()
     }
 
     pub async fn wait_until(&self, what: &str, done: impl Fn(&str) -> bool) {

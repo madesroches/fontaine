@@ -121,6 +121,9 @@ All notable changes are recorded here. The format follows
   scope.
 - Update the pinned Rust toolchain and minimum `rust-version` to 1.99.1, and fix the clippy
   lints it adds.
+- The terminal UI draws inline instead of on the alternate screen: finished output goes into the
+  terminal's own scrollback, so mouse selection and wheel scrolling work, including under tmux.
+  PageUp/PageDown now only scroll an open approval prompt (#70).
 
 ### Removed
 

@@ -6,11 +6,21 @@ rules work as in headless runs; the mode is the one from `[permissions] default_
 `--permission-mode`. With neither set, the terminal UI starts in `auto`, the mode where the
 [guardian](guardian.md) judges each call that nothing pre-approved.
 
-The screen has a transcript, an input box and a status bar. The transcript shows your messages
-(`>`), the streaming answer, and one line per tool call with its status: pending, done, failed,
-denied with the reason, or interrupted. A call the guardian refused shows its rule label and the
-guardian's own explanation on lines of their own, for example `[Download+Execute] pipes a download
-into a shell`.
+The UI draws inline, not on the alternate screen. Finished output goes into the terminal's normal
+scrollback, and a live area at the bottom holds the input box, the status bar, any open prompt and
+the unfinished tail of the transcript. Scroll back with the terminal or with tmux copy mode, and
+select text with the mouse as in any shell program.
+
+The transcript shows your messages (`>`), the streaming answer, and one line per tool call with its
+status: pending, done, failed, denied with the reason, or interrupted. A call the guardian refused
+shows its rule label and the guardian's own explanation on lines of their own, for example
+`[Download+Execute] pipes a download into a shell`. A line is written to scrollback once it is
+settled, so a call's status is final by then.
+
+Narrowing the terminal clears the visible screen and redraws the live area at the top. Output
+already scrolled off is kept. Lines still on screen at that moment are kept only where clearing the
+screen saves it to history (tmux by default) and may be lost elsewhere. Lines already in scrollback
+keep the width they were written at.
 
 ## Status bar
 
@@ -25,7 +35,7 @@ The bar shows the permission mode, the model and a key hint. The mode labels are
 | Shift+Tab | Cycle the mode: manual, accept edits, plan, auto, and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` lists the broad allow rules it sets aside and says so when the guardian cannot be asked. |
 | Esc, Ctrl-C while a turn runs | Interrupt the turn. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. |
 | Ctrl-C, or Ctrl-D on an empty input, when idle | Quit. |
-| PageUp, PageDown | Scroll the transcript, or the command in an open approval prompt. |
+| PageUp, PageDown | Scroll the command in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/U/K/W/B/F | Edit the input. |
 
 ## Approval prompts
