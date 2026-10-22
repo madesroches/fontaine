@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -61,9 +61,15 @@ pub struct World {
     guardian_on_main: bool,
     /// Environment variables the switcher resolves models with.
     pub env: Vec<(String, String)>,
+    /// How many times the interface has been driven.
+    runs: Cell<usize>,
 }
 
-pub const SESSION_ID: &str = "00000000-0000-4000-8000-000000000001";
+/// The id of the session the `n`th drive run of a world uses: a session directory cannot be
+/// reused, so each run needs its own.
+fn session_id(n: usize) -> String {
+    format!("00000000-0000-4000-8000-{n:012}")
+}
 
 /// A verdict the scripted guardian answers with.
 pub fn verdict(decision: &str, rule: &str, confidence: f64) -> Value {
@@ -104,6 +110,7 @@ impl World {
             guardian_unavailable: None,
             guardian_on_main: false,
             env: Vec::new(),
+            runs: Cell::new(0),
         };
         world.mock = MockCompletionModel::from_stream_turns(turns(&world));
         world
@@ -149,9 +156,29 @@ impl World {
             .map_or(0, MockCompletionModel::request_count)
     }
 
-    /// The audit records of the session, in order.
+    /// The id of the latest run's session.
+    pub fn session_id(&self) -> String {
+        session_id(self.runs.get().max(1))
+    }
+
+    /// The latest run's ledger, as text.
+    pub fn ledger_text(&self) -> String {
+        std::fs::read_to_string(
+            self.data
+                .join("sessions")
+                .join(self.session_id())
+                .join("ledger")
+                .join("ledger.jsonl"),
+        )
+        .unwrap()
+    }
+
+    /// The audit records of the latest run's session, in order.
     pub fn audit(&self) -> Vec<Value> {
-        let path = self.data.join("audit").join(format!("{SESSION_ID}.jsonl"));
+        let path = self
+            .data
+            .join("audit")
+            .join(format!("{}.jsonl", self.session_id()));
         std::fs::read_to_string(path)
             .unwrap_or_default()
             .lines()
@@ -216,7 +243,7 @@ impl World {
                 },
                 notices: Vec::new(),
             },
-            session: Session::create(&self.data, SESSION_ID).unwrap(),
+            session: Session::create(&self.data, &session_id(self.runs.get())).unwrap(),
             roots: vec![self.work.clone()],
             mode: self.mode,
             scrub_env: vec![],
@@ -241,6 +268,7 @@ impl World {
         F: FnOnce(Ui) -> Fut,
         Fut: Future<Output = ()>,
     {
+        self.runs.set(self.runs.get() + 1);
         let (keys, rx) = unbounded_channel();
         let screen = Rc::new(RefCell::new(String::new()));
         let live = Rc::new(RefCell::new(String::new()));
@@ -263,6 +291,16 @@ impl World {
             script(ui)
         );
         result.unwrap();
+    }
+
+    /// What the scripted guardian was asked, one entry per request.
+    pub fn guardian_requests(&self) -> Vec<String> {
+        self.guardian.as_ref().map_or_else(Vec::new, |mock| {
+            mock.requests()
+                .iter()
+                .map(|r: &CompletionRequest| format!("{r:?}"))
+                .collect()
+        })
     }
 
     pub fn requests(&self) -> Vec<String> {

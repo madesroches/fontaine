@@ -4,7 +4,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use fontaine_guardian::{Guardian, Profile, Settings as GuardianSettings};
 use fontaine_tools::builtins::Seen;
@@ -23,6 +23,7 @@ use crate::models::{GuardianChoice, GuardianModel, ModelRef, Models, Switcher};
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
 use crate::session::{CONVERSATION_LOG, Session};
+use crate::steering::{Steering, SteeringHook};
 use crate::tools::{self, RegistryParams};
 use crate::trust;
 use crate::user_config;
@@ -136,18 +137,23 @@ pub struct AgentRuntime {
     pub mode: PermissionMode,
     pub guardian_profile: Profile,
     pub notices: Vec<String>,
+    /// Messages typed while a turn runs, delivered with the next tool result.
+    pub steering: Steering,
+    /// The workspace files `@` completion offers: the session-start index, rebuilt by
+    /// [`AgentRuntime::refresh_files`].
+    pub files: Arc<RwLock<Arc<Vec<String>>>>,
     pipeline: Arc<PermissionPipeline>,
     approver: Arc<dyn Approver>,
     seen: Seen,
-    setup: Setup,
+    pub(crate) setup: Setup,
 }
 
 /// The parts of the setup a rebuild needs again.
-struct Setup {
+pub(crate) struct Setup {
     config_dir: PathBuf,
     data_dir: PathBuf,
-    scrub_env: Vec<OsString>,
-    git_bash: Option<GitBash>,
+    pub(crate) scrub_env: Vec<OsString>,
+    pub(crate) git_bash: Option<GitBash>,
     system_prompt: Option<String>,
     append_system_prompt: Option<String>,
     json_schema: Option<Schema>,
@@ -213,6 +219,7 @@ impl AgentRuntime {
             switcher: setup.switcher,
         };
         let seen = Seen::default();
+        let steering = Steering::default();
         let (agent, tool_names) = build_agent(&Parts {
             setup: &setup_rest,
             roots: &setup.roots,
@@ -222,6 +229,7 @@ impl AgentRuntime {
             models: &setup.models,
             config: &setup.config,
             session: &setup.session,
+            steering: &steering,
         })?;
         Ok(AgentRuntime {
             agent,
@@ -234,6 +242,8 @@ impl AgentRuntime {
             mode: setup.mode,
             guardian_profile: setup.guardian_profile,
             notices: setup.notices,
+            steering,
+            files: Arc::default(),
             pipeline,
             approver: setup.approver,
             seen,
@@ -253,6 +263,7 @@ impl AgentRuntime {
             models: &self.models,
             config: &self.config,
             session: &self.session,
+            steering: &self.steering,
         })?;
         self.agent = agent;
         self.tool_names = tool_names;
@@ -420,6 +431,7 @@ impl AgentRuntime {
         })
         .await
         .unwrap_or_default();
+        self.set_files(index.paths.clone());
         let trusted = trust::is_trusted(&self.setup.data_dir, &self.config.workspace);
         self.append(Record::SessionStart {
             session_id: self.session.id.clone(),
@@ -435,6 +447,21 @@ impl AgentRuntime {
         self.append(Record::FileIndex {
             paths: index.paths,
             truncated: index.truncated,
+        });
+    }
+
+    fn set_files(&self, paths: Vec<String>) {
+        *self.files.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(paths);
+    }
+
+    /// Rebuilds the completion file list in the background, so files the agent created and
+    /// directories added since start become completable. Never blocks the caller.
+    pub fn refresh_files(&self) {
+        let roots = self.roots.clone();
+        let slot = self.files.clone();
+        tokio::task::spawn_blocking(move || {
+            let index = FileIndex::build(&roots, FILE_INDEX_CAP);
+            *slot.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(index.paths);
         });
     }
 
@@ -456,6 +483,7 @@ struct Parts<'a> {
     models: &'a Models,
     config: &'a Config,
     session: &'a Session,
+    steering: &'a Steering,
 }
 
 /// The agent, with its wrapped tool registry, and the names of the tools it was given.
@@ -489,6 +517,10 @@ fn build_agent(p: &Parts<'_>) -> Result<(Agent, Vec<&'static str>), String> {
         .add_hook(CurrentCall {
             state: p.state.clone(),
         })
+        .add_hook(SteeringHook::new(
+            p.steering.clone(),
+            p.session.ledger.clone(),
+        ))
         .dynamic_tools(registered.into_iter().map(|tool| tool.tool).collect());
     if let Some(schema) = &p.setup.json_schema {
         builder = builder.output_schema_raw(schema.clone());

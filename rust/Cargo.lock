@@ -1378,6 +1378,7 @@ dependencies = [
  "rig-agent",
  "rig-core",
  "rig-memory",
+ "rig-tools",
  "serde",
  "serde_jcs",
  "serde_json",

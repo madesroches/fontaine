@@ -33,6 +33,12 @@ pub enum Entry {
     },
     Notice(String),
     Error(String),
+    /// A `!` command the human ran. `output` already ends with the line saying how it ended.
+    Shell {
+        command: String,
+        output: String,
+        exit_code: Option<i32>,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -67,6 +73,15 @@ impl Transcript {
     pub fn notice(&mut self, text: impl Into<String>) {
         self.finish_streaming();
         self.entries.push(Entry::Notice(text.into()));
+    }
+
+    pub fn shell(&mut self, command: String, output: String, exit_code: Option<i32>) {
+        self.finish_streaming();
+        self.entries.push(Entry::Shell {
+            command,
+            output,
+            exit_code,
+        });
     }
 
     pub fn error(&mut self, text: impl Into<String>) {
@@ -369,6 +384,17 @@ fn entry_lines(entry: &Entry, width: usize, skip: usize, out: &mut Vec<Line<'sta
         }
         Entry::Notice(text) => prefixed(text, width, "· ", dim, out),
         Entry::Error(text) => prefixed(text, width, "! ", Style::default().fg(Color::Red), out),
+        Entry::Shell {
+            command, output, ..
+        } => {
+            prefixed(&format!("! {command}"), width, "", dim, out);
+            for line in output.trim_end().split('\n') {
+                for piece in wrap(line, width) {
+                    out.push(Line::styled(piece, dim));
+                }
+            }
+            out.push(Line::default());
+        }
     }
 }
 
@@ -474,6 +500,14 @@ mod tests {
         t.on_event(SessionEvent::Assistant(full.into()));
         out.extend(text(&t.commit(6)));
         assert_eq!(out.concat(), full.replace('\n', ""));
+    }
+
+    #[test]
+    fn a_shell_entry_shows_the_command_and_its_output() {
+        let mut t = Transcript::default();
+        t.shell("echo hi".into(), "hi\n[exit 0]".into(), Some(0));
+        assert_eq!(text(&t.commit(40)), vec!["! echo hi", "hi", "[exit 0]", ""]);
+        assert!(t.live_lines(40).is_empty());
     }
 
     #[test]

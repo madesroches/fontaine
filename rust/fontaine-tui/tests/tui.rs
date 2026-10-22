@@ -278,18 +278,11 @@ fn absolute_rule(tool: &str, path: &std::path::Path) -> String {
 // auto mode: denials, retries, escalation, model switches and the unavailable guardian
 // ---------------------------------------------------------------------------------------
 
-use common::{SESSION_ID, verdict, verdict_endpoint};
+use common::{verdict, verdict_endpoint};
 use fontaine_core::config::PermissionMode;
 
 fn ledger_text(w: &World) -> String {
-    std::fs::read_to_string(
-        w.data
-            .join("sessions")
-            .join(SESSION_ID)
-            .join("ledger")
-            .join("ledger.jsonl"),
-    )
-    .unwrap()
+    w.ledger_text()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -640,4 +633,206 @@ async fn finished_replies_scroll_above_the_live_area() {
         assert!(live.contains("shift+tab mode"), "{live}");
     })
     .await;
+}
+
+// ---------------------------------------------------------------------------------------
+// input modes: queued messages, `!` commands and history
+// ---------------------------------------------------------------------------------------
+
+const ALLOW_SLEEP: &str = "[permissions]\nallow = [\"shell(sleep *)\"]\n";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_typed_during_a_tool_call_reaches_the_model_in_its_result() {
+    let w = World::new(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("noted"),
+    ])
+    .with_config(ALLOW_SLEEP);
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("also check the docs");
+        ui.wait_for("queued: also check the docs").await;
+        assert!(ui.screen().contains("↑ to edit"), "{}", ui.screen());
+        ui.wait_for("noted").await;
+        idle(&ui).await;
+        let screen = ui.screen();
+        assert!(screen.contains("> also check the docs"), "{screen}");
+        assert!(!ui.live().contains("queued:"), "{}", ui.live());
+    })
+    .await;
+    let requests = w.requests();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(!requests[0].contains("also check the docs"));
+    assert!(requests[1].contains("The user sent this message while you were working"));
+    assert!(requests[1].contains("also check the docs"));
+    let ledger = w.ledger_text();
+    assert_eq!(
+        ledger.matches("\"kind\":\"user_message\"").count(),
+        2,
+        "{ledger}"
+    );
+    assert!(ledger.contains("also check the docs"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_message_becomes_guardian_intent_only_when_the_model_receives_it() {
+    let w = World::new(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        tool_turn("c2", "shell", json!({"command": "echo two > two.txt"})),
+        text_turn("done"),
+    ])
+    .in_mode(PermissionMode::Auto)
+    .with_guardian(vec![verdict("allow", "allow", 0.95)]);
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("also check the docs");
+        ui.wait_for("done").await;
+    })
+    .await;
+    let asked = w.guardian_requests();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!(!asked[0].contains("also check the docs"), "{}", asked[0]);
+    assert!(asked[1].contains("also check the docs"), "{}", asked[1]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interrupting_a_turn_puts_the_queued_message_back_in_the_input() {
+    let w = World::new(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("never"),
+    ])
+    .with_config(ALLOW_SLEEP);
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("not sent");
+        ui.wait_for("queued: not sent").await;
+        ui.press(KeyCode::Esc);
+        ui.wait_for("interrupted").await;
+        idle(&ui).await;
+        let live = ui.live();
+        assert!(live.contains("not sent"), "{live}");
+        assert!(!live.contains("queued:"), "{live}");
+    })
+    .await;
+    assert_eq!(w.requests().len(), 1);
+    assert!(!w.ledger_text().contains("not sent"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn up_takes_a_queued_message_back_to_edit() {
+    let w = World::new(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("done"),
+    ])
+    .with_config(ALLOW_SLEEP);
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("first thought");
+        ui.wait_for("queued: first thought").await;
+        ui.press(KeyCode::Up);
+        ui.wait_until("the input to hold it", |_| {
+            ui.live().contains("first thought") && !ui.live().contains("queued:")
+        })
+        .await;
+        ui.wait_for("done").await;
+    })
+    .await;
+    assert!(!w.requests()[1].contains("first thought"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bang_command_runs_without_a_prompt_and_its_output_reaches_the_next_message() {
+    let w = World::new(vec![text_turn("seen it")]);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.type_text("!echo hi-from-user");
+        ui.wait_for("shell · Enter runs").await;
+        ui.press(KeyCode::Enter);
+        ui.wait_for("! echo hi-from-user").await;
+        ui.wait_until("the output", |s| s.matches("hi-from-user").count() >= 2)
+            .await;
+        assert!(!ui.screen().contains("Allow"), "{}", ui.screen());
+        ui.send("what did it print");
+        ui.wait_for("seen it").await;
+    })
+    .await;
+    let requests = w.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].contains("not the user's words"),
+        "{}",
+        requests[0]
+    );
+    assert!(requests[0].contains("$ echo hi-from-user"));
+    assert!(requests[0].contains("what did it print"));
+
+    let audit = w.audit();
+    assert_eq!(audit.len(), 1, "{audit:?}");
+    assert_eq!(audit[0]["agent_id"], "user");
+    assert_eq!(audit[0]["tool"], "shell");
+    assert_eq!(audit[0]["tier"], "human");
+    assert_eq!(audit[0]["decision"], "allow");
+    assert_eq!(audit[0]["rule"], "user_shell");
+    assert_eq!(audit[0]["headless"], false);
+    let ledger = w.ledger_text();
+    assert!(ledger.contains("\"kind\":\"user_shell\""), "{ledger}");
+    assert!(ledger.contains("\"exit_code\":0"), "{ledger}");
+    // The command is not the human's message to the agent.
+    assert_eq!(
+        ledger.matches("\"kind\":\"user_message\"").count(),
+        1,
+        "{ledger}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interrupting_a_bang_command_records_it_and_tells_the_agent_nothing() {
+    let w = World::new(vec![text_turn("fine")]);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("!sleep 5");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        ui.press(KeyCode::Esc);
+        ui.wait_for("interrupted").await;
+        idle(&ui).await;
+        ui.send("next");
+        ui.wait_for("fine").await;
+    })
+    .await;
+    let ledger = w.ledger_text();
+    assert!(ledger.contains("\"kind\":\"user_shell\""), "{ledger}");
+    assert!(ledger.contains("\"exit_code\":null"), "{ledger}");
+    let audit = w.audit();
+    assert_eq!(audit.len(), 1, "{audit:?}");
+    assert_eq!(audit[0]["rule"], "user_shell");
+    let requests = w.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].contains("Harness note"), "{}", requests[0]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_persists_across_runs() {
+    let w = World::new(vec![text_turn("ok")]);
+    w.run(|ui| async move {
+        ui.send("remember me");
+        ui.wait_for("ok").await;
+        idle(&ui).await;
+    })
+    .await;
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.press(KeyCode::Up);
+        ui.wait_until("the recalled message", |_| {
+            ui.live().contains("remember me")
+        })
+        .await;
+    })
+    .await;
+    let file = std::fs::read_to_string(w.data.join("history.jsonl")).unwrap();
+    assert_eq!(file.lines().count(), 1, "{file}");
+    assert_ne!(w.session_id(), "00000000-0000-4000-8000-000000000001");
 }

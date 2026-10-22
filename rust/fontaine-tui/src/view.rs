@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -50,6 +50,7 @@ pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
     } else {
         body.len() + footer.len() + 2
     };
+    let overlay_rows = overlay_rows + queued_lines(app, inner_width).len();
     let input_rows = input_view(&app.input, inner_width).rows.len() + 2;
     let live = app.transcript.live_lines(usize::from(width).max(1)).len();
     let total = live + overlay_rows + input_rows + 1;
@@ -62,14 +63,19 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let (title, body, footer) = overlay(app, inner_width);
     let view = input_view(&app.input, inner_width);
     let input_height = view.rows.len() as u16 + 2;
+    let queued = queued_lines(app, inner_width);
     let approval_height = if body.is_empty() {
         0
     } else {
-        ((body.len() + footer.len()) as u16 + 2).min(area.height.saturating_sub(input_height + 1))
+        ((body.len() + footer.len()) as u16 + 2).min(
+            area.height
+                .saturating_sub(input_height + queued.len() as u16 + 1),
+        )
     };
-    let [transcript, approval, input, status] = Layout::vertical([
+    let [transcript, approval, queued_area, input, status] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(approval_height),
+        Constraint::Length(queued.len() as u16),
         Constraint::Length(input_height),
         Constraint::Length(1),
     ])
@@ -83,12 +89,33 @@ pub fn draw(frame: &mut Frame, app: &App) {
             draw_overlay(frame, approval, title, body, footer);
         }
     }
+    frame.render_widget(Paragraph::new(queued), queued_area);
     draw_input(frame, input, app, &view);
     statusbar::render(frame, status, app);
 }
 
-/// What sits above the message box, if anything: the approval prompt, the denied list or the
-/// unavailable-guardian prompt, in that order of precedence.
+/// The messages waiting for the agent's next tool result, one dimmed row each.
+fn queued_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    if app.queued.is_empty() {
+        return Vec::new();
+    }
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let mut lines: Vec<Line<'static>> = app
+        .queued
+        .iter()
+        .map(|message| {
+            let first = message.lines().next().unwrap_or("");
+            let shown: String = format!("queued: {first}").chars().take(width).collect();
+            Line::styled(shown, dim)
+        })
+        .collect();
+    lines.push(Line::styled("  ↑ to edit", dim));
+    lines
+}
+
+/// What sits above the message box, if anything: the approval prompt, the unavailable-guardian
+/// prompt, the denied list, the history search or the file completion list, in that order of
+/// precedence.
 fn overlay(app: &App, width: usize) -> (&'static str, Vec<Line<'static>>, Vec<Line<'static>>) {
     if let Some(approval) = &app.approval {
         return ("approval", approval.body(width), approval.footer(width));
@@ -98,6 +125,48 @@ fn overlay(app: &App, width: usize) -> (&'static str, Vec<Line<'static>>, Vec<Li
     }
     if let Some(list) = &app.denied {
         return ("denied", list.body(width), list.footer());
+    }
+    if let Some(search) = &app.search {
+        let found = app.search_match().map_or_else(
+            || Line::styled("no match", Style::default().add_modifier(Modifier::DIM)),
+            |text| Line::raw(text.lines().next().unwrap_or("").to_string()),
+        );
+        return (
+            "history search",
+            vec![
+                Line::raw(format!("history search: {}", search.query)),
+                found,
+            ],
+            vec![Line::styled(
+                "Enter/Tab use · Ctrl-R older · Esc cancel",
+                Style::default().add_modifier(Modifier::DIM),
+            )],
+        );
+    }
+    if let Some(list) = &app.completion {
+        let body = list
+            .matches
+            .iter()
+            .enumerate()
+            .map(|(i, path)| {
+                if i == list.selected {
+                    Line::styled(
+                        format!("> {path}"),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Line::raw(format!("  {path}"))
+                }
+            })
+            .collect();
+        return (
+            "files",
+            body,
+            vec![Line::styled(
+                "↑/↓ select · Tab/Enter complete · Esc close",
+                Style::default().add_modifier(Modifier::DIM),
+            )],
+        );
     }
     ("", Vec::new(), Vec::new())
 }
@@ -167,15 +236,26 @@ fn draw_approval(
 }
 
 fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
-    let covered = app.approval.is_some() || app.denied.is_some() || app.unavailable.is_some();
+    let covered = app.approval.is_some()
+        || app.denied.is_some()
+        || app.unavailable.is_some()
+        || app.search.is_some();
     let style = if covered {
         Style::default().add_modifier(Modifier::DIM)
     } else {
         Style::default()
     };
+    let (title, style) = if app.shell_mode() {
+        (
+            " shell · Enter runs · output goes to the agent with your next message ",
+            style.fg(Color::Magenta),
+        )
+    } else {
+        (" message · Enter sends · Alt+Enter new line ", style)
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" message · Enter sends · Alt+Enter new line ")
+        .title(title)
         .border_style(style);
     let inner = block.inner(area);
     frame.render_widget(block, area);

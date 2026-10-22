@@ -95,6 +95,11 @@ All notable changes are recorded here. The format follows
 - Release setup: cargo-dist builds and publishes binaries for Linux, macOS and Windows on a
   `vX.Y.Z` tag, and CI runs `cargo dist plan`.
 - `docs/guardian.md` and the scorecard page `docs/evals.md`.
+- Terminal UI input modes: `!` runs a shell command as the user, outside the permission pipeline
+  and recorded in the ledger and the audit log (`tier = human`, `rule = user_shell`); `@` completes
+  workspace file paths; Up/Down and Ctrl-R recall and search a persistent prompt history
+  (`history.jsonl`); messages typed during a turn are queued and delivered with the agent's next
+  tool result, becoming guardian-visible intent only then (#46).
 
 ### Changed
 
