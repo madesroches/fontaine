@@ -146,3 +146,24 @@ async fn the_skill_list_is_in_the_system_prompt_without_the_skill_bodies() {
         "the body loads on demand"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_skill_command_that_needs_approval_prompts_and_answering_completes_the_expansion() {
+    let w = World::new(vec![text_turn("done")]).with_user_file(
+        "skills/greet/SKILL.md",
+        "---\ndescription: Greets\n---\nOutput: !`echo hello-from-skill > out.txt && echo marker-ran`\n",
+    );
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/greet");
+        ui.wait_for_prompt("Allow shell?").await;
+        ui.press(KeyCode::Char('y'));
+        ui.wait_for("done").await;
+    })
+    .await;
+    assert!(
+        w.requests()[0].contains("marker-ran"),
+        "{}",
+        w.requests()[0]
+    );
+}

@@ -119,6 +119,28 @@ struct Inner {
     session_spend: Spend,
 }
 
+impl Inner {
+    /// Every running agent below `id`, nearest first.
+    fn running_descendants(&self, id: &str) -> Vec<String> {
+        let mut found = vec![id.to_string()];
+        let mut at = 0;
+        while at < found.len() {
+            let parent = found[at].clone();
+            at += 1;
+            for (child, n) in &self.nodes {
+                if n.info.parent.as_deref() == Some(parent.as_str())
+                    && n.status.is_running()
+                    && !found.contains(child)
+                {
+                    found.push(child.clone());
+                }
+            }
+        }
+        found.remove(0);
+        found
+    }
+}
+
 /// One row of the agents panel.
 #[derive(Clone, Debug)]
 pub struct AgentRow {
@@ -408,9 +430,19 @@ impl AgentTree {
             .is_some_and(|n| n.status.is_running())
     }
 
-    /// Records how a child ended. A child already marked killed or exhausted keeps that.
+    /// Records how a child ended. A child already marked killed or exhausted keeps that. Its
+    /// own background children are stopped: nobody is left to read their reports.
     pub fn finish(&self, id: &str, report: ChildReport) {
         let mut inner = self.lock();
+        let mut handles = Vec::new();
+        if inner.nodes.contains_key(id) {
+            for orphan in inner.running_descendants(id) {
+                if let Some(node) = inner.nodes.get_mut(&orphan) {
+                    node.status = ChildStatus::Killed;
+                    handles.extend(node.handle.clone());
+                }
+            }
+        }
         if let Some(node) = inner.nodes.get_mut(id) {
             if node.status.is_running() {
                 node.status = report.status;
@@ -418,6 +450,9 @@ impl AgentTree {
             node.report = Some(report);
         }
         drop(inner);
+        for handle in handles {
+            handle.kill();
+        }
         self.changed.notify_waiters();
     }
 
@@ -436,19 +471,7 @@ impl AgentTree {
                 return false;
             }
             let mut doomed = vec![id.to_string()];
-            let mut at = 0;
-            while at < doomed.len() {
-                let parent = doomed[at].clone();
-                at += 1;
-                for (child, n) in &inner.nodes {
-                    if n.info.parent.as_deref() == Some(parent.as_str())
-                        && n.status.is_running()
-                        && !doomed.contains(child)
-                    {
-                        doomed.push(child.clone());
-                    }
-                }
-            }
+            doomed.extend(inner.running_descendants(id));
             let mut handles = Vec::new();
             for doomed_id in &doomed {
                 if let Some(node) = inner.nodes.get_mut(doomed_id) {

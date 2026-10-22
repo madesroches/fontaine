@@ -371,18 +371,23 @@ impl<R: FnMut(&App)> Ui<R> {
                     ));
                     return Continue(());
                 }
-                let prompt = match runtime.expand_skill(&name, &argument).await {
-                    Ok(prompt) => prompt,
-                    Err(e) => {
+                // Recorded before the skill's commands run so the guardian judging them has
+                // this turn's intent in the ledger.
+                runtime.append(Record::UserMessage { text: text.clone() });
+                let prompt = match self.expand_serving(runtime, &name, &argument).await {
+                    Ok(Ok(prompt)) => prompt,
+                    Ok(Err(e)) => {
                         self.app.transcript.error(format!("/{name}: {e}"));
+                        return Continue(());
+                    }
+                    Err(TurnEnd::InputClosed) => return Break(()),
+                    Err(_) => {
+                        self.app.transcript.notice("interrupted");
                         return Continue(());
                     }
                 };
                 self.app.transcript.user(text.clone());
-                if matches!(
-                    self.turn(runtime, prompt, Some(&text)).await,
-                    TurnEnd::InputClosed
-                ) {
+                if matches!(self.turn(runtime, prompt, None).await, TurnEnd::InputClosed) {
                     return Break(());
                 }
             }
@@ -397,6 +402,43 @@ impl<R: FnMut(&App)> Ui<R> {
             }
         }
         Continue(())
+    }
+
+    /// Expands a skill while still serving prompts and keys: its `!` commands can need a
+    /// human answer, and nothing else would be listening for it. `Err` is the user leaving or
+    /// interrupting.
+    async fn expand_serving(
+        &mut self,
+        runtime: &AgentRuntime,
+        name: &str,
+        argument: &str,
+    ) -> Result<Result<String, String>, TurnEnd> {
+        let mut expansion = Box::pin(runtime.expand_skill(name, argument));
+        let end = loop {
+            self.draw(runtime);
+            tokio::select! {
+                biased;
+                result = &mut expansion => return Ok(result),
+                input = self.input.recv() => match input {
+                    None => break TurnEnd::InputClosed,
+                    Some(input) => match self.app.handle_input(input) {
+                        Action::Interrupt | Action::Quit => break TurnEnd::Interrupted,
+                        Action::CycleMode => self.cycle_mode(runtime),
+                        Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
+                        Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                        Action::RetryDenied(_)
+                        | Action::Server(_)
+                        | Action::None
+                        | Action::Submit(_) => {}
+                    },
+                },
+                Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
+            }
+        };
+        drop(expansion);
+        self.app.deny_pending();
+        self.drain_prompts();
+        Err(end)
     }
 
     /// `/output-style`: shows the styles, or switches to one for the next turn.

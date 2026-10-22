@@ -19,7 +19,8 @@ it returns `{"agent_id": "agent-1"}` at once and the subagent runs alongside; wh
 report is delivered to the conversation that started it as a notification, in the next tool result
 that conversation reads or, if it is idle, as the prompt of a turn of its own. The report passes
 through the same result pipeline as any tool result. A killed background subagent delivers
-nothing.
+nothing. When a subagent ends, any background subagents it started are stopped too, and their
+reports are not delivered.
 
 The model used is the call's `model`, else the agent type's `model`, else the session model. An
 invalid value is an error result, and so is a `model` on a type defined by a project file (see

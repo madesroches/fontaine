@@ -668,3 +668,33 @@ async fn a_kill_that_lands_before_the_handle_attaches_still_stops_the_child() {
     rig.tree.attach(&id, child.clone());
     assert!(*child.killed.lock().unwrap());
 }
+
+#[tokio::test]
+async fn a_child_that_finishes_stops_its_own_background_children() {
+    let rig = rig();
+    let mut background = args("explore", "dig");
+    background.background = Some(true);
+    spawn(&rig, background).await.unwrap();
+    let grandchild = rig
+        .tree
+        .reserve("agent-1", "explore", "m", vec![], Ladder::Manual, true)
+        .unwrap();
+    let (report, _) = watch::channel(None);
+    let handle = Arc::new(FakeChild {
+        status: Mutex::new(ChildStatus::Running),
+        report,
+        killed: Mutex::new(false),
+    });
+    rig.tree.attach(&grandchild, handle.clone());
+
+    rig.runner.child(0).finish(ChildStatus::Done, "finished");
+    for _ in 0..100 {
+        if !rig.tree.is_running(&grandchild) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(rig.tree.was_killed(&grandchild));
+    assert!(*handle.killed.lock().unwrap());
+    assert!(!rig.tree.background_running());
+}
