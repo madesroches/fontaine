@@ -76,11 +76,12 @@ Keys (in `App::message_key`):
 - `mention_at(buffer) -> Option<(start, query)>`: the token under the cursor when it starts with
   `@` at the start of the input or after whitespace.
 - Candidates come from a `FileIndex` snapshot. `AgentRuntime` keeps the index it builds in
-  `record_session_start` as `pub files: Arc<Vec<String>>` and `refresh_files()` rebuilds it
-  after `/add-dir` and when a turn ends, so files the agent created become completable. The
-  rebuild is a background `spawn_blocking` task whose result replaces the snapshot when done; it
-  never blocks the turn loop or `Ui::run`. The driver hands the `Arc` to `App` the same way it
-  copies `steering.queued()`.
+  `record_session_start` in a shared slot, `pub files: Arc<RwLock<Arc<Vec<String>>>>` (std
+  `RwLock`), and `refresh_files()` rebuilds it after `/add-dir` and when a turn ends, so files
+  the agent created become completable. The rebuild is a detached `spawn_blocking` task that
+  swaps a new `Arc<Vec<String>>` into the slot when done; it never blocks the turn loop or
+  `Ui::run`, and turns that hold `&AgentRuntime` are unaffected. The driver reads the slot before
+  each draw and hands the `Arc` to `App`, the same way it copies `steering.queued()`.
   Paths under the primary root are shown relative to it; paths under other roots stay absolute.
 - `rank(query, files) -> Vec<String>`: case-insensitive substring matches, ordered by basename
   prefix match, then basename substring, then shorter path; at most 8.
@@ -145,9 +146,6 @@ pub struct SteeringHook { steering: Steering, ledger: Arc<Ledger> }
   `\n\n[The user sent this message while you were working. Address it, then continue:]\n<text>`
   per message, and moves them to `delivered`. Otherwise `OutcomeAction::Proceed`. Errors and other
   agents' results pass through untouched; the next root result picks the messages up.
-- Because the ledger record precedes the rewritten result, every call the model makes after
-  reading the message is judged with it in `recent_user_messages`, and no call is judged with it
-  before the model could have read it.
 - `AgentRuntime` owns `pub steering: Steering`, created once in `AgentRuntime::new` before
   `build_agent`; `Parts` gains a `steering` field and every rebuild (`agent.rs:247`) passes
   `self.steering`, so `/add-dir` and `/model` do not split the queue. `build_agent` adds the hook
@@ -171,10 +169,12 @@ TUI:
 
 ### Key precedence
 
-`App::handle_key` order becomes: cycle key, Ctrl-C, `/denied`, unavailable prompt, approval, history
-search, completion list, Esc-interrupt, Ctrl-D, message keys. Search and completion sit below
-approval, so they are inactive while an approval, `/denied` or the unavailable prompt is open and
-cannot capture its keys. Esc closes a search or a completion list before it interrupts a turn.
+`App::handle_key` order becomes: cycle key, Ctrl-C, `/denied`, unavailable prompt, Esc-interrupt
+(`Esc && running && !typing_reason`, as today, so Esc still interrupts and denies an open
+approval), approval, history search, completion list, Ctrl-D, message keys. When no approval,
+`/denied` or unavailable prompt is open, Esc closes an open search or completion list just
+before the Esc-interrupt check. Search and completion sit below approval, so they are inactive
+while an approval, `/denied` or the unavailable prompt is open and cannot capture its keys.
 
 ## Implementation Steps
 
@@ -182,10 +182,12 @@ cannot capture its keys. Esc closes a search or a completion list before it inte
    `AgentRuntime` (created once in `new`), `Parts`, and `build_agent` (`agent.rs`). Unit tests for the hook (see Testing).
 2. **Core user shell.** Add `Record::UserShell` (`ledger.rs`), `user_shell.rs` with
    `run_user_shell` and its ledger and audit records; keep `ShellSettings` reachable from
-   `AgentRuntime` (`Setup` already holds `scrub_env` and `git_bash`).
-3. **File index snapshot.** Keep `files` on `AgentRuntime`; add `refresh_files()` (background task, driver passes the `Arc` to `App`).
+   `AgentRuntime` (`Setup` already holds `scrub_env` and `git_bash`). Add
+   `rig-tools.workspace = true` to `fontaine-core/Cargo.toml` for `Shell` / `ShellArgs`.
+3. **File index snapshot.** Keep `files` on `AgentRuntime` as a shared slot; add `refresh_files()` (detached background task writes the slot; the driver reads it before each draw and passes the `Arc` to `App`).
 4. **History.** Add `fontaine-tui/src/history.rs`; load it in `drive` from `setup.data_dir` and the
-   primary root; append on every submit in `Ui::run` and on every queued message (an auto-submitted or
+   primary root, before `AgentRuntime::new(setup)` moves `setup` (the runtime's `Setup.data_dir`
+   is private, so clone both first); append on every submit in `Ui::run` and on every queued message (an auto-submitted or
    re-edited queued message is not appended again).
 5. **Completion.** Add `fontaine-tui/src/complete.rs`; completion state on `App`; drawing in
    `view.rs` (an overlay above the input, like the other overlays; `view::height` counts it).
@@ -195,18 +197,18 @@ cannot capture its keys. Esc closes a search or a completion list before it inte
 7. **Driver.** Handle the new actions in `Ui::run` and `Ui::turn`; the queued-message end-of-turn
    rules; a `shell` method that runs `run_user_shell` while serving keys (`lib.rs`). New transcript
    entry `Entry::Shell` (`transcript.rs`).
-8. **Docs.** Update `docs/tui.md`, `docs/permissions.md`, `docs/guardian.md` (see Documentation);
+8. **Docs.** Update `docs/tui.md`, `docs/permissions.md`, `docs/guardian.md`, `docs/telemetry.md` (see Documentation);
    add the Decisions lines to `tasks/fontaine_harness_plan.md`.
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/steering.rs` (new), `user_shell.rs` (new), `lib.rs`, `agent.rs`,
-  `ledger.rs`
+  `ledger.rs`, `rust/fontaine-core/Cargo.toml`
 - `rust/fontaine-tui/src/history.rs` (new), `complete.rs` (new), `app.rs`, `input.rs`, `lib.rs`,
   `transcript.rs`, `view.rs`
 - `rust/fontaine-tui/tests/tui.rs`, `rust/fontaine-tui/tests/common/mod.rs`
 - `docs/tui.md`, `docs/permissions.md`, `docs/guardian.md`, `docs/configuration.md`,
-  `docs/architecture.md`
+  `docs/architecture.md`, `docs/telemetry.md`
 - `tasks/fontaine_harness_plan.md` (`## Decisions`)
 
 ## Trade-offs
@@ -249,6 +251,9 @@ cannot capture its keys. Esc closes a search or a completion list before it inte
   in the audit log with `tier = human`, `rule = user_shell`.
 - `docs/guardian.md`: a queued message counts as the user's words from the moment the agent
   receives it; `!` commands and their output never count.
+- `docs/telemetry.md`: `tool_decision` / `fontaine.tool_decision.count` document gate decisions;
+  say that `!` commands appear there as `tier = human`, `rule = user_shell`, `agent_id = "user"`
+  (they go through the same audit append path), and that they are not gate decisions.
 - `docs/configuration.md`: a `history.jsonl` row in the "Files in these directories" table.
 - `docs/architecture.md`: ledger contents list gains the `user_shell` record; user messages from
   the queue are recorded on delivery.
@@ -269,11 +274,17 @@ Unit tests:
   elsewhere move the cursor; `!` input gives `Shell` and the shell title; Ctrl-R search flow
   (type, Ctrl-R again, Enter fills without sending, Esc restores); completion list Tab/Enter
   inserts `@path `, Esc closes it, and Esc with a list open does not interrupt; with an approval, `/denied` or the unavailable
-  prompt open, search and completion do not capture keys (Up/Down/Tab/Enter/Esc, `y`/`n`).
+  prompt open, search and completion do not capture keys (Up/Down/Tab/Enter/Esc, `y`/`n`); Esc
+  with an approval open while running returns `Interrupt`.
 - `steering.rs`: the hook rewrites a root tool result with queued messages and writes one ledger
   `UserMessage` each, in order; it leaves results untouched when nothing is queued, for an error
   outcome, and for a non-root agent; `retract` returns only undelivered messages.
 - `ledger.rs`: `UserShell` round-trips and does not reach `user_messages`.
+
+Driver unit test (`fontaine-tui/src/lib.rs` tests): seed `Steering` with a queued message, settle
+the turn with `TurnOutcome::Answer`, and assert the message is submitted as the next turn with no
+second history entry. (Not an integration test: mock stream events have no delay and the turn
+loop polls the run before input, so queueing during a text-only answer is not deterministic.)
 
 Integration tests (`fontaine-tui/tests/tui.rs`, mock model through `World`):
 - A message queued during a slow allowed tool call (`with_config` with an allow rule like
@@ -283,8 +294,8 @@ Integration tests (`fontaine-tui/tests/tui.rs`, mock model through `World`):
 - In `auto` with a scripted guardian, call 1 is the `sleep` (judged before anything is queued, so
   its request lacks the message) and call 2's guardian request carries it in
   `recent_user_messages`. (Silent failure class: authorization context.)
-- A message queued during a text-only answer is sent as the next turn once the turn ends.
-- Interrupting a turn with a queued message puts it back in the input and sends nothing.
+- Interrupting a turn with a queued message puts it back in the input and sends nothing: queue
+  during the allowed `sleep 1` call used by the first steering test, then press Esc.
 - `!echo hi` runs with no approval prompt, shows the output, writes the `user_shell` audit record
   and the ledger record, and the next model request carries the harness note with `hi`.
 - History persists across two `drive` runs on the same data dir (Up recalls the earlier message).
