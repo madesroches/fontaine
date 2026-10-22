@@ -38,7 +38,7 @@ rename or removal bumps it) and `session_id`. The contract is a checked-in JSON 
 - `gate_decision` — `tool_use_id`, `tier` (the tier enum in `tasks/design/permissions.md` §Core data flow, equal to the audit record's), `decision`, `rule`, and for
   guardian decisions `explanation`, `confidence`, `guardian_model`.
 - `tool_result` — `tool_use_id`, success, the result text as the agent receives it.
-- `result` — `subtype` (`success` | `error_max_turns` | `error_max_budget` | `error_run`), result
+- `result` — `subtype` (`success` | `error_max_turns` | `error_max_budget_usd` | `error_during_execution`), result
   text, `structured_output` (with `--json-schema`), usage and cost (main / guardian / subagents),
   and the denial list (tool, tier, rule, explanation).
 
@@ -66,8 +66,8 @@ upstream builder knob.
 
 1. Add rig crates (pinned exact versions): `rig-core` (feature `reqwest`, plus defaults), `rig-agent`; dev-dependencies `rig-core` and `rig-agent` with `test-utils`. Extend `rust/deny.toml`'s license allowlist with what the final Phase 1 tree needs (at least ISC, BSD-3-Clause, CDLA-Permissive-2.0, BSL-1.0, MIT-0), plus `[[licenses.clarify]]` for any crate lacking an SPDX expression, so `cargo deny check licenses` stays green. `fontaine-core/src/models.rs`: map Fontaine config
    accounts → rig provider clients (one per account; Anthropic, OpenAI, Gemini, Ollama, custom
-   OpenAI-compatible base URLs; `kind = "ollama"` uses rig's native Ollama client (`native_completion()`, not `completion()`, which targets the `/v1` OpenAI-compatible API) against Ollama's native API, `base_url` like `http://localhost:11434`; `openai-compatible` is the kind for OpenAI-style endpoints, built on rig's gateway dialect (`Dialect::gateway(<account>, base_url, …)`) so it speaks Chat Completions and reports a non-catalog vendor name, not the OpenAI Responses dialect), resolve `<account>/<model>` references (unknown account or model
-   is a config error, exit 2; an account without a `models` list resolves it through rig's `list_models` before the unknown-model check; `[guardian] model`, when set, gets the same unknown-account/model check, exit 2, while a missing or invalid guardian credential does not fail startup — guardian availability is Phase 4's concern), resolve credentials (env var / the Phase 0 `credentials.rs` lookup, plus the
+   OpenAI-compatible base URLs; `kind = "ollama"` uses rig's native Ollama client (`native_completion()`, not `completion()`, which targets the `/v1` OpenAI-compatible API) against Ollama's native API, `base_url` like `http://localhost:11434`; `openai-compatible` is the kind for OpenAI-style endpoints, built on one fixed static gateway dialect, `Dialect::gateway("openai-compatible", "", "")` (its parameters are `&'static str`, and the dialect name is the vendor used for catalog pricing, so it is the kind name, never the account name), with `OpenAIConfig::with_key(&dialect, <resolved credential>).with_base_url(<account base_url>).client()`; it speaks Chat Completions, unpriced, not the OpenAI Responses dialect). `ollama` and `openai-compatible` accounts with no credential source build an unauthenticated client; an `anthropic`/`openai`/`gemini` account referenced by the main model with no resolvable credential is a config error (exit 2), resolve `<account>/<model>` references (unknown account or model
+   is a config error, exit 2; an account without a `models` list resolves it through rig's `list_models` before the unknown-model check, lazily and once per account, only for the account referenced by `[model] model` / `--model` (a failed listing call — transport error, non-2xx, 401/403 — is a provider failure, exit 1; a successful listing that lacks the model is a config error, exit 2); `[guardian] model`, when set, gets the same unknown-account/model check, exit 2, while a missing or invalid guardian credential does not fail startup — guardian availability is Phase 4's concern), resolve credentials (env var / the Phase 0 `credentials.rs` lookup, plus the
    `fontaine auth login` subcommand, the writer), and expose the main-model handle and, when `[guardian] model` is explicitly set, the guardian-model handle (`init` reports the guardian model as null when unset). Spike: streaming one prompt to stdout via rig, with
    a tool call round-trip through a side-effect-free, test-only `echo` tool (no gate exists until Phase 2; Phase 2 removes it when it registers the wrapped tool set), to validate rig's ergonomics before building on it.
 2. Headless surface `fontaine -p "task"` on the same core — a non-interactive run driven by the CI
@@ -88,7 +88,7 @@ upstream builder knob.
    | `--output-format text\|json\|stream-json` | output per the I/O contract | 1 |
    | `--input-format text\|stream-json` | `stream-json`: user messages as JSONL on stdin | 1 |
    | `--include-partial-messages` | `stream-json` also emits `assistant_delta` | 1 |
-   | `--max-turns <n>` / `--max-budget-usd <x>` | stop the run with `result.subtype` `error_max_turns` / `error_max_budget`, exit 1; a budget with no known price for a configured model is a usage error (exit 2); the pre-check queries the builtin catalog for the resolved vendor/model | 1 |
+   | `--max-turns <n>` / `--max-budget-usd <x>` | stop the run with `result.subtype` `error_max_turns` / `error_max_budget_usd`, exit 1; a budget with no known price for the resolved main model (`--model`, else `[model] model`) is a usage error (exit 2); the pre-check queries the builtin catalog for the resolved vendor/model, and in Phase 1 the cap applies to main-model spend | 1 |
    | `--json-schema <schema>` | inline JSON Schema string (Claude Code parity), parsed to JSON and converted with `Schema::try_from`, then passed to rig-agent `AgentBuilder::output_schema_raw` (an invalid schema is a usage error, exit 2); structured final output in `result.structured_output` | 1 |
    | `--system-prompt <text>` / `--append-system-prompt <text>` | replace the base system prompt / append after all other layers (layering in Phase 2 step 2) | 1 |
    | `--settings <file>` | CLI-scope settings overlay (`tasks/design/config.md` §Config scope stack) | 0 |
@@ -98,7 +98,7 @@ upstream builder knob.
    | `--session-id <uuid>` | use this session id (ledger, audit log, telemetry) | 2 |
    | `--continue` / `--resume <id>` / `--fork-session` | resume the latest / a given session; fork it under a new id | 5 |
    | `--in-container` | user assertion that the process runs inside a container; only an input to `[guardian] profile = "minimal"` resolution, never sufficient alone (the runtime probe must also pass — Phase 4 step 6); a CLI flag, not a config key | 4 |
-   | `fontaine auth login <account>` | store the account's credentials in the stored-credentials file; the secret comes from a hidden TTY prompt, or from stdin when stdin is not a TTY | 1 |
+   | `fontaine auth login <account>` | store the account's credentials in the stored-credentials file; the account must exist in the loaded config (else usage error, exit 2); the secret comes from a hidden TTY prompt, or from stdin when stdin is not a TTY | 1 |
    | `fontaine auth login --telemetry` | store the telemetry ingestion key in the stored-credentials file; same secret input | 1 |
 3. Telemetry backends (design above): `rust/fontaine/src/telemetry/{micromegas,otlp,span_bridge}.rs`;
    the `SpanBridge` maps rig `chat` / `invoke_agent` spans to `api_request`, `token.usage` and
@@ -135,7 +135,7 @@ upstream builder knob.
   a `wiremock` endpoint speaking that provider's wire format (Anthropic, OpenAI, Gemini, and Ollama's native `/api/chat`); the
   OpenAI-compatible mock serves only `openai-compatible`.
 - **accounts**: `<account>/<model>`
-  resolution with unknown-account and unknown-model errors (including an account without `models`, via a wiremock `/models` route; Ollama: `/api/tags`); two same-kind accounts routed to their
+  resolution with unknown-account and unknown-model errors (including an account without `models`, via a wiremock `/models` route; Ollama: `/api/tags`; `/models` 500 → exit 1; list lacks the model → exit 2); two same-kind accounts routed to their
   own `wiremock` endpoints; credentials resolved from env (and a temp stored-credentials file) with no live API.
 - **credentials writer** (`rust/fontaine-core/tests/credentials.rs`, temp `FONTAINE_DATA_DIR`): `auth login` entries (account and telemetry) round-trip through the lookup; the file is owner-only (0600 on Unix, current-user-only ACL on Windows).
 - Integration surface: the headless `-p` run is the driver for every later integration test. The
@@ -146,10 +146,10 @@ upstream builder knob.
   `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR` setup. Headless tests written before Phase 4 pass `--permission-mode manual` explicitly, so the Phase 4 default flip does not change them. Later phases reuse it; `rust/fontaine/tests/headless_smoke.rs` runs `fontaine -p` against it (streamed prompt,
   tool-call round-trip, exit codes 0/1/2) and covers CLI parsing (`--permission-mode auto` rejected
   before Phase 4; no bypass value). Library-level tests (`rust/fontaine-core/tests/{models,accounts}.rs`)
-  use `rig_core::test_utils` models.
+  use `rig_core::test_utils` models for resolution logic and `wiremock` (a `fontaine-core` dev-dependency) for provider smoke tests, listing routes and account routing.
 - **headless contract** (`rust/fontaine/tests/headless_contract.rs`): `json` and `stream-json` output
   validate against `docs/schemas/headless-v1.schema.json` (`jsonschema =0.59.0`, a dev-dependency); `init` (roots, config sources, trust state) and `result` present;
-  `--max-turns` / `--max-budget-usd` stop with the matching subtype and exit 1 (the budget test uses a catalog-priced account, see the telemetry bullet; `--max-budget-usd` against an unpriced `openai-compatible` model is a usage error, exit 2); `--input-format
+  `--max-turns` / `--max-budget-usd` stop with the matching subtype (`error_max_turns` / `error_max_budget_usd`) and exit 1 (the budget test uses a catalog-priced account, see the telemetry bullet; `--max-budget-usd` against an unpriced `openai-compatible` model is a usage error, exit 2); `--input-format
   stream-json` drives a two-turn run; `--json-schema '<inline schema>'` fills `result.structured_output`; `--input-format stream-json` input lines validate against the schema too.
 - **telemetry**: `-p` against the scripted `wiremock` endpoint returning `usage` yields `api_request` with tokens and cost — cost and budget tests use an account of `kind = "openai"` (or `anthropic`) whose `base_url` points at the wiremock server and whose model id is in rig's price catalog, because rig 0.45's `Catalog` prices by provider vendor and model id and a custom `openai-compatible` endpoint has no price; **span tree
   round-trip** (`telemetry_micromegas.rs`, its own single-test binary; it sets `MICROMEGAS_ENABLE_CPU_TRACING` once at the start before any thread spawns, and further tests in the file serialize via a `static Mutex<()>` guard): a nested span tree,
@@ -174,7 +174,3 @@ upstream builder knob.
   (`InMemorySink` test) and the OTLP backend exports to a mock collector; `docs/telemetry.md` exists.
 - CHANGELOG entry appended.
 - Log the phase in the master plan's Progress log; set Phase 1 to done in the master Phase Tracker and on this plan's Status line, and refresh the master `## Current State`.
-
-## Open Questions
-
-- When does provider model listing run (at reference resolution vs. startup for every account), and does a failed listing call exit 1 or 2?
