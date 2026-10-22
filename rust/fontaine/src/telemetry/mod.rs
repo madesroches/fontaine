@@ -240,7 +240,7 @@ pub fn install(sink: Option<&DebugSink>, config: &Config, params: &InstallParams
     } else {
         (Telemetry::default(), Vec::new())
     };
-    // A second install in the same process (in-process tests) keeps the first subscriber.
+    // A global subscriber may already be set (e.g. by an embedding host); keep the first subscriber.
     let _ = base.with(layers).try_init();
     telemetry
 }

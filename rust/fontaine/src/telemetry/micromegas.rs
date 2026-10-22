@@ -83,8 +83,9 @@ impl MicromegasExport {
                 lod: Verbosity::Med,
                 target: meta.target(),
                 module_path: meta.module_path().unwrap_or_default(),
-                file: meta.file().unwrap_or_default(),
-                line: meta.line().unwrap_or_default(),
+                // Callsite files are absolute paths inside the user's home for dependencies.
+                file: "",
+                line: 0,
             }))
         })
     }

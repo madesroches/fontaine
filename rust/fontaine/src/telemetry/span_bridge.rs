@@ -141,7 +141,7 @@ impl<E: Export> SpanBridge<E> {
             "chat" | "generate_content" => self.completion(fields, elapsed),
             "fontaine.session" => self.export.metric(Metric {
                 name: "fontaine.session.count",
-                unit: "count",
+                unit: "{session}",
                 value: MetricValue::Int(1),
                 attrs: vec![(
                     "start_type",
@@ -191,7 +191,7 @@ impl<E: Export> SpanBridge<E> {
             if let Some(tokens) = tokens {
                 self.export.metric(Metric {
                     name: "fontaine.token.usage",
-                    unit: "count",
+                    unit: "{token}",
                     value: MetricValue::Int(tokens),
                     attrs: vec![
                         ("type", kind.to_string()),

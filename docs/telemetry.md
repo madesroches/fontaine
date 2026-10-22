@@ -101,8 +101,8 @@ not exported.
 
 | Metric | Unit | Attributes |
 |---|---|---|
-| `fontaine.session.count` | count | `start_type` |
-| `fontaine.token.usage` | tokens | `type` (`input`, `output`, `cacheRead`, `cacheCreation`, `reasoning`), `model`, `query_source` |
+| `fontaine.session.count` | `{session}` | `start_type` |
+| `fontaine.token.usage` | `{token}` | `type` (`input`, `output`, `cacheRead`, `cacheCreation`, `reasoning`), `model`, `query_source` |
 | `fontaine.cost.usage` | USD | `model`, `query_source` |
 
 `fontaine.cost.usage` is priced from the model catalog and is absent when the catalog has no price,

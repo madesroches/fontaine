@@ -404,3 +404,30 @@ async fn an_exporter_that_cannot_start_prints_one_notice_and_the_run_continues()
     assert_eq!(notices.len(), 1, "{}", out.stderr);
     assert!(ingestion.received_requests().await.unwrap().is_empty());
 }
+
+#[test]
+fn exported_span_locations_carry_no_file_path() {
+    let _serial = serial();
+    let guard = init_in_memory_tracing();
+    let dispatch = bridge_dispatch();
+    with_stream(|| {
+        tracing::dispatcher::with_default(&dispatch, || {
+            drop(info_span!(target: TARGET, "located"));
+        });
+    });
+    let blocks = guard.sink.state.lock().unwrap().thread_blocks.clone();
+    let mut checked = 0;
+    for block in &blocks {
+        for event in block.events.iter() {
+            let location = match event {
+                ThreadEventQueueAny::BeginAsyncDynNamedSpanEvent(e) => e.span_location,
+                ThreadEventQueueAny::EndAsyncDynNamedSpanEvent(e) => e.span_location,
+                ThreadEventQueueAny::TaggedEndAsyncNamedSpanEvent(e) => e.span_location,
+                _ => continue,
+            };
+            assert_eq!((location.file, location.line), ("", 0));
+            checked += 1;
+        }
+    }
+    assert!(checked > 0);
+}
