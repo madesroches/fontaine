@@ -41,8 +41,8 @@ background in `research/research-llamafirewall.md`. Subagent reports flow throug
    `[guardian] scanner_hf_token_env` (default `HF_TOKEN`; never stored or logged) after the user has
    accepted the license on HF. Downloads land in `<data dir>/models/promptguard2-86m/`.
    The `pg2` model loads (and downloads, if needed) at startup, not on the first result; the license notice is pushed through `runtime.notices` (`rust/fontaine/src/lib.rs`) and printed in every headless mode (`announce` in `rust/fontaine/src/headless.rs` is changed to stop returning early unless mode is Auto or Plan).
-   The default `scanner_hf_token_env = "HF_TOKEN"` is resolved in the resolved config (`rust/fontaine-core/src/config.rs`, at least when `scanner = "pg2"`) so `scrubbed_env` (`rust/fontaine-core/src/tools.rs`) always removes it from shell/hook environments.
-   Resolved-config validation rejects `scanner = "command"` without `scanner_command` (exit 2).
+   The default `scanner_hf_token_env = "HF_TOKEN"` is resolved in the resolved config (`rust/fontaine-core/src/config.rs`) whenever unset, regardless of `scanner`, so `scrubbed_env` (`rust/fontaine-core/src/tools.rs`) always removes it from shell/hook environments.
+   Resolved-config validation (in `load_unresolved`, not `validate_values`, so docs examples under default features still load) rejects `scanner = "command"` without `scanner_command` and `scanner = "pg2"` in a build without the `pg2` feature (exit 2).
    Behavior is wired to the `[guardian] scanner*` keys already parsed and scope-validated by Phase 0's `config.rs`. The eval runner's `--guardian live:<account>/<model>` mode (CLI in `tasks/design/testing.md`) also routes `kind = scanner` cases to the configured scanner (`rust/fontaine-evals/src/live.rs`): `score_live` in `rust/fontaine-evals/src/runner.rs` routes `Kind::Scanner` to the scanner built from `live::connect`'s `config.guardian.scanner`, and keeps the skip-with-reason when it is `off`.
    Telemetry: scanner verdict and latency on the `tool_result` event (`query_source = scanner` for
    the `llm` scanner's model usage).
@@ -50,20 +50,20 @@ background in `research/research-llamafirewall.md`. Subagent reports flow throug
    reaches the agent, why off-by-default (latency), the fail-closed behavior, and that scanned results carry into the
    subagent-report path; write the gated-download / Llama 4 Community License caveat up beside
    the in-app first-enable notice; `docs/configuration.md` (resolved `HF_TOKEN` default at the `scanner_hf_token_env` entry; remove the "accepted and validated; they take effect when the scanner ships" line) for `scanner`, `scanner_command` (the BYO
-   stdin/stdout JSON contract), `scanner_model_path`, `scanner_hf_token_env` and the `llm` option; the scanner fields in `docs/telemetry.md`; append
+   stdin/stdout JSON contract), `scanner_model_path`, `scanner_hf_token_env` and the `llm` option; the scanner fields in `docs/telemetry.md`; say `pg2` is in release binaries and in source builds only with `--features pg2` (add pg2 to the binary's cargo feature list in `docs/architecture.md` and an install note in `README.md`); append
    a CHANGELOG entry.
 
 ## Files created or modified
 
-`rust/fontaine-guardian/src/scanner.rs` (trait + `pg2`/`llm`/`command` implementations; `pg2` behind the cargo feature); `rust/fontaine-guardian/prompts/scanner_llm.md` (compiled in via `include_str!`); `rust/fontaine-core/src/scanner_stage.rs` (attaches the configured scanner as the `ResultPipeline` scanner stage); `rust/fontaine-tools/src/result_pipeline.rs` (only if its stage trait changes); `.github/workflows/ci.yml` (pg2 clippy/test steps); `rust/fontaine/Cargo.toml` (`features = ["pg2"]` in `[package.metadata.dist]`); `rust/Cargo.toml` (candle and tokenizers pins); `rust/deny.toml` (`[graph] features`); `rust/fontaine-core/src/config.rs` (resolved `HF_TOKEN` default, `command` validation); `rust/fontaine-core/src/tools.rs` (`scrubbed_env`); `rust/fontaine/src/{lib,headless}.rs` (startup load, notice delivery); `rust/fontaine/src/telemetry/span_bridge.rs` (`scanner` span); `rust/fontaine-core/tests/{tools,user_hooks}.rs` (`scanner = "llm"`); `rust/fontaine-evals/src/runner.rs`;
-`rust/fontaine-evals/src/live.rs` (`scanner`-kind live routing); `docs/{guardian,configuration,telemetry}.md`.
+`rust/fontaine-guardian/src/scanner.rs` (trait + `pg2`/`llm`/`command` implementations; `pg2` behind the cargo feature); `rust/fontaine-guardian/prompts/scanner_llm.md` (compiled in via `include_str!`); `rust/fontaine-core/src/agent.rs` (attach the scanner stage where the `ResultPipeline` is built); `rust/fontaine-core/src/scanner_stage.rs` (attaches the configured scanner as the `ResultPipeline` scanner stage); `rust/fontaine-tools/src/result_pipeline.rs` (only if its stage trait changes); `.github/workflows/ci.yml` (pg2 clippy/test steps); `rust/fontaine/Cargo.toml` (`features = ["pg2"]` in `[package.metadata.dist]`); `rust/Cargo.toml` (candle and tokenizers pins); `rust/deny.toml` (`[graph] features`); `rust/fontaine-core/src/config.rs` (resolved `HF_TOKEN` default, `command` validation); `rust/fontaine-core/src/tools.rs` (`scrubbed_env`); `rust/fontaine/src/{lib,headless}.rs` (startup load, notice delivery); `rust/fontaine/src/telemetry/span_bridge.rs` (`scanner` span); `rust/fontaine-core/tests/{tools,user_hooks}.rs` (`scanner = "llm"`); `rust/fontaine-evals/src/runner.rs`;
+`rust/fontaine-evals/src/live.rs` (`scanner`-kind live routing); `docs/{guardian,configuration,telemetry,architecture}.md`; `README.md` (install note).
 
 ## Tests owned by this phase
 
 - Scanner logic tests with fixture payloads through `scanner_stage.rs` with a fake `Scanner` implementation: flagged ⇒ flagged annotation; clean ⇒ result unchanged; scanner error ⇒ unscanned-and-suspect annotation; annotation present before the agent reads the result. `HF_TOKEN` is scrubbed from shell/hook env by default.
 - Eval live routing (`rust/fontaine-evals/tests/live.rs`): under `--guardian live:<account>/<model>`, `kind = scanner` cases are scored by the configured scanner (fake BYO scanner in the test), not the guardian; this replaces the skip assertion in that file.
 - Scanner selection: `scanner` accepts exactly `off`/`pg2`/`llm`/`command` (anything else, or `command` without `scanner_command`, is a config error); default `off` means zero behavior
-  change.
+  change. A `cfg(not(feature = "pg2"))` test asserts `scanner = "pg2"` exits 2; a `cfg(feature = "pg2")` test asserts it is accepted.
 - `command` scanner (a script in a temp dir): clean and flagged verdicts honored; non-zero exit, timeout (time-paused), invalid JSON and a missing program each ⇒ flagged; stdin carries exactly `{tool, content}`; configured credential env vars are absent from its environment.
 - `llm` scanner (scripted endpoint): verdict parsed into `{verdict, reason}`; scanned content appears only inside untrusted delimiters in the request; malformed/unparseable verdict, endpoint error or timeout ⇒ flagged.
 - Subagent reports (ordinary tool results from Phase 5) pass the scanner stage of `ResultPipeline` when enabled: an
