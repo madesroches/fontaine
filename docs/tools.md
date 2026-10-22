@@ -16,6 +16,9 @@ result passes one post-call step before the model sees it.
 | `edit` | workspace write | Replaces text in a file. The file must have been read first. |
 | `shell` | arbitrary | Runs a shell command. |
 | `webfetch` | arbitrary | Fetches one web page. |
+| `agent` | arbitrary | Starts a [subagent](agents.md) and returns its report, or an id when it runs in the background. |
+| `skill` | read-only | Loads a [skill](extensions.md#skills) by name into the conversation. |
+| `send_message` | arbitrary | Sends a queued message to another agent or to the main conversation; see [Subagents](agents.md#messages-between-agents). |
 
 `read`, `write`, `edit` and `shell` are the file and process tools of the rig runtime, configured
 rather than modified. `ls`, `glob` and `grep` are Fontaine's own front ends over rig's directory
@@ -25,6 +28,10 @@ which is an arbitrary tool and so is always gated as one.
 
 The system prompt steers the model toward `ls`, `read`, `glob` and `grep` and away from `cat`,
 `find` and `grep` inside a shell.
+
+Tools of MCP servers join these at run time, always as arbitrary tools named
+`mcp__<server>__<tool>`; see [MCP servers](mcp.md). `agent` and `send_message` are described in
+[Subagents](agents.md), and `skill` in [Skills](extensions.md#skills).
 
 ## Risk classes
 
@@ -45,6 +52,11 @@ step, and it is read-only too. A call whose path arguments cannot be read, or th
 outside every root, is outside the fast path.
 File-tool calls on such a path are denied with a hint to add the directory with `/add-dir` or
 `--add-dir`; they are never offered for approval.
+
+The `skill` tool is the one read-only tool that names no path. Its only argument is a skill name,
+resolved against the skills loaded at startup, so all it can do is put that skill's text in the
+conversation; it needs no scope check. An MCP tool that declares itself read-only does not get the
+same treatment: such tools are registered as arbitrary whatever the server says.
 
 ## Workspace roots
 

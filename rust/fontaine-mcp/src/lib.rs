@@ -6,4 +6,5 @@ pub mod register;
 pub mod servers;
 
 pub use register::{GuardedSink, mcp_tool_name};
-pub use servers::{Connected, McpError, ServerSpec, Transport, connect};
+pub use rig_rmcp::McpConnection as McpConnectionHandle;
+pub use servers::{Connected, McpError, ServerSpec, Transport, connect, connect_transport};

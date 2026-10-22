@@ -1,6 +1,6 @@
 # Phase 5 — Extensibility: MCP, sessions, parallel agents, hooks, extension files
 
-**Status:** not started · **Depends on:** [Phase 4](phase4_guardian.md) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
+**Status:** done (offline gates green; live steps are human) · **Depends on:** [Phase 4](phase4_guardian.md) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
 
 ## Design (excerpt owned by this phase)
 
@@ -253,3 +253,13 @@ and **`docs/sandboxing.md`** documenting the srt/bubblewrap integration path and
 - 2026-10-22 AFK: A spawn past `[agents] max_parallel` (blocking or background) is not queued; it returns an error tool result naming the limit and telling the model not to retry — Claude Code's `Concurrent subagent limit reached` behaviour, and queueing a blocking spawn can deadlock.
 - 2026-10-22 AFK: A skill's `allowed-tools` grant lasts from invocation to the end of that user turn, applies to the invoking agent only (never its subagents), is the same for `skill`-tool and `/name` invocation, and acts after the floor and the mode — the narrowest reading of "while the skill is active".
 - 2026-10-22 AFK: `--continue` picks the most recently updated session whose primary root is the launch cwd and starts fresh when there is none; `--session-id` with `--continue`/`--resume` without `--fork-session` is a usage error (exit 2) — mirrors observed `claude -p` (fresh start with exit 0; the `--session-id` combination rejected), with Fontaine's usage exit code.
+- 2026-10-22: A stdio MCP server gets a scrubbed environment — a short base set plus the variables named in `env_vars` — and its stderr goes to the debug file; reason: `env_vars` is a pass-through list, so the rest of the parent's environment (provider keys, telemetry credentials) must not reach a third-party process.
+- 2026-10-22: The built-in `explore` and `worker` agent types include `send_message`; reason: peer messaging between subagents is a v1 requirement and a type's toolset is closed.
+- 2026-10-22: The hook wire uses Claude Code's `PreToolUse` / `PostToolUse` / `PermissionDenied` for `hook_event_name` and `hookEventName` while configuration keys stay snake_case; a `hookEventName` naming another event makes the answer unreadable (no decision).
+- 2026-10-22: A `permission_denied` hook's `retry` feeds the retry grant only for guardian denials (the floor and the mode have no retry to give), and a repository hook's `retry` is ignored like its `allow`; reason: a retry grant loosens a decision, and project executables never change one.
+- 2026-10-22: An agent file's `tools` entry with a specifier limits that tool's calls for the type, and a `disallowedTools` entry with a specifier forbids the calls it matches; reason: ignoring a narrowing specifier would widen authority.
+- 2026-10-22: A personal skill outranks a repository skill of the same name (Claude Code), while a repository agent file replaces a user one (Claude Code and the plan); the `skill` tool takes only `name`, so arguments reach a skill by `/name` only.
+- 2026-10-22: A repository's MCP server approval lives in `trust.toml` as `[[approved_servers]]` (root, name, definition digest); reason: the record must be outside the repository and a changed definition must ask again.
+- 2026-10-22: `gen_ai.tool.name` and every other exported MCP server or tool name read `third-party` unless `log_tool_details` is on; reason: those names belong to a third party and can name internal systems.
+- 2026-10-22: The agents panel opens with `/agents` or Ctrl-T (Ctrl-A is the input's Home key) and takes the keys over a pending approval, whose prompts it also lists per agent.
+- 2026-10-22: Notices raised without an interface (such as the pause of `auto` or an inactive cost cap) go to stderr in a headless run.

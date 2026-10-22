@@ -33,8 +33,10 @@ fn the_assembled_prompt_is_stable() {
         roots: &roots,
         system_prompt: None,
         instructions: &instructions,
-        skill_index: None,
-        output_style: None,
+        skill_index: Some(
+            "Skills you can load with the `skill` tool, each a set of instructions for a kind of task:\n- review: Review a pull request",
+        ),
+        output_style: Some(("terse", "Answer in at most two sentences.")),
         append: Some("Keep answers under ten lines."),
     });
     insta::assert_snapshot!(assembled);
@@ -92,6 +94,23 @@ fn layers_come_in_order_base_then_instructions_then_append() {
     let project = assembled.find("Run `cargo test`").unwrap();
     let appended = assembled.find("APPENDED").unwrap();
     assert!(base < user && user < project && project < appended);
+
+    // The skill list and the output style sit between the instructions and the appended text.
+    let layered = prompt::assemble(&PromptParts {
+        roots: &roots,
+        system_prompt: None,
+        instructions: &instructions,
+        skill_index: Some("SKILL INDEX"),
+        output_style: Some(("terse", "STYLE TEXT")),
+        append: Some("APPENDED"),
+    });
+    let at = |needle: &str| layered.find(needle).unwrap();
+    assert!(
+        at("You are Fontaine") < at("Always answer in French")
+            && at("Run `cargo test`") < at("SKILL INDEX")
+            && at("SKILL INDEX") < at("STYLE TEXT")
+            && at("STYLE TEXT") < at("APPENDED")
+    );
 }
 
 #[test]

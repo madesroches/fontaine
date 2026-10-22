@@ -94,8 +94,9 @@ The user file may set every key. For the other scopes:
 | `[auto_mode] soft_deny`, `hard_deny` | add only | add only | add only |
 | `[agents]` keys and `[agents.types]` | no | yes | yes |
 | `[shell_preclassifier] allow_extra` | no | yes | yes |
-| `[[hooks.*]]` | yes | yes | yes |
-| `[mcp.servers.*]` | yes | yes | yes |
+| Agent files `agents/*.md` | narrowing only | n/a | n/a |
+| `[[hooks.*]]` | yes, after workspace trust; `allow` ignored | yes, after workspace trust | yes |
+| `[mcp.servers.*]` | yes, after workspace trust and your approval of each server | yes, after workspace trust | yes |
 | `[telemetry]` | `enabled = false` only | `enabled = false` only | yes |
 
 A project-local file that has not earned user trust is validated against the project column.
@@ -372,13 +373,14 @@ from the primary root only. A `.fontaine/settings.toml` in an added root is not 
 
 ### `[[hooks.pre_tool_use]]`, `[[hooks.post_tool_use]]`, `[[hooks.permission_denied]]`
 
-User hooks. Accepted and validated; not yet active.
+[User hooks](hooks.md): programs that look at a tool call before it runs, after it ran and when it
+was denied.
 
 | Key | Meaning | Default |
 |---|---|---|
-| `matcher` | A rule in the `Tool(specifier)` form. Required. | none |
-| `command` | The program to run. Required. | none |
-| `timeout_secs` | At least 1. | unset |
+| `matcher` | A rule in the `Tool(specifier)` form; the hook runs for the calls it covers. A hook without one runs for every call and counts as broad. | none |
+| `command` | The command line, run by the shell. Required. | none |
+| `timeout_secs` | At least 1. | `30` |
 
 ```toml
 [[hooks.pre_tool_use]]
@@ -387,11 +389,16 @@ command = "/home/me/.config/fontaine/hooks/git-guard.sh"
 timeout_secs = 10
 ```
 
+Hooks the repository defines start only after [workspace trust](#workspace-trust) in the terminal
+UI, and their `allow` is ignored. See [User hooks](hooks.md#hooks-a-repository-defines).
+
 ### `[mcp.servers.<name>]`
 
-MCP servers. Set exactly one of `command` (a stdio server) or `url`. `args` and `env_vars` apply to
-stdio servers only. `env_vars` lists variable names to pass through; values never appear in
-configuration. Accepted and validated; not yet active.
+[MCP servers](mcp.md). Set exactly one of `command` (a stdio server) or `url` (streamable HTTP).
+`args` and `env_vars` apply to stdio servers only. `env_vars` lists variable names to pass
+through; values never appear in configuration, and the rest of Fontaine's environment is not passed.
+Tools register as `mcp__<server>__<tool>`, always as `arbitrary` tools. A server a repository
+defines starts only after workspace trust and your approval of that server in the terminal UI.
 
 ```toml
 [mcp.servers.github]
@@ -428,19 +435,21 @@ hard_deny = ["$defaults", "Never send repo contents to third-party code-review A
 
 ### `[agents]`
 
-Accepted and validated; not yet active.
+[Subagent](agents.md) limits and agent types.
 
 | Key | Meaning | Default |
 |---|---|---|
-| `max_parallel` | Concurrent subagents; at least 1. | `4` |
-| `subagent_token_budget` | Per-subagent token cap. | `200000` |
-| `subagent_cost_budget_usd` | Per-subagent spend cap. | `2.0` |
-| `session_token_budget` | Whole-session token cap. | unset |
-| `session_cost_budget_usd` | Whole-session spend cap. | unset |
+| `max_parallel` | Subagents running at once across the whole session, at any depth; at least 1. A spawn past it is refused, not queued. | `4` |
+| `subagent_token_budget` | Per-subagent token cap, the guardian's calls for it included. A subagent that passes it stops and returns a partial report. | `200000` |
+| `subagent_cost_budget_usd` | Per-subagent spend cap. Inactive, with a one-time notice, on a model with no known price; the token cap still binds. | `2.0` |
+| `session_token_budget` | A token ceiling that every agent in the tree debits, when set. | unset |
+| `session_cost_budget_usd` | The same in dollars, when set. | unset |
 
 `[agents.types.<name>]` defines an agent type with `model` (`$main`, `$guardian_default` or
 `<account>/<model>`), `tools` (built-in or `mcp__` tool names) and `mode`. `mode` accepts only
-`inherit`, `manual` or `dontAsk`; any other value is an error.
+`inherit` (the default: the parent's mode), `manual` or `dontAsk`; any other value is an error, so
+a subagent is never looser than its parent. A type's toolset is cut down to what its parent has.
+Agent files in `agents/` define types too; see [Extensions](extensions.md#agent-files).
 
 ```toml
 [agents]
@@ -493,16 +502,28 @@ resource_attributes = { "team.id" = "platform" }
 
 ## Workspace trust
 
-Some project files can name programs to run, such as hooks and MCP servers. Whether the repository
-may be treated as the user's own is decided by a trust record that lives outside the repository:
-`<data dir>/trust.toml`. Nothing but trust is recorded there, and the way to trust a root is to edit
-the file by hand. Each entry is the canonical path of a trusted directory, written as a TOML
-literal string (single quotes) so Windows paths need no escaping:
+Some project files can name programs to run, such as hooks and MCP servers, and skills can carry
+commands. Whether the repository may be treated as the user's own is decided by a trust record that
+lives outside the repository: `<data dir>/trust.toml`. The terminal UI asks about a folder it does
+not know, before anything the repository defines starts, and writes your answer there ("trust" is
+recorded; "do not trust" is not, and is asked again next session). You can also edit the file by
+hand. Each entry is the canonical path of a trusted directory, written as a TOML literal string
+(single quotes) so Windows paths need no escaping:
 
 ```toml trust.toml
 [[trusted]]
 root = '/home/me/code/myrepo'
 ```
+
+The same file records which repository-defined MCP servers you approved, one `[[approved_servers]]`
+entry per root, server name and definition digest; a changed definition is asked about again. See
+[MCP servers](mcp.md#servers-a-repository-defines).
+
+Trust covers what a repository can *run*: hooks, MCP servers and skill commands. It never lets any
+of them approve a tool call. A headless run (`fontaine -p`) loads a repository's hooks and MCP
+servers without asking, as Claude Code's `-p` does, and holds them to the same rule. Prompt
+content (`FONTAINE.md`, skills, agent files, output styles) and the keys that only tighten load
+whatever the answer.
 
 A root is trusted when it, or an ancestor of it, is recorded. Inside a git work tree the search
 stops at the work-tree root, so trusting your home directory does not trust every repository in
@@ -555,6 +576,7 @@ for any reason other than not existing, is a configuration error naming the path
 | `--model <account>/<model>` | Overrides `[model] model`. |
 | `--permission-mode <mode>` | Overrides `[permissions] default_mode`. `auto` is accepted. |
 | `--in-container` | States that the process runs inside a container. With `[guardian] profile = "minimal"` it lets the minimal guardian load, after a runtime probe also finds a container; the flag alone is never enough. |
+| `--continue`, `--resume <id>`, `--fork-session` | Reopen the latest session of the launch directory, reopen one by id, or copy the one that would have been reopened under a new id. See [Headless runs](headless.md#continuing-a-session). |
 | `--allowed-tools <rule>`, `--disallowed-tools <rule>` | Adds an allow or deny rule for the session (CLI scope). Repeatable. |
 | `fontaine auth login` | Stores a credential; see [Credentials](#credentials). |
 | `FONTAINE_LOG` | An `EnvFilter` directive that replaces the default `debug` filter of the debug file. On its own it creates no file and prints nothing. |

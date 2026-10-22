@@ -96,6 +96,29 @@ All notable changes are recorded here. The format follows
   `vX.Y.Z` tag, and CI runs `cargo dist plan`.
 - `docs/guardian.md` and the scorecard page `docs/evals.md`.
 
+- Phase 5, extensibility. Parallel subagents: the `agent` tool (blocking, or `background: true`
+  with the report delivered as a notification) and `send_message`, agent types from `[agents.types]`
+  and agent files, a mode that is never looser than the parent's and follows it on every call, a
+  `plan` parent blocking every child edit, `[agents] max_parallel`, per-subagent and session token
+  and cost budgets that include the guardian's calls, a nesting limit of three layers, and a
+  background-agents panel in the terminal UI (`/agents`, Ctrl-T) with kill and per-agent
+  decisions. Headless runs wait for background subagents and count their spend.
+- MCP servers over stdio and streamable HTTP from `[mcp.servers.*]`, registered as wrapped
+  `arbitrary` tools named `mcp__<server>__<tool>`, refreshed on list changes; server annotations
+  reach the guardian only as untrusted text. A repository's servers need workspace trust and the
+  user's approval of each in the terminal UI.
+- User hooks: `pre_tool_use`, `post_tool_use` and `permission_denied` command hooks with Claude
+  Code's JSON input, output and exit codes; a repository's hook can tighten but never allow.
+- Skills, agent files and output styles with Claude Code's frontmatter, the `skill` tool, skills as
+  `/name` commands with arguments, `` !`cmd` `` context run as gated `shell` calls, `allowed-tools`
+  lent for a turn, and `/output-style`.
+- Sessions: `--continue`, `--resume <id>` and `--fork-session`; the `fontaine.session.count`
+  metric carries `start_type` (`fresh`, `resume`, `continue`) and `headless`.
+- The workspace trust prompt in the terminal UI, which records trust in `trust.toml`.
+- Telemetry: `fontaine.subagent`, `fontaine.hook` and `fontaine.mcp.call` spans, `subagent` and
+  `mcp_server_connection` events, `agent.id` on `tool_decision`, `query_source = subagent`.
+- `docs/agents.md`, `docs/hooks.md`, `docs/mcp.md` and `docs/extensions.md`.
+
 ### Changed
 
 - `[permissions] default_mode` is optional: the terminal UI starts in `auto` and a headless run in
@@ -121,6 +144,14 @@ All notable changes are recorded here. The format follows
   scope.
 - Update the pinned Rust toolchain and minimum `rust-version` to 1.99.1, and fix the clippy
   lints it adds.
+- Headless `gate_decision` events carry `agent_id`; `total_cost_usd` and `--max-budget-usd` include
+  the subagents' model calls; `result.usage.subagents` is filled in.
+- The `fontaine.session.count` attribute `start_type` is now `fresh`, `resume` or `continue`, and the
+  surface moved to a `headless` attribute (it was `headless` or `interactive`).
+- `gen_ai.tool.name` on tool spans, like the other MCP names, reads `third-party` for an MCP tool
+  unless `log_tool_details` is on.
+- Notices (for example the pause of `auto`) go to stderr in a headless run instead of being
+  dropped.
 
 ### Removed
 

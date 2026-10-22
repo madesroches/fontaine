@@ -179,6 +179,10 @@ fn the_required_pages_exist_with_content() {
         "docs/tools.md",
         "docs/permissions.md",
         "docs/tui.md",
+        "docs/mcp.md",
+        "docs/agents.md",
+        "docs/hooks.md",
+        "docs/extensions.md",
         "evals/README.md",
         "README.md",
         "CONTRIBUTING.md",
@@ -194,12 +198,15 @@ fn the_required_pages_exist_with_content() {
 fn the_tools_page_names_every_registered_built_in_tool() {
     let root = repo_root();
     let text = std::fs::read_to_string(root.join("docs/tools.md")).unwrap();
-    for (name, risk) in fontaine_tools::risk::BUILTIN_RISK {
+    // The built-ins and the tools registered beyond them each have a row.
+    for (name, _) in fontaine_tools::risk::BUILTIN_RISK
+        .iter()
+        .chain(fontaine_tools::risk::EXTENSION_RISK.iter())
+    {
         assert!(
             text.contains(&format!("| `{name}` |")),
             "docs/tools.md has no inventory row for `{name}`"
         );
-        let _ = risk;
     }
     for removed in ["list", "search", "delete", "move"] {
         assert!(

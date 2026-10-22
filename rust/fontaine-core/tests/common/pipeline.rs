@@ -139,7 +139,7 @@ pub struct Rig {
     pub world: World,
     pub agents: Arc<AgentTree>,
     pub state: Arc<SessionState>,
-    pub pipeline: PermissionPipeline,
+    pub pipeline: Arc<PermissionPipeline>,
     pub approver: Arc<Scripted>,
     pub session: Session,
     pub user_config: PathBuf,
@@ -179,7 +179,7 @@ impl Rig {
         }));
         let approver = Arc::new(Scripted::default());
         let user_config = world.config.join("config.toml");
-        let pipeline = PermissionPipeline::new(PipelineParams {
+        let pipeline = Arc::new(PermissionPipeline::new(PipelineParams {
             state: state.clone(),
             approver: approver.clone(),
             headless: options.headless,
@@ -187,7 +187,7 @@ impl Rig {
             denied_hooks: options.denied_hooks,
             allow_extra: options.allow_extra,
             user_config: options.always_allow_file.then(|| user_config.clone()),
-        });
+        }));
         Rig {
             world,
             agents,

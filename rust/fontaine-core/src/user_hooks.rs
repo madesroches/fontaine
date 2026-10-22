@@ -397,7 +397,12 @@ impl PostHookStage {
             .iter()
             .map(|root| root.display().to_string())
             .collect();
-        let mode = self.state.mode();
+        let tree = self.state.agents();
+        let mode = if tree.is_child(call.agent) {
+            crate::gate::permission_mode(tree.posture(call.agent).mode)
+        } else {
+            self.state.mode()
+        };
         let tool_use_id = self.state.current_call(call.agent);
         let mut input = base_event(
             wire::POST,

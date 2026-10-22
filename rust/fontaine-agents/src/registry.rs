@@ -131,7 +131,11 @@ impl AgentTypes {
             name: "explore".to_string(),
             description: "Reads and searches the workspace; cannot change anything.".to_string(),
             prompt: None,
-            tools: Some(["ls", "read", "glob", "grep"].map(String::from).to_vec()),
+            tools: Some(
+                ["ls", "read", "glob", "grep", "send_message"]
+                    .map(String::from)
+                    .to_vec(),
+            ),
             disallowed: Vec::new(),
             model: Some(ModelSpec::GuardianDefault),
             mode: ModeSetting::Inherit,
@@ -142,9 +146,18 @@ impl AgentTypes {
             description: "Reads, edits and writes files and runs shell commands.".to_string(),
             prompt: None,
             tools: Some(
-                ["ls", "read", "glob", "grep", "edit", "write", "shell"]
-                    .map(String::from)
-                    .to_vec(),
+                [
+                    "ls",
+                    "read",
+                    "glob",
+                    "grep",
+                    "edit",
+                    "write",
+                    "shell",
+                    "send_message",
+                ]
+                .map(String::from)
+                .to_vec(),
             ),
             disallowed: Vec::new(),
             model: Some(ModelSpec::Main),
@@ -194,6 +207,10 @@ mod tests {
         let worker = AgentTypes::builtin().get("worker").unwrap().clone();
         let parent = names(&["read", "ls", "shell"]);
         assert_eq!(worker.toolset(&parent), names(&["read", "ls", "shell"]));
+        assert_eq!(
+            worker.toolset(&names(&["read", "send_message", "agent"])),
+            names(&["read", "send_message"])
+        );
         let explore = AgentTypes::builtin().get("explore").unwrap().clone();
         assert_eq!(explore.toolset(&parent), names(&["read", "ls"]));
     }

@@ -7,6 +7,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub mod routed;
+
 use fontaine_core::agent::AgentSetup;
 use fontaine_core::config::{self, AccountKind, LoadParams, PermissionMode};
 use fontaine_core::models::{
@@ -64,6 +66,10 @@ pub struct World {
     pub project_executables: bool,
     /// Whether the repository's MCP servers wait for the human's approval.
     pub confirm_servers: bool,
+    /// The main model is resolved from the settings, against this routed endpoint.
+    routed: bool,
+    /// How many sessions this world has started, so a second run gets a new id.
+    runs: std::sync::atomic::AtomicUsize,
 }
 
 pub const SESSION_ID: &str = "00000000-0000-4000-8000-000000000001";
@@ -109,6 +115,8 @@ impl World {
             env: Vec::new(),
             project_executables: true,
             confirm_servers: true,
+            routed: false,
+            runs: std::sync::atomic::AtomicUsize::new(0),
         };
         world.mock = MockCompletionModel::from_stream_turns(turns(&world));
         world
@@ -140,6 +148,16 @@ impl World {
     pub fn with_config(self, text: &str) -> World {
         std::fs::write(&self.user_config, text).unwrap();
         self
+    }
+
+    /// A world whose main model is the endpoint at `url`, which answers each conversation from
+    /// its own route. `extra` is more user settings.
+    pub fn routed(url: &str, extra: &str) -> World {
+        let mut world = World::new(Vec::new());
+        world.routed = true;
+        world.with_config(&format!(
+            "[accounts.mock]\nkind = \"openai-compatible\"\nbase_url = \"{url}\"\nmodels = [\"scripted\"]\n\n[model]\nmodel = \"mock/scripted\"\n{extra}"
+        ))
     }
 
     /// The workspace's settings file, as a repository would carry it.
@@ -201,6 +219,21 @@ impl World {
             AccountKind::OpenAiCompatible,
             self.mock.clone().into(),
         );
+        let resolved = if self.routed {
+            Some(
+                futures::executor::block_on(fontaine_core::models::resolve(
+                    &fontaine_core::models::ResolveParams {
+                        config: &config,
+                        data_dir: &self.data,
+                        env: &|_| None,
+                        model_override: None,
+                    },
+                ))
+                .unwrap(),
+            )
+        } else {
+            None
+        };
         let guardian = if self.guardian_on_main {
             Some(GuardianModel::Ready(model.clone()))
         } else if let Some(spec) = &self.guardian_unavailable {
@@ -237,7 +270,7 @@ impl World {
             config,
             config_dir: self.config_dir.clone(),
             data_dir: self.data.clone(),
-            models: Models {
+            models: resolved.unwrap_or(Models {
                 main: model,
                 main_listing: Vec::new(),
                 guardian,
@@ -247,8 +280,16 @@ impl World {
                     GuardianChoice::Pinned
                 },
                 notices: Vec::new(),
+            }),
+            session: {
+                let n = self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let id = if n == 0 {
+                    SESSION_ID.to_string()
+                } else {
+                    format!("00000000-0000-4000-8000-0000000001{n:02}")
+                };
+                Session::create(&self.data, &id).unwrap()
             },
-            session: Session::create(&self.data, SESSION_ID).unwrap(),
             roots: vec![self.work.clone()],
             mode: self.mode,
             scrub_env: vec![],

@@ -310,13 +310,7 @@ impl App {
                 None => Action::None,
             };
         }
-        if key.code == KeyCode::Esc && self.running && !typing_reason && self.agents.is_none() {
-            return Action::Interrupt;
-        }
-        if self.approval.is_some() {
-            self.approval_key(key);
-            return Action::None;
-        }
+        // The panel can be open over a pending approval, and takes the keys while it is.
         if let Some(panel) = &mut self.agents {
             return match panel.handle_key(key) {
                 PanelKey::None => Action::None,
@@ -326,6 +320,17 @@ impl App {
                 }
                 PanelKey::Kill(id) => Action::KillAgent(id),
             };
+        }
+        if control && key.code == KeyCode::Char('t') && !typing_reason {
+            self.agents = Some(AgentsPanel::new());
+            return Action::None;
+        }
+        if key.code == KeyCode::Esc && self.running && !typing_reason {
+            return Action::Interrupt;
+        }
+        if self.approval.is_some() {
+            self.approval_key(key);
+            return Action::None;
         }
         if control && key.code == KeyCode::Char('d') {
             return if !self.running && self.input.is_empty() {

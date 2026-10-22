@@ -62,7 +62,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     draw_transcript(frame, transcript, app);
     if approval_height > 0 {
-        if app.approval.is_some() {
+        if app.approval.is_some() && app.agents.is_none() {
             draw_approval(frame, approval, app, body, footer);
         } else {
             draw_overlay(frame, approval, title, body, footer);
@@ -75,6 +75,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
 /// What sits above the message box, if anything: the approval prompt, the denied list or the
 /// unavailable-guardian prompt, in that order of precedence.
 fn overlay(app: &App, width: usize) -> (&'static str, Vec<Line<'static>>, Vec<Line<'static>>) {
+    if let Some(panel) = &app.agents {
+        return ("agents", panel.body(width), panel.footer());
+    }
     if let Some(approval) = &app.approval {
         return ("approval", approval.body(width), approval.footer(width));
     }
@@ -86,9 +89,6 @@ fn overlay(app: &App, width: usize) -> (&'static str, Vec<Line<'static>>, Vec<Li
     }
     if let Some(list) = &app.denied {
         return ("denied", list.body(width), list.footer());
-    }
-    if let Some(panel) = &app.agents {
-        return ("agents", panel.body(width), panel.footer());
     }
     let menu = menu_lines(app, width);
     if !menu.is_empty() {

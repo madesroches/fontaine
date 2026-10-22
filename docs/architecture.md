@@ -13,8 +13,8 @@ fontaine/
 │   ├── fontaine-core/       configuration, trust, credentials, model accounts, the permission pipeline and rules, audit log, agent setup and turn runner, sessions, session ledger, system prompt
 │   ├── fontaine-tools/      built-in tools, risk classes, workspace scope check, shell parsing and pre-classifier (preclassify), the gate seam and tool wrapper
 │   ├── fontaine-guardian/   the guardian: request and verdict types, prompt builder, verdict cache, loop breaker; kept free of Fontaine dependencies
-│   ├── fontaine-agents/     subagent orchestration (skeleton)
-│   ├── fontaine-mcp/        MCP server wiring (skeleton)
+│   ├── fontaine-agents/     subagents: the agent tree, mode ladder, budgets, agent types, the `agent` and `send_message` tools
+│   ├── fontaine-mcp/        MCP servers: transports and the wrapped registration of their tools
 │   ├── fontaine-tui/        terminal UI
 │   └── fontaine-evals/      eval runner: binary and library
 ├── evals/                   golden dataset (JSONL) and its format documentation
@@ -28,11 +28,12 @@ fontaine/
 | Crate | Responsibility today |
 |---|---|
 | `fontaine` | The `fontaine` binary. `main.rs` is thin; `lib.rs` parses the command line, resolves the directories, loads configuration, installs the tracing subscriber and opens the `fontaine.session` span. `headless.rs` maps the core turn runner's events to the versioned output described in [Headless runs](headless.md) for `fontaine -p`; `auth.rs` is `fontaine auth login`. `src/telemetry/` is the only place a subscriber is built, and holds the two export backends described in [Telemetry](telemetry.md). |
-| `fontaine-core` | The settings scope stack (`config`), config and data directory resolution (`dirs`), the `Tool(specifier)` permission rule syntax (`permission_rules`), the workspace trust store (`trust`), the credentials file (`credentials`: lookup and the `auth login` writer), owner-only file creation (`owner_only`), the permission decision tier enum (`tier`), and the model layer (`models`): config accounts mapped to provider clients and `<account>/<model>` references resolved to model handles. It also holds the permission pipeline (`permissions`, with the floor checks in `floor`), the audit log (`audit`), the shared session state (`gate`), the session (`session`: the model context store and its compaction), the session ledger (`ledger`), the system prompt (`prompt`), the workspace roots (`workspace`), the wrapped tool registry (`tools`), and the agent setup and turn runner that headless and the terminal UI share (`agent`, `turn`). The guardian's side of the core is the request builder that reads only the ledger (`adjudication`), the structural destructive-class derivation (`destructive`), the container probe (`containment`), and default-guardian selection and live model switching in `models`. |
+| `fontaine-core` | The settings scope stack (`config`), config and data directory resolution (`dirs`), the `Tool(specifier)` permission rule syntax (`permission_rules`), the workspace trust store (`trust`), the credentials file (`credentials`: lookup and the `auth login` writer), owner-only file creation (`owner_only`), the permission decision tier enum (`tier`), and the model layer (`models`): config accounts mapped to provider clients and `<account>/<model>` references resolved to model handles. It also holds the user hooks (`user_hooks`), the extension files (`extensions`, `frontmatter`, `skills`), the child runner that starts subagents (`child_runner`), and the permission pipeline (`permissions`, with the floor checks in `floor`), the audit log (`audit`), the shared session state (`gate`), the session (`session`: the model context store and its compaction), the session ledger (`ledger`), the system prompt (`prompt`), the workspace roots (`workspace`), the wrapped tool registry (`tools`), and the agent setup and turn runner that headless and the terminal UI share (`agent`, `turn`). The guardian's side of the core is the request builder that reads only the ledger (`adjudication`), the structural destructive-class derivation (`destructive`), the container probe (`containment`), and default-guardian selection and live model switching in `models`. |
 | `fontaine-tools` | The built-in tools and their risk classes, the workspace scope check, shell parsing and the Tier-0.5 pre-classifier (`preclassify`), the gate interface and the wrapper that puts every tool behind it, the result pipeline and the built-in tool names that rules and agent toolsets may refer to. It depends on no other Fontaine crate. |
 | `fontaine-guardian` | The guardian: a separate, tool-less model conversation that judges one tool call and answers with a typed verdict. It holds the `AdjudicationRequest` and `Verdict` types, the `RuleLabel` enum, the prompt assets and the prompt builder, the shipped default rule lists, the verdict cache, the loop breaker, the minimal profile and the ranked model list types. It depends on rig and `serde` but on no other Fontaine crate, so other harnesses can embed it; see [The guardian](guardian.md). |
-| `fontaine-tui` | The terminal UI: transcript, input, approval prompts and the status bar, driven by the core turn runner. See [The terminal UI](tui.md). |
-| `fontaine-agents`, `fontaine-mcp` | Skeleton crates that reserve their place in the dependency graph. |
+| `fontaine-tui` | The terminal UI: transcript, input, approval prompts, the agents panel, the workspace trust prompt and the status bar, driven by the core turn runner. See [The terminal UI](tui.md). |
+| `fontaine-agents` | Subagent orchestration without the core: the live tree of agents (who runs, what each spent, the messages waiting), the permission-mode ladder, budgets, the agent-type registry, and the `agent` and `send_message` tools. It defines the `ChildRunner` and `RootLedger` interfaces, which `fontaine-core` implements, in the same way `fontaine-tools` defines the gate. See [Subagents](agents.md). |
+| `fontaine-mcp` | Starts MCP servers over stdio or streamable HTTP and registers their tools through a sink that wraps every tool in the gate, always as `arbitrary`. See [MCP servers](mcp.md). |
 | `fontaine-evals` | Loads and validates the golden dataset, scores canned verdicts, runs `pipeline` cases through the real permission pipeline, scores a live guardian model and writes the models that clear the inclusion bar, and captures and diffs Claude Code baselines. |
 
 ## Dependencies between crates
@@ -40,10 +41,10 @@ fontaine/
 ```
 fontaine          -> fontaine-core, fontaine-tools, fontaine-tui
 fontaine-evals    -> fontaine-core, fontaine-guardian, fontaine-tools
-fontaine-tui      -> fontaine-core, fontaine-guardian, fontaine-tools
+fontaine-tui      -> fontaine-core, fontaine-guardian, fontaine-tools, fontaine-agents
 fontaine-core     -> fontaine-tools, fontaine-guardian, fontaine-mcp, fontaine-agents
 fontaine-mcp      -> fontaine-tools
-fontaine-agents   -> fontaine-tools
+fontaine-agents   -> fontaine-tools (no fontaine-core: the core implements its interfaces)
 fontaine-guardian -> (no Fontaine crates)
 fontaine-tools    -> (no Fontaine crates)
 ```
@@ -105,12 +106,14 @@ pipeline before the model sees it:
    +----------------------------------------------+
         |
         v
-   ls  read  glob  grep  write  edit  shell  webfetch
+   ls  read  glob  grep  write  edit  shell  webfetch  agent  skill  send_message  mcp__*
 ```
 
 A deny goes back to the model as the tool result and the run goes on. The registry is built at
 session start (and rebuilt between turns by `/add-dir`); each file tool and `shell` has one confined
-instance per workspace root, and `webfetch` has one. See [Tools](tools.md).
+instance per workspace root, and `webfetch` has one. MCP tools join the registry as their servers
+connect, wrapped by the same gate. A subagent gets a copy of the registry cut down to its type's
+tools, so its calls reach the same gate. See [Tools](tools.md).
 
 ## The permission pipeline
 
@@ -162,6 +165,21 @@ Each session keeps two stores in `<data dir>/sessions/<session id>/`:
 Compaction changes the first store only. A summary is model-written text and is never an input to a
 safety decision; the ledger is the only record of what the human asked for. The ledger lives in its
 own subdirectory because the memory store refuses a directory that holds a top-level `.jsonl` file.
+
+### Resuming and forking
+
+`--continue` and `--resume` reopen both stores of an earlier session: the conversation log and the
+ledger, whose records rebuild the view the guardian's requests are built from, and new records
+continue the sequence. The session starts in the mode the settings resolve to and with no
+"allow session" grants, which were never persisted. `--fork-session` copies both stores into a
+session directory under a new id and opens the copy, leaving the original as it was; the audit log
+of the copy starts empty.
+
+### Subagents in the ledger
+
+A subagent tree has one source of intent, the human messages in the root session's ledger. The
+ledger records when subagents start and end and when they message each other, but a spawn prompt or
+a message is never recorded as something the human said.
 
 ## Models
 

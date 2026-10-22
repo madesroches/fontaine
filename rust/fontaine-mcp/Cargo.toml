@@ -19,6 +19,8 @@ tracing.workspace = true
 [dev-dependencies]
 rig-agent = { workspace = true, features = ["test-utils"] }
 rig-core = { workspace = true, features = ["test-utils"] }
-rmcp = { workspace = true, features = ["server"] }
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+serde_json.workspace = true
 tempfile.workspace = true
+wiremock.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

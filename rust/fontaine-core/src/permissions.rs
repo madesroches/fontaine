@@ -120,6 +120,11 @@ impl Approver for DenyAll {
     fn approve<'a>(&'a self, _request: ApprovalRequest) -> BoxFuture<'a, Answer> {
         Box::pin(async { Answer::Deny { feedback: None } })
     }
+
+    /// With no interface to show it on, a notice goes to stderr.
+    fn notice(&self, message: &str) {
+        eprintln!("fontaine: {message}");
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

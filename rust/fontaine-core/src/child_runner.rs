@@ -285,7 +285,7 @@ impl ChildRunner for CoreChildRunner {
                 async move {
                     let report = run_child(&task_state, &agent, &id, prompt, kill_rx).await;
                     *status.lock().unwrap_or_else(|e| e.into_inner()) = report.status;
-                    let _ = report_tx.send(Some(report));
+                    report_tx.send_replace(Some(report));
                 }
                 .instrument(span.clone()),
             );

@@ -51,7 +51,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let hint = if app.running {
         "working · esc to interrupt · shift+tab mode"
     } else {
-        "shift+tab mode · /add-dir · /agents · /denied · /model · /exit"
+        "shift+tab mode · /add-dir · /denied · /model · ctrl+t agents · /exit"
     };
     let agents = match app.running_agents {
         0 => String::new(),

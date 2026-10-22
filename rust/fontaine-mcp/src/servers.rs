@@ -147,6 +147,30 @@ where
     result
 }
 
+/// Starts the server behind an already-built transport, such as an in-process pipe, with the
+/// same wrapping as [`connect`]. The server's name is `name`.
+pub async fn connect_transport<S, T, E, A>(
+    name: &str,
+    transport: T,
+    sink: S,
+    guard: Guard,
+    reveal_names: bool,
+) -> Result<McpConnection, McpError>
+where
+    S: ManagedToolSink + Send + Sync + 'static,
+    T: rmcp::transport::IntoTransport<rmcp::RoleClient, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let handler = McpClientHandler::new(
+        client_config(),
+        GuardedSink::new(sink, name, guard, reveal_names),
+    );
+    handler.connect(transport).await.map_err(|e| McpError {
+        server: name.to_string(),
+        message: e.to_string(),
+    })
+}
+
 async fn start<S>(
     spec: &ServerSpec,
     sink: S,

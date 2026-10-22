@@ -231,7 +231,14 @@ fn load_skill(path: &Path, dir_name: &str, scope: Scope) -> Result<Skill, Extens
             .text("description")
             .filter(|d| !d.trim().is_empty())
             .unwrap_or_else(|| first_line(&doc.body)),
-        argument_hint: doc.text("argument-hint").filter(|h| !h.is_empty()),
+        // `[issue-number]` is how Claude Code files write a hint, which a YAML reader would
+        // take for a one-item list.
+        argument_hint: match doc.get("argument-hint") {
+            Some(frontmatter::Value::List(items)) => Some(format!("[{}]", items.join(", "))),
+            Some(frontmatter::Value::Scalar(text)) => Some(text.clone()),
+            _ => None,
+        }
+        .filter(|hint| !hint.is_empty()),
         user_invocable: flag("user-invocable", true)?,
         disable_model_invocation: flag("disable-model-invocation", false)?,
         body: doc.body.clone(),

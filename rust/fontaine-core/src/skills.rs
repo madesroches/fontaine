@@ -182,7 +182,15 @@ impl SkillRuntime {
             .run_with(&mut context, json!({ "command": command }))
             .await
         {
-            Ok(output) => output.render().trim_end().to_string(),
+            Ok(output) => {
+                let text = output.render();
+                // The shell tool ends its output with the exit code; a clean exit is not news.
+                let text = text.trim_end();
+                text.strip_suffix("[exit code 0]")
+                    .unwrap_or(text)
+                    .trim_end()
+                    .to_string()
+            }
             Err(error) => format!("[command failed: {}]", error.model_output().render().trim()),
         }
     }
