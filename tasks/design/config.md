@@ -35,7 +35,7 @@ server is also approved individually, and a repository cannot pre-approve its ow
 `-p` loads them without a prompt, as Claude Code does. In both surfaces a project hook's `allow` is
 ignored, project MCP tools are gated like any MCP tool (`Arbitrary`), and `!cmd` runs as a gated
 `shell` call; a project-local (user-trust) hook's `allow` counts as a user grant. The trust record lives in `<data dir>/trust.toml`, keyed by
-canonical root path, never in the repo. Tightening keys (deny/ask, soft/hard deny) and prompt
+canonical root path (a trusted ancestor within the work tree covers subdirectories; hand-editable), never in the repo. Tightening keys (deny/ask, soft/hard deny) and prompt
 content (FONTAINE.md, skills, agent files, output styles) load regardless of trust. Trust state is
 a ledger fact passed to the guardian in `session_facts`.
 
