@@ -92,7 +92,9 @@ dependency logs stays in the local debug file.
 ### Spans
 
 Both backends export the same tree: `fontaine.session` contains one `fontaine.interaction` per
-user message, and below it the model calls (`chat`) and tool executions (`execute_tool`).
+user message, and below it the model calls (`chat`) and tool executions (`execute_tool`). Each
+tool call also has a `fontaine.tool` span, with `tool_name`, `risk_class` (`read_only`,
+`workspace_write` or `arbitrary`), `tool_source` (`builtin` or `mcp`) and `success`.
 `fontaine.interaction` carries `prompt.id` and `prompt.length`. Model-call spans carry the
 provider, the model, the response id and the token counts. Source file paths and thread names are
 not exported.
@@ -115,6 +117,7 @@ session model. No metric carries a prompt or tool-call id.
 |---|---|
 | `api_request` | `model`, `provider`, `input_tokens`, `output_tokens`, `cost_usd` (when priced), `duration_ms`, `query_source` |
 | `user_prompt` | `prompt_id`, `prompt_length` (the length only) |
+| `tool_result` | `tool_name`, `risk_class`, `tool_source`, `success`, `duration_ms`, `args_bytes`, `result_bytes` (sizes only: no arguments and no output). Emitted for every call, including a denied one. |
 
 ## Privacy
 

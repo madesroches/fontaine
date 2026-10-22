@@ -1,6 +1,5 @@
 mod auth;
 pub mod cli;
-mod echo;
 pub mod headless;
 pub mod telemetry;
 
@@ -12,12 +11,18 @@ use clap::Parser;
 use fontaine_core::config::{self, Config, ConfigError, LoadParams, PermissionMode};
 use fontaine_core::dirs::{self, Dirs};
 use fontaine_core::models::{self, ResolveParams};
+use fontaine_core::session::Session;
+use fontaine_core::tools;
+use fontaine_core::workspace::{self, RootSource};
+use fontaine_tools::git_bash::GitBash;
 use rig_core::schemars::Schema;
+use uuid::Uuid;
 
 use cli::{AuthCommand, Cli, Command, InputFormat, OutputFormat};
 use telemetry::{DebugSink, InstallParams};
 
 pub type EnvFn = Box<dyn Fn(&str) -> Option<OsString>>;
+pub type EnvNamesFn = Box<dyn Fn() -> Vec<OsString>>;
 
 /// The process environment, injected so only `main` touches the real one.
 pub struct Host {
@@ -25,6 +30,9 @@ pub struct Host {
     pub env: EnvFn,
     pub default_config_dir: Option<PathBuf>,
     pub default_data_dir: Option<PathBuf>,
+    /// The names present in the environment, for the variables found by prefix rather than by
+    /// name.
+    pub env_names: EnvNamesFn,
 }
 
 impl Host {
@@ -34,6 +42,7 @@ impl Host {
             env: Box::new(|name| std::env::var_os(name)),
             default_config_dir: ::dirs::config_dir(),
             default_data_dir: ::dirs::data_dir(),
+            env_names: Box::new(|| std::env::vars_os().map(|(name, _)| name).collect()),
         })
     }
 }
@@ -104,7 +113,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
         };
     }
 
-    let headless = match prepare_headless(&cli, &config, &host) {
+    let headless = match prepare_headless(&cli, &config, &host, &dirs) {
         Ok(options) => options,
         Err(code) => return code,
     };
@@ -150,6 +159,7 @@ fn prepare_headless(
     cli: &Cli,
     config: &Config,
     host: &Host,
+    dirs: &Dirs,
 ) -> Result<Option<headless::Options>, ExitCode> {
     if !cli.print {
         return Ok(None);
@@ -196,7 +206,36 @@ fn prepare_headless(
             Some(schema)
         }
     };
-    let echo_tool = (host.env)(echo::ENABLE_VAR).is_some_and(|v| v == "1");
+    let session_id = match cli.session_id.as_deref() {
+        None => Uuid::new_v4(),
+        Some(text) => {
+            Uuid::parse_str(text).map_err(|e| usage(format!("--session-id must be a UUID: {e}")))?
+        }
+    }
+    .hyphenated()
+    .to_string();
+    let git_bash = git_bash(host)?;
+
+    let added = cli
+        .add_dir
+        .iter()
+        .map(|dir| (RootSource::Flag, dir.clone()))
+        .chain(
+            config
+                .permissions
+                .additional_directories
+                .iter()
+                .map(|dir| (RootSource::Settings, PathBuf::from(dir))),
+        );
+    let roots = workspace::resolve(&config.workspace, &host.cwd, added);
+    for warning in &roots.warnings {
+        eprintln!("fontaine: warning: {warning}");
+    }
+
+    let session = Session::create(&dirs.data, &session_id).map_err(|e| {
+        eprintln!("fontaine: {e}");
+        ExitCode::from(e.exit_code())
+    })?;
     Ok(Some(headless::Options {
         prompt: cli.prompt.clone(),
         input_format: cli.input_format,
@@ -208,8 +247,28 @@ fn prepare_headless(
         system_prompt: cli.system_prompt.clone(),
         append_system_prompt: cli.append_system_prompt.clone(),
         mode,
-        echo_tool,
+        roots: roots.roots,
+        session,
+        scrub_env: tools::scrubbed_env(config, (host.env_names)()),
+        git_bash,
     }))
+}
+
+/// The shell tool runs through Git Bash on Windows; elsewhere it needs none.
+#[cfg(windows)]
+fn git_bash(host: &Host) -> Result<Option<GitBash>, ExitCode> {
+    let probe = fontaine_tools::git_bash::Probe {
+        env: &*host.env,
+        is_file: &|path| path.is_file(),
+    };
+    fontaine_tools::git_bash::discover(&probe)
+        .map(Some)
+        .map_err(usage)
+}
+
+#[cfg(not(windows))]
+fn git_bash(_host: &Host) -> Result<Option<GitBash>, ExitCode> {
+    Ok(None)
 }
 
 async fn run_headless(
@@ -246,6 +305,7 @@ async fn run_headless(
             config,
             models,
             data_dir: &dirs.data,
+            config_dir: &dirs.config,
         },
     )
     .await

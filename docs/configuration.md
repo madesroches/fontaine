@@ -321,7 +321,9 @@ Rule strings use the `Tool` or `Tool(specifier)` form. At load, Fontaine checks 
 that the tool is one of `shell`, `read`, `edit`, `write`, `ls`, `glob`, `grep`, `webfetch`,
 `agent`, `skill`, `send_message` or an `mcp__<server>[__<tool>|__*]` name, and that a `webfetch`
 specifier has the form `domain:<host>` or `domain:*.<host>`. Other specifiers are kept as written.
-Accepted and validated; not yet active.
+Specifiers are not matched yet: a `deny` or `ask` rule stops every call to the tool it names,
+whatever its specifier, and `allow` rules and `default_mode` loosen nothing (see
+[Tools](tools.md#permissions-today)).
 
 | Key | Meaning | Default |
 |---|---|---|
@@ -329,7 +331,7 @@ Accepted and validated; not yet active.
 | `deny` | Rules that always deny. | `[]` |
 | `ask` | Rules that always prompt. | `[]` |
 | `allow` | Pre-approval rules. User-trust scopes only. | `[]` |
-| `additional_directories` | Extra workspace roots. User-trust scopes only. | `[]` |
+| `additional_directories` | Extra workspace roots. User-trust scopes only. See [Workspace roots](#workspace-roots). | `[]` |
 
 `default_mode = "auto"` is rejected at load from the user file and from `--settings`, because auto
 mode is not available yet. It is also never accepted from project scopes.
@@ -342,6 +344,18 @@ ask = ["webfetch(domain:*.example.com)"]
 allow = ["shell(cargo test)"]
 additional_directories = ["/home/me/shared-libs"]
 ```
+
+### Workspace roots
+
+The workspace is an ordered set of roots: the primary root, then every `--add-dir <path>` and every
+`additional_directories` entry. File tools reach a path that lies inside any root. A relative entry
+is resolved against the launch directory. An entry that does not exist, is not a directory or
+cannot be resolved is left out, with a warning on stderr naming the path and whether it came from
+`--add-dir` or the settings, and the run continues.
+
+Roots grant file access, not configuration: settings, hooks, MCP servers and extension files load
+from the primary root only. A `.fontaine/settings.toml` in an added root is not read. See
+[Tools](tools.md#workspace-roots).
 
 ### `[[hooks.pre_tool_use]]`, `[[hooks.post_tool_use]]`, `[[hooks.permission_denied]]`
 

@@ -221,15 +221,40 @@ fn responses_response(turn: &Turn, usage: Usage, id: usize) -> ResponseTemplate 
     sse(frames)
 }
 
+/// The reply to a request that did not ask for a stream, such as the compaction summarizer's.
+fn responses_json(turn: &Turn, usage: Usage, id: usize) -> ResponseTemplate {
+    let Turn::Text(text) = turn else {
+        return ResponseTemplate::new(500).set_body_string("only text answers are scripted here");
+    };
+    ResponseTemplate::new(200).set_body_json(json!({
+        "id": format!("resp_{id}"),
+        "object": "response",
+        "created_at": 1,
+        "status": "completed",
+        "model": "scripted",
+        "output": [{"type": "message", "id": format!("msg_{id}"), "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": text, "annotations": []}]}],
+        "usage": {
+            "input_tokens": usage.input,
+            "output_tokens": usage.output,
+            "total_tokens": usage.input + usage.output,
+        },
+    }))
+}
+
 impl Respond for Scripted {
-    fn respond(&self, _request: &Request) -> ResponseTemplate {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
         let at = self.next.fetch_add(1, Ordering::SeqCst);
         // Past the end of the script the last turn repeats, so a runaway loop is still served.
         let Some(turn) = self.turns.get(at).or(self.turns.last()) else {
             return ResponseTemplate::new(500).set_body_string("empty script");
         };
+        let streamed = serde_json::from_slice::<Value>(&request.body)
+            .is_ok_and(|body| body["stream"] == json!(true));
         match self.wire {
             Wire::Chat => chat_response(turn, self.usage),
+            Wire::Responses if !streamed => responses_json(turn, self.usage, at),
             Wire::Responses => responses_response(turn, self.usage, at),
         }
     }
@@ -327,10 +352,15 @@ impl Sandbox {
     /// A sandbox whose only model is the scripted `openai-compatible` endpoint at `url`.
     pub fn compatible(url: &str) -> Sandbox {
         let sandbox = Sandbox::new();
-        sandbox.user_config(&format!(
+        sandbox.point_at(url);
+        sandbox
+    }
+
+    /// Makes the scripted `openai-compatible` endpoint at `url` the only model.
+    pub fn point_at(&self, url: &str) {
+        self.user_config(&format!(
             "[accounts.mock]\nkind = \"openai-compatible\"\nbase_url = \"{url}\"\nmodels = [\"scripted\"]\n\n[model]\nmodel = \"mock/scripted\"\n"
         ));
-        sandbox
     }
 
     /// A sandbox whose model is a catalog-priced `openai` account at `url`.
@@ -358,7 +388,6 @@ impl Sandbox {
             .env("FONTAINE_CONFIG_DIR", &self.config)
             .env("FONTAINE_DATA_DIR", &self.data)
             .env_remove("FONTAINE_LOG")
-            .env_remove("FONTAINE_SPIKE_ECHO_TOOL")
             .env_remove("MICROMEGAS_TELEMETRY_URL")
             .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
             .kill_on_drop(true);
@@ -393,27 +422,18 @@ impl Sandbox {
         }
     }
 
-    /// A headless run with the echo spike tool and an explicit permission mode.
+    /// A headless run with an explicit permission mode.
     pub async fn headless(&self, args: &[&str]) -> Output {
         let mut all = vec!["-p", "--permission-mode", "manual"];
         all.extend_from_slice(args);
         self.run(&all).await
     }
 
-    pub async fn headless_with_echo(&self, args: &[&str]) -> Output {
-        let mut all = vec!["-p", "--permission-mode", "manual"];
-        all.extend_from_slice(args);
-        let mut cmd = self.command(&all);
-        cmd.env("FONTAINE_SPIKE_ECHO_TOOL", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let out = cmd.output().await.unwrap();
-        Output {
-            code: out.status.code(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        }
+    /// Creates `relative` under the launch directory.
+    pub fn add_file(&self, relative: &str, text: &str) -> PathBuf {
+        let path = self.work.join(relative);
+        write(&path, text);
+        path
     }
 }
 

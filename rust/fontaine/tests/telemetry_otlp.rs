@@ -96,14 +96,15 @@ async fn a_run_exports_spans_metrics_and_the_api_request_event() {
     let model = Endpoint::start(
         Wire::Responses,
         vec![
-            Turn::tool("call_1", "echo", json!({"text": "x"})),
+            Turn::tool("call_1", "read", json!({"path": "note.txt"})),
             Turn::text("done"),
         ],
     )
     .await;
     let collector = collector().await;
     let s = sandbox(&model.url(), &collector.uri(), "");
-    let out = s.headless_with_echo(&["go"]).await;
+    s.add_file("note.txt", "x\n");
+    let out = s.headless(&["go"]).await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     assert_eq!(out.stdout, "done\n");
 
@@ -291,6 +292,53 @@ async fn content_is_truncated_at_content_max_bytes() {
         !contains(&exported, PROMPT_CANARY),
         "the canary lies past the cap"
     );
+}
+
+const TOOL_ARG_CANARY: &str = "CANARY-TOOLARG-2b9e41";
+const TOOL_OUT_CANARY: &str = "CANARY-TOOLOUT-8c07d3";
+
+async fn tool_canary_run(extra: &str) -> Vec<u8> {
+    let file = format!("{TOOL_ARG_CANARY}.txt");
+    let model = Endpoint::start(
+        Wire::Responses,
+        vec![
+            Turn::tool("call_1", "read", json!({ "path": file })),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let collector = collector().await;
+    let s = sandbox(&model.url(), &collector.uri(), extra);
+    s.add_file(&file, &format!("contents {TOOL_OUT_CANARY}\n"));
+    let out = s.headless(&["go"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert!(out.stdout == "done\n", "{}", out.stdout);
+    all_bytes(&collector).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tool_arguments_and_output_stay_out_of_the_export_without_their_opt_in_keys() {
+    let exported = tool_canary_run("").await;
+    assert!(!contains(&exported, TOOL_ARG_CANARY), "arguments leaked");
+    assert!(!contains(&exported, TOOL_OUT_CANARY), "output leaked");
+    // The content-free record of the call itself is exported.
+    assert!(contains(&exported, "fontaine.tool"));
+    assert!(contains(&exported, "tool_result"));
+    assert!(contains(&exported, "read_only"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn log_tool_details_exports_the_arguments_and_not_the_output() {
+    let exported = tool_canary_run("log_tool_details = true\n").await;
+    assert!(contains(&exported, TOOL_ARG_CANARY));
+    assert!(!contains(&exported, TOOL_OUT_CANARY));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn log_tool_content_exports_the_output_and_not_the_arguments() {
+    let exported = tool_canary_run("log_tool_content = true\n").await;
+    assert!(contains(&exported, TOOL_OUT_CANARY));
+    assert!(!contains(&exported, TOOL_ARG_CANARY));
 }
 
 /// A listener that accepts connections and never answers.

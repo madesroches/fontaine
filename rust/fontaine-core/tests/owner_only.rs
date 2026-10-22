@@ -59,3 +59,20 @@ fn append_keeps_existing_content() {
     #[cfg(unix)]
     assert_eq!(mode(&path), 0o600);
 }
+
+#[test]
+fn a_new_directory_is_owner_only_and_creating_it_twice_reports_it_exists() {
+    let w = World::new();
+    let path = w.root.join("session");
+    owner_only::create_dir(&path).unwrap();
+    assert!(path.is_dir());
+    #[cfg(unix)]
+    assert_eq!(mode(&path), 0o700);
+    #[cfg(windows)]
+    common::assert_current_user_only(&path);
+
+    let again = owner_only::create_dir(&path).unwrap_err();
+    assert_eq!(again.kind(), std::io::ErrorKind::AlreadyExists);
+    let orphan = owner_only::create_dir(&w.root.join("missing").join("child")).unwrap_err();
+    assert_eq!(orphan.kind(), std::io::ErrorKind::NotFound);
+}

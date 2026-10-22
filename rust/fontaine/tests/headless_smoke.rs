@@ -22,32 +22,44 @@ async fn a_prompt_streams_to_stdout_and_exits_zero() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn without_the_spike_variable_no_tool_is_advertised() {
+async fn the_registered_tools_are_advertised_to_the_model() {
     let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("ok")]).await;
     let s = Sandbox::compatible(&endpoint.url());
-    let out = s.headless(&["hi"]).await;
+    let out = s.headless(&["--output-format", "stream-json", "hi"]).await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let names = [
+        "read", "ls", "glob", "grep", "write", "edit", "shell", "webfetch",
+    ];
+    assert_eq!(out.lines()[0]["tools"], json!(names));
+
     let requests = endpoint.requests().await;
-    let tools = requests[0].get("tools");
-    assert!(
-        tools.is_none_or(|t| t.as_array().is_some_and(Vec::is_empty)),
-        "{tools:?}"
-    );
+    let advertised: Vec<&str> = requests[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    let mut advertised_sorted = advertised.clone();
+    advertised_sorted.sort_unstable();
+    let mut expected = names.to_vec();
+    expected.sort_unstable();
+    assert_eq!(advertised_sorted, expected);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_tool_call_round_trips_through_the_echo_tool() {
+async fn a_tool_call_round_trips_through_the_wrapped_read_tool() {
     let endpoint = Endpoint::start(
         Wire::Chat,
         vec![
-            Turn::tool("call_1", "echo", json!({"text": "ping"})),
+            Turn::tool("call_1", "read", json!({"path": "note.txt"})),
             Turn::text("The tool said ping"),
         ],
     )
     .await;
     let s = Sandbox::compatible(&endpoint.url());
+    s.add_file("note.txt", "ping\n");
     let out = s
-        .headless_with_echo(&["--output-format", "stream-json", "use the tool"])
+        .headless(&["--output-format", "stream-json", "use the tool"])
         .await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let lines = out.lines();
@@ -55,12 +67,17 @@ async fn a_tool_call_round_trips_through_the_echo_tool() {
         kinds(&lines),
         ["init", "tool_call", "tool_result", "assistant", "result"]
     );
-    assert_eq!(lines[0]["tools"], json!(["echo"]));
-    assert_eq!(lines[1]["tool"], "echo");
+    assert!(
+        lines[0]["tools"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("read"))
+    );
+    assert_eq!(lines[1]["tool"], "read");
     assert_eq!(lines[1]["tool_use_id"], "call_1");
-    assert_eq!(lines[1]["args"], json!({"text": "ping"}));
+    assert_eq!(lines[1]["args"], json!({"path": "note.txt"}));
     assert_eq!(lines[2]["tool_use_id"], "call_1");
-    assert_eq!(lines[2]["text"], "ping");
+    assert!(lines[2]["text"].as_str().unwrap().contains("ping"));
     assert_eq!(lines[2]["success"], json!(true));
     assert_eq!(lines[3]["text"], "The tool said ping");
     assert_eq!(lines[4]["result"], "The tool said ping");
@@ -68,7 +85,7 @@ async fn a_tool_call_round_trips_through_the_echo_tool() {
 
     let requests = endpoint.requests().await;
     assert_eq!(requests.len(), 2);
-    assert!(requests[0].to_string().contains("\"echo\""));
+    assert!(requests[0].to_string().contains("\"read\""));
     assert!(
         requests[1].to_string().contains("ping"),
         "the tool result reaches the model"
