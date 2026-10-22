@@ -173,7 +173,9 @@ async fn a_write_prompt_shows_the_exact_rule_for_the_lasting_answers() {
         let screen = ui.screen();
         assert!(screen.contains("allow session"), "{screen}");
         assert!(screen.contains("always allow"), "{screen}");
-        assert!(screen.contains(&rule), "{rule}\n{screen}");
+        // A long temp path wraps inside the approval box.
+        let unwrapped: String = screen.lines().map(|line| line.trim_matches('│')).collect();
+        assert!(unwrapped.contains(&rule), "{rule}\n{screen}");
         ui.press(KeyCode::Char('n'));
         ui.wait_for("ok").await;
     })

@@ -201,10 +201,14 @@ fn path_patterns_follow_gitignore_rules() {
     assert!(!read("src/**", "other/a.rs"));
     assert!(read("secrets", "secrets/a/b"));
     let absolute = f.world.work.join("a.txt");
-    assert!(read(
-        &format!("/{}", absolute.display()),
-        absolute.to_str().unwrap()
-    ));
+    // Windows absolute rules are written `//C:/...`, never with the verbatim prefix.
+    let absolute_rule = if cfg!(windows) {
+        let text = absolute.display().to_string();
+        format!("//{}", text.trim_start_matches(r"\\?\").replace('\\', "/"))
+    } else {
+        format!("/{}", absolute.display())
+    };
+    assert!(read(&absolute_rule, absolute.to_str().unwrap()));
     // Directory-scoped tools are covered by a rule for the tree.
     for tool in ["ls", "grep", "glob"] {
         let args = match tool {
