@@ -51,7 +51,7 @@ so tmux selection, wheel scrolling and search keep working.
 last committed line on screen (the viewport top). Rows the content does not need are padding,
 drawn by `view::draw` as blank space between the transcript tail and the panel/input box. Padding
 is consumed by later commits before anything scrolls, so the transcript stays top-aligned and
-contiguous and no blank holes enter scrollback.
+contiguous and, apart from a terminal shrink (see Resize), no blank holes enter scrollback.
 
 **Startup.** `Screen::new` reads the terminal size and builds `Viewport::Inline(terminal height)`.
 `compute_inline_size` then scrolls everything above the cursor into the terminal's history (it is
@@ -88,7 +88,8 @@ returns right under the transcript.
 
 **Resize.** `autoresize` runs first as today; the rule above then rebuilds to reach the new bottom
 row. Narrowing clears the screen (ratatui's `resize`), after which the live area fills the whole
-screen from row 0.
+screen from row 0. When the terminal gets shorter, the emulator pushes the top rows, padding
+included, into history before Fontaine sees the resize, so blank rows can enter scrollback.
 
 ## Implementation Steps
 
@@ -103,7 +104,10 @@ screen from row 0.
 3. Check the integration harness (`tests/common/mod.rs`) and `tests/tui.rs` still pass; `Ui::live`
    now includes padding rows, which the existing `contains` assertions tolerate.
 4. Docs: `docs/tui.md` (see Documentation).
-5. Master plan: add a dated line to `tasks/fontaine_harness_plan.md` `## Decisions`.
+5. Master plan: add this line to `tasks/fontaine_harness_plan.md` `## Decisions`: "- 2026-10-22: The
+   TUI takes the whole terminal at startup (earlier shell output scrolls into the terminal's
+   history) and keeps the input box and status bar on the bottom rows; Claude Code renders from the
+   cursor row. Reason: a full-screen layout was requested (#74)."
 
 ## Files to Modify
 
@@ -126,6 +130,9 @@ screen from row 0.
   scrollback).
 
 ## Decisions
+
+- 2026-10-22: Accepted: shrinking the terminal while padding is on screen can leave blank rows in
+  scrollback; the emulator moves them before Fontaine sees the resize.
 
 ## Documentation
 
@@ -173,6 +180,8 @@ not model.
 3. Trigger an approval prompt and answer it: the panel opens above the input box and closes
    without leaving blank rows in the transcript when scrolled back.
 4. Make the pane taller and shorter (`tmux resize-pane`): the input box stays on the bottom row.
+   After a shrink, check scrollback: blank rows may appear there, and all transcript lines are
+   present and in order.
 5. Quit: the shell prompt appears right under the transcript.
 
 ## Open Questions
