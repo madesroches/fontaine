@@ -711,6 +711,16 @@ async fn a_shell_command_that_only_names_a_missing_path_does_not_make_it_session
     assert!(!sent.contains("notes.txt [created_this_session]"), "{sent}");
 }
 
+#[tokio::test]
+async fn an_edit_of_a_missing_path_does_not_make_it_session_created() {
+    let fake = fake_guardian(verdict_json("allow", "allow", 0.5));
+    let rig = auto_rig(&fake, "");
+    rig.check("edit", write_args("ghost.txt")).await;
+    std::fs::write(rig.work().join("ghost.txt"), "k").unwrap();
+    let d = rig.check("write", write_args("ghost.txt")).await;
+    assert!(denied_message(&d).contains("[LowConfidence]"), "{d:?}");
+}
+
 struct AutoHook {
     matcher: Option<&'static str>,
     permission: Option<fontaine_core::permissions::HookPermission>,

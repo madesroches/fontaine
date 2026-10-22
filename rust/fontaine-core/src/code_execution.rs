@@ -6,7 +6,7 @@ use fontaine_tools::preclassify::program_name;
 
 /// Entries whose bare form, or form with more arguments (`<entry> *`), runs arbitrary code.
 /// Multi-word entries name a subcommand that does.
-pub const PROGRAMS: [&str; 34] = [
+pub const PROGRAMS: [&str; 36] = [
     "sh",
     "bash",
     "zsh",
@@ -28,6 +28,8 @@ pub const PROGRAMS: [&str; 34] = [
     "exec",
     "xargs",
     "env",
+    "systemd-run",
+    "parallel",
     "sudo",
     "awk",
     "gawk",
@@ -46,7 +48,7 @@ pub const PROGRAMS: [&str; 34] = [
 /// Argv launchers: the options that take a separate value, and how many operands precede the
 /// wrapped program. Each one runs any program it is given, so a rule on one is as broad as a
 /// shell, while a call is judged by the program it wraps.
-pub const LAUNCHERS: [(&str, &[&str], usize); 12] = [
+pub const LAUNCHERS: [(&str, &[&str], usize); 24] = [
     ("timeout", &["-s", "--signal", "-k", "--kill-after"], 1),
     ("nice", &["-n", "--adjustment"], 0),
     ("nohup", &[], 0),
@@ -63,6 +65,52 @@ pub const LAUNCHERS: [(&str, &[&str], usize); 12] = [
         &["-w", "--timeout", "-E", "--conflict-exit-code"],
         1,
     ),
+    (
+        "strace",
+        &[
+            "-e", "-o", "-p", "-s", "-u", "-E", "-P", "-a", "-O", "-S", "-b", "-I", "-X",
+        ],
+        0,
+    ),
+    (
+        "ltrace",
+        &["-e", "-l", "-o", "-p", "-s", "-u", "-n", "-A", "-a", "-F"],
+        0,
+    ),
+    ("taskset", &[], 1),
+    (
+        "fakeroot",
+        &["-l", "--lib", "-f", "--faked", "-i", "-s", "-b"],
+        0,
+    ),
+    (
+        "unshare",
+        &[
+            "-S",
+            "-G",
+            "-R",
+            "-w",
+            "--setuid",
+            "--setgid",
+            "--root",
+            "--wd",
+            "--propagation",
+            "--map-user",
+            "--map-group",
+        ],
+        0,
+    ),
+    ("chrt", &[], 1),
+    (
+        "nsenter",
+        &["-t", "--target", "-S", "-G", "-r", "-w", "--root", "--wd"],
+        0,
+    ),
+    ("firejail", &[], 0),
+    ("caffeinate", &["-t", "-w"], 0),
+    ("arch", &[], 0),
+    ("prlimit", &["-p", "--pid"], 0),
+    ("time", &["-f", "--format", "-o", "--output"], 0),
 ];
 
 /// A program name without a trailing version (`python3.12` is `python`), for the lookups in

@@ -29,6 +29,42 @@ fn shell_is(command: &str) -> bool {
 }
 
 #[test]
+fn argv_launchers_are_judged_by_the_program_they_wrap() {
+    for command in [
+        "strace -f rm -rf src",
+        "strace -o out.txt -e trace=open rm x",
+        "taskset -c 0 rm x",
+        "/usr/bin/time rm x",
+        "/usr/bin/time -f %e rm x",
+        "fakeroot rm x",
+        "nsenter -t 1 rm x",
+        "chrt 10 rm x",
+        "systemd-run --user ls",
+        "parallel echo ::: a",
+    ] {
+        assert!(shell_is(command), "{command}");
+    }
+    for command in ["strace ls", "taskset -c 0 ls", "/usr/bin/time ls"] {
+        assert!(!shell_is(command), "{command}");
+    }
+}
+
+#[test]
+fn git_config_injection_is_destructive() {
+    for command in [
+        "git -c alias.x='!rm -rf ~' x",
+        "git -c core.pager=less log",
+        "git -c core.fsmonitor=evil status",
+        "git -ccore.pager=less log",
+        "git --config-env=core.pager=VAR log",
+        "git --exec-path=/tmp/x status",
+    ] {
+        assert!(shell_is(command), "{command}");
+    }
+    assert!(!shell_is("git -C sub status"));
+}
+
+#[test]
 fn plain_builds_and_tests_are_not_destructive() {
     for command in [
         "cargo test",

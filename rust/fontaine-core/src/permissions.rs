@@ -667,8 +667,8 @@ impl PermissionPipeline {
             touched_paths(cx.call.tool, &cx.args, &self.state.scope())
         };
         // Checked before the tool runs. A shell command only names paths, so its words prove
-        // nothing was created; only a file tool's own target counts.
-        let created = if matches!(cx.call.tool, "write" | "edit") {
+        // nothing was created; only `write` creates a file (`edit` reads its target first).
+        let created = if cx.call.tool == "write" {
             paths
                 .iter()
                 .filter(|p| !Path::new(p).exists())
