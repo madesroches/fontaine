@@ -98,7 +98,8 @@ frame needs: `live_lines` + overlay (body + footer + 2 borders when open) + inpu
 status row, clamped to `max_height` (the terminal height). `view::draw` keeps its layout with the
 transcript slot holding `live_lines` (tail shown when clipped). The overlay cap changes from
 `area.height - 4` to `area.height - input_height - 1`, so the input box and status bar always
-fit. Approval-body scrolling (`set_max_scroll`) is unchanged.
+fit. The transcript constraint changes from `Constraint::Min(1)` to `Constraint::Min(0)` so an
+empty live tail does not make the exactly-sized viewport one row short. Approval-body scrolling (`set_max_scroll`) is unchanged.
 
 `App::scroll`, `SCROLL_STEP`, `SCROLL_CAP` and the transcript PgUp/PgDn arms are removed. PgUp
 and PgDn now only scroll an open approval prompt. The terminal's own scrollback (tmux copy mode,
@@ -118,16 +119,18 @@ pub struct Screen<B: Backend> {
 }
 
 impl<B: Backend> Screen<B> {
-    pub fn new(backend: B, placeholder: fn() -> B) -> io::Result<Self>;
+    pub fn new(backend: B, placeholder: fn() -> B) -> Result<Self, B::Error>;
     /// Commit settled lines, fit the live area, draw it.
-    pub fn render(&mut self, app: &mut App) -> io::Result<()>;
+    pub fn render(&mut self, app: &mut App) -> Result<(), B::Error>;
     /// Clear the live area and leave the cursor at its top, for exit.
-    pub fn clear_live(&mut self) -> io::Result<()>;
+    pub fn clear_live(&mut self) -> Result<(), B::Error>;
     pub fn backend(&self) -> &B;
 }
 ```
 
 `render` does, in order:
+0. `self.terminal.autoresize()?`, then `width` = `get_frame().area().width` and `term_height` =
+   `size()?.height` from the resized terminal.
 1. `lines = app.transcript.commit(width)`. If any, call `terminal.insert_before(n, ...)`, which
    renders `Paragraph::new(lines)` into the buffer. The lines are already wrapped at `width`.
 2. `h = view::height(app, width, term_height)`. If `h != self.height`, rebuild (below).
@@ -135,8 +138,8 @@ impl<B: Backend> Screen<B> {
 
 **Height change = rebuild the `Terminal`** (the issue's open point, decided here). ratatui 0.30.2
 cannot resize an inline viewport, so the rebuild:
-1. moves the cursor to the current viewport's top row (`viewport_area` is captured from the last
-   `CompletedFrame`/`get_frame().area()`), and `clear_region(ClearType::AfterCursor)`;
+1. moves the cursor to the viewport's top row, read from `self.terminal.get_frame().area().y` at
+   rebuild time (after the step 1 commit), and `clear_region(ClearType::AfterCursor)`;
 2. takes the real backend out with
    `std::mem::replace(self.terminal.backend_mut(), (self.placeholder)())`;
 3. builds `Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(h) })`.
@@ -149,14 +152,15 @@ round trip: a network round trip over ssh, and a 2 s timeout on terminals that d
 racing the input reader thread. To avoid it, `run` uses a thin backend wrapper, `Anchored<B>`, in
 `screen.rs`. It delegates every `Backend` method, remembers the position from the last
 `set_cursor_position`, and forgets it on any call that moves the cursor (`draw`, `append_lines`,
-`scroll_region_up/down`, `clear`) and whenever `size()`/`window_size()` reports a size different
+`scroll_region_up/down`) and whenever `size()`/`window_size()` reports a size different
 from the last one it saw (ratatui sets the cursor after `draw`, so a resize would otherwise read a
-stale pre-resize position). `get_cursor_position` answers from the remembered position and
+stale pre-resize position). Neither `clear` nor `clear_region` forgets it, since neither moves the
+cursor. `get_cursor_position` answers from the remembered position and
 falls back to the inner backend when it has none. At startup (before the reader thread starts)
 and after a terminal resize, ratatui still asks the real terminal.
 
-**Terminal resize** is left to ratatui's `autoresize` inside `draw`, which re-anchors an inline
-viewport and clears the screen on a horizontal shrink. Lines already in scrollback keep the width
+**Terminal resize**: `render` calls `autoresize` first (step 0), before the commit and
+`insert_before`, which re-anchors an inline viewport and clears the screen on a horizontal shrink. Lines already in scrollback keep the width
 they were wrapped at, as in Claude Code.
 
 ### Driver signature
@@ -193,11 +197,15 @@ live area does not flicker. Windows 10+ consoles support DECSTBM through crosste
    `live_lines` and an `is_settled` helper. Factor `entry_lines` so an assistant entry can be
    rendered from a char offset. Unit tests below.
 3. **Turn end** (`lib.rs`): `finish_turn` calls `interrupt_pending` on every end. Keep the
-   `"interrupted"` notice and the feed drain only for `TurnEnd::Interrupted`.
+   `"interrupted"` notice and the feed drain only for `TurnEnd::Interrupted`. Move the
+   runtime-free part (running=false, deny_pending, drain_prompts, interrupt_pending, outcome
+   notices) into a sync `Ui` method that the `lib.rs` unit test calls; only the feed drain stays
+   in the async path that needs `&AgentRuntime`.
 4. **App** (`app.rs`): remove `scroll`, `SCROLL_STEP`, `SCROLL_CAP`, the PgUp/PgDn arms and
    `self.scroll = 0` in `enter`.
 5. **View** (`view.rs`): add `height`. `draw_transcript` renders `live_lines` showing the tail.
-   Change the overlay cap to `area.height - input_height - 1`.
+   Change the overlay cap to `area.height - input_height - 1` and the transcript constraint from
+   `Constraint::Min(1)` to `Constraint::Min(0)`.
 6. **Screen** (new `screen.rs`, `pub mod screen` in `lib.rs`): `Screen<B>` with `render`, the
    rebuild, `clear_live`, and the `Anchored<B>` backend wrapper.
 7. **Driver** (`lib.rs`): `render: impl FnMut(&mut App)`, `Ui<R: FnMut(&mut App)>`, `Ui::draw`
@@ -245,7 +253,8 @@ live area does not flicker. Windows 10+ consoles support DECSTBM through crosste
   and the live area at the bottom holds the input box, status bar, open prompts and the unfinished
   tail. Scroll back with the terminal or tmux copy mode. Mouse selection works as in any shell
   program. Change the PageUp/PageDown row to "Scroll the command in an open approval prompt".
-  Note that lines already printed keep their width after a resize.
+  Note that narrowing the terminal clears the visible screen and redraws the live area at the
+  top, and earlier output remains in the scrollback above.
 - `tasks/fontaine_harness_plan.md` `## Decisions`: `2026-10-22: The TUI draws inline (live area
   plus terminal scrollback) instead of on the alternate screen, matching Claude Code; reason:
   alternate-screen apps lose mouse selection and wheel scrolling under tmux (#70).`
@@ -299,5 +308,6 @@ breakage is obvious on the next interactive run.
    Expected: the live area grows and shrinks without flicker or leftover rows.
 3. Quit with Ctrl-C. Expected: the shell prompt appears right under the transcript with no input
    box or status bar left behind.
-4. Resize the terminal narrower mid-session. Expected: the live area redraws at the new width,
-   and earlier lines keep their old wrapping.
+4. Resize the terminal narrower mid-session. Expected: the visible screen is cleared
+   and the live area redraws at the top at the new width; earlier output remains in the scrollback
+   above.
