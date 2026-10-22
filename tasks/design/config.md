@@ -109,7 +109,7 @@ subagent_token_budget = 200000    # per-subagent cap; semantics in Phase 5 desig
 subagent_cost_budget_usd = 2.0    # per-subagent spend cap; inactive (one-time notice) on a model with no catalog price, the token cap still binds
 # session_token_budget / session_cost_budget_usd   # root-of-tree totals, default unset
 
-[agents.types]                    # per-type model + toolset + mode (default "inherit", never looser than parent; under a `plan` parent child edits are blocked and non-edits use the tighter of the child's mode and `manual`)
+[agents.types]                    # per-type model + toolset + mode (`mode` accepts only `inherit`/`manual`/`dontAsk`, else load error (exit 2); default "inherit", never looser than parent; under a `plan` parent child edits are blocked and non-edits use the tighter of the child's mode and `manual`)
   explore = { model = "$guardian_default", tools = ["ls", "read", "glob", "grep"] }
   worker  = { model = "$main", tools = ["ls", "read", "glob", "grep", "edit", "write", "shell"] }
 
