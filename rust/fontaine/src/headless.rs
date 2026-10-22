@@ -482,10 +482,13 @@ async fn run_one(
     outcome
 }
 
-/// Startup notices that matter to a run that can reach the guardian: one stderr line each, and
-/// one more when the guardian cannot be asked at all, since every adjudication then fails
-/// closed.
+/// Startup notices: the scanner's, in every mode, then those that matter to a run that can
+/// reach the guardian: one stderr line each, and one more when the guardian cannot be asked at
+/// all, since every adjudication then fails closed.
 fn announce(runtime: &AgentRuntime) {
+    for notice in &runtime.scanner_notices {
+        eprintln!("fontaine: {notice}");
+    }
     if !matches!(runtime.mode, PermissionMode::Auto | PermissionMode::Plan) {
         return;
     }

@@ -969,7 +969,12 @@ pub async fn drive(
     if let Some(error) = history_error {
         ui.app.transcript.notice(error);
     }
-    for notice in runtime.notices.clone() {
+    for notice in runtime
+        .notices
+        .iter()
+        .chain(&runtime.scanner_notices)
+        .cloned()
+    {
         ui.app.transcript.notice(notice);
     }
     if let fontaine_core::agent::SessionOrigin::Continued { source, how } = &runtime.origin {

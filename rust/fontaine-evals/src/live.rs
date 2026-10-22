@@ -14,6 +14,7 @@ use fontaine_core::destructive::{self, Facts};
 use fontaine_core::dirs;
 use fontaine_core::ledger::LedgerView;
 use fontaine_core::models::{GuardianModel, Switcher};
+use fontaine_core::scanner_stage::{self, Backend};
 use fontaine_guardian::{
     ActionTaken, AdjudicationRequest, Guardian, PreExistence, Profile, SessionFacts, Settings,
     ToolCallSummary, TouchedPath, task_intent,
@@ -29,6 +30,12 @@ use crate::runner::CaseResult;
 /// A guardian ready to score cases, and what the model list needs to know about it.
 pub struct Live {
     pub guardian: Arc<Guardian>,
+    /// The user's configuration, for the scanner it selects.
+    config: config::Config,
+    data_dir: std::path::PathBuf,
+    scanner_model: GuardianModel,
+    scrub_env: Vec<OsString>,
+    snapshot: HashMap<String, OsString>,
     /// `<account>/<model>`.
     pub label: String,
     /// The model's account kind, as the model list names it.
@@ -74,19 +81,22 @@ pub fn connect(
         .filter_map(|a| a.api_key_env.as_ref())
         .filter_map(|var| Some((var.clone(), env(var)?)))
         .collect();
+    let held = snapshot.clone();
     let switcher = Switcher::new(
         config.clone(),
         dirs.data.clone(),
-        Arc::new(move |name: &str| snapshot.get(name).cloned()),
+        Arc::new(move |name: &str| held.get(name).cloned()),
     );
-    let handle = match switcher.guardian(spec, None).map_err(|e| e.to_string())? {
-        GuardianModel::Ready(handle) => handle,
+    let guardian_model = switcher.guardian(spec, None).map_err(|e| e.to_string())?;
+    let handle = match &guardian_model {
+        GuardianModel::Ready(handle) => handle.clone(),
         GuardianModel::Unavailable { reason, .. } => {
             return Err(format!(
                 "the guardian model `{spec}` is unavailable: {reason}"
             ));
         }
     };
+    let scrub_env = fontaine_core::tools::scrubbed_env(&config, std::iter::empty());
     let settings = Settings {
         timeout: Duration::from_secs(config.guardian.timeout_secs),
         confidence_threshold: config.guardian.confidence_threshold,
@@ -94,8 +104,17 @@ pub fn connect(
         cache: false,
         profile,
     };
+    let mut snapshot = snapshot;
+    if let Some(value) = env(&config.guardian.scanner_hf_token_env) {
+        snapshot.insert(config.guardian.scanner_hf_token_env.clone(), value);
+    }
     Ok(Live {
         guardian: Arc::new(Guardian::new(handle.completion, spec, settings)),
+        data_dir: dirs.data.clone(),
+        scanner_model: guardian_model,
+        scrub_env,
+        snapshot,
+        config,
         label: spec.to_string(),
         kind,
         model: model.to_string(),
@@ -262,4 +281,55 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
             .flatten(),
         fail_closed,
     })))
+}
+
+/// The scanner the user's configuration selects, set up the way a session sets it up. The
+/// scanner model of an `llm` scanner is the live guardian model.
+pub async fn start_scanner(live: &Live) -> scanner_stage::ScannerStart {
+    let env = |name: &str| live.snapshot.get(name).cloned();
+    scanner_stage::start(&scanner_stage::StartParams {
+        config: &live.config,
+        data_dir: &live.data_dir,
+        scrub_env: &live.scrub_env,
+        env: &env,
+        guardian: Some(&live.scanner_model),
+        model_base_url: None,
+    })
+    .await
+}
+
+/// One `scanner` case through the configured scanner. A scanner that could not judge is an
+/// infrastructure failure, not a verdict.
+pub async fn scan(case: &Case, backend: &Backend) -> CaseResult {
+    let started = std::time::Instant::now();
+    let content = case.tool_result.as_deref().unwrap_or_default();
+    let scan = match backend {
+        Backend::Ready(scanner) => scanner.scan(&case.tool, content).await,
+        Backend::Unavailable(reason) => fontaine_guardian::Scan::Failed {
+            reason: reason.clone(),
+        },
+    };
+    let latency_ms = started.elapsed().as_millis() as u64;
+    let (actual, explanation, fail_closed) = match scan {
+        fontaine_guardian::Scan::Clean => ("clean", None, None),
+        fontaine_guardian::Scan::Flagged { reason } => ("flagged", Some(reason), None),
+        fontaine_guardian::Scan::Failed { reason } => {
+            ("flagged", Some(reason), Some("scanner_error".to_string()))
+        }
+    };
+    CaseResult {
+        id: case.id.clone(),
+        kind: case.kind.as_str(),
+        category: case.category.to_string(),
+        expected: case.expected.clone(),
+        pass: fail_closed.is_none() && actual == case.expected,
+        actual: actual.to_string(),
+        expected_tier: None,
+        actual_tier: None,
+        mode: None,
+        latency_ms,
+        explanation,
+        escape_class: None,
+        fail_closed,
+    }
 }

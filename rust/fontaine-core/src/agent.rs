@@ -39,6 +39,7 @@ use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
 use crate::models::{GuardianChoice, GuardianModel, ModelRef, Models, Switcher};
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
+use crate::scanner_stage::{ScannerStage, ScannerStart};
 use crate::session::{CONVERSATION_LOG, Session};
 use crate::skills::{self, SkillRuntime};
 use crate::steering::{Steering, SteeringHook};
@@ -89,6 +90,8 @@ pub struct AgentSetup {
     pub guardian_profile: Profile,
     /// What to tell the user once at startup.
     pub notices: Vec<String>,
+    /// The tool-result scanner as started, and what it has to tell the user.
+    pub scanner: ScannerStart,
     /// Resolves models again for `/model` and `/guardian-model`.
     pub switcher: Option<Switcher>,
     /// The skills, agent files and output styles that were loaded.
@@ -179,6 +182,9 @@ pub struct AgentRuntime {
     pub mode: PermissionMode,
     pub guardian_profile: Profile,
     pub notices: Vec<String>,
+    /// Scanner startup notices. Kept apart from `notices` because every surface shows them in
+    /// every permission mode.
+    pub scanner_notices: Vec<String>,
     pub origin: SessionOrigin,
     /// Messages typed while a turn runs, delivered with the next tool result.
     pub steering: Steering,
@@ -387,6 +393,9 @@ impl AgentRuntime {
             StageKind::Notifications,
             Arc::new(NotificationStage { tree: tree.clone() }),
         );
+        if let Some(backend) = setup.scanner.backend {
+            results = results.with_stage(StageKind::Scanner, Arc::new(ScannerStage::new(backend)));
+        }
         if !hooks.post.is_empty() {
             results = results.with_stage(
                 StageKind::PostToolUse,
@@ -494,6 +503,7 @@ impl AgentRuntime {
             mode: setup.mode,
             guardian_profile: setup.guardian_profile,
             notices: setup.notices,
+            scanner_notices: setup.scanner.notices,
             origin: setup.origin,
             steering,
             files: Arc::default(),
@@ -658,7 +668,8 @@ impl AgentRuntime {
             agent: ROOT_AGENT,
             annotations: None,
         };
-        let screened = match self.results.run(view, Ok(ToolOutput::text(text))).await {
+        let (screened, _) = self.results.run(view, Ok(ToolOutput::text(text))).await;
+        let screened = match screened {
             Ok(output) => output.render(),
             Err(error) => error.model_output().render(),
         };

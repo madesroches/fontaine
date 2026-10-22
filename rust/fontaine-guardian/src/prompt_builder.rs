@@ -61,7 +61,7 @@ pub fn system_prompt(profile: Profile, request: &AdjudicationRequest) -> String 
 
 /// Defuses text that would close or open an untrusted block, so request content can never end
 /// the block it sits in.
-fn neutralize(text: &str) -> String {
+pub(crate) fn neutralize(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     let mut out = String::with_capacity(text.len());
     let mut copied = 0;

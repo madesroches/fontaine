@@ -378,6 +378,14 @@ async fn score_live<'a>(
     live: &Live,
 ) -> Result<(Vec<CaseResult>, Vec<&'a Case>, Vec<Skipped>), String> {
     let (mut results, mut scored, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
+    let scanner = if selected.iter().any(|c| c.kind == Kind::Scanner) {
+        live::start_scanner(live).await
+    } else {
+        Default::default()
+    };
+    for notice in &scanner.notices {
+        eprintln!("fontaine-evals: {notice}");
+    }
     for case in selected {
         match case.kind {
             Kind::Guardian => match live::adjudicate(case, live).await? {
@@ -405,10 +413,16 @@ async fn score_live<'a>(
                 }),
                 Err(e) => return Err(format!("case {}: {e}", case.id)),
             },
-            Kind::Scanner => skipped.push(Skipped {
-                id: case.id.clone(),
-                reason: "scanner cases are scored once the tool-result scanner exists".into(),
-            }),
+            Kind::Scanner => match &scanner.backend {
+                Some(backend) => {
+                    results.push(live::scan(case, backend).await);
+                    scored.push(*case);
+                }
+                None => skipped.push(Skipped {
+                    id: case.id.clone(),
+                    reason: "`scanner` is `off` in the user configuration".into(),
+                }),
+            },
         }
     }
     Ok((results, scored, skipped))

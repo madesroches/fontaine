@@ -342,14 +342,16 @@ where
         let Some(bridge) = span.extensions_mut().remove::<BridgeSpan>() else {
             return;
         };
-        // A model call made while a guardian adjudication is open is the guardian's own, and one
-        // under a subagent's span is that subagent's.
+        // A model call made while a guardian adjudication is open is the guardian's own, one
+        // under a scan is the scanner's, and one under a subagent's span is that subagent's.
         let query_source = if span
             .scope()
             .skip(1)
             .any(|p| p.name() == "fontaine.guardian")
         {
             "guardian"
+        } else if span.scope().skip(1).any(|p| p.name() == "fontaine.scanner") {
+            "scanner"
         } else if span
             .scope()
             .skip(1)
@@ -596,6 +598,25 @@ mod tests {
             .map(|e| e.fields["query_source"].clone())
             .collect();
         assert_eq!(sources, ["main", "guardian"]);
+    }
+
+    #[test]
+    fn a_model_call_under_a_scanner_span_is_attributed_to_the_scanner() {
+        let (_recorder, capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            let scanner = tracing::info_span!(target: TARGET, "fontaine.scanner");
+            scanner.in_scope(|| {
+                let agent = tracing::info_span!(target: "rig::agent_chat", "invoke_agent");
+                agent.in_scope(|| completion("openai", "gpt-4o-mini"));
+            });
+        });
+        let events = capture.events();
+        let sources: Vec<_> = events
+            .iter()
+            .filter(|e| e.message() == "api_request")
+            .map(|e| e.fields["query_source"].clone())
+            .collect();
+        assert_eq!(sources, ["scanner"]);
     }
 
     #[test]

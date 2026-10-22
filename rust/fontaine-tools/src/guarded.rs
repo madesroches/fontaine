@@ -196,6 +196,7 @@ where
         agent: &agent,
         annotations,
     };
+    let mut scan = None;
     let outcome = match guard.gate.check(view).instrument(span.clone()).await {
         GateDecision::Deny { message } => Err(ToolExecutionError::refused(message)),
         GateDecision::Allow { args: allowed } => {
@@ -208,18 +209,33 @@ where
                 agent: &agent,
                 annotations,
             };
-            guard
+            let (outcome, record) = guard
                 .results
                 .run(view, outcome)
                 .instrument(span.clone())
-                .await
+                .await;
+            scan = record;
+            outcome
         }
     };
 
     let success = outcome.is_ok();
     span.record("success", success);
-    span.in_scope(|| {
-        tracing::info!(
+    span.in_scope(|| match scan {
+        Some(scan) => tracing::info!(
+            target: TARGET,
+            tool_name = shown,
+            risk_class = risk.as_str(),
+            tool_source = source.as_str(),
+            success = success,
+            duration_ms = started.elapsed().as_millis() as u64,
+            args_bytes = args_bytes as u64,
+            result_bytes = output_bytes(&outcome) as u64,
+            scanner_verdict = scan.verdict.as_str(),
+            scanner_latency_ms = scan.latency_ms,
+            "tool_result"
+        ),
+        None => tracing::info!(
             target: TARGET,
             tool_name = shown,
             risk_class = risk.as_str(),
@@ -229,7 +245,7 @@ where
             args_bytes = args_bytes as u64,
             result_bytes = output_bytes(&outcome) as u64,
             "tool_result"
-        );
+        ),
     });
     outcome
 }

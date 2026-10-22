@@ -9,8 +9,10 @@ repository.workspace = true
 
 [package.metadata.dist]
 dist = true
+features = ["pg2"]
 
 [features]
+pg2 = ["fontaine-core/pg2"]
 default = ["telemetry-micromegas", "telemetry-otlp"]
 telemetry-micromegas = ["dep:micromegas-tracing", "dep:micromegas-telemetry-sink"]
 telemetry-otlp = [

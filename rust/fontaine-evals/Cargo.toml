@@ -9,6 +9,9 @@ publish.workspace = true
 [package.metadata.dist]
 dist = false
 
+[features]
+pg2 = ["fontaine-core/pg2"]
+
 [dependencies]
 clap.workspace = true
 dirs.workspace = true
