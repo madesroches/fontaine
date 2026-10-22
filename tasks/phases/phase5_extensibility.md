@@ -14,7 +14,7 @@ in the main session, and their results return to the parent as a summary.
   a separate **rig-agent** conversation (`AgentBuilder` + `AgentRun`, its own `rig-memory` context), with its own
   selectable model and a **per-agent-type restricted tool registry** drawn from Fontaine's risk registry — a subagent's
   registry is a subset of the parent's, never a superset. The `agent` tool blocks until the child finishes and returns its report as the tool result (Claude Code parity); with `background: true` it returns `{agent_id}` immediately and the child's report is delivered later as a notification injected into the parent's next turn, passing through `ResultPipeline` like any tool result. With `tool_concurrency = 1`, concurrency comes from background children. Listing,
-  status streaming and interrupt/kill/pause are TUI-only user controls (the agents panel), not model tools.
+  status streaming and interrupt/kill are TUI-only user controls (the agents panel), not model tools.
 - **Results re-enter through the gate.** A subagent's report comes back to the parent as an ordinary *tool result*, so
   when a scanner is configured (`[guardian] scanner`, off by default) it passes the tool-result scanner like any other
   result — only then is injection text surviving inside a subagent's output flagged before the parent reads it. The
@@ -69,7 +69,7 @@ returns the decision, `updatedInput` and `guardian_context` above; `post_tool_us
 append a note to the tool result the agent sees, returned as `hookSpecificOutput.additionalContext` (string; a `ResultPipeline` stage that runs after the Phase 6 scanner stage); `permission_denied` may return `hookSpecificOutput.retry` (bool; the agent is
 told it may retry, as with `/denied` → `r`). Handlers run (through Git Bash on Windows, found by the same discovery as the `shell` tool, including `FONTAINE_GIT_BASH_PATH`) with the scrubbed child environment and a
 `timeout_secs` cap, in a `fontaine.hook` span. A user-scope `allow` in `auto` follows Claude Code: a
-narrow matcher skips the guardian, a broad one is suspended. Every subagent tool call runs the same hooks.
+narrow matcher skips the guardian, a broad one is suspended. `matcher` is optional (absent counts as broad, so its `allow` is suspended in `auto`), and `timeout_secs` defaults to 30. Every subagent tool call runs the same hooks.
 
 ### Extension files (skills, agent files, output styles)
 
@@ -95,7 +95,7 @@ agents port by copying; `.claude/` is not read directly. `user-invocable` (defau
 ### TUI extension — background-agents panel
 
 One row per running subagent — type, model, status (running / waiting-on-permission / done /
-killed), token/cost spend vs budget — with keys to inspect a row's transcript, kill/pause it, and
+killed), token/cost spend vs budget — with keys to inspect a row's transcript, kill it, and
 see its pending approval prompts; per-agent guardian decisions (including Tier-0.5 audit entries)
 are listed per row, so a background subagent never hides an approval behind the parent's
 transcript.
@@ -117,10 +117,10 @@ transcript.
    `ToolCallSummary` (`rust/fontaine-guardian/src/request.rs`) with the render in
    `rust/fontaine-guardian/src/prompt_builder.rs` and a snapshot test. Telemetry: `mcp_server_connection` and
    `fontaine.mcp.call` (server and tool names only under `log_tool_details`, otherwise `"third-party"`).
-2. Session persistence via rig's serializable `AgentRun` + `rig-memory` save/resume, with the
+2. Session persistence over the session's `rig-memory` `DirStore` (the conversation log the agent is built with via `AgentBuilder::memory(..).conversation(..)`), with the
    Phase-2 ledger as the second store (`tasks/design/sessions.md` §Session ledger): `--continue` / `--resume <id>`
-   restore context and ledger (through new session/ledger open/load constructors beside today's `Session::create` and `Ledger::create`), start in the resolved default mode and drop session grants;
-   `--fork-session` copies both stores under a new session id without session grants (`--session-id` sets that new id under `--fork-session`, as Claude Code allows);
+   restore context and ledger by reopening both stores (through new session/ledger open/load constructors beside today's `Session::create` and `Ledger::create`), start in the resolved default mode and drop session grants;
+   `--fork-session` copies both stores (or uses rig-memory's `Writer::fork_log` for the conversation log) under a new session id without session grants (`--session-id` sets that new id under `--fork-session`, as Claude Code allows);
    `fontaine.session.count{start_type=resume}`.
 3. `fontaine-agents`: defines the `ChildRunner` trait (`rust/fontaine-agents/src/runner.rs`: spawn a gated child
    run from agent type, effective mode, budget and a `LedgerView` handle; returns a handle for status, kill
@@ -131,7 +131,7 @@ transcript.
    one-way mode inheritance (child mode ≤ parent mode); agent-to-agent messages (`send_message`) through the same
    guardian gate; results returned as ordinary tool results through `ResultPipeline` (Phase 2; the Phase 6 scanner
    stage attaches there); `[agents]` budgets
-   enforced; TUI background-agents panel (status, kill/pause, per-agent decisions). Telemetry:
+   enforced; TUI background-agents panel (status, kill, per-agent decisions). Telemetry:
    `fontaine.subagent` spans (`agent.id` / `agent.type`) parented to the spawning tool call,
    `subagent` lifecycle events (incl. `budget_exhausted`).
 
@@ -144,9 +144,9 @@ transcript.
    | `skill` | ReadOnly | `name` (resolved against the start-time index) |
    | `send_message` | Arbitrary | `to` (agent id of a parent, child or sibling in the same root tree, or `"main"` for the root session), `message`; returns `{status: "queued"}`, or error `agent not running` for a finished or killed target |
 
-4. User hooks (design above); `post_tool_use` attaches to `ResultPipeline` as its hook stage; `permission_denied` is invoked from the pipeline's deny paths (`rust/fontaine-core/src/permissions.rs`) and its `retry` feeds the existing gate retry grant (`approve_retry`/`take_retry` in `rust/fontaine-core/src/gate.rs`).
+4. User hooks (design above): extend `PreToolUseEvent` (`rust/fontaine-core/src/permissions.rs`) with the wire fields `session_id`, `cwd`, `permission_mode`, `workspace_roots`; wire configured hooks into the agent in `rust/fontaine-core/src/agent.rs` (today `hooks: Vec::new()`); `post_tool_use` attaches to `ResultPipeline` as its hook stage, where `rust/fontaine-core/src/tools.rs` builds `ResultPipeline::new()`; `permission_denied` is invoked from the pipeline's deny paths (`rust/fontaine-core/src/permissions.rs`) and its `retry` feeds the existing gate retry grant (`approve_retry`/`take_retry` in `rust/fontaine-core/src/gate.rs`), via a new non-index retry entry beside `approve_retry`.
 5. Extension files (design above): loader in `fontaine-core/src/extensions.rs`; `skill` tool and
-   skill slash commands (the `skill` tool is in the step-3 table); agent files into the agent-type registry; output styles.
+   skill slash commands (the `skill` tool is in the step-3 table; it is constructed and wrapped by `fontaine_core::tools::registry`, not by `fontaine-tools`' `builtins::build`, so the Phase-2 builtins-only check stays at 8 entries); agent files into the agent-type registry; output styles.
 6. Docs — `docs/mcp.md`: declaring stdio / streamable-HTTP servers in config, project servers
    behind workspace trust and per-server approval, and the MCP trust model (server annotations reach the guardian only as untrusted text, never as gates; all MCP tools
    register `Arbitrary`); `docs/agents.md`: the `agent` tool, `[agents]` budgets, `[agents.types]`
@@ -155,7 +155,7 @@ transcript.
    `docs/hooks.md`: events, handler I/O, place in the pipeline, composition, failure semantics,
    scopes and trust; `docs/extensions.md`: skills, slash commands, output styles, layout,
    frontmatter, porting from `.claude/`; extend `docs/tui.md` with the panel, the trust prompt and
-   `/output-style`; add resume/fork to `docs/architecture.md` and `--continue` / `--resume` /
+   `/output-style`; add the four new pages to `docs/index.md` and to the required-pages list in `rust/fontaine-core/tests/docs.rs`; add resume/fork to `docs/architecture.md` and `--continue` / `--resume` /
    `--fork-session` to `docs/headless.md`; add subagent/MCP telemetry to `docs/telemetry.md`; extend
    `docs/configuration.md` with `[mcp.servers.*]`, `[hooks.*]` and every
    `[agents]`/`[agents.types]` key; extend `docs/tools.md` with inventory rows for `agent`, `skill` and `send_message` (required by `the_tools_page_names_every_registered_built_in_tool`); in `docs/permissions.md` replace the sentence "No hook is configurable in this build; the slot exists and is tested" with a link to `docs/hooks.md`; append a CHANGELOG entry.
@@ -175,7 +175,7 @@ and **`docs/sandboxing.md`** documenting the srt/bubblewrap integration path and
 ## Files created or modified
 
 `rust/Cargo.toml` (`rig-rmcp =0.45.0`; direct `rmcp` pin `=3.6.0`, features `client`, `transport-child-process`, `transport-streamable-http-client-reqwest`, `default-features = false`; TLS via the workspace reqwest `rustls` feature); `rust/fontaine-mcp/src/{lib,servers,register}.rs`; `rust/fontaine-agents/src/{lib,spawn,registry,budget,runner,ledger_view}.rs`;
-`rust/fontaine-core/src/{session,user_hooks,extensions,child_runner}.rs`; `rust/fontaine-guardian/src/{request,prompt_builder}.rs`; `rust/fontaine-tools/src/skill.rs`;
+`rust/fontaine-core/src/{session,user_hooks,extensions,child_runner,permissions,agent,tools,gate}.rs`; `rust/fontaine-guardian/src/{request,prompt_builder}.rs`; `rust/fontaine-tools/src/{lib,skill}.rs` (`pub mod skill;`);
 `rust/fontaine-tui/src/{agents_panel,trust_prompt}.rs`;
 `docs/{mcp,agents,hooks,extensions,tools,permissions,tui,configuration,architecture,headless,telemetry,index}.md`.
 
@@ -200,7 +200,7 @@ and **`docs/sandboxing.md`** documenting the srt/bubblewrap integration path and
   fast path (`rust/fontaine-core/tests/choke_point.rs` extended to MCP-imported tools and to a list-changed refresh: tools added or
   replaced by a refresh are registered wrapped as `Arbitrary` under `mcp__<server>__<tool>`, none
   reachable raw).
-- Persistence: save/resume round-trip through `AgentRun` + ledger; resume starts in the default mode
+- Persistence: save/resume round-trip through the reopened `rig-memory` conversation log + ledger; resume starts in the default mode
   without session grants; fork copies both stores under a new id; neither carries session grants.
 - **workspace trust** (TUI `TestBackend`): an untrusted root's project and project-local MCP servers and hooks do not
   start before the trust prompt is accepted; declining starts none; a trusted root still asks per
