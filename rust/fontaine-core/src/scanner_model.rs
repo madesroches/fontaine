@@ -42,14 +42,43 @@ impl std::fmt::Display for FetchError {
     }
 }
 
-/// Downloads the files of `dir` that are missing from `base_url`. A file lands under its final
-/// name only after a complete, successful response; an interrupted one leaves nothing behind.
-/// With every file present, no token is needed and nothing is requested.
-pub async fn ensure(dir: &Path, base_url: &str, token: Option<&str>) -> Result<(), FetchError> {
-    let missing: Vec<&str> = FILES
+/// Marks a download in progress, so a later start can tell what an interrupted one left.
+const PART_PREFIX: &str = ".part-";
+/// Old enough that no live download of another session can be mistaken for a leftover.
+const STALE_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// The files of `dir` that a download would still fetch.
+pub fn missing(dir: &Path) -> Vec<&'static str> {
+    FILES
         .into_iter()
         .filter(|name| !dir.join(name).is_file())
-        .collect();
+        .collect()
+}
+
+/// Removes partial downloads that a killed process left behind.
+fn sweep_stale(dir: &Path, grace: Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let is_part = entry.file_name().to_string_lossy().starts_with(PART_PREFIX);
+        let age = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok());
+        if is_part && age.is_some_and(|age| age >= grace) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Downloads the files of `dir` that are missing from `base_url`. A file lands under its final
+/// name only after a complete, successful response; a failed fetch removes its partial file, and
+/// one a killed process left behind is swept by the next download once it is stale.
+/// With every file present, no token is needed and nothing is requested.
+pub async fn ensure(dir: &Path, base_url: &str, token: Option<&str>) -> Result<(), FetchError> {
+    let missing = missing(dir);
     if missing.is_empty() {
         return Ok(());
     }
@@ -59,6 +88,7 @@ pub async fn ensure(dir: &Path, base_url: &str, token: Option<&str>) -> Result<(
     tokio::fs::create_dir_all(dir)
         .await
         .map_err(|e| FetchError::Failed(format!("cannot create {}: {e}", dir.display())))?;
+    sweep_stale(dir, STALE_AFTER);
     let client = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
@@ -68,7 +98,7 @@ pub async fn ensure(dir: &Path, base_url: &str, token: Option<&str>) -> Result<(
         let target = dir.join(name);
         // A temp file of its own, so a second session fetching the same files never writes
         // into this one's; a failed fetch drops it.
-        let part = fetch_one(&client, &format!("{base_url}/{name}"), token, dir).await?;
+        let part = fetch_one(&client, &format!("{base_url}/{name}"), token, dir, name).await?;
         // Another session may have finished first; its complete file stays.
         if let Err(e) = part.persist_noclobber(&target)
             && !target.is_file()
@@ -88,6 +118,7 @@ async fn fetch_one(
     url: &str,
     token: &str,
     dir: &Path,
+    name: &str,
 ) -> Result<tempfile::TempPath, FetchError> {
     use tokio::io::AsyncWriteExt;
 
@@ -109,7 +140,9 @@ async fn fetch_one(
     let expected = response.content_length();
     let cannot_write =
         |e: std::io::Error| FetchError::Failed(format!("cannot write in {}: {e}", dir.display()));
-    let (file, part) = tempfile::NamedTempFile::new_in(dir)
+    let (file, part) = tempfile::Builder::new()
+        .prefix(&format!("{PART_PREFIX}{name}-"))
+        .tempfile_in(dir)
         .map_err(cannot_write)?
         .into_parts();
     let mut file = tokio::fs::File::from_std(file);

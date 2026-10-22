@@ -47,8 +47,8 @@ background in `research/research-llamafirewall.md`. Subagent reports flow throug
    The download lives in a new `rust/fontaine-core/src/scanner_model.rs` (behind `fontaine-core/pg2`, with `reqwest` as an
    optional workspace dependency of `fontaine-core` enabled by that feature; `fontaine-guardian` only loads from a directory):
    it fetches only missing files from a base URL constant (a parameter, so tests point it at `wiremock`) with
-   `Authorization: Bearer <token>`, writes each to `<file>.part` and renames it into place only after a complete, successful
-   response, and removes the `.part` on failure. A missing token, a 401/403 (license not accepted), a network error, or a load
+   `Authorization: Bearer <token>`, writes each to a per-session temp file (prefix `.part-`) and persists it without clobbering only after a complete, successful
+   response, removes it on failure, and sweeps stale ones (older than 10 minutes) left by a killed process. A missing token, a 401/403 (license not accepted), a network error, or a load
    failure (missing/corrupt files, load timeout) never aborts startup: the session runs with the scanner stage attached in an
    unavailable state that gives every result the unscanned-and-suspect note, plus a startup notice naming the cause, the
    Llama 4 Community License acceptance on HF and the token variable from `scanner_hf_token_env`.
@@ -97,7 +97,7 @@ background in `research/research-llamafirewall.md`. Subagent reports flow throug
   `FONTAINE_PG2_MODEL`, an injection placed after token 512 of benign text is flagged.
 - pg2 download (`rust/fontaine-core/tests/scanner_model.rs`, `cfg(feature = "pg2")`, wiremock): the Bearer token comes from the
   `scanner_hf_token_env` variable; files appear only after a complete response (an interrupted response leaves no final file and
-  no `.part`); missing token, 401/403 and a bad model directory each keep startup going with a notice naming the license and the
+  no temp file; a stale temp file is swept and a fresh one kept); missing token, 401/403 and a bad model directory each keep startup going with a notice naming the license and the
   token variable, and results then carry the unscanned-and-suspect note.
 - License-notice path (`cfg(feature = "pg2")`): the license notice is in `scanner_notices` on every startup with `scanner = "pg2"`
   (from `scanner_model_path` and after a download, whether or not the model loads), and headless prints it in every permission mode
@@ -122,7 +122,8 @@ background in `research/research-llamafirewall.md`. Subagent reports flow throug
 - 2026-10-22 AFK: pg2 scores the whole result in 512-token windows at stride 256 and flags if any window reaches `FLAG_THRESHOLD`, instead of LlamaFirewall's truncation to 512 tokens — an injection past the first window would otherwise pass unflagged; the whole scan stays under `timeout_secs` and a timeout is flagged.
 - 2026-10-22 AFK: Scanner verdict and latency reach `tool_result` through a `ScanRecord` returned by `ResultPipeline::run` (via a provided `ResultStage::process_reported` only the scanner stage overrides), recorded by `guarded.rs` as `scanner_verdict` / `scanner_latency_ms` — the smallest change that keeps them on the event without touching the other stages.
 - 2026-10-22 AFK: The pg2 license notice shows on every startup with `scanner = "pg2"` (download or `scanner_model_path`, loaded or not) through a separate `AgentRuntime::scanner_notices` that headless prints in every mode; `runtime.notices` and the guardian-unavailable line keep their auto/plan gate.
-- 2026-10-22 AFK: The pg2 download lives in `fontaine-core/src/scanner_model.rs` (optional workspace `reqwest` behind `pg2`; `fontaine-guardian` only loads from a directory), writes `*.part` then renames; any download or load failure keeps the session running, with a startup notice naming the cause, license and token variable, and every result gets the unscanned-and-suspect note — the same keep-running, fail-closed-per-call shape as an unavailable guardian.
+- 2026-10-22 AFK: The pg2 download lives in `fontaine-core/src/scanner_model.rs` (optional workspace `reqwest` behind `pg2`; `fontaine-guardian` only loads from a directory), writes a per-session temp file then persists it without clobbering; any download or load failure keeps the session running, with a startup notice naming the cause, license and token variable, and every result gets the unscanned-and-suspect note — the same keep-running, fail-closed-per-call shape as an unavailable guardian.
 - 2026-10-22 AFK: `fontaine-evals` gets a forwarding `pg2 = ["fontaine-core/pg2"]` feature, documented as `--features pg2` for live runs with `scanner = "pg2"`, rather than skipping scanner cases — keeps live scanner evals possible and the config error explicit.
 - 2026-10-22 AFK: pg2 tokenization, inference and the startup model load run in `spawn_blocking` (model in an `Arc`) under `tokio::time::timeout` bounded by `timeout_secs`, a timeout or `JoinError` counting as flagged — synchronous candle work would otherwise never yield to the timeout and would block a runtime worker.
 - 2026-10-22 AFK: The pg2 download is bounded by a 30 second connect timeout and a 60 second read timeout (the longest silence between pieces of a body), not by a total time — the weights are large and connections vary, but a hung server can no longer block startup forever; a timeout is a download failure and keeps the session running with the unavailable notice.
+- 2026-10-22 AFK: The pg2 download uses a per-session `.part-` temp file with a no-clobber persist and a stale-file sweep instead of a shared `<file>.part` rename, so two sessions downloading at once never write into each other's file.

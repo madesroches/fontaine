@@ -231,7 +231,8 @@ Either point `scanner_model_path` at a directory holding `model.safetensors`, `t
 with your Hugging Face token, read from the environment variable named by `scanner_hf_token_env`
 (`HF_TOKEN` by default). The token is never stored or logged, and that variable is never passed to
 `shell` commands or hooks. A download gives up when it cannot connect within 30 seconds or
-when the server goes silent for 60 seconds, and a file appears under its final name only after a complete response.
+when the server goes silent for 60 seconds, and a file appears under its final name only after a complete response. The first start downloads the
+model (hundreds of MB), prints a line on stderr saying so, and is slow; later starts reuse the files.
 
 The model loads at startup. If the token is missing, Hugging Face refuses the download (the license
 is not accepted), the network fails, or the files are missing or corrupt, the session still starts.

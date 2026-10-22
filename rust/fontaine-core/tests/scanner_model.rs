@@ -156,7 +156,7 @@ async fn the_token_comes_from_the_named_variable_and_only_missing_files_are_fetc
 }
 
 #[tokio::test]
-async fn an_interrupted_response_leaves_no_final_file_and_no_part_file() {
+async fn an_interrupted_response_leaves_no_final_file_and_no_temp_file() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move {
@@ -182,6 +182,32 @@ async fn an_interrupted_response_leaves_no_final_file_and_no_part_file() {
         assert!(!dir.join(name).exists(), "{name} must not exist");
     }
     assert!(parts_in(&dir).is_empty(), "{:?}", parts_in(&dir));
+}
+
+#[tokio::test]
+async fn a_stale_partial_download_is_swept_and_a_fresh_one_kept() {
+    let server = MockServer::start().await;
+    serve_files(&server, 200).await;
+    let w = World::new();
+    let dir = scanner_model::default_dir(&w.data);
+    std::fs::create_dir_all(&dir).unwrap();
+    let stale = dir.join(".part-model.safetensors-old");
+    let fresh = dir.join(".part-model.safetensors-new");
+    for p in [&stale, &fresh] {
+        std::fs::write(p, "partial").unwrap();
+    }
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&stale)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    scanner_model::ensure(&dir, &server.uri(), Some("tok"))
+        .await
+        .unwrap();
+    assert!(!stale.exists());
+    assert!(fresh.exists());
 }
 
 #[tokio::test(start_paused = true)]
