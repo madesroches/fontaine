@@ -24,7 +24,7 @@ ratatui + crossterm, codex-rs-style: transcript pane (streaming assistant text, 
 calls), input box, status bar showing mode (`⏵⏵ auto mode on`). Approval prompt widget for
 manual/escalate (allow once / allow session / always allow / deny + feedback): "allow session" adds
 a session-scope grant to `SessionState` (recorded in the ledger); "always allow" shows the exact
-`Tool(specifier)` rule it will write and appends it to the user file's `[permissions] allow` (user-file writes — "always allow", `/model`, `/guardian-model` — go through `toml_edit =0.25.17`, preserving the file's formatting and comments); the
+`Tool(specifier)` rule it will write and appends it to the user file's `[permissions] allow` and adds it to `SessionState`'s allow rules immediately, so the next matching call in the same session skips the prompt (user-file writes — "always allow", `/model`, `/guardian-model` — go through `toml_edit =0.25.17`, preserving the file's formatting and comments); the
 proposed rule is the narrowest that covers the call (exact argv for `shell`, the resolved path for
 path tools, the host for `webfetch`). `/add-dir <path>` adds a
 workspace root; Shift+Tab cycles modes. (The denial UX — inline `[Rule]` rendering,
@@ -76,7 +76,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
    read-only fast path, then the Tier-0.5 shell pre-classifier with its curated set +
    per-command read-only flag allowlist (initial table above) + `allow_extra` entries (a command or `command subcommand` pair; no flags — any flag falls through; positional args validated as in-scope paths) + audit log, schema per
    `tasks/design/permissions.md` §Core data flow); rule matching and allow rules (design above; `--allowed-tools` /
-   `--disallowed-tools` as CLI-scope rules); the step-1a hook-decision slot; `GateDecision` → audit
+   `--disallowed-tools` as CLI-scope rules: two repeatable flags in `rust/fontaine/src/cli.rs`, merged by `rust/fontaine-core/src/config.rs` into the CLI layer's `permissions.deny`/`allow` and validated by the same load-time rule parser); the step-1a hook-decision slot; `GateDecision` → audit
    log, then `tool_decision` telemetry and the headless `gate_decision` event; `fontaine.permission`
    and `fontaine.tool.blocked_on_user` spans, `permission_mode_changed` event; human-approval
    callback trait.
@@ -89,7 +89,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
    `baseline capture` / `baseline diff` subcommands (Differential
    baselines; `diff` runs against a `--guardian none --out` file) and run them for manual/acceptEdits/plan/dontAsk over the Tier-0.5 adversarial set and
    the floor/headless cases (the cases' `permissions` field is written as equivalent `.claude/settings.json` permissions in `Tool(specifier)` syntax in the scratch workspace); also confirm the protected-path list and the allowlist table against
-   the captured `claude -p` behavior. Fix or record each divergence. Add `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none` (from `rust/`) to `ci.yml` on all three OSes.
+   the captured `claude -p` behavior. Fix or record each divergence. In `none` mode each case's risk class comes from `builtin_risk(tool)`, falling back to `Arbitrary` as `risk_of` in `fontaine-tools/src/builtins.rs` does (`agent` is not in `BUILTIN_RISK`). A symlink-creation failure or a dangling link in a case workspace (`tier05-symlink-escape`, `tier05-out-of-scope-cwd` on Windows) counts as out of scope, not a runner error. Add `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none` (from `rust/`) to `ci.yml` on all three OSes.
 4. Cassette test (offline build; recording stays the human step): `rust/fontaine/tests/cassettes.rs` with the manual-mode
    test (in-scope read round-trip) marked `#[ignore = "cassette not recorded"]`, the rig-cassette scrubbing
    configuration, and the account `base_url` pointed at the cassette proxy.
@@ -99,19 +99,19 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
    `Tool(specifier)` rule grammar and allow rules (sources, step order, session vs always grants,
    suspension of broad rules in `auto`), and the Tier-0.5 pre-classifier (curated set,
    per-command read-only flag allowlist, fail-through rule, `[shell_preclassifier] allow_extra` —
-   user trust scopes only (per the config scope table), flag-free, positionals must be in-scope paths); complete the full permission-pipeline diagram in `docs/architecture.md`;
+   user trust scopes only (per the config scope table), flag-free, positionals must be in-scope paths); complete the full permission-pipeline diagram in `docs/architecture.md`, update its crate tree (add `preclassify`; `fontaine-tui` is no longer a skeleton) and module table (`permissions`/`audit` modules);
    start `docs/tui.md` (keybinds incl. Shift+Tab, approval-prompt options, `/add-dir`); add
-   `--allowed-tools` / `--disallowed-tools` and the `gate_decision` event to `docs/headless.md`; add
-   the `tool_decision` event and permission spans to `docs/telemetry.md`; fill the README mode
+   the `--allowed-tools` / `--disallowed-tools` flags to the `docs/headless.md` flag table and rewrite its Denials paragraph (no longer deny-by-default; `gate_decision` is emitted; `result.denials` is populated); add
+   the `tool_decision` event and permission spans to `docs/telemetry.md`; in `docs/tools.md` replace "Permissions today" with a pointer to `docs/permissions.md` and repoint the inbound links in `docs/headless.md` and `docs/configuration.md`; in `docs/configuration.md` update the `[permissions]` intro, the `allow_extra` "not yet active" note and the CLI table (add the two flags); add `docs/index.md` entries for `docs/permissions.md` and `docs/tui.md`; fill the README mode
    table; append a CHANGELOG entry.
 
 ## Files created or modified
 
-`rust/Cargo.toml` (new crates: dev `rig-cassette =0.45.0` (features `http`, `agent`), `ratatui =0.30.2`, `crossterm =0.29.0`, `brush-parser =0.4.0`, `toml_edit =0.25.17`, `sha2 =0.11.1` (audit `args_digest`), `serde_jcs =0.2.0` (args canonicalization)); `rust/fontaine-core/src/{permissions,permission_rules,audit}.rs`; `.github/workflows/ci.yml` (adds the `--guardian none` eval step on all three OSes); `rust/fontaine-evals/src/baseline.rs`; `rust/fontaine-evals/tests/{baseline,none_mode}.rs`;
+`rust/Cargo.toml` (new crates: dev `rig-cassette =0.45.0` (features `http`, `agent`), `ratatui =0.30.2` (crossterm via `ratatui::crossterm`, no direct pin), `brush-parser =0.4.0`, `toml_edit =0.25.17`, `sha2 =0.11.1` (audit `args_digest`), `serde_jcs =0.2.0` (args canonicalization)); `rust/fontaine-core/src/{permissions,permission_rules,audit}.rs`; `.github/workflows/ci.yml` (adds the `--guardian none` eval step on all three OSes); `rust/fontaine-evals/src/baseline.rs`; `rust/fontaine-evals/tests/{baseline,none_mode}.rs`;
 `rust/fontaine-tools/src/preclassify.rs`; `rust/fontaine/tests/cassettes.rs` (manual-mode cassette, built in step 4; the auto-mode cassette is added in Phase 4);
 `rust/fontaine-tui/src/{app,transcript,approval,statusbar}.rs`; tests under `rust/fontaine-core/tests/`,
 `rust/fontaine/tests/`, `rust/fontaine-tui/tests/`;
-`rust/fontaine/src/lib.rs` (TUI wiring); `docs/{permissions,tui,headless,telemetry}.md`, `docs/architecture.md`,
+`rust/fontaine/src/{lib,cli}.rs` (TUI wiring; the two rule flags); `rust/fontaine-core/src/config.rs` (CLI rule merge); `docs/{permissions,tui,headless,telemetry,tools,configuration}.md`, `docs/architecture.md`,
 `docs/index.md`, `README.md`.
 
 ## Tests owned by this phase
@@ -131,9 +131,8 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   symlinks (a symlink into a denied path is denied; an allow on a symlinked alias does not match); `webfetch(domain:)` normalization; a redirect leaving an allowed domain is returned, not followed; an allow rule never passes deny/ask/critical-path/
   protected-path and never lets an edit run in `plan`; an allow rule pre-approves in `dontAsk` and
   skips the prompt in `manual`; "allow session" lasts only for the session, "always allow" writes
-  exactly the shown rule to the user file; `--allowed-tools` / `--disallowed-tools` act as CLI rules;
-  a project-scope allow rule is rejected at load.
-- **windows** (`#[cfg(windows)]`; compile-checked locally with `cargo check --all-targets --target x86_64-pc-windows-gnu`, executed in the windows CI job): critical-path prompts for a drive root and for
+  exactly the shown rule to the user file and the next matching call in the same session skips the prompt; `--allowed-tools` / `--disallowed-tools` act as CLI rules.
+- **windows** (`#[cfg(windows)]`; compile-checked locally with `cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings`, executed in the windows CI job): critical-path prompts for a drive root and for
   `%USERPROFILE%` targets; path-rule matching is case-insensitive and resolves junctions; protected
   paths match across separators and case.
 - **baseline** (`rust/fontaine-evals/tests/baseline.rs`): `diff` over constructed baseline and run files reports exactly the cases whose outcomes differ under the mapping in `tasks/design/testing.md` (Fontaine `allow` ↔ CC allowed; `deny` and `prompt` ↔ CC denied in headless); denial extraction from a checked-in sample `claude -p --output-format json` result (fixture under `rust/fontaine-evals/tests/fixtures/`).
