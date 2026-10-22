@@ -634,57 +634,10 @@ fn shell_quote(word: &str) -> String {
     }
 }
 
-/// Entries whose bare form, or form with more arguments (`<entry> *`), runs arbitrary code.
-/// `auto` suspends allow rules of this shape for as long as it is on; narrower rules such as
-/// `shell(npm test)` stay.
-pub const BROAD_CODE_EXECUTION: [&str; 23] = [
-    "sh",
-    "bash",
-    "zsh",
-    "python",
-    "python3",
-    "node",
-    "ruby",
-    "perl",
-    "deno",
-    "bun",
-    "cargo run",
-    "npm run",
-    "npm exec",
-    "bunx",
-    "npx",
-    "pnpm",
-    "yarn",
-    "make",
-    "eval",
-    "exec",
-    "xargs",
-    "env",
-    "sudo",
-];
-
 /// A ` *` rule matches any argv that starts with its words, so `python -c *` runs whatever
-/// code the model writes: only the interpreter counts, not the words after it. The program is
-/// normalized the way the shell resolves it (`/usr/bin/python3.12` is `python`).
+/// code the model writes: only the program counts, not the words after it.
 fn wildcard_is_broad(words: &[String]) -> bool {
-    let Some(first) = words.first() else {
-        return false;
-    };
-    let name = fontaine_tools::preclassify::program_name(first);
-    let program = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
-    let rest = &words[1..];
-    BROAD_CODE_EXECUTION.iter().any(|entry| {
-        let mut entry_words = entry.split(' ');
-        if entry_words.next() != Some(program) {
-            return false;
-        }
-        let entry_rest: Vec<&str> = entry_words.collect();
-        // Either direction overlaps: `python -c *` runs inside `python`, and `cargo *` reaches
-        // `cargo run`.
-        let covers = |a: &[&str], b: &[String]| a.iter().zip(b).all(|(x, y)| *x == y);
-        let n = entry_rest.len().min(rest.len());
-        covers(&entry_rest[..n], &rest[..n])
-    })
+    crate::code_execution::wildcard_overlaps_entry(words)
 }
 
 /// Whether an allow rule is one `auto` suspends.
@@ -698,9 +651,7 @@ pub fn is_broad_code_execution(rule: &Rule) -> bool {
             if spec.wildcard {
                 return wildcard_is_broad(&spec.words);
             }
-            BROAD_CODE_EXECUTION
-                .iter()
-                .any(|entry| entry.split(' ').eq(spec.words.iter().map(String::as_str)))
+            crate::code_execution::is_exactly_entry(&spec.words)
         }
         _ => false,
     }
@@ -925,6 +876,12 @@ mod tests {
             "shell(npm *)",
             "shell(npm exec *)",
             "shell(bunx *)",
+            "shell(doas *)",
+            "shell(php *)",
+            "shell(timeout *)",
+            "shell(pwsh *)",
+            "shell(cmd *)",
+            "shell(/usr/bin/powershell.exe *)",
         ] {
             assert!(is_broad_code_execution(&ok(rule)), "{rule}");
         }

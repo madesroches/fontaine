@@ -1,6 +1,7 @@
 pub mod adjudication;
 pub mod agent;
 pub mod audit;
+pub mod code_execution;
 pub mod config;
 pub mod containment;
 pub mod credentials;

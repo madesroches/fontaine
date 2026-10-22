@@ -10,8 +10,8 @@ use fontaine_tools::preclassify::{SimpleCommand, analyze, program_name};
 use fontaine_tools::scope::Scope;
 use serde_json::Value;
 
+use crate::code_execution::{LAUNCHERS, starts_with_entry, trim_version};
 use crate::ledger::{Existence, LedgerView};
-use crate::permission_rules::BROAD_CODE_EXECUTION;
 
 /// Programs that remove, overwrite or re-point files whatever their arguments.
 pub const REMOVAL_OVERWRITE_WORDS: [&str; 14] = [
@@ -44,32 +44,6 @@ pub const INSTALLERS: [(&str, &[&str]); 11] = [
 
 /// Installers that take a bare `install` subcommand, so they need no entry in the table above.
 const MORE_INSTALLERS: [&str; 2] = ["dnf", "yum"];
-
-/// Interpreters that run a program given as an argument, which can do anything.
-const INTERPRETERS: [&str; 9] = [
-    "awk", "gawk", "mawk", "nawk", "php", "lua", "luajit", "tclsh", "wish",
-];
-
-/// Argv launchers: the options that take a separate value, and how many operands precede the
-/// wrapped program.
-const LAUNCHERS: [(&str, &[&str], usize); 12] = [
-    ("timeout", &["-s", "--signal", "-k", "--kill-after"], 1),
-    ("nice", &["-n", "--adjustment"], 0),
-    ("nohup", &[], 0),
-    ("setsid", &[], 0),
-    ("stdbuf", &["-i", "-o", "-e"], 0),
-    ("chroot", &["--userspec", "--groups"], 1),
-    ("command", &[], 0),
-    ("doas", &["-u", "-C"], 0),
-    ("busybox", &[], 0),
-    ("ionice", &["-c", "-n", "-p", "-P", "-u"], 0),
-    ("watch", &["-n", "--interval"], 0),
-    (
-        "flock",
-        &["-w", "--timeout", "-E", "--conflict-exit-code"],
-        1,
-    ),
-];
 
 const FIND_DESTRUCTIVE_FLAGS: [&str; 5] = ["-delete", "-exec", "-execdir", "-ok", "-okdir"];
 
@@ -209,19 +183,6 @@ fn installer(program: &str, args: &[String]) -> bool {
         .is_some_and(|(_, subs)| first.is_some_and(|f| subs.contains(&f)))
 }
 
-/// Whether the leading words of the command start with an entry of the broad code-execution
-/// list: `cargo run --release` starts with `cargo run`, `shred` does not start with `sh`.
-fn broad_code_execution(program: &str, args: &[String]) -> bool {
-    BROAD_CODE_EXECUTION.iter().any(|entry| {
-        let mut entry_words = entry.split(' ');
-        let head = entry_words.next().unwrap_or("");
-        head == program
-            && entry_words
-                .enumerate()
-                .all(|(i, word)| args.get(i).is_some_and(|a| a == word))
-    })
-}
-
 fn destructive_command(command: &SimpleCommand) -> bool {
     // A command word that expands (`$cmd`, `$(pick)`) cannot be classified.
     let Some(first) = command.words.first() else {
@@ -278,10 +239,7 @@ fn destructive_argv(program: &str, args: &[String], depth: usize) -> bool {
         return destructive_argv(&program_name(wrapped), &args[at + 1..], depth + 1);
     }
 
-    if REMOVAL_OVERWRITE_WORDS.contains(&program)
-        || NETWORK_CLIENT_WORDS.contains(&program)
-        || INTERPRETERS.contains(&program)
-    {
+    if REMOVAL_OVERWRITE_WORDS.contains(&program) || NETWORK_CLIENT_WORDS.contains(&program) {
         return true;
     }
     match program {
@@ -297,7 +255,7 @@ fn destructive_argv(program: &str, args: &[String], depth: usize) -> bool {
         "git" if git_destructive(args) || git_network(args) => return true,
         _ => {}
     }
-    installer(program, args) || broad_code_execution(program, args)
+    installer(program, args) || starts_with_entry(trim_version(program), args)
 }
 
 /// The absolute paths a call touches, as the scope validator resolves them. A file tool names

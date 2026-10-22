@@ -1,12 +1,12 @@
 //! The destructive class: derived from the call itself, on the shell parser and the scope
 //! validator, never from the guardian's label.
 
+use fontaine_core::code_execution::PROGRAMS;
 use fontaine_core::destructive::{
     Facts, GIT_NETWORK_SUBCOMMANDS, INSTALLERS, NETWORK_CLIENT_WORDS, REMOVAL_OVERWRITE_WORDS,
     derive, touched_paths,
 };
 use fontaine_core::ledger::{LedgerView, path_key};
-use fontaine_core::permission_rules::BROAD_CODE_EXECUTION;
 use fontaine_tools::scope::Scope;
 use serde_json::json;
 
@@ -159,7 +159,7 @@ fn every_flagged_form_is_destructive() {
 
 #[test]
 fn every_broad_code_execution_entry_is_destructive() {
-    for entry in BROAD_CODE_EXECUTION {
+    for entry in PROGRAMS {
         assert!(shell_is(entry), "{entry}");
         assert!(shell_is(&format!("{entry} arg")), "{entry} arg");
         assert!(
@@ -338,6 +338,13 @@ fn launched_and_scripted_programs_are_judged_by_what_they_run() {
         "php -r 'x();'",
         "lua -e 'x()'",
         "tclsh script.tcl",
+        "/usr/bin/python3.12 -c 'x()'",
+        "python3.11 -c 'x()'",
+        "ruby3.2 -e 'x()'",
+        "pwsh -c 'x'",
+        "powershell -c 'x'",
+        "powershell.exe -c 'x'",
+        "cmd /c 'del /s x'",
     ] {
         assert!(shell_is(command), "{command}");
     }
