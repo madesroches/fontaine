@@ -890,7 +890,7 @@ impl Config {
 
     /// Applies one layer on top of what is already merged: scalars override, lists union,
     /// named table entries are replaced whole, map-valued keys merge per key.
-    fn apply(&mut self, s: &Settings) -> Result<(), RuleError> {
+    fn apply(&mut self, s: &Settings) {
         for (name, account) in s.accounts.iter().flatten() {
             self.accounts.insert(name.clone(), account.clone());
         }
@@ -932,9 +932,9 @@ impl Config {
             if let Some(v) = p.default_mode {
                 t.default_mode = v;
             }
-            union_rules(&mut t.deny, p.deny.as_deref())?;
-            union_rules(&mut t.ask, p.ask.as_deref())?;
-            union_rules(&mut t.allow, p.allow.as_deref())?;
+            union_rules(&mut t.deny, p.deny.as_deref());
+            union_rules(&mut t.ask, p.ask.as_deref());
+            union_rules(&mut t.allow, p.allow.as_deref());
             union(
                 &mut t.additional_directories,
                 p.additional_directories.as_deref(),
@@ -1021,7 +1021,6 @@ impl Config {
                 t.resource_attributes.insert(k.clone(), v.clone());
             }
         }
-        Ok(())
     }
 }
 
@@ -1033,14 +1032,14 @@ fn union<T: PartialEq + Clone>(target: &mut Vec<T>, items: Option<&[T]>) {
     }
 }
 
-fn union_rules(target: &mut Vec<Rule>, items: Option<&[String]>) -> Result<(), RuleError> {
+fn union_rules(target: &mut Vec<Rule>, items: Option<&[String]>) {
     for text in items.unwrap_or_default() {
-        let rule = parse_rule(text)?;
+        // `validate_values` already parsed every rule of every layer before any is applied.
+        let rule = parse_rule(text).expect("rule validated before merge");
         if !target.contains(&rule) {
             target.push(rule);
         }
     }
-    Ok(())
 }
 
 /// Looks up an environment variable by name; only the binary reads the real environment.
@@ -1162,9 +1161,7 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
             continue;
         };
         phase_gate(settings, layer)?;
-        config
-            .apply(settings)
-            .map_err(|e| rule_error(&layer.path, "permissions", e))?;
+        config.apply(settings);
     }
 
     resolve_telemetry(&config.telemetry, params)?;
@@ -1227,6 +1224,11 @@ fn demotion_hint(why: &ProjectDemotion, data_dir: &Path) -> Option<String> {
             root.display(),
             trust::trust_path(data_dir).display(),
             trust::toml_literal(&root.to_string_lossy()),
+        )),
+        ProjectDemotion::UnreadableTrustStore => Some(format!(
+            "{} is unreadable or malformed, so no workspace is trusted and this file loads as \
+             project settings; fix or remove it, then trust the workspace again",
+            trust::trust_path(data_dir).display(),
         )),
         _ => None,
     }

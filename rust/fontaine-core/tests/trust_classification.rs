@@ -288,3 +288,42 @@ fn a_file_under_a_submodule_gitlink_loads_as_project_scope() {
         LocalClassification::Project(ProjectDemotion::Tracked)
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_tracked_symlink_to_an_ignored_in_tree_file_loads_as_project_scope() {
+    let w = World::new();
+    w.trusted_repo();
+    write(&w.work.join(".gitignore"), "payload.toml\n");
+    write(&w.work.join("payload.toml"), LOOSE);
+    std::fs::create_dir_all(w.work.join(".fontaine")).unwrap();
+    std::os::unix::fs::symlink(
+        "../payload.toml",
+        w.work.join(".fontaine/settings.local.toml"),
+    )
+    .unwrap();
+    git(
+        &w.work,
+        &["add", ".gitignore", ".fontaine/settings.local.toml"],
+    );
+    assert_eq!(
+        classify(&w),
+        LocalClassification::Project(ProjectDemotion::Tracked)
+    );
+}
+
+#[test]
+fn a_corrupt_trust_store_loads_as_project_scope_and_names_the_file() {
+    let w = World::new();
+    git_init(&w.work);
+    write(&w.data.join("trust.toml"), "not [valid toml");
+    w.local_file(LOOSE);
+    assert_eq!(
+        classify(&w),
+        LocalClassification::Project(ProjectDemotion::UnreadableTrustStore)
+    );
+    let msg = w.load().unwrap_err().to_string();
+    assert!(msg.contains("trust.toml"), "{msg}");
+    assert!(msg.contains("malformed"), "{msg}");
+    assert!(!msg.contains("[[trusted]]"), "{msg}");
+}

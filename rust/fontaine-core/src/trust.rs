@@ -13,6 +13,8 @@ use crate::owner_only;
 
 pub const TRUST_FILE: &str = "trust.toml";
 
+const LOCAL_SETTINGS: &str = ".fontaine/settings.local.toml";
+
 pub fn trust_path(data_dir: &Path) -> PathBuf {
     data_dir.join(TRUST_FILE)
 }
@@ -191,6 +193,8 @@ pub enum ProjectDemotion {
     Tracked,
     /// Untracked, but the workspace root is not trusted.
     UntrustedRoot(PathBuf),
+    /// `trust.toml` exists but cannot be read or parsed; nothing is trusted until it is fixed.
+    UnreadableTrustStore,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -223,7 +227,17 @@ pub fn classify_project_local(
     let Ok(relative) = gix::path::into_bstr(relative) else {
         return Project(GitError);
     };
-    let relative = gix::path::to_unix_separators(relative);
+    let resolved = gix::path::to_unix_separators(relative).into_owned();
+
+    // The path as git sees it before symlinks are followed: a tracked `.fontaine` or
+    // `settings.local.toml` symlink must count even when its target is an ignored file.
+    let literal = std::fs::canonicalize(workspace)
+        .ok()
+        .and_then(|ws| {
+            let rel = ws.strip_prefix(&workdir).ok()?.join(LOCAL_SETTINGS);
+            Some(gix::path::to_unix_separators(gix::path::into_bstr(rel).ok()?).into_owned())
+        })
+        .unwrap_or_default();
 
     let Ok(index) = repo.index_or_empty() else {
         return Project(GitError);
@@ -236,14 +250,19 @@ pub fn classify_project_local(
             .entry_by_path_icase(BStr::new(path), true, &lookup)
             .is_some()
     };
-    let bytes: &[u8] = relative.as_ref();
-    let tracked = in_index(bytes)
-        || bytes
-            .iter()
-            .enumerate()
-            .any(|(i, &b)| b == b'/' && in_index(&bytes[..i]));
-    if tracked {
+    let tracked = |bytes: &[u8]| {
+        !bytes.is_empty()
+            && (in_index(bytes)
+                || bytes
+                    .iter()
+                    .enumerate()
+                    .any(|(i, &b)| b == b'/' && in_index(&bytes[..i])))
+    };
+    if tracked(resolved.as_ref()) || tracked(literal.as_ref()) {
         return Project(Tracked);
+    }
+    if read_entries(data_dir).is_none() {
+        return Project(UnreadableTrustStore);
     }
     if !is_trusted(data_dir, workspace) {
         return Project(UntrustedRoot(workspace.to_path_buf()));

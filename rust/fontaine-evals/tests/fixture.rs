@@ -500,6 +500,7 @@ fn workspace_paths_escaping_the_root_are_rejected_on_any_platform() {
         "\\x",
         "C:\\x",
         "C:/x",
+        "C:x",
         "..\\..\\x",
         "../x",
         "a/../x",

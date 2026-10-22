@@ -92,6 +92,12 @@ fn a_malformed_file_never_echoes_the_secret() {
         "[accounts.work]\napikey = \"sk-abc123\"\n",
         "[accounts.work]\napi_key = \"sk-abc123\" sk-abc123\n",
         "[accounts.work]\napi_key = \"sk-abc123\"\nextra = sk-abc123\n",
+        "telemetry = \"sk-abc123\"\n",
+        "[accounts]\nwork = \"sk-abc123\"\n",
+        "[accounts.sk-abc123]\napi_key = 1\n",
+        "[telemetry]\nsk-abc123 = \"x\"\n",
+        "[accounts.work]\napi_key = 12345\n",
+        "[accounts.work]\napi_key = true\n",
     ] {
         let w = World::new();
         write(&w.data.join("credentials.toml"), body);

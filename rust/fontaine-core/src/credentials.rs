@@ -26,6 +26,10 @@ struct Entry {
     api_key: String,
 }
 
+/// `toml`'s message echoes wrongly typed values and unknown field names, either of which can be
+/// a pasted key, so no text from the error is ever reported.
+const MALFORMED: &str = "malformed credentials file";
+
 /// Stored API keys, read-only. Not `Debug`: the values are secrets.
 #[derive(Default)]
 pub struct Credentials(File);
@@ -46,7 +50,7 @@ impl Credentials {
                 path,
                 line,
                 column,
-                message: e.message().to_string(),
+                message: MALFORMED.to_string(),
             }
         })
     }
@@ -69,12 +73,12 @@ fn non_empty(entry: Option<&Entry>) -> Option<&str> {
 pub fn validate_credentials_toml(text: &str) -> Result<(), String> {
     toml::from_str::<File>(text).map(|_| ()).map_err(|e| {
         let (line, column) = line_col(text, &e);
-        format!("{line}:{column}: {}", e.message())
+        format!("{line}:{column}: {MALFORMED}")
     })
 }
 
 /// 1-based position of the error. `toml::de::Error`'s `Display` quotes the source line, which
-/// would leak the key, so only the position and message are ever reported.
+/// would leak the key, so only the position is ever reported.
 fn line_col(text: &str, e: &toml::de::Error) -> (usize, usize) {
     let start = e.span().map_or(0, |s| s.start).min(text.len());
     let before = &text.as_bytes()[..start];

@@ -308,7 +308,7 @@ pub fn validate_case(case: &Case) -> Vec<String> {
 fn workspace_path_ok(path: &str) -> bool {
     let mut segments = path.split(['/', '\\']);
     let first = segments.next().unwrap_or("");
-    !first.is_empty() && !first.ends_with(':') && !path.split(['/', '\\']).any(|c| c == "..")
+    !first.is_empty() && !first.contains(':') && !path.split(['/', '\\']).any(|c| c == "..")
 }
 
 /// Loads and validates every `*.jsonl` file in `dir`, in file-name order. On failure returns
