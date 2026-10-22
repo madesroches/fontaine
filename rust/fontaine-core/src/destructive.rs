@@ -136,7 +136,7 @@ fn has_flag(args: &[String], long: &[&str], short: &[char]) -> bool {
 fn git_destructive(args: &[String]) -> bool {
     // Config injection (`-c alias.x=!cmd`, `core.pager`, `core.fsmonitor`) and an alternate
     // exec path run arbitrary programs under any subcommand.
-    let before_subcommand = git_subcommand(args).map_or(args.len(), |at| at);
+    let before_subcommand = git_subcommand(args).unwrap_or(args.len());
     if args[..before_subcommand].iter().any(|a| {
         a == "-c"
             || a.starts_with("--config-env")
