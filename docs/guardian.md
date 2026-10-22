@@ -121,9 +121,8 @@ first: an `ask` rule or a critical path still asks.
 - Read-only calls inside the workspace and the shell pre-classifier's commands never reach the
   guardian. A narrow allow rule you wrote skips it too; broad code-execution allow rules are
   [suspended in `auto`](permissions.md#allow-rules).
-- A verdict is cached for 60 seconds (`[guardian] cache`), so five `cargo test` runs adjudicate
-  once. The key covers the call, the model, the rules, the environment, your messages, the session's
-  recent actions and its denials, so any change misses. Only verdicts the model returned are cached,
+- A verdict is cached for 60 seconds (`[guardian] cache`). The key covers the call, the model, the rules, the environment, your messages, the session's
+  recent actions and its denials, so any change misses. An identical call therefore reuses a verdict only when nothing else has happened in the session since (in practice consecutive identical calls under the minimal profile, or retries); this is deliberate, so an Allow is not reused after a security-relevant change. Only verdicts the model returned are cached,
   never a fail-closed outcome; the confidence rewrite applies after every lookup.
 - Calls are adjudicated one at a time, in order. The guardian is on the critical path, so a fast
   model matters.

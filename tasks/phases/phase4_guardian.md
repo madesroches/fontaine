@@ -127,8 +127,7 @@ Deny or Escalate."* All request content is wrapped in delimited untrusted blocks
 
 **Caching & latency**:
 - verdict cache keyed by `hash(tool name + audit args_digest (from `ToolCallSummary.args_digest`) + resolved guardian model + rules version + environment version +
-  intent digest + hook_context digest + session_facts actions-list digest + prior_denials digest)` with a 60 s TTL — repeated identical calls (e.g. `cargo test`
-  five times) adjudicate once; the rules and environment versions are digests of the resolved `RuleConfig` and `EnvironmentConfig` (including the active profile's prompt asset), computed when the request is built, so config edits
+  intent digest + hook_context digest + session_facts actions-list digest + prior_denials digest)` with a 60 s TTL — an identical call reuses a verdict only when nothing else has happened in the session since (in practice consecutive identical calls under the minimal profile, or retries), deliberately; the rules and environment versions are digests of the resolved `RuleConfig` and `EnvironmentConfig` (including the active profile's prompt asset), computed when the request is built, so config edits
   invalidate the cache; the actions-list and `prior_denials` digests make an Allow unreusable after a security-relevant session change within the TTL. The `destructive ∧ confidence < threshold` rewrite is applied after every cache lookup, hit or miss. Only verdicts the model actually returned are cached, never fail-closed outcomes
   (`Timeout`, `GuardianUnavailable`, `Unparseable`, `LowConfidence`). `[guardian] cache = false` turns the cache off.
 - the numeric budgets above (60 s cache TTL, 2,000-character `task_intent`, last 5 `recent_user_messages`, last 20 actions taken, 2 extractor retries) are shipped constants in `fontaine-guardian`, not config keys.

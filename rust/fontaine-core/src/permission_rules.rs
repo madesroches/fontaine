@@ -637,7 +637,7 @@ fn shell_quote(word: &str) -> String {
 /// Entries whose bare form, or form with more arguments (`<entry> *`), runs arbitrary code.
 /// `auto` suspends allow rules of this shape for as long as it is on; narrower rules such as
 /// `shell(npm test)` stay.
-pub const BROAD_CODE_EXECUTION: [&str; 21] = [
+pub const BROAD_CODE_EXECUTION: [&str; 23] = [
     "sh",
     "bash",
     "zsh",
@@ -650,6 +650,8 @@ pub const BROAD_CODE_EXECUTION: [&str; 21] = [
     "bun",
     "cargo run",
     "npm run",
+    "npm exec",
+    "bunx",
     "npx",
     "pnpm",
     "yarn",
@@ -670,12 +672,18 @@ fn wildcard_is_broad(words: &[String]) -> bool {
     };
     let name = fontaine_tools::preclassify::program_name(first);
     let program = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    let rest = &words[1..];
     BROAD_CODE_EXECUTION.iter().any(|entry| {
         let mut entry_words = entry.split(' ');
-        entry_words.next() == Some(program)
-            && entry_words
-                .enumerate()
-                .all(|(i, word)| words.get(i + 1).is_some_and(|w| w == word))
+        if entry_words.next() != Some(program) {
+            return false;
+        }
+        let entry_rest: Vec<&str> = entry_words.collect();
+        // Either direction overlaps: `python -c *` runs inside `python`, and `cargo *` reaches
+        // `cargo run`.
+        let covers = |a: &[&str], b: &[String]| a.iter().zip(b).all(|(x, y)| *x == y);
+        let n = entry_rest.len().min(rest.len());
+        covers(&entry_rest[..n], &rest[..n])
     })
 }
 
@@ -913,6 +921,10 @@ mod tests {
             "shell(/usr/bin/python3 *)",
             "shell(python3.12 *)",
             "shell(cargo run --release *)",
+            "shell(cargo *)",
+            "shell(npm *)",
+            "shell(npm exec *)",
+            "shell(bunx *)",
         ] {
             assert!(is_broad_code_execution(&ok(rule)), "{rule}");
         }
@@ -923,7 +935,7 @@ mod tests {
             "read",
             "shell(cargo run --release)",
             "shell(cargo test *)",
-            "shell(cargo *)",
+            "shell(cargo build *)",
         ] {
             assert!(!is_broad_code_execution(&ok(rule)), "{rule}");
         }

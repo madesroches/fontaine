@@ -122,9 +122,9 @@ prompt in `manual` and `acceptEdits`, pre-approves in `dontAsk`, and skips the g
 
 While `auto` is on, **broad code-execution allow rules are suspended**: a bare `shell` or `agent`,
 and `shell(<entry>)` or `shell(<entry> *)` for `sh`, `bash`, `zsh`, `python`, `python3`, `node`,
-`ruby`, `perl`, `deno`, `bun`, `cargo run`, `npm run`, `npx`, `pnpm`, `yarn`, `make`, `eval`,
-`exec`, `xargs`, `env` and `sudo`. A wildcard rule counts by its program alone, so `shell(python -c *)`,
-`shell(/usr/bin/python3 *)` and `shell(python3.12 *)` are suspended too. A call they would have approved goes to the guardian instead.
+`ruby`, `perl`, `deno`, `bun`, `cargo run`, `npm run`, `npm exec`, `npx`, `bunx`, `pnpm`, `yarn`, `make`, `eval`,
+`exec`, `xargs`, `env` and `sudo`. A wildcard rule is suspended whenever it can match something an entry covers: an interpreter counts by its program alone, so `shell(python -c *)`,
+`shell(/usr/bin/python3 *)` and `shell(python3.12 *)` are suspended too, and so are `shell(cargo *)` and `shell(npm *)`, which reach `cargo run` and `npm run`. `shell(cargo test *)` stays. A call they would have approved goes to the guardian instead.
 Narrower rules such as `shell(npm test)` stay. The terminal UI lists the suspended rules when you
 enter `auto`, and a headless run lists them in the `init` event; leaving `auto` restores them. A
 `pre_tool_use` hook's `allow` follows the same test on the hook's matcher.
