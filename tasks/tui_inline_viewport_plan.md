@@ -20,10 +20,10 @@ and the docs.
   bracketed paste and calls `ratatui::restore()`, which also leaves the alternate screen.
 - `drive` (`lib.rs:488`) takes a `render: impl FnMut(&App)`. `Ui::draw` (`lib.rs:106`) calls it
   after every change. `run` passes a closure that calls `terminal.draw(|f| view::draw(f, app))`.
-- `view::draw` (`view.rs:43`) splits the full frame into transcript (`Min(1)`), overlay
+- `view::draw` (`view.rs:44`) splits the full frame into transcript (`Min(1)`), overlay
   (approval / guardian-unavailable / `/denied`, capped at `area.height - 4`), input (wrapped rows
   up to `MAX_INPUT_ROWS = 6`, plus a border) and a one-row status bar. `draw_transcript`
-  (`view.rs:109`) re-wraps every entry each frame and shows a window offset by `App::scroll`.
+  (`view.rs:111`) re-wraps every entry each frame and shows a window offset by `App::scroll`.
 - `Transcript` (`transcript.rs`) is a `Vec<Entry>`. Its entries are user messages, assistant text
   with a `streaming` flag, tool calls whose `ToolStatus` starts as `Pending`, notices and errors.
   Events mutate entries in place: deltas extend the last streaming assistant entry, and
@@ -131,26 +131,36 @@ impl<B: Backend> Screen<B> {
 `render` does, in order:
 0. `self.terminal.autoresize()?`, then `width` = `get_frame().area().width` and `term_height` =
    `size()?.height` from the resized terminal.
-1. `lines = app.transcript.commit(width)`. If any, call `terminal.insert_before(n, ...)`, which
-   renders `Paragraph::new(lines)` into the buffer. The lines are already wrapped at `width`.
+1. `lines = app.transcript.commit(width)`.
 2. `h = view::height(app, width, term_height)`. If `h != self.height`, rebuild (below).
-3. `terminal.draw(|f| view::draw(f, app))`.
+3. If `lines` is non-empty, call `terminal.insert_before(n, ...)` on the current terminal, which
+   renders `Paragraph::new(lines)` into the buffer. The lines are already wrapped at `width`.
+   The rebuild runs first so that a shrink leaves the viewport above the bottom: ratatui's
+   `insert_before` then takes its "viewport isn't yet at the bottom" branch, which fills the freed
+   rows and returns the viewport to the bottom. In the other order a bottom-anchored viewport
+   would stay put and leave blank rows under the status bar.
+4. `terminal.draw(|f| view::draw(f, app))`.
+
+An `insert_before` or draw error is returned from `render`, and `run` treats a render error as a
+gone terminal and ends the session; a write error means stdout is dead.
 
 **Height change = rebuild the `Terminal`** (the issue's open point, decided here). ratatui 0.30.2
 cannot resize an inline viewport, so the rebuild:
 1. moves the cursor to the viewport's top row, read from `self.terminal.get_frame().area().y` at
-   rebuild time (after the step 1 commit), and `clear_region(ClearType::AfterCursor)`;
+   rebuild time (before the step 3 insert), and `clear_region(ClearType::AfterCursor)`;
 2. takes the real backend out with
    `std::mem::replace(self.terminal.backend_mut(), (self.placeholder)())`;
 3. builds `Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(h) })`.
    ratatui anchors the viewport at the cursor row. When it grows, ratatui appends lines and
    scrolls the screen, pushing older lines into scrollback. When it shrinks, the area below is
-   already clear and the next `insert_before` fills it.
+   already clear and the step 3 insert in the same render, or a later one, fills it.
 
 `Terminal::with_options` asks the backend for the cursor position. On crossterm that is a DSR
 round trip: a network round trip over ssh, and a 2 s timeout on terminals that do not answer,
 racing the input reader thread. To avoid it, `run` uses a thin backend wrapper, `Anchored<B>`, in
-`screen.rs`. It delegates every `Backend` method, remembers the position from the last
+`screen.rs`. It keeps its remembered position and last seen size in `Cell`s, because `Backend::size(&self)` is
+immutable. It delegates every `Backend` method explicitly, including the defaulted `append_lines`
+(a no-op by default, so growth breaks otherwise) and the scroll-region methods. It remembers the position from the last
 `set_cursor_position`, and forgets it on any call that moves the cursor (`draw`, `append_lines`,
 `scroll_region_up/down`) and whenever `size()`/`window_size()` reports a size different
 from the last one it saw (ratatui sets the cursor after `draw`, so a resize would otherwise read a
@@ -159,8 +169,7 @@ cursor. `get_cursor_position` answers from the remembered position and
 falls back to the inner backend when it has none. At startup (before the reader thread starts)
 and after a terminal resize, ratatui still asks the real terminal.
 
-**Terminal resize**: `render` calls `autoresize` first (step 0), before the commit and
-`insert_before`, which re-anchors an inline viewport and clears the screen on a horizontal shrink. Lines already in scrollback keep the width
+**Terminal resize**: `autoresize` re-anchors an inline viewport and clears the screen on a horizontal shrink. Lines already in scrollback keep the width
 they were wrapped at, as in Claude Code.
 
 ### Driver signature
@@ -217,7 +226,8 @@ live area does not flicker. Windows 10+ consoles support DECSTBM through crosste
 9. **Test harness** (`tests/common/mod.rs`): build `Screen::new(TestBackend::new(120, 40), ||
    TestBackend::new(1, 1))`. After each render, `Ui::screen()` is the backend's scrollback rows
    followed by its buffer rows, so `wait_for("all done")` finds text whether it is in scrollback
-   or live. Existing `tests/tui.rs` assertions should keep passing unchanged; fix any that
+   or live. The harness also exposes `Ui::live()`, a string built from the rows of the Screen's
+   viewport area only. Existing `tests/tui.rs` assertions should keep passing unchanged; fix any that
    asserted the absence of text that now legitimately remains in scrollback.
 10. **Docs** (`docs/tui.md`, master plan): see Documentation.
 
@@ -292,8 +302,8 @@ Unit tests (`view.rs` / `screen.rs`, `TestBackend` with scrollback):
 - `clear_live` leaves the scrollback intact and the live rows blank.
 
 Integration (`tests/tui.rs` through the harness): the whole existing suite runs on the inline
-screen. Add one test: a session with two turns ends up with both replies in order in scrollback,
-and the live area shows only the idle prompt.
+screen. Add one test: a session with two turns shows both replies in order above the live area
+(in `Ui::screen()`), and `Ui::live()` shows only the idle prompt.
 
 ## Manual Verification
 
