@@ -11,16 +11,23 @@ fontaine-agents.workspace = true
 fontaine-guardian.workspace = true
 fontaine-mcp.workspace = true
 fontaine-tools.workspace = true
+futures.workspace = true
 gix.workspace = true
+ignore.workspace = true
+rig-agent.workspace = true
 rig-core.workspace = true
+rig-memory.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
+tracing.workspace = true
+uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+insta.workspace = true
 rig-core = { workspace = true, features = ["test-utils"] }
 rig-agent = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true

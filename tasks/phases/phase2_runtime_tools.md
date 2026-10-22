@@ -1,6 +1,6 @@
 # Phase 2 — Agent runtime & tools
 
-**Status:** not started · **Depends on:** [Phase 1](phase1_model_headless.md) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
+**Status:** done · **Depends on:** [Phase 1](phase1_model_headless.md) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
 
 ## Design (excerpt owned by this phase)
 
@@ -203,3 +203,6 @@ context.
 - 2026-10-22 AFK: The ledger is `<data dir>/sessions/<session-id>/ledger/ledger.jsonl`; reason: rig-memory `DirStore::open` refuses a dir with a top-level `*.jsonl` and ignores everything outside `logs/` and `files/`.
 - 2026-10-22 AFK: Session-dir creation is `create_dir_all(<data dir>/sessions)` then an owner-only create of `<id>` via a new `owner_only::create_dir` (Unix 0o700, Windows protected current-user DACL), `AlreadyExists` → exit 2 "already in use", other io errors → exit 1 naming the path, run in `prepare_headless` which now receives `&Dirs`; reason: a bare `create_dir` fails on first run and is not owner-only.
 - 2026-10-22 AFK: Between-runs compaction is `summary_state` → `plan_summary` → summarizer completion → `summary_text` → write into `plan.state.summary` → `apply_summary` → save; `Ok(None)` skips silently and any other failure warns and leaves the context unchanged without aborting the run; reason: a missed compaction is recoverable while aborting loses the user's run, and nothing is written from a failed summary.
+- 2026-10-22 implementation: the `tool_result` event reports `duration_ms`, `args_bytes` and `result_bytes` beside `tool_name`, `risk_class`, `success` and `tool_source`, matching the `api_request` event's `duration_ms`; reason: one unit per field name across events, sizes only so the event stays content-free.
+- 2026-10-22 implementation: `webfetch` follows redirects within one host (up to 10) and returns a cross-host redirect to the model; a `--session-id` is normalized to its hyphenated lowercase form before it names a directory; reason: Claude Code follows same-host redirects, and a canonical form keeps odd UUID spellings (braces, `urn:uuid:`) out of directory names.
+- 2026-10-22 implementation: the stub gate appends an `action` ledger record for each allowed call and a `denial` record for each denied one; reason: the ledger is the only record of decisions until the audit log lands.

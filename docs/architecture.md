@@ -10,8 +10,8 @@ directly under `rust/`. The repository root holds only `rust/`, `evals/`, `docs/
 fontaine/
 ├── rust/
 │   ├── fontaine/            binary and library: command line, headless runs, tracing and telemetry export
-│   ├── fontaine-core/       configuration, workspace trust, credentials, model accounts, permission rule syntax
-│   ├── fontaine-tools/      tool name registry (and, as it grows, tool risk metadata)
+│   ├── fontaine-core/       configuration, trust, credentials, model accounts, permission rules, sessions, session ledger, system prompt
+│   ├── fontaine-tools/      built-in tools, risk classes, workspace scope check, the gate seam and tool wrapper
 │   ├── fontaine-guardian/   guardian vocabulary; kept free of Fontaine dependencies
 │   ├── fontaine-agents/     subagent orchestration (skeleton)
 │   ├── fontaine-mcp/        MCP server wiring (skeleton)
@@ -27,9 +27,9 @@ fontaine/
 
 | Crate | Responsibility today |
 |---|---|
-| `fontaine` | The `fontaine` binary. `main.rs` is thin; `lib.rs` parses the command line, resolves the directories, loads configuration, installs the tracing subscriber and opens the `fontaine.session` span. `headless.rs` runs `fontaine -p` and prints the versioned output described in [Headless runs](headless.md); `auth.rs` is `fontaine auth login`. `src/telemetry/` is the only place a subscriber is built, and holds the two export backends described in [Telemetry](telemetry.md). |
-| `fontaine-core` | The settings scope stack (`config`), config and data directory resolution (`dirs`), the `Tool(specifier)` permission rule syntax (`permission_rules`), the workspace trust store (`trust`), the credentials file (`credentials`: lookup and the `auth login` writer), owner-only file creation (`owner_only`), the permission decision tier enum (`tier`), and the model layer (`models`): config accounts mapped to provider clients and `<account>/<model>` references resolved to model handles. |
-| `fontaine-tools` | The built-in tool names that rules and agent toolsets may refer to. It depends on no other Fontaine crate. |
+| `fontaine` | The `fontaine` binary. `main.rs` is thin; `lib.rs` parses the command line, resolves the directories, loads configuration, installs the tracing subscriber and opens the `fontaine.session` span. `headless.rs` runs `fontaine -p`, drives the agent and prints the versioned output described in [Headless runs](headless.md); `auth.rs` is `fontaine auth login`. `src/telemetry/` is the only place a subscriber is built, and holds the two export backends described in [Telemetry](telemetry.md). |
+| `fontaine-core` | The settings scope stack (`config`), config and data directory resolution (`dirs`), the `Tool(specifier)` permission rule syntax (`permission_rules`), the workspace trust store (`trust`), the credentials file (`credentials`: lookup and the `auth login` writer), owner-only file creation (`owner_only`), the permission decision tier enum (`tier`), and the model layer (`models`): config accounts mapped to provider clients and `<account>/<model>` references resolved to model handles. It also holds the session (`session`: the model context store and its compaction), the session ledger (`ledger`), the system prompt (`prompt`), the workspace roots (`workspace`), the permission gate (`gate`) and the wrapped tool registry (`tools`). |
+| `fontaine-tools` | The built-in tools and their risk classes, the workspace scope check, the gate interface and the wrapper that puts every tool behind it, the result pipeline and the built-in tool names that rules and agent toolsets may refer to. It depends on no other Fontaine crate. |
 | `fontaine-guardian` | The `RuleLabel` enum: the fixed label set a guardian verdict can carry. It has no dependencies, so other harnesses can embed it. |
 | `fontaine-agents`, `fontaine-mcp`, `fontaine-tui` | Skeleton crates that reserve their place in the dependency graph. |
 | `fontaine-evals` | Loads and validates the golden dataset and scores canned verdicts against the expected outcomes. |
@@ -37,7 +37,7 @@ fontaine/
 ## Dependencies between crates
 
 ```
-fontaine          -> fontaine-core, fontaine-tui
+fontaine          -> fontaine-core, fontaine-tools, fontaine-tui
 fontaine-evals    -> fontaine-core, fontaine-guardian
 fontaine-tui      -> fontaine-core
 fontaine-core     -> fontaine-tools, fontaine-guardian, fontaine-mcp, fontaine-agents
@@ -71,12 +71,64 @@ The steps of a run:
    per-thread streams, which must happen before any thread exists, and then builds the async
    runtime with the stream callbacks.
 5. It opens the `fontaine.session` span, resolves `<account>/<model>` to a model handle (which may
-   list an account's models), and drives the agent over that handle.
+   list an account's models), and drives the agent over that handle with the wrapped tool
+   registry.
 6. It closes the session span, flushes the exporter for at most two seconds, and exits with the
    run's code.
 
 Any configuration or usage error exits with code 2 and a message on stderr; a run error exits
 with code 1.
+
+## The agent loop
+
+The agent loop is rig's: Fontaine builds an agent from a model handle, a system prompt, a
+conversation store and a tool registry, and runs it once per user message. It writes no loop of its
+own. Every tool call crosses the gate before the tool runs, and every result crosses the result
+pipeline before the model sees it:
+
+```
+                 user message
+                      |
+                      v
+   +---------------------------------------+
+   |  rig agent run  (model <-> tool calls) |
+   +---------------------------------------+
+        |  tool call                  ^  tool result
+        v                             |
+   +----------------------------------------------+
+   | wrapped tool                                  |
+   |   1. gate: allow (maybe with changed          |
+   |      arguments) or deny with a reason         |
+   |   2. on allow: the tool instance of the root  |
+   |      that holds the call's path               |
+   |   3. result pipeline                          |
+   +----------------------------------------------+
+        |
+        v
+   ls  read  glob  grep  write  edit  shell  webfetch
+```
+
+A deny goes back to the model as the tool result and the run goes on. The registry is built once
+per session; each file tool and `shell` has one confined instance per workspace root, and
+`webfetch` has one. See [Tools](tools.md).
+
+## The session ledger
+
+Each session keeps two stores in `<data dir>/sessions/<session id>/`:
+
+- the **model context**, the conversation the model sees, kept in `logs/` by rig's memory store.
+  Compaction rewrites it: when the conversation outgrows the model's context window, the older part
+  is replaced by a summary the model wrote.
+- the **session ledger**, `ledger/ledger.jsonl`: an append-only record, written by the harness and
+  never by the model. It holds the user's messages verbatim, mode changes, approvals and grants,
+  denials, actions taken, the workspace roots, the trust state, the repository's git remotes
+  (read from the repository's own config, without credentials) and an index of the files present
+  when the session started. The index respects `.gitignore` and holds at most 50,000 paths, after
+  which it records that it was cut short.
+
+Compaction changes the first store only. A summary is model-written text and is never an input to a
+safety decision; the ledger is the only record of what the human asked for. The ledger lives in its
+own subdirectory because the memory store refuses a directory that holds a top-level `.jsonl` file.
 
 ## Models
 

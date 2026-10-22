@@ -1,0 +1,216 @@
+//! The session ledger: the append-only record of what the human said and what the harness did,
+//! kept apart from the model context that compaction rewrites. Only the harness writes it,
+//! never the model, and nothing here removes or edits a record.
+
+use std::fs::File;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use gix::bstr::ByteSlice;
+use ignore::WalkBuilder;
+use serde::{Deserialize, Serialize};
+
+use crate::owner_only;
+
+pub const LEDGER_DIR: &str = "ledger";
+pub const LEDGER_FILE: &str = "ledger.jsonl";
+
+/// Paths the pre-session file index holds before it records that it was cut short.
+pub const FILE_INDEX_CAP: usize = 50_000;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Record {
+    SessionStart {
+        session_id: String,
+        permission_mode: String,
+        workspace_roots: Vec<String>,
+        workspace_trust: String,
+        git_remotes: Vec<String>,
+    },
+    FileIndex {
+        paths: Vec<String>,
+        truncated: bool,
+    },
+    /// A human message, verbatim.
+    UserMessage {
+        text: String,
+    },
+    ModeChange {
+        from: String,
+        to: String,
+    },
+    Approval {
+        tool: String,
+        agent: String,
+        scope: String,
+    },
+    Grant {
+        rule: String,
+    },
+    Denial {
+        tool: String,
+        agent: String,
+        reason: String,
+    },
+    Action {
+        tool: String,
+        agent: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Entry {
+    pub seq: u64,
+    pub ts_ms: u64,
+    #[serde(flatten)]
+    pub record: Record,
+}
+
+struct Tail {
+    file: File,
+    next_seq: u64,
+}
+
+pub struct Ledger {
+    path: PathBuf,
+    tail: Mutex<Tail>,
+}
+
+impl Ledger {
+    /// Starts the ledger of the session whose directory is `session_dir`.
+    pub fn create(session_dir: &Path) -> io::Result<Ledger> {
+        let dir = session_dir.join(LEDGER_DIR);
+        owner_only::create_dir(&dir)?;
+        let path = dir.join(LEDGER_FILE);
+        let file = owner_only::open(&path, true)?;
+        Ok(Ledger {
+            path,
+            tail: Mutex::new(Tail { file, next_seq: 0 }),
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn append(&self, record: Record) -> io::Result<()> {
+        let mut tail = self.tail.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = Entry {
+            seq: tail.next_seq,
+            ts_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64),
+            record,
+        };
+        let mut line = serde_json::to_vec(&entry).map_err(io::Error::other)?;
+        line.push(b'\n');
+        tail.file.write_all(&line)?;
+        tail.file.flush()?;
+        tail.next_seq += 1;
+        Ok(())
+    }
+
+    /// Every record written so far, in order.
+    pub fn read(&self) -> io::Result<Vec<Entry>> {
+        std::fs::read_to_string(&self.path)?
+            .lines()
+            .map(|line| serde_json::from_str(line).map_err(io::Error::other))
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileIndex {
+    pub paths: Vec<String>,
+    pub truncated: bool,
+}
+
+impl FileIndex {
+    /// The files under `roots` that git would not ignore, up to `cap` of them.
+    pub fn build(roots: &[PathBuf], cap: usize) -> FileIndex {
+        let mut index = FileIndex::default();
+        for root in roots {
+            let walk = WalkBuilder::new(root)
+                .hidden(false)
+                .git_global(false)
+                .require_git(false)
+                .filter_entry(|entry| entry.file_name() != ".git")
+                .build();
+            for entry in walk.flatten() {
+                if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                    continue;
+                }
+                if index.paths.len() == cap {
+                    index.truncated = true;
+                    return index;
+                }
+                index
+                    .paths
+                    .push(entry.path().to_string_lossy().into_owned());
+            }
+        }
+        index
+    }
+}
+
+/// The fetch URLs of the repository around `root`, read from its own config without following
+/// `include` or `includeIf`. None when there is no repository or gix cannot read it; Fontaine
+/// never spawns `git`.
+pub fn git_remotes(root: &Path) -> Vec<String> {
+    let options = gix::open::Options::isolated().strict_config(true);
+    let Ok(repo) = gix::discover_opts(root, gix::discover::upwards::Options::default(), options)
+    else {
+        return Vec::new();
+    };
+    let mut urls: Vec<String> = repo
+        .remote_names()
+        .iter()
+        .filter_map(|name| repo.try_find_remote(name.as_bstr())?.ok())
+        .filter_map(|remote| {
+            let url = remote.url(gix::remote::Direction::Fetch)?;
+            Some(without_credentials(&url.to_bstring().to_string()))
+        })
+        .collect();
+    urls.sort();
+    urls.dedup();
+    urls
+}
+
+/// `https://user:token@host/x` without its `user:token@`; an scp-style `git@host:x` keeps its
+/// user, which names no secret.
+fn without_credentials(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let (authority, path) = rest
+        .split_once('/')
+        .map_or((rest, None), |(a, p)| (a, Some(p)));
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    match path {
+        Some(path) => format!("{scheme}://{host}/{path}"),
+        None => format!("{scheme}://{host}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credentials_are_stripped_from_remote_urls() {
+        assert_eq!(
+            without_credentials("https://me:ghp_secret@github.com/org/repo.git"),
+            "https://github.com/org/repo.git"
+        );
+        assert_eq!(
+            without_credentials("git@github.com:org/repo.git"),
+            "git@github.com:org/repo.git"
+        );
+        assert_eq!(without_credentials("ssh://git@host"), "ssh://host");
+    }
+}

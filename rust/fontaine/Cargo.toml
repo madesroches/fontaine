@@ -21,6 +21,7 @@ telemetry-otlp = [
 clap.workspace = true
 dirs.workspace = true
 fontaine-core.workspace = true
+fontaine-tools.workspace = true
 fontaine-tui.workspace = true
 futures.workspace = true
 micromegas-telemetry-sink = { workspace = true, optional = true }

@@ -1,8 +1,14 @@
 pub mod config;
 pub mod credentials;
 pub mod dirs;
+pub mod gate;
+pub mod ledger;
 pub mod models;
 pub mod owner_only;
 pub mod permission_rules;
+pub mod prompt;
+pub mod session;
 pub mod tier;
+pub mod tools;
 pub mod trust;
+pub mod workspace;

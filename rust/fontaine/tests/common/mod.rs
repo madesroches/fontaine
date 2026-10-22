@@ -327,10 +327,15 @@ impl Sandbox {
     /// A sandbox whose only model is the scripted `openai-compatible` endpoint at `url`.
     pub fn compatible(url: &str) -> Sandbox {
         let sandbox = Sandbox::new();
-        sandbox.user_config(&format!(
+        sandbox.point_at(url);
+        sandbox
+    }
+
+    /// Makes the scripted `openai-compatible` endpoint at `url` the only model.
+    pub fn point_at(&self, url: &str) {
+        self.user_config(&format!(
             "[accounts.mock]\nkind = \"openai-compatible\"\nbase_url = \"{url}\"\nmodels = [\"scripted\"]\n\n[model]\nmodel = \"mock/scripted\"\n"
         ));
-        sandbox
     }
 
     /// A sandbox whose model is a catalog-priced `openai` account at `url`.
@@ -358,7 +363,6 @@ impl Sandbox {
             .env("FONTAINE_CONFIG_DIR", &self.config)
             .env("FONTAINE_DATA_DIR", &self.data)
             .env_remove("FONTAINE_LOG")
-            .env_remove("FONTAINE_SPIKE_ECHO_TOOL")
             .env_remove("MICROMEGAS_TELEMETRY_URL")
             .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
             .kill_on_drop(true);
@@ -393,27 +397,18 @@ impl Sandbox {
         }
     }
 
-    /// A headless run with the echo spike tool and an explicit permission mode.
+    /// A headless run with an explicit permission mode.
     pub async fn headless(&self, args: &[&str]) -> Output {
         let mut all = vec!["-p", "--permission-mode", "manual"];
         all.extend_from_slice(args);
         self.run(&all).await
     }
 
-    pub async fn headless_with_echo(&self, args: &[&str]) -> Output {
-        let mut all = vec!["-p", "--permission-mode", "manual"];
-        all.extend_from_slice(args);
-        let mut cmd = self.command(&all);
-        cmd.env("FONTAINE_SPIKE_ECHO_TOOL", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let out = cmd.output().await.unwrap();
-        Output {
-            code: out.status.code(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        }
+    /// Creates `relative` under the launch directory.
+    pub fn add_file(&self, relative: &str, text: &str) -> PathBuf {
+        let path = self.work.join(relative);
+        write(&path, text);
+        path
     }
 }
 

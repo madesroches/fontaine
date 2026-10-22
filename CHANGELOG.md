@@ -34,3 +34,26 @@ All notable changes are recorded here. The format follows
   capped flush on exit.
 - Documentation: model accounts and provider examples, headless runs, telemetry, and a README
   quickstart.
+- Phase 2, agent runtime and tools: `fontaine -p` now runs rig's agent over a wrapped tool
+  registry (`read`, `ls`, `glob`, `grep`, `write`, `edit`, `shell`, `webfetch`). Every tool has a
+  risk class and sits behind one gate; this build's gate is deny-by-default and allows only
+  read-only calls whose paths are inside the workspace roots and that no `deny` or `ask` rule
+  names. A result pipeline (empty for now) sits after every tool, and each call emits a
+  `fontaine.tool` span and a `tool_result` telemetry event.
+- Workspace roots: the repeatable `--add-dir` flag and `[permissions] additional_directories`,
+  with one confined tool instance per root; entries that are missing or not directories are
+  skipped with a warning. On Windows the shell runs through Git Bash, found on `PATH`, in the
+  standard install locations or through `FONTAINE_GIT_BASH_PATH`.
+- The `shell` tool's child processes no longer inherit telemetry credentials, configured accounts'
+  API key variables or the scanner token variable.
+- Sessions: `--session-id`, a per-session directory under the data directory with the
+  conversation persisted by rig's memory store, between-runs compaction by a summarizing call, and
+  an append-only session ledger of user messages, decisions, roots, trust, git remotes and a
+  pre-session file index.
+- A versioned system prompt (steering toward the dedicated read tools, denial handling, the
+  workspace roots) layered with `FONTAINE.md` from the user config directory and the primary root.
+- `docs/tools.md`, and extensions to the architecture, configuration, headless and telemetry pages.
+
+### Removed
+
+- The test-only `echo` tool and its `FONTAINE_SPIKE_ECHO_TOOL` switch.

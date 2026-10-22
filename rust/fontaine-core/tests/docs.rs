@@ -174,6 +174,7 @@ fn the_required_pages_exist_with_content() {
         "docs/configuration.md",
         "docs/headless.md",
         "docs/telemetry.md",
+        "docs/tools.md",
         "evals/README.md",
         "README.md",
         "CONTRIBUTING.md",
@@ -182,5 +183,24 @@ fn the_required_pages_exist_with_content() {
     ] {
         let text = std::fs::read_to_string(root.join(page)).unwrap_or_else(|_| panic!("{page}"));
         assert!(text.lines().count() > 8, "{page} is a stub");
+    }
+}
+
+#[test]
+fn the_tools_page_names_every_registered_built_in_tool() {
+    let root = repo_root();
+    let text = std::fs::read_to_string(root.join("docs/tools.md")).unwrap();
+    for (name, risk) in fontaine_tools::risk::BUILTIN_RISK {
+        assert!(
+            text.contains(&format!("| `{name}` |")),
+            "docs/tools.md has no inventory row for `{name}`"
+        );
+        let _ = risk;
+    }
+    for removed in ["list", "search", "delete", "move"] {
+        assert!(
+            text.contains(&format!("`{removed}`")),
+            "docs/tools.md should say that rig's `{removed}` is not registered"
+        );
     }
 }

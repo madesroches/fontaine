@@ -52,6 +52,14 @@ pub struct Cli {
     #[arg(long, value_name = "SCHEMA")]
     pub json_schema: Option<String>,
 
+    /// Add a directory to the workspace roots; file tools may reach it. Repeatable
+    #[arg(long = "add-dir", value_name = "PATH")]
+    pub add_dir: Vec<PathBuf>,
+
+    /// Use this UUID as the session id instead of a fresh one; it must not name an existing session
+    #[arg(long, value_name = "UUID")]
+    pub session_id: Option<String>,
+
     /// Replace the base system prompt
     #[arg(long, value_name = "TEXT")]
     pub system_prompt: Option<String>,

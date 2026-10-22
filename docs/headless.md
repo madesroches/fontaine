@@ -30,6 +30,8 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `--max-turns <n>` | Stops each turn after `n` model calls with `error_max_turns` (exit code 1). Without it a turn is capped at 1000 calls. |
 | `--max-budget-usd <x>` | Stops the run once the main model's spend exceeds `x` with `error_max_budget_usd` (exit code 1). A model with no known price makes this a usage error (exit code 2). Only the main model's spend counts today. |
 | `--json-schema <schema>` | An inline JSON Schema the final answer must follow. The parsed answer is returned in `result.structured_output`. A schema that is not a JSON object is a usage error. |
+| `--add-dir <path>` | Adds a directory to the workspace roots. Repeatable. See [Tools](tools.md#workspace-roots). |
+| `--session-id <uuid>` | Uses this UUID as the session id. A value that is not a UUID is a usage error (exit code 2), and so is an id whose session directory already exists. |
 | `--system-prompt <text>` | Replaces the base system prompt. |
 | `--append-system-prompt <text>` | Appends to the system prompt after every other layer. |
 | `--settings <file>` | A settings file layered over the others (CLI scope). |
@@ -39,6 +41,18 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 
 The budget is checked between model calls. A call that pushes the spend over the cap stops the
 run before its tool calls execute; an answer that was already complete is kept.
+
+## Sessions
+
+Each run is a session, named by a UUID: the one given with `--session-id`, or a fresh one. Its
+files live in `<data dir>/sessions/<session id>/`, created readable by the current user only. The
+conversation is kept there between turns, and it is compacted by a summarizing call when it
+outgrows the model's context window (only when the window is known; the summarizing call counts
+toward the spend and the model-call count). A compaction that cannot finish leaves the
+conversation as it was, prints a warning on stderr and does not stop the run.
+
+A separate, append-only ledger beside it records what the user said, verbatim, and what the
+harness did. Compaction never touches it. See [Architecture](architecture.md#the-session-ledger).
 
 ## Exit codes
 
@@ -55,9 +69,10 @@ escalated verdict or a protected-path prompt, becomes a denial that is returned 
 tool result; the run continues. External approval delegates are not supported: there is no
 second approval path around the permission rules.
 
-This build does not yet route tool calls through the permission pipeline, so `gate_decision`
-events are never emitted and `result.denials` is always empty. The schema defines both, so a
-consumer written today keeps working when they appear.
+Tool calls already go through a deny-by-default gate (see [Tools](tools.md#permissions-today)),
+and a denied call comes back to the model as the tool result with the run exiting 0. That gate
+does not emit `gate_decision` events yet, so they are never emitted and `result.denials` is always
+empty. The schema defines both, so a consumer written today keeps working when they appear.
 
 ## Output
 

@@ -50,19 +50,25 @@ async fn stream_json_events_match_the_schema_and_init_reports_the_session() {
     let endpoint = Endpoint::start(
         Wire::Chat,
         vec![
-            Turn::tool("call_1", "echo", json!({"text": "x"})),
+            Turn::tool("call_1", "read", json!({"path": "note.txt"})),
             Turn::text("done"),
         ],
     )
     .await;
     let s = Sandbox::compatible(&endpoint.url());
+    s.add_file("note.txt", "x\n");
+    let shared = s.work.parent().unwrap().join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
     std::fs::write(
         s.work.join("extra.toml"),
-        "[permissions]\nadditional_directories = [\"/srv/shared\"]\n",
+        format!(
+            "[permissions]\nadditional_directories = [{:?}]\n",
+            shared.display().to_string()
+        ),
     )
     .unwrap();
     let out = s
-        .headless_with_echo(&[
+        .headless(&[
             "--settings",
             s.work.join("extra.toml").to_str().unwrap(),
             "--output-format",
@@ -89,7 +95,10 @@ async fn stream_json_events_match_the_schema_and_init_reports_the_session() {
     assert_eq!(init["workspace_trust"], "untrusted");
     let roots = init["workspace_roots"].as_array().unwrap();
     assert_eq!(roots[0], s.work.display().to_string());
-    assert_eq!(roots[1], "/srv/shared");
+    assert_eq!(
+        roots[1],
+        shared.canonicalize().unwrap().display().to_string()
+    );
     let sources = init["config_sources"].as_array().unwrap();
     let scopes: Vec<&str> = sources
         .iter()
@@ -129,14 +138,15 @@ async fn max_turns_stops_the_run_with_its_subtype() {
     let endpoint = Endpoint::start(
         Wire::Chat,
         vec![
-            Turn::tool("call_1", "echo", json!({"text": "x"})),
+            Turn::tool("call_1", "read", json!({"path": "note.txt"})),
             Turn::text("never reached"),
         ],
     )
     .await;
     let s = Sandbox::compatible(&endpoint.url());
+    s.add_file("note.txt", "x\n");
     let out = s
-        .headless_with_echo(&["--output-format", "stream-json", "--max-turns", "1", "go"])
+        .headless(&["--output-format", "stream-json", "--max-turns", "1", "go"])
         .await;
     assert_eq!(out.code, Some(1), "{}", out.stderr);
     let lines = out.lines();
@@ -147,7 +157,7 @@ async fn max_turns_stops_the_run_with_its_subtype() {
     assert_eq!(result["is_error"], json!(true));
 
     let out = s
-        .headless_with_echo(&["--output-format", "json", "--max-turns", "2", "go"])
+        .headless(&["--output-format", "json", "--max-turns", "2", "go"])
         .await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
 }
@@ -157,14 +167,15 @@ async fn max_budget_stops_a_run_whose_spend_is_exhausted() {
     let endpoint = Endpoint::start(
         Wire::Responses,
         vec![
-            Turn::tool("call_1", "echo", json!({"text": "x"})),
+            Turn::tool("call_1", "read", json!({"path": "note.txt"})),
             Turn::text("never reached"),
         ],
     )
     .await;
     let s = Sandbox::priced(&endpoint.url());
+    s.add_file("note.txt", "x\n");
     let out = s
-        .headless_with_echo(&[
+        .headless(&[
             "--output-format",
             "stream-json",
             "--max-budget-usd",
@@ -405,5 +416,117 @@ async fn system_prompt_flags_shape_the_request() {
     assert!(
         !request.contains("You are Fontaine"),
         "the base prompt is replaced"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_nonexistent_add_dir_and_a_nonexistent_config_entry_are_skipped_with_a_warning() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let missing_flag = s.work.parent().unwrap().join("no-such-flag-dir");
+    let missing_config = s.work.parent().unwrap().join("no-such-config-dir");
+    std::fs::write(
+        s.work.join("extra.toml"),
+        format!(
+            "[permissions]\nadditional_directories = [{:?}]\n",
+            missing_config.display().to_string()
+        ),
+    )
+    .unwrap();
+    let out = s
+        .headless(&[
+            "--settings",
+            s.work.join("extra.toml").to_str().unwrap(),
+            "--add-dir",
+            missing_flag.to_str().unwrap(),
+            "--output-format",
+            "stream-json",
+            "go",
+        ])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let init = &out.lines()[0];
+    assert_eq!(
+        init["workspace_roots"],
+        json!([s.work.display().to_string()])
+    );
+    let flag_warning = out
+        .stderr
+        .lines()
+        .find(|l| l.contains(&missing_flag.display().to_string()))
+        .unwrap_or_else(|| panic!("{}", out.stderr));
+    assert!(flag_warning.contains("--add-dir"), "{flag_warning}");
+    let config_warning = out
+        .stderr
+        .lines()
+        .find(|l| l.contains(&missing_config.display().to_string()))
+        .unwrap_or_else(|| panic!("{}", out.stderr));
+    assert!(
+        config_warning.contains("additional_directories"),
+        "{config_warning}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_non_uuid_session_id_is_a_usage_error_that_costs_no_provider_call() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("never asked")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let out = s.headless(&["--session-id", "not-a-uuid", "hi"]).await;
+    assert_eq!(out.code, Some(2), "{}", out.stderr);
+    assert!(out.stderr.contains("--session-id"), "{}", out.stderr);
+    assert!(endpoint.requests().await.is_empty());
+    assert!(!s.data.join("sessions").join("not-a-uuid").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_id_that_is_already_in_use_exits_two_before_any_provider_call() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let id = "0b9c2a3e-9f5d-4c6e-8a11-2f3d4e5a6b7c";
+
+    let first = s
+        .headless(&["--session-id", id, "--output-format", "stream-json", "hi"])
+        .await;
+    assert_eq!(first.code, Some(0), "{}", first.stderr);
+    assert_eq!(first.lines()[0]["session_id"], id);
+    let ledger = s
+        .data
+        .join("sessions")
+        .join(id)
+        .join("ledger")
+        .join("ledger.jsonl");
+    let before = std::fs::read_to_string(&ledger).unwrap();
+    let calls = endpoint.requests().await.len();
+
+    let again = s.headless(&["--session-id", id, "hi again"]).await;
+    assert_eq!(again.code, Some(2), "{}", again.stderr);
+    assert!(
+        again
+            .stderr
+            .contains(&format!("session ID {id} is already in use")),
+        "{}",
+        again.stderr
+    );
+    assert_eq!(endpoint.requests().await.len(), calls, "no provider call");
+    assert_eq!(std::fs::read_to_string(&ledger).unwrap(), before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_id_is_normalized_to_its_hyphenated_form() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let out = s
+        .headless(&[
+            "--session-id",
+            "0B9C2A3E9F5D4C6E8A112F3D4E5A6B7C",
+            "--output-format",
+            "stream-json",
+            "hi",
+        ])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert_eq!(
+        out.lines()[0]["session_id"],
+        "0b9c2a3e-9f5d-4c6e-8a11-2f3d4e5a6b7c"
     );
 }

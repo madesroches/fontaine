@@ -11,6 +11,13 @@ pub fn open(path: &Path, append: bool) -> io::Result<File> {
     imp::open(path, append)
 }
 
+/// Creates the directory `path`, whose parent must exist, readable only by the current user:
+/// mode 0700 on Unix, a protected current-user-only DACL that children inherit on Windows. An
+/// existing directory is an `AlreadyExists` error, so the caller learns it did not create it.
+pub fn create_dir(path: &Path) -> io::Result<()> {
+    imp::create_dir(path)
+}
+
 /// The current user's SID in string form; what a current-user-only DACL must name.
 #[cfg(windows)]
 pub use imp::current_user_sid;
@@ -28,6 +35,11 @@ mod imp {
     use std::io;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     use std::path::Path;
+
+    pub fn create_dir(path: &Path) -> io::Result<()> {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(path)
+    }
 
     pub fn open(path: &Path, append: bool) -> io::Result<File> {
         let mut options = OpenOptions::new();
@@ -69,7 +81,7 @@ mod imp {
         TokenUser,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, OPEN_ALWAYS,
+        CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, OPEN_ALWAYS,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -115,9 +127,11 @@ mod imp {
     }
 
     /// A security descriptor granting full control to the current user alone, with
-    /// inheritance from the parent blocked. Free with `LocalFree`.
-    fn descriptor() -> io::Result<*mut c_void> {
-        let sddl: Vec<u16> = format!("D:P(A;;FA;;;{})", current_user_sid()?)
+    /// inheritance from the parent blocked. A directory's grant is inherited by what is
+    /// created in it. Free with `LocalFree`.
+    fn descriptor(directory: bool) -> io::Result<*mut c_void> {
+        let inherit = if directory { "OICI" } else { "" };
+        let sddl: Vec<u16> = format!("D:P(A;{inherit};FA;;;{})", current_user_sid()?)
             .encode_utf16()
             .chain(Some(0))
             .collect();
@@ -137,8 +151,26 @@ mod imp {
     }
 
     pub fn open(path: &Path, append: bool) -> io::Result<File> {
-        let sd = descriptor()?;
+        let sd = descriptor(false)?;
         let result = unsafe { open_with(path, append, sd) };
+        unsafe { LocalFree(sd) };
+        result
+    }
+
+    pub fn create_dir(path: &Path) -> io::Result<()> {
+        let sd = descriptor(true)?;
+        let wide_path = wide(path);
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd,
+            bInheritHandle: 0,
+        };
+        let created = unsafe { CreateDirectoryW(wide_path.as_ptr(), &attributes) };
+        let result = if created == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        };
         unsafe { LocalFree(sd) };
         result
     }
