@@ -48,14 +48,21 @@ pub struct AgentTool {
 /// Kills a child whose blocking call was dropped, such as by an interrupt.
 struct KillOnDrop {
     tree: Arc<AgentTree>,
+    ledger: Arc<dyn RootLedger>,
     id: String,
+    agent_type: String,
     armed: bool,
 }
 
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
-        if self.armed {
-            self.tree.kill(&self.id);
+        if self.armed && self.tree.kill(&self.id) {
+            // Nothing awaits the child's report any more, so nothing else concludes it.
+            self.ledger.append_event(AgentEvent::Finished {
+                agent: self.id.clone(),
+                status: ChildStatus::Killed.as_str().to_string(),
+            });
+            subagent_event("killed", &self.id, &self.agent_type);
         }
     }
 }
@@ -277,7 +284,9 @@ impl Tool for AgentTool {
 
         let mut guard = KillOnDrop {
             tree: self.tree.clone(),
+            ledger: self.ledger.clone(),
             id: id.clone(),
+            agent_type: agent_type.name.clone(),
             armed: true,
         };
         let report = handle.report().await;

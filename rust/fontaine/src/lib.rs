@@ -533,8 +533,15 @@ fn agent_setup(
     let lookup: fontaine_core::agent::EnvLookup =
         Arc::new(move |name: &str| env.get(name).cloned());
     let switcher = Switcher::new(config.clone(), dirs.data.clone(), lookup.clone());
+    let mut config = config.clone();
+    if headless && let Some(cap) = cli.max_budget_usd {
+        // The tree's session ceiling counts root, guardian and child spend alike, so a running
+        // child is stopped at the headless cap instead of finishing its own budget first.
+        let ceiling = &mut config.agents.session_cost_budget_usd;
+        *ceiling = Some(ceiling.map_or(cap, |c| c.min(cap)));
+    }
     AgentSetup {
-        config: config.clone(),
+        config,
         config_dir: dirs.config.clone(),
         data_dir: dirs.data.clone(),
         models,

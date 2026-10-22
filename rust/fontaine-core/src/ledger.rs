@@ -258,10 +258,29 @@ impl Ledger {
         let text = std::fs::read_to_string(&path)?;
         let mut view = LedgerView::default();
         let mut next_seq = 0;
-        for line in text.lines().filter(|line| !line.trim().is_empty()) {
-            let entry: Entry = serde_json::from_str(line).map_err(io::Error::other)?;
-            view.apply(&entry.record);
-            next_seq = entry.seq + 1;
+        let mut good_end = 0;
+        let mut offset = 0;
+        let mut lines = text.split_inclusive('\n').peekable();
+        while let Some(raw) = lines.next() {
+            offset += raw.len();
+            if raw.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Entry>(raw) {
+                Ok(entry) => {
+                    view.apply(&entry.record);
+                    next_seq = entry.seq + 1;
+                    good_end = offset;
+                }
+                // A write cut short (full disk, power loss) can only damage the end; cutting it
+                // off keeps later appends on a clean line.
+                Err(e) if lines.peek().is_none() => {
+                    tracing::warn!(error = %e, "dropping the torn last line of the session ledger");
+                    let file = std::fs::OpenOptions::new().write(true).open(&path)?;
+                    file.set_len(good_end as u64)?;
+                }
+                Err(e) => return Err(io::Error::other(e)),
+            }
         }
         let file = owner_only::open(&path, true)?;
         Ok(Ledger {
@@ -400,5 +419,46 @@ mod tests {
             "git@github.com:org/repo.git"
         );
         assert_eq!(without_credentials("ssh://git@host"), "ssh://host");
+    }
+
+    fn ledger_with_two_messages(dir: &Path) -> PathBuf {
+        let ledger = Ledger::create(dir).unwrap();
+        for text in ["one", "two"] {
+            ledger
+                .append(Record::UserMessage { text: text.into() })
+                .unwrap();
+        }
+        ledger.path().to_path_buf()
+    }
+
+    #[test]
+    fn a_torn_last_line_is_cut_off_and_appends_continue_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ledger_with_two_messages(dir.path());
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("{\"seq\":2,\"ts_ms\":1,\"rec");
+        std::fs::write(&path, &text).unwrap();
+
+        let ledger = Ledger::open(dir.path()).unwrap();
+        ledger
+            .append(Record::UserMessage {
+                text: "three".into(),
+            })
+            .unwrap();
+        drop(ledger);
+        let reopened = Ledger::open(dir.path()).unwrap();
+        let lines = std::fs::read_to_string(reopened.path()).unwrap();
+        assert_eq!(lines.lines().count(), 3);
+        assert!(lines.lines().last().unwrap().contains("three"));
+    }
+
+    #[test]
+    fn a_bad_line_before_the_last_still_fails_the_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ledger_with_two_messages(dir.path());
+        let text = std::fs::read_to_string(&path).unwrap();
+        let (first, rest) = text.split_once('\n').unwrap();
+        std::fs::write(&path, format!("{first}\nnot json\n{rest}")).unwrap();
+        assert!(Ledger::open(dir.path()).is_err());
     }
 }

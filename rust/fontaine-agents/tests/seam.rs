@@ -514,6 +514,9 @@ async fn dropping_a_blocking_call_kills_the_child() {
     }
     drop(call);
     assert!(*rig.runner.child(0).killed.lock().unwrap());
+    assert!(rig.ledger.events.lock().unwrap().iter().any(
+        |e| matches!(e, AgentEvent::Finished { agent, status } if agent == "agent-1" && status == "killed")
+    ));
 }
 
 #[tokio::test]

@@ -587,6 +587,15 @@ impl SessionState {
             .insert(agent.to_string(), call_id);
     }
 
+    /// Forgets the call, so work the harness starts on its own is not attributed to the last
+    /// real one.
+    pub fn clear_current_call(&self, agent: &str) {
+        self.current_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(agent);
+    }
+
     pub fn current_call(&self, agent: &str) -> Option<String> {
         self.current_calls
             .lock()

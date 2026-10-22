@@ -144,8 +144,21 @@ fn restrictions(agent_type: &AgentType) -> ChildRestrictions {
             .filter_map(|entry| parse_rule(entry).ok())
             .collect::<Vec<_>>()
     };
+    // A tool listed bare is allowed whole, so a specifier for it in the same list adds nothing.
+    let only = |entries: &[String]| {
+        let bare: Vec<String> = entries
+            .iter()
+            .filter(|entry| !entry_has_specifier(entry))
+            .filter_map(|entry| parse_rule(entry).ok())
+            .map(|rule| rule.tool)
+            .collect();
+        rules(entries)
+            .into_iter()
+            .filter(|rule| !bare.contains(&rule.tool))
+            .collect::<Vec<_>>()
+    };
     ChildRestrictions {
-        only: agent_type.tools.as_deref().map(rules).unwrap_or_default(),
+        only: agent_type.tools.as_deref().map(only).unwrap_or_default(),
         deny: rules(&agent_type.disallowed),
     }
 }
@@ -392,4 +405,31 @@ async fn run_child(
 /// A usage report in the tree's terms; re-exported for the surfaces.
 pub fn spend(usage: &rig_core::completion::Usage) -> Spend {
     spend_of(usage)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fontaine_agents::mode::ModeSetting;
+    use fontaine_agents::registry::TypeOrigin;
+
+    fn typed(tools: &[&str]) -> AgentType {
+        AgentType {
+            name: "t".to_string(),
+            description: String::new(),
+            prompt: None,
+            tools: Some(tools.iter().map(|t| t.to_string()).collect()),
+            disallowed: Vec::new(),
+            model: None,
+            mode: ModeSetting::Inherit,
+            origin: TypeOrigin::Builtin,
+        }
+    }
+
+    #[test]
+    fn a_tool_listed_bare_is_not_limited_by_its_specifier() {
+        let only = restrictions(&typed(&["shell", "shell(git *)", "read(src/*)"])).only;
+        let tools: Vec<&str> = only.iter().map(|r| r.tool.as_str()).collect();
+        assert_eq!(tools, ["read"]);
+    }
 }

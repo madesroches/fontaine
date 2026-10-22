@@ -620,6 +620,56 @@ async fn a_spent_budget_with_a_background_child_running_stops_the_run_and_kills_
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_foreground_child_is_stopped_when_the_headless_cap_is_passed() {
+    let endpoint = Endpoint::start_routed(
+        Wire::Responses,
+        vec![
+            Route::new(
+                "root task",
+                vec![
+                    Turn::tool("c1", "agent", spawn_args("explore", "child-F: dig", false)),
+                    Turn::text("root finished"),
+                ],
+            ),
+            Route::new(
+                "child-F",
+                vec![
+                    Turn::tool("kf1", "read", json!({"path": "a.txt"})),
+                    Turn::text("F done"),
+                ],
+            ),
+        ],
+    )
+    .await;
+    let mut s = Sandbox::new();
+    s.user_config(&format!(
+        "[accounts.paid]\nkind = \"openai\"\nbase_url = \"{}\"\napi_key_env = \"PAID_KEY\"\nmodels = [\"gpt-4o-mini\"]\n\n[model]\nmodel = \"paid/gpt-4o-mini\"\n",
+        endpoint.url()
+    ));
+    s.set_env("PAID_KEY", "sk-test-not-a-real-key");
+    // One scripted reply costs $0.00045: the root's call is under the cap, the child's first
+    // call crosses it.
+    let out = s
+        .run(&[
+            "-p",
+            "--permission-mode",
+            "manual",
+            "--output-format",
+            "stream-json",
+            "--allowed-tools",
+            "agent",
+            "--max-budget-usd",
+            "0.0006",
+            "root task",
+        ])
+        .await;
+    let lines = out.lines();
+    assert!(!of_type(&lines, "result").is_empty(), "{}", out.stderr);
+    // The child never made its second call, which would carry the read result.
+    assert!(requests_with(&endpoint, "kf1").await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_child_cannot_spawn_past_the_toolset_its_type_allows() {
     // The built-in types have no `agent` tool, so a child that tries gets nothing it can call.
     let endpoint = Endpoint::start_routed(

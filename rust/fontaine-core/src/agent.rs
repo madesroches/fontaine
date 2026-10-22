@@ -632,6 +632,8 @@ impl AgentRuntime {
             .collect::<Vec<_>>()
             .join("\n\n");
         let args = json!({});
+        // No model call produced this result, so hooks get no tool_use_id for it.
+        self.state.clear_current_call(ROOT_AGENT);
         let view = CallView {
             tool: "agent",
             risk: RiskClass::Arbitrary,

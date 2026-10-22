@@ -460,6 +460,29 @@ async fn a_post_hooks_additional_context_is_added_to_the_result() {
 }
 
 #[tokio::test]
+async fn a_post_hook_event_carries_the_call_id_only_while_a_call_is_current() {
+    let rig = Rig::new(Manual);
+    let dir = tempfile::tempdir().unwrap();
+    let record = dir.path().join("event.json");
+    let pipeline = post_stage(
+        vec![hook(
+            None,
+            command(&["--record", &record.to_string_lossy(), "--reply", "{}"]),
+            user(),
+        )],
+        &rig,
+    );
+    let sent =
+        || -> Value { serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap() };
+    rig.state.set_current_call(ROOT_AGENT, "call-1".to_string());
+    through(&pipeline, "read", Ok(ToolOutput::text("body"))).await;
+    assert_eq!(sent()["tool_use_id"], "call-1");
+    rig.state.clear_current_call(ROOT_AGENT);
+    through(&pipeline, "read", Ok(ToolOutput::text("body"))).await;
+    assert!(sent().get("tool_use_id").is_none_or(Value::is_null));
+}
+
+#[tokio::test]
 async fn a_failing_post_hook_adds_nothing_and_exit_two_adds_its_stderr() {
     let rig = Rig::new(Manual);
     let failing = post_stage(
