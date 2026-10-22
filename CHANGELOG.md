@@ -99,7 +99,7 @@ All notable changes are recorded here. The format follows
   and recorded in the ledger and the audit log (`tier = human`, `rule = user_shell`); `@` completes
   workspace file paths; Up/Down and Ctrl-R recall and search a persistent prompt history
   (`history.jsonl`); messages typed during a turn are queued and delivered with the agent's next
-  tool result, becoming guardian-visible intent only then.
+  tool result, becoming guardian-visible intent only then (#46).
 
 ### Changed
 
