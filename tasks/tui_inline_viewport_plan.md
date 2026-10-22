@@ -47,8 +47,9 @@ and the docs.
 
 ### Commit-then-forget transcript
 
-`Transcript` keeps its `entries` (so `find_tool`, `set_status` and `guardian_denied` keep working
-on calls already in scrollback) and gains a commit cursor:
+`Transcript` keeps its `entries` (so `find_tool`, whose name fallback would match the wrong call
+once the right one left the vector, `set_status` and `guardian_denied` keep working on calls
+already in scrollback) and gains a commit cursor:
 
 ```rust
 pub struct Transcript {
@@ -73,6 +74,10 @@ pub struct Transcript {
 - Rows are counted by char offset, not row index. A resize mid-stream then re-wraps only the
   uncommitted remainder at the new width, and no text is dropped or repeated. Assistant text has
   an empty prefix, so continuing it from a row boundary renders the same as wrapping it whole.
+- Pushing any non-delta entry (`user`, `notice`, `error`, `ToolCall`) first finishes the streaming
+  entry, so at most one streaming entry exists and it is always the last. Otherwise a notice
+  pushed mid-turn would leave the earlier entry `streaming: true` forever and block every later
+  commit.
 - The existing `lines(width)` stays for tests and is the reference the commit property is checked
   against.
 - Once committed, a status change (for example a late `ToolResult` on a call already shown as
@@ -139,16 +144,16 @@ cannot resize an inline viewport, so the rebuild:
    scrolls the screen, pushing older lines into scrollback. When it shrinks, the area below is
    already clear and the next `insert_before` fills it.
 
-Vendoring a custom terminal (Codex CLI's approach) was rejected; see Trade-offs.
-
 `Terminal::with_options` asks the backend for the cursor position. On crossterm that is a DSR
 round trip: a network round trip over ssh, and a 2 s timeout on terminals that do not answer,
 racing the input reader thread. To avoid it, `run` uses a thin backend wrapper, `Anchored<B>`, in
 `screen.rs`. It delegates every `Backend` method, remembers the position from the last
 `set_cursor_position`, and forgets it on any call that moves the cursor (`draw`, `append_lines`,
-`scroll_region_up/down`, `clear`). `get_cursor_position` answers from the remembered position and
+`scroll_region_up/down`, `clear`) and whenever `size()`/`window_size()` reports a size different
+from the last one it saw (ratatui sets the cursor after `draw`, so a resize would otherwise read a
+stale pre-resize position). `get_cursor_position` answers from the remembered position and
 falls back to the inner backend when it has none. At startup (before the reader thread starts)
-and on a terminal resize, ratatui still asks the real terminal.
+and after a terminal resize, ratatui still asks the real terminal.
 
 **Terminal resize** is left to ratatui's `autoresize` inside `draw`, which re-anchors an inline
 viewport and clears the screen on a horizontal shrink. Lines already in scrollback keep the width
@@ -168,10 +173,11 @@ and a stray `ESC[?1049l` restores a saved cursor position on xterm-likes. Instea
   restore before chaining to the previous hook, then
   `Screen::new(Anchored::new(CrosstermBackend::new(stdout())), ...)`, then spawn the reader
   thread;
-- `TerminalGuard` (Drop, so panics unwind through it) holds the restore: `clear_live` (so the
-  input box and status bar do not stay in scrollback; the guard owns the `Screen`, or `run`
-  calls `clear_live` before dropping it), then `DisableBracketedPaste`, `Show` cursor and
-  `disable_raw_mode`.
+- `TerminalGuard` (Drop, so panics unwind through it) owns the `Screen` and holds the restore:
+  `clear_live` (so the input box and status bar do not stay in scrollback), then
+  `DisableBracketedPaste`, `Show` cursor and `disable_raw_mode`. When `std::thread::panicking()`
+  it skips `clear_live`: the panic hook has already restored the terminal and printed the message
+  inside the live area, and clearing would erase it.
 
 ### Feature flag
 
@@ -198,7 +204,8 @@ live area does not flicker. Windows 10+ consoles support DECSTBM through crosste
    passes `&mut self.app`. Update the unit-test `ui()` helper.
 8. **run / exit** (`lib.rs`): raw mode + bracketed paste + panic hook. `Screen` over
    `Anchored<CrosstermBackend<Stdout>>`. The render closure calls `screen.render(app)`.
-   `TerminalGuard` clears the live area and restores, with no alternate-screen calls.
+   `TerminalGuard` owns the `Screen`, clears the live area (except when panicking) and restores,
+   with no alternate-screen calls.
 9. **Test harness** (`tests/common/mod.rs`): build `Screen::new(TestBackend::new(120, 40), ||
    TestBackend::new(1, 1))`. After each render, `Ui::screen()` is the backend's scrollback rows
    followed by its buffer rows, so `wait_for("all done")` finds text whether it is in scrollback
@@ -223,24 +230,12 @@ live area does not flicker. Windows 10+ consoles support DECSTBM through crosste
 
 - **Inline viewport vs. mouse capture with our own selection and OSC 52 copy:** capture is far
   more work and would break native selection where it works today. Inline matches Claude Code.
-- **Rebuilding the `Terminal` on height change vs. vendoring a custom terminal (Codex CLI):**
-  the rebuild is ~30 lines on top of the pinned ratatui and reuses its inline anchoring,
-  `insert_before` and diffing. A vendored terminal is several hundred lines that must track
-  ratatui internals by hand. The rebuild costs one full repaint of the live area per height
-  change, which is a few rows.
-- **`Anchored` backend wrapper vs. letting each rebuild do a DSR:** height changes happen on
-  input wrapping, panels and tool calls. Paying a cursor query each time is a visible stall over
-  ssh (the reported setup) and races the reader thread. The wrapper is plain delegation.
-- **Char-offset vs. row-count commit cursor for streaming replies:** row counts break when the
-  width changes mid-stream. A char offset re-wraps only the uncommitted remainder.
-- **Keeping committed entries in `entries` vs. dropping them:** dropping would make `find_tool`'s
-  name fallback match the wrong call once the right one left the vector. Memory is the same as
-  today.
 
 ## Decisions
 
 - 2026-10-22: Height changes rebuild the inline `Terminal` (with a cursor-anchored backend
-  wrapper) rather than vendoring a custom terminal; resolves the issue's open technical point.
+  wrapper) rather than vendoring a custom terminal (Codex CLI's approach: several hundred lines tracking
+  ratatui internals); resolves the issue's open technical point.
 - 2026-10-22: Every turn end marks still-pending tool calls `Interrupted`, so an orphaned call
   cannot hold the live region open.
 
@@ -258,6 +253,7 @@ live area does not flicker. Windows 10+ consoles support DECSTBM through crosste
 ## Testing Strategy
 
 Unit tests (`transcript.rs`):
+- A delta, then a notice, then more deltas, then the turn ends: everything commits.
 - Streaming commit property: for a reply fed in arbitrary delta chunks (including `'\n'`
   boundaries and lines exactly `width` chars), concatenate every `commit` output and the final
   `commit` after `Assistant(full)`. The result equals `lines(width)` of the same transcript, with
@@ -282,7 +278,8 @@ Unit tests (`view.rs` / `screen.rs`, `TestBackend` with scrollback):
 - The existing long-command approval test is ported to `Screen` and keeps passing: the tail is
   reachable with PgDn inside a viewport that fits the terminal.
 - `Anchored`: `get_cursor_position` returns the last set position, and after a `draw` or
-  `append_lines` it asks the inner backend.
+  `append_lines` it asks the inner backend. After the inner size changes, it asks the inner
+  backend too.
 - `clear_live` leaves the scrollback intact and the live rows blank.
 
 Integration (`tests/tui.rs` through the harness): the whole existing suite runs on the inline
