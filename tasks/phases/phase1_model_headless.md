@@ -123,7 +123,7 @@ upstream builder knob.
 
 ## Files created or modified
 
-`rust/Cargo.toml` (rig + telemetry pins — `rig-core` with `reqwest`, dev `rig-core`/`rig-agent` with `test-utils`, dev `rig-cassette` with `http`; `jsonschema` dev-dependency; new crates: `tokio` (caret), `wiremock =0.6.5` (dev), `rpassword 7.5.4` (hidden `auth login` prompt), `uuid 1.28.0` with the `v4` feature (session ids)); `rust/fontaine-core/src/models.rs`; `rust/fontaine-core/src/credentials.rs` (adds the writer for `auth login`); `rust/fontaine/src/{main,lib,headless}.rs`
+`rust/Cargo.toml` (rig + telemetry pins — `rig-core` with `reqwest`, dev `rig-core`/`rig-agent` with `test-utils`, dev `rig-cassette` with `http`; `jsonschema` dev-dependency; new crates: `tokio` (caret), `wiremock =0.6.5` (dev), `serial_test 4.0.1` (caret, dev), `rpassword 7.5.4` (hidden `auth login` prompt), `uuid 1.28.0` with the `v4` feature (session ids)); `rust/fontaine-core/src/models.rs`; `rust/fontaine-core/src/credentials.rs` (adds the writer for `auth login`); `rust/fontaine/src/{main,lib,headless}.rs`
 (`main.rs` thin; `lib.rs` holds the logic the integration tests import; `-p` flag wiring, I/O contract); `rust/fontaine/src/telemetry/{micromegas,otlp,span_bridge}.rs`;
 `rust/fontaine/tests/{headless_smoke,headless_contract,telemetry_micromegas,telemetry_otlp}.rs`;
 `docs/schemas/headless-v1.schema.json`; `rust/fontaine-core/tests/{models,accounts}.rs`; `rust/fontaine/tests/common/mod.rs` (shared scripted-wiremock helper);
