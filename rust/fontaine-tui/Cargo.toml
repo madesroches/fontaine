@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 fontaine-core.workspace = true
+fontaine-guardian.workspace = true
 fontaine-tools.workspace = true
 futures.workspace = true
 ratatui.workspace = true

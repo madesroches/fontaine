@@ -182,15 +182,34 @@ async fn the_model_flag_overrides_the_configured_model() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn auto_mode_is_rejected_before_the_guardian_ships() {
+async fn auto_mode_is_accepted_by_flag_and_by_the_user_file() {
     let s = Sandbox::new();
+    // No model is configured, so the run ends there, not at the mode.
     let out = s.run(&["-p", "--permission-mode", "auto", "hi"]).await;
     assert_eq!(out.code, Some(2));
-    assert!(out.stderr.contains("auto"), "{}", out.stderr);
+    assert!(out.stderr.contains("no main model"), "{}", out.stderr);
 
     s.user_config("[permissions]\ndefault_mode = \"auto\"\n");
     let out = s.run(&["-p", "hi"]).await;
     assert_eq!(out.code, Some(2), "{}", out.stderr);
+    assert!(out.stderr.contains("no main model"), "{}", out.stderr);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_headless_run_starts_in_manual_even_though_the_interactive_ui_defaults_to_auto() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let out = s.run(&["-p", "--output-format", "stream-json", "hi"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert_eq!(out.lines()[0]["permission_mode"], "manual");
+
+    // An explicit default_mode applies to both surfaces.
+    s.user_config(&format!(
+        "[accounts.mock]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"scripted\"]\n\n[model]\nmodel = \"mock/scripted\"\n\n[permissions]\ndefault_mode = \"plan\"\n",
+        endpoint.url()
+    ));
+    let out = s.run(&["-p", "--output-format", "stream-json", "hi"]).await;
+    assert_eq!(out.lines()[0]["permission_mode"], "plan");
 }
 
 #[tokio::test(flavor = "multi_thread")]

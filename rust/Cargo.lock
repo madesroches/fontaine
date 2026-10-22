@@ -1454,6 +1454,7 @@ name = "fontaine-tui"
 version = "0.1.0"
 dependencies = [
  "fontaine-core",
+ "fontaine-guardian",
  "fontaine-tools",
  "futures",
  "ratatui",

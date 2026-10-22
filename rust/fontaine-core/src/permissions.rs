@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use fontaine_guardian::{Adjudication, Decision as GuardianDecision, FailClosed};
 use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
 use fontaine_tools::preclassify::{Environment, Preclassifier, analyze};
 use fontaine_tools::risk::RiskClass;
@@ -16,12 +17,17 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 use tracing::Instrument;
 
+use crate::adjudication::{self, action_summary};
 use crate::audit::{Decision, DecisionRecord, args_digest, now_rfc3339};
 use crate::config::PermissionMode;
+use crate::destructive::touched_paths;
 use crate::floor::{self, CriticalEnv};
-use crate::gate::SessionState;
+use crate::gate::{DeniedCall, SessionState};
 use crate::ledger::Record;
-use crate::permission_rules::{CallContext, Posture, RuleSource, SourcedRule, matches, propose};
+use crate::permission_rules::{
+    CallContext, Posture, RuleSource, SourcedRule, is_broad_code_execution, matches, parse_rule,
+    propose,
+};
 use crate::tier::Tier;
 use crate::user_config;
 
@@ -75,6 +81,36 @@ pub trait Approver: Send + Sync {
     fn warn(&self, message: &str) {
         eprintln!("fontaine: warning: {message}");
     }
+
+    /// The pinned guardian cannot be used at all (no credential, unknown account). Nothing is
+    /// substituted silently: the human chooses whether to try again, to run with `manual`
+    /// instead, or to leave the call denied.
+    fn guardian_unavailable<'a>(
+        &'a self,
+        _info: GuardianUnavailable,
+    ) -> BoxFuture<'a, UnavailableChoice> {
+        Box::pin(async { UnavailableChoice::Deny })
+    }
+}
+
+/// Why the guardian could not be asked, for the human who has to decide what to do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuardianUnavailable {
+    /// `<account>/<model>`.
+    pub model: String,
+    pub reason: String,
+    /// The call that needed it.
+    pub tool: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnavailableChoice {
+    /// Ask the guardian again; the surface has re-resolved or replaced it.
+    Retry,
+    /// Switch the session to `manual` and prompt for this call.
+    Manual,
+    /// Leave the call denied.
+    Deny,
 }
 
 /// An approver that denies everything, for runs where nobody can answer.
@@ -100,6 +136,8 @@ pub struct HookDecision {
     /// Replaces the call's arguments; every later step judges the rewritten call.
     pub updated_input: Option<Value>,
     pub reason: Option<String>,
+    /// A note for the guardian, shown to it inside an untrusted block.
+    pub guardian_context: Option<String>,
 }
 
 #[derive(Debug)]
@@ -119,6 +157,13 @@ pub struct PreToolUseEvent<'a> {
 /// unreadable contributes no decision; it never loosens anything.
 pub trait PreToolUseHook: Send + Sync {
     fn id(&self) -> String;
+
+    /// The matcher the hook is configured with, in the permission-rule grammar. A hook `allow`
+    /// skips the guardian in `auto` only when this is a narrow rule; a hook that names none, or
+    /// a broad one, is suspended there like a broad allow rule.
+    fn matcher(&self) -> Option<String> {
+        None
+    }
 
     fn timeout(&self) -> Duration {
         Duration::from_secs(30)
@@ -155,8 +200,22 @@ pub struct PermissionPipeline {
 struct HookOutcome {
     deny: Option<(String, Option<String>)>,
     ask: Option<String>,
-    allow: Option<String>,
+    /// The hook id, and whether its matcher is narrow enough to act in `auto`.
+    allow: Option<(String, bool)>,
     updated_input: Option<Value>,
+    guardian_context: Vec<String>,
+}
+
+/// One call as the pipeline carries it from the first hook to the last record.
+struct CallCtx<'a> {
+    call: &'a CallView<'a>,
+    /// The arguments every step judges: the model's, or a hook's rewrite of them.
+    args: Value,
+    tool_use_id: Option<String>,
+    digest: String,
+    original_digest: Option<String>,
+    mode: PermissionMode,
+    started: Instant,
 }
 
 /// A call that needs the human, or is denied because there is none.
@@ -179,6 +238,8 @@ enum Verdict {
         why: String,
     },
     Prompt(Prompt),
+    /// Nothing before the mode pre-approved or refused the call: the guardian decides.
+    Guardian,
 }
 
 fn denied(tool: &str, why: &str) -> String {
@@ -293,9 +354,16 @@ impl PermissionPipeline {
                     outcome.ask.get_or_insert(id);
                 }
                 Some(HookPermission::Allow) => {
-                    outcome.allow.get_or_insert(id);
+                    let narrow = hook
+                        .matcher()
+                        .and_then(|text| parse_rule(&text).ok())
+                        .is_some_and(|rule| !is_broad_code_execution(&rule));
+                    outcome.allow.get_or_insert((id, narrow));
                 }
                 None => {}
+            }
+            if let Some(note) = decision.guardian_context {
+                outcome.guardian_context.push(note);
             }
         }
         outcome
@@ -387,6 +455,11 @@ impl PermissionPipeline {
             && let Some(found) =
                 floor::protected_path(&scope, home, &self.state.protected_dirs, args)
         {
+            // In `auto` the guardian takes the place of the forced prompt, but only for a path
+            // the file tool can reach at all; the others are refused below.
+            if mode == PermissionMode::Auto && scope.locate(tool, args).is_ok() {
+                return Verdict::Guardian;
+            }
             return self.would_prompt(
                 mode,
                 Prompt {
@@ -441,17 +514,24 @@ impl PermissionPipeline {
                 };
             }
         }
+        // `auto` sets broad code-execution rules aside for as long as it is on: a blanket
+        // `shell` or `python *` grant would otherwise run anything past the guardian.
+        let suspended = |rule: &SourcedRule| {
+            mode == PermissionMode::Auto && is_broad_code_execution(&rule.rule)
+        };
         if let Some(rule) = rules
             .allow
             .iter()
-            .find(|r| matches(&r.rule, &ctx, Posture::Allow))
+            .find(|r| !suspended(r) && matches(&r.rule, &ctx, Posture::Allow))
         {
             return Verdict::Allow {
                 tier: Tier::AllowRule,
                 rule: Some(rule.label()),
             };
         }
-        if let Some(id) = &hook.allow {
+        if let Some((id, narrow)) = &hook.allow
+            && (mode != PermissionMode::Auto || *narrow)
+        {
             return Verdict::Allow {
                 tier: Tier::Hook,
                 rule: Some(id.clone()),
@@ -487,9 +567,10 @@ impl PermissionPipeline {
                 rule: None,
                 why: "dontAsk mode only runs calls that are pre-approved".to_string(),
             },
-            PermissionMode::Manual | PermissionMode::Plan => {
-                self.would_prompt(mode, needs_approval())
-            }
+            PermissionMode::Manual => self.would_prompt(mode, needs_approval()),
+            // Plan mode never edits (refused above); what is left is consequential, and the
+            // guardian judges it as it does in `auto`.
+            PermissionMode::Plan | PermissionMode::Auto => Verdict::Guardian,
             PermissionMode::AcceptEdits => {
                 if edit_class && located.is_ok() {
                     Verdict::Allow {
@@ -500,11 +581,6 @@ impl PermissionPipeline {
                     self.would_prompt(mode, needs_approval())
                 }
             }
-            PermissionMode::Auto => Verdict::Deny {
-                tier: Tier::Guardian,
-                rule: None,
-                why: "auto mode is not available because no guardian is wired".to_string(),
-            },
         }
     }
 
@@ -530,6 +606,113 @@ impl PermissionPipeline {
         Verdict::Prompt(prompt)
     }
 
+    fn record(
+        &self,
+        cx: &CallCtx<'_>,
+        tier: Tier,
+        decision: Decision,
+        rule: Option<String>,
+        explanation: Option<String>,
+    ) -> DecisionRecord {
+        DecisionRecord {
+            ts: now_rfc3339(),
+            session_id: self.state.session_id.clone(),
+            agent_id: cx.call.agent.to_string(),
+            tool_use_id: cx.tool_use_id.clone(),
+            tool: cx.call.tool.to_string(),
+            args_digest: cx.digest.clone(),
+            original_args_digest: cx.original_digest.clone(),
+            tier,
+            decision,
+            rule,
+            confidence: None,
+            guardian_model: None,
+            latency_ms: cx.started.elapsed().as_millis() as u64,
+            guardian_profile: None,
+            guardian_verdict: None,
+            guardian_cache_hit: None,
+            guardian_latency_ms: None,
+            fail_closed_reason: None,
+            permission_mode: cx.mode.as_str().to_string(),
+            headless: self.headless,
+            explanation,
+        }
+    }
+
+    /// The guardian's part of a record.
+    fn with_guardian(mut record: DecisionRecord, adjudication: &Adjudication) -> DecisionRecord {
+        record.confidence = adjudication.confidence;
+        record.guardian_model = Some(adjudication.model.clone());
+        record.guardian_profile = Some(adjudication.profile.as_str().to_string());
+        record.guardian_verdict = Some(adjudication.decision.as_str().to_string());
+        record.guardian_cache_hit = Some(adjudication.cache_hit);
+        record.guardian_latency_ms = Some(adjudication.latency_ms);
+        record.fail_closed_reason = adjudication.fail_closed.map(|r| r.as_str().to_string());
+        record
+    }
+
+    /// Puts the decision on the `fontaine.permission` span.
+    fn note(tier: Tier, decision: Decision) {
+        let span = tracing::Span::current();
+        span.record("tier", tier.as_str());
+        span.record("decision", decision.as_str());
+    }
+
+    /// What the ledger keeps of an executed call. The paths a read-only fast-path call names
+    /// are not kept: reading does not create anything.
+    fn action(&self, cx: &CallCtx<'_>, tier: Tier) -> Record {
+        let paths = if matches!(tier, Tier::ReadOnlyFastPath | Tier::Tier05) {
+            Vec::new()
+        } else {
+            touched_paths(cx.call.tool, &cx.args, &self.state.scope())
+        };
+        Record::Action {
+            tool: cx.call.tool.to_string(),
+            agent: cx.call.agent.to_string(),
+            paths,
+            summary: action_summary(cx.call.tool, &cx.args),
+        }
+    }
+
+    fn denial(&self, cx: &CallCtx<'_>, tier: Tier, rule: Option<&str>, reason: &str) -> Record {
+        Record::Denial {
+            tool: cx.call.tool.to_string(),
+            agent: cx.call.agent.to_string(),
+            reason: reason.to_string(),
+            rule: Some(rule.unwrap_or(tier.as_str()).to_string()),
+            summary: action_summary(cx.call.tool, &cx.args),
+        }
+    }
+
+    fn allow(&self, cx: &CallCtx<'_>, tier: Tier, rule: Option<String>) -> GateDecision {
+        Self::note(tier, Decision::Allow);
+        self.emit(self.record(cx, tier, Decision::Allow, rule, None));
+        self.state.append(self.action(cx, tier));
+        GateDecision::Allow {
+            args: cx.args.clone(),
+        }
+    }
+
+    fn deny(
+        &self,
+        cx: &CallCtx<'_>,
+        tier: Tier,
+        rule: Option<String>,
+        message: String,
+    ) -> GateDecision {
+        Self::note(tier, Decision::Deny);
+        self.emit(self.record(
+            cx,
+            tier,
+            Decision::Deny,
+            rule.clone(),
+            Some(message.clone()),
+        ));
+        self.state
+            .append(self.denial(cx, tier, rule.as_deref(), &message));
+        GateDecision::Deny { message }
+    }
+
     async fn adjudicate(&self, call: CallView<'_>) -> GateDecision {
         let started = Instant::now();
         let tool_use_id = self.state.current_call(call.agent);
@@ -538,79 +721,233 @@ impl PermissionPipeline {
             .updated_input
             .clone()
             .unwrap_or_else(|| call.args.clone());
-        let original_digest = hook.updated_input.is_some().then(|| args_digest(call.args));
-        let digest = args_digest(&args);
-        let mode = self.state.mode();
+        let cx = CallCtx {
+            call: &call,
+            digest: args_digest(&args),
+            original_digest: hook.updated_input.is_some().then(|| args_digest(call.args)),
+            args,
+            tool_use_id,
+            mode: self.state.mode(),
+            started,
+        };
 
-        let make =
-            |tier: Tier, decision: Decision, rule: Option<String>, explanation: Option<String>| {
-                DecisionRecord {
-                    ts: now_rfc3339(),
-                    session_id: self.state.session_id.clone(),
-                    agent_id: call.agent.to_string(),
-                    tool_use_id: tool_use_id.clone(),
-                    tool: call.tool.to_string(),
-                    args_digest: digest.clone(),
-                    original_args_digest: original_digest.clone(),
-                    tier,
-                    decision,
-                    rule,
-                    confidence: None,
-                    guardian_model: None,
-                    latency_ms: started.elapsed().as_millis() as u64,
-                    permission_mode: mode.as_str().to_string(),
-                    headless: self.headless,
-                    explanation,
-                }
-            };
-        let span = tracing::Span::current();
-
-        match self.evaluate(&call, &args, &hook) {
-            Verdict::Allow { tier, rule } => {
-                span.record("tier", tier.as_str());
-                span.record("decision", Decision::Allow.as_str());
-                self.emit(make(tier, Decision::Allow, rule, None));
-                self.state.append(Record::Action {
-                    tool: call.tool.to_string(),
-                    agent: call.agent.to_string(),
-                });
-                GateDecision::Allow { args }
-            }
+        match self.evaluate(&call, &cx.args, &hook) {
+            Verdict::Allow { tier, rule } => self.allow(&cx, tier, rule),
             Verdict::Deny { tier, rule, why } => {
-                let message = denied(call.tool, &why);
-                span.record("tier", tier.as_str());
-                span.record("decision", Decision::Deny.as_str());
-                self.emit(make(tier, Decision::Deny, rule, Some(message.clone())));
-                self.state.append(Record::Denial {
+                self.deny(&cx, tier, rule, denied(call.tool, &why))
+            }
+            Verdict::Prompt(prompt) => self.prompt_or_ask(&cx, prompt).await,
+            Verdict::Guardian => self.guardian_branch(&cx, &hook).await,
+        }
+    }
+
+    /// Records the prompt and puts it to the human.
+    async fn prompt_or_ask(&self, cx: &CallCtx<'_>, prompt: Prompt) -> GateDecision {
+        Self::note(prompt.tier, Decision::Prompt);
+        self.emit(self.record(cx, prompt.tier, Decision::Prompt, prompt.rule.clone(), None));
+        self.ask_human(cx, prompt).await
+    }
+
+    /// A prompt that nobody can answer is a denial; otherwise it is asked.
+    async fn human_or_deny(&self, cx: &CallCtx<'_>, prompt: Prompt) -> GateDecision {
+        match self.would_prompt(cx.mode, prompt) {
+            Verdict::Prompt(prompt) => self.prompt_or_ask(cx, prompt).await,
+            Verdict::Deny { tier, rule, why } => {
+                self.deny(cx, tier, rule, denied(cx.call.tool, &why))
+            }
+            Verdict::Allow { .. } | Verdict::Guardian => self.deny(
+                cx,
+                Tier::Guardian,
+                None,
+                denied(cx.call.tool, "it needs the user's approval"),
+            ),
+        }
+    }
+
+    /// Step 7 and 9: the guardian decides, unless the human already settled this exact call.
+    async fn guardian_branch(&self, cx: &CallCtx<'_>, hook: &HookOutcome) -> GateDecision {
+        let call = cx.call;
+        // `/denied` then `r`: the human approved this exact call once. The floor has already
+        // run; the guardian is not asked and the approval never enters the cache or the
+        // breaker.
+        if self.state.take_retry(call.agent, call.tool, &cx.digest) {
+            Self::note(Tier::Human, Decision::Allow);
+            self.emit(self.record(
+                cx,
+                Tier::Human,
+                Decision::Allow,
+                Some("retry approved by the user".to_string()),
+                None,
+            ));
+            self.approved(cx, Tier::Human, "once");
+            return GateDecision::Allow {
+                args: cx.args.clone(),
+            };
+        }
+        if self.state.auto_paused() {
+            return self
+                .human_or_deny(
+                    cx,
+                    Prompt {
+                        tier: Tier::Guardian,
+                        rule: None,
+                        reason: "auto mode is paused after repeated guardian denials; approving this call resumes it".to_string(),
+                        forced: true,
+                    },
+                )
+                .await;
+        }
+
+        let request = adjudication::build(
+            &self.state,
+            call.tool,
+            &cx.args,
+            hook.guardian_context.clone(),
+        );
+        let mut adjudication = self.state.guardian().adjudicate(&request).await;
+        if adjudication.fail_closed == Some(FailClosed::Unavailable) && !self.headless {
+            let info = GuardianUnavailable {
+                model: adjudication.model.clone(),
+                reason: self
+                    .state
+                    .guardian()
+                    .unavailable_reason()
+                    .unwrap_or_default()
+                    .to_string(),
+                tool: call.tool.to_string(),
+            };
+            match self.approver.guardian_unavailable(info).await {
+                UnavailableChoice::Retry => {
+                    adjudication = self.state.guardian().adjudicate(&request).await;
+                }
+                UnavailableChoice::Manual => {
+                    self.state.set_mode(PermissionMode::Manual);
+                    return self
+                        .prompt_or_ask(
+                            cx,
+                            Prompt {
+                                tier: Tier::Mode,
+                                rule: None,
+                                reason: "it needs the user's approval".to_string(),
+                                forced: false,
+                            },
+                        )
+                        .await;
+                }
+                UnavailableChoice::Deny => {}
+            }
+        }
+        self.state.add_guardian_usage(&adjudication.usage);
+        self.settle(cx, adjudication).await
+    }
+
+    /// Acts on what the guardian came to.
+    async fn settle(&self, cx: &CallCtx<'_>, adjudication: Adjudication) -> GateDecision {
+        let call = cx.call;
+        let rule = adjudication.rule.as_str().to_string();
+        match adjudication.decision {
+            GuardianDecision::Allow => {
+                self.state.guardian_allowed();
+                Self::note(Tier::Guardian, Decision::Allow);
+                self.emit(Self::with_guardian(
+                    self.record(cx, Tier::Guardian, Decision::Allow, Some(rule), None),
+                    &adjudication,
+                ));
+                self.state.append(self.action(cx, Tier::Guardian));
+                GateDecision::Allow {
+                    args: cx.args.clone(),
+                }
+            }
+            GuardianDecision::Escalate if !self.headless => {
+                Self::note(Tier::Guardian, Decision::Prompt);
+                self.emit(Self::with_guardian(
+                    self.record(
+                        cx,
+                        Tier::Guardian,
+                        Decision::Prompt,
+                        Some(rule.clone()),
+                        None,
+                    ),
+                    &adjudication,
+                ));
+                self.ask_human(
+                    cx,
+                    Prompt {
+                        tier: Tier::Guardian,
+                        reason: format!(
+                            "the guardian wants you to decide: [{rule}] {}",
+                            adjudication.explanation
+                        ),
+                        rule: Some(rule),
+                        forced: true,
+                    },
+                )
+                .await
+            }
+            GuardianDecision::Deny | GuardianDecision::Escalate => {
+                let why = if adjudication.decision == GuardianDecision::Escalate {
+                    format!(
+                        "{}, and a headless run cannot ask the user",
+                        adjudication.explanation.trim_end_matches('.')
+                    )
+                } else {
+                    adjudication.explanation.clone()
+                };
+                let message = format!(
+                    "Denied by guardian: [{rule}] {why}. Do not retry it or look for another route to the same effect; tell the user what you could not do."
+                );
+                Self::note(Tier::Guardian, Decision::Deny);
+                self.emit(Self::with_guardian(
+                    self.record(
+                        cx,
+                        Tier::Guardian,
+                        Decision::Deny,
+                        Some(rule.clone()),
+                        Some(message.clone()),
+                    ),
+                    &adjudication,
+                ));
+                self.state
+                    .append(self.denial(cx, Tier::Guardian, Some(&rule), &message));
+                self.state.record_denied(DeniedCall {
                     tool: call.tool.to_string(),
                     agent: call.agent.to_string(),
-                    reason: message.clone(),
+                    tool_use_id: cx.tool_use_id.clone(),
+                    args: cx.args.clone(),
+                    args_digest: cx.digest.clone(),
+                    summary: action_summary(call.tool, &cx.args),
+                    rule,
+                    explanation: adjudication.explanation,
+                    retried: false,
                 });
+                if self.state.guardian_denied() {
+                    self.approver.notice(
+                        "auto mode paused after repeated guardian denials: the next call that needs the guardian asks you, and approving it resumes auto mode",
+                    );
+                }
                 GateDecision::Deny { message }
-            }
-            Verdict::Prompt(prompt) => {
-                span.record("tier", prompt.tier.as_str());
-                span.record("decision", Decision::Prompt.as_str());
-                self.emit(make(
-                    prompt.tier,
-                    Decision::Prompt,
-                    prompt.rule.clone(),
-                    None,
-                ));
-                self.ask_human(&call, args, &tool_use_id, prompt, make)
-                    .await
             }
         }
     }
 
-    async fn ask_human(
-        &self,
-        call: &CallView<'_>,
-        args: Value,
-        tool_use_id: &Option<String>,
-        prompt: Prompt,
-        make: impl Fn(Tier, Decision, Option<String>, Option<String>) -> DecisionRecord,
-    ) -> GateDecision {
+    /// The ledger's approval and action records for a call a human allowed.
+    fn approved(&self, cx: &CallCtx<'_>, tier: Tier, scope: &str) {
+        self.state.append(Record::Approval {
+            tool: cx.call.tool.to_string(),
+            agent: cx.call.agent.to_string(),
+            scope: scope.to_string(),
+        });
+        self.state.append(self.action(cx, tier));
+        if self.state.auto_paused() {
+            self.state.resume_auto();
+        } else {
+            self.state.guardian_allowed();
+        }
+    }
+
+    async fn ask_human(&self, cx: &CallCtx<'_>, prompt: Prompt) -> GateDecision {
+        let call = cx.call;
+        let args = cx.args.clone();
         let scope = self.state.scope();
         let proposed = if prompt.forced {
             None
@@ -629,7 +966,7 @@ impl PermissionPipeline {
         let request = ApprovalRequest {
             tool: call.tool.to_string(),
             agent: call.agent.to_string(),
-            tool_use_id: tool_use_id.clone(),
+            tool_use_id: cx.tool_use_id.clone(),
             summary: summarize(call.tool, &args),
             args: args.clone(),
             tier: prompt.tier,
@@ -647,28 +984,16 @@ impl PermissionPipeline {
             ))
             .await;
 
-        let tool = call.tool.to_string();
-        let agent = call.agent.to_string();
-        let approved = |scope: &str| {
-            self.state.append(Record::Approval {
-                tool: tool.clone(),
-                agent: agent.clone(),
-                scope: scope.to_string(),
-            });
-            self.state.append(Record::Action {
-                tool: tool.clone(),
-                agent: agent.clone(),
-            });
-        };
         match answer {
             Answer::AllowOnce => {
-                self.emit(make(Tier::Human, Decision::Allow, None, None));
-                approved("once");
+                self.emit(self.record(cx, Tier::Human, Decision::Allow, None, None));
+                self.approved(cx, Tier::Human, "once");
                 GateDecision::Allow { args }
             }
             Answer::AllowSession if offers.session => {
                 let rule = proposed.expect("offered with a proposal");
-                self.emit(make(
+                self.emit(self.record(
+                    cx,
                     Tier::Human,
                     Decision::Allow,
                     Some(format!("{rule} [session]")),
@@ -678,7 +1003,7 @@ impl PermissionPipeline {
                     rule: rule.to_string(),
                 });
                 self.state.grant(rule, RuleSource::Session);
-                approved("session");
+                self.approved(cx, Tier::Human, "session");
                 GateDecision::Allow { args }
             }
             Answer::AllowAlways if offers.always => {
@@ -698,7 +1023,8 @@ impl PermissionPipeline {
                         RuleSource::Session
                     }
                 };
-                self.emit(make(
+                self.emit(self.record(
+                    cx,
                     Tier::Human,
                     Decision::Allow,
                     Some(format!("{rule} [{}]", source.label())),
@@ -708,13 +1034,13 @@ impl PermissionPipeline {
                     rule: rule.to_string(),
                 });
                 self.state.grant(rule, source);
-                approved(if saved { "always" } else { "session" });
+                self.approved(cx, Tier::Human, if saved { "always" } else { "session" });
                 GateDecision::Allow { args }
             }
             // A grant the prompt did not offer is only the one call.
             Answer::AllowSession | Answer::AllowAlways => {
-                self.emit(make(Tier::Human, Decision::Allow, None, None));
-                approved("once");
+                self.emit(self.record(cx, Tier::Human, Decision::Allow, None, None));
+                self.approved(cx, Tier::Human, "once");
                 GateDecision::Allow { args }
             }
             Answer::Deny { feedback } => {
@@ -725,17 +1051,15 @@ impl PermissionPipeline {
                     ),
                     None => denied(call.tool, "the user declined it"),
                 };
-                self.emit(make(
+                self.emit(self.record(
+                    cx,
                     Tier::Human,
                     Decision::Deny,
                     None,
                     Some(message.clone()),
                 ));
-                self.state.append(Record::Denial {
-                    tool: call.tool.to_string(),
-                    agent: call.agent.to_string(),
-                    reason: message.clone(),
-                });
+                self.state
+                    .append(self.denial(cx, Tier::Human, None, &message));
                 GateDecision::Deny { message }
             }
         }
@@ -755,6 +1079,13 @@ impl PermissionPipeline {
             permission_mode = record.permission_mode.as_str(),
             headless = record.headless,
             latency_ms = record.latency_ms,
+            guardian.model = record.guardian_model.as_deref(),
+            guardian.profile = record.guardian_profile.as_deref(),
+            guardian.verdict = record.guardian_verdict.as_deref(),
+            guardian.confidence = record.confidence,
+            guardian.cache_hit = record.guardian_cache_hit,
+            guardian.latency_ms = record.guardian_latency_ms,
+            fail_closed_reason = record.fail_closed_reason.as_deref(),
             "tool_decision"
         );
         self.state.publish(record);

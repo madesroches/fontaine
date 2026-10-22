@@ -10,8 +10,9 @@ use std::process::ExitCode;
 use clap::Parser;
 use fontaine_core::agent::{AgentRuntime, AgentSetup};
 use fontaine_core::config::{self, CliRules, Config, ConfigError, LoadParams, PermissionMode};
+use fontaine_core::containment;
 use fontaine_core::dirs::{self, Dirs};
-use fontaine_core::models::{self, Models, ResolveParams};
+use fontaine_core::models::{self, Models, ResolveParams, Switcher};
 use fontaine_core::permissions::DenyAll;
 use fontaine_core::session::Session;
 use fontaine_core::tools;
@@ -121,10 +122,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
         };
     }
 
-    let mode = match session_mode(&cli, &config) {
-        Ok(mode) => mode,
-        Err(code) => return code,
-    };
+    let mode = session_mode(&cli, &config);
     if !cli.print && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         return usage("the interactive UI needs a terminal; use `fontaine -p` for scripted runs");
     }
@@ -174,18 +172,18 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     ExitCode::from(code)
 }
 
-/// The session's permission mode. `auto` waits for the guardian, on every surface.
-fn session_mode(cli: &Cli, config: &Config) -> Result<PermissionMode, ExitCode> {
-    let mode = cli
-        .permission_mode
-        .map_or(config.permissions.default_mode, PermissionMode::from);
-    if mode == PermissionMode::Auto {
-        return Err(usage(
-            "`--permission-mode auto` is not available until the guardian ships; \
-             use manual, acceptEdits, plan or dontAsk",
-        ));
-    }
-    Ok(mode)
+/// The session's permission mode: `--permission-mode`, then `default_mode`, then what the
+/// surface starts in. The interactive UI starts in `auto`; a headless run starts in `manual`,
+/// as Claude Code's `-p` starts in `default`.
+fn session_mode(cli: &Cli, config: &Config) -> PermissionMode {
+    cli.permission_mode
+        .map(PermissionMode::from)
+        .or(config.permissions.default_mode)
+        .unwrap_or(if cli.print {
+            PermissionMode::Manual
+        } else {
+            PermissionMode::Auto
+        })
 }
 
 /// Validates everything about a headless invocation that needs no network, so a usage error
@@ -335,15 +333,48 @@ async fn resolve_models(
     })
 }
 
+/// What the session was started from.
+struct Launch<'a> {
+    cli: &'a Cli,
+    config: &'a Config,
+    dirs: &'a Dirs,
+    host: &'a Host,
+}
+
 fn agent_setup(
-    cli: &Cli,
+    launch: &Launch<'_>,
     prep: SessionPrep,
     models: Models,
-    config: &Config,
-    dirs: &Dirs,
     headless: bool,
     json_schema: Option<Schema>,
 ) -> AgentSetup {
+    let Launch {
+        cli,
+        config,
+        dirs,
+        host,
+    } = *launch;
+    let resolved = containment::resolve(
+        config.guardian.profile,
+        cli.in_container,
+        containment::detect(),
+    );
+    let mut notices = models.notices.clone();
+    notices.extend(resolved.notice);
+    // The environment as the session started, for resolving models again later.
+    let env: std::collections::HashMap<String, OsString> = (host.env_names)()
+        .into_iter()
+        .filter_map(|name| {
+            let name = name.into_string().ok()?;
+            let value = (host.env)(&name)?;
+            Some((name, value))
+        })
+        .collect();
+    let switcher = Switcher::new(
+        config.clone(),
+        dirs.data.clone(),
+        Arc::new(move |name: &str| env.get(name).cloned()),
+    );
     AgentSetup {
         config: config.clone(),
         config_dir: dirs.config.clone(),
@@ -361,6 +392,9 @@ fn agent_setup(
         approver: Arc::new(DenyAll),
         home: prep.home,
         user_config: Some(dirs.config.join(config::USER_FILE)),
+        guardian_profile: resolved.profile,
+        notices,
+        switcher: Some(switcher),
     }
 }
 
@@ -383,15 +417,13 @@ async fn run_headless(
         );
         return EXIT_CONFIG;
     }
-    let setup = agent_setup(
+    let launch = Launch {
         cli,
-        prep,
-        models,
         config,
         dirs,
-        true,
-        options.json_schema.clone(),
-    );
+        host,
+    };
+    let setup = agent_setup(&launch, prep, models, true, options.json_schema.clone());
     let runtime = match AgentRuntime::new(setup) {
         Ok(runtime) => runtime,
         Err(message) => {
@@ -413,7 +445,13 @@ async fn run_interactive(
         Ok(models) => models,
         Err(code) => return code,
     };
-    let setup = agent_setup(cli, prep, models, config, dirs, false, None);
+    let launch = Launch {
+        cli,
+        config,
+        dirs,
+        host,
+    };
+    let setup = agent_setup(&launch, prep, models, false, None);
     match fontaine_tui::run(setup, host.cwd.clone()).await {
         Ok(()) => 0,
         Err(message) => {

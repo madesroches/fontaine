@@ -217,6 +217,19 @@ pub enum AccountKind {
     Ollama,
 }
 
+impl AccountKind {
+    /// The name the kind has in settings and in the guardian model list.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AccountKind::Anthropic => "anthropic",
+            AccountKind::OpenAi => "openai",
+            AccountKind::Gemini => "gemini",
+            AccountKind::OpenAiCompatible => "openai-compatible",
+            AccountKind::Ollama => "ollama",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GuardianProfile {
@@ -768,7 +781,9 @@ pub struct Guardian {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Permissions {
-    pub default_mode: PermissionMode,
+    /// The mode a session starts in; unset leaves the choice to the surface (the interactive UI
+    /// starts in `auto`, a headless run in `manual`).
+    pub default_mode: Option<PermissionMode>,
     pub deny: Vec<SourcedRule>,
     pub ask: Vec<SourcedRule>,
     pub allow: Vec<SourcedRule>,
@@ -898,7 +913,7 @@ impl Config {
                 scanner_hf_token_env: None,
             },
             permissions: Permissions {
-                default_mode: PermissionMode::Manual,
+                default_mode: None,
                 deny: Vec::new(),
                 ask: Vec::new(),
                 allow: Vec::new(),
@@ -974,7 +989,7 @@ impl Config {
         if let Some(p) = &s.permissions {
             let t = &mut self.permissions;
             if let Some(v) = p.default_mode {
-                t.default_mode = v;
+                t.default_mode = Some(v);
             }
             let source = RuleSource::Config(slot);
             union_rules(&mut t.deny, p.deny.as_deref(), source);
@@ -1251,25 +1266,10 @@ pub fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
         let Some(settings) = &layer.settings else {
             continue;
         };
-        phase_gate(settings, layer)?;
         config.apply(settings, layer.slot);
     }
 
     Ok(config)
-}
-
-/// `auto` ships with the guardian wiring; until then the default mode cannot select it.
-fn phase_gate(settings: &Settings, layer: &Layer) -> Result<(), ConfigError> {
-    let auto =
-        settings.permissions.as_ref().and_then(|p| p.default_mode) == Some(PermissionMode::Auto);
-    if auto && matches!(layer.column, Column::User | Column::Cli) {
-        return Err(ConfigError::invalid(
-            &layer.path,
-            "permissions.default_mode",
-            "`auto` is not available yet; use `manual`, `acceptEdits`, `plan` or `dontAsk`",
-        ));
-    }
-    Ok(())
 }
 
 fn resolve_telemetry(t: &Telemetry, params: &LoadParams<'_>) -> Result<(), ConfigError> {

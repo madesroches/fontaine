@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use fontaine_core::audit::AuditLog;
 use fontaine_core::config::{PermissionMode, Slot};
-use fontaine_core::gate::{SessionState, StateParams};
+use fontaine_core::gate::{AutoContext, SessionState, StateParams, no_guardian};
 use fontaine_core::ledger::Ledger;
 use fontaine_core::permission_rules::{RuleSource, SourcedRule, parse_rule};
 use fontaine_core::permissions::{DenyAll, PermissionPipeline, PipelineParams};
@@ -71,6 +71,8 @@ pub async fn decide(case: &Case) -> Result<Outcome, String> {
         audit: Arc::new(audit),
         home: Some(home),
         protected_dirs: Vec::new(),
+        guardian: no_guardian(),
+        auto: AutoContext::default(),
     }));
     let pipeline = PermissionPipeline::new(PipelineParams {
         state: state.clone(),

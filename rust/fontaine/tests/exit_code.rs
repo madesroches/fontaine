@@ -76,19 +76,32 @@ fn a_valid_settings_overlay_is_accepted() {
 }
 
 #[test]
-fn auto_is_refused_by_the_interactive_start_as_it_is_by_print() {
+fn auto_is_accepted_by_the_interactive_start_as_it_is_by_print() {
     let s = Sandbox::new();
     let interactive = s.run(&["--permission-mode", "auto"]);
     let headless = s.run(&["-p", "--permission-mode", "auto", "hello"]);
+    // Neither stops at the mode: the interactive start reaches the missing terminal, the
+    // headless one the missing model.
+    assert_eq!(
+        interactive.status.code(),
+        Some(2),
+        "{}",
+        stderr(&interactive)
+    );
+    assert!(
+        stderr(&interactive).contains("needs a terminal"),
+        "{}",
+        stderr(&interactive)
+    );
+    assert_eq!(headless.status.code(), Some(2), "{}", stderr(&headless));
+    assert!(
+        stderr(&headless).contains("no main model"),
+        "{}",
+        stderr(&headless)
+    );
     for out in [&interactive, &headless] {
-        assert_eq!(out.status.code(), Some(2), "{}", stderr(out));
-        assert!(
-            stderr(out).contains("`--permission-mode auto` is not available"),
-            "{}",
-            stderr(out)
-        );
+        assert!(!stderr(out).contains("not available"), "{}", stderr(out));
     }
-    assert_eq!(stderr(&interactive), stderr(&headless));
 }
 
 #[test]
@@ -125,13 +138,36 @@ fn a_missing_settings_file_exits_two_naming_the_path() {
 }
 
 #[test]
-fn default_mode_auto_exits_two() {
+fn default_mode_auto_in_the_user_file_loads() {
     let s = Sandbox::new();
     write(
         &s.config.join("config.toml"),
         "[permissions]\ndefault_mode = \"auto\"\n",
     );
-    assert_eq!(s.run(&[]).status.code(), Some(2));
+    // Past config loading, the start ends at the missing terminal.
+    let out = s.run(&[]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("needs a terminal"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn default_mode_auto_in_project_settings_exits_two() {
+    let s = Sandbox::new();
+    write(
+        &s.work.join(".fontaine/settings.toml"),
+        "[permissions]\ndefault_mode = \"auto\"\n",
+    );
+    let out = s.run(&[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("permissions.default_mode"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 #[test]

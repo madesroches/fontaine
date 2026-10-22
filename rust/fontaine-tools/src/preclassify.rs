@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use brush_parser::ast::{
     AndOrList, Command, CommandPrefixOrSuffixItem, CompoundCommand, CompoundList,
-    IoFileRedirectTarget, IoRedirect, Program, SeparatorOperator, Word,
+    IoFileRedirectKind, IoFileRedirectTarget, IoRedirect, Program, SeparatorOperator, Word,
 };
 use brush_parser::word::{WordPiece, WordPieceWithSource};
 use brush_parser::{Parser, ParserOptions};
@@ -60,6 +60,9 @@ pub struct ShellAnalysis {
     /// Some construct was not followed (arithmetic, a parameter expansion that may hold a
     /// substitution, a deep nesting); callers that need completeness fall back to the raw text.
     pub unanalyzed: bool,
+    /// Some command, anywhere in the text, redirects output to a file (`>`, `>>`, `>|`, `<>`,
+    /// `&>`). Duplicating a descriptor (`2>&1`) is not a file.
+    pub output_redirect: bool,
     pub raw: String,
 }
 
@@ -202,9 +205,26 @@ impl Walk<'_> {
 
     fn redirect(&mut self, redirect: &IoRedirect) {
         match redirect {
-            IoRedirect::File(_, _, target) => match target {
-                IoFileRedirectTarget::Filename(word) | IoFileRedirectTarget::Duplicate(word) => {
+            IoRedirect::File(_, kind, target) => match target {
+                IoFileRedirectTarget::Filename(word) => {
+                    self.out.output_redirect |= matches!(
+                        kind,
+                        IoFileRedirectKind::Write
+                            | IoFileRedirectKind::Append
+                            | IoFileRedirectKind::ReadAndWrite
+                            | IoFileRedirectKind::Clobber
+                    );
                     self.word(word);
+                }
+                IoFileRedirectTarget::Duplicate(word) => {
+                    // `>&2` copies a descriptor; `>&file` is how a shell spells `> file 2>&1`.
+                    let classified = self.word(word);
+                    let copies_descriptor = classified.literal.as_deref().is_some_and(|text| {
+                        text == "-"
+                            || (!text.is_empty() && text.chars().all(|c| c.is_ascii_digit()))
+                    });
+                    self.out.output_redirect |=
+                        matches!(kind, IoFileRedirectKind::DuplicateOutput) && !copies_descriptor;
                 }
                 IoFileRedirectTarget::Fd(_) => {}
                 IoFileRedirectTarget::ProcessSubstitution(_, sub) => self.list(&sub.list),
@@ -214,7 +234,11 @@ impl Walk<'_> {
                     self.word(&doc.doc);
                 }
             }
-            IoRedirect::HereString(_, word) | IoRedirect::OutputAndError(word, _) => {
+            IoRedirect::OutputAndError(word, _) => {
+                self.out.output_redirect = true;
+                self.word(word);
+            }
+            IoRedirect::HereString(_, word) => {
                 self.word(word);
             }
         }
@@ -255,6 +279,7 @@ impl Walk<'_> {
             self.out.unanalyzed = true;
         }
         self.out.unanalyzed |= nested.unanalyzed;
+        self.out.output_redirect |= nested.output_redirect;
         self.out.nested_chain |= nested.nested_chain || (nested.parsed && nested.simple.is_none());
         self.out.commands.extend(nested.commands);
     }
@@ -373,6 +398,7 @@ impl Walk<'_> {
                     self.out.unanalyzed = true;
                 }
                 self.out.unanalyzed |= nested.unanalyzed;
+                self.out.output_redirect |= nested.output_redirect;
                 self.out.commands.extend(nested.commands);
                 if !nested.parsed {
                     // The inner text still counts as part of the command for textual fallbacks.
@@ -917,6 +943,40 @@ mod tests {
         assert_eq!(count("env FOO=1 git commit -m 'a b'"), 1);
         assert!(analyze("git commit -m \"don't rm this\"").parsed);
         assert!(!analyze("git commit -m \"don't rm this\"").unanalyzed);
+    }
+
+    #[test]
+    fn only_a_redirect_to_a_file_sets_output_redirect() {
+        for text in [
+            "echo x > f",
+            "echo x >> f",
+            "echo x >| f",
+            "cat <> f",
+            "echo x &> f",
+            "echo x &>> f",
+            "echo x >&f",
+            "ls | tee out > f",
+            "cat a && echo b > f",
+            "{ echo x; } > f",
+            "sh -c 'echo x > f'",
+            "echo $(echo x > f)",
+            "echo x 2> err.log",
+        ] {
+            assert!(analyze(text).output_redirect, "{text}");
+        }
+        for text in [
+            "cargo test 2>&1",
+            "cargo test 2>&1 | tail",
+            "ls >&2",
+            "ls 1>&-",
+            "cat < in.txt",
+            "cat <<< word",
+            "ls | wc",
+            "echo '>' x",
+            "echo a\\>b",
+        ] {
+            assert!(!analyze(text).output_redirect, "{text}");
+        }
     }
 
     #[test]

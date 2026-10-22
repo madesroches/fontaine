@@ -51,6 +51,40 @@ pub fn append_allow_rule(path: &Path, rule: &str) -> io::Result<()> {
     write_atomically(path, doc.to_string().as_bytes())
 }
 
+/// Sets `[model] model` in the settings file at `path` to `reference` (`<account>/<model>`).
+pub fn set_model(path: &Path, reference: &str) -> io::Result<()> {
+    set_string(path, "model", "model", reference)
+}
+
+/// Sets `[guardian] model` in the settings file at `path` to `reference` (`<account>/<model>`).
+pub fn set_guardian_model(path: &Path, reference: &str) -> io::Result<()> {
+    set_string(path, "guardian", "model", reference)
+}
+
+/// Sets `table.key` to a string, creating the file and the table as needed and touching nothing
+/// else in the file.
+fn set_string(path: &Path, table: &str, key: &str, value: &str) -> io::Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let mut doc: DocumentMut = text
+        .parse()
+        .map_err(|e| invalid(format!("{} is not valid TOML: {e}", path.display())))?;
+    if doc.get(table).is_none() {
+        doc.insert(table, Item::Table(Table::new()));
+    }
+    let section = doc[table]
+        .as_table_like_mut()
+        .ok_or_else(|| invalid(format!("`{table}` in the settings file is not a table")))?;
+    section.insert(key, toml_edit::value(value));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    write_atomically(path, doc.to_string().as_bytes())
+}
+
 /// Replaces `path` through a same-directory rename so a crash or full disk cannot leave the
 /// settings file truncated, which would parse as valid TOML and silently drop its deny rules.
 fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -143,6 +177,39 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "[permissions]\nallow = [\"shell(ls)\"]\n"
+        );
+    }
+
+    #[test]
+    fn model_choices_are_written_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# mine\n[model]\nmodel = \"a/old\" # was\n\n[permissions]\ndeny = [\"shell(rm)\"]\n",
+        )
+        .unwrap();
+        set_model(&path, "a/new").unwrap();
+        set_guardian_model(&path, "b/judge").unwrap();
+        set_guardian_model(&path, "b/judge2").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with("# mine\n[model]\nmodel = \"a/new\""),
+            "{text}"
+        );
+        assert!(text.contains("deny = [\"shell(rm)\"]"));
+        assert!(text.contains("[guardian]\nmodel = \"b/judge2\""), "{text}");
+        assert!(!text.contains("b/judge\""));
+    }
+
+    #[test]
+    fn a_missing_file_gets_the_model_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sub").join("config.toml");
+        set_model(&path, "a/b").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[model]\nmodel = \"a/b\"\n"
         );
     }
 

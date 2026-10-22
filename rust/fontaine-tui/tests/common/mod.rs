@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use fontaine_core::agent::AgentSetup;
 use fontaine_core::config::{self, AccountKind, LoadParams, PermissionMode};
-use fontaine_core::models::{ModelHandle, ModelRef, Models};
+use fontaine_core::models::{GuardianChoice, ModelHandle, ModelRef, Models};
 use fontaine_core::permissions::DenyAll;
 use fontaine_core::session::Session;
 use fontaine_tui::{Input, drive, view};
@@ -103,7 +103,10 @@ impl World {
             data_dir: self.data.clone(),
             models: Models {
                 main: model,
+                main_listing: Vec::new(),
                 guardian: None,
+                guardian_choice: GuardianChoice::MainFallback,
+                notices: Vec::new(),
             },
             session: Session::create(&self.data, "00000000-0000-4000-8000-000000000001").unwrap(),
             roots: vec![self.work.clone()],
@@ -117,6 +120,9 @@ impl World {
             approver: Arc::new(DenyAll),
             home: Some(self.home.clone()),
             user_config: Some(self.user_config.clone()),
+            guardian_profile: fontaine_guardian::Profile::Full,
+            notices: Vec::new(),
+            switcher: None,
         }
     }
 

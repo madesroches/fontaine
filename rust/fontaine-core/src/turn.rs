@@ -97,7 +97,9 @@ pub async fn run_turn(
         .agent
         .prompt(rig_core::message::Message::user(params.prompt))
         .tool_context(tool_context)
-        .max_turns(params.max_turns);
+        .max_turns(params.max_turns)
+        // One call at a time, in order: the guardian judges each call before the next starts.
+        .tool_concurrency(1);
     // The run adopts the span it is built under as its own agent span.
     let mut stream = interaction.in_scope(|| runner.stream());
     let mut feed = params.state.feed().await;

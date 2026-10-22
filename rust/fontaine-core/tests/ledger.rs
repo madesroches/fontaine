@@ -198,6 +198,8 @@ fn the_ledger_is_append_only_and_owner_only() {
             tool: "shell".into(),
             agent: "root".into(),
             reason: "no".into(),
+            rule: None,
+            summary: String::new(),
         })
         .unwrap();
     let all = ledger.read().unwrap();
