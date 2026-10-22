@@ -115,14 +115,14 @@ plan → not reachable (edit-class is blocked at steps 3/9); dontAsk → Deny; h
 
 **Audit log** (written by the pipeline in every mode; one record per gate decision): JSONL, one
 append-only file per session at `<data dir>/audit/<session-id>.jsonl`, owner-only.
-Fields: `ts` (RFC 3339), `session_id`, `agent_id`, `tool`, `args_digest` (SHA-256 over the
+Fields: `ts` (RFC 3339), `session_id`, `agent_id`, `tool_use_id` (the model's tool-call id), `tool`, `args_digest` (SHA-256 over the
 RFC 8785 JSON Canonicalization Scheme serialization of the args, produced by `serde_jcs` — raw args are never logged; when a hook rewrote the call, `original_args_digest`
 too), `tier` (the tier enum below), `decision` (`allow` | `deny` | `prompt`), `rule` (deny/ask/allow rule text and
 its source scope, hook id, floor check, or guardian rule label; null if none), `confidence` and `guardian_model`
 (`<account>/<model>`) for guardian decisions, `latency_ms`. A human answer to a prompt appends a
 second record with `tier = human`.
 
-**Tier enum** (defined once, on `GateDecision.tier`; the audit log, the `tool_decision` telemetry
+**Tier enum** (defined once, on `DecisionRecord.tier`; the audit log, the `tool_decision` telemetry
 event, the headless `gate_decision` event and the eval `expected_tier` all carry exactly these values,
 with no projection or renaming): `deny_rule` | `ask_rule` | `critical_path` | `protected_path` (the
 floor, in check order) | `hook` | `read_only_fast_path` (step 4) | `tier05` (step 5) | `allow_rule`
