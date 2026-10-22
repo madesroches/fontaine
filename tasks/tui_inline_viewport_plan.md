@@ -45,7 +45,7 @@ and the docs.
 
 ## Design
 
-### Commit-then-forget transcript
+### Transcript commit cursor
 
 `Transcript` keeps its `entries` (so `find_tool`, whose name fallback would match the wrong call
 once the right one left the vector, `set_status` and `guardian_denied` keep working on calls
@@ -83,7 +83,9 @@ pub struct Transcript {
 - Once committed, a status change (for example a late `ToolResult` on a call already shown as
   denied) is not redrawn. `set_status` already never overwrites `Denied`, and `guardian_denied`
   runs in the same `on_event` call as the `Decision`, before any render. No committed entry
-  changes after it is written.
+  changes after it is written. The `Decision` deny arm writes `Denied` without `set_status`'s guard,
+  but it only reaches a still-`Pending`, uncommitted call, because fontaine-core's turn loop passes
+  each decision on before that call's result.
 
 ### Turn end settles the tail
 
@@ -225,7 +227,8 @@ live area does not flicker. Windows 10+ consoles support DECSTBM through crosste
    Change the overlay cap to `area.height - input_height - 1` and the transcript constraint from
    `Constraint::Min(1)` to `Constraint::Min(0)`.
 6. **Screen** (new `screen.rs`, `pub mod screen` in `lib.rs`): `Screen<B>` with `render`, the
-   rebuild, `clear_live`, and the `Anchored<B>` backend wrapper.
+   rebuild, `clear_live`, and the `Anchored<B>` backend wrapper. `Screen::new` builds
+   `Viewport::Inline(0)` with `height: 0`, so the first `render` rebuilds to the real height.
 7. **Driver** (`lib.rs`): `render: impl FnMut(&mut App)`, `Ui<R: FnMut(&mut App)>`, `Ui::draw`
    passes `&mut self.app`. Update the unit-test `ui()` helper.
 8. **run / exit** (`lib.rs`): raw mode + bracketed paste + panic hook. `Screen` over
@@ -238,8 +241,7 @@ live area does not flicker. Windows 10+ consoles support DECSTBM through crosste
    TestBackend::new(1, 1))`. After each render, `Ui::screen()` is the backend's scrollback rows
    followed by its buffer rows, so `wait_for("all done")` finds text whether it is in scrollback
    or live. The harness also exposes `Ui::live()`, a string built from the `backend().buffer()` rows
-   `area.top()..area.bottom()`, with `area` from `Screen::area()`. Existing `tests/tui.rs` assertions should keep passing unchanged; fix any that
-   asserted the absence of text that now legitimately remains in scrollback.
+   `area.top()..area.bottom()`, with `area` from `Screen::area()`. Existing `tests/tui.rs` assertions should keep passing unchanged.
 10. **Docs** (`docs/tui.md`, master plan): see Documentation.
 
 ## Files to Modify
@@ -308,6 +310,10 @@ Unit tests (`view.rs` / `screen.rs`, `TestBackend` with scrollback):
   freed hold no stale panel text.
 - The existing long-command approval test is ported to `Screen` and keeps passing: the tail is
   reachable with PgDn inside a viewport that fits the terminal.
+- Bottom-anchored paths on a small `TestBackend` (e.g. 30x10): commit enough notices to push the
+  viewport to the bottom, open an approval (grow), then in one render close it and add 1-2 notices
+  (shrink + commit). Scrollback plus the buffer rows above `area().top()` hold each notice exactly
+  once, in order, and `area().bottom()` equals the backend height.
 - `Anchored`: `get_cursor_position` returns the last set position, and after a `draw` or
   `append_lines` it asks the inner backend. After the inner size changes, it asks the inner
   backend too.
