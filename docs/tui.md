@@ -6,9 +6,11 @@ rules work as in headless runs; the mode is the one from `[permissions] default_
 `--permission-mode`. With neither set, the terminal UI starts in `auto`, the mode where the
 [guardian](guardian.md) judges each call that nothing pre-approved.
 
-The UI draws inline, not on the alternate screen. Finished output goes into the terminal's normal
-scrollback, and a live area at the bottom holds the input box, the status bar, any open prompt and
-the unfinished tail of the transcript. Scroll back with the terminal or with tmux copy mode, and
+The UI draws inline, not on the alternate screen, but it takes the whole terminal when it starts:
+the shell's earlier output scrolls into the terminal's history. The transcript reads top-down, with
+the input box and status bar on the bottom rows, and this holds across resizes. Finished output goes
+into the terminal's normal scrollback, and a live area down to the bottom row holds the input box,
+the status bar, any open prompt and the unfinished tail of the transcript. Scroll back with the terminal or with tmux copy mode, and
 select text with the mouse as in any shell program.
 
 The transcript shows your messages (`>`), the streaming answer, and one line per tool call with its
@@ -17,7 +19,7 @@ shows its rule label and the guardian's own explanation on lines of their own, f
 `[Download+Execute] pipes a download into a shell`. A line is written to scrollback once it is
 settled, so a call's status is final by then.
 
-Narrowing the terminal clears the visible screen and redraws the live area at the top. Output
+Narrowing the terminal clears the visible screen and redraws the live area over the whole screen. Output
 already scrolled off is kept. Lines still on screen at that moment are kept only where clearing the
 screen saves it to history (tmux by default) and may be lost elsewhere. Lines already in scrollback
 keep the width they were written at.

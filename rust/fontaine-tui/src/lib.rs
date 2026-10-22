@@ -32,7 +32,9 @@ use futures::future::BoxFuture;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
-use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use ratatui::crossterm::terminal::{
+    BeginSynchronizedUpdate, EndSynchronizedUpdate, disable_raw_mode, enable_raw_mode,
+};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 
@@ -604,7 +606,14 @@ pub async fn run(setup: AgentSetup, launch_dir: PathBuf) -> Result<(), String> {
     let on_error = stop.clone();
     let result = drive(setup, launch_dir, rx, move |app| {
         let rendered = match screen.lock() {
-            Ok(mut screen) => screen.render(app).is_ok(),
+            Ok(mut screen) => {
+                // A rebuild clears rows before redrawing them; one frame hides that.
+                let mut out = std::io::stdout();
+                let _ = ratatui::crossterm::execute!(out, BeginSynchronizedUpdate);
+                let ok = screen.render(app).is_ok();
+                let _ = ratatui::crossterm::execute!(out, EndSynchronizedUpdate);
+                ok
+            }
             Err(_) => false,
         };
         if !rendered {
