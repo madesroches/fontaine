@@ -340,11 +340,26 @@ async fn json_schema_fills_structured_output() {
 async fn an_invalid_json_schema_is_a_usage_error() {
     let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("x")]).await;
     let s = Sandbox::compatible(&endpoint.url());
-    for schema in ["not json", "42", "\"string\""] {
+    for schema in ["not json", "42", "\"string\"", "true", "false"] {
         let out = s.headless(&["--json-schema", schema, "go"]).await;
         assert_eq!(out.code, Some(2), "{schema}");
     }
     assert!(endpoint.requests().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn piped_stdin_is_appended_to_the_prompt_argument() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("x")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let out = s
+        .run_with_stdin(&["-p", "explain this PROMPT-ARG"], "PIPED-LINE-7731\n")
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let request = endpoint.requests().await.remove(0).to_string();
+    assert!(
+        request.contains("explain this PROMPT-ARG\\nPIPED-LINE-7731"),
+        "{request}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -1,7 +1,7 @@
 //! The non-interactive surface, `fontaine -p`. Its output is a versioned contract: see
 //! `docs/headless.md` and `docs/schemas/headless-v1.schema.json`.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 
 use fontaine_core::config::{Config, PermissionMode};
@@ -138,16 +138,20 @@ async fn open_input(options: &mut Options) -> Result<Input, String> {
     match options.input_format {
         InputFormat::StreamJson => Ok(Input::Lines(BufReader::new(tokio::io::stdin()).lines())),
         InputFormat::Text => {
+            let piped = if options.prompt.is_none() || !std::io::stdin().is_terminal() {
+                let mut text = String::new();
+                tokio::io::stdin()
+                    .read_to_string(&mut text)
+                    .await
+                    .map_err(|e| format!("cannot read the prompt from stdin: {e}"))?;
+                text
+            } else {
+                String::new()
+            };
             let prompt = match options.prompt.take() {
-                Some(prompt) => prompt,
-                None => {
-                    let mut text = String::new();
-                    tokio::io::stdin()
-                        .read_to_string(&mut text)
-                        .await
-                        .map_err(|e| format!("cannot read the prompt from stdin: {e}"))?;
-                    text
-                }
+                Some(prompt) if piped.trim().is_empty() => prompt,
+                Some(prompt) => format!("{prompt}\n{}", piped.trim_end()),
+                None => piped,
             };
             if prompt.trim().is_empty() {
                 return Err("no prompt: pass it as an argument or on stdin".to_string());
@@ -462,6 +466,7 @@ impl TurnRun<'_> {
                 Ok(value) => outcome.structured = Some(value),
                 Err(e) => {
                     outcome.subtype = Subtype::Execution;
+                    outcome.text.clear();
                     outcome.error = Some(format!("the final answer is not valid JSON: {e}"));
                 }
             }

@@ -14,7 +14,8 @@ echo "summarize the build" | fontaine -p
 ## Command line
 
 `-p` / `--print` is a flag and the prompt is a positional argument, as in Claude Code. Without a
-prompt argument the prompt is read from stdin. A prompt that is also a subcommand name, such as
+prompt argument the prompt is read from stdin. With one, text piped on stdin is appended
+after the prompt on a new line, as in Claude Code; empty piped input leaves the prompt unchanged. A prompt that is also a subcommand name, such as
 `auth`, is taken as the subcommand; write `fontaine -p -- auth` to pass it as the prompt.
 
 | Invocation | Meaning |

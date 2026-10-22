@@ -188,6 +188,9 @@ fn prepare_headless(
         Some(text) => {
             let value: serde_json::Value = serde_json::from_str(text)
                 .map_err(|e| usage(format!("--json-schema is not valid JSON: {e}")))?;
+            if !value.is_object() {
+                return Err(usage("--json-schema must be a JSON Schema object"));
+            }
             let schema = Schema::try_from(value)
                 .map_err(|_| usage("--json-schema must be a JSON Schema object"))?;
             Some(schema)
