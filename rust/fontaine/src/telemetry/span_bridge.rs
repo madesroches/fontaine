@@ -150,21 +150,6 @@ impl<E: Export> SpanBridge<E> {
                         .to_string(),
                 )],
             }),
-            "fontaine.permission" => {
-                if let (Some(tier), Some(decision)) =
-                    (lookup(fields, "tier"), lookup(fields, "decision"))
-                {
-                    self.export.metric(Metric {
-                        name: "fontaine.tool_decision.count",
-                        unit: "{decision}",
-                        value: MetricValue::Int(1),
-                        attrs: vec![
-                            ("tier", tier.to_string()),
-                            ("decision", decision.to_string()),
-                        ],
-                    });
-                }
-            }
             "fontaine.interaction" => {
                 let prompt_id = lookup(fields, "prompt.id").unwrap_or_default();
                 let length = count(fields, "prompt.length").unwrap_or(0);
@@ -254,6 +239,31 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
     E: Export,
 {
+    // Counted from the decision event, which every audit record emits, so the human's answer
+    // counts like any other tier's.
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+        if event.metadata().target() != TARGET {
+            return;
+        }
+        let mut fields = Vec::new();
+        event.record(&mut Collect(&mut fields));
+        if lookup(&fields, "message") != Some("tool_decision") {
+            return;
+        }
+        if let (Some(tier), Some(decision)) = (lookup(&fields, "tier"), lookup(&fields, "decision"))
+        {
+            self.export.metric(Metric {
+                name: "fontaine.tool_decision.count",
+                unit: "{decision}",
+                value: MetricValue::Int(1),
+                attrs: vec![
+                    ("tier", tier.to_string()),
+                    ("decision", decision.to_string()),
+                ],
+            });
+        }
+    }
+
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(id) else { return };
         let mut fields = Vec::new();
@@ -466,37 +476,29 @@ mod tests {
     }
 
     #[test]
-    fn a_permission_span_counts_its_decision() {
+    fn every_decision_event_counts_including_the_humans() {
         let (recorder, _capture, subscriber) = harness();
         tracing::subscriber::with_default(subscriber, || {
-            let span = tracing::info_span!(
-                target: TARGET,
-                "fontaine.permission",
-                tool_name = "shell",
-                tier = Empty,
-                decision = Empty,
-            );
-            span.record("tier", "tier05");
-            span.record("decision", "allow");
-            let _ = tracing::info_span!(target: TARGET, "fontaine.permission", tool_name = "x");
+            for (tier, decision) in [("tier05", "allow"), ("mode", "prompt"), ("human", "allow")] {
+                tracing::info!(target: TARGET, tier = tier, decision = decision, "tool_decision");
+            }
+            tracing::info!(target: TARGET, tier = "x", "tool_decision");
+            tracing::info!(target: TARGET, tier = "x", decision = "allow", "something_else");
         });
         let metrics = recorder.0.lock().unwrap();
         let counts: Vec<_> = metrics
             .iter()
             .filter(|(name, _, _)| name == "fontaine.tool_decision.count")
             .collect();
-        assert_eq!(counts.len(), 1, "a span with no decision counts nothing");
-        assert_eq!(counts[0].1, 1.0);
-        assert!(
-            counts[0]
-                .2
-                .contains(&("tier".to_string(), "tier05".to_string()))
-        );
-        assert!(
-            counts[0]
-                .2
-                .contains(&("decision".to_string(), "allow".to_string()))
-        );
+        assert_eq!(counts.len(), 3, "an event with no decision counts nothing");
+        for (tier, decision) in [("tier05", "allow"), ("mode", "prompt"), ("human", "allow")] {
+            assert!(counts.iter().any(|c| {
+                c.1 == 1.0
+                    && c.2.contains(&("tier".to_string(), tier.to_string()))
+                    && c.2
+                        .contains(&("decision".to_string(), decision.to_string()))
+            }));
+        }
     }
 
     #[test]

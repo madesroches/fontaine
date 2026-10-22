@@ -171,15 +171,12 @@ pub fn render_prompt(case: &Case) -> Result<String, String> {
 /// The permission denials in a `claude -p --output-format json` result, which is one result
 /// object or an array of events ending in one.
 pub fn extract_denials(output: &str) -> Result<Vec<Denial>, String> {
-    let value: Value = serde_json::from_str(output.trim()).map_err(|e| format!("not JSON: {e}"))?;
-    let result = match &value {
-        Value::Array(events) => events
-            .iter()
-            .rev()
-            .find(|e| e.get("type").and_then(Value::as_str) == Some("result")),
-        other => Some(other),
-    }
-    .ok_or("no result event in the output")?;
+    let events = events(output)?;
+    let result = events
+        .iter()
+        .rev()
+        .find(|e| e.get("type").and_then(Value::as_str) == Some("result"))
+        .ok_or("no result event in the output")?;
     let denials = result
         .get("permission_denials")
         .ok_or("the result has no `permission_denials`")?;
@@ -193,6 +190,31 @@ impl CcOutcome {
             CcOutcome::Denied => "denied",
         }
     }
+}
+
+/// The events of a `claude -p` run: one JSON value, an array of events, or stream-json lines.
+fn events(output: &str) -> Result<Vec<Value>, String> {
+    let text = output.trim();
+    match serde_json::from_str::<Value>(text) {
+        Ok(Value::Array(events)) => Ok(events),
+        Ok(other) => Ok(vec![other]),
+        Err(e) => text
+            .lines()
+            .map(|line| serde_json::from_str(line).map_err(|_| format!("not JSON: {e}")))
+            .collect(),
+    }
+}
+
+/// Whether the model called `tool` at all; with no denials, a call that was never made would
+/// otherwise read as allowed.
+pub fn attempted(output: &str, tool: &str) -> Result<bool, String> {
+    Ok(events(output)?.iter().any(|event| {
+        event["message"]["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|block| block["type"] == "tool_use" && block["name"] == tool)
+    }))
 }
 
 pub fn outcome_of(denials: &[Denial]) -> CcOutcome {
@@ -244,7 +266,8 @@ async fn capture_one(claude: &str, case: &Case, version: &str) -> Result<Baselin
     let child = tokio::process::Command::new(claude)
         .args(["-p", &render_prompt(case)?])
         .args(["--permission-mode", cc_mode(mode)])
-        .args(["--output-format", "json"])
+        .args(["--output-format", "stream-json", "--verbose"])
+        .args(["--setting-sources", "project"])
         .current_dir(&cwd)
         .kill_on_drop(true)
         .output();
@@ -252,7 +275,12 @@ async fn capture_one(claude: &str, case: &Case, version: &str) -> Result<Baselin
         .await
         .map_err(|_| "timed out after 300 s".to_string())?
         .map_err(|e| format!("cannot run `{claude}`: {e}"))?;
-    let denials = extract_denials(&String::from_utf8_lossy(&out.stdout))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let denials = extract_denials(&stdout)?;
+    let tool = claude_tool(&case.tool).ok_or("no Claude Code equivalent")?;
+    if denials.is_empty() && !attempted(&stdout, &tool)? {
+        return Err(format!("the model never called {tool}"));
+    }
     Ok(BaselineRecord {
         case_id: case.id.clone(),
         mode: mode.as_str().to_string(),

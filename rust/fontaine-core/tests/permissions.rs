@@ -43,7 +43,7 @@ async fn the_mode_and_risk_class_matrix() {
         (
             "read",
             json!({"path": "../outside.txt"}),
-            [(Prompt, Mode), (Prompt, Mode), (Prompt, Mode), (Deny, Dont)],
+            [(Deny, Mode), (Deny, Mode), (Deny, Mode), (Deny, Dont)],
         ),
         (
             "write",
@@ -68,12 +68,7 @@ async fn the_mode_and_risk_class_matrix() {
         (
             "write",
             write_args("../outside.txt"),
-            [
-                (Prompt, Mode),
-                (Prompt, Mode),
-                (Deny, PlanBlock),
-                (Deny, Dont),
-            ],
+            [(Deny, Mode), (Deny, Mode), (Deny, PlanBlock), (Deny, Dont)],
         ),
         (
             "shell",

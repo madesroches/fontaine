@@ -31,13 +31,14 @@ pub fn append_allow_rule(path: &Path, rule: &str) -> io::Result<()> {
         doc.insert("permissions", Item::Table(Table::new()));
     }
     let permissions = doc["permissions"]
-        .as_table_mut()
+        .as_table_like_mut()
         .ok_or_else(|| invalid("`permissions` in the settings file is not a table"))?;
     if permissions.get("allow").is_none() {
         permissions.insert("allow", Item::Value(Value::Array(Array::new())));
     }
-    let allow = permissions["allow"]
-        .as_array_mut()
+    let allow = permissions
+        .get_mut("allow")
+        .and_then(Item::as_array_mut)
         .ok_or_else(|| invalid("`permissions.allow` in the settings file is not an array"))?;
     if allow.iter().any(|v| v.as_str() == Some(rule)) {
         return Ok(());
@@ -70,6 +71,17 @@ mod tests {
         assert!(text.contains("deny = [\"shell(rm)\"]"));
         assert_eq!(text.matches("read(//tmp/x)").count(), 1);
         assert!(text.contains("allow = [\"read(//tmp/x)\"]"));
+    }
+
+    #[test]
+    fn an_inline_permissions_table_takes_the_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "permissions = { deny = [\"shell(rm)\"] }\n").unwrap();
+        append_allow_rule(&path, "shell(ls)").unwrap();
+        let doc: DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(doc["permissions"]["allow"][0].as_str(), Some("shell(ls)"));
+        assert_eq!(doc["permissions"]["deny"][0].as_str(), Some("shell(rm)"));
     }
 
     #[test]

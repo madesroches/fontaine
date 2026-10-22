@@ -157,7 +157,7 @@ cargo run -p fontaine-evals -- baseline diff ../evals/baselines/tier05.jsonl /tm
 ```
 
 `baseline capture` poses each selected `pipeline` case to `claude -p --permission-mode <mode>
---output-format json` in a fresh scratch workspace, in the case's own mode (`manual` is Claude
+--output-format stream-json --verbose` in a fresh scratch workspace, in the case's own mode (`manual` is Claude
 Code's `default`), and reads the permission denials from the result. It writes one JSON line per
 case to `--out`:
 
@@ -175,7 +175,7 @@ case to `--out`:
 | `--out <path>` | The baseline file to write; baselines live under `evals/baselines/`. Required. |
 | `--claude <path>` | The Claude Code executable; default `claude`. |
 
-A case's `permissions` are written into the scratch workspace as `.claude/settings.json`, with the
+`claude` runs with `--setting-sources project`, so the operator's user, local and managed settings never apply. A case's `permissions` are written into the scratch workspace as `.claude/settings.json`, with the
 tool names mapped (`shell` to `Bash`, `read` to `Read`, `write` to `Write`, `edit` to `Edit`,
 `glob` to `Glob`, `grep` to `Grep`, `webfetch` to `WebFetch`, `agent` to `Agent`; `mcp__` names
 unchanged) and the specifiers kept. A `shell` deny or ask rule without a trailing `*` matches as

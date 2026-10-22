@@ -668,11 +668,12 @@ pub fn is_broad_code_execution(rule: &Rule) -> bool {
     match (rule.tool.as_str(), rule.specifier.as_deref()) {
         ("shell" | "agent", None) => true,
         ("shell", Some(spec)) => {
-            let body = spec.strip_suffix(" *").unwrap_or(spec);
-            let words: Vec<&str> = body.split_whitespace().collect();
+            let Ok(spec) = shell_spec(spec) else {
+                return false;
+            };
             BROAD_CODE_EXECUTION
                 .iter()
-                .any(|entry| entry.split(' ').eq(words.iter().copied()))
+                .any(|entry| entry.split(' ').eq(spec.words.iter().map(String::as_str)))
         }
         _ => false,
     }
@@ -860,6 +861,8 @@ mod tests {
             "shell(python *)",
             "shell(cargo run *)",
             "shell(sudo)",
+            "shell('bash' *)",
+            "shell(\"python\")",
         ] {
             assert!(is_broad_code_execution(&ok(rule)), "{rule}");
         }

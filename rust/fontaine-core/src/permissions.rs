@@ -383,12 +383,21 @@ impl PermissionPipeline {
             )),
             _ => None,
         };
+        // The tool refuses an out-of-scope path whatever the answer, so asking would only offer
+        // grants that cannot take effect.
+        if let Some(why) = outside
+            && mode != PermissionMode::DontAsk
+        {
+            return Verdict::Deny {
+                tier: Tier::Mode,
+                rule: None,
+                why,
+            };
+        }
         let needs_approval = || Prompt {
             tier: Tier::Mode,
             rule: None,
-            reason: outside
-                .clone()
-                .unwrap_or_else(|| "it needs the user's approval".to_string()),
+            reason: "it needs the user's approval".to_string(),
             forced: false,
         };
         match mode {

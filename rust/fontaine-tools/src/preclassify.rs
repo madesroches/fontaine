@@ -55,6 +55,8 @@ pub struct ShellAnalysis {
     /// redirection, no assignment prefix, no background marker, no substitution, and every word
     /// literal.
     pub simple: Option<Vec<String>>,
+    /// A runner's command-line argument held more than one simple command (`bash -c 'a; b'`).
+    pub nested_chain: bool,
     /// Some construct was not followed (arithmetic, a parameter expansion that may hold a
     /// substitution, a deep nesting); callers that need completeness fall back to the raw text.
     pub unanalyzed: bool,
@@ -90,6 +92,9 @@ fn analyze_at(command: &str, depth: usize) -> ShellAnalysis {
     };
     walk.program(&program);
     analysis.simple = simple_of(&program);
+    if analysis.nested_chain {
+        analysis.simple = None;
+    }
     analysis
 }
 
@@ -250,6 +255,7 @@ impl Walk<'_> {
             self.out.unanalyzed = true;
         }
         self.out.unanalyzed |= nested.unanalyzed;
+        self.out.nested_chain |= nested.nested_chain || (nested.parsed && nested.simple.is_none());
         self.out.commands.extend(nested.commands);
     }
 

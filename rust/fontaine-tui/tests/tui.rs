@@ -244,7 +244,13 @@ async fn interrupting_a_pending_prompt_denies_it_and_keeps_the_session_usable() 
         ui.wait_for("interrupted").await;
         idle(&ui).await;
         assert!(!ui.screen().contains("Allow write?"));
+        ui.send("are you there");
+        ui.wait_for("after").await;
     })
     .await;
     assert!(!w.work.join("notes.txt").exists());
+    let requests = w.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(!requests[1].contains("c1"), "{}", requests[1]);
+    assert!(requests[1].contains("are you there"));
 }

@@ -128,7 +128,7 @@ fn scan(analysis: &ShellAnalysis, base: &Path, env: &CriticalEnv<'_>) -> Option<
         }
     }
     // Chains, pipes and lists hide what runs when; an rm among them is critical.
-    if mentions_deleter && analysis.simple.is_none() {
+    if mentions_deleter && (analysis.simple.is_none() || analysis.nested_chain) {
         return Some("rm inside a command that is not one simple command".to_string());
     }
     None
@@ -268,6 +268,8 @@ mod tests {
             "ssh host 'rm -rf /'",
             "X=r; ${X}m -rf /",
             "$(printf r)m -rf ~",
+            "bash -c 'cd / && rm -rf usr'",
+            "sh -c 'ls; rm x'",
         ] {
             assert!(critical_shell(cmd, None, &env).is_some(), "{cmd}");
         }
@@ -284,6 +286,7 @@ mod tests {
             "git commit -m \"it's a format fix\"",
             "ls $HOME",
             "echo $(date)",
+            "bash -c 'rm x'",
         ] {
             assert!(critical_shell(cmd, None, &env).is_none(), "{cmd}");
         }

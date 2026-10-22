@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use fontaine_evals::baseline::{
-    BaselineRecord, CcOutcome, capture_skip_reason, claude_rules, claude_settings, diff,
+    BaselineRecord, CcOutcome, attempted, capture_skip_reason, claude_rules, claude_settings, diff,
     extract_denials, outcome_of, read_records, render_prompt, write_records,
 };
 use fontaine_evals::{Case, run};
@@ -242,4 +242,16 @@ fn a_record_serializes_with_the_documented_fields() {
         line,
         json!({"case_id": "a", "mode": "manual", "cc_outcome": "denied", "claude": "2.1.0 (Claude Code)"})
     );
+}
+
+#[test]
+fn a_call_that_was_never_made_is_not_attempted() {
+    let called = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{}}]}}
+{"type":"result","permission_denials":[]}"#;
+    let chatted = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}
+{"type":"result","permission_denials":[]}"#;
+    assert!(attempted(called, "Bash").unwrap());
+    assert!(!attempted(called, "Read").unwrap());
+    assert!(!attempted(chatted, "Bash").unwrap());
+    assert!(extract_denials(called).unwrap().is_empty());
 }
