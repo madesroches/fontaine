@@ -159,3 +159,15 @@ fn the_trust_store_stays_owner_only() {
         .mode();
     assert_eq!(mode & 0o077, 0);
 }
+
+#[test]
+fn a_hook_defined_in_several_scopes_is_kept_under_the_origin_with_more_trust() {
+    let w = World::new();
+    w.project_file(HOOK);
+    let cli = w.cli_file(HOOK);
+    let c = w.load_with_settings(&cli).unwrap();
+    assert_eq!(c.hooks.pre_tool_use.len(), 1);
+    let origin = c.hooks.pre_tool_use[0].origin;
+    assert_eq!(origin.slot, Slot::Cli);
+    assert!(origin.user_trust && !origin.is_project());
+}

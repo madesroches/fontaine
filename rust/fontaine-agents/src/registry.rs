@@ -83,6 +83,24 @@ pub fn entry_has_specifier(entry: &str) -> bool {
     entry.contains('(')
 }
 
+/// Whether a toolset entry's tool covers `tool`: the same name, or for an MCP entry naming a
+/// whole server (`mcp__srv` or `mcp__srv__*`) any tool of that server.
+fn entry_covers(entry_tool: &str, tool: &str) -> bool {
+    if entry_tool == tool {
+        return true;
+    }
+    let Some(rest) = entry_tool.strip_prefix(fontaine_tools::names::MCP_TOOL_PREFIX) else {
+        return false;
+    };
+    let server = rest.strip_suffix("__*").unwrap_or(rest);
+    if server.is_empty() || server.contains("__") {
+        return false;
+    }
+    tool.strip_prefix(fontaine_tools::names::MCP_TOOL_PREFIX)
+        .and_then(|t| t.strip_prefix(server))
+        .is_some_and(|t| t.starts_with("__"))
+}
+
 impl AgentType {
     /// The tools a child of this type gets from a parent holding `parent`: the type's own set
     /// (every parent tool when it names none), cut down to the parent's, minus the ones it
@@ -102,8 +120,8 @@ impl AgentType {
         for tool in parent {
             let named = wanted
                 .as_ref()
-                .is_none_or(|wanted| wanted.contains(&tool.as_str()));
-            if named && !removed.contains(&tool.as_str()) && !out.contains(tool) {
+                .is_none_or(|wanted| wanted.iter().any(|w| entry_covers(w, tool)));
+            if named && !removed.iter().any(|r| entry_covers(r, tool)) && !out.contains(tool) {
                 out.push(tool.clone());
             }
         }
@@ -221,6 +239,28 @@ mod tests {
         ty.disallowed = names(&["shell", "edit(src/**)"]);
         let set = ty.toolset(&names(&["read", "edit", "shell"]));
         assert_eq!(set, names(&["read", "edit"]));
+    }
+
+    #[test]
+    fn a_whole_mcp_server_entry_covers_its_tools_in_both_lists() {
+        let parent = names(&["read", "mcp__gh__issue", "mcp__gh__pr", "mcp__ghost__x"]);
+        for entry in ["mcp__gh", "mcp__gh__*"] {
+            let mut ty = AgentTypes::builtin().get("worker").unwrap().clone();
+            ty.tools = None;
+            ty.disallowed = names(&[entry]);
+            assert_eq!(
+                ty.toolset(&parent),
+                names(&["read", "mcp__ghost__x"]),
+                "{entry}"
+            );
+            ty.disallowed = Vec::new();
+            ty.tools = Some(names(&[entry]));
+            assert_eq!(
+                ty.toolset(&parent),
+                names(&["mcp__gh__issue", "mcp__gh__pr"]),
+                "{entry}"
+            );
+        }
     }
 
     #[test]

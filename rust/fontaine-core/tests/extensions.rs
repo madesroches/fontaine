@@ -532,3 +532,14 @@ async fn a_project_skills_commands_do_not_run_when_the_workspace_is_not_trusted(
     assert!(text.contains("not trusted"), "{text}");
     assert_eq!(rig.approver.asked(), 0);
 }
+
+#[tokio::test]
+async fn a_user_typed_skill_is_not_attributed_to_the_previous_tool_call() {
+    let w = World::new();
+    user_skill(&w, "review", "---\ndescription: Review\n---\nbody\n");
+    let built = common::runtime::build(&w, Manual, Vec::new(), true);
+    let state = &built.runtime.state;
+    state.set_current_call(fontaine_tools::gate::ROOT_AGENT, "stale-call".to_string());
+    built.runtime.expand_skill("review", "").await.unwrap();
+    assert_eq!(state.current_call(fontaine_tools::gate::ROOT_AGENT), None);
+}

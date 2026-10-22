@@ -607,6 +607,9 @@ impl AgentRuntime {
 
     /// `/name arguments`: the skill's text for the root agent, ready to be the next prompt.
     pub async fn expand_skill(&self, name: &str, arguments: &str) -> Result<String, String> {
+        // A user-typed skill is no model call, so its commands must not inherit the previous
+        // turn's tool_use_id.
+        self.state.clear_current_call(ROOT_AGENT);
         // The grants the skill lends last for the turn its text starts; an expansion that is
         // abandoned or fails never starts one.
         let guard = crate::turn::EndTurnOnDrop(&self.state);

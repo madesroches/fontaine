@@ -1150,12 +1150,19 @@ fn union<T: PartialEq + Clone>(target: &mut Vec<T>, items: Option<&[T]>) {
 }
 
 fn union_hooks(target: &mut Vec<Hook>, items: Option<&[Hook]>, origin: Origin) {
+    // The same hook defined in several scopes is kept once, under the origin with more trust.
+    let rank = |o: Origin| (o.user_trust, !o.is_project());
     for item in items.unwrap_or_default() {
-        if !target.contains(item) {
-            target.push(Hook {
+        match target.iter_mut().find(|kept| *kept == item) {
+            Some(kept) => {
+                if rank(origin) > rank(kept.origin) {
+                    kept.origin = origin;
+                }
+            }
+            None => target.push(Hook {
                 origin,
                 ..item.clone()
-            });
+            }),
         }
     }
 }

@@ -416,19 +416,9 @@ fn prepare_session(
     }
 
     let (session, origin, start_type) = open_session(cli, config, dirs)?;
-    // The MCP servers that can start bound what a repository's agent file may name.
-    let servers: Vec<String> = config
-        .mcp_servers
-        .keys()
-        .filter(|name| {
-            project_executables
-                || !config
-                    .mcp_origins
-                    .get(*name)
-                    .is_some_and(|origin| origin.is_project())
-        })
-        .cloned()
-        .collect();
+    // Declined trust keeps a repository's servers from starting, but its agent files may still
+    // name their tools: toolset cutting drops them.
+    let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
     let extensions = extensions::load(&extensions::LoadParams {
         config_dir: &dirs.config,
         project_root: &config.workspace,
