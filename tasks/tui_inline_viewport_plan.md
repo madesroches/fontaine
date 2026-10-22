@@ -113,14 +113,14 @@ New module `fontaine-tui/src/screen.rs`. It is generic over `ratatui::backend::B
 drive it with `TestBackend`:
 
 ```rust
-pub struct Screen<B: Backend> {
+pub struct Screen<B: Backend + Anchor> {
     terminal: Terminal<B>,
     height: u16,
     /// A stand-in left in the old `Terminal` while its backend moves to the new one.
     placeholder: fn() -> B,
 }
 
-impl<B: Backend> Screen<B> {
+impl<B: Backend + Anchor> Screen<B> {
     pub fn new(backend: B, placeholder: fn() -> B) -> Result<Self, B::Error>;
     /// Commit settled lines, fit the live area, draw it.
     pub fn render(&mut self, app: &mut App) -> Result<(), B::Error>;
@@ -163,17 +163,17 @@ cannot resize an inline viewport, so the rebuild:
 
 `Terminal::with_options` asks the backend for the cursor position. On crossterm that is a DSR
 round trip: a network round trip over ssh, and a 2 s timeout on terminals that do not answer,
-waiting on the input reader thread's hold on crossterm's event-reader lock (up to 100 ms per poll). To avoid it, `run` uses a thin backend wrapper, `Anchored<B>`, in
-`screen.rs`. It keeps its remembered position and last seen size in `Cell`s, because `Backend::size(&self)` is
-immutable. It delegates every `Backend` method explicitly, including the defaulted `append_lines`
-(a no-op by default, so growth breaks otherwise) and the scroll-region methods. It remembers the position from the last
-`set_cursor_position`, and forgets it on any call that moves the cursor (`draw`, `append_lines`,
-`scroll_region_up/down`) and whenever `size()`/`window_size()` reports a size different
-from the last one it saw (ratatui sets the cursor after `draw`, so a resize would otherwise read a
-stale pre-resize position). Neither `clear` nor `clear_region` forgets it, since neither moves the
-cursor. `get_cursor_position` answers from the remembered position and
-falls back to the inner backend when it has none. At startup (before the reader thread starts)
-and after a terminal resize, ratatui still asks the real terminal.
+waiting on the input reader thread's hold on crossterm's event-reader lock (up to 100 ms per poll). To avoid it on a rebuild, `run` uses a thin backend wrapper, `Anchored<B>`, in
+`screen.rs`, holding a one-shot `Option<Position>` anchor. `Screen<B>` requires
+`B: Backend + Anchor`, where `trait Anchor { fn arm(&mut self, at: Position); }` is implemented
+by `Anchored<B>` (stores the anchor) and as a no-op for `TestBackend` (which answers the query
+from its own cursor). The rebuild calls `arm(top)` on the taken-out backend just before
+`Terminal::with_options`, with the row it moved the cursor to in step 1. `get_cursor_position`
+`take()`s the anchor if set and otherwise asks the inner backend, so only that one query is
+answered locally; every other query (startup, `autoresize` after a terminal resize,
+`Terminal::clear`) asks the real terminal. It delegates every other `Backend` method
+explicitly, including the defaulted `append_lines` (a no-op by default, so growth breaks
+otherwise) and the scroll-region methods.
 
 **Terminal resize**: `autoresize` re-anchors an inline viewport and clears the screen on a horizontal shrink. Lines already in scrollback keep the width
 they were wrapped at, as in Claude Code.
@@ -269,6 +269,8 @@ live area does not flicker. Windows 10+ consoles support DECSTBM through crosste
   ratatui internals); resolves the issue's open technical point.
 - 2026-10-22: Every turn end marks still-pending tool calls `Interrupted`, so an orphaned call
   cannot hold the live region open.
+- 2026-10-22: AFK: `Anchored<B>` uses a one-shot anchor armed by the rebuild just before `Terminal::with_options` instead of a remembered position with a forget-on-cursor-move list and size tracking; only the query the rebuild itself set up is answered locally, so a missed cursor-moving method cannot yield a stale position.
+- 2026-10-22: AFK: Keep `Screen::area()` (viewport rect from `get_frame().area()`) in the Screen API, already present in the plan; the test harness needs it to build `Ui::live()`.
 
 ## Documentation
 
@@ -314,9 +316,8 @@ Unit tests (`view.rs` / `screen.rs`, `TestBackend` with scrollback):
   viewport to the bottom, open an approval (grow), then in one render close it and add 1-2 notices
   (shrink + commit). Scrollback plus the buffer rows above `area().top()` hold each notice exactly
   once, in order, and `area().bottom()` equals the backend height.
-- `Anchored`: `get_cursor_position` returns the last set position, and after a `draw` or
-  `append_lines` it asks the inner backend. After the inner size changes, it asks the inner
-  backend too.
+- `Anchored`: after `arm(p)`, the next `get_cursor_position` returns `p` and the one after it
+  asks the inner backend; unarmed, it always asks the inner backend.
 - `clear_live` leaves the scrollback intact and the live rows blank.
 
 Integration (`tests/tui.rs` through the harness): the whole existing suite runs on the inline
