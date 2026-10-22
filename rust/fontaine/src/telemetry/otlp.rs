@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use opentelemetry::KeyValue;
-use opentelemetry::metrics::{Counter, MeterProvider};
+use opentelemetry::metrics::{Counter, Histogram, MeterProvider};
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{
@@ -106,6 +106,8 @@ pub struct OtlpExport {
     cost: Counter<f64>,
     sessions: Counter<u64>,
     decisions: Counter<u64>,
+    guardian_failed: Counter<u64>,
+    guardian_latency: Histogram<u64>,
 }
 
 impl Export for OtlpExport {
@@ -120,6 +122,12 @@ impl Export for OtlpExport {
             ("fontaine.cost.usage", MetricValue::Float(v)) => self.cost.add(v, &attrs),
             ("fontaine.session.count", MetricValue::Int(v)) => self.sessions.add(v, &attrs),
             ("fontaine.tool_decision.count", MetricValue::Int(v)) => self.decisions.add(v, &attrs),
+            ("fontaine.guardian.fail_closed.count", MetricValue::Int(v)) => {
+                self.guardian_failed.add(v, &attrs)
+            }
+            ("fontaine.guardian.latency", MetricValue::Int(v)) => {
+                self.guardian_latency.record(v, &attrs)
+            }
             _ => {}
         }
     }
@@ -209,6 +217,14 @@ where
         decisions: meter
             .u64_counter("fontaine.tool_decision.count")
             .with_unit("{decision}")
+            .build(),
+        guardian_failed: meter
+            .u64_counter("fontaine.guardian.fail_closed.count")
+            .with_unit("{denial}")
+            .build(),
+        guardian_latency: meter
+            .u64_histogram("fontaine.guardian.latency")
+            .with_unit("ms")
             .build(),
     };
 

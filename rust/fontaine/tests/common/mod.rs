@@ -138,6 +138,36 @@ fn chat_response(turn: &Turn, usage: Usage) -> ResponseTemplate {
     sse(frames)
 }
 
+/// The reply to a Chat Completions request that did not ask for a stream, such as the
+/// guardian's typed-extraction call.
+fn chat_json(turn: &Turn, usage: Usage) -> ResponseTemplate {
+    let message = match turn {
+        Turn::Text(text) => json!({"role": "assistant", "content": text}),
+        Turn::Tool { id, name, args } => json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": id,
+                "type": "function",
+                "function": {"name": name, "arguments": args.to_string()},
+            }],
+        }),
+        Turn::Fail(status) => return ResponseTemplate::new(*status).set_body_string("scripted"),
+    };
+    ResponseTemplate::new(200).set_body_json(json!({
+        "id": "chatcmpl-scripted",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "scripted",
+        "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": usage.input,
+            "completion_tokens": usage.output,
+            "total_tokens": usage.input + usage.output,
+        },
+    }))
+}
+
 fn event(name: &str, data: Value) -> String {
     format!("event: {name}\ndata: {data}\n\n")
 }
@@ -253,6 +283,7 @@ impl Respond for Scripted {
         let streamed = serde_json::from_slice::<Value>(&request.body)
             .is_ok_and(|body| body["stream"] == json!(true));
         match self.wire {
+            Wire::Chat if !streamed => chat_json(turn, self.usage),
             Wire::Chat => chat_response(turn, self.usage),
             Wire::Responses if !streamed => responses_json(turn, self.usage, at),
             Wire::Responses => responses_response(turn, self.usage, at),
