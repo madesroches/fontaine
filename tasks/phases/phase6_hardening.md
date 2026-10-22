@@ -1,6 +1,6 @@
 # Phase 6 — Guardian hardening: tool-result scanner
 
-**Status:** not started · **Depends on:** [Phase 4](phase4_guardian.md) (evals already public;
+**Status:** done (offline gates green; the real-weights steps are human) · **Depends on:** [Phase 4](phase4_guardian.md) (evals already public;
 Phase 5 for the subagent-result path) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
 
 ## Design (excerpt owned by this phase)
@@ -125,3 +125,4 @@ background in `research/research-llamafirewall.md`. Subagent reports flow throug
 - 2026-10-22 AFK: The pg2 download lives in `fontaine-core/src/scanner_model.rs` (optional workspace `reqwest` behind `pg2`; `fontaine-guardian` only loads from a directory), writes `*.part` then renames; any download or load failure keeps the session running, with a startup notice naming the cause, license and token variable, and every result gets the unscanned-and-suspect note — the same keep-running, fail-closed-per-call shape as an unavailable guardian.
 - 2026-10-22 AFK: `fontaine-evals` gets a forwarding `pg2 = ["fontaine-core/pg2"]` feature, documented as `--features pg2` for live runs with `scanner = "pg2"`, rather than skipping scanner cases — keeps live scanner evals possible and the config error explicit.
 - 2026-10-22 AFK: pg2 tokenization, inference and the startup model load run in `spawn_blocking` (model in an `Arc`) under `tokio::time::timeout` bounded by `timeout_secs`, a timeout or `JoinError` counting as flagged — synchronous candle work would otherwise never yield to the timeout and would block a runtime worker.
+- 2026-10-22 AFK: The pg2 download is bounded by a 30 second connect timeout and a 60 second read timeout (the longest silence between pieces of a body), not by a total time — the weights are large and connections vary, but a hung server can no longer block startup forever; a timeout is a download failure and keeps the session running with the unavailable notice.

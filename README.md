@@ -22,7 +22,10 @@ source:
 cargo install --git https://github.com/madesroches/fontaine fontaine
 ```
 
-Fontaine is not published to crates.io.
+Fontaine is not published to crates.io. Release binaries include the PromptGuard 2 tool-result
+scanner; a source build has it only with `--features pg2` (`cargo install --features pg2 ...`).
+Its weights are a gated download under the Llama 4 Community License, and the scanner is off by
+default: see [Scanning tool results](docs/guardian.md#scanning-tool-results).
 
 ## Build from source
 

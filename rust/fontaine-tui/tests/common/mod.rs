@@ -320,6 +320,7 @@ impl World {
             user_config: Some(self.user_config.clone()),
             guardian_profile: fontaine_guardian::Profile::Full,
             notices: Vec::new(),
+            scanner: Default::default(),
             switcher: Some(switcher),
             extensions,
             project_executables: self.project_executables,

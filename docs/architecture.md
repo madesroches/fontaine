@@ -195,7 +195,9 @@ kinds, the credential sources and model discovery.
 Every crate instruments with the `tracing` facade only. No crate other than the `fontaine` binary
 depends on a subscriber, so library crates stay embeddable: with no subscriber installed their
 spans and events cost nothing. The export backends sit behind the binary's `telemetry-micromegas`
-and `telemetry-otlp` features, both on by default.
+and `telemetry-otlp` features, both on by default. The binary's `pg2` feature builds the PromptGuard 2
+tool-result scanner (candle and a tokenizer); it is off in a plain source build and on in release
+binaries.
 
 ## The eval runner
 

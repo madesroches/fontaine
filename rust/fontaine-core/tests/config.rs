@@ -916,3 +916,80 @@ fn an_unparseable_credentials_file_fails_telemetry_resolution() {
     let err = w.load().unwrap_err();
     assert!(matches!(err, ConfigError::Credentials { .. }), "{err:?}");
 }
+
+mod scanner_selection {
+    use fontaine_core::config::{ConfigError, Scanner};
+
+    use super::World;
+
+    fn load(text: &str) -> Result<fontaine_core::config::Config, ConfigError> {
+        let w = World::new();
+        w.user_file(text);
+        w.load()
+    }
+
+    #[test]
+    fn the_scanner_is_off_by_default_and_the_token_variable_is_always_resolved() {
+        let config = World::new().load().unwrap();
+        assert_eq!(config.guardian.scanner, Scanner::Off);
+        assert_eq!(config.guardian.scanner_hf_token_env, "HF_TOKEN");
+        let named = load("[guardian]\nscanner_hf_token_env = \"MY_HF\"\n").unwrap();
+        assert_eq!(named.guardian.scanner, Scanner::Off);
+        assert_eq!(named.guardian.scanner_hf_token_env, "MY_HF");
+    }
+
+    #[test]
+    fn exactly_off_llm_command_and_pg2_are_accepted_values() {
+        assert_eq!(
+            load("[guardian]\nscanner = \"off\"\n")
+                .unwrap()
+                .guardian
+                .scanner,
+            Scanner::Off
+        );
+        assert_eq!(
+            load("[guardian]\nscanner = \"llm\"\n")
+                .unwrap()
+                .guardian
+                .scanner,
+            Scanner::Llm
+        );
+        let command =
+            load("[guardian]\nscanner = \"command\"\nscanner_command = \"/bin/scan\"\n").unwrap();
+        assert_eq!(command.guardian.scanner, Scanner::Command);
+        for bad in ["on", "true", "LLM", "regex", ""] {
+            let err = load(&format!("[guardian]\nscanner = \"{bad}\"\n")).unwrap_err();
+            assert_eq!(err.exit_code(), 2, "{bad}");
+        }
+        let err = load("[guardian]\nscanner = true\n").unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn the_command_scanner_needs_its_program() {
+        for text in [
+            "[guardian]\nscanner = \"command\"\n",
+            "[guardian]\nscanner = \"command\"\nscanner_command = \"\"\n",
+        ] {
+            let err = load(text).unwrap_err();
+            assert!(matches!(err, ConfigError::Invalid { .. }), "{err:?}");
+            assert_eq!(err.exit_code(), 2);
+            assert!(err.to_string().contains("scanner_command"), "{err}");
+        }
+    }
+
+    #[cfg(not(feature = "pg2"))]
+    #[test]
+    fn pg2_in_a_build_without_the_feature_is_a_config_error() {
+        let err = load("[guardian]\nscanner = \"pg2\"\n").unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.to_string().contains("pg2"), "{err}");
+    }
+
+    #[cfg(feature = "pg2")]
+    #[test]
+    fn pg2_in_a_build_with_the_feature_is_accepted() {
+        let config = load("[guardian]\nscanner = \"pg2\"\n").unwrap();
+        assert_eq!(config.guardian.scanner, Scanner::Pg2);
+    }
+}

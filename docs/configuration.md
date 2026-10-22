@@ -309,12 +309,31 @@ Keys of the guardian that judges tool calls in `auto` mode and in the consequent
 | `timeout_secs` | Time allowed for one verdict, retries included; at least 1. On expiry the call is denied. | `30` |
 | `confidence_threshold` | Between 0 and 1. An allow below it on a destructive call is turned into a deny. | `0.7` |
 | `cache` | Whether verdicts are cached for 60 seconds. | `true` |
-| `scanner` | Tool-result scanner: `off`, `pg2`, `llm` or `command`. User file only. | `off` |
-| `scanner_command` | Program used by the `command` scanner. User file only. | unset |
-| `scanner_model_path` | Model directory for the `pg2` scanner. User file only. | unset |
-| `scanner_hf_token_env` | Name of the environment variable holding a Hugging Face token. User file only. | unset |
+| `scanner` | Tool-result scanner: `off`, `pg2`, `llm` or `command`; it is the only switch. User file only. [Scanning tool results](guardian.md#scanning-tool-results) explains each. `pg2` needs a build with the `pg2` feature, which release binaries have; elsewhere it is a configuration error. | `off` |
+| `scanner_command` | Program used by the `command` scanner: required with `scanner = "command"`. User file only. | unset |
+| `scanner_model_path` | Directory holding `model.safetensors`, `tokenizer.json` and `config.json` for the `pg2` scanner. With it set, nothing is downloaded. User file only. | unset: downloaded into `<data dir>/models/promptguard2-86m/` |
+| `scanner_hf_token_env` | Name of the environment variable holding the Hugging Face token the `pg2` download uses. The variable is always removed from `shell` and hook environments, whatever `scanner` is. User file only. | `HF_TOKEN` |
 
-The scanner keys are accepted and validated; they take effect when the scanner ships.
+The `llm` scanner uses the guardian's model, so it follows `model`. `timeout_secs` bounds each scan
+of every scanner type, and the `pg2` model load at startup.
+
+#### Bring your own scanner
+
+`scanner = "command"` runs the program at `scanner_command` once per tool result, with no arguments
+and no shell, and the same scrubbed environment as hooks. It receives one JSON object on standard
+input and answers with one on standard output:
+
+```json
+{"tool": "webfetch", "content": "the text of the tool result"}
+```
+
+```json
+{"verdict": "flagged", "reason": "asks the agent to send ~/.ssh to a host"}
+```
+
+`verdict` is `clean` or `flagged`; `reason` is optional text shown to the agent. A non-zero exit, no
+answer within `timeout_secs`, a program that cannot be started, or output that is not exactly this
+shape counts as a failed scan: the result is marked unscanned and suspect.
 
 ```toml
 [guardian]
@@ -324,6 +343,12 @@ timeout_secs = 30
 confidence_threshold = 0.7
 cache = true
 scanner = "off"
+```
+
+```toml
+[guardian]
+scanner = "command"
+scanner_command = "/usr/local/bin/injection-scan"
 ```
 
 `/model` and `/guardian-model` in the terminal UI write `[model] model` and `[guardian] model` to
