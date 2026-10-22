@@ -13,7 +13,8 @@ into the terminal's normal scrollback, and a live area down to the bottom row ho
 the status bar, any open prompt and the unfinished tail of the transcript. Scroll back with the terminal or with tmux copy mode, and
 select text with the mouse as in any shell program.
 
-The transcript shows your messages (`>`), the streaming answer, and one line per tool call with its
+The input box title says what Enter does: it sends a message, or, when the input starts with `!`,
+runs it as a shell command. The transcript shows your messages (`>`), the streaming answer, and one line per tool call with its
 status: pending, done, failed, denied with the reason, or interrupted. A call the guardian refused
 shows its rule label and the guardian's own explanation on lines of their own, for example
 `[Download+Execute] pipes a download into a shell`. A line is written to scrollback once it is
@@ -33,12 +34,76 @@ The bar shows the permission mode, the model and a key hint. The mode labels are
 
 | Key | Action |
 |---|---|
-| Enter | Submit. Alt+Enter, Shift+Enter or Ctrl+J insert a newline; a trailing `\` before Enter also continues the line. |
+| Enter | Submit. Alt+Enter, Shift+Enter or Ctrl+J insert a newline; a trailing `\` before Enter also continues the line. While a turn runs, a message is queued (see [Messages during a turn](#messages-during-a-turn)). With a `@` list open, Enter completes instead. |
+| Up, Down | On the first or last line of the input, recall older or newer submitted inputs; elsewhere they move the cursor. With messages queued, Up takes them back into the input. |
+| Ctrl-R | Search the prompt history; see [History](#history). |
+| Tab | Completes the `@` file under the cursor when a list is open. |
 | Shift+Tab | Cycle the mode: manual, accept edits, plan, auto, and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` lists the broad allow rules it sets aside and says so when the guardian cannot be asked. |
-| Esc, Ctrl-C while a turn runs | Interrupt the turn. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. |
+| Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search or `@` list is closed first. |
 | Ctrl-C, or Ctrl-D on an empty input, when idle | Quit. |
 | PageUp, PageDown | Scroll the command in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/U/K/W/B/F | Edit the input. |
+
+## Shell commands
+
+An input that starts with `!` is a shell command. The input box title changes and its border is
+coloured; Enter runs the command instead of sending a message, and the `!` is not part of it.
+
+- It runs as you, in the primary workspace root, with no approval prompt: it is your own action, so
+  the [permission pipeline](permissions.md) and the [guardian](guardian.md) do not see it.
+- It runs with the same scrubbed environment and the same output cut as the agent's `shell` tool,
+  because the output goes to the agent. It is killed after 120 seconds, or after 60 seconds without
+  output, and has no standard input.
+- It runs only between turns. While a turn runs, Enter on a `!` input says so and keeps the text.
+  While a command runs nothing else can be sent or queued; Esc or Ctrl-C interrupts it and kills
+  its process group.
+- The output is shown in the transcript and handed to the agent with your next message, marked as
+  output you produced and as data, not instructions. An interrupted command tells the agent nothing.
+- Each command is written to the session ledger and to the audit log, an interrupted one included,
+  since it may already have had effects. It never counts as one of your messages to the agent.
+
+## File mentions
+
+Typing `@` after whitespace, or at the start of the input, opens a list of up to eight workspace
+files that match what follows it, best matches first (file name prefix, then file name substring,
+then shorter paths). Up and Down select, Tab or Enter put `@path ` in the input, and Esc closes
+the list until you edit the token. Files come from the same index the session starts with, which
+respects `.gitignore`, and is refreshed when a turn ends and after `/add-dir`. Paths under the
+primary root are shown relative to it.
+
+Completion only edits your input. The message is sent as you typed it, and the agent reads the
+file through its `read` tool, so the content passes the same scope checks, deterministic floor and
+guardian as any other read.
+
+## History
+
+Every input you submit, `/` commands and `!` commands included, is kept in `history.jsonl` in the
+[data directory](configuration.md#files-in-these-directories), readable by the current user only.
+It holds what you typed, so treat it like your shell history. The file is shared by all projects;
+each line records the primary root it was typed in, and only this project's lines are recalled. It
+keeps the newest 5,000 lines. A file that cannot be read or written is reported once and the
+history then lasts for the session only.
+
+- Up on the first line of the input shows older entries, Down on the last line shows newer ones,
+  and going past the newest restores what you had typed. Editing a recalled entry stops the walk.
+- Ctrl-R opens a search above the input. Typing narrows the match (case-insensitive), Ctrl-R again
+  moves to the next older match, Enter or Tab put the match in the input without sending it, and Esc
+  cancels.
+
+## Messages during a turn
+
+Enter on an ordinary message while a turn runs queues it. Queued messages show above the input as
+`queued: <first line>`. They are not sent at once: the agent receives them with its next tool
+result, appended to that result after a line saying the user sent the message while it was working,
+and the transcript then shows the message as a `>` line at that point. Only then do the words count
+as yours for the [guardian](guardian.md).
+
+- Up on the first line takes the queued messages back into the input, for editing.
+- If the agent answers without another tool result, the queued messages are sent as the next turn.
+- If the turn is interrupted, fails or hits its turn limit, undelivered messages return to the
+  input, in front of whatever is there, and nothing is sent. Messages already delivered in that turn
+  are discarded with it, like its prompt, and must be sent again.
+- `/` commands are not queued; Enter on one says a turn is running.
 
 ## Approval prompts
 

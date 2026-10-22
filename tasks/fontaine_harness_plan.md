@@ -335,6 +335,10 @@ carries the reasoning:
 - 2026-10-22: `/denied` is Fontaine's stand-in for Claude Code's `/permissions` Recently-denied tab until issue #47; reason: Fontaine has no `/permissions` UI yet.
 - 2026-10-22: The TUI draws inline (live area plus terminal scrollback) instead of on the alternate screen, matching Claude Code; reason: alternate-screen apps lose mouse selection and wheel scrolling under tmux (#70).
 - 2026-10-22: The TUI takes the whole terminal at startup (earlier shell output scrolls into the terminal's history) and keeps the input box and status bar on the bottom rows; Claude Code renders from the cursor row. Reason: a full-screen layout was requested (#74).
+- 2026-10-22: `@path` mentions are completion only; the message is sent as typed and the agent reads the file through its gated `read` tool (Claude Code inlines the file's content). Reason: file content reaching the model must pass the scope validator, the deterministic floor and the guardian.
+- 2026-10-22: A `!` command's text and output are not guardian intent; the guardian sees only typed messages. Reason: output is data, and treating a command as authorization would let one `!` run widen what the agent may do.
+- 2026-10-22: `!` commands run only between turns. Reason: a user command racing the agent's own calls would interleave side effects the guardian is judging.
+- 2026-10-22: Queued messages become guardian intent when the model receives them, not when typed. Reason: at queue time the guardian would judge calls using words the model never read.
 
 ## Open Questions
 

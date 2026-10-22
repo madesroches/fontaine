@@ -79,6 +79,14 @@ The `tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`,
 whether the verdict came from the cache, how long the guardian took, and, when it failed closed,
 the reason (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`).
 
+## Your own shell commands
+
+A command you run in the terminal UI with `!` is your own action, not a tool call: it bypasses the
+pipeline above, including the floor and the guardian, and runs as you. It is still recorded. The
+audit log gets one record with `tier = human`, `decision = allow`, `rule = user_shell`, `tool =
+shell` and `agent_id = user`, and the session ledger gets a `user_shell` record. See
+[Shell commands](tui.md#shell-commands).
+
 ## Rules
 
 `[permissions] deny`, `ask` and `allow` (and `--disallowed-tools` / `--allowed-tools`) share one

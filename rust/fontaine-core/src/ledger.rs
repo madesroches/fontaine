@@ -80,6 +80,12 @@ pub enum Record {
     AddDir {
         root: String,
     },
+    /// A `!` command the human ran in their own shell, outside the permission pipeline. `None`
+    /// when it did not exit with a code, such as when it was interrupted.
+    UserShell {
+        command: String,
+        exit_code: Option<i32>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,7 +212,10 @@ impl LedgerView {
                 summary: summary.clone(),
             }),
             Record::AddDir { root } => self.workspace_roots.push(root.clone()),
-            Record::ModeChange { .. } | Record::Approval { .. } | Record::Grant { .. } => {}
+            Record::ModeChange { .. }
+            | Record::Approval { .. }
+            | Record::Grant { .. }
+            | Record::UserShell { .. } => {}
         }
     }
 }
@@ -360,5 +369,35 @@ mod tests {
             "git@github.com:org/repo.git"
         );
         assert_eq!(without_credentials("ssh://git@host"), "ssh://host");
+    }
+
+    #[test]
+    fn a_user_shell_record_round_trips_and_is_not_user_intent() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        for exit_code in [Some(2), None] {
+            ledger
+                .append(Record::UserShell {
+                    command: "make".into(),
+                    exit_code,
+                })
+                .unwrap();
+        }
+        let entries = ledger.read().unwrap();
+        assert_eq!(
+            entries[0].record,
+            Record::UserShell {
+                command: "make".into(),
+                exit_code: Some(2)
+            }
+        );
+        assert_eq!(
+            entries[1].record,
+            Record::UserShell {
+                command: "make".into(),
+                exit_code: None
+            }
+        );
+        assert!(ledger.view().user_messages.is_empty());
     }
 }

@@ -1081,29 +1081,34 @@ impl PermissionPipeline {
 
     /// Audit log first, then the telemetry event, then whoever follows the decision feed.
     fn emit(&self, record: DecisionRecord) {
-        if let Err(e) = self.state.audit.append(&record) {
-            tracing::warn!(error = %e, "the audit log could not be written");
-        }
-        tracing::info!(
-            target: TARGET,
-            tool_name = record.tool.as_str(),
-            tool_use_id = record.tool_use_id.as_deref().unwrap_or(""),
-            tier = record.tier.as_str(),
-            decision = record.decision.as_str(),
-            permission_mode = record.permission_mode.as_str(),
-            headless = record.headless,
-            latency_ms = record.latency_ms,
-            guardian.model = record.guardian_model.as_deref(),
-            guardian.profile = record.guardian_profile.as_deref(),
-            guardian.verdict = record.guardian_verdict.as_deref(),
-            guardian.confidence = record.confidence,
-            guardian.cache_hit = record.guardian_cache_hit,
-            guardian.latency_ms = record.guardian_latency_ms,
-            fail_closed_reason = record.fail_closed_reason.as_deref(),
-            "tool_decision"
-        );
+        record_decision(&self.state.audit, &record);
         self.state.publish(record);
     }
+}
+
+/// The audit append and the `tool_decision` event for one decision, without the decision feed.
+pub(crate) fn record_decision(audit: &crate::audit::AuditLog, record: &DecisionRecord) {
+    if let Err(e) = audit.append(record) {
+        tracing::warn!(error = %e, "the audit log could not be written");
+    }
+    tracing::info!(
+        target: TARGET,
+        tool_name = record.tool.as_str(),
+        tool_use_id = record.tool_use_id.as_deref().unwrap_or(""),
+        tier = record.tier.as_str(),
+        decision = record.decision.as_str(),
+        permission_mode = record.permission_mode.as_str(),
+        headless = record.headless,
+        latency_ms = record.latency_ms,
+        guardian.model = record.guardian_model.as_deref(),
+        guardian.profile = record.guardian_profile.as_deref(),
+        guardian.verdict = record.guardian_verdict.as_deref(),
+        guardian.confidence = record.confidence,
+        guardian.cache_hit = record.guardian_cache_hit,
+        guardian.latency_ms = record.guardian_latency_ms,
+        fail_closed_reason = record.fail_closed_reason.as_deref(),
+        "tool_decision"
+    );
 }
 
 /// The call as the human is shown it: the whole command, path or URL, never cut short.

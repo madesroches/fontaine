@@ -50,6 +50,12 @@ The request is built from the ledger and the call itself:
 | `hook_context` | Notes from `pre_tool_use` hooks, in an untrusted block. |
 | `prior_denials` | Reason-coded denials earlier in the session, for loop detection. |
 
+Only messages you typed count as user intent. A message you queue while the agent works counts from
+the moment the agent receives it, with its next tool result, not from when you typed it: until then
+the model has not read it, and a call judged earlier must not rest on words the model never saw.
+Commands you run with `!` and their output never count, and neither does anything a tool or the
+model wrote.
+
 ## The verdict
 
 ```
