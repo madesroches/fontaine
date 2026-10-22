@@ -56,6 +56,12 @@ async fn malformed_answers_are_retried_and_then_denied_as_unparseable() {
     assert_eq!(names(&result), (Decision::Deny, "Unparseable"));
     assert_eq!(result.fail_closed, Some(FailClosed::Unparseable));
     assert_eq!(endpoint.calls().await, 3, "two retries after the first try");
+    assert_eq!(
+        result.usage.input_tokens,
+        Some(300),
+        "all three billed calls"
+    );
+    assert_eq!(result.usage.output_tokens, Some(60));
 }
 
 #[tokio::test]
@@ -67,6 +73,11 @@ async fn a_malformed_answer_followed_by_a_good_one_is_a_verdict() {
         .await;
     assert_eq!(names(&result), (Decision::Allow, "allow"));
     assert_eq!(endpoint.calls().await, 2);
+    assert_eq!(
+        result.usage.input_tokens,
+        Some(200),
+        "the retried attempt is counted too"
+    );
 }
 
 #[tokio::test]
@@ -128,6 +139,11 @@ async fn the_last_failure_names_the_denial() {
         .adjudicate(&request("ls", false))
         .await;
     assert_eq!(result.fail_closed, Some(FailClosed::Error));
+    assert_eq!(
+        result.usage.input_tokens,
+        Some(200),
+        "the two billed malformed answers"
+    );
 
     let endpoint =
         Endpoint::start(vec![Reply::Fail(500), Reply::Fail(500), Reply::Malformed]).await;

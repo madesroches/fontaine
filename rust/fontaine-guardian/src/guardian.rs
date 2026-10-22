@@ -1,9 +1,10 @@
 //! One stateless, tool-less model conversation per adjudication. Every outcome that is not a
 //! verdict the model returned is a denial decided here, by code.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use rig_agent::agent::{AgentHook, HookContext, OutcomeAction, OutcomeEvent};
 use rig_agent::completion::StructuredOutputError;
 use rig_agent::extractor::ExtractorBuilder;
 use rig_core::DynModel;
@@ -44,6 +45,19 @@ impl Default for Settings {
             cache: true,
             profile: Profile::Full,
         }
+    }
+}
+
+/// rig's structured-output errors carry no usage, so every billed response is tallied as it
+/// arrives; a fail-closed adjudication still spent those tokens.
+struct UsageTally(Arc<Mutex<Usage>>);
+
+impl AgentHook for UsageTally {
+    async fn on_outcome(&self, _ctx: &HookContext, event: OutcomeEvent<'_>) -> OutcomeAction {
+        if let Some(response) = event.completion() {
+            *self.0.lock().unwrap_or_else(|e| e.into_inner()) += response.usage;
+        }
+        OutcomeAction::Proceed
     }
 }
 
@@ -153,6 +167,7 @@ impl Guardian {
                 return finish(Outcome::FailClosed(
                     FailClosed::Unavailable,
                     format!("the guardian model {} is unavailable: {reason}", self.label),
+                    Usage::default(),
                 ));
             }
         };
@@ -183,7 +198,10 @@ impl Guardian {
             });
         }
 
+        let spent = Arc::new(Mutex::new(Usage::default()));
+        let tally = || *spent.lock().unwrap_or_else(|e| e.into_inner());
         let extractor = ExtractorBuilder::<Verdict>::new(model.as_ref().clone())
+            .add_hook(UsageTally(spent.clone()))
             .append_preamble(&rendered.system)
             .max_tokens(MAX_TOKENS)
             .retries(EXTRACTOR_RETRIES)
@@ -200,12 +218,14 @@ impl Guardian {
                     "the guardian did not answer within {} seconds",
                     self.settings.timeout.as_secs()
                 ),
+                tally(),
             )),
             Ok(Err(StructuredOutputError::Prompt(error))) => {
                 tracing::warn!(error = %error, "the guardian model call failed");
                 finish(Outcome::FailClosed(
                     FailClosed::Error,
                     "the guardian model could not be reached".to_string(),
+                    tally(),
                 ))
             }
             Ok(Err(error)) => {
@@ -213,6 +233,7 @@ impl Guardian {
                 finish(Outcome::FailClosed(
                     FailClosed::Unparseable,
                     "the guardian's answer was not a valid verdict".to_string(),
+                    tally(),
                 ))
             }
             Ok(Ok(response)) => {
@@ -226,7 +247,7 @@ impl Guardian {
                 finish(Outcome::Verdict {
                     verdict: response.output,
                     cache_hit: false,
-                    usage: Box::new(response.usage),
+                    usage: Box::new(tally()),
                 })
             }
         }
@@ -256,14 +277,14 @@ impl Guardian {
                 }
             };
         match outcome {
-            Outcome::FailClosed(reason, explanation) => base(
+            Outcome::FailClosed(reason, explanation, usage) => base(
                 Decision::Deny,
                 reason.label(),
                 explanation,
                 None,
                 Some(reason),
                 false,
-                Usage::default(),
+                usage,
             ),
             Outcome::Verdict {
                 verdict,
@@ -310,5 +331,5 @@ enum Outcome {
         cache_hit: bool,
         usage: Box<Usage>,
     },
-    FailClosed(FailClosed, String),
+    FailClosed(FailClosed, String, Usage),
 }

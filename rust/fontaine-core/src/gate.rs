@@ -84,7 +84,6 @@ pub struct GuardianUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cost_usd: Option<f64>,
-    pub calls: u64,
 }
 
 /// The rules in force, as they stand now.
@@ -301,7 +300,6 @@ impl SessionState {
             .guardian_usage
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        total.calls += 1;
         total.input_tokens += usage.input_tokens.unwrap_or(0);
         total.output_tokens += usage.output_tokens.unwrap_or(0);
         if let Some(cost) = usage.cost {

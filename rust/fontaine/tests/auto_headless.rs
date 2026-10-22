@@ -171,6 +171,11 @@ async fn an_unparseable_verdict_denies_the_call() {
     assert_eq!(decisions[0]["rule"], "Unparseable");
     assert_eq!(decisions[0]["fail_closed_reason"], "unparseable");
     assert!(!s.work.join("out.txt").exists());
+    let usage = &of_type(&lines, "result")[0]["usage"]["guardian"];
+    assert!(
+        usage["input_tokens"].as_u64().unwrap() > 0,
+        "a fail-closed guardian still spent tokens: {usage}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

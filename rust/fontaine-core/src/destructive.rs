@@ -166,8 +166,22 @@ fn git_destructive(args: &[String]) -> bool {
     let rest = &args[at + 1..];
     match args[at].as_str() {
         "reset" => rest.iter().any(|a| a == "--hard"),
-        "clean" | "restore" | "rebase" | "filter-branch" => true,
-        "checkout" => rest.iter().any(|a| a == "--"),
+        "clean" | "restore" | "rebase" | "filter-branch" | "rm" => true,
+        // A branch name and a pathspec look alike, so any operand is treated as a possible
+        // discard of working-tree changes unless the call is creating a branch.
+        "checkout" => {
+            let creates = rest
+                .iter()
+                .any(|a| matches!(a.as_str(), "-b" | "-B" | "--orphan"));
+            rest.iter().any(|a| a == "--" || a == "-f")
+                || rest
+                    .iter()
+                    .any(|a| a == "--force" || a.starts_with("--force="))
+                || (!creates && rest.iter().any(|a| !a.starts_with('-')))
+        }
+        "switch" => rest
+            .iter()
+            .any(|a| a == "-f" || a == "--force" || a == "--discard-changes"),
         "branch" => rest.iter().any(|a| a == "-D"),
         "push" => rest
             .iter()
