@@ -459,13 +459,34 @@ fn resolve_guardian(
     main: (&ModelRef, &Client, &[String]),
 ) -> Result<GuardianModel, ModelError> {
     let (main_ref, main_client, main_models) = main;
+    build_guardian(
+        config,
+        stored,
+        env,
+        text,
+        Some((main_ref, main_models)),
+        Some(main_client),
+    )
+}
+
+/// The guardian `text` names. The main model's account listing vouches for a guardian on that
+/// account, and reuses the main client rather than building another.
+fn build_guardian(
+    config: &Config,
+    stored: &Credentials,
+    env: EnvLookup<'_>,
+    text: &str,
+    main: Option<(&ModelRef, &[String])>,
+    main_client: Option<&Client>,
+) -> Result<GuardianModel, ModelError> {
     let reference = parse_reference(text, "guardian model")?;
     let account = account_of(config, &reference, "guardian model")?;
+    let same_account = main.is_some_and(|(main_ref, _)| reference.account == main_ref.account);
 
-    let known: Option<&[String]> = match &account.models {
-        Some(list) => Some(list),
-        None if reference.account == main_ref.account => Some(main_models),
-        None => None,
+    let known: Option<&[String]> = match (&account.models, main) {
+        (Some(list), _) => Some(list),
+        (None, Some((_, listing))) if same_account => Some(listing),
+        _ => None,
     };
     if let Some(list) = known
         && !lists(account.kind, list, &reference.model)
@@ -473,10 +494,9 @@ fn resolve_guardian(
         return Err(unknown_model(&reference, list));
     }
 
-    let client = if reference.account == main_ref.account {
-        Ok(main_client.clone())
-    } else {
-        client_for(&reference.account, account, env, stored)
+    let client = match main_client {
+        Some(client) if same_account => Ok(client.clone()),
+        _ => client_for(&reference.account, account, env, stored),
     };
     Ok(match client {
         Ok(client) => {
@@ -599,29 +619,7 @@ impl Switcher {
         main: Option<(&ModelRef, &[String])>,
     ) -> Result<GuardianModel, ModelError> {
         let stored = Credentials::load(&self.data_dir)?;
-        let reference = parse_reference(text, "guardian model")?;
-        let account = account_of(&self.config, &reference, "guardian model")?;
-        let known: Option<&[String]> = match (&account.models, main) {
-            (Some(list), _) => Some(list),
-            (None, Some((main_ref, listing))) if reference.account == main_ref.account => {
-                Some(listing)
-            }
-            _ => None,
-        };
-        if let Some(list) = known
-            && !lists(account.kind, list, &reference.model)
-        {
-            return Err(unknown_model(&reference, list));
-        }
-        Ok(
-            match client_for(&reference.account, account, &*self.env, &stored) {
-                Ok(client) => {
-                    let completion = client.completion(&reference.model);
-                    GuardianModel::Ready(ModelHandle::new(reference, account.kind, completion))
-                }
-                Err(reason) => GuardianModel::Unavailable { reference, reason },
-            },
-        )
+        build_guardian(&self.config, &stored, &*self.env, text, main, None)
     }
 
     /// Guardian models to offer when the pinned one is unavailable: the validated list entries

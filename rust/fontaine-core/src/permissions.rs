@@ -369,7 +369,7 @@ impl PermissionPipeline {
         outcome
     }
 
-    /// Steps 1a to 9 for one call, with no side effects.
+    /// The verdict for one call, with no side effects.
     fn evaluate(&self, call: &CallView<'_>, args: &Value, hook: &HookOutcome) -> Verdict {
         let mode = self.state.mode();
         let scope = self.state.scope();
@@ -776,7 +776,7 @@ impl PermissionPipeline {
         }
     }
 
-    /// Step 7 and 9: the guardian decides, unless the human already settled this exact call.
+    /// The guardian decides, unless the human already settled this exact call.
     async fn guardian_branch(&self, cx: &CallCtx<'_>, hook: &HookOutcome) -> GateDecision {
         let call = cx.call;
         // `/denied` then `r`: the human approved this exact call once. The floor has already

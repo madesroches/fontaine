@@ -203,9 +203,8 @@ where
 
 #[tokio::test]
 async fn a_connection_reset_is_denied_without_hanging() {
-    #[allow(deprecated)]
     let url = raw_endpoint(|stream| async move {
-        let _ = stream.set_linger(Some(Duration::ZERO));
+        let _ = stream.set_zero_linger();
         drop(stream);
     })
     .await;

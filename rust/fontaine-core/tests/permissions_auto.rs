@@ -710,3 +710,99 @@ async fn a_shell_command_that_only_names_a_missing_path_does_not_make_it_session
         .collect();
     assert!(!sent.contains("notes.txt [created_this_session]"), "{sent}");
 }
+
+struct AutoHook {
+    matcher: Option<&'static str>,
+    permission: Option<fontaine_core::permissions::HookPermission>,
+    note: Option<&'static str>,
+}
+
+impl fontaine_core::permissions::PreToolUseHook for AutoHook {
+    fn id(&self) -> String {
+        "double".to_string()
+    }
+
+    fn matcher(&self) -> Option<String> {
+        self.matcher.map(str::to_string)
+    }
+
+    fn run<'a>(
+        &'a self,
+        _event: fontaine_core::permissions::PreToolUseEvent<'a>,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<fontaine_core::permissions::HookDecision, fontaine_core::permissions::HookError>,
+    > {
+        Box::pin(async move {
+            Ok(fontaine_core::permissions::HookDecision {
+                permission: self.permission,
+                updated_input: None,
+                reason: None,
+                guardian_context: self.note.map(str::to_string),
+            })
+        })
+    }
+}
+
+fn auto_rig_with_hook(fake: &common::pipeline::Fake, hook: AutoHook) -> Rig {
+    let mut options = Options::new(Auto).guardian(fake.guardian.clone());
+    options.hooks = vec![std::sync::Arc::new(hook)];
+    Rig::with(options)
+}
+
+#[tokio::test]
+async fn a_narrow_matcher_hook_allow_skips_the_guardian_in_auto() {
+    use fontaine_core::permissions::HookPermission::Allow;
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig_with_hook(
+        &fake,
+        AutoHook {
+            matcher: Some("shell(npm test)"),
+            permission: Some(Allow),
+            note: None,
+        },
+    );
+    assert!(allowed(&rig.check("shell", shell("npm test")).await));
+    assert_eq!(fake.calls(), 0);
+    assert_eq!(last(&rig).tier, Tier::Hook);
+}
+
+#[tokio::test]
+async fn a_hook_allow_without_a_narrow_matcher_still_reaches_the_guardian() {
+    use fontaine_core::permissions::HookPermission::Allow;
+    for matcher in [None, Some("shell"), Some("shell(python *)")] {
+        let fake = fake_guardian(allow_verdict());
+        let rig = auto_rig_with_hook(
+            &fake,
+            AutoHook {
+                matcher,
+                permission: Some(Allow),
+                note: None,
+            },
+        );
+        assert!(allowed(&rig.check("shell", shell("rm file.txt")).await));
+        assert_eq!(fake.calls(), 1, "{matcher:?}");
+        assert_eq!(last(&rig).tier, Tier::Guardian, "{matcher:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_hooks_guardian_context_note_is_in_the_guardian_request() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig_with_hook(
+        &fake,
+        AutoHook {
+            matcher: None,
+            permission: None,
+            note: Some("HOOKNOTE: the release script was reviewed"),
+        },
+    );
+    assert!(allowed(&rig.check("shell", shell("rm file.txt")).await));
+    let sent: String = fake
+        .mock
+        .requests()
+        .iter()
+        .map(|r| format!("{r:?}"))
+        .collect();
+    assert!(sent.contains("HOOKNOTE"), "{sent}");
+}

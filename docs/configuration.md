@@ -345,9 +345,9 @@ tool (a `shell` specifier is literal command words, a path specifier a gitignore
 | `allow` | Pre-approval rules. User-trust scopes only. | `[]` |
 | `additional_directories` | Extra workspace roots. User-trust scopes only. See [Workspace roots](#workspace-roots). | `[]` |
 
-`default_mode = "auto"` loads from the user file, an untracked `settings.local.toml` that has earned
-user trust, and `--settings`. It is rejected from the shared project file and from a project-local
-file that did not, because it loosens: those scopes accept only `manual` and `dontAsk`.
+`default_mode = "auto"` loads only from the user file and `--settings`. It is rejected from the shared
+project file and from `settings.local.toml`, trusted or not, because it loosens: those scopes accept
+only `manual` and `dontAsk`.
 
 ```toml
 [permissions]
