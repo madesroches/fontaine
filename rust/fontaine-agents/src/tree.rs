@@ -239,6 +239,13 @@ impl AgentTree {
         }
     }
 
+    /// Records the model a child actually runs on, once the runner has resolved its spec.
+    pub fn set_model(&self, agent: &str, model: String) {
+        if let Some(node) = self.lock().nodes.get_mut(agent) {
+            node.info.model = model;
+        }
+    }
+
     pub fn tools_of(&self, agent: &str) -> Vec<String> {
         if agent == ROOT_AGENT
             && let Some(source) = self

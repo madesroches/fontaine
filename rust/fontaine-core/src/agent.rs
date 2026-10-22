@@ -254,6 +254,9 @@ fn server_description(server: &McpServer) -> String {
                 line.push(' ');
                 line.push_str(arg);
             }
+            if let Some(names) = server.env_vars.as_ref().filter(|n| !n.is_empty()) {
+                line.push_str(&format!("\nenvironment: {}", names.join(", ")));
+            }
             line
         }
         (None, Some(url)) => url.clone(),

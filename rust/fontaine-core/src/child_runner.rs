@@ -251,6 +251,10 @@ impl ChildRunner for CoreChildRunner {
         Box::pin(async move {
             let context = &self.context;
             let model = context.model_for(&request.model).await?;
+            context
+                .state
+                .agents()
+                .set_model(&request.id, model.reference.to_string());
             if request.budget.cost_usd.is_some()
                 && !model.priced()
                 && context.state.agents().first_unpriced_cap()

@@ -82,9 +82,9 @@ terminal UI:
    prompt](tui.md#workspace-trust). If you decline, the session runs without the repository's
    servers and hooks, and the question comes back next session.
 2. In a trusted root each repository-defined server is then approved on its own, the first time it
-   would start: the prompt shows the command line or URL. Your approval is recorded in
+   would start: the prompt shows the command line or URL and, for a command, the names of the environment variables it asks to receive (never their values). Your approval is recorded in
    `<data dir>/trust.toml` for that root, that name and that exact definition, so a server whose
-   command, arguments or URL change is asked about again, and a repository cannot approve its own
+   command, arguments, environment variable names or URL change is asked about again, and a repository cannot approve its own
    servers.
 
 A headless run (`fontaine -p`) starts them without asking, as Claude Code's `-p` does. In both

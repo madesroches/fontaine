@@ -272,9 +272,10 @@ impl Ledger {
                     next_seq = entry.seq + 1;
                     good_end = offset;
                 }
-                // A write cut short (full disk, power loss) can only damage the end; cutting it
-                // off keeps later appends on a clean line.
-                Err(e) if lines.peek().is_none() => {
+                // A write cut short (full disk, power loss) can only damage the end, and leaves no
+                // newline; a complete line that fails to parse is something else (say, a newer
+                // build's record) and is not ours to cut.
+                Err(e) if lines.peek().is_none() && !raw.ends_with('\n') => {
                     tracing::warn!(error = %e, "dropping the torn last line of the session ledger");
                     let file = std::fs::OpenOptions::new().write(true).open(&path)?;
                     file.set_len(good_end as u64)?;
@@ -483,5 +484,16 @@ mod tests {
         let (first, rest) = text.split_once('\n').unwrap();
         std::fs::write(&path, format!("{first}\nnot json\n{rest}")).unwrap();
         assert!(Ledger::open(dir.path()).is_err());
+    }
+
+    #[test]
+    fn a_complete_unparseable_last_line_fails_the_open_and_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ledger_with_two_messages(dir.path());
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("{\"seq\":2,\"ts_ms\":1,\"record\":{\"kind\":\"from_the_future\"}}\n");
+        std::fs::write(&path, &text).unwrap();
+        assert!(Ledger::open(dir.path()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
     }
 }

@@ -1199,6 +1199,13 @@ impl PermissionPipeline {
 
     async fn ask_human(&self, cx: &CallCtx<'_>, prompt: Prompt) -> GateDecision {
         let call = cx.call;
+        if let Some(why) = self.state.agents().exhausted_of(call.agent) {
+            let message = denied(call.tool, &why.describe());
+            self.emit(self.record(cx, Tier::Human, Decision::Deny, None, Some(message.clone())));
+            self.state
+                .append(self.denial(cx, Tier::Human, None, &message));
+            return GateDecision::Deny { message };
+        }
         let args = cx.args.clone();
         let scope = self.state.scope();
         let proposed = if prompt.forced {
