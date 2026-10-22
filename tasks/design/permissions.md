@@ -51,7 +51,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
                MCP-declared readOnlyHint does not qualify — such tools register as Arbitrary;
                the `skill` tool qualifies: its only argument is a skill name resolved against the
                start-time index, and it loads skill text into context)
-           5. Tier 0.5 — (after the parse below, every path-valued word, including `--flag=value` values, is also checked as a `read` call — and as `ls`/`grep` for those commands — against the deny and ask rules: a deny match is a Deny, an ask match a prompt; the pre-classifier never skips file-read rules) deterministic shell pre-classifier (zero-LLM), `shell` calls only:
+           5. Tier 0.5 — (after the parse below, every path-valued word, including `--flag=value` values, is also checked as a `read` call — and as `ls`/`grep` for those commands — against the deny and ask rules: a deny match is a Deny, an ask match a prompt; each path word is checked, but files a recursive or path-less search reaches under a directory are not individually checked; read rules are not a containment boundary for shell) deterministic shell pre-classifier (zero-LLM), `shell` calls only:
               parsed by `brush-parser` (a real POSIX shell parser, pinned to an exact version — NOT
               regex, no hand-rolled lexer) into exactly ONE simple command (no control operators
               `; | & && ||`, redirections, substitutions, subshells, backgrounding, globs —

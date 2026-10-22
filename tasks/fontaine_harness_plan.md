@@ -330,6 +330,7 @@ carries the reasoning:
 - 2026-10-21: The system prompt is the versioned asset `rust/fontaine-core/prompts/system_prompt.md` layered base → `FONTAINE.md` → skill index → output style → `--append-system-prompt`; `--system-prompt` replaces only the base (Phase 2 step 2).
 - 2026-10-21: Project-local `settings.local.toml` gets user trust only when untracked AND its root is trusted (Claude Code trusts `settings.local.json` unconditionally): a shipped `.git` skeleton or an enclosing repo can make a hostile file look untracked.
 - 2026-10-22: A file-tool call outside the workspace roots is denied with the /add-dir hint instead of prompting (Claude Code prompts); reason: file tools are confined to the roots, so an approved out-of-scope call would still be refused.
+- 2026-10-22: Read deny/ask rules check only the path words of a pre-classified shell command, not files a recursive search (`grep -r KEY .`) reaches under a directory; matches Claude Code, whose Read rules are best-effort for Bash. Reason: shell reads are not a containment boundary; use shell rules or the protected paths.
 
 ## Open Questions
 

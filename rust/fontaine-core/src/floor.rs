@@ -28,17 +28,25 @@ pub const PROTECTED_FILES: [&str; 9] = [
 
 const DELETERS: [&str; 2] = ["rm", "rmdir"];
 
-fn same(a: &std::ffi::OsStr, b: &str) -> bool {
+/// Windows and macOS file systems are case-insensitive by default, so `.MCP.json` names the
+/// protected file there even before it exists.
+pub(crate) const FOLD_CASE: bool = cfg!(any(windows, target_os = "macos"));
+
+fn same(a: &std::ffi::OsStr, b: &str, fold: bool) -> bool {
     let a = a.to_string_lossy();
-    if cfg!(windows) {
+    if fold {
         a.eq_ignore_ascii_case(b)
     } else {
         a == b
     }
 }
 
-fn under(path: &Path, root: &Path) -> Option<PathBuf> {
-    if cfg!(windows) {
+pub(crate) fn under(path: &Path, root: &Path) -> Option<PathBuf> {
+    under_with(path, root, FOLD_CASE)
+}
+
+fn under_with(path: &Path, root: &Path, fold: bool) -> Option<PathBuf> {
+    if fold {
         let mut p = path.components();
         for r in root.components() {
             let c = p.next()?;
@@ -65,9 +73,22 @@ pub fn protected_path(
     owned: &[PathBuf],
     args: &Value,
 ) -> Option<String> {
+    protected_path_with(scope, home, owned, args, FOLD_CASE)
+}
+
+fn protected_path_with(
+    scope: &Scope,
+    home: Option<&Path>,
+    owned: &[PathBuf],
+    args: &Value,
+    fold: bool,
+) -> Option<String> {
     let given = args.get("path")?.as_str()?;
     for path in [scope.written(given), scope.resolved(given)] {
-        if owned.iter().any(|dir| under(&path, dir).is_some()) {
+        if owned
+            .iter()
+            .any(|dir| under_with(&path, dir, fold).is_some())
+        {
             return Some("Fontaine's own config or data directory".to_string());
         }
         let relative = scope
@@ -75,7 +96,7 @@ pub fn protected_path(
             .iter()
             .map(PathBuf::as_path)
             .chain(home)
-            .find_map(|root| under(&path, root))
+            .find_map(|root| under_with(&path, root, fold))
             .unwrap_or_else(|| path.clone());
         let names: Vec<&std::ffi::OsStr> = relative
             .components()
@@ -86,13 +107,13 @@ pub fn protected_path(
             .collect();
         if let Some(dir) = names
             .iter()
-            .find_map(|n| PROTECTED_DIRS.iter().find(|d| same(n, d)))
+            .find_map(|n| PROTECTED_DIRS.iter().find(|d| same(n, d, fold)))
         {
             return Some(format!("protected directory {dir}"));
         }
         if let Some(file) = names
             .last()
-            .and_then(|n| PROTECTED_FILES.iter().find(|f| same(n, f)))
+            .and_then(|n| PROTECTED_FILES.iter().find(|f| same(n, f, fold)))
         {
             return Some(format!("protected file {file}"));
         }
@@ -367,6 +388,26 @@ mod tests {
         for path in ["src/main.rs", "gitconfig", ".github/ci.yml", "x/.gitignore"] {
             assert!(!hit(path), "{path}");
         }
+    }
+
+    #[test]
+    fn case_folding_protects_differently_cased_names() {
+        let root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let scope = Scope::new(root.clone(), []);
+        let hit = |path: &str, fold: bool| {
+            protected_path_with(
+                &scope,
+                None,
+                &[],
+                &serde_json::json!({ "path": path }),
+                fold,
+            )
+            .is_some()
+        };
+        for path in [".MCP.json", ".VSCODE/tasks.json", ".Husky/pre-commit"] {
+            assert!(hit(path, true), "{path}");
+        }
+        assert!(!hit(".MCP.json", false));
     }
 
     #[test]

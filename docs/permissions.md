@@ -47,7 +47,7 @@ A call goes through these steps in order and the first one that decides wins.
      `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc` or `.mcp.json`,
      in any workspace root or the home directory, asks; so does any path under Fontaine's own
      config or data directory. Matching is on resolved path components, so separators and, on
-     Windows, case do not matter.
+     on Windows and macOS, case do not matter.
 
    A floor outcome that asks is a denial in `dontAsk` and in headless runs.
 3. **Read-only fast path.** A read-only tool (`read`, `ls`, `glob`, `grep`) whose paths all
@@ -160,9 +160,12 @@ subcommand` pair (`cargo metadata`). It is accepted from user-trust scopes only,
 takes no flags (any flag falls through), and its positional words must be in-scope paths. A grant
 from the prompt never extends the set.
 
-The pre-classifier does not skip your `read` rules. Each word of the command that could be a path
+Each word of the command that could be a path
 (including the value of `--flag=value`), as written and resolved against the `cwd`, is checked
 against the `read` deny and ask rules, and against the `ls` or `grep` rules for those commands. A
-deny match denies the call and an ask match asks, so `deny = ["read(.env)"]` also stops `cat .env`.
+deny match denies the call and an ask match asks, so `deny = ["read(.env)"]` also stops `cat .env`. Only the words written in the command are
+checked: files a recursive search reaches under a directory (`grep -r KEY .`) are not checked
+one by one. `read` deny rules are not a containment boundary for shell; use a `shell` deny or
+ask rule, or the protected paths.
 
 A pre-classified call is audited with `tier = tier05`.

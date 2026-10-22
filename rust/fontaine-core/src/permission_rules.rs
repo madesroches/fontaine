@@ -270,7 +270,7 @@ struct PathSpec {
 fn gitignore(line: &str) -> Result<Gitignore, String> {
     let mut builder = GitignoreBuilder::new(".");
     builder
-        .case_insensitive(cfg!(windows))
+        .case_insensitive(crate::floor::FOLD_CASE)
         .map_err(|e| e.to_string())?;
     builder.add_line(None, line).map_err(|e| e.to_string())?;
     let matcher = builder.build().map_err(|e| e.to_string())?;
@@ -325,22 +325,7 @@ fn drive_of(path: &Path) -> Option<char> {
 }
 
 fn strip_root(path: &Path, root: &Path) -> Option<PathBuf> {
-    if cfg!(windows) {
-        let mut p = path.components();
-        for r in root.components() {
-            let c = p.next()?;
-            if !c
-                .as_os_str()
-                .to_string_lossy()
-                .eq_ignore_ascii_case(&r.as_os_str().to_string_lossy())
-            {
-                return None;
-            }
-        }
-        Some(p.as_path().to_path_buf())
-    } else {
-        path.strip_prefix(root).ok().map(Path::to_path_buf)
-    }
+    crate::floor::under(path, root)
 }
 
 impl PathSpec {

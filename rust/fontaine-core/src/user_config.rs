@@ -48,7 +48,25 @@ pub fn append_allow_rule(path: &Path, rule: &str) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, doc.to_string())
+    write_atomically(path, doc.to_string().as_bytes())
+}
+
+/// Replaces `path` through a same-directory rename so a crash or full disk cannot leave the
+/// settings file truncated, which would parse as valid TOML and silently drop its deny rules.
+fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let dir = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(bytes)?;
+    tmp.as_file().sync_all()?;
+    if let Ok(meta) = std::fs::metadata(path) {
+        std::fs::set_permissions(tmp.path(), meta.permissions())?;
+    }
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -82,6 +100,19 @@ mod tests {
         let doc: DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(doc["permissions"]["allow"][0].as_str(), Some("shell(ls)"));
         assert_eq!(doc["permissions"]["deny"][0].as_str(), Some("shell(rm)"));
+    }
+
+    #[test]
+    fn the_write_leaves_only_the_settings_file_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[permissions]\ndeny = [\"shell(rm)\"]\n").unwrap();
+        append_allow_rule(&path, "shell(ls)").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("deny = [\"shell(rm)\"]") && text.contains("allow = [\"shell(ls)\"]")
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
