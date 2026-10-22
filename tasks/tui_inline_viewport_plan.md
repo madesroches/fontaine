@@ -125,6 +125,8 @@ impl<B: Backend> Screen<B> {
     /// Clear the live area and leave the cursor at its top, for exit.
     pub fn clear_live(&mut self) -> Result<(), B::Error>;
     pub fn backend(&self) -> &B;
+    /// The viewport rect.
+    pub fn area(&mut self) -> Rect; // self.terminal.get_frame().area()
 }
 ```
 
@@ -155,10 +157,11 @@ cannot resize an inline viewport, so the rebuild:
    ratatui anchors the viewport at the cursor row. When it grows, ratatui appends lines and
    scrolls the screen, pushing older lines into scrollback. When it shrinks, the area below is
    already clear and the step 3 insert in the same render, or a later one, fills it.
+4. calls `hide_cursor()` on the new terminal, so the old terminal's drop (which shows a hidden cursor) leaves nothing stray; the next draw places the cursor.
 
 `Terminal::with_options` asks the backend for the cursor position. On crossterm that is a DSR
 round trip: a network round trip over ssh, and a 2 s timeout on terminals that do not answer,
-racing the input reader thread. To avoid it, `run` uses a thin backend wrapper, `Anchored<B>`, in
+waiting on the input reader thread's hold on crossterm's event-reader lock (up to 100 ms per poll). To avoid it, `run` uses a thin backend wrapper, `Anchored<B>`, in
 `screen.rs`. It keeps its remembered position and last seen size in `Cell`s, because `Backend::size(&self)` is
 immutable. It delegates every `Backend` method explicitly, including the defaulted `append_lines`
 (a no-op by default, so growth breaks otherwise) and the scroll-region methods. It remembers the position from the last
@@ -192,6 +195,10 @@ and a stray `ESC[?1049l` restores a saved cursor position on xterm-likes. Instea
   `DisableBracketedPaste`, `Show` cursor and `disable_raw_mode`. When `std::thread::panicking()`
   it skips `clear_live`: the panic hook has already restored the terminal and printed the message
   inside the live area, and clearing would erase it.
+- the restore steps live in one function used by the guard, the panic hook and the `Screen::new`
+  error path: when `Screen::new` returns Err (inline `Terminal::with_options` does a DSR cursor query
+  that errors after 2 s on a terminal that does not answer) no guard exists yet, so `run` runs
+  `DisableBracketedPaste`, `Show` cursor and `disable_raw_mode` before returning the error.
 
 ### Feature flag
 
@@ -225,12 +232,13 @@ live area does not flicker. Windows 10+ consoles support DECSTBM through crosste
    `Anchored<CrosstermBackend<Stdout>>`. The render closure calls `screen.render(app)` and, on `Err`, sets a
    clone of `run`'s `stop` flag so the session ends via `InputClosed`.
    `TerminalGuard` owns the `Screen`, clears the live area (except when panicking) and restores,
-   with no alternate-screen calls.
+   with no alternate-screen calls. One restore function serves the guard, the panic hook and a
+   failed `Screen::new` (which runs it before returning the error).
 9. **Test harness** (`tests/common/mod.rs`): build `Screen::new(TestBackend::new(120, 40), ||
    TestBackend::new(1, 1))`. After each render, `Ui::screen()` is the backend's scrollback rows
    followed by its buffer rows, so `wait_for("all done")` finds text whether it is in scrollback
-   or live. The harness also exposes `Ui::live()`, a string built from the rows of the Screen's
-   viewport area only. Existing `tests/tui.rs` assertions should keep passing unchanged; fix any that
+   or live. The harness also exposes `Ui::live()`, a string built from the `backend().buffer()` rows
+   `area.top()..area.bottom()`, with `area` from `Screen::area()`. Existing `tests/tui.rs` assertions should keep passing unchanged; fix any that
    asserted the absence of text that now legitimately remains in scrollback.
 10. **Docs** (`docs/tui.md`, master plan): see Documentation.
 
@@ -267,7 +275,8 @@ live area does not flicker. Windows 10+ consoles support DECSTBM through crosste
   tail. Scroll back with the terminal or tmux copy mode. Mouse selection works as in any shell
   program. Change the PageUp/PageDown row to "Scroll the command in an open approval prompt".
   Note that narrowing the terminal clears the visible screen and redraws the live area at the
-  top, and earlier output remains in the scrollback above.
+  top. Output already scrolled off is kept; lines still on screen at the narrowing are kept only
+  where clearing the screen saves it to history (tmux by default) and may be lost elsewhere.
 - `tasks/fontaine_harness_plan.md` `## Decisions`: `2026-10-22: The TUI draws inline (live area
   plus terminal scrollback) instead of on the alternate screen, matching Claude Code; reason:
   alternate-screen apps lose mouse selection and wheel scrolling under tmux (#70).`
@@ -322,5 +331,6 @@ breakage is obvious on the next interactive run.
 3. Quit with Ctrl-C. Expected: the shell prompt appears right under the transcript with no input
    box or status bar left behind.
 4. Resize the terminal narrower mid-session. Expected: the visible screen is cleared
-   and the live area redraws at the top at the new width; earlier output remains in the scrollback
-   above.
+   and the live area redraws at the top at the new width; output already scrolled off remains in the
+   scrollback, and lines that were on screen are kept only where clearing saves to history (tmux
+   by default).
