@@ -2,8 +2,8 @@
 //! validator, never from the guardian's label.
 
 use fontaine_core::destructive::{
-    Facts, GIT_NETWORK_SUBCOMMANDS, INSTALLERS, NETWORK_CLIENT_WORDS, NETWORK_CLIENT_WORDS_EXTRA,
-    REMOVAL_OVERWRITE_WORDS, derive, touched_paths,
+    Facts, GIT_NETWORK_SUBCOMMANDS, INSTALLERS, NETWORK_CLIENT_WORDS, REMOVAL_OVERWRITE_WORDS,
+    derive, touched_paths,
 };
 use fontaine_core::ledger::{LedgerView, path_key};
 use fontaine_core::permission_rules::BROAD_CODE_EXECUTION;
@@ -56,11 +56,7 @@ fn plain_builds_and_tests_are_not_destructive() {
 
 #[test]
 fn every_removal_and_network_word_is_destructive() {
-    for word in REMOVAL_OVERWRITE_WORDS
-        .iter()
-        .chain(&NETWORK_CLIENT_WORDS)
-        .chain(&NETWORK_CLIENT_WORDS_EXTRA)
-    {
+    for word in REMOVAL_OVERWRITE_WORDS.iter().chain(&NETWORK_CLIENT_WORDS) {
         assert!(shell_is(&format!("{word} a b")), "{word}");
         assert!(shell_is(&format!("ls && {word} a")), "{word} in a list");
         assert!(shell_is(&format!("/usr/bin/{word} a")), "{word} by path");
@@ -96,6 +92,7 @@ fn every_flagged_form_is_destructive() {
         "sed -i.bak s/a/b/ f",
         "sed -ni s/a/b/p f",
         "sed --in-place s/a/b/ f",
+        "sed --in-place=.bak s/a/b/ f",
         "perl -i -pe s/a/b/ f",
         "perl -pi -e s/a/b/ f",
         "find . -name x -delete",
@@ -253,6 +250,7 @@ fn a_write_is_an_overwrite_only_when_it_replaces_something_old() {
             tool: "write".into(),
             agent: "root".into(),
             paths: vec![root.join("session.txt").to_string_lossy().into_owned()],
+            created: vec![root.join("session.txt").to_string_lossy().into_owned()],
             summary: String::new(),
         })
         .unwrap();
@@ -293,6 +291,7 @@ fn a_ledger_written_before_paths_and_summaries_existed_still_loads() {
             tool: "read".into(),
             agent: "root".into(),
             paths: vec![],
+            created: vec![],
             summary: String::new()
         }
     );

@@ -61,7 +61,11 @@ impl DeniedList {
             KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab if n > 0 => {
                 self.selected = (self.selected + 1) % n;
             }
-            KeyCode::Char('r') if n > 0 && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('r')
+                if n > 0
+                    && !self.entries[self.selected].retried
+                    && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
                 return DeniedKey::Retry(self.selected);
             }
             _ => {}
@@ -204,8 +208,8 @@ impl UnavailablePrompt {
                     self.candidates[self.selected].to_string(),
                 ));
             }
-            KeyCode::Char(c) if c.is_ascii_digit() => {
-                let index = (c as usize).saturating_sub('1' as usize);
+            KeyCode::Char(c @ '1'..='9') => {
+                let index = c as usize - '1' as usize;
                 if index < n {
                     return Some(UnavailableAnswer::Pick(self.candidates[index].to_string()));
                 }
@@ -319,6 +323,7 @@ mod tests {
             p.handle_key(key('2')),
             Some(UnavailableAnswer::Pick("b/two".into()))
         );
+        assert_eq!(p.handle_key(key('0')), None);
     }
 
     #[test]
@@ -338,6 +343,8 @@ mod tests {
         assert_eq!(list.handle_key(key('r')), DeniedKey::Retry(1));
         list.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(list.handle_key(key('r')), DeniedKey::Retry(0));
+        list.mark_retried(0);
+        assert_eq!(list.handle_key(key('r')), DeniedKey::None);
         assert_eq!(list.handle_key(key('q')), DeniedKey::Close);
         let empty = DeniedList::new(vec![]);
         assert!(empty.body(40)[0].to_string().contains("nothing"));

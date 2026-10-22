@@ -517,6 +517,9 @@ async fn a_human_retry_goes_past_the_guardian_once_and_never_feeds_the_breaker()
             .any(|r| matches!(r, Record::Approval { scope, .. } if scope == "once"))
     );
 
+    // A second press on the same entry queues nothing more.
+    assert!(rig.state.approve_retry(0).is_none());
+
     // The approval was one-shot: the identical call afterwards reaches the guardian again.
     assert!(!allowed(&rig.check("shell", args.clone()).await));
     assert_eq!(fake.calls(), calls + 1);
@@ -535,8 +538,9 @@ async fn a_human_retry_does_not_pass_the_floor() {
         .await;
     plain.state.approve_retry(0).unwrap();
     // The same approval in a session where an ask rule applies still prompts.
-    rig.state
-        .record_denied(plain.state.denied_calls().remove(0));
+    let mut copied = plain.state.denied_calls().remove(0);
+    copied.retried = false;
+    rig.state.record_denied(copied);
     rig.state.approve_retry(0).unwrap();
     rig.approver.answer(Answer::Deny { feedback: None });
     assert!(!allowed(
@@ -667,4 +671,25 @@ async fn a_path_an_earlier_action_touched_is_created_this_session_unless_it_was_
         .collect();
     assert!(sent.contains("made.txt [created_this_session]"), "{sent}");
     assert!(sent.contains("untouched.txt [unindexed]"), "{sent}");
+}
+
+#[tokio::test]
+async fn touching_an_unindexed_existing_file_does_not_make_a_later_overwrite_routine() {
+    let fake = fake_guardian(verdict_json("allow", "allow", 0.5));
+    let rig = auto_rig(&fake, "");
+    std::fs::write(rig.work().join("secret.env"), "k").unwrap();
+    assert!(allowed(
+        &rig.check("shell", shell("ls ../ ./secret.env")).await
+    ));
+    let d = rig.check("write", write_args("secret.env")).await;
+    assert!(denied_message(&d).contains("[LowConfidence]"), "{d:?}");
+}
+
+#[tokio::test]
+async fn a_file_the_session_created_is_not_destructive_to_write_again() {
+    let fake = fake_guardian(verdict_json("allow", "allow", 0.5));
+    let rig = auto_rig(&fake, "");
+    assert!(allowed(&rig.check("write", write_args("new.txt")).await));
+    std::fs::write(rig.work().join("new.txt"), "x").unwrap();
+    assert!(allowed(&rig.check("write", write_args("new.txt")).await));
 }

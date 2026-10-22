@@ -433,13 +433,22 @@ fn the_switcher_offers_the_validated_and_the_explicit_models_the_accounts_have()
         ]
     );
     // An account without its credential gives an unavailable guardian, not an error.
-    let nokey = switcher.guardian("nokey/gpt-flash").unwrap();
+    let nokey = switcher.guardian("nokey/gpt-flash", None).unwrap();
     assert!(matches!(nokey, GuardianModel::Unavailable { .. }));
     assert!(matches!(
-        switcher.guardian("cloud/claude-haiku-5-5").unwrap(),
+        switcher.guardian("cloud/claude-haiku-5-5", None).unwrap(),
         GuardianModel::Ready(_)
     ));
-    assert!(switcher.guardian("cloud/not-offered").is_err());
+    assert!(switcher.guardian("cloud/not-offered", None).is_err());
+
+    // A guardian on the main model's account is checked against that account's listing.
+    let listing = ["qwen3:4b".to_string()];
+    let with_main = Some((&main, &listing[..]));
+    assert!(matches!(
+        switcher.guardian("main/qwen3:4b", with_main).unwrap(),
+        GuardianModel::Ready(_)
+    ));
+    assert!(switcher.guardian("main/typo", with_main).is_err());
 }
 
 #[test]

@@ -258,10 +258,14 @@ impl SessionState {
 
     /// Records the human's one-shot approval of denied call `index` (as `/denied` lists it): the
     /// next call by the same agent with the same tool and arguments goes past the guardian.
-    /// The deterministic floor still runs first. Returns the call, or `None` for a bad index.
+    /// The deterministic floor still runs first. Returns the call, or `None` for a bad index or a
+    /// call already approved, so one entry queues one approval.
     pub fn approve_retry(&self, index: usize) -> Option<DeniedCall> {
         let mut denied = self.denied.lock().unwrap_or_else(|e| e.into_inner());
         let call = denied.get_mut(index)?;
+        if call.retried {
+            return None;
+        }
         call.retried = true;
         let approval = RetryApproval {
             agent: call.agent.clone(),

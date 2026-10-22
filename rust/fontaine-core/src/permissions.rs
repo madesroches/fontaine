@@ -4,7 +4,7 @@
 //! paths) in every mode, then the read-only fast path, the shell pre-classifier, allow rules and
 //! finally what the mode does with a call nobody pre-approved.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -666,10 +666,21 @@ impl PermissionPipeline {
         } else {
             touched_paths(cx.call.tool, &cx.args, &self.state.scope())
         };
+        // Checked before the tool runs; only a call that can write may have created a path.
+        let created = if matches!(cx.call.tool, "write" | "edit" | "shell") {
+            paths
+                .iter()
+                .filter(|p| !Path::new(p).exists())
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
         Record::Action {
             tool: cx.call.tool.to_string(),
             agent: cx.call.agent.to_string(),
             paths,
+            created,
             summary: action_summary(cx.call.tool, &cx.args),
         }
     }

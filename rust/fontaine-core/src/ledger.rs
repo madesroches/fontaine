@@ -68,6 +68,10 @@ pub enum Record {
         /// The absolute paths the call touches, as the scope validator resolved them.
         #[serde(default)]
         paths: Vec<String>,
+        /// The subset of `paths` that was absent on disk when the call was allowed, so a call
+        /// that touches an existing file never marks it as made by this session.
+        #[serde(default)]
+        created: Vec<String>,
         /// A compact, credential-redacted summary of the arguments.
         #[serde(default)]
         summary: String,
@@ -141,7 +145,7 @@ pub struct DenialEntry {
 pub enum Existence {
     /// In the file index taken at session start.
     PreExisting,
-    /// Not indexed, and an earlier action of this session touched it.
+    /// Not indexed, and an earlier action of this session created it.
     CreatedThisSession,
     /// Not indexed and untouched so far.
     Unindexed,
@@ -179,10 +183,11 @@ impl LedgerView {
             Record::Action {
                 tool,
                 agent,
-                paths,
+                created,
                 summary,
+                ..
             } => {
-                self.touched.extend(paths.iter().map(|p| path_key(p)));
+                self.touched.extend(created.iter().map(|p| path_key(p)));
                 self.actions.push(ActionEntry {
                     tool: tool.clone(),
                     agent: agent.clone(),

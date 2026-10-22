@@ -79,7 +79,7 @@ pub fn connect(
         dirs.data.clone(),
         Arc::new(move |name: &str| snapshot.get(name).cloned()),
     );
-    let handle = match switcher.guardian(spec).map_err(|e| e.to_string())? {
+    let handle = match switcher.guardian(spec, None).map_err(|e| e.to_string())? {
         GuardianModel::Ready(handle) => handle,
         GuardianModel::Unavailable { reason, .. } => {
             return Err(format!(

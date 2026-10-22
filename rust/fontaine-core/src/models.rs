@@ -571,21 +571,33 @@ impl Switcher {
         }
     }
 
-    /// The main model `text` names, checked against what its account offers.
-    pub async fn main(&self, text: &str) -> Result<ModelHandle, ModelError> {
+    /// The main model `text` names, checked against what its account offers, and that listing.
+    pub async fn main(&self, text: &str) -> Result<(ModelHandle, Vec<String>), ModelError> {
         let stored = Credentials::load(&self.data_dir)?;
-        let (_, _, _, handle) =
+        let (_, _, listing, handle) =
             resolve_main_model(&self.config, &stored, &*self.env, text, "model").await?;
-        Ok(handle)
+        Ok((handle, listing))
     }
 
     /// The guardian model `text` names. An account without a credential gives an unavailable
-    /// guardian, not an error: it fails closed and the user is asked what to do.
-    pub fn guardian(&self, text: &str) -> Result<GuardianModel, ModelError> {
+    /// guardian, not an error: it fails closed and the user is asked what to do. `main` is the
+    /// main model and the listing of its account, which vouches for a guardian on that account.
+    pub fn guardian(
+        &self,
+        text: &str,
+        main: Option<(&ModelRef, &[String])>,
+    ) -> Result<GuardianModel, ModelError> {
         let stored = Credentials::load(&self.data_dir)?;
         let reference = parse_reference(text, "guardian model")?;
         let account = account_of(&self.config, &reference, "guardian model")?;
-        if let Some(list) = &account.models
+        let known: Option<&[String]> = match (&account.models, main) {
+            (Some(list), _) => Some(list),
+            (None, Some((main_ref, listing))) if reference.account == main_ref.account => {
+                Some(listing)
+            }
+            _ => None,
+        };
+        if let Some(list) = known
             && !lists(account.kind, list, &reference.model)
         {
             return Err(unknown_model(&reference, list));

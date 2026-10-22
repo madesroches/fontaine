@@ -20,12 +20,9 @@ pub const REMOVAL_OVERWRITE_WORDS: [&str; 14] = [
 ];
 
 /// Programs that talk to the network whatever their arguments.
-pub const NETWORK_CLIENT_WORDS: [&str; 10] = [
-    "curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "socat",
+pub const NETWORK_CLIENT_WORDS: [&str; 12] = [
+    "curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "socat", "telnet", "ftp",
 ];
-
-/// More network clients, kept apart so the table above stays a plain array.
-pub const NETWORK_CLIENT_WORDS_EXTRA: [&str; 2] = ["telnet", "ftp"];
 
 /// `git` subcommands that reach a remote.
 pub const GIT_NETWORK_SUBCOMMANDS: [&str; 5] = ["push", "fetch", "pull", "clone", "remote"];
@@ -45,7 +42,7 @@ pub const INSTALLERS: [(&str, &[&str]); 11] = [
     ("brew", &["install"]),
 ];
 
-/// Installers from the table above that need no subcommand beyond `install`.
+/// Installers that take a bare `install` subcommand, so they need no entry in the table above.
 const MORE_INSTALLERS: [&str; 2] = ["dnf", "yum"];
 
 const FIND_DESTRUCTIVE_FLAGS: [&str; 5] = ["-delete", "-exec", "-execdir", "-ok", "-okdir"];
@@ -126,7 +123,8 @@ fn git_subcommand(args: &[String]) -> Option<usize> {
 
 fn has_flag(args: &[String], long: &[&str], short: &[char]) -> bool {
     args.iter().any(|arg| {
-        if long.contains(&arg.as_str()) {
+        let name = arg.split_once('=').map_or(arg.as_str(), |(name, _)| name);
+        if long.contains(&name) {
             return true;
         }
         arg.starts_with('-')
@@ -203,10 +201,7 @@ fn destructive_command(command: &SimpleCommand) -> bool {
     };
     let program = program.as_str();
 
-    if REMOVAL_OVERWRITE_WORDS.contains(&program)
-        || NETWORK_CLIENT_WORDS.contains(&program)
-        || NETWORK_CLIENT_WORDS_EXTRA.contains(&program)
-    {
+    if REMOVAL_OVERWRITE_WORDS.contains(&program) || NETWORK_CLIENT_WORDS.contains(&program) {
         return true;
     }
     match program {
@@ -279,7 +274,6 @@ pub fn touched_paths(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
         }
         _ => {}
     }
-    out.dedup();
     let mut seen = std::collections::HashSet::new();
     out.retain(|p| seen.insert(p.clone()));
     out.truncate(LIMIT);

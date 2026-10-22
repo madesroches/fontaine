@@ -314,6 +314,15 @@ impl AgentRuntime {
             .ok_or_else(|| "models cannot be switched in this session".to_string())
     }
 
+    fn guardian_for(&self, text: &str) -> Result<GuardianModel, String> {
+        self.switcher()?
+            .guardian(
+                text,
+                Some((&self.models.main.reference, &self.models.main_listing)),
+            )
+            .map_err(|e| e.to_string())
+    }
+
     fn persist(&self, write: impl FnOnce(&Path) -> std::io::Result<()>) -> Option<String> {
         match &self.setup.user_config {
             Some(path) => write(path)
@@ -327,15 +336,17 @@ impl AgentRuntime {
     /// choice as `[model] model`. The guardian follows only when it is on the main-model
     /// fallback; a pinned or validated guardian stays where it is.
     pub async fn switch_main_model(&mut self, text: &str) -> Result<Switched, String> {
-        let handle = self
+        let (handle, listing) = self
             .switcher()?
             .clone()
             .main(text)
             .await
             .map_err(|e| e.to_string())?;
         let previous = std::mem::replace(&mut self.models.main, handle);
+        let previous_listing = std::mem::replace(&mut self.models.main_listing, listing);
         if let Err(e) = self.rebuild() {
             self.models.main = previous;
+            self.models.main_listing = previous_listing;
             return Err(e);
         }
         let guardian_followed = self.models.guardian_choice == GuardianChoice::MainFallback;
@@ -357,7 +368,7 @@ impl AgentRuntime {
     /// `[guardian] model`. An account with no credential gives an unavailable guardian rather
     /// than an error, which the next adjudication reports.
     pub fn set_guardian_model(&mut self, text: &str) -> Result<Switched, String> {
-        let model = self.switcher()?.guardian(text).map_err(|e| e.to_string())?;
+        let model = self.guardian_for(text)?;
         self.install_guardian(&model);
         let reference = model.reference().to_string();
         self.models.guardian = Some(model);
@@ -374,10 +385,7 @@ impl AgentRuntime {
     /// Returns whether it can be asked now.
     pub fn retry_guardian(&self) -> Result<bool, String> {
         let current = self.state.guardian();
-        let model = self
-            .switcher()?
-            .guardian(current.label())
-            .map_err(|e| e.to_string())?;
+        let model = self.guardian_for(current.label())?;
         self.install_guardian(&model);
         Ok(matches!(model, GuardianModel::Ready(_)))
     }
@@ -385,7 +393,7 @@ impl AgentRuntime {
     /// Switches the guardian for this session only, without saving it: the "pick another"
     /// answer to an unavailable guardian.
     pub fn use_guardian(&self, text: &str) -> Result<bool, String> {
-        let model = self.switcher()?.guardian(text).map_err(|e| e.to_string())?;
+        let model = self.guardian_for(text)?;
         self.install_guardian(&model);
         Ok(matches!(model, GuardianModel::Ready(_)))
     }

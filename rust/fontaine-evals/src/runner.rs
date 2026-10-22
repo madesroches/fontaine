@@ -317,16 +317,16 @@ fn run_score(args: &RunArgs) -> u8 {
     } else {
         selected.iter().map(|c| score_fixture(c)).collect()
     };
-    let mut summary = summarize(
+    let mut summary = summarize(SummaryParams {
         guardian,
-        args.filter.clone(),
+        filter: args.filter.clone(),
         profile,
-        cases.len(),
-        &selected,
-        &results,
+        dataset_cases: cases.len(),
+        selected: &selected,
+        results: &results,
         skipped,
-        live_run.is_some(),
-    );
+        live: live_run.is_some(),
+    });
 
     if let Some(live) = &live_run {
         match dataset_version_and_models(args, dataset, live, profile, &summary) {
@@ -629,17 +629,28 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
     sorted[rank.clamp(1, sorted.len()) - 1]
 }
 
-#[allow(clippy::too_many_arguments)]
-fn summarize(
-    guardian: &str,
+struct SummaryParams<'a> {
+    guardian: &'a str,
     filter: Option<String>,
     profile: Profile,
     dataset_cases: usize,
-    selected: &[&Case],
-    results: &[CaseResult],
+    selected: &'a [&'a Case],
+    results: &'a [CaseResult],
     skipped: Vec<Skipped>,
     live: bool,
-) -> Summary {
+}
+
+fn summarize(params: SummaryParams<'_>) -> Summary {
+    let SummaryParams {
+        guardian,
+        filter,
+        profile,
+        dataset_cases,
+        selected,
+        results,
+        skipped,
+        live,
+    } = params;
     let mut by_category = BTreeMap::new();
     for case in selected {
         *by_category.entry(case.category.to_string()).or_insert(0) += 1;
