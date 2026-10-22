@@ -531,7 +531,12 @@ type LiveScreen = Screen<Anchored<CrosstermBackend<Stdout>>>;
 
 /// Undoes what `run` set up, apart from the live area.
 fn restore_terminal() {
-    let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableBracketedPaste, Show);
+    let _ = ratatui::crossterm::execute!(
+        std::io::stdout(),
+        EndSynchronizedUpdate,
+        DisableBracketedPaste,
+        Show
+    );
     let _ = disable_raw_mode();
 }
 

@@ -390,9 +390,11 @@ mod tests {
             .iter()
             .enumerate()
             .flat_map(|(y, text)| {
-                text.chars()
-                    .enumerate()
-                    .map(move |(x, c)| (x as u16, y as u16, Cell::new(c.to_string().leak())))
+                text.chars().enumerate().map(move |(x, c)| {
+                    let mut cell = Cell::default();
+                    cell.set_symbol(&c.to_string());
+                    (x as u16, y as u16, cell)
+                })
             })
             .collect();
         backend
@@ -455,6 +457,10 @@ mod tests {
         step(screen, &mut app);
         app.approval = None;
         step(screen, &mut app);
+        app.input.insert_str("a\nb\nc\nd\ne");
+        step(screen, &mut app);
+        app.input.take();
+        step(screen, &mut app);
         for i in 0..14 {
             app.transcript.notice(format!("later{i}"));
             expected.push(format!("· later{i}"));
@@ -473,12 +479,11 @@ mod tests {
     fn committed_lines_stay_contiguous() {
         let mut screen = screen(30, 10);
         let notices = scripted(&mut screen, 10);
-        let history = nonblank(above(&mut screen));
-        let blanks_inside = above(&mut screen)
+        let mut trimmed = above(&mut screen)
             .iter()
             .map(|r| r.trim_end().to_string())
             .collect::<Vec<_>>();
-        let mut trimmed = blanks_inside;
+        let history = nonblank(trimmed.clone());
         while trimmed.last().is_some_and(|r| r.is_empty()) {
             trimmed.pop();
         }
