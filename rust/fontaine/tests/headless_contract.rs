@@ -363,6 +363,28 @@ async fn piped_stdin_is_appended_to_the_prompt_argument() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_stdin_pipe_that_stays_silent_does_not_block_the_prompt_argument() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("x")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let mut cmd = s.command(&["-p", "SILENT-PIPE-PROMPT"]);
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    let held_open = child.stdin.take().unwrap();
+    let out = tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output())
+        .await
+        .expect("the run blocked on stdin")
+        .unwrap();
+    drop(held_open);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("no stdin data received in 3s"), "{stderr}");
+    let request = endpoint.requests().await.remove(0).to_string();
+    assert!(request.contains("SILENT-PIPE-PROMPT"), "{request}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn system_prompt_flags_shape_the_request() {
     let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("x")]).await;
     let s = Sandbox::compatible(&endpoint.url());

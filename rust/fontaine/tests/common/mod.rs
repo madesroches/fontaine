@@ -351,7 +351,7 @@ impl Sandbox {
         self.env.push((name.to_string(), value.to_string()));
     }
 
-    fn command(&self, args: &[&str]) -> tokio::process::Command {
+    pub fn command(&self, args: &[&str]) -> tokio::process::Command {
         let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fontaine"));
         cmd.args(args)
             .current_dir(&self.work)

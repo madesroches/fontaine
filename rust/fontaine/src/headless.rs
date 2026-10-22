@@ -133,18 +133,77 @@ fn user_line_text(line: &str) -> Result<String, String> {
     }
 }
 
+/// How long a prompt argument waits for piped stdin to start before running without it.
+const STDIN_FIRST_DATA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Reads stdin on a detached thread: a blocking read on a pipe that never closes would
+/// otherwise keep the runtime from shutting down.
+async fn read_piped_stdin() -> Result<String, String> {
+    use std::io::Read;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<std::io::Result<Vec<u8>>>();
+    std::thread::spawn(move || {
+        let mut stdin = std::io::stdin().lock();
+        let mut buf = [0u8; 8192];
+        loop {
+            match stdin.read(&mut buf) {
+                Ok(0) => {
+                    let _ = tx.send(Ok(Vec::new()));
+                    return;
+                }
+                Ok(n) => {
+                    if tx.send(Ok(buf[..n].to_vec())).is_err() {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
+            }
+        }
+    });
+    let read_error = |e: std::io::Error| format!("cannot read the prompt from stdin: {e}");
+    let mut bytes = Vec::new();
+    match tokio::time::timeout(STDIN_FIRST_DATA_TIMEOUT, rx.recv()).await {
+        Err(_) => {
+            eprintln!(
+                "Warning: no stdin data received in {}s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.",
+                STDIN_FIRST_DATA_TIMEOUT.as_secs()
+            );
+            return Ok(String::new());
+        }
+        Ok(None) => return Ok(String::new()),
+        Ok(Some(chunk)) => bytes.extend(chunk.map_err(read_error)?),
+    }
+    while !bytes.is_empty() {
+        match rx.recv().await {
+            Some(chunk) => {
+                let chunk = chunk.map_err(read_error)?;
+                if chunk.is_empty() {
+                    break;
+                }
+                bytes.extend(chunk);
+            }
+            None => break,
+        }
+    }
+    String::from_utf8(bytes).map_err(|e| format!("cannot read the prompt from stdin: {e}"))
+}
+
 /// Reads the prompt the run will use, or the stream the prompts come from.
 async fn open_input(options: &mut Options) -> Result<Input, String> {
     match options.input_format {
         InputFormat::StreamJson => Ok(Input::Lines(BufReader::new(tokio::io::stdin()).lines())),
         InputFormat::Text => {
-            let piped = if options.prompt.is_none() || !std::io::stdin().is_terminal() {
+            let piped = if options.prompt.is_none() {
                 let mut text = String::new();
                 tokio::io::stdin()
                     .read_to_string(&mut text)
                     .await
                     .map_err(|e| format!("cannot read the prompt from stdin: {e}"))?;
                 text
+            } else if !std::io::stdin().is_terminal() {
+                read_piped_stdin().await?
             } else {
                 String::new()
             };
