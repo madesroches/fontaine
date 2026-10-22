@@ -2,12 +2,15 @@
 //! loop with the terminal swapped for an input channel and a render callback, which is how the
 //! tests exercise it.
 
+pub mod agents_panel;
 pub mod app;
 pub mod approval;
 pub mod denials;
 pub mod input;
+pub mod server_prompt;
 pub mod statusbar;
 pub mod transcript;
+pub mod trust_prompt;
 pub mod view;
 
 use std::path::{Path, PathBuf};
@@ -26,15 +29,18 @@ use fontaine_core::tier::Tier;
 use fontaine_core::turn::{
     DEFAULT_MAX_TURNS, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
 };
+use fontaine_tools::gate::ROOT_AGENT;
 use futures::future::BoxFuture;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 
-pub use app::{Action, App, Command, Input, parse_command};
+pub use app::{Action, App, Command, Input, MenuEntry, builtin_menu, parse_command};
 pub use denials::UnavailableAnswer;
 
+use agents_panel::{AgentsPanel, Detail, PanelRow};
 use denials::{DeniedList, UnavailablePrompt};
+use server_prompt::ServerPrompt;
 
 /// What the permission pipeline sends to the interface.
 enum Prompt {
@@ -106,7 +112,61 @@ impl<R: FnMut(&App)> Ui<R> {
     fn draw(&mut self, runtime: &AgentRuntime) {
         self.app.mode = runtime.state.mode();
         self.app.model = runtime.models.main.reference.to_string();
+        self.app.prune_closed();
+        let rows = runtime.state.agents().rows();
+        self.app.running_agents = rows.iter().filter(|r| r.status.is_running()).count();
+        if self.app.agents.is_some() {
+            self.refresh_panel(runtime, &rows);
+        }
         (self.render)(&self.app);
+    }
+
+    /// Brings the agents panel up to date with the tree, the decisions and the queue.
+    fn refresh_panel(&mut self, runtime: &AgentRuntime, rows: &[fontaine_agents::tree::AgentRow]) {
+        let panel_rows: Vec<PanelRow> = rows
+            .iter()
+            .map(|row| PanelRow {
+                id: row.id.clone(),
+                agent_type: row.agent_type.clone(),
+                model: row.model.clone(),
+                status: row.status,
+                tokens: row.spend.tokens(),
+                token_budget: row.budget.tokens,
+                cost_usd: row.spend.cost_usd,
+                cost_budget: row.budget.cost_usd,
+                depth: row.depth,
+                stopped_because: row.exhausted.map(|why| why.describe()),
+            })
+            .collect();
+        let selected = self.app.agents.as_ref().and_then(AgentsPanel::selected_id);
+        let detail = match (&self.app.agents, selected) {
+            (Some(panel), Some(id)) if panel.is_inspecting() => Some(Detail {
+                pending: self.app.pending_for(&id),
+                decisions: runtime
+                    .state
+                    .decisions_of(&id)
+                    .iter()
+                    .map(|d| {
+                        format!(
+                            "{} {} ({}{})",
+                            d.tool,
+                            d.decision,
+                            d.tier,
+                            d.rule
+                                .as_deref()
+                                .map_or(String::new(), |r| format!(": {r}"))
+                        )
+                    })
+                    .collect(),
+                log: runtime.state.agent_log(&id),
+                id,
+            }),
+            _ => None,
+        };
+        if let Some(panel) = &mut self.app.agents {
+            panel.set_rows(panel_rows);
+            panel.detail = detail;
+        }
     }
 
     fn on_prompt(&mut self, runtime: Option<&AgentRuntime>, prompt: Prompt) {
@@ -128,8 +188,15 @@ impl<R: FnMut(&App)> Ui<R> {
     /// longer exist, so they are dropped, but notices still count.
     fn drain_prompts(&mut self) {
         while let Ok(prompt) = self.prompts.try_recv() {
-            if let Prompt::Notice(message) = prompt {
-                self.app.transcript.notice(message);
+            match prompt {
+                Prompt::Notice(message) => self.app.transcript.notice(message),
+                // A background agent's call is still waiting for its answer.
+                Prompt::Ask(request, reply)
+                    if request.agent != ROOT_AGENT && !reply.is_closed() =>
+                {
+                    self.app.begin_approval(*request, reply);
+                }
+                Prompt::Ask(..) | Prompt::Unavailable(..) => {}
             }
         }
     }
@@ -162,8 +229,22 @@ impl<R: FnMut(&App)> Ui<R> {
     }
 
     async fn run(&mut self, runtime: &mut AgentRuntime, launch_dir: &Path) {
+        let tree = runtime.state.agents().clone();
         loop {
+            // A background agent that finished while nothing was running has news for the
+            // main conversation, which gets a turn of its own to read it.
+            if tree.has_notifications(ROOT_AGENT)
+                && matches!(
+                    self.notification_turn(runtime).await,
+                    Some(TurnEnd::InputClosed)
+                )
+            {
+                return;
+            }
             self.draw(runtime);
+            let changed = tree.changed().notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
             let action = tokio::select! {
                 input = self.input.recv() => match input {
                     Some(input) => self.app.handle_input(input),
@@ -173,6 +254,7 @@ impl<R: FnMut(&App)> Ui<R> {
                     self.on_prompt(Some(runtime), prompt);
                     Action::None
                 }
+                _ = &mut changed => Action::None,
             };
             match action {
                 Action::Quit => return,
@@ -184,9 +266,81 @@ impl<R: FnMut(&App)> Ui<R> {
                 }
                 Action::RetryDenied(index) => self.retry_denied(runtime, index),
                 Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
-                Action::None | Action::Interrupt => {}
+                Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                Action::Server(_) | Action::None | Action::Interrupt => {}
             }
         }
+    }
+
+    /// Starts the MCP servers: the ones in the user's own settings at once, a repository's only
+    /// after the human approves each. Returns false when the input closed meanwhile.
+    async fn start_mcp(&mut self, runtime: &mut AgentRuntime) -> bool {
+        let mut approved = Vec::new();
+        for plan in runtime.mcp_plan().into_iter().filter(|p| p.needs_approval) {
+            self.app.begin_server(ServerPrompt::new(
+                plan.name.clone(),
+                plan.description.clone(),
+            ));
+            let answer = loop {
+                self.draw(runtime);
+                let Some(input) = self.input.recv().await else {
+                    return false;
+                };
+                match self.app.handle_input(input) {
+                    Action::Server(answer) => break answer,
+                    Action::Quit => return false,
+                    _ => {}
+                }
+            };
+            if answer {
+                match runtime.approve_mcp_server(&plan) {
+                    Ok(()) => {}
+                    Err(e) => self.app.transcript.error(format!(
+                        "could not remember the approval of `{}`: {e}",
+                        plan.name
+                    )),
+                }
+                approved.push(plan.name.clone());
+            } else {
+                self.app
+                    .transcript
+                    .notice(format!("MCP server `{}` was left off", plan.name));
+            }
+        }
+        if runtime
+            .mcp_plan()
+            .iter()
+            .any(|p| !p.needs_approval || approved.contains(&p.name))
+        {
+            self.app.transcript.notice("starting MCP servers");
+            self.draw(runtime);
+        }
+        for outcome in runtime.connect_mcp(&approved).await {
+            match outcome.error {
+                None => self
+                    .app
+                    .transcript
+                    .notice(format!("MCP server `{}` is connected", outcome.server)),
+                Some(e) => self.app.transcript.error(e),
+            }
+        }
+        true
+    }
+
+    fn kill_agent(&mut self, runtime: &AgentRuntime, id: &str) {
+        if runtime.state.agents().kill(id) {
+            self.app.transcript.notice(format!("killed {id}"));
+        }
+    }
+
+    /// A turn on what the background agents reported. It is not the user speaking, so it is not
+    /// recorded as a user message.
+    async fn notification_turn(&mut self, runtime: &AgentRuntime) -> Option<TurnEnd> {
+        let prompt = runtime.notification_prompt().await?;
+        self.app
+            .transcript
+            .notice("a background agent reported back");
+        Some(self.turn(runtime, prompt, None).await)
     }
 
     async fn submit(
@@ -202,19 +356,77 @@ impl<R: FnMut(&App)> Ui<R> {
             Some(Command::Denied) => {
                 self.app.denied = Some(DeniedList::new(runtime.state.denied_calls()));
             }
+            Some(Command::Agents) => self.app.agents = Some(AgentsPanel::new()),
+            Some(Command::OutputStyle(name)) => self.output_style(runtime, &name),
             Some(Command::Model(reference)) => self.model(runtime, &reference).await,
             Some(Command::GuardianModel(reference)) => self.guardian_model(runtime, &reference),
-            Some(Command::Unknown(name)) => self.app.transcript.error(format!(
-                "unknown command /{name}; try /add-dir <path>, /denied, /model [account/model], /guardian-model [account/model] or /exit"
-            )),
+            Some(Command::Other { name, argument }) => {
+                let known = runtime
+                    .slash_skills()
+                    .iter()
+                    .any(|(skill, _, _)| *skill == name);
+                if !known {
+                    self.app.transcript.error(format!(
+                        "unknown command /{name}; type / to see the commands and skills"
+                    ));
+                    return Continue(());
+                }
+                let prompt = match runtime.expand_skill(&name, &argument).await {
+                    Ok(prompt) => prompt,
+                    Err(e) => {
+                        self.app.transcript.error(format!("/{name}: {e}"));
+                        return Continue(());
+                    }
+                };
+                self.app.transcript.user(text.clone());
+                if matches!(
+                    self.turn(runtime, prompt, Some(&text)).await,
+                    TurnEnd::InputClosed
+                ) {
+                    return Break(());
+                }
+            }
             None => {
                 self.app.transcript.user(text.clone());
-                if matches!(self.turn(runtime, text).await, TurnEnd::InputClosed) {
+                if matches!(
+                    self.turn(runtime, text.clone(), Some(&text)).await,
+                    TurnEnd::InputClosed
+                ) {
                     return Break(());
                 }
             }
         }
         Continue(())
+    }
+
+    /// `/output-style`: shows the styles, or switches to one for the next turn.
+    fn output_style(&mut self, runtime: &mut AgentRuntime, name: &str) {
+        if name.is_empty() {
+            let known: Vec<String> = runtime
+                .extensions()
+                .output_styles
+                .iter()
+                .map(|s| format!("{} ({})", s.name, s.description))
+                .collect();
+            let current = runtime.output_style().unwrap_or("none");
+            self.app.transcript.notice(format!(
+                "output style: {current} · available: {}",
+                if known.is_empty() {
+                    "none".to_string()
+                } else {
+                    known.join(", ")
+                }
+            ));
+            return;
+        }
+        let choice = (name != "none").then_some(name);
+        match runtime.set_output_style(choice) {
+            Ok(()) => self
+                .app
+                .transcript
+                .notice(format!("output style is now {}", choice.unwrap_or("none"))),
+            Err(e) => self.app.transcript.error(format!("/output-style: {e}")),
+        }
     }
 
     fn add_dir(&mut self, runtime: &mut AgentRuntime, launch_dir: &Path, path: &str) {
@@ -369,8 +581,15 @@ impl<R: FnMut(&App)> Ui<R> {
     }
 
     /// Runs one user message while still serving keys and prompts.
-    async fn turn(&mut self, runtime: &AgentRuntime, text: String) -> TurnEnd {
-        runtime.append(Record::UserMessage { text: text.clone() });
+    ///
+    /// `human` is what the user typed, recorded in the ledger as theirs; `None` is a turn the
+    /// harness started, whose prompt is not.
+    async fn turn(&mut self, runtime: &AgentRuntime, text: String, human: Option<&str>) -> TurnEnd {
+        if let Some(typed) = human {
+            runtime.append(Record::UserMessage {
+                text: typed.to_string(),
+            });
+        }
         // What the agent reads is the user's words behind any note the harness owes it.
         let mut prompt = String::new();
         for note in self.app.pending_notices.drain(..) {
@@ -400,10 +619,15 @@ impl<R: FnMut(&App)> Ui<R> {
             )
             .await
         });
+        let tree = runtime.state.agents().clone();
         let end = loop {
             self.draw(runtime);
+            let changed = tree.changed().notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
             tokio::select! {
                 biased;
+                _ = &mut changed => {}
                 Some(event) = seen.recv() => {
                     self.on_event(runtime, event);
                     // One redraw for everything already queued, not one per streamed delta.
@@ -419,7 +643,8 @@ impl<R: FnMut(&App)> Ui<R> {
                         Action::CycleMode => self.cycle_mode(runtime),
                         Action::RetryDenied(index) => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
-                        Action::None | Action::Submit(_) => {}
+                        Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                        Action::Server(_) | Action::None | Action::Submit(_) => {}
                     },
                 },
                 Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
@@ -506,10 +731,28 @@ pub async fn drive(
     for notice in runtime.notices.clone() {
         ui.app.transcript.notice(notice);
     }
+    if let fontaine_core::agent::SessionOrigin::Continued { source, how } = &runtime.origin {
+        ui.app.transcript.notice(format!(
+            "continuing session {source} ({how}) in {mode} mode, with no grants carried over",
+            mode = mode.as_str()
+        ));
+    }
+    for (name, hint, description) in runtime.slash_skills() {
+        ui.app.menu.push(MenuEntry {
+            name,
+            hint,
+            description,
+        });
+    }
+    ui.app.menu.sort_by(|a, b| a.name.cmp(&b.name));
     if mode == PermissionMode::Auto {
         ui.announce_auto(&runtime);
     }
-    ui.run(&mut runtime, &launch_dir).await;
+    if ui.start_mcp(&mut runtime).await {
+        ui.run(&mut runtime, &launch_dir).await;
+    }
+    // Whatever is still running is stopped with the session.
+    runtime.state.agents().kill_all();
     Ok(())
 }
 
@@ -584,7 +827,7 @@ mod tests {
         let (reply, answer) = oneshot::channel();
         let request = ApprovalRequest {
             tool: "shell".into(),
-            agent: "main".into(),
+            agent: ROOT_AGENT.into(),
             tool_use_id: None,
             args: serde_json::json!({}),
             summary: "ls".into(),

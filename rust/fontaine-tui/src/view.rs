@@ -81,10 +81,51 @@ fn overlay(app: &App, width: usize) -> (&'static str, Vec<Line<'static>>, Vec<Li
     if let Some(prompt) = &app.unavailable {
         return ("guardian unavailable", prompt.body(width), prompt.footer());
     }
+    if let Some(prompt) = &app.server {
+        return ("MCP server", prompt.body(width), prompt.footer());
+    }
     if let Some(list) = &app.denied {
         return ("denied", list.body(width), list.footer());
     }
+    if let Some(panel) = &app.agents {
+        return ("agents", panel.body(width), panel.footer());
+    }
+    let menu = menu_lines(app, width);
+    if !menu.is_empty() {
+        return ("commands", menu, Vec::new());
+    }
     ("", Vec::new(), Vec::new())
+}
+
+/// The `/` menu: the commands and skills the text typed so far could be. Shown while the
+/// first word of the message is a bare `/name`.
+fn menu_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let text = app.input.text();
+    let Some(typed) = text.strip_prefix('/') else {
+        return Vec::new();
+    };
+    if typed.contains(char::is_whitespace) {
+        return Vec::new();
+    }
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    app.menu
+        .iter()
+        .filter(|entry| entry.name.starts_with(typed))
+        .map(|entry| {
+            let hint = entry
+                .hint
+                .as_deref()
+                .map_or(String::new(), |h| format!(" {h}"));
+            let head = format!("/{}{hint}", entry.name);
+            let room = width.saturating_sub(head.chars().count() + 3);
+            let description: String = entry.description.chars().take(room).collect();
+            Line::from(vec![
+                ratatui::text::Span::styled(head, bold),
+                ratatui::text::Span::styled(format!("  {description}"), dim),
+            ])
+        })
+        .collect()
 }
 
 fn draw_overlay(
@@ -156,7 +197,7 @@ fn draw_approval(
 }
 
 fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
-    let covered = app.approval.is_some() || app.denied.is_some() || app.unavailable.is_some();
+    let covered = app.covered();
     let style = if covered {
         Style::default().add_modifier(Modifier::DIM)
     } else {

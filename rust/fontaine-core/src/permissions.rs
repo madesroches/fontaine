@@ -22,7 +22,7 @@ use crate::audit::{Decision, DecisionRecord, args_digest, now_rfc3339};
 use crate::config::PermissionMode;
 use crate::destructive::touched_paths;
 use crate::floor::{self, CriticalEnv};
-use crate::gate::{DeniedCall, SessionState};
+use crate::gate::{DeniedCall, SessionState, permission_mode};
 use crate::ledger::Record;
 use crate::permission_rules::{
     CallContext, Posture, RuleSource, SourcedRule, is_broad_code_execution, matches, parse_rule,
@@ -151,6 +151,12 @@ pub struct PreToolUseEvent<'a> {
     pub args: &'a Value,
     pub agent: &'a str,
     pub tool_use_id: Option<&'a str>,
+    pub session_id: &'a str,
+    /// The primary workspace root.
+    pub cwd: &'a Path,
+    /// The agent's permission mode in force for this call, by its settings name.
+    pub permission_mode: &'a str,
+    pub workspace_roots: &'a [String],
 }
 
 /// The slot for user `pre_tool_use` hooks. A hook that errors, times out or answers something
@@ -169,10 +175,55 @@ pub trait PreToolUseHook: Send + Sync {
         Duration::from_secs(30)
     }
 
+    /// Whether this hook's `allow` counts. A hook the repository defines can tighten a call
+    /// but never approve one.
+    fn can_allow(&self) -> bool {
+        true
+    }
+
     fn run<'a>(
         &'a self,
         event: PreToolUseEvent<'a>,
     ) -> BoxFuture<'a, Result<HookDecision, HookError>>;
+}
+
+/// What the pipeline tells a `permission_denied` hook.
+pub struct PermissionDeniedEvent<'a> {
+    pub tool: &'a str,
+    pub args: &'a Value,
+    pub agent: &'a str,
+    pub tool_use_id: Option<&'a str>,
+    pub session_id: &'a str,
+    pub cwd: &'a Path,
+    pub permission_mode: &'a str,
+    pub workspace_roots: &'a [String],
+    pub tier: Tier,
+    pub reason: &'a str,
+}
+
+/// The slot for user `permission_denied` hooks. The answer can only say the agent may retry
+/// the call; the floor and the guardian are not consulted differently because of it.
+pub trait PermissionDeniedHook: Send + Sync {
+    fn id(&self) -> String;
+
+    fn matcher(&self) -> Option<String> {
+        None
+    }
+
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(30)
+    }
+
+    /// Whether its `retry` counts. A hook the repository defines never loosens a decision.
+    fn can_retry(&self) -> bool {
+        true
+    }
+
+    /// `Ok(true)` when the hook says the agent may retry exactly this call.
+    fn run<'a>(
+        &'a self,
+        event: PermissionDeniedEvent<'a>,
+    ) -> BoxFuture<'a, Result<bool, HookError>>;
 }
 
 pub struct PipelineParams {
@@ -181,6 +232,7 @@ pub struct PipelineParams {
     /// Nothing can be asked: every would-prompt outcome becomes a denial.
     pub headless: bool,
     pub hooks: Vec<Arc<dyn PreToolUseHook>>,
+    pub denied_hooks: Vec<Arc<dyn PermissionDeniedHook>>,
     /// `[shell_preclassifier] allow_extra`.
     pub allow_extra: Vec<String>,
     /// The user settings file "always allow" appends to.
@@ -192,6 +244,7 @@ pub struct PermissionPipeline {
     approver: Arc<dyn Approver>,
     headless: bool,
     hooks: Vec<Arc<dyn PreToolUseHook>>,
+    denied_hooks: Vec<Arc<dyn PermissionDeniedHook>>,
     preclassifier: Preclassifier,
     user_config: Option<PathBuf>,
 }
@@ -308,6 +361,7 @@ impl PermissionPipeline {
             approver: params.approver,
             headless: params.headless,
             hooks: params.hooks,
+            denied_hooks: params.denied_hooks,
             user_config: params.user_config,
         }
     }
@@ -316,15 +370,73 @@ impl PermissionPipeline {
         &self.state
     }
 
-    async fn run_hooks(&self, call: &CallView<'_>, tool_use_id: Option<&str>) -> HookOutcome {
+    /// The mode this agent's calls are judged under right now, and whether edits are blocked
+    /// for it. The root's is the session mode; a child's is the tighter of its own and its
+    /// parent's, so a child is never looser than its parent and follows it on every call.
+    fn posture_of(&self, agent: &str) -> (PermissionMode, bool) {
+        let tree = self.state.agents();
+        if agent == fontaine_tools::gate::ROOT_AGENT || !tree.is_child(agent) {
+            return (self.state.mode(), false);
+        }
+        let posture = tree.posture(agent);
+        (permission_mode(posture.mode), posture.plan_block)
+    }
+
+    fn workspace_view(&self) -> (PathBuf, Vec<String>) {
+        let scope = self.state.scope();
+        (
+            scope.primary().to_path_buf(),
+            scope
+                .roots()
+                .iter()
+                .map(|root| root.display().to_string())
+                .collect(),
+        )
+    }
+
+    async fn run_hooks(
+        &self,
+        call: &CallView<'_>,
+        tool_use_id: Option<&str>,
+        mode: PermissionMode,
+    ) -> HookOutcome {
         let mut outcome = HookOutcome::default();
+        if self.hooks.is_empty() {
+            return outcome;
+        }
         let mut args = call.args.clone();
+        let scope = self.state.scope();
+        let home = self.state.home.as_deref();
+        let (cwd, roots) = self.workspace_view();
         for hook in &self.hooks {
+            let rule = hook.matcher().and_then(|text| parse_rule(&text).ok());
+            // A hook that names a matcher runs for the calls it covers; one that cannot be read
+            // runs for every call, since a hook can only tighten by running.
+            let covers = |args: &Value, posture: Posture| match &rule {
+                Some(rule) => matches(
+                    rule,
+                    &CallContext {
+                        tool: call.tool,
+                        args,
+                        scope: &scope,
+                        home,
+                    },
+                    posture,
+                ),
+                None => true,
+            };
+            if !covers(&args, Posture::Deny) {
+                continue;
+            }
             let event = PreToolUseEvent {
                 tool: call.tool,
                 args: &args,
                 agent: call.agent,
                 tool_use_id,
+                session_id: &self.state.session_id,
+                cwd: &cwd,
+                permission_mode: mode.as_str(),
+                workspace_roots: &roots,
             };
             let id = hook.id();
             let decision = match tokio::time::timeout(hook.timeout(), hook.run(event)).await {
@@ -353,13 +465,18 @@ impl PermissionPipeline {
                 Some(HookPermission::Ask) => {
                     outcome.ask.get_or_insert(id);
                 }
-                Some(HookPermission::Allow) => {
-                    let narrow = hook
-                        .matcher()
-                        .and_then(|text| parse_rule(&text).ok())
-                        .is_some_and(|rule| !is_broad_code_execution(&rule));
+                Some(HookPermission::Allow) if !hook.can_allow() => {
+                    tracing::debug!(hook = %id, "a project hook's allow is ignored");
+                }
+                // Like an allow rule, it acts only where its matcher would match as an allow rule
+                // does: exactly one simple command, not a chain.
+                Some(HookPermission::Allow) if covers(&args, Posture::Allow) => {
+                    let narrow = rule
+                        .as_ref()
+                        .is_some_and(|rule| !is_broad_code_execution(rule));
                     outcome.allow.get_or_insert((id, narrow));
                 }
+                Some(HookPermission::Allow) => {}
                 None => {}
             }
             if let Some(note) = decision.guardian_context {
@@ -370,8 +487,14 @@ impl PermissionPipeline {
     }
 
     /// The verdict for one call, with no side effects.
-    fn evaluate(&self, call: &CallView<'_>, args: &Value, hook: &HookOutcome) -> Verdict {
-        let mode = self.state.mode();
+    fn evaluate(
+        &self,
+        call: &CallView<'_>,
+        args: &Value,
+        hook: &HookOutcome,
+        mode: PermissionMode,
+        plan_block: bool,
+    ) -> Verdict {
         let scope = self.state.scope();
         let rules = self.state.rules();
         let home = self.state.home.as_deref();
@@ -406,7 +529,14 @@ impl PermissionPipeline {
                 why: format!("the permission rule `{}` forbids it", rule.label()),
             };
         }
-        if mode == PermissionMode::Plan && edit_class {
+        if let Some(why) = self.state.child_restriction(call.agent, &ctx) {
+            return Verdict::Deny {
+                tier: Tier::DenyRule,
+                rule: Some("agent tools".to_string()),
+                why,
+            };
+        }
+        if (mode == PermissionMode::Plan || plan_block) && edit_class {
             return Verdict::Deny {
                 tier: Tier::PlanBlock,
                 rule: None,
@@ -519,9 +649,11 @@ impl PermissionPipeline {
         let suspended = |rule: &SourcedRule| {
             mode == PermissionMode::Auto && is_broad_code_execution(&rule.rule)
         };
+        let skill_grants = self.state.skill_grants(call.agent);
         if let Some(rule) = rules
             .allow
             .iter()
+            .chain(skill_grants.iter())
             .find(|r| !suspended(r) && matches(&r.rule, &ctx, Posture::Allow))
         {
             return Verdict::Allow {
@@ -705,7 +837,7 @@ impl PermissionPipeline {
         }
     }
 
-    fn deny(
+    async fn deny(
         &self,
         cx: &CallCtx<'_>,
         tier: Tier,
@@ -722,13 +854,73 @@ impl PermissionPipeline {
         ));
         self.state
             .append(self.denial(cx, tier, rule.as_deref(), &message));
+        // The deterministic floor and the mode have no retry grant to give, so a hook's `retry`
+        // changes nothing here; the hook still hears about the denial.
+        self.denied_hooks(cx, tier, &message).await;
         GateDecision::Deny { message }
+    }
+
+    /// Tells the `permission_denied` hooks about a denial. Returns whether one of them, one the
+    /// user defined, says the agent may retry exactly this call.
+    async fn denied_hooks(&self, cx: &CallCtx<'_>, tier: Tier, reason: &str) -> bool {
+        if self.denied_hooks.is_empty() {
+            return false;
+        }
+        let scope = self.state.scope();
+        let (cwd, roots) = self.workspace_view();
+        let mut retry = false;
+        for hook in &self.denied_hooks {
+            let covered = match hook.matcher().and_then(|text| parse_rule(&text).ok()) {
+                Some(rule) => matches(
+                    &rule,
+                    &CallContext {
+                        tool: cx.call.tool,
+                        args: &cx.args,
+                        scope: &scope,
+                        home: self.state.home.as_deref(),
+                    },
+                    Posture::Deny,
+                ),
+                None => true,
+            };
+            if !covered {
+                continue;
+            }
+            let event = PermissionDeniedEvent {
+                tool: cx.call.tool,
+                args: &cx.args,
+                agent: cx.call.agent,
+                tool_use_id: cx.tool_use_id.as_deref(),
+                session_id: &self.state.session_id,
+                cwd: &cwd,
+                permission_mode: cx.mode.as_str(),
+                workspace_roots: &roots,
+                tier,
+                reason,
+            };
+            let id = hook.id();
+            match tokio::time::timeout(hook.timeout(), hook.run(event)).await {
+                Ok(Ok(true)) if hook.can_retry() => retry = true,
+                Ok(Ok(true)) => {
+                    tracing::debug!(hook = %id, "a project hook's retry is ignored");
+                }
+                Ok(Ok(false)) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(hook = %id, error = ?e, "a permission_denied hook failed; it decides nothing");
+                }
+                Err(_) => {
+                    tracing::warn!(hook = %id, "a permission_denied hook timed out; it decides nothing");
+                }
+            }
+        }
+        retry
     }
 
     async fn adjudicate(&self, call: CallView<'_>) -> GateDecision {
         let started = Instant::now();
         let tool_use_id = self.state.current_call(call.agent);
-        let hook = self.run_hooks(&call, tool_use_id.as_deref()).await;
+        let (mode, plan_block) = self.posture_of(call.agent);
+        let hook = self.run_hooks(&call, tool_use_id.as_deref(), mode).await;
         let args = hook
             .updated_input
             .clone()
@@ -739,14 +931,14 @@ impl PermissionPipeline {
             original_digest: hook.updated_input.is_some().then(|| args_digest(call.args)),
             args,
             tool_use_id,
-            mode: self.state.mode(),
+            mode,
             started,
         };
 
-        match self.evaluate(&call, &cx.args, &hook) {
+        match self.evaluate(&call, &cx.args, &hook, mode, plan_block) {
             Verdict::Allow { tier, rule } => self.allow(&cx, tier, rule),
             Verdict::Deny { tier, rule, why } => {
-                self.deny(&cx, tier, rule, denied(call.tool, &why))
+                self.deny(&cx, tier, rule, denied(call.tool, &why)).await
             }
             Verdict::Prompt(prompt) => self.prompt_or_ask(&cx, prompt).await,
             Verdict::Guardian => self.guardian_branch(&cx, &hook).await,
@@ -765,14 +957,17 @@ impl PermissionPipeline {
         match self.would_prompt(cx.mode, prompt) {
             Verdict::Prompt(prompt) => self.prompt_or_ask(cx, prompt).await,
             Verdict::Deny { tier, rule, why } => {
-                self.deny(cx, tier, rule, denied(cx.call.tool, &why))
+                self.deny(cx, tier, rule, denied(cx.call.tool, &why)).await
             }
-            Verdict::Allow { .. } | Verdict::Guardian => self.deny(
-                cx,
-                Tier::Guardian,
-                None,
-                denied(cx.call.tool, "it needs the user's approval"),
-            ),
+            Verdict::Allow { .. } | Verdict::Guardian => {
+                self.deny(
+                    cx,
+                    Tier::Guardian,
+                    None,
+                    denied(cx.call.tool, "it needs the user's approval"),
+                )
+                .await
+            }
         }
     }
 
@@ -815,6 +1010,7 @@ impl PermissionPipeline {
             call.tool,
             &cx.args,
             hook.guardian_context.clone(),
+            call.annotations,
         );
         let mut adjudication = self.state.guardian().adjudicate(&request).await;
         if adjudication.fail_closed == Some(FailClosed::Unavailable) && !self.headless {
@@ -828,6 +1024,7 @@ impl PermissionPipeline {
                     .to_string(),
                 tool: call.tool.to_string(),
             };
+            let _waiting = self.state.wait_on_human(call.agent);
             match self.approver.guardian_unavailable(info).await {
                 UnavailableChoice::Retry => {
                     adjudication = self.state.guardian().adjudicate(&request).await;
@@ -849,7 +1046,8 @@ impl PermissionPipeline {
                 UnavailableChoice::Deny => {}
             }
         }
-        self.state.add_guardian_usage(&adjudication.usage);
+        self.state
+            .add_guardian_usage(cx.call.agent, &adjudication.usage);
         self.settle(cx, adjudication).await
     }
 
@@ -905,9 +1103,20 @@ impl PermissionPipeline {
                 } else {
                     adjudication.explanation.clone()
                 };
-                let message = format!(
+                let mut message = format!(
                     "Denied by guardian: [{rule}] {why}. Do not retry it or look for another route to the same effect; tell the user what you could not do."
                 );
+                // A user's `permission_denied` hook may allow exactly one retry, as `/denied`
+                // then `r` does. It is asked first so the agent is told the truth.
+                let retry = self
+                    .denied_hooks(cx, Tier::Guardian, &adjudication.explanation)
+                    .await;
+                if retry {
+                    message = format!(
+                        "Denied by guardian: [{rule}] {why}. A permission_denied hook approved one retry of exactly this call: you may run it again once, unchanged."
+                    );
+                    self.state.grant_retry(call.agent, call.tool, &cx.digest);
+                }
                 Self::note(Tier::Guardian, Decision::Deny);
                 let record = Self::with_guardian(
                     self.record(
@@ -930,7 +1139,7 @@ impl PermissionPipeline {
                     summary: action_summary(call.tool, &cx.args),
                     rule,
                     explanation: adjudication.explanation,
-                    retried: false,
+                    retried: retry,
                 });
                 // The list a surface reads when it sees this event is complete before the event.
                 self.emit(record);
@@ -988,13 +1197,14 @@ impl PermissionPipeline {
             offers,
             proposed_rule: proposed.as_ref().map(ToString::to_string),
         };
+        let _waiting = self.state.wait_on_human(call.agent);
         let answer = self
             .approver
             .approve(request)
             .instrument(tracing::info_span!(
                 target: TARGET,
                 "fontaine.tool.blocked_on_user",
-                tool_name = call.tool,
+                tool_name = self.state.telemetry_tool_name(call.tool),
             ))
             .await;
 
@@ -1086,7 +1296,9 @@ impl PermissionPipeline {
         }
         tracing::info!(
             target: TARGET,
-            tool_name = record.tool.as_str(),
+            tool_name = self.state.telemetry_tool_name(&record.tool),
+            agent.id = record.agent_id.as_str(),
+            agent.type = self.state.agents().type_of(&record.agent_id).as_deref().unwrap_or("main"),
             tool_use_id = record.tool_use_id.as_deref().unwrap_or(""),
             tier = record.tier.as_str(),
             decision = record.decision.as_str(),
@@ -1126,7 +1338,7 @@ impl ToolGate for PermissionPipeline {
         let span = tracing::info_span!(
             target: TARGET,
             "fontaine.permission",
-            tool_name = call.tool,
+            tool_name = self.state.telemetry_tool_name(call.tool),
             permission_mode = self.state.mode().as_str(),
             tier = tracing::field::Empty,
             decision = tracing::field::Empty,

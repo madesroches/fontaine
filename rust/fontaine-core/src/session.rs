@@ -27,6 +27,8 @@ pub const CONVERSATION_LOG: &str = "main";
 pub enum SessionError {
     /// The session id names a directory that already exists.
     InUse(String),
+    /// There is no session with this id to resume or fork.
+    Missing(String),
     Io {
         path: PathBuf,
         source: io::Error,
@@ -38,6 +40,7 @@ impl fmt::Display for SessionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SessionError::InUse(id) => write!(f, "session ID {id} is already in use"),
+            SessionError::Missing(id) => write!(f, "no session with ID {id} to resume"),
             SessionError::Io { path, source } => {
                 write!(f, "cannot create {}: {source}", path.display())
             }
@@ -49,10 +52,10 @@ impl fmt::Display for SessionError {
 impl std::error::Error for SessionError {}
 
 impl SessionError {
-    /// A reused session id is a usage error; anything else is a failure of the run.
+    /// A reused or unknown session id is a usage error; anything else is a failure of the run.
     pub fn exit_code(&self) -> u8 {
         match self {
-            SessionError::InUse(_) => crate::config::CONFIG_EXIT_CODE,
+            SessionError::InUse(_) | SessionError::Missing(_) => crate::config::CONFIG_EXIT_CODE,
             _ => 1,
         }
     }
@@ -98,6 +101,60 @@ impl Session {
             store,
             policy: CompactionPolicy::default(),
         })
+    }
+
+    /// Reopens the session `id`: its conversation log and its ledger, with the audit log
+    /// continuing. Nothing that was granted during it is restored.
+    pub fn open(data_dir: &Path, id: &str) -> Result<Session, SessionError> {
+        if !is_session_id(id) {
+            return Err(SessionError::Missing(id.to_string()));
+        }
+        let dir = data_dir.join(SESSIONS_DIR).join(id);
+        if !dir.join(crate::ledger::LEDGER_DIR).is_dir() {
+            return Err(SessionError::Missing(id.to_string()));
+        }
+        let io_error = |path: &Path| {
+            let path = path.to_path_buf();
+            move |source| SessionError::Io { path, source }
+        };
+        let ledger = Ledger::open(&dir).map_err(io_error(&dir))?;
+        let audit = AuditLog::create(data_dir, id)
+            .map_err(io_error(&data_dir.join(crate::audit::AUDIT_DIR)))?;
+        let store = DirStore::open(&dir).map_err(|e| SessionError::Store(e.to_string()))?;
+        Ok(Session {
+            id: id.to_string(),
+            dir,
+            ledger: Arc::new(ledger),
+            audit: Arc::new(audit),
+            store,
+            policy: CompactionPolicy::default(),
+        })
+    }
+
+    /// Copies the session `source` under the new id `id` and opens the copy. The audit log
+    /// starts empty: it records what this session decides.
+    pub fn fork(data_dir: &Path, source: &str, id: &str) -> Result<Session, SessionError> {
+        if !is_session_id(source) {
+            return Err(SessionError::Missing(source.to_string()));
+        }
+        let sessions = data_dir.join(SESSIONS_DIR);
+        let from = sessions.join(source);
+        if !from.is_dir() {
+            return Err(SessionError::Missing(source.to_string()));
+        }
+        let to = sessions.join(id);
+        match owner_only::create_dir(&to) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(SessionError::InUse(id.to_string()));
+            }
+            Err(source) => return Err(SessionError::Io { path: to, source }),
+        }
+        copy_tree(&from, &to).map_err(|source| SessionError::Io {
+            path: to.clone(),
+            source,
+        })?;
+        Session::open(data_dir, id)
     }
 
     pub fn store(&self) -> DirStore {
@@ -180,4 +237,72 @@ impl Session {
 fn warn(message: &str) {
     tracing::warn!("compaction skipped: {message}");
     eprintln!("fontaine: warning: compaction skipped: {message}");
+}
+
+/// Whether `id` can name a session directory: ids are UUIDs, and nothing that climbs out of the
+/// sessions directory is one.
+fn is_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Copies the files under `from` into `to`, which exists. Everything written is owner-only.
+fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            owner_only::create_dir(&target)?;
+            copy_tree(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            owner_only::write(&target, &std::fs::read(entry.path())?)?;
+        }
+    }
+    Ok(())
+}
+
+/// The id of the most recently updated session whose primary root is `root`.
+pub fn latest_for_root(data_dir: &Path, root: &Path) -> Option<String> {
+    use std::io::BufRead;
+    let wanted = crate::ledger::path_key(&root.display().to_string());
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+    for entry in std::fs::read_dir(data_dir.join(SESSIONS_DIR))
+        .ok()?
+        .flatten()
+    {
+        let ledger = entry
+            .path()
+            .join(crate::ledger::LEDGER_DIR)
+            .join(crate::ledger::LEDGER_FILE);
+        let Ok(file) = std::fs::File::open(&ledger) else {
+            continue;
+        };
+        let Ok(updated) = file.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        let mut first = String::new();
+        if std::io::BufReader::new(file).read_line(&mut first).is_err() {
+            continue;
+        }
+        let Ok(crate::ledger::Entry {
+            record:
+                crate::ledger::Record::SessionStart {
+                    workspace_roots, ..
+                },
+            ..
+        }) = serde_json::from_str(first.trim())
+        else {
+            continue;
+        };
+        let same = workspace_roots
+            .first()
+            .is_some_and(|primary| crate::ledger::path_key(primary) == wanted);
+        if same && best.as_ref().is_none_or(|(at, _)| updated > *at) {
+            best = Some((updated, entry.file_name().to_string_lossy().into_owned()));
+        }
+    }
+    best.map(|(_, id)| id)
 }

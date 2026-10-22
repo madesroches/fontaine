@@ -15,7 +15,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::audit::DecisionRecord;
-use crate::gate::SessionState;
+use crate::gate::{DecisionFeed, SessionState, spend_of};
 
 /// Without a limit from the caller, a turn is still bounded so a looping model cannot run
 /// forever.
@@ -79,7 +79,8 @@ fn tool_text(content: &[ToolResultContent]) -> String {
         .join("\n")
 }
 
-/// Runs `params.prompt` to an answer, a limit or a failure.
+/// Runs `params.prompt` to an answer, a limit or a failure. The permission rules a skill lent
+/// for the turn end with it.
 pub async fn run_turn(
     params: TurnParams<'_>,
     on_event: &mut (dyn FnMut(SessionEvent) -> Flow + Send),
@@ -90,9 +91,53 @@ pub async fn run_turn(
         prompt.id = %Uuid::new_v4(),
         prompt.length = params.prompt.len() as u64,
     );
+    let mut feed = params.state.feed().await;
+    let outcome = drive(
+        Drive {
+            agent: params.agent,
+            state: params.state,
+            agent_id: ROOT_AGENT,
+            prompt: params.prompt,
+            max_turns: params.max_turns,
+            span: interaction,
+        },
+        Some(&mut feed),
+        on_event,
+    )
+    .await;
+    params.state.end_turn();
+    outcome
+}
+
+/// One agent's run: whose it is, what it is asked and under which span it runs.
+pub struct Drive<'a> {
+    pub agent: &'a Agent,
+    pub state: &'a SessionState,
+    pub agent_id: &'a str,
+    pub prompt: String,
+    pub max_turns: usize,
+    /// The run adopts this span as its own agent span.
+    pub span: tracing::Span,
+}
+
+async fn next_decision(feed: &mut Option<&mut DecisionFeed>) -> Option<DecisionRecord> {
+    match feed {
+        Some(feed) => feed.next().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Drives one agent's stream, reporting what happens to `on_event`. The root's run also
+/// forwards the decisions the pipeline makes for the whole tree through `feed`; a subagent's
+/// run has none.
+pub async fn drive(
+    params: Drive<'_>,
+    mut feed: Option<&mut DecisionFeed>,
+    on_event: &mut (dyn FnMut(SessionEvent) -> Flow + Send),
+) -> TurnOutcome {
     let mut tool_context = ToolContext::new();
     // The root agent's id is the default, but a call should say whose it is.
-    let _ = tool_context.insert(AgentId(ROOT_AGENT.to_string()));
+    let _ = tool_context.insert(AgentId(params.agent_id.to_string()));
     let runner = params
         .agent
         .prompt(rig_core::message::Message::user(params.prompt))
@@ -101,8 +146,7 @@ pub async fn run_turn(
         // One call at a time, in order: the guardian judges each call before the next starts.
         .tool_concurrency(1);
     // The run adopts the span it is built under as its own agent span.
-    let mut stream = interaction.in_scope(|| runner.stream());
-    let mut feed = params.state.feed().await;
+    let mut stream = params.span.in_scope(|| runner.stream());
 
     let mut turn_calls_tool = false;
     let mut final_response = None;
@@ -112,7 +156,7 @@ pub async fn run_turn(
     'run: loop {
         let item = tokio::select! {
             biased;
-            Some(decision) = feed.next() => {
+            Some(decision) = next_decision(&mut feed) => {
                 if on_event(SessionEvent::Decision(decision)) == Flow::Stop {
                     stopped = true;
                     break 'run;
@@ -123,10 +167,12 @@ pub async fn run_turn(
         };
         // A call's decision is made before its result exists, so the decisions already waiting
         // belong ahead of whatever the stream just produced.
-        while let Some(decision) = feed.try_next() {
-            if on_event(SessionEvent::Decision(decision)) == Flow::Stop {
-                stopped = true;
-                break 'run;
+        if let Some(feed) = feed.as_deref_mut() {
+            while let Some(decision) = feed.try_next() {
+                if on_event(SessionEvent::Decision(decision)) == Flow::Stop {
+                    stopped = true;
+                    break 'run;
+                }
             }
         }
         let Some(item) = item else { break };
@@ -151,6 +197,11 @@ pub async fn run_turn(
                 _ => Flow::Continue,
             },
             MultiTurnStreamItem::CompletionCall(call) => {
+                let spend = spend_of(&call.usage);
+                params.state.agents().debit(params.agent_id, &spend);
+                if params.agent_id != ROOT_AGENT {
+                    params.state.add_subagent_usage(&call.usage);
+                }
                 let flow = on_event(SessionEvent::Usage {
                     usage: call.usage,
                     calls_tool: turn_calls_tool,
@@ -182,8 +233,10 @@ pub async fn run_turn(
     }
     drop(stream);
     // Decisions made by calls that were cut short still belong in the record of the turn.
-    while let Some(decision) = feed.try_next() {
-        let _ = on_event(SessionEvent::Decision(decision));
+    if let Some(feed) = feed {
+        while let Some(decision) = feed.try_next() {
+            let _ = on_event(SessionEvent::Decision(decision));
+        }
     }
 
     if stopped && failure.is_none() {

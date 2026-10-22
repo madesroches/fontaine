@@ -244,12 +244,22 @@ struct Outcome {
     denials: Vec<Value>,
 }
 
-/// Session spend: the main model plus the guardian. Null only when neither is priced.
-fn session_cost(main: Option<f64>, guardian: Option<f64>) -> Option<f64> {
-    match (main, guardian) {
-        (None, None) => None,
-        (m, g) => Some(m.unwrap_or(0.0) + g.unwrap_or(0.0)),
+/// Session spend: the main model, the guardian and the subagents' models. Null only when none
+/// is priced.
+fn session_cost(main: Option<f64>, guardian: Option<f64>, subagents: Option<f64>) -> Option<f64> {
+    match (main, guardian, subagents) {
+        (None, None, None) => None,
+        (m, g, s) => Some(m.unwrap_or(0.0) + g.unwrap_or(0.0) + s.unwrap_or(0.0)),
     }
+}
+
+/// What the session has spent so far, subagents included.
+fn spent(runtime: &AgentRuntime, totals: &Totals) -> Option<f64> {
+    session_cost(
+        totals.cost_usd,
+        runtime.state.guardian_usage().cost_usd,
+        runtime.state.subagent_usage().cost_usd,
+    )
 }
 
 fn result_event(
@@ -257,6 +267,7 @@ fn result_event(
     outcome: &Outcome,
     totals: &Totals,
     guardian: &GuardianUsage,
+    subagents: &GuardianUsage,
 ) -> Value {
     let mut fields = json!({
         "subtype": outcome.subtype.name(),
@@ -265,7 +276,7 @@ fn result_event(
         "error": outcome.error,
         "num_turns": totals.model_calls,
         "duration_ms": outcome.started.elapsed().as_millis() as u64,
-        "total_cost_usd": session_cost(totals.cost_usd, guardian.cost_usd),
+        "total_cost_usd": session_cost(totals.cost_usd, guardian.cost_usd, subagents.cost_usd),
         "usage": {
             "main": {
                 "input_tokens": totals.input_tokens,
@@ -277,7 +288,11 @@ fn result_event(
                 "output_tokens": guardian.output_tokens,
                 "cost_usd": guardian.cost_usd,
             },
-            "subagents": { "input_tokens": 0, "output_tokens": 0, "cost_usd": null },
+            "subagents": {
+                "input_tokens": subagents.input_tokens,
+                "output_tokens": subagents.output_tokens,
+                "cost_usd": subagents.cost_usd,
+            },
         },
         "denials": outcome.denials,
     });
@@ -334,7 +349,7 @@ fn init_event(runtime: &AgentRuntime, data_dir: &Path) -> Value {
             } else {
                 Vec::new()
             },
-            "tools": runtime.tool_names,
+            "tools": runtime.tool_names(),
         }),
     )
 }
@@ -345,6 +360,7 @@ fn gate_decision_event(session_id: &str, record: &DecisionRecord) -> Value {
         session_id,
         json!({
             "tool_use_id": record.tool_use_id.clone().unwrap_or_default(),
+            "agent_id": record.agent_id,
             "tool": record.tool,
             "tier": record.tier.as_str(),
             "decision": record.decision.as_str(),
@@ -414,10 +430,8 @@ async fn run_one(
                 // The cap is checked between turns: a spent budget stops the run before its
                 // tool calls run, but never discards an answer already complete.
                 if calls_tool
-                    && let (Some(cap), Some(spent)) = (
-                        options.max_budget_usd,
-                        session_cost(totals.cost_usd, runtime.state.guardian_usage().cost_usd),
-                    )
+                    && let (Some(cap), Some(spent)) =
+                        (options.max_budget_usd, spent(runtime, totals))
                     && spent > cap
                 {
                     return Flow::Stop;
@@ -489,6 +503,44 @@ fn announce(runtime: &AgentRuntime) {
     }
 }
 
+/// What a headless run learns after the main conversation's answer while subagents still run.
+enum News {
+    /// Reports or messages for the main conversation, as the prompt of a further turn.
+    Prompt(String),
+    OverBudget,
+    /// Nothing is running and nothing is waiting.
+    Done,
+}
+
+/// Waits until a background subagent has news for the main conversation, the budget is spent, or
+/// no subagent is left running.
+async fn wait_for_news(runtime: &AgentRuntime, over_cap: &dyn Fn() -> bool) -> News {
+    let tree = runtime.state.agents().clone();
+    loop {
+        let changed = tree.changed().notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        if let Some(prompt) = runtime.notification_prompt().await {
+            return News::Prompt(prompt);
+        }
+        if !tree.background_running() {
+            // A report is queued before its child is marked finished, so nothing is missed
+            // between the check above and this one.
+            return match runtime.notification_prompt().await {
+                Some(prompt) => News::Prompt(prompt),
+                None => News::Done,
+            };
+        }
+        if over_cap() {
+            return News::OverBudget;
+        }
+        tokio::select! {
+            _ = &mut changed => {}
+            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+        }
+    }
+}
+
 /// Runs the headless session and returns the process exit code: 0 completed, 1 run error,
 /// 2 usage error.
 pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -> u8 {
@@ -526,10 +578,7 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
         // precede a turn is paid too, so the cap is checked again after it.
         let over_cap = |totals: &Totals| {
             matches!(
-                (
-                    options.max_budget_usd,
-                    session_cost(totals.cost_usd, runtime.state.guardian_usage().cost_usd)
-                ),
+                (options.max_budget_usd, spent(&runtime, totals)),
                 (Some(cap), Some(spent)) if spent > cap
             )
         };
@@ -541,7 +590,7 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
             started: std::time::Instant::now(),
             denials: Vec::new(),
         };
-        let outcome = if over_cap(&totals) {
+        let mut outcome = if over_cap(&totals) {
             budget_stop()
         } else {
             if let Some(usage) = runtime
@@ -557,13 +606,36 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
                 run_one(&runtime, &options, text, &mut totals, stream_events).await
             }
         };
+        // Background subagents still running when the answer comes are waited for: their
+        // reports reach the main conversation as notifications, each a turn of its own, until
+        // none is running. A run stopped by a limit kills them and drops their reports.
+        while outcome.subtype == Subtype::Success {
+            match wait_for_news(&runtime, &|| over_cap(&totals)).await {
+                News::Prompt(prompt) => {
+                    let earlier = std::mem::take(&mut outcome.denials);
+                    let started = outcome.started;
+                    outcome = run_one(&runtime, &options, prompt, &mut totals, stream_events).await;
+                    outcome.started = started;
+                    let later = std::mem::take(&mut outcome.denials);
+                    outcome.denials = earlier.into_iter().chain(later).collect();
+                }
+                News::OverBudget => {
+                    outcome = budget_stop();
+                }
+                News::Done => break,
+            }
+        }
         let failed = outcome.subtype != Subtype::Success;
+        if failed {
+            runtime.state.agents().kill_all();
+        }
         if stream_events {
             emit_line(&result_event(
                 &session_id,
                 &outcome,
                 &totals,
                 &runtime.state.guardian_usage(),
+                &runtime.state.subagent_usage(),
             ));
         }
         last = Some(outcome);
@@ -572,6 +644,7 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
             break;
         }
     }
+    runtime.state.agents().kill_all();
 
     let Some(last) = last else {
         eprintln!("fontaine: no prompt: the input held no user message");
@@ -584,6 +657,7 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
             &last,
             &totals,
             &runtime.state.guardian_usage(),
+            &runtime.state.subagent_usage(),
         )),
         OutputFormat::Text => {
             if let Some(error) = &last.error {
@@ -601,10 +675,15 @@ mod tests {
     use super::session_cost;
 
     #[test]
-    fn session_cost_adds_the_guardian_and_is_null_only_when_neither_is_priced() {
-        assert_eq!(session_cost(None, None), None);
-        assert_eq!(session_cost(Some(0.5), None), Some(0.5));
-        assert_eq!(session_cost(None, Some(0.25)), Some(0.25));
-        assert_eq!(session_cost(Some(0.5), Some(0.25)), Some(0.75));
+    fn session_cost_adds_the_guardian_and_subagents_and_is_null_only_when_none_is_priced() {
+        assert_eq!(session_cost(None, None, None), None);
+        assert_eq!(session_cost(Some(0.5), None, None), Some(0.5));
+        assert_eq!(session_cost(None, Some(0.25), None), Some(0.25));
+        assert_eq!(session_cost(Some(0.5), Some(0.25), None), Some(0.75));
+        assert_eq!(session_cost(None, None, Some(0.125)), Some(0.125));
+        assert_eq!(
+            session_cost(Some(0.5), Some(0.25), Some(0.125)),
+            Some(0.875)
+        );
     }
 }

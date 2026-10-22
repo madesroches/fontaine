@@ -60,6 +60,10 @@ pub struct World {
     guardian_on_main: bool,
     /// Environment variables the switcher resolves models with.
     pub env: Vec<(String, String)>,
+    /// Whether the repository's executables may start (the trust prompt was accepted).
+    pub project_executables: bool,
+    /// Whether the repository's MCP servers wait for the human's approval.
+    pub confirm_servers: bool,
 }
 
 pub const SESSION_ID: &str = "00000000-0000-4000-8000-000000000001";
@@ -103,6 +107,8 @@ impl World {
             guardian_unavailable: None,
             guardian_on_main: false,
             env: Vec::new(),
+            project_executables: true,
+            confirm_servers: true,
         };
         world.mock = MockCompletionModel::from_stream_turns(turns(&world));
         world
@@ -133,6 +139,28 @@ impl World {
 
     pub fn with_config(self, text: &str) -> World {
         std::fs::write(&self.user_config, text).unwrap();
+        self
+    }
+
+    /// The workspace's settings file, as a repository would carry it.
+    pub fn with_project_settings(self, text: &str) -> World {
+        let dir = self.work.join(".fontaine");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("settings.toml"), text).unwrap();
+        self
+    }
+
+    /// The user declined to trust the workspace.
+    pub fn untrusted(mut self) -> World {
+        self.project_executables = false;
+        self
+    }
+
+    /// Writes `text` to `relative` under the user's config directory.
+    pub fn with_user_file(self, relative: &str, text: &str) -> World {
+        let path = self.config_dir.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
         self
     }
 
@@ -195,11 +223,16 @@ impl World {
             .iter()
             .map(|(k, v)| (k.clone(), v.into()))
             .collect();
-        let switcher = Switcher::new(
-            config.clone(),
-            self.data.clone(),
-            Arc::new(move |name: &str| env.get(name).cloned()),
-        );
+        let env: fontaine_core::agent::EnvLookup =
+            Arc::new(move |name: &str| env.get(name).cloned());
+        let switcher = Switcher::new(config.clone(), self.data.clone(), env.clone());
+        let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
+        let extensions = fontaine_core::extensions::load(&fontaine_core::extensions::LoadParams {
+            config_dir: &self.config_dir,
+            project_root: &self.work,
+            servers: &servers,
+        })
+        .unwrap();
         AgentSetup {
             config,
             config_dir: self.config_dir.clone(),
@@ -230,6 +263,11 @@ impl World {
             guardian_profile: fontaine_guardian::Profile::Full,
             notices: Vec::new(),
             switcher: Some(switcher),
+            extensions,
+            project_executables: self.project_executables,
+            confirm_project_servers: self.confirm_servers,
+            origin: fontaine_core::agent::SessionOrigin::Fresh,
+            env,
         }
     }
 

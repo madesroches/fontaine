@@ -20,6 +20,9 @@ use crate::scope::Scope;
 /// The tracing target the telemetry allowlist exports from.
 const TARGET: &str = "fontaine::telemetry";
 
+/// What exporters see for an MCP tool whose name is not opted in.
+pub const HIDDEN: &str = "third-party";
+
 /// How a call picks the tool instance that serves it.
 enum Routing {
     One,
@@ -32,6 +35,8 @@ enum Routing {
 pub struct Guard {
     pub gate: Arc<dyn ToolGate>,
     pub results: Arc<ResultPipeline>,
+    /// Telemetry names an MCP tool `third-party` instead of by its server and tool.
+    pub hide_mcp_names: bool,
 }
 
 pub struct GuardedTool<T: Tool> {
@@ -142,11 +147,16 @@ fn output_bytes(outcome: &ToolOutcome) -> usize {
 /// One gated call. The gate decides first; `run` executes only after an allow, and what the
 /// tool returns passes the result pipeline before anything else sees it. A denial or a tool
 /// failure still ends in a `tool_result` event. Built-in and MCP tools share this path.
-async fn gated<'a, F, Fut>(
-    guard: &Guard,
-    name: &str,
+struct Meta<'a> {
+    name: &'a str,
     risk: RiskClass,
     source: ToolSource,
+    annotations: Option<&'a str>,
+}
+
+async fn gated<'a, F, Fut>(
+    guard: &Guard,
+    meta: Meta<'_>,
     context: &'a mut ToolContext,
     args: Value,
     run: F,
@@ -155,12 +165,23 @@ where
     F: FnOnce(&'a mut ToolContext, Value) -> Fut + Send,
     Fut: std::future::Future<Output = ToolOutcome> + Send + 'a,
 {
+    let Meta {
+        name,
+        risk,
+        source,
+        annotations,
+    } = meta;
     let args = normalize(args);
     let agent = agent_of(context);
+    let shown = if source == ToolSource::Mcp && guard.hide_mcp_names {
+        HIDDEN
+    } else {
+        name
+    };
     let span = tracing::info_span!(
         target: TARGET,
         "fontaine.tool",
-        tool_name = name,
+        tool_name = shown,
         risk_class = risk.as_str(),
         tool_source = source.as_str(),
         success = tracing::field::Empty,
@@ -173,6 +194,7 @@ where
         risk,
         args: &args,
         agent: &agent,
+        annotations,
     };
     let outcome = match guard.gate.check(view).instrument(span.clone()).await {
         GateDecision::Deny { message } => Err(ToolExecutionError::refused(message)),
@@ -184,6 +206,7 @@ where
                 risk,
                 args: &allowed,
                 agent: &agent,
+                annotations,
             };
             guard
                 .results
@@ -198,7 +221,7 @@ where
     span.in_scope(|| {
         tracing::info!(
             target: TARGET,
-            tool_name = name,
+            tool_name = shown,
             risk_class = risk.as_str(),
             tool_source = source.as_str(),
             success = success,
@@ -232,9 +255,12 @@ impl<T: Tool> Tool for GuardedTool<T> {
     async fn call(&self, context: &mut ToolContext, args: Value) -> ToolOutcome {
         gated(
             &self.guard,
-            T::NAME,
-            self.risk,
-            ToolSource::Builtin,
+            Meta {
+                name: T::NAME,
+                risk: self.risk,
+                source: ToolSource::Builtin,
+                annotations: None,
+            },
             context,
             args,
             |context, allowed| self.run(context, allowed),
@@ -259,16 +285,25 @@ pub fn guard_callback(
         ..
     } = definition;
     let label = name.to_string();
+    // The server's own words about the tool, kept as text for the guardian to weigh.
+    let declared = (!annotations.is_empty())
+        .then(|| serde_json::to_string(&annotations).ok())
+        .flatten();
+    let kept = annotations.clone();
     DynamicTool::new_with_context(name, description, parameters, move |context, args| {
         let guard = guard.clone();
         let callback = callback.clone();
         let label = label.clone();
+        let declared = declared.clone();
         Box::pin(async move {
             gated(
                 &guard,
-                &label,
-                risk,
-                ToolSource::Mcp,
+                Meta {
+                    name: &label,
+                    risk,
+                    source: ToolSource::Mcp,
+                    annotations: declared.as_deref(),
+                },
                 context,
                 args,
                 |context, allowed| (*callback)(context, allowed),
@@ -276,5 +311,5 @@ pub fn guard_callback(
             .await
         })
     })
-    .with_annotations(annotations)
+    .with_annotations(kept)
 }

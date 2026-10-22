@@ -33,6 +33,8 @@ fn the_assembled_prompt_is_stable() {
         roots: &roots,
         system_prompt: None,
         instructions: &instructions,
+        skill_index: None,
+        output_style: None,
         append: Some("Keep answers under ten lines."),
     });
     insta::assert_snapshot!(assembled);
@@ -63,6 +65,8 @@ fn the_roots_section_lists_every_root_with_the_primary_first() {
         roots: &roots,
         system_prompt: None,
         instructions: &[],
+        skill_index: None,
+        output_style: None,
         append: None,
     });
     assert!(!assembled.contains("{{workspace_roots}}"));
@@ -79,6 +83,8 @@ fn layers_come_in_order_base_then_instructions_then_append() {
         roots: &roots,
         system_prompt: None,
         instructions: &instructions,
+        skill_index: None,
+        output_style: None,
         append: Some("APPENDED"),
     });
     let base = assembled.find("You are Fontaine").unwrap();
@@ -96,6 +102,8 @@ fn a_replacement_system_prompt_replaces_only_the_base() {
         roots: &roots,
         system_prompt: Some("You are a pirate."),
         instructions: &instructions,
+        skill_index: None,
+        output_style: None,
         append: Some("APPENDED"),
     });
     assert!(assembled.starts_with("You are a pirate."));

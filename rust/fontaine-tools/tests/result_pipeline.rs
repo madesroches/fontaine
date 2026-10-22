@@ -42,6 +42,7 @@ fn env_with_pipeline(d: &Dirs, results: ResultPipeline) -> BuiltinEnv {
     env.guard = Guard {
         gate: env.guard.gate.clone(),
         results: Arc::new(results),
+        hide_mcp_names: false,
     };
     env
 }
@@ -124,6 +125,7 @@ async fn a_call_the_gate_denies_never_reaches_the_pipeline() {
             results: Arc::new(
                 ResultPipeline::new().with_stage(StageKind::Scanner, marker("s", &ran)),
             ),
+            hide_mcp_names: false,
         },
         ..env_with(scope(&d.dir("work"), &[]), Arc::new(DenyAll))
     };

@@ -55,3 +55,24 @@ pub fn builtin_risk(name: &str) -> Option<RiskClass> {
         .find(|(tool, _)| *tool == name)
         .map(|(_, risk)| *risk)
 }
+
+/// The risk class of the tools Fontaine registers beyond the built-ins: the subagent and
+/// messaging tools and the skill loader. They are assembled by `fontaine-core`, not by
+/// `builtins::build`, so they have a table of their own.
+pub const EXTENSION_RISK: [(&str, RiskClass); 3] = [
+    ("agent", RiskClass::Arbitrary),
+    ("skill", RiskClass::ReadOnly),
+    ("send_message", RiskClass::Arbitrary),
+];
+
+pub fn extension_risk(name: &str) -> Option<RiskClass> {
+    EXTENSION_RISK
+        .iter()
+        .find(|(tool, _)| *tool == name)
+        .map(|(_, risk)| *risk)
+}
+
+/// The class of any tool this build registers by name, from either table.
+pub fn registered_risk(name: &str) -> Option<RiskClass> {
+    builtin_risk(name).or_else(|| extension_risk(name))
+}

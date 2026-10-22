@@ -23,6 +23,9 @@ pub struct ToolCallSummary {
     pub args_digest: String,
     /// Derived by the core from the call itself, never from the guardian's own label.
     pub destructive: bool,
+    /// What an MCP server declared about the tool. The server is outside the harness, so this
+    /// is shown as untrusted text and never as a fact.
+    pub annotations: Option<String>,
 }
 
 /// Whether a path the call touches was there before the session.

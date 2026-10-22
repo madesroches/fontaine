@@ -72,9 +72,26 @@ pub struct Cli {
     #[arg(long = "add-dir", value_name = "PATH")]
     pub add_dir: Vec<PathBuf>,
 
-    /// Use this UUID as the session id instead of a fresh one; it must not name an existing session
+    /// Use this UUID as the session id instead of a fresh one; it must not name an existing
+    /// session. With --continue or --resume it is accepted only together with --fork-session,
+    /// where it names the copy
     #[arg(long, value_name = "UUID")]
     pub session_id: Option<String>,
+
+    /// Continue the most recently updated session that was started in this directory; a fresh
+    /// session starts when there is none
+    #[arg(short = 'c', long = "continue", conflicts_with = "resume")]
+    pub continue_session: bool,
+
+    /// Resume the session with this ID: its conversation and ledger come back, in the default
+    /// permission mode and without any grants
+    #[arg(short = 'r', long, value_name = "ID")]
+    pub resume: Option<String>,
+
+    /// With --continue or --resume, start a new session that is a copy of the one it would
+    /// have continued
+    #[arg(long)]
+    pub fork_session: bool,
 
     /// Replace the base system prompt
     #[arg(long, value_name = "TEXT")]

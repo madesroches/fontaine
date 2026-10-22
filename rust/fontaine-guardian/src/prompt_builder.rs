@@ -171,10 +171,16 @@ pub fn user_message(request: &AdjudicationRequest) -> String {
     out.push_str(&block("session_facts", text.trim_end()));
 
     let call = &request.tool_call;
+    let declared = call.annotations.as_deref().map_or(String::new(), |text| {
+        format!(
+            "server_declared_annotations (the server's own claim, not a fact): {}\n",
+            one_line(text)
+        )
+    });
     out.push_str(&block(
         "tool_call",
         &format!(
-            "tool: {}\ndestructive: {}\nargs_digest: {}\nargs:\n{}",
+            "tool: {}\ndestructive: {}\nargs_digest: {}\n{declared}args:\n{}",
             call.tool,
             call.destructive,
             call.args_digest,
@@ -223,6 +229,7 @@ mod tests {
                 args: json!({"command": "cargo test"}),
                 args_digest: "abc123".into(),
                 destructive: true,
+                annotations: None,
             },
             session_facts: SessionFacts {
                 workspace_roots: vec!["/work/proj".into()],

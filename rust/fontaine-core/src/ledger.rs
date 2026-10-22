@@ -80,6 +80,22 @@ pub enum Record {
     AddDir {
         root: String,
     },
+    /// This session continues another one: `resume` and `continue` reopen it, `fork` copies it
+    /// under a new id. Session grants are never carried over.
+    Resumed {
+        source: String,
+        how: String,
+    },
+    /// A subagent started or ended, or two agents exchanged a message. What an agent was told
+    /// to do is not recorded here as anything the human said.
+    Agent {
+        event: String,
+        agent: String,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        detail: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,7 +222,11 @@ impl LedgerView {
                 summary: summary.clone(),
             }),
             Record::AddDir { root } => self.workspace_roots.push(root.clone()),
-            Record::ModeChange { .. } | Record::Approval { .. } | Record::Grant { .. } => {}
+            Record::ModeChange { .. }
+            | Record::Approval { .. }
+            | Record::Grant { .. }
+            | Record::Resumed { .. }
+            | Record::Agent { .. } => {}
         }
     }
 }
@@ -228,6 +248,26 @@ impl Ledger {
             path,
             tail: Mutex::new(Tail { file, next_seq: 0 }),
             view: Mutex::new(LedgerView::default()),
+        })
+    }
+
+    /// Reopens the ledger of an earlier session: its records rebuild the view, and new ones
+    /// continue the sequence.
+    pub fn open(session_dir: &Path) -> io::Result<Ledger> {
+        let path = session_dir.join(LEDGER_DIR).join(LEDGER_FILE);
+        let text = std::fs::read_to_string(&path)?;
+        let mut view = LedgerView::default();
+        let mut next_seq = 0;
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let entry: Entry = serde_json::from_str(line).map_err(io::Error::other)?;
+            view.apply(&entry.record);
+            next_seq = entry.seq + 1;
+        }
+        let file = owner_only::open(&path, true)?;
+        Ok(Ledger {
+            path,
+            tail: Mutex::new(Tail { file, next_seq }),
+            view: Mutex::new(view),
         })
     }
 

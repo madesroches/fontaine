@@ -196,6 +196,7 @@ pub fn request_for(case: &Case, root: &std::path::Path) -> AdjudicationRequest {
             args: case.args.clone(),
             args_digest: args_digest(&case.args),
             destructive,
+            annotations: None,
         },
         session_facts: facts_from(case, &root.display().to_string()),
         hook_context: Vec::new(),

@@ -24,6 +24,18 @@ pub fn trust_path(data_dir: &Path) -> PathBuf {
 struct TrustFile {
     #[serde(default)]
     trusted: Vec<Trusted>,
+    /// Repository-defined MCP servers the user approved to start.
+    #[serde(default)]
+    approved_servers: Vec<ApprovedServer>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovedServer {
+    root: String,
+    name: String,
+    /// Of the server's definition, so a changed command or URL is asked about again.
+    digest: String,
 }
 
 #[derive(Deserialize)]
@@ -49,14 +61,85 @@ pub fn toml_literal(value: &str) -> String {
 }
 
 /// `None` when the file is unreadable or unparseable; a missing file is an empty record.
-fn read_entries(data_dir: &Path) -> Option<Vec<String>> {
+fn read_file(data_dir: &Path) -> Option<TrustFile> {
     let text = match std::fs::read_to_string(trust_path(data_dir)) {
         Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Some(Vec::new()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Some(TrustFile::default()),
         Err(_) => return None,
     };
-    let file: TrustFile = toml::from_str(&text).ok()?;
-    Some(file.trusted.into_iter().map(|t| t.root).collect())
+    toml::from_str(&text).ok()
+}
+
+fn read_entries(data_dir: &Path) -> Option<Vec<String>> {
+    Some(
+        read_file(data_dir)?
+            .trusted
+            .into_iter()
+            .map(|t| t.root)
+            .collect(),
+    )
+}
+
+fn canonical_root(root: &Path) -> Option<String> {
+    Some(
+        std::fs::canonicalize(root)
+            .ok()?
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// Whether the user approved the repository-defined MCP server `name` with this definition
+/// for exactly this root. The repository cannot approve its own servers: the record is in the
+/// data directory.
+pub fn server_approved(data_dir: &Path, root: &Path, name: &str, digest: &str) -> bool {
+    let (Some(file), Some(root)) = (read_file(data_dir), canonical_root(root)) else {
+        return false;
+    };
+    file.approved_servers
+        .iter()
+        .any(|a| a.root == root && a.name == name && a.digest == digest)
+}
+
+/// Records the user's approval of an MCP server definition.
+pub fn approve_server(
+    data_dir: &Path,
+    root: &Path,
+    name: &str,
+    digest: &str,
+) -> Result<(), ConfigError> {
+    let path = trust_path(data_dir);
+    let io_err = |source| ConfigError::Io {
+        path: path.clone(),
+        source,
+    };
+    let root = canonical_root(root).ok_or_else(|| ConfigError::Io {
+        path: root.to_path_buf(),
+        source: io::Error::other("the root cannot be resolved"),
+    })?;
+    if server_approved(data_dir, Path::new(&root), name, digest) {
+        return Ok(());
+    }
+    let mut text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(io_err(e)),
+    };
+    toml::from_str::<TrustFile>(&text).map_err(|e| ConfigError::Parse {
+        path: path.clone(),
+        message: e.to_string(),
+    })?;
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&format!(
+        "[[approved_servers]]\nroot = {}\nname = {}\ndigest = {}\n",
+        toml_literal(&root),
+        toml_literal(name),
+        toml_literal(digest)
+    ));
+    std::fs::create_dir_all(data_dir).map_err(io_err)?;
+    owner_only::write(&path, text.as_bytes()).map_err(io_err)
 }
 
 /// Records `root` (canonicalized) as trusted. Nothing but "trust" is persisted.

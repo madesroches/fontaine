@@ -7,4 +7,5 @@ pub mod preclassify;
 pub mod result_pipeline;
 pub mod risk;
 pub mod scope;
+pub mod skill;
 pub mod webfetch;

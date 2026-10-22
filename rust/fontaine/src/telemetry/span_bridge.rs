@@ -155,12 +155,16 @@ impl<E: Export> SpanBridge<E> {
                 name: "fontaine.session.count",
                 unit: "{session}",
                 value: MetricValue::Int(1),
-                attrs: vec![(
-                    "start_type",
-                    lookup(fields, "start_type")
-                        .unwrap_or("headless")
-                        .to_string(),
-                )],
+                attrs: vec![
+                    (
+                        "start_type",
+                        lookup(fields, "start_type").unwrap_or("fresh").to_string(),
+                    ),
+                    (
+                        "headless",
+                        lookup(fields, "headless").unwrap_or("false").to_string(),
+                    ),
+                ],
             }),
             "fontaine.interaction" => {
                 let prompt_id = lookup(fields, "prompt.id").unwrap_or_default();
@@ -338,13 +342,20 @@ where
         let Some(bridge) = span.extensions_mut().remove::<BridgeSpan>() else {
             return;
         };
-        // A model call made while a guardian adjudication is open is the guardian's own.
+        // A model call made while a guardian adjudication is open is the guardian's own, and one
+        // under a subagent's span is that subagent's.
         let query_source = if span
             .scope()
             .skip(1)
             .any(|p| p.name() == "fontaine.guardian")
         {
             "guardian"
+        } else if span
+            .scope()
+            .skip(1)
+            .any(|p| p.name() == "fontaine.subagent")
+        {
+            "subagent"
         } else {
             "main"
         };
@@ -633,15 +644,24 @@ mod tests {
     fn the_session_span_counts_a_session() {
         let (recorder, _capture, subscriber) = harness();
         tracing::subscriber::with_default(subscriber, || {
-            let _ =
-                tracing::info_span!(target: TARGET, "fontaine.session", start_type = "headless");
+            let _ = tracing::info_span!(
+                target: TARGET,
+                "fontaine.session",
+                start_type = "resume",
+                headless = true
+            );
         });
         let metrics = recorder.0.lock().unwrap();
         let count = metric(&metrics, "fontaine.session.count", None).unwrap();
         assert!(
             count
                 .2
-                .contains(&("start_type".to_string(), "headless".to_string()))
+                .contains(&("start_type".to_string(), "resume".to_string()))
+        );
+        assert!(
+            count
+                .2
+                .contains(&("headless".to_string(), "true".to_string()))
         );
     }
 }

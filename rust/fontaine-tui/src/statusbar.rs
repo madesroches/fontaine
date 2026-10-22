@@ -51,11 +51,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let hint = if app.running {
         "working · esc to interrupt · shift+tab mode"
     } else {
-        "shift+tab mode · /add-dir · /denied · /model · /exit"
+        "shift+tab mode · /add-dir · /agents · /denied · /model · /exit"
+    };
+    let agents = match app.running_agents {
+        0 => String::new(),
+        1 => " · 1 agent running".to_string(),
+        n => format!(" · {n} agents running"),
     };
     let line = Line::from(vec![
         Span::styled(format!(" {} ", mode_label(app.mode)), mode_style(app.mode)),
-        Span::styled(format!("· {} · {hint}", app.model), dim),
+        Span::styled(format!("· {}{agents} · {hint}", app.model), dim),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }

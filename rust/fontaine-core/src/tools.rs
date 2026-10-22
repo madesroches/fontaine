@@ -3,13 +3,17 @@
 use std::ffi::OsString;
 use std::sync::Arc;
 
+use fontaine_agents::spawn::{AgentTool, SendMessageTool};
 use fontaine_tools::builtins::{self, BuiltinEnv, Registered, Seen, ShellSettings};
 use fontaine_tools::gate::ToolGate;
 use fontaine_tools::git_bash::GitBash;
-use fontaine_tools::guarded::Guard;
+use fontaine_tools::guarded::{Guard, GuardedTool};
 use fontaine_tools::result_pipeline::ResultPipeline;
+use fontaine_tools::risk::{RiskClass, ToolSource, extension_risk};
 use fontaine_tools::scope::Scope;
+use fontaine_tools::skill::SkillTool;
 use fontaine_tools::webfetch::WebfetchConfig;
+use rig_core::tool::Tool;
 
 use crate::config::Config;
 
@@ -47,6 +51,13 @@ pub fn scrubbed_env(
     names
 }
 
+/// The tools beyond the built-ins: the subagent tools and the skill loader.
+pub struct ExtensionTools {
+    pub agent: AgentTool,
+    pub send_message: SendMessageTool,
+    pub skill: SkillTool,
+}
+
 pub struct RegistryParams {
     pub gate: Arc<dyn ToolGate>,
     pub scope: Arc<Scope>,
@@ -54,18 +65,38 @@ pub struct RegistryParams {
     pub seen: Seen,
     pub scrub_env: Vec<OsString>,
     pub git_bash: Option<GitBash>,
+    /// The post-call stages every result passes.
+    pub results: Arc<ResultPipeline>,
+    /// Telemetry names MCP tools `third-party`.
+    pub hide_mcp_names: bool,
+    pub extension: Option<ExtensionTools>,
 }
 
-/// Every built-in tool, each wrapped so the permission pipeline decides before it runs.
+fn register_extension<T: Tool + 'static>(tool: T, guard: &Guard) -> Registered {
+    // A tool missing from the table is the riskiest class, so a forgotten entry only makes it
+    // stricter.
+    let risk = extension_risk(T::NAME).unwrap_or(RiskClass::Arbitrary);
+    let guarded = GuardedTool::single(tool, risk, guard.clone());
+    Registered {
+        name: T::NAME,
+        risk: guarded.risk(),
+        source: ToolSource::Builtin,
+        tool: guarded.into_dynamic(),
+    }
+}
+
+/// Every tool a session registers by name, each wrapped so the permission pipeline decides
+/// before it runs. MCP tools join later, wrapped the same way, as their servers connect.
 pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
     let guard = Guard {
         gate: params.gate,
-        results: Arc::new(ResultPipeline::new()),
+        results: params.results,
+        hide_mcp_names: params.hide_mcp_names,
     };
-    builtins::build(&BuiltinEnv {
+    let mut tools = builtins::build(&BuiltinEnv {
         scope: params.scope,
         seen: params.seen,
-        guard,
+        guard: guard.clone(),
         shell: ShellSettings {
             scrub_env: params.scrub_env,
             git_bash: params.git_bash,
@@ -73,5 +104,11 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
         },
         webfetch: WebfetchConfig::default(),
     })
-    .map_err(|e| format!("cannot set up the webfetch tool: {e}"))
+    .map_err(|e| format!("cannot set up the webfetch tool: {e}"))?;
+    if let Some(extension) = params.extension {
+        tools.push(register_extension(extension.agent, &guard));
+        tools.push(register_extension(extension.skill, &guard));
+        tools.push(register_extension(extension.send_message, &guard));
+    }
+    Ok(tools)
 }

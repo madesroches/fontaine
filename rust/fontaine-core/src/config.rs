@@ -341,12 +341,50 @@ pub struct PermissionsSection {
     pub additional_directories: Option<Vec<String>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+/// Where a hook or an MCP server came from, which decides whether it needs workspace trust and
+/// whether its `allow` counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Origin {
+    pub slot: Slot,
+    /// The scope the file was validated against grants user trust: the user file, `--settings`
+    /// and an untracked `settings.local.toml` of a trusted root.
+    pub user_trust: bool,
+}
+
+impl Origin {
+    /// Defined by the repository, so it starts only after workspace trust.
+    pub fn is_project(self) -> bool {
+        matches!(self.slot, Slot::Project | Slot::ProjectLocal)
+    }
+}
+
+impl Default for Origin {
+    fn default() -> Self {
+        Origin {
+            slot: Slot::User,
+            user_trust: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Hook {
-    pub matcher: String,
+    /// In the permission-rule grammar. A hook without one runs for every call and counts as
+    /// broad.
+    pub matcher: Option<String>,
     pub command: String,
     pub timeout_secs: Option<u64>,
+    #[serde(skip)]
+    pub origin: Origin,
+}
+
+impl PartialEq for Hook {
+    fn eq(&self, other: &Self) -> bool {
+        self.matcher == other.matcher
+            && self.command == other.command
+            && self.timeout_secs == other.timeout_secs
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -663,7 +701,9 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         ] {
             for hook in hooks.iter().flatten() {
                 let key = format!("hooks.{event}");
-                parse_rule(&hook.matcher).map_err(|e| rule_error(path, &key, e))?;
+                if let Some(matcher) = &hook.matcher {
+                    parse_rule(matcher).map_err(|e| rule_error(path, &key, e))?;
+                }
                 if hook.command.is_empty() {
                     return bad(&key, "`command` must not be empty");
                 }
@@ -888,6 +928,8 @@ pub struct Config {
     pub permissions: Permissions,
     pub hooks: Hooks,
     pub mcp_servers: BTreeMap<String, McpServer>,
+    /// Where each server in `mcp_servers` was defined.
+    pub mcp_origins: BTreeMap<String, Origin>,
     pub auto_mode: AutoMode,
     pub agents: Agents,
     pub shell_preclassifier_allow_extra: Vec<String>,
@@ -921,6 +963,7 @@ impl Config {
             },
             hooks: Hooks::default(),
             mcp_servers: BTreeMap::new(),
+            mcp_origins: BTreeMap::new(),
             auto_mode: AutoMode::default(),
             agents: Agents {
                 max_parallel: 4,
@@ -949,7 +992,11 @@ impl Config {
 
     /// Applies one layer on top of what is already merged: scalars override, lists union,
     /// named table entries are replaced whole, map-valued keys merge per key.
-    fn apply(&mut self, s: &Settings, slot: Slot) {
+    fn apply(&mut self, s: &Settings, slot: Slot, column: Column) {
+        let origin = Origin {
+            slot,
+            user_trust: column != Column::Project,
+        };
         for (name, account) in s.accounts.iter().flatten() {
             self.accounts.insert(name.clone(), account.clone());
         }
@@ -1001,15 +1048,25 @@ impl Config {
             );
         }
         if let Some(h) = &s.hooks {
-            union(&mut self.hooks.pre_tool_use, h.pre_tool_use.as_deref());
-            union(&mut self.hooks.post_tool_use, h.post_tool_use.as_deref());
-            union(
+            union_hooks(
+                &mut self.hooks.pre_tool_use,
+                h.pre_tool_use.as_deref(),
+                origin,
+            );
+            union_hooks(
+                &mut self.hooks.post_tool_use,
+                h.post_tool_use.as_deref(),
+                origin,
+            );
+            union_hooks(
                 &mut self.hooks.permission_denied,
                 h.permission_denied.as_deref(),
+                origin,
             );
         }
         for (name, server) in s.mcp.iter().flat_map(|m| m.servers.iter().flatten()) {
             self.mcp_servers.insert(name.clone(), server.clone());
+            self.mcp_origins.insert(name.clone(), origin);
         }
         if let Some(a) = &s.auto_mode {
             let t = &mut self.auto_mode;
@@ -1088,6 +1145,17 @@ fn union<T: PartialEq + Clone>(target: &mut Vec<T>, items: Option<&[T]>) {
     for item in items.unwrap_or_default() {
         if !target.contains(item) {
             target.push(item.clone());
+        }
+    }
+}
+
+fn union_hooks(target: &mut Vec<Hook>, items: Option<&[Hook]>, origin: Origin) {
+    for item in items.unwrap_or_default() {
+        if !target.contains(item) {
+            target.push(Hook {
+                origin,
+                ..item.clone()
+            });
         }
     }
 }
@@ -1266,7 +1334,7 @@ pub fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
         let Some(settings) = &layer.settings else {
             continue;
         };
-        config.apply(settings, layer.slot);
+        config.apply(settings, layer.slot, layer.column);
     }
 
     Ok(config)

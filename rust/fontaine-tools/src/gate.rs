@@ -27,6 +27,9 @@ pub struct CallView<'a> {
     pub risk: RiskClass,
     pub args: &'a Value,
     pub agent: &'a str,
+    /// What an MCP server declared about the tool, as untrusted text for the guardian. Never
+    /// a gate: it changes no decision.
+    pub annotations: Option<&'a str>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
