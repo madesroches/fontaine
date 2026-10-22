@@ -8,10 +8,16 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
+dirs.workspace = true
 fontaine-core.workspace = true
 fontaine-guardian.workspace = true
 fontaine-tools.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
+toml.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true

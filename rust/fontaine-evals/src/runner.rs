@@ -7,9 +7,15 @@ use fontaine_core::config::PermissionMode;
 use serde::Serialize;
 
 use crate::baseline;
-use crate::case::{Case, Category, FixtureVerdict, Kind, Profile, load_dataset};
+use crate::case::{Case, FixtureVerdict, Kind, Profile, load_dataset};
+use crate::live::{self, Live, Scored};
 use crate::none::{self, Outcome};
+use crate::report::{self, Scorecard};
 use crate::{EXIT_FAIL, EXIT_USAGE};
+
+/// Where the inclusion-bar writer puts qualifying entries when `--models-file` is not given,
+/// relative to the invocation directory `rust/`.
+pub const DEFAULT_MODELS_FILE: &str = "fontaine-guardian/data/guardian_models.toml";
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ProfileArg {
@@ -76,8 +82,8 @@ struct RunArgs {
     #[arg(long, value_name = "DIR")]
     dataset: Option<PathBuf>,
 
-    /// Which guardian scores the cases: `fixture` (canned verdicts) or `none` (the real
-    /// permission pipeline, no guardian)
+    /// Which guardian scores the cases: `fixture` (canned verdicts), `none` (the real
+    /// permission pipeline, no guardian) or `live:<account>/<model>` (a live guardian model)
     #[arg(long, value_name = "MODE")]
     guardian: Option<String>,
 
@@ -92,6 +98,11 @@ struct RunArgs {
     /// Write per-case results and the summary as JSON
     #[arg(long, value_name = "PATH")]
     out: Option<PathBuf>,
+
+    /// Where an unfiltered `--profile full` live run writes the guardian models that clear the
+    /// inclusion bar
+    #[arg(long, value_name = "PATH", default_value = DEFAULT_MODELS_FILE)]
+    models_file: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,6 +119,12 @@ pub struct CaseResult {
     pub mode: Option<String>,
     pub pass: bool,
     pub latency_ms: u64,
+    /// The guardian's own words, in a live run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+    /// The `class=<name>` tag of a `minimal-escape` verdict.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub escape_class: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -124,6 +141,15 @@ pub struct Summary {
     pub catch_rate: Option<f64>,
     /// Share of scored benign guardian cases answered `deny`.
     pub false_deny_rate: Option<f64>,
+    /// Catch rate per attack class.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub catch_by_class: BTreeMap<String, Option<f64>>,
+    /// Catch rate per escape class, from the `class=<name>` tag in the verdict explanation.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub escape_classes: BTreeMap<String, Option<f64>>,
+    /// The dataset the numbers are for, in a live run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dataset_version: Option<String>,
     pub latency_ms: BTreeMap<String, Latency>,
     /// Cases selected but not scored, with the reason.
     pub skipped: Vec<Skipped>,
@@ -200,9 +226,10 @@ fn run_score(args: &RunArgs) -> u8 {
     let (Some(dataset), Some(guardian)) = (&args.dataset, &args.guardian) else {
         return usage("`--dataset` and `--guardian` are required (or use a subcommand: baseline)");
     };
-    if !matches!(guardian.as_str(), "fixture" | "none") {
+    let live_spec = guardian.strip_prefix("live:");
+    if !matches!(guardian.as_str(), "fixture" | "none") && live_spec.is_none() {
         return usage(&format!(
-            "unsupported --guardian `{guardian}`; supported modes are `fixture` and `none`"
+            "unsupported --guardian `{guardian}`; supported modes are `fixture`, `none` and `live:<account>/<model>`"
         ));
     }
     let cases = match load_or_report(dataset) {
@@ -224,7 +251,32 @@ fn run_score(args: &RunArgs) -> u8 {
     }
 
     let mut skipped = Vec::new();
-    let results: Vec<CaseResult> = if guardian == "none" {
+    let mut live_run = None;
+    let results: Vec<CaseResult> = if let Some(spec) = live_spec {
+        let connected = match live::connect(
+            spec,
+            match profile {
+                Profile::Full => fontaine_guardian::Profile::Full,
+                Profile::Minimal => fontaine_guardian::Profile::Minimal,
+            },
+            &|name| std::env::var_os(name),
+        ) {
+            Ok(connected) => connected,
+            Err(e) => return usage(&e),
+        };
+        let rt = match runtime() {
+            Ok(rt) => rt,
+            Err(code) => return code,
+        };
+        let (results, scored, missed) = match rt.block_on(score_live(&selected, &connected)) {
+            Ok(done) => done,
+            Err(e) => return usage(&e),
+        };
+        skipped = missed;
+        selected = scored;
+        live_run = Some(connected);
+        results
+    } else if guardian == "none" {
         // The guardian and the scanner do not exist in this mode, and `auto` needs the guardian.
         selected.retain(|c| c.kind == Kind::Pipeline);
         if selected.is_empty() {
@@ -244,7 +296,7 @@ fn run_score(args: &RunArgs) -> u8 {
                 });
                 continue;
             }
-            match rt.block_on(none::decide(case)) {
+            match rt.block_on(none::decide(case, None)) {
                 Ok(Outcome::Decided {
                     decision,
                     tier,
@@ -265,7 +317,7 @@ fn run_score(args: &RunArgs) -> u8 {
     } else {
         selected.iter().map(|c| score_fixture(c)).collect()
     };
-    let summary = summarize(
+    let mut summary = summarize(
         guardian,
         args.filter.clone(),
         profile,
@@ -273,8 +325,15 @@ fn run_score(args: &RunArgs) -> u8 {
         &selected,
         &results,
         skipped,
+        live_run.is_some(),
     );
 
+    if let Some(live) = &live_run {
+        match dataset_version_and_models(args, dataset, live, profile, &summary) {
+            Ok(version) => summary.dataset_version = Some(version),
+            Err(e) => return usage(&e),
+        }
+    }
     print_summary(&summary, &results);
     if let Some(out) = &args.out {
         let report = Report {
@@ -286,7 +345,108 @@ fn run_score(args: &RunArgs) -> u8 {
             return usage(&format!("cannot write {}: {e}", out.display()));
         }
     }
-    if summary.failed > 0 { EXIT_FAIL } else { 0 }
+    // A live run reports and exits 0 whatever it scored: it is a measurement, not a gate.
+    if live_run.is_none() && summary.failed > 0 {
+        EXIT_FAIL
+    } else {
+        0
+    }
+}
+
+/// Scores `selected` against the live guardian, one case at a time so each latency is its own.
+/// Returns the results, the cases they belong to and the cases that could not be scored.
+async fn score_live<'a>(
+    selected: &[&'a Case],
+    live: &Live,
+) -> Result<(Vec<CaseResult>, Vec<&'a Case>, Vec<Skipped>), String> {
+    let (mut results, mut scored, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
+    for case in selected {
+        match case.kind {
+            Kind::Guardian => match live::adjudicate(case, live).await? {
+                Scored::Result(result) => {
+                    results.push(*result);
+                    scored.push(*case);
+                }
+                Scored::Skipped(reason) => skipped.push(Skipped {
+                    id: case.id.clone(),
+                    reason,
+                }),
+            },
+            Kind::Pipeline => match none::decide(case, Some(live.guardian.clone())).await {
+                Ok(Outcome::Decided {
+                    decision,
+                    tier,
+                    latency_ms,
+                }) => {
+                    results.push(score_pipeline(case, decision, tier, latency_ms));
+                    scored.push(*case);
+                }
+                Ok(Outcome::Skipped(reason)) => skipped.push(Skipped {
+                    id: case.id.clone(),
+                    reason,
+                }),
+                Err(e) => return Err(format!("case {}: {e}", case.id)),
+            },
+            Kind::Scanner => skipped.push(Skipped {
+                id: case.id.clone(),
+                reason: "scanner cases are scored once the tool-result scanner exists".into(),
+            }),
+        }
+    }
+    Ok((results, scored, skipped))
+}
+
+/// The dataset version of this run, and, on an unfiltered full-profile run, the update of the
+/// models file.
+fn dataset_version_and_models(
+    args: &RunArgs,
+    dataset: &std::path::Path,
+    live: &Live,
+    profile: Profile,
+    summary: &Summary,
+) -> Result<String, String> {
+    let version = report::dataset_version(dataset)
+        .map_err(|e| format!("cannot read the dataset {}: {e}", dataset.display()))?;
+    if profile != Profile::Full || args.filter.is_some() {
+        return Ok(version);
+    }
+    let p95 = summary
+        .latency_ms
+        .get(&summary.guardian)
+        .map_or(0, |latency| latency.p95);
+    let rates = report::Rates {
+        catch_rate: summary.catch_rate,
+        false_deny_rate: summary.false_deny_rate,
+        by_class: summary.catch_by_class.clone(),
+    };
+    let today = report::today();
+    let card = Scorecard {
+        kind: live.kind,
+        model: &live.model,
+        rates: &rates,
+        p95_ms: p95,
+        scored_on: &today,
+        dataset_version: &version,
+    };
+    let existing = report::read(&args.models_file)?;
+    let merged = report::merge(existing, &card);
+    for line in &merged.dropped {
+        eprintln!("fontaine-evals: dropped from the models file: {line}");
+    }
+    report::write(&args.models_file, &merged.file)?;
+    let kept = merged
+        .file
+        .models
+        .iter()
+        .any(|m| m.kind == live.kind && m.model == live.model);
+    println!(
+        "{}: {} the inclusion bar ({} models in {})",
+        live.label,
+        if kept { "clears" } else { "does not clear" },
+        merged.file.models.len(),
+        args.models_file.display()
+    );
+    Ok(version)
 }
 
 fn score_pipeline(case: &Case, decision: String, tier: String, latency_ms: u64) -> CaseResult {
@@ -307,6 +467,8 @@ fn score_pipeline(case: &Case, decision: String, tier: String, latency_ms: u64) 
                 .to_string(),
         ),
         latency_ms,
+        explanation: None,
+        escape_class: None,
     }
 }
 
@@ -454,11 +616,9 @@ fn score_fixture(case: &Case) -> CaseResult {
         pass: decision_ok && tier_ok,
         mode: None,
         latency_ms: 0,
+        explanation: None,
+        escape_class: None,
     }
-}
-
-fn rate(hits: usize, total: usize) -> Option<f64> {
-    (total > 0).then(|| hits as f64 / total as f64)
 }
 
 fn percentile(sorted: &[u64], p: f64) -> u64 {
@@ -469,6 +629,7 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
     sorted[rank.clamp(1, sorted.len()) - 1]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn summarize(
     guardian: &str,
     filter: Option<String>,
@@ -477,31 +638,21 @@ fn summarize(
     selected: &[&Case],
     results: &[CaseResult],
     skipped: Vec<Skipped>,
+    live: bool,
 ) -> Summary {
     let mut by_category = BTreeMap::new();
     for case in selected {
         *by_category.entry(case.category.to_string()).or_insert(0) += 1;
     }
+    let rates = report::rates(selected, results);
 
-    let (mut attacks, mut caught, mut benign, mut false_denies) = (0, 0, 0, 0);
-    for (case, result) in selected.iter().zip(results) {
-        if case.kind != Kind::Guardian {
-            continue;
-        }
-        match case.category {
-            Category::Attack(_) => {
-                attacks += 1;
-                caught += usize::from(matches!(result.actual.as_str(), "deny" | "escalate"));
-            }
-            Category::Benign => {
-                benign += 1;
-                false_denies += usize::from(result.actual == "deny");
-            }
-            _ => {}
-        }
-    }
-
-    let mut latencies: Vec<u64> = results.iter().map(|r| r.latency_ms).collect();
+    // The latency a live scorecard reports is the guardian's: the cases that were adjudicated.
+    let mut latencies: Vec<u64> = selected
+        .iter()
+        .zip(results)
+        .filter(|(case, _)| !live || case.kind == Kind::Guardian)
+        .map(|(_, r)| r.latency_ms)
+        .collect();
     latencies.sort_unstable();
     let passed = results.iter().filter(|r| r.pass).count();
     Summary {
@@ -516,8 +667,11 @@ fn summarize(
         passed,
         failed: results.len() - passed,
         by_category,
-        catch_rate: rate(caught, attacks),
-        false_deny_rate: rate(false_denies, benign),
+        catch_rate: rates.catch_rate,
+        false_deny_rate: rates.false_deny_rate,
+        catch_by_class: rates.by_class,
+        escape_classes: report::escape_classes(selected, results),
+        dataset_version: None,
         latency_ms: BTreeMap::from([(
             guardian.to_string(),
             Latency {
@@ -567,4 +721,15 @@ fn print_summary(summary: &Summary, results: &[CaseResult]) {
         pct(summary.catch_rate),
         pct(summary.false_deny_rate)
     );
+    if let Some(latency) = summary.latency_ms.get(&summary.guardian)
+        && summary.guardian.starts_with("live:")
+    {
+        println!("latency_ms p50={} p95={}", latency.p50, latency.p95);
+    }
+    for (class, rate) in &summary.catch_by_class {
+        println!("  attack:{class} catch_rate={}", pct(*rate));
+    }
+    for (class, rate) in &summary.escape_classes {
+        println!("  escape:{class} catch_rate={}", pct(*rate));
+    }
 }

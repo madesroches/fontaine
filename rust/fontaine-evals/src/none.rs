@@ -1,4 +1,5 @@
-//! `--guardian none`: pipeline cases through the real `PermissionPipeline`, with nobody to ask.
+//! Pipeline cases through the real `PermissionPipeline`, with nobody to ask: with no guardian
+//! (`--guardian none`, where `auto` has nothing to run) or with a live one.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -6,9 +7,10 @@ use std::time::Instant;
 use fontaine_core::audit::AuditLog;
 use fontaine_core::config::{PermissionMode, Slot};
 use fontaine_core::gate::{AutoContext, SessionState, StateParams, no_guardian};
-use fontaine_core::ledger::Ledger;
+use fontaine_core::ledger::{Ledger, Record};
 use fontaine_core::permission_rules::{RuleSource, SourcedRule, parse_rule};
 use fontaine_core::permissions::{DenyAll, PermissionPipeline, PipelineParams};
+use fontaine_guardian::{EnvironmentConfig, Guardian, RuleConfig};
 use fontaine_tools::gate::{CallView, ROOT_AGENT, ToolGate};
 use fontaine_tools::risk::{RiskClass, builtin_risk};
 
@@ -35,9 +37,28 @@ fn sourced(rules: &[String]) -> Result<Vec<SourcedRule>, String> {
         .collect()
 }
 
+/// The prose lists a case overrides, expanded as a session expands them.
+pub fn auto_context(case: &Case) -> AutoContext {
+    let overrides = case.auto_mode.clone().unwrap_or_default();
+    let environment = case
+        .environment
+        .clone()
+        .or(overrides.environment)
+        .unwrap_or_default();
+    AutoContext {
+        environment: EnvironmentConfig::expand(&environment),
+        rules: RuleConfig::expand(
+            &overrides.hard_deny.unwrap_or_default(),
+            &overrides.soft_deny.unwrap_or_default(),
+            &overrides.allow.unwrap_or_default(),
+        ),
+        project_instructions: None,
+    }
+}
+
 /// The first decision record is the one scored: a prompt scores `prompt` even though the
-/// approver then answers deny.
-pub async fn decide(case: &Case) -> Result<Outcome, String> {
+/// approver then answers deny. `guardian` is the live guardian of a `live:` run, if any.
+pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outcome, String> {
     let scratch = tempfile::tempdir().map_err(|e| format!("scratch directory: {e}"))?;
     let base = scratch
         .path()
@@ -59,6 +80,26 @@ pub async fn decide(case: &Case) -> Result<Outcome, String> {
     let permissions = case.permissions.clone().unwrap_or_default();
     let session_id = format!("eval-{}", case.id);
     let ledger = Ledger::create(&data).map_err(|e| format!("ledger: {e}"))?;
+    // What the guardian reads of the user and the session comes from the ledger.
+    let append = |record| ledger.append(record).map_err(|e| format!("ledger: {e}"));
+    append(Record::SessionStart {
+        session_id: session_id.clone(),
+        permission_mode: case
+            .mode
+            .unwrap_or(PermissionMode::Manual)
+            .as_str()
+            .to_string(),
+        workspace_roots: vec![cwd.display().to_string()],
+        workspace_trust: "trusted".to_string(),
+        git_remotes: Vec::new(),
+    })?;
+    let mut said = case.recent_user_messages.clone().unwrap_or_default();
+    if said.last() != Some(&case.task_intent) {
+        said.push(case.task_intent.clone());
+    }
+    for message in said {
+        append(Record::UserMessage { text: message })?;
+    }
     let audit = AuditLog::create(&data, &session_id).map_err(|e| format!("audit log: {e}"))?;
     let state = Arc::new(SessionState::new(StateParams {
         session_id,
@@ -71,8 +112,8 @@ pub async fn decide(case: &Case) -> Result<Outcome, String> {
         audit: Arc::new(audit),
         home: Some(home),
         protected_dirs: Vec::new(),
-        guardian: no_guardian(),
-        auto: AutoContext::default(),
+        guardian: guardian.unwrap_or_else(no_guardian),
+        auto: auto_context(case),
     }));
     let pipeline = PermissionPipeline::new(PipelineParams {
         state: state.clone(),
