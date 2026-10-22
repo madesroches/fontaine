@@ -547,7 +547,7 @@ pub async fn run(mut options: Options, ctx: Context<'_>) -> u8 {
             if let Some(error) = &last.error {
                 eprintln!("fontaine: {error}");
             } else {
-                println!("{}", last.text);
+                let _ = writeln!(std::io::stdout().lock(), "{}", last.text);
             }
         }
     }

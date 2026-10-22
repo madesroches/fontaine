@@ -70,13 +70,18 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
             host.default_config_dir.clone(),
             host.default_data_dir.clone(),
         )?;
-        let config = config::load(&LoadParams {
+        let params = LoadParams {
             launch_dir: &host.cwd,
             config_dir: &dirs.config,
             data_dir: &dirs.data,
             settings_file: cli.settings.as_deref(),
             env: &*host.env,
-        })?;
+        };
+        let config = if matches!(cli.command, Some(Command::Auth { .. })) {
+            config::load_unresolved(&params)?
+        } else {
+            config::load(&params)?
+        };
         let stack: Vec<String> = config.scopes.iter().map(ToString::to_string).collect();
         tracing::debug!(scope_stack = ?stack, workspace = %config.workspace.display(), "config loaded");
         Ok::<_, ConfigError>((config, dirs))

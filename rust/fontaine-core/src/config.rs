@@ -1097,6 +1097,14 @@ struct Layer {
 }
 
 pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
+    let config = load_unresolved(params)?;
+    resolve_telemetry(&config.telemetry, params)?;
+    Ok(config)
+}
+
+/// Every check `load` makes except the telemetry ingestion key, which `auth login --telemetry`
+/// must be able to supply.
+pub fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
     let workspace = std::fs::canonicalize(params.launch_dir).map_err(|source| ConfigError::Io {
         path: params.launch_dir.to_path_buf(),
         source,
@@ -1195,7 +1203,6 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
         config.apply(settings);
     }
 
-    resolve_telemetry(&config.telemetry, params)?;
     Ok(config)
 }
 

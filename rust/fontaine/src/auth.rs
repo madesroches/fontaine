@@ -43,6 +43,16 @@ pub fn login(
         },
         credentials::credentials_path(data_dir).display()
     );
+    if let Target::Account(name) = target
+        && let Some(var) = config
+            .accounts
+            .get(name)
+            .and_then(|a| a.api_key_env.as_deref())
+    {
+        eprintln!(
+            "fontaine: warning: account `{name}` sets `api_key_env = \"{var}\"`, so the stored key is ignored while it is set"
+        );
+    }
     Ok(())
 }
 

@@ -234,6 +234,25 @@ async fn auth_login_stores_a_secret_read_from_stdin() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn auth_login_works_with_telemetry_enabled_but_keyless() {
+    let s = Sandbox::new();
+    s.user_config(
+        "[accounts.work]\nkind = \"anthropic\"\n\n[telemetry]\nenabled = true\nendpoint = \"http://127.0.0.1:1\"\n",
+    );
+    let out = s.run(&["-p", "hi"]).await;
+    assert_eq!(out.code, Some(2), "{}", out.stderr);
+
+    let out = s
+        .run_with_stdin(&["auth", "login", "--telemetry"], "ingest\n")
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let out = s
+        .run_with_stdin(&["auth", "login", "work"], "sk-work\n")
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn auth_login_rejects_an_unknown_account_and_an_empty_secret() {
     let s = Sandbox::new();
     s.user_config("[accounts.work]\nkind = \"anthropic\"\n");
