@@ -196,6 +196,9 @@ async fn open_input(options: &mut Options) -> Result<Input, String> {
         InputFormat::StreamJson => Ok(Input::Lines(BufReader::new(tokio::io::stdin()).lines())),
         InputFormat::Text => {
             let piped = if options.prompt.is_none() {
+                if std::io::stdin().is_terminal() {
+                    return Err("no prompt: pass it as an argument or on stdin".to_string());
+                }
                 let mut text = String::new();
                 tokio::io::stdin()
                     .read_to_string(&mut text)
