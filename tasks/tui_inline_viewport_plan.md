@@ -141,8 +141,9 @@ impl<B: Backend> Screen<B> {
    would stay put and leave blank rows under the status bar.
 4. `terminal.draw(|f| view::draw(f, app))`.
 
-An `insert_before` or draw error is returned from `render`, and `run` treats a render error as a
-gone terminal and ends the session; a write error means stdout is dead.
+An `insert_before` or draw error is returned from `render`. The render closure in `run` holds a
+clone of `stop` and sets it on `Err`; the reader exits, the input channel closes, and the session
+ends through the existing `InputClosed` path. A write error means stdout is dead.
 
 **Height change = rebuild the `Terminal`** (the issue's open point, decided here). ratatui 0.30.2
 cannot resize an inline viewport, so the rebuild:
@@ -204,7 +205,8 @@ live area does not flicker. Windows 10+ consoles support DECSTBM through crosste
 1. **Feature flag.** Add `scrolling-regions` to the workspace `ratatui` dependency.
 2. **Transcript commit cursor** (`transcript.rs`): add `committed`/`committed_chars`, `commit`,
    `live_lines` and an `is_settled` helper. Factor `entry_lines` so an assistant entry can be
-   rendered from a char offset. Unit tests below.
+   rendered from a char offset. `user`, `notice` and `error` call `self.finish_streaming()` before
+   pushing, as the ToolCall handling already does. Unit tests below.
 3. **Turn end** (`lib.rs`): `finish_turn` calls `interrupt_pending` on every end. Keep the
    `"interrupted"` notice and the feed drain only for `TurnEnd::Interrupted`. Move the
    runtime-free part (running=false, deny_pending, drain_prompts, interrupt_pending, outcome
@@ -220,7 +222,8 @@ live area does not flicker. Windows 10+ consoles support DECSTBM through crosste
 7. **Driver** (`lib.rs`): `render: impl FnMut(&mut App)`, `Ui<R: FnMut(&mut App)>`, `Ui::draw`
    passes `&mut self.app`. Update the unit-test `ui()` helper.
 8. **run / exit** (`lib.rs`): raw mode + bracketed paste + panic hook. `Screen` over
-   `Anchored<CrosstermBackend<Stdout>>`. The render closure calls `screen.render(app)`.
+   `Anchored<CrosstermBackend<Stdout>>`. The render closure calls `screen.render(app)` and, on `Err`, sets a
+   clone of `run`'s `stop` flag so the session ends via `InputClosed`.
    `TerminalGuard` owns the `Screen`, clears the live area (except when panicking) and restores,
    with no alternate-screen calls.
 9. **Test harness** (`tests/common/mod.rs`): build `Screen::new(TestBackend::new(120, 40), ||
