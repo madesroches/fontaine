@@ -23,10 +23,38 @@ cargo test
 cargo run -p fontaine
 ```
 
+## Quickstart: a local agent with Ollama
+
+With [Ollama](https://ollama.com) running and a model pulled (`ollama pull qwen3:4b`), create
+`~/.config/fontaine/config.toml`:
+
+```toml
+[accounts.local]
+kind = "ollama"
+base_url = "http://localhost:11434"
+
+[model]
+model = "local/qwen3:4b"
+```
+
+Then run a task from `rust/`:
+
+```
+cargo run -p fontaine -- -p "explain what a Cargo workspace is"
+```
+
+The answer goes to stdout and the exit code is 0 when the run completed. Add `--output-format
+stream-json` for one JSON event per line. Other providers, several accounts, credentials and
+OpenAI-compatible endpoints such as OpenRouter, LM Studio, vLLM and LiteLLM are in
+[Configuration](docs/configuration.md); the flags and the output format are in
+[Headless runs](docs/headless.md).
+
 ## Documentation
 
 - [Documentation index](docs/index.md)
 - [Configuration](docs/configuration.md)
+- [Headless runs](docs/headless.md)
+- [Telemetry](docs/telemetry.md)
 - [Architecture](docs/architecture.md)
 - [Golden dataset and eval runner](evals/README.md)
 

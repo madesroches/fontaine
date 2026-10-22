@@ -56,11 +56,32 @@ pub enum ConfigError {
     Telemetry {
         message: String,
     },
+    /// A model reference or account that cannot be resolved: unknown account or model, no
+    /// main model, a missing credential.
+    Model {
+        message: String,
+    },
+    /// A command line or input that cannot be acted on.
+    Usage {
+        message: String,
+    },
 }
 
 impl ConfigError {
     pub fn exit_code(&self) -> u8 {
         CONFIG_EXIT_CODE
+    }
+
+    pub fn model(message: impl Into<String>) -> Self {
+        ConfigError::Model {
+            message: message.into(),
+        }
+    }
+
+    pub fn usage(message: impl Into<String>) -> Self {
+        ConfigError::Usage {
+            message: message.into(),
+        }
     }
 
     pub(crate) fn invalid(path: &Path, key: impl Into<String>, message: impl Into<String>) -> Self {
@@ -117,6 +138,7 @@ impl fmt::Display for ConfigError {
                 "cannot determine the {what} directory; set {var} to a directory"
             ),
             ConfigError::Telemetry { message } => write!(f, "invalid [telemetry]: {message}"),
+            ConfigError::Model { message } | ConfigError::Usage { message } => f.write_str(message),
         }
     }
 }

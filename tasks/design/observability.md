@@ -27,8 +27,7 @@ Code's `--debug-file` analog), and (b) when `[telemetry] enabled`, one export ba
   streams, which exist only while CPU tracing is enabled: until micromegas grows a builder knob, the bin
   sets `MICROMEGAS_ENABLE_CPU_TRACING=true` in its own environment before building the guard (while
   still single-threaded; child environments scrub it), the tokio runtime is built with
-  `TracingRuntimeExt::with_tracing_callbacks()`, and the bridge calls `init_thread_stream()` before
-  emitting from any other thread. The same layer derives the metrics (`imetric!`/`fmetric!`) on close.
+  `TracingRuntimeExt::with_tracing_callbacks()`, which gives every worker a thread stream and unregisters it as the worker stops; the bridge never creates a stream itself (micromegas keeps a raw pointer to each one, so a thread that exited without unregistering would leave it dangling). The same layer derives the metrics (`imetric!`/`fmetric!`) on close.
   Once micromegas captures `tracing` spans with parentage upstream, the bridge shrinks to the stock
   layer plus Fontaine's metric derivation.
 - `otlp` (fallback; any OTel collector, including micromegas's `/ingestion/otlp`): OTLP/HTTP

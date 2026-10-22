@@ -115,42 +115,183 @@ any scope turns the guardian off.
 
 ### `[accounts.<name>]`
 
-Named model accounts. Several accounts of one kind are allowed. A model is addressed as
-`<account>/<model>`. Accepted and validated; not yet active.
+Named model accounts. Several accounts of one kind are allowed, and each keeps its own endpoint
+and credential. A model is addressed as `<account>/<model>`, split at the first `/`, so a model id
+may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 
 | Key | Meaning | Default |
 |---|---|---|
 | `kind` | `anthropic`, `openai`, `gemini`, `openai-compatible` or `ollama`. Required. | none |
 | `api_key_env` | The name of the environment variable that holds the key. Omit it to use the stored credential. Raw keys are never accepted inline. | unset |
-| `base_url` | Endpoint override. Required for `openai-compatible`. | unset |
-| `models` | Explicit model list. | unset |
+| `base_url` | Endpoint override. Required for `openai-compatible`. | the provider's public endpoint |
+| `models` | Explicit model list. Without it the provider is asked which models it offers. | unset |
+
+Account names are not empty and contain no `/`. Accounts can be set from the user file or from
+`--settings` only: a project file cannot choose an endpoint or a credential source.
+
+What each kind talks to:
+
+| Kind | Wire | Default endpoint | Credential |
+|---|---|---|---|
+| `anthropic` | Messages API | `https://api.anthropic.com` | required |
+| `openai` | Responses API | `https://api.openai.com/v1` | required |
+| `gemini` | `generateContent` | `https://generativelanguage.googleapis.com` | required |
+| `ollama` | Ollama's native `/api/chat` | `http://localhost:11434` | optional |
+| `openai-compatible` | Chat Completions | none; `base_url` is required | optional |
+
+An `openai-compatible` endpoint speaks Chat Completions, not the Responses API, and its models are
+unpriced, so `--max-budget-usd` does not apply to them.
+
+#### Where a credential comes from
+
+1. If the account sets `api_key_env`, the key is that environment variable. An unset or empty
+   variable is a configuration error (exit code 2) when the main model uses the account, for any
+   kind; the stored credential is not consulted as a fallback.
+2. Otherwise the key is the account's entry in `credentials.toml`, written by
+   `fontaine auth login <account>`.
+3. With neither, an `ollama` or `openai-compatible` account sends no `Authorization` header. An
+   `anthropic`, `openai` or `gemini` account with no key is a configuration error (exit code 2)
+   when the main model uses it.
+
+The guardian is different: a missing or invalid credential on the account of `[guardian] model`
+never stops startup. The guardian is then unavailable, and every decision that needs it fails
+closed.
+
+#### Model discovery
+
+An account with a `models` list accepts exactly those names. An account without one is asked for
+its model list (`/models` for OpenAI-style endpoints, `/api/tags` for Ollama, the provider's model
+listing otherwise), once, and only for the account that `[model] model` or `--model` names. A
+model the account does not offer is a configuration error (exit code 2). A listing call that
+fails, whether by a transport error, a non-2xx status or a 401/403, is a run failure (exit code 1).
+For Ollama a bare name matches the `latest` tag.
+
+The model of `[guardian] model` is checked the same way when its account has a `models` list, or
+shares the main model's account. Otherwise Fontaine makes no call with the guardian's credentials
+at startup. An unknown account in `[guardian] model` is always a configuration error.
+
+#### Worked examples
+
+Anthropic, with the key in an environment variable:
+
+```toml
+[accounts.work]
+kind = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[model]
+model = "work/claude-sonnet-5"
+```
+
+A second Anthropic account with its own key, stored with `fontaine auth login personal`:
 
 ```toml
 [accounts.work]
 kind = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY_WORK"
 
+[accounts.personal]
+kind = "anthropic"
+
+[model]
+model = "work/claude-sonnet-5"
+
+[guardian]
+model = "personal/claude-haiku-4-5"
+```
+
+OpenAI:
+
+```toml
+[accounts.openai]
+kind = "openai"
+api_key_env = "OPENAI_API_KEY"
+models = ["gpt-5.2", "gpt-4o-mini"]
+
+[model]
+model = "openai/gpt-5.2"
+```
+
+Gemini:
+
+```toml
+[accounts.google]
+kind = "gemini"
+api_key_env = "GEMINI_API_KEY"
+
+[model]
+model = "google/gemini-2.5-pro"
+```
+
+A local Ollama daemon, which needs no key:
+
+```toml
 [accounts.local]
 kind = "ollama"
 base_url = "http://localhost:11434"
 
+[model]
+model = "local/qwen3:4b"
+```
+
+OpenRouter, through its OpenAI-compatible endpoint:
+
+```toml
 [accounts.router]
 kind = "openai-compatible"
 base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
 models = ["anthropic/claude-sonnet-4-6"]
+
+[model]
+model = "router/anthropic/claude-sonnet-4-6"
 ```
 
-Account names are not empty and contain no `/`.
+LM Studio:
+
+```toml
+[accounts.lmstudio]
+kind = "openai-compatible"
+base_url = "http://localhost:1234/v1"
+
+[model]
+model = "lmstudio/qwen2.5-coder-7b-instruct"
+```
+
+vLLM, with an API key if the server was started with one:
+
+```toml
+[accounts.vllm]
+kind = "openai-compatible"
+base_url = "http://localhost:8000/v1"
+api_key_env = "VLLM_API_KEY"
+
+[model]
+model = "vllm/Qwen/Qwen2.5-Coder-32B-Instruct"
+```
+
+LiteLLM proxy:
+
+```toml
+[accounts.litellm]
+kind = "openai-compatible"
+base_url = "http://localhost:4000"
+api_key_env = "LITELLM_API_KEY"
+
+[model]
+model = "litellm/gpt-4o-mini"
+```
 
 ### `[model]`
 
 | Key | Meaning | Default |
 |---|---|---|
-| `model` | The session model as `<account>/<model>`. Accepted and validated; not yet active. | unset |
+| `model` | The session model as `<account>/<model>`. `--model` overrides it. There is no default model: a run with neither is a configuration error (exit code 2) that names both. | unset |
 
 ### `[guardian]`
 
-Accepted and validated; not yet active.
+`model` is resolved at startup (see [Model discovery](#model-discovery)). The other keys are
+accepted and validated; not yet active.
 
 | Key | Meaning | Default |
 |---|---|---|
@@ -299,8 +440,8 @@ The key is `api_key_env` when that is set; if the named variable is unset or emp
 missing. When `api_key_env` is omitted, the key is the `[telemetry]` entry in `credentials.toml`.
 Keys are never written inline in settings.
 
-No exporter is built yet: with `enabled = true` the inputs are validated and nothing is exported.
-Project scopes can only set `enabled = false`.
+Project scopes can only set `enabled = false`. What is exported, the two backends and the privacy
+defaults are described in [Telemetry](telemetry.md).
 
 ```toml
 [telemetry]
@@ -345,9 +486,8 @@ may set, Fontaine exits with code 2, names the root, and prints the `trust.toml`
 
 ## Credentials
 
-`<data dir>/credentials.toml` holds stored API keys. Fontaine only reads it. Each account has an
-`api_key`, and the telemetry key is kept separately, so an account named `telemetry` cannot shadow
-it:
+`<data dir>/credentials.toml` holds stored API keys. Each account has an `api_key`, and the
+telemetry key is kept separately, so an account named `telemetry` cannot shadow it:
 
 ```toml credentials.toml
 [accounts.work]
@@ -356,6 +496,13 @@ api_key = "sk-..."
 [telemetry]
 api_key = "ingestion-key"
 ```
+
+`fontaine auth login <account>` stores an account's key and `fontaine auth login --telemetry`
+stores the telemetry ingestion key. The secret is read from a hidden prompt, or from stdin when
+stdin is not a terminal (`printf %s "$KEY" | fontaine auth login work`). The account must exist in
+the loaded configuration; an empty secret is a usage error. The file is written through the
+owner-only writer and every other entry in it is kept. A file that cannot be parsed is never
+overwritten.
 
 A missing file or entry means no credential. A file that cannot be parsed, or that cannot be read
 for any reason other than not existing, is a configuration error naming the path.
@@ -366,8 +513,13 @@ for any reason other than not existing, is a configuration error naming the path
 |---|---|
 | `--settings <file>` | Layers a TOML file over the project and user settings for this session (CLI scope). |
 | `--debug-file <path>` | Writes debug-level diagnostics to the file, which is created readable by the current user only. The `config loaded` event, which carries the resolved scope stack, is written here. |
+| `--model <account>/<model>` | Overrides `[model] model`. |
+| `--permission-mode <mode>` | Overrides `[permissions] default_mode`. |
+| `fontaine auth login` | Stores a credential; see [Credentials](#credentials). |
 | `FONTAINE_LOG` | An `EnvFilter` directive that replaces the default `debug` filter of the debug file. On its own it creates no file and prints nothing. |
 | `FONTAINE_CONFIG_DIR`, `FONTAINE_DATA_DIR` | Directory overrides, described above. |
+
+The flags of a non-interactive run (`-p`) are in [Headless runs](headless.md).
 
 An unparseable `FONTAINE_LOG` or an unopenable `--debug-file` path is a usage error: Fontaine exits
 with code 2 and names the variable or flag.
@@ -376,5 +528,6 @@ with code 2 and names the variable or flag.
 
 | Code | Meaning |
 |---|---|
-| 0 | Success. |
+| 0 | Success. A headless run that finished exits 0 even when tool calls were denied. |
+| 1 | A run error: a provider or model failure, a failed model listing, or a run stopped by `--max-turns` or `--max-budget-usd`. |
 | 2 | Configuration or usage error. |

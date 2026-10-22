@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::ConfigError;
 
@@ -12,15 +12,16 @@ pub fn credentials_path(data_dir: &Path) -> PathBuf {
     data_dir.join(CREDENTIALS_FILE)
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
     #[serde(default)]
     accounts: BTreeMap<String, Entry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     telemetry: Option<Entry>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Entry {
     api_key: String,
@@ -44,15 +45,7 @@ impl Credentials {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(source) => return Err(ConfigError::Io { path, source }),
         };
-        toml::from_str(&text).map(Credentials).map_err(|e| {
-            let (line, column) = line_col(&text, &e);
-            ConfigError::Credentials {
-                path,
-                line,
-                column,
-                message: MALFORMED.to_string(),
-            }
-        })
+        parse(&text, path).map(Credentials)
     }
 
     pub fn account(&self, name: &str) -> Option<&str> {
@@ -63,6 +56,62 @@ impl Credentials {
     pub fn telemetry(&self) -> Option<&str> {
         non_empty(self.0.telemetry.as_ref())
     }
+}
+
+fn parse(text: &str, path: PathBuf) -> Result<File, ConfigError> {
+    toml::from_str(text).map_err(|e| {
+        let (line, column) = line_col(text, &e);
+        ConfigError::Credentials {
+            path,
+            line,
+            column,
+            message: MALFORMED.to_string(),
+        }
+    })
+}
+
+/// Which credential a stored secret belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target<'a> {
+    Account(&'a str),
+    Telemetry,
+}
+
+/// Stores `secret` for `target`, keeping every other entry. Read-modify-write through the
+/// owner-only writer. A trailing newline is trimmed; an empty secret is a usage error and an
+/// unparseable existing file is a config error, neither touching the file.
+pub fn store(data_dir: &Path, target: Target<'_>, secret: &str) -> Result<(), ConfigError> {
+    let secret = secret.trim_end_matches(['\n', '\r']);
+    if secret.is_empty() {
+        return Err(ConfigError::usage(
+            "the secret is empty; nothing was stored",
+        ));
+    }
+    let path = credentials_path(data_dir);
+    let io_err = |source| ConfigError::Io {
+        path: path.clone(),
+        source,
+    };
+    let mut file = match std::fs::read_to_string(&path) {
+        Ok(text) => parse(&text, path.clone())?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => File::default(),
+        Err(e) => return Err(io_err(e)),
+    };
+    let entry = Entry {
+        api_key: secret.to_string(),
+    };
+    match target {
+        Target::Account(name) => {
+            file.accounts.insert(name.to_string(), entry);
+        }
+        Target::Telemetry => file.telemetry = Some(entry),
+    }
+    let text = toml::to_string(&file).map_err(|e| ConfigError::Parse {
+        path: path.clone(),
+        message: e.to_string(),
+    })?;
+    std::fs::create_dir_all(data_dir).map_err(io_err)?;
+    crate::owner_only::write(&path, text.as_bytes()).map_err(io_err)
 }
 
 fn non_empty(entry: Option<&Entry>) -> Option<&str> {

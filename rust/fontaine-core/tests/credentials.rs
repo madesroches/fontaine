@@ -111,3 +111,93 @@ fn a_malformed_file_never_echoes_the_secret() {
         assert!(!err.contains("sk-abc123"), "{err}");
     }
 }
+
+mod writer {
+    use super::*;
+    use fontaine_core::credentials::{self, Target};
+
+    fn file(w: &World) -> std::path::PathBuf {
+        w.data.join("credentials.toml")
+    }
+
+    #[test]
+    fn account_and_telemetry_logins_round_trip_through_the_lookup() {
+        let w = World::new();
+        credentials::store(&w.data, Target::Account("work"), "sk-work\n").unwrap();
+        credentials::store(&w.data, Target::Telemetry, "ingest-key").unwrap();
+        let c = Credentials::load(&w.data).unwrap();
+        assert_eq!(c.account("work"), Some("sk-work"));
+        assert_eq!(c.telemetry(), Some("ingest-key"));
+    }
+
+    #[test]
+    fn the_file_is_owner_only() {
+        let w = World::new();
+        credentials::store(&w.data, Target::Account("work"), "sk-work").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(file(&w)).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        #[cfg(windows)]
+        common::assert_current_user_only(&file(&w));
+    }
+
+    #[test]
+    fn a_data_dir_that_does_not_exist_yet_is_created() {
+        let w = World::new();
+        let nested = w.data.join("deeper").join("still");
+        credentials::store(&nested, Target::Telemetry, "k").unwrap();
+        assert_eq!(Credentials::load(&nested).unwrap().telemetry(), Some("k"));
+    }
+
+    #[test]
+    fn a_later_login_keeps_the_earlier_entries() {
+        let w = World::new();
+        credentials::store(&w.data, Target::Account("work"), "k1").unwrap();
+        credentials::store(&w.data, Target::Account("home"), "k2").unwrap();
+        credentials::store(&w.data, Target::Telemetry, "k3").unwrap();
+        let c = Credentials::load(&w.data).unwrap();
+        assert_eq!(c.account("work"), Some("k1"));
+        assert_eq!(c.account("home"), Some("k2"));
+        assert_eq!(c.telemetry(), Some("k3"));
+
+        credentials::store(&w.data, Target::Account("work"), "k1-new").unwrap();
+        let c = Credentials::load(&w.data).unwrap();
+        assert_eq!(c.account("work"), Some("k1-new"));
+        assert_eq!(c.account("home"), Some("k2"));
+        assert_eq!(c.telemetry(), Some("k3"));
+    }
+
+    #[test]
+    fn an_empty_secret_is_a_usage_error_and_leaves_the_file_alone() {
+        let w = World::new();
+        credentials::store(&w.data, Target::Account("work"), "k1").unwrap();
+        let before = std::fs::read_to_string(file(&w)).unwrap();
+        for secret in ["", "\n", "\r\n"] {
+            let err = credentials::store(&w.data, Target::Account("work"), secret).unwrap_err();
+            assert!(matches!(err, ConfigError::Usage { .. }), "{err:?}");
+            assert_eq!(err.exit_code(), 2);
+        }
+        assert_eq!(std::fs::read_to_string(file(&w)).unwrap(), before);
+
+        let fresh = World::new();
+        assert!(credentials::store(&fresh.data, Target::Telemetry, "").is_err());
+        assert!(
+            !file(&fresh).exists(),
+            "no file is created for an empty secret"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_existing_file_is_a_config_error_and_is_not_overwritten() {
+        let w = World::new();
+        let broken = "[accounts.work\napi_key = \"keep-me\"\n";
+        write(&file(&w), broken);
+        let err = credentials::store(&w.data, Target::Account("home"), "k").unwrap_err();
+        assert!(matches!(err, ConfigError::Credentials { .. }), "{err:?}");
+        assert_eq!(err.exit_code(), 2);
+        assert_eq!(std::fs::read_to_string(file(&w)).unwrap(), broken);
+    }
+}

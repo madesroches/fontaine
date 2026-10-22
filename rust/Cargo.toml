@@ -35,3 +35,30 @@ windows-sys = { version = "=0.61.2", features = [
     "Win32_System_SystemServices",
     "Win32_System_Threading",
 ] }
+
+# Pre-1.0 families are pinned exactly and upgraded deliberately.
+rig-core = { version = "=0.45.0", features = ["reqwest"] }
+rig-agent = "=0.45.0"
+micromegas-tracing = "=0.32.0"
+micromegas-telemetry-sink = "=0.32.0"
+micromegas-transit = "=0.32.0"
+opentelemetry = "=0.33.1"
+opentelemetry_sdk = "=0.33.1"
+opentelemetry-otlp = { version = "=0.33.1", default-features = false, features = [
+    "http-proto",
+    "reqwest-blocking-client",
+    "trace",
+    "metrics",
+    "logs",
+] }
+opentelemetry-appender-tracing = "=0.33.1"
+opentelemetry-proto = { version = "=0.33.1", default-features = false, features = ["gen-tonic-messages", "trace", "metrics", "logs"] }
+tracing-opentelemetry = "=0.34.0"
+jsonschema = "=0.59.0"
+wiremock = "=0.6.5"
+
+futures = "0.3.34"
+prost = "0.14.4"
+rpassword = "7.5.4"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "process", "time", "sync"] }
+uuid = { version = "1.28.0", features = ["v4"] }

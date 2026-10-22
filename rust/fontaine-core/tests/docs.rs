@@ -172,6 +172,8 @@ fn the_required_pages_exist_with_content() {
         "docs/index.md",
         "docs/architecture.md",
         "docs/configuration.md",
+        "docs/headless.md",
+        "docs/telemetry.md",
         "evals/README.md",
         "README.md",
         "CONTRIBUTING.md",
