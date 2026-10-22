@@ -1,5 +1,7 @@
-//! An inline terminal whose live area follows what is on screen. Settled transcript lines are
-//! written once into the terminal's own scrollback; only the live area is redrawn.
+//! An inline terminal whose live area always ends on the terminal's bottom row. Settled transcript
+//! lines are written once into the terminal's own scrollback; only the live area is redrawn. Rows
+//! the content does not need are padding between the transcript tail and the input box, and later
+//! commits consume them before anything scrolls.
 
 use std::mem;
 
@@ -129,28 +131,35 @@ pub struct Screen<B: Backend + Anchor> {
 }
 
 impl<B: Backend + Anchor> Screen<B> {
-    /// The live area starts empty, so the first `render` builds it at its real height.
+    /// The live area starts as the whole screen: earlier output above the cursor scrolls into the
+    /// terminal's history.
     pub fn new(backend: B, placeholder: fn() -> B) -> Result<Self, B::Error> {
+        let height = backend.size()?.height;
         let terminal = Terminal::with_options(
             backend,
             TerminalOptions {
-                viewport: Viewport::Inline(0),
+                viewport: Viewport::Inline(height),
             },
         )?;
         Ok(Screen {
             terminal,
-            height: 0,
+            height,
             placeholder,
         })
     }
 
-    /// Commits settled lines, fits the live area to the app, and draws it.
+    /// Commits settled lines, sizes the live area to reach the bottom row, and draws it.
     pub fn render(&mut self, app: &mut App) -> Result<(), B::Error> {
         self.terminal.autoresize()?;
         let width = self.terminal.get_frame().area().width;
         let terminal_height = self.terminal.size()?.height;
         let lines = app.transcript.commit(usize::from(width).max(1));
-        let wanted = view::height(app, width, terminal_height);
+        let content = view::height(app, width, terminal_height);
+        let top = self.terminal.get_frame().area().y;
+        let free = usize::from(terminal_height.saturating_sub(top)).saturating_sub(lines.len());
+        let wanted = usize::from(content)
+            .max(free)
+            .min(usize::from(terminal_height)) as u16;
         if wanted != self.height {
             self.rebuild(wanted)?;
         }
@@ -310,19 +319,18 @@ mod tests {
     }
 
     #[test]
-    fn the_live_area_grows_with_a_prompt_and_shrinks_without_leftovers() {
+    fn a_prompt_leaves_no_text_behind_when_it_closes() {
         let mut screen = screen(40, 20);
         let mut app = app();
         screen.render(&mut app).unwrap();
-        let idle = screen.area().height;
         let (tx, _rx) = oneshot::channel();
         app.begin_approval(approval_request("rm -rf /tmp/stale"), tx);
         screen.render(&mut app).unwrap();
-        assert!(screen.area().height > idle);
+        assert_eq!(screen.area().bottom(), 20);
         assert!(live(&mut screen).join("\n").contains("rm -rf /tmp/stale"));
         app.approval = None;
         screen.render(&mut app).unwrap();
-        assert_eq!(screen.area().height, idle);
+        assert_eq!(screen.area().bottom(), 20);
         let everything = everything(&screen).join("\n");
         assert!(!everything.contains("rm -rf"));
         assert!(!everything.contains("approval"));
@@ -371,11 +379,130 @@ mod tests {
             let mut expected: Vec<String> = (0..8).map(|i| format!("· n{i}")).collect();
             expected.extend((0..late).map(|i| format!("· late{i}")));
             assert_eq!(history, expected, "{late} late notices");
-            // The freed rows are only filled by what is committed after the shrink.
-            if late >= 6 {
-                assert_eq!(screen.area().bottom(), 10);
-            }
+            assert_eq!(screen.area().bottom(), 10);
         }
+    }
+
+    #[test]
+    fn startup_takes_the_whole_screen_and_keeps_earlier_output_in_history() {
+        let mut backend = TestBackend::new(30, 12);
+        let cells: Vec<(u16, u16, Cell)> = ["one", "two", "three"]
+            .iter()
+            .enumerate()
+            .flat_map(|(y, text)| {
+                text.chars().enumerate().map(move |(x, c)| {
+                    let mut cell = Cell::default();
+                    cell.set_symbol(&c.to_string());
+                    (x as u16, y as u16, cell)
+                })
+            })
+            .collect();
+        backend
+            .draw(cells.iter().map(|(x, y, cell)| (*x, *y, cell)))
+            .unwrap();
+        backend.set_cursor_position(Position::new(0, 4)).unwrap();
+        let mut screen = Screen::new(backend, placeholder).unwrap();
+        let mut app = app();
+        screen.render(&mut app).unwrap();
+        assert_eq!(screen.area(), Rect::new(0, 0, 30, 12));
+        let history = nonblank(rows(screen.backend().scrollback()));
+        assert_eq!(history, vec!["one", "two", "three"]);
+        let visible = rows(screen.backend().buffer());
+        assert!(visible[11].contains("manual"));
+        assert!(
+            visible[7..11].iter().any(|r| r.contains("message")),
+            "{visible:?}"
+        );
+        assert!(visible[..8].iter().all(|r| r.trim().is_empty()));
+    }
+
+    #[test]
+    fn first_commits_fill_from_the_top() {
+        let mut screen = screen(30, 12);
+        let mut app = app();
+        app.transcript.notice(String::from("a"));
+        app.transcript.notice(String::from("b"));
+        screen.render(&mut app).unwrap();
+        let visible = rows(screen.backend().buffer());
+        assert!(visible[0].contains("a"));
+        assert!(visible[1].contains("b"));
+        assert!(nonblank(rows(screen.backend().scrollback())).is_empty());
+        assert_eq!(screen.area().bottom(), 12);
+    }
+
+    /// Renders a scripted session and checks the bottom-row rule after every step.
+    fn scripted(screen: &mut Screen<TestBackend>, height: u16) -> Vec<String> {
+        let mut app = app();
+        let mut expected = Vec::new();
+        let step = |screen: &mut Screen<TestBackend>, app: &mut App| {
+            screen.render(app).unwrap();
+            let area = screen.area();
+            assert_eq!(area.bottom(), height);
+            let content = view::height(app, area.width, height);
+            assert_eq!(area.height, content.max(height - area.top()));
+        };
+        for i in 0..4 {
+            app.transcript.notice(format!("note{i}"));
+            expected.push(format!("· note{i}"));
+            step(screen, &mut app);
+        }
+        app.on_event(SessionEvent::AssistantDelta("abcdefghij".repeat(3)));
+        step(screen, &mut app);
+        for _ in 0..3 {
+            app.on_event(SessionEvent::AssistantDelta("klmnopqrst".into()));
+            step(screen, &mut app);
+        }
+        let (tx, _rx) = oneshot::channel();
+        app.begin_approval(approval_request("ls"), tx);
+        step(screen, &mut app);
+        app.approval = None;
+        step(screen, &mut app);
+        app.input.insert_str("a\nb\nc\nd\ne");
+        step(screen, &mut app);
+        app.input.take();
+        step(screen, &mut app);
+        for i in 0..14 {
+            app.transcript.notice(format!("later{i}"));
+            expected.push(format!("· later{i}"));
+            step(screen, &mut app);
+        }
+        expected
+    }
+
+    #[test]
+    fn the_live_area_always_ends_on_the_bottom_row() {
+        let mut screen = screen(30, 10);
+        scripted(&mut screen, 10);
+    }
+
+    #[test]
+    fn committed_lines_stay_contiguous() {
+        let mut screen = screen(30, 10);
+        let notices = scripted(&mut screen, 10);
+        let mut trimmed = above(&mut screen)
+            .iter()
+            .map(|r| r.trim_end().to_string())
+            .collect::<Vec<_>>();
+        let history = nonblank(trimmed.clone());
+        while trimmed.last().is_some_and(|r| r.is_empty()) {
+            trimmed.pop();
+        }
+        assert!(trimmed.iter().all(|r| !r.is_empty()), "{trimmed:?}");
+        let notes: Vec<String> = history
+            .into_iter()
+            .filter(|r| r.starts_with("· "))
+            .collect();
+        assert_eq!(notes, notices);
+    }
+
+    #[test]
+    fn a_taller_terminal_is_filled_on_the_next_render() {
+        let mut screen = screen(30, 10);
+        let mut app = app();
+        screen.render(&mut app).unwrap();
+        screen.terminal.backend_mut().resize(30, 16);
+        screen.render(&mut app).unwrap();
+        assert_eq!(screen.area().bottom(), 16);
     }
 
     #[test]

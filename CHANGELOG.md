@@ -124,6 +124,9 @@ All notable changes are recorded here. The format follows
 - The terminal UI draws inline instead of on the alternate screen: finished output goes into the
   terminal's own scrollback, so mouse selection and wheel scrolling work, including under tmux.
   PageUp/PageDown now only scroll an open approval prompt (#70).
+- The terminal UI takes the whole terminal on start: earlier shell output scrolls into the
+  terminal's history, the transcript reads top-down, and the input box and status bar stay on the
+  bottom rows across resizes (#74).
 
 ### Removed
 
