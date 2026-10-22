@@ -109,7 +109,10 @@ Keys (in `App::message_key`):
   no guardian, not counted in the denial counters. The scrubbed environment and the output cut
   are the same as the agent's shell tool, because the output goes to the model.
 - The driver runs it like a turn: `running = true`, keys still served, Esc or Ctrl-C drops the
-  future (which kills the process group) and shows "interrupted".
+  future (which kills the process group) and shows "interrupted". The driver, not `run_user_shell`,
+  writes the ledger and audit records, so an interrupted command (which may already have had side
+  effects) is still recorded: `Record::UserShell` with `exit_code: None` and the audit record with
+  `latency_ms` up to the interrupt. The transcript shows "interrupted" and no harness note is added.
 - Records:
   - Ledger: new `Record::UserShell { command, exit_code: Option<i32> }`. `LedgerView` ignores it,
     so a `!` command is not user intent for the guardian (see Decisions).
@@ -191,7 +194,7 @@ while an approval, `/denied` or the unavailable prompt is open and cannot captur
 1. **Core steering.** Add `steering.rs` with `Steering` and `SteeringHook`; wire it into
    `AgentRuntime` (created once in `new`), `Parts`, and `build_agent` (`agent.rs`). Unit tests for the hook (see Testing).
 2. **Core user shell.** Add `Record::UserShell` (`ledger.rs`), `user_shell.rs` with
-   `run_user_shell` and its ledger and audit records; keep `ShellSettings` reachable from
+   `run_user_shell` and the ledger and audit record writers the driver calls after completion or interrupt; keep `ShellSettings` reachable from
    `AgentRuntime` (`Setup` already holds `scrub_env` and `git_bash`). Add
    `rig-tools.workspace = true` to `fontaine-core/Cargo.toml` for `Shell` / `ShellArgs`.
 3. **File index snapshot.** Keep `files` on `AgentRuntime` as a shared slot; add `refresh_files()` (detached background task writes the slot; the driver reads it before each draw and passes the `Arc` to `App`).
@@ -207,7 +210,7 @@ while an approval, `/denied` or the unavailable prompt is open and cannot captur
 7. **Driver.** Handle the new actions in `Ui::run` and `Ui::turn`; the queued-message end-of-turn
    rules; a `shell` method that runs `run_user_shell` while serving keys (`lib.rs`). New transcript
    entry `Entry::Shell` (`transcript.rs`).
-8. **Docs.** Update `docs/tui.md`, `docs/permissions.md`, `docs/guardian.md`, `docs/telemetry.md` (see Documentation);
+8. **Docs.** Update `docs/tui.md`, `docs/permissions.md`, `docs/guardian.md`, `docs/configuration.md`, `docs/architecture.md`, `docs/telemetry.md` (see Documentation);
    add the Decisions lines to `tasks/fontaine_harness_plan.md`.
 
 ## Files to Modify
@@ -216,8 +219,8 @@ while an approval, `/denied` or the unavailable prompt is open and cannot captur
   `ledger.rs`, `rust/fontaine-core/Cargo.toml`
 - `rust/fontaine-tui/src/history.rs` (new), `complete.rs` (new), `app.rs`, `input.rs`, `lib.rs`,
   `transcript.rs`, `view.rs`
-- `rust/fontaine-tui/tests/tui.rs`, `rust/fontaine-tui/tests/common/mod.rs` (fresh session id per
-  `World`, same data dir)
+- `rust/fontaine-tui/tests/tui.rs`, `rust/fontaine-tui/tests/common/mod.rs` (fresh session id for each
+  drive run of a `World`, same data dir; `audit()` and `ledger_text` read the latest run's id)
 - `docs/tui.md`, `docs/permissions.md`, `docs/guardian.md`, `docs/configuration.md`,
   `docs/architecture.md`, `docs/telemetry.md`
 - `tasks/fontaine_harness_plan.md` (`## Decisions`)
@@ -314,8 +317,11 @@ Integration tests (`fontaine-tui/tests/tui.rs`, mock model through `World`):
 - `!echo hi` runs with no approval prompt, shows the output, writes the `user_shell` audit record
   and the ledger record, and the next model request carries the harness note with `hi`.
 - History persists across two `drive` runs on the same data dir (Up recalls the earlier message).
-  `World` uses a fresh session id per run (it has a fixed `SESSION_ID`, and `Session::create`
-  returns `InUse` for an existing session dir).
+  `World` uses a fresh session id for each drive run (it has a fixed `SESSION_ID`, and
+  `Session::create` returns `InUse` for an existing session dir); `World::audit()` and `ledger_text`
+  read the latest run's id.
+- Interrupting `!sleep 5` with Esc leaves a `UserShell` ledger record with no exit code, an audit
+  record, an "interrupted" transcript line and no harness note on the next request.
 
 ## Open Questions
 
