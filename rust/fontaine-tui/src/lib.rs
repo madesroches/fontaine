@@ -237,20 +237,23 @@ impl<R: FnMut(&mut App)> Ui<R> {
     async fn run(&mut self, runtime: &mut AgentRuntime, launch_dir: &Path) {
         let tree = runtime.state.agents().clone();
         loop {
-            // A background agent that finished while nothing was running has news for the
-            // main conversation, which gets a turn of its own to read it.
-            if tree.has_notifications(ROOT_AGENT)
-                && matches!(
-                    self.notification_turn(runtime).await,
-                    Some(TurnEnd::InputClosed)
-                )
-            {
-                return;
-            }
-            self.draw(runtime);
+            // Registered before the tree is read: a child that finishes between the read and
+            // the wait would otherwise go unseen until the next key.
             let changed = tree.changed().notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
+            // A background agent that finished while nothing was running has news for the
+            // main conversation, which gets a turn of its own to read it.
+            if tree.has_notifications(ROOT_AGENT) {
+                if matches!(
+                    self.notification_turn(runtime).await,
+                    Some(TurnEnd::InputClosed)
+                ) {
+                    return;
+                }
+                continue;
+            }
+            self.draw(runtime);
             let action = tokio::select! {
                 input = self.input.recv() => match input {
                     Some(input) => self.app.handle_input(input),
@@ -669,10 +672,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
         });
         let tree = runtime.state.agents().clone();
         let end = loop {
-            self.draw(runtime);
             let changed = tree.changed().notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
+            self.draw(runtime);
             tokio::select! {
                 biased;
                 _ = &mut changed => {}

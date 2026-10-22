@@ -78,11 +78,18 @@ async fn a_killed_subagents_row_shows_killed_and_its_spend_against_its_budget() 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn parallel_subagents_one_killed_the_others_finish_and_every_call_is_audited_by_agent() {
+    // The third child is still at work after the main conversation has read the first report
+    // and gone idle, so its own report has to wake an idle interface.
     let child = |n: u32| {
+        let command = if n == 3 {
+            format!("sleep 1; echo run-{n}")
+        } else {
+            format!("echo run-{n}")
+        };
         Route::new(
             &format!("child-{n}"),
             vec![
-                Turn::tool("k", "shell", json!({"command": format!("echo run-{n}")})),
+                Turn::tool("k", "shell", json!({ "command": command })),
                 Turn::text(&format!("child {n} done")),
             ],
         )
