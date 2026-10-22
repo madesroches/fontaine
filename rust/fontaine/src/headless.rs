@@ -100,6 +100,14 @@ impl Input {
 }
 
 fn parse_user_line(line: &str) -> Result<String, String> {
+    let text = user_line_text(line)?;
+    if text.trim().is_empty() {
+        return Err("input line holds an empty prompt".to_string());
+    }
+    Ok(text)
+}
+
+fn user_line_text(line: &str) -> Result<String, String> {
     let value: Value =
         serde_json::from_str(line).map_err(|e| format!("input line is not JSON: {e}"))?;
     if value.get("type").and_then(Value::as_str) != Some("user") {
@@ -500,7 +508,23 @@ pub async fn run(mut options: Options, ctx: Context<'_>) -> u8 {
                 return 2;
             }
         };
-        let outcome = turn.run(&mut history, text, &mut totals).await;
+        // A text-only answer that crossed the cap ends its own turn as a success, so the cap is
+        // enforced here before a further paid call starts.
+        let spent_over_cap = matches!(
+            (options.max_budget_usd, totals.cost_usd),
+            (Some(cap), Some(spent)) if spent > cap
+        );
+        let outcome = if spent_over_cap {
+            Outcome {
+                subtype: Subtype::MaxBudget,
+                text: String::new(),
+                structured: None,
+                error: Some("the run's spend exceeded --max-budget-usd".to_string()),
+                started: std::time::Instant::now(),
+            }
+        } else {
+            turn.run(&mut history, text, &mut totals).await
+        };
         let failed = outcome.subtype != Subtype::Success;
         if stream_events {
             emit_line(&result_event(&session_id, &outcome, &totals));

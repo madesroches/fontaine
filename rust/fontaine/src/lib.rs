@@ -120,6 +120,8 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     let entered = session.enter();
 
     let Some(options) = headless else {
+        drop(entered);
+        drop(session);
         export.finish(0);
         return ExitCode::SUCCESS;
     };

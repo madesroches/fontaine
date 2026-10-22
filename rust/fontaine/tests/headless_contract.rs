@@ -186,6 +186,44 @@ async fn max_budget_stops_a_run_whose_spend_is_exhausted() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn max_budget_stops_a_stream_json_session_after_a_text_only_answer() {
+    let endpoint = Endpoint::start(
+        Wire::Responses,
+        vec![Turn::text("first answer"), Turn::text("never reached")],
+    )
+    .await;
+    let s = Sandbox::priced(&endpoint.url());
+    let input = [
+        json!({"type": "user", "message": {"role": "user", "content": "one"}}),
+        json!({"type": "user", "message": {"role": "user", "content": "two"}}),
+    ];
+    let stdin: String = input.iter().map(|l| format!("{l}\n")).collect();
+    let out = s
+        .run_with_stdin(
+            &[
+                "-p",
+                "--permission-mode",
+                "manual",
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+                "--max-budget-usd",
+                "0.0001",
+            ],
+            &stdin,
+        )
+        .await;
+    assert_eq!(out.code, Some(1), "{}", out.stderr);
+    let lines = out.lines();
+    let results: Vec<&Value> = lines.iter().filter(|l| l["type"] == "result").collect();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["subtype"], "success");
+    assert_eq!(results[1]["subtype"], "error_max_budget_usd");
+    assert_eq!(endpoint.requests().await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_budget_that_is_not_exceeded_lets_the_run_finish_and_reports_its_cost() {
     let endpoint = Endpoint::start(Wire::Responses, vec![Turn::text("done")]).await;
     let s = Sandbox::priced(&endpoint.url());

@@ -259,8 +259,8 @@ impl Telemetry {
         builder.build()
     }
 
-    /// Flushes and shuts the exporters down, giving up after the flush cap. Dropped by the
-    /// caller's own return, never `process::exit`, so a fast flush costs nothing.
+    /// Flushes and shuts the exporters down, giving up after the flush cap. A fast flush
+    /// returns normally; if it runs past `FLUSH_CAP` a watchdog force-exits with the run's code.
     pub fn finish(self, exit_code: u8) {
         if !self.is_active() {
             return;
