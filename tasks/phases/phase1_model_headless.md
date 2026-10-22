@@ -51,7 +51,7 @@ would-prompt outcome stays a Deny.
 
 ### Telemetry backends
 
-The export slot from Phase 0 gets both backends from `tasks/design/observability.md` §Observability: the
+The `Option` export layer from Phase 0 is built from loaded config at install time with both backends from `tasks/design/observability.md` §Observability: the
 micromegas sink guard (local sink, global capture and system monitor off; explicit endpoint +
 `ApiKeyRequestDecorator` from the configured key) with `TracingCaptureLayer` composed into
 Fontaine's registry and the `SpanBridge` mapping allowlisted spans to micromegas async span events
