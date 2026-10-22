@@ -188,7 +188,7 @@ where
             telemetry.micromegas = Some(guard);
             layers.push(filtered(
                 span_bridge::SpanBridge::new(micromegas::MicromegasExport::new(t.traces), policy),
-                span_bridge::is_exported_span,
+                span_bridge::is_bridged,
             ));
             layers.push(filtered(
                 micromegas::capture_layer(),
@@ -209,7 +209,7 @@ where
             layers.extend(built.tracing);
             layers.push(filtered(
                 span_bridge::SpanBridge::new(built.export, policy),
-                span_bridge::is_exported_span,
+                span_bridge::is_bridged,
             ));
             telemetry.otlp = Some(built.providers);
         }

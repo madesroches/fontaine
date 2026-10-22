@@ -51,7 +51,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
                MCP-declared readOnlyHint does not qualify — such tools register as Arbitrary;
                the `skill` tool qualifies: its only argument is a skill name resolved against the
                start-time index, and it loads skill text into context)
-           5. Tier 0.5 — deterministic shell pre-classifier (zero-LLM), `shell` calls only:
+           5. Tier 0.5 — (after the parse below, every path-valued word, including `--flag=value` values, is also checked as a `read` call — and as `ls`/`grep` for those commands — against the deny and ask rules: a deny match is a Deny, an ask match a prompt; each path word is checked, but files a recursive or path-less search reaches under a directory are not individually checked; read rules are not a containment boundary for shell) deterministic shell pre-classifier (zero-LLM), `shell` calls only:
               parsed by `brush-parser` (a real POSIX shell parser, pinned to an exact version — NOT
               regex, no hand-rolled lexer) into exactly ONE simple command (no control operators
               `; | & && ||`, redirections, substitutions, subshells, backgrounding, globs —
@@ -74,13 +74,16 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               PreToolUse hook `allow` → Allow (no guardian), audit `tier = allow_rule` / `hook`;
               in `auto`, broad code-execution rules and hooks are suspended (§Permission rules);
               in `plan`, edit-class calls never get here
+           5b. file tool (read/ls/glob/grep/write/edit) with a path outside every root → Deny with
+              the `/add-dir` hint (file tools are confined to the roots, so an approved call
+              would still be refused); never reaches the prompt
            6. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
            7. mode == auto → Guardian::adjudicate(request) ──▶ Verdict
            8. mode == dontAsk → anything not pre-allowed is Denied (pre-allowed = steps 4, 5, 5a)
            9. mode == plan (not allowed by steps 4–5a): WorkspaceWrite / edit-class → BLOCKED
               outright (structural; no verdict or escalation can override the edit block while
               plan mode is on); every other consequential call — write-capable or unparsed shell,
-              webfetch, out-of-scope reads, ALL MCP calls (anything non-shell `Arbitrary`) →
+              webfetch, ALL MCP calls (anything non-shell `Arbitrary`) →
               Guardian::adjudicate as in auto (CC parity: plan mode routes consequential calls
               through the classifier by default; never edits). Until the guardian ships (Phase 4),
               these step-9 calls fall through to the human prompt.
@@ -106,7 +109,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 — the only registered tools that write structurally (`delete`/`move` are not registered; shell writes
 are not structurally detectable without regex on args, so they take the ordinary shell path: guardian
 in `auto`, prompt in manual/acceptEdits). Matched on resolved path components, in any workspace root or
-the home directory. Directories: `.git`, `.vscode`, `.idea`, `.husky`, `.fontaine`. Files: `.gitconfig`,
+the home directory, plus any path under Fontaine's own config and data directories. Directories: `.git`, `.vscode`, `.idea`, `.husky`, `.fontaine`. Files: `.gitconfig`,
 `.gitmodules`, `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc`,
 `.mcp.json`. This follows Claude Code's documented protected-paths list (`.fontaine` in place of
 `.claude`); confirm it against a `claude -p` baseline in Phase 3 and record any difference in Decisions.
@@ -115,14 +118,14 @@ plan → not reachable (edit-class is blocked at steps 3/9); dontAsk → Deny; h
 
 **Audit log** (written by the pipeline in every mode; one record per gate decision): JSONL, one
 append-only file per session at `<data dir>/audit/<session-id>.jsonl`, owner-only.
-Fields: `ts` (RFC 3339), `session_id`, `agent_id`, `tool`, `args_digest` (SHA-256 over the
+Fields: `ts` (RFC 3339), `session_id`, `agent_id`, `tool_use_id` (the model's tool-call id), `tool`, `args_digest` (SHA-256 over the
 RFC 8785 JSON Canonicalization Scheme serialization of the args, produced by `serde_jcs` — raw args are never logged; when a hook rewrote the call, `original_args_digest`
 too), `tier` (the tier enum below), `decision` (`allow` | `deny` | `prompt`), `rule` (deny/ask/allow rule text and
 its source scope, hook id, floor check, or guardian rule label; null if none), `confidence` and `guardian_model`
 (`<account>/<model>`) for guardian decisions, `latency_ms`. A human answer to a prompt appends a
 second record with `tier = human`.
 
-**Tier enum** (defined once, on `GateDecision.tier`; the audit log, the `tool_decision` telemetry
+**Tier enum** (defined once, on `DecisionRecord.tier`; the audit log, the `tool_decision` telemetry
 event, the headless `gate_decision` event and the eval `expected_tier` all carry exactly these values,
 with no projection or renaming): `deny_rule` | `ask_rule` | `critical_path` | `protected_path` (the
 floor, in check order) | `hook` | `read_only_fast_path` (step 4) | `tier05` (step 5) | `allow_rule`

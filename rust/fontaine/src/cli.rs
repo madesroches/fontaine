@@ -23,6 +23,16 @@ pub struct Cli {
     #[arg(long, value_enum, value_name = "MODE")]
     pub permission_mode: Option<ModeArg>,
 
+    /// Allow rule in `Tool(specifier)` syntax for this session, such as `shell(npm test)`.
+    /// Repeatable; it loads as the CLI scope's `[permissions] allow`
+    #[arg(long = "allowed-tools", value_name = "RULE")]
+    pub allowed_tools: Vec<String>,
+
+    /// Deny rule in `Tool(specifier)` syntax for this session, such as `read(.env)`.
+    /// Repeatable; it loads as the CLI scope's `[permissions] deny`
+    #[arg(long = "disallowed-tools", value_name = "RULE")]
+    pub disallowed_tools: Vec<String>,
+
     /// The main model as `<account>/<model>`, overriding `[model] model`
     #[arg(long, value_name = "ACCOUNT/MODEL")]
     pub model: Option<String>,

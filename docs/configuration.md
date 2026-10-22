@@ -317,13 +317,13 @@ scanner = "off"
 
 ### `[permissions]`
 
-Rule strings use the `Tool` or `Tool(specifier)` form. At load, Fontaine checks the outer shape,
-that the tool is one of `shell`, `read`, `edit`, `write`, `ls`, `glob`, `grep`, `webfetch`,
-`agent`, `skill`, `send_message` or an `mcp__<server>[__<tool>|__*]` name, and that a `webfetch`
-specifier has the form `domain:<host>` or `domain:*.<host>`. Other specifiers are kept as written.
-Specifiers are not matched yet: a `deny` or `ask` rule stops every call to the tool it names,
-whatever its specifier, and `allow` rules and `default_mode` loosen nothing (see
-[Tools](tools.md#permissions-today)).
+Rule strings use the `Tool` or `Tool(specifier)` form described in
+[Permissions](permissions.md#rules). At load, Fontaine checks the outer shape, that the tool is one
+of `shell`, `read`, `edit`, `write`, `ls`, `glob`, `grep`, `webfetch`, `agent`, `skill`,
+`send_message` or an `mcp__<server>[__<tool>|__*]` name, and that the specifier is valid for the
+tool (a `shell` specifier is literal command words, a path specifier a gitignore-style pattern, a
+`webfetch` specifier `domain:<host>` or `domain:*.<host>`). A bad rule is a configuration error.
+`deny` and `ask` rules apply in every mode; `allow` rules act after the floor.
 
 | Key | Meaning | Default |
 |---|---|---|
@@ -431,7 +431,7 @@ mode = "inherit"
 
 | Key | Meaning | Default |
 |---|---|---|
-| `allow_extra` | Extra read-only commands. Each entry is a command name or a `command subcommand` pair with no flags. Accepted and validated; not yet active. | `[]` |
+| `allow_extra` | Extra read-only commands for the [shell pre-classifier](permissions.md#the-shell-pre-classifier). Each entry is a command name or a `command subcommand` pair with no flags; any flag on the call falls through, and positional words must be in-scope paths. User-trust scopes only. | `[]` |
 
 ### `[telemetry]`
 
@@ -529,6 +529,7 @@ for any reason other than not existing, is a configuration error naming the path
 | `--debug-file <path>` | Writes debug-level diagnostics to the file, which is created readable by the current user only. The `config loaded` event, which carries the resolved scope stack, is written here. |
 | `--model <account>/<model>` | Overrides `[model] model`. |
 | `--permission-mode <mode>` | Overrides `[permissions] default_mode`. |
+| `--allowed-tools <rule>`, `--disallowed-tools <rule>` | Adds an allow or deny rule for the session (CLI scope). Repeatable. |
 | `fontaine auth login` | Stores a credential; see [Credentials](#credentials). |
 | `FONTAINE_LOG` | An `EnvFilter` directive that replaces the default `debug` filter of the debug file. On its own it creates no file and prints nothing. |
 | `FONTAINE_CONFIG_DIR`, `FONTAINE_DATA_DIR` | Directory overrides, described above. |

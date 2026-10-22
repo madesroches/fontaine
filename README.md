@@ -49,10 +49,28 @@ OpenAI-compatible endpoints such as OpenRouter, LM Studio, vLLM and LiteLLM are 
 [Configuration](docs/configuration.md); the flags and the output format are in
 [Headless runs](docs/headless.md).
 
+## Permission modes
+
+Every tool call is adjudicated before it runs; the mode decides what happens to a call that nothing
+pre-approved. A deterministic floor (deny and ask rules, critical paths, protected paths) applies
+in every mode.
+
+| Mode | Behavior |
+|---|---|
+| `manual` (default) | Asks you. |
+| `acceptEdits` | Runs edits inside the workspace; asks for the rest. |
+| `plan` | Never edits; asks for other consequential calls. |
+| `dontAsk` | Denies anything not pre-approved. |
+| `auto` | Not available yet. |
+
+Run `fontaine` for the terminal UI (Shift+Tab cycles the mode) or `fontaine -p` for a headless run.
+
 ## Documentation
 
 - [Documentation index](docs/index.md)
 - [Configuration](docs/configuration.md)
+- [Permissions](docs/permissions.md)
+- [The terminal UI](docs/tui.md)
 - [Headless runs](docs/headless.md)
 - [Telemetry](docs/telemetry.md)
 - [Architecture](docs/architecture.md)

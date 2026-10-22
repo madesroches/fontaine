@@ -65,7 +65,14 @@ async fn a_tool_call_round_trips_through_the_wrapped_read_tool() {
     let lines = out.lines();
     assert_eq!(
         kinds(&lines),
-        ["init", "tool_call", "tool_result", "assistant", "result"]
+        [
+            "init",
+            "tool_call",
+            "gate_decision",
+            "tool_result",
+            "assistant",
+            "result"
+        ]
     );
     assert!(
         lines[0]["tools"]
@@ -77,11 +84,14 @@ async fn a_tool_call_round_trips_through_the_wrapped_read_tool() {
     assert_eq!(lines[1]["tool_use_id"], "call_1");
     assert_eq!(lines[1]["args"], json!({"path": "note.txt"}));
     assert_eq!(lines[2]["tool_use_id"], "call_1");
-    assert!(lines[2]["text"].as_str().unwrap().contains("ping"));
-    assert_eq!(lines[2]["success"], json!(true));
-    assert_eq!(lines[3]["text"], "The tool said ping");
-    assert_eq!(lines[4]["result"], "The tool said ping");
-    assert_eq!(lines[4]["subtype"], "success");
+    assert_eq!(lines[2]["tier"], "read_only_fast_path");
+    assert_eq!(lines[2]["decision"], "allow");
+    assert_eq!(lines[3]["tool_use_id"], "call_1");
+    assert!(lines[3]["text"].as_str().unwrap().contains("ping"));
+    assert_eq!(lines[3]["success"], json!(true));
+    assert_eq!(lines[4]["text"], "The tool said ping");
+    assert_eq!(lines[5]["result"], "The tool said ping");
+    assert_eq!(lines[5]["subtype"], "success");
 
     let requests = endpoint.requests().await;
     assert_eq!(requests.len(), 2);

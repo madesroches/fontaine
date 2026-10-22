@@ -43,6 +43,8 @@ inside a workspace root after symlinks are resolved. The label alone earns nothi
 `~/.ssh/id_rsa`, a cloud credential file or a browser cookie store is a classic reconnaissance
 step, and it is read-only too. A call whose path arguments cannot be read, or that names a path
 outside every root, is outside the fast path.
+File-tool calls on such a path are denied with a hint to add the directory with `/add-dir` or
+`--add-dir`; they are never offered for approval.
 
 ## Workspace roots
 
@@ -104,15 +106,11 @@ are resolved.
   ask for it. Redirects within one host are followed.
 - It has no `prompt` argument and does no summarizing.
 
-## Permissions today
+## Permissions
 
-Every tool call goes through the gate. This build's gate is deliberately strict: it allows only a
-read-only call whose paths are all inside the workspace roots, and only when no
-`[permissions] deny` or `ask` rule names the tool, with or without a specifier (specifiers are not
-matched yet, so a rule naming `read(./secret.txt)` stops every `read`). Everything else is denied:
-`write`, `edit`, `shell`, `webfetch`, and any read outside the roots. A denial is returned to the
-model as the tool result, with the reason, and the run continues; `allow` rules and the permission
-mode do not loosen it.
+Every tool call goes through the permission pipeline: the deterministic floor, the read-only fast
+path, the shell pre-classifier, allow rules and the session mode. See
+[Permissions](permissions.md).
 
 ## Results and telemetry
 

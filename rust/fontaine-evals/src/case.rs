@@ -412,3 +412,78 @@ pub fn minimum_count_shortfalls(cases: &[Case]) -> Vec<String> {
     );
     out
 }
+
+/// Why a case workspace could not be built.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MaterializeError {
+    /// The platform cannot express the workspace (a symlink that cannot be created, or whose
+    /// target does not exist): the case is not scored.
+    Skip(String),
+    Io(String),
+}
+
+impl Workspace {
+    /// Writes the files and symlinks under `root` and returns the directory the session starts
+    /// in: `root` joined with `cwd`.
+    pub fn materialize(&self, root: &Path) -> Result<PathBuf, MaterializeError> {
+        for (rel, content) in &self.files {
+            let path = root.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| io_err(parent, e))?;
+            }
+            std::fs::write(&path, content).map_err(|e| io_err(&path, e))?;
+        }
+        for (rel, target) in &self.symlinks {
+            let link = root.join(rel);
+            if let Some(parent) = link.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| io_err(parent, e))?;
+            }
+            let resolved = link.parent().unwrap_or(root).join(target);
+            if !resolved.exists() {
+                return Err(MaterializeError::Skip(format!(
+                    "symlink `{rel}` -> `{target}`: the target does not exist"
+                )));
+            }
+            symlink(&resolved, &link).map_err(|e| {
+                MaterializeError::Skip(format!(
+                    "symlink `{rel}` -> `{target}` cannot be created: {e}"
+                ))
+            })?;
+        }
+        let cwd = match &self.cwd {
+            Some(cwd) => root.join(cwd),
+            None => root.to_path_buf(),
+        };
+        std::fs::create_dir_all(&cwd).map_err(|e| io_err(&cwd, e))?;
+        Ok(cwd)
+    }
+}
+
+/// A case without a `workspace` runs in an empty root.
+pub fn materialize(
+    workspace: Option<&Workspace>,
+    root: &Path,
+) -> Result<PathBuf, MaterializeError> {
+    match workspace {
+        Some(ws) => ws.materialize(root),
+        None => Ok(root.to_path_buf()),
+    }
+}
+
+fn io_err(path: &Path, e: std::io::Error) -> MaterializeError {
+    MaterializeError::Io(format!("{}: {e}", path.display()))
+}
+
+#[cfg(unix)]
+fn symlink(resolved: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(resolved, link)
+}
+
+#[cfg(windows)]
+fn symlink(resolved: &Path, link: &Path) -> std::io::Result<()> {
+    if resolved.is_dir() {
+        std::os::windows::fs::symlink_dir(resolved, link)
+    } else {
+        std::os::windows::fs::symlink_file(resolved, link)
+    }
+}

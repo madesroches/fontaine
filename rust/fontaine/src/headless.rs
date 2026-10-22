@@ -1,40 +1,24 @@
 //! The non-interactive surface, `fontaine -p`. Its output is a versioned contract: see
 //! `docs/headless.md` and `docs/schemas/headless-v1.schema.json`.
 
-use std::ffi::OsString;
 use std::io::{IsTerminal, Write};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 
-use fontaine_core::config::{Config, PermissionMode};
-use fontaine_core::gate::SessionState;
-use fontaine_core::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
-use fontaine_core::models::{GuardianModel, Models};
-use fontaine_core::prompt::{self, PromptParts};
-use fontaine_core::session::{CONVERSATION_LOG, Session};
-use fontaine_core::tools::{self, RegistryParams};
+use fontaine_core::agent::AgentRuntime;
+use fontaine_core::audit::{Decision, DecisionRecord};
+use fontaine_core::ledger::Record;
+use fontaine_core::models::GuardianModel;
 use fontaine_core::trust;
-use fontaine_tools::gate::{AgentId, ROOT_AGENT};
-use fontaine_tools::git_bash::GitBash;
-use fontaine_tools::scope::Scope;
-use futures::StreamExt;
-use rig_agent::agent::MultiTurnStreamItem;
-use rig_agent::completion::PromptError;
-use rig_agent::prelude::*;
-use rig_core::message::{AssistantContent, ToolResultContent};
+use fontaine_core::turn::{
+    DEFAULT_MAX_TURNS, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
+};
 use rig_core::schemars::Schema;
-use rig_core::streaming::{Item, StreamEvent};
-use rig_core::tool::ToolContext;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use uuid::Uuid;
 
 use crate::cli::{InputFormat, OutputFormat};
 
 pub const SCHEMA_VERSION: u32 = 1;
-
-/// Without `--max-turns`, a turn is still bounded so a looping model cannot run forever.
-pub const DEFAULT_MAX_TURNS: usize = 1000;
 
 pub struct Options {
     pub prompt: Option<String>,
@@ -44,32 +28,6 @@ pub struct Options {
     pub max_turns: Option<usize>,
     pub max_budget_usd: Option<f64>,
     pub json_schema: Option<Schema>,
-    pub system_prompt: Option<String>,
-    pub append_system_prompt: Option<String>,
-    pub mode: PermissionMode,
-    /// The workspace roots, primary first, canonical.
-    pub roots: Vec<PathBuf>,
-    pub session: Session,
-    /// Variables the shell tool's child processes do not inherit.
-    pub scrub_env: Vec<OsString>,
-    pub git_bash: Option<GitBash>,
-}
-
-pub struct Context<'a> {
-    pub config: &'a Config,
-    pub models: Models,
-    pub data_dir: &'a Path,
-    pub config_dir: &'a Path,
-}
-
-pub fn mode_name(mode: PermissionMode) -> &'static str {
-    match mode {
-        PermissionMode::Manual => "manual",
-        PermissionMode::AcceptEdits => "acceptEdits",
-        PermissionMode::Plan => "plan",
-        PermissionMode::DontAsk => "dontAsk",
-        PermissionMode::Auto => "auto",
-    }
 }
 
 fn emit_line(value: &Value) {
@@ -281,6 +239,8 @@ struct Outcome {
     structured: Option<Value>,
     error: Option<String>,
     started: std::time::Instant,
+    /// Every call the pipeline denied during the turn.
+    denials: Vec<Value>,
 }
 
 fn result_event(session_id: &str, outcome: &Outcome, totals: &Totals) -> Value {
@@ -301,7 +261,7 @@ fn result_event(session_id: &str, outcome: &Outcome, totals: &Totals) -> Value {
             "guardian": { "input_tokens": 0, "output_tokens": 0, "cost_usd": null },
             "subagents": { "input_tokens": 0, "output_tokens": 0, "cost_usd": null },
         },
-        "denials": [],
+        "denials": outcome.denials,
     });
     if let (Some(structured), Some(map)) = (&outcome.structured, fields.as_object_mut()) {
         map.insert("structured_output".into(), structured.clone());
@@ -309,16 +269,16 @@ fn result_event(session_id: &str, outcome: &Outcome, totals: &Totals) -> Value {
     event("result", session_id, fields)
 }
 
-fn init_event(session_id: &str, ctx: &Context<'_>, options: &Options, tools: &[&str]) -> Value {
-    let config = ctx.config;
-    let (guardian_model, guardian_available) = match &ctx.models.guardian {
+fn init_event(runtime: &AgentRuntime, data_dir: &Path) -> Value {
+    let config = &runtime.config;
+    let (guardian_model, guardian_available) = match &runtime.models.guardian {
         None => (Value::Null, Value::Null),
         Some(g) => (
             json!(g.reference().to_string()),
             json!(matches!(g, GuardianModel::Ready(_))),
         ),
     };
-    let roots: Vec<String> = options
+    let roots: Vec<String> = runtime
         .roots
         .iter()
         .map(|root| root.display().to_string())
@@ -334,281 +294,156 @@ fn init_event(session_id: &str, ctx: &Context<'_>, options: &Options, tools: &[&
             })
         })
         .collect();
-    let trusted = trust::is_trusted(ctx.data_dir, &config.workspace);
+    let trusted = trust::is_trusted(data_dir, &config.workspace);
     event(
         "init",
-        session_id,
+        &runtime.session.id,
         json!({
-            "model": ctx.models.main.reference.to_string(),
+            "model": runtime.models.main.reference.to_string(),
             "guardian_model": guardian_model,
             "guardian_available": guardian_available,
             "guardian_profile": match config.guardian.profile {
                 fontaine_core::config::GuardianProfile::Full => "full",
                 fontaine_core::config::GuardianProfile::Minimal => "minimal",
             },
-            "permission_mode": mode_name(options.mode),
+            "permission_mode": runtime.mode.as_str(),
             "workspace_roots": roots,
             "config_sources": sources,
             "workspace_trust": if trusted { "trusted" } else { "untrusted" },
             "suspended_allow_rules": [],
-            "tools": tools,
+            "tools": runtime.tool_names,
         }),
     )
 }
 
-/// The agent, with its wrapped tool registry, and the names of the tools it was given.
-fn build_agent(
-    ctx: &Context<'_>,
+fn gate_decision_event(session_id: &str, record: &DecisionRecord) -> Value {
+    event(
+        "gate_decision",
+        session_id,
+        json!({
+            "tool_use_id": record.tool_use_id.clone().unwrap_or_default(),
+            "tool": record.tool,
+            "tier": record.tier.as_str(),
+            "decision": record.decision.as_str(),
+            "rule": record.rule,
+            "explanation": record.explanation,
+            "confidence": record.confidence,
+            "guardian_model": record.guardian_model,
+        }),
+    )
+}
+
+/// One user message: runs the agent to its answer, a limit or a failure.
+async fn run_one(
+    runtime: &AgentRuntime,
     options: &Options,
-    state: &Arc<SessionState>,
-) -> Result<(Agent, Vec<&'static str>), String> {
-    let instructions = prompt::load_instructions(ctx.config_dir, &options.roots[0]);
-    let preamble = prompt::assemble(&PromptParts {
-        roots: &options.roots,
-        system_prompt: options.system_prompt.as_deref(),
-        instructions: &instructions,
-        append: options.append_system_prompt.as_deref(),
-    });
-    let registered = tools::registry(RegistryParams {
-        config: ctx.config,
-        state: state.clone(),
-        scrub_env: options.scrub_env.clone(),
-        git_bash: options.git_bash.clone(),
-    })?;
-    let names: Vec<&'static str> = registered.iter().map(|tool| tool.name).collect();
-    let telemetry = &ctx.config.telemetry;
-    let content = telemetry.enabled
-        && (telemetry.log_user_prompts
-            || telemetry.log_assistant_responses
-            || telemetry.log_tool_details
-            || telemetry.log_tool_content);
-    let mut builder = AgentBuilder::new(ctx.models.main.completion.clone())
-        .preamble(preamble)
-        .record_content_telemetry(content)
-        .memory(options.session.store())
-        .conversation(CONVERSATION_LOG)
-        .dynamic_tools(registered.into_iter().map(|tool| tool.tool).collect());
-    if let Some(schema) = &options.json_schema {
-        builder = builder.output_schema_raw(schema.clone());
-    }
-    Ok((builder.build(), names))
-}
-
-fn tool_text(content: &[ToolResultContent]) -> String {
-    content
-        .iter()
-        .map(|part| match part {
-            ToolResultContent::Text(text) => text.text.clone(),
-            ToolResultContent::Json { value } => value.to_string(),
-            ToolResultContent::Image(_) => "[image]".to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-struct TurnRun<'a> {
-    agent: &'a Agent,
-    options: &'a Options,
-    session_id: &'a str,
+    text: String,
+    totals: &mut Totals,
     stream_events: bool,
-}
-
-impl TurnRun<'_> {
-    fn emit(&self, value: Value) {
-        if self.stream_events {
+) -> Outcome {
+    let started = std::time::Instant::now();
+    let sid = runtime.session.id.as_str();
+    let mut denials: Vec<Value> = Vec::new();
+    let emit = |value: Value| {
+        if stream_events {
             emit_line(&value);
         }
-    }
-
-    /// One user message: runs the agent to its answer, a limit or a failure.
-    async fn run(&self, text: String, totals: &mut Totals) -> Outcome {
-        let started = std::time::Instant::now();
-        let max_turns = self.options.max_turns.unwrap_or(DEFAULT_MAX_TURNS);
-        let interaction = tracing::info_span!(
-            target: "fontaine::telemetry",
-            "fontaine.interaction",
-            prompt.id = %Uuid::new_v4(),
-            prompt.length = text.len() as u64,
-        );
-        let mut tool_context = ToolContext::new();
-        // The root agent's id is the default, but a call should say whose it is.
-        let _ = tool_context.insert(AgentId(ROOT_AGENT.to_string()));
-        let runner = self
-            .agent
-            .prompt(rig_core::message::Message::user(text))
-            .tool_context(tool_context)
-            .max_turns(max_turns);
-        // The run adopts the span it is built under as its own agent span.
-        let mut stream = interaction.in_scope(|| runner.stream());
-
-        let sid = self.session_id;
-        let mut turn_calls_tool = false;
-        let mut over_budget = false;
-        let mut final_response = None;
-        let mut failure: Option<PromptError> = None;
-
-        let consume = async {
-            while let Some(item) = stream.next().await {
-                let item = match item {
-                    Ok(item) => item,
-                    Err(e) => {
-                        failure = Some(e);
-                        return None;
-                    }
-                };
-                match item {
-                    MultiTurnStreamItem::StreamAssistantItem(Item::Event(ev)) => match ev {
-                        StreamEvent::Text { text, .. } if self.options.include_partial_messages => {
-                            self.emit(event("assistant_delta", sid, json!({ "text": text })));
-                        }
-                        StreamEvent::End { content, .. } => match content {
-                            AssistantContent::Text(text) => {
-                                self.emit(event("assistant", sid, json!({ "text": text.text })));
-                            }
-                            AssistantContent::ToolCall(_) => turn_calls_tool = true,
-                            _ => {}
-                        },
-                        _ => {}
-                    },
-                    MultiTurnStreamItem::CompletionCall(call) => {
-                        totals.add(&call.usage);
-                        if let (Some(cap), Some(spent)) =
-                            (self.options.max_budget_usd, totals.cost_usd)
-                            && spent > cap
-                        {
-                            over_budget = true;
-                        }
-                        // The cap is checked between turns: a spent budget stops the run before
-                        // its tool calls run, but never discards an answer already complete.
-                        if over_budget && turn_calls_tool {
-                            return None;
-                        }
-                        turn_calls_tool = false;
-                    }
-                    MultiTurnStreamItem::ToolCall { tool_call } => {
-                        self.emit(event(
-                            "tool_call",
-                            sid,
-                            json!({
-                                "tool_use_id": tool_call.id.to_string(),
-                                "tool": tool_call.function.name.to_string(),
-                                "args": Value::Object(tool_call.function.arguments.clone()),
-                            }),
-                        ));
-                    }
-                    MultiTurnStreamItem::ToolResult { tool_result } => {
-                        self.emit(event(
-                            "tool_result",
-                            sid,
-                            json!({
-                                "tool_use_id": tool_result.call.to_string(),
-                                "tool": tool_result.name.to_string(),
-                                "success": !tool_result.is_error,
-                                "text": tool_text(&tool_result.content),
-                            }),
-                        ));
-                    }
-                    MultiTurnStreamItem::FinalResponse(response) => {
-                        final_response = Some(response);
-                    }
-                    _ => {}
+    };
+    let mut on_event = |event_in: SessionEvent| -> Flow {
+        match event_in {
+            SessionEvent::AssistantDelta(text) => {
+                if options.include_partial_messages {
+                    emit(event("assistant_delta", sid, json!({ "text": text })));
                 }
             }
-            Some(())
-        };
-        let finished = consume.await;
-        drop(stream);
-
-        let (subtype, text, error) = if finished.is_none() && failure.is_none() {
-            (
-                Subtype::MaxBudget,
-                String::new(),
-                Some("the run's spend exceeded --max-budget-usd".to_string()),
-            )
-        } else if let Some(e) = failure {
-            let subtype = match e {
-                PromptError::MaxTurns { .. } => Subtype::MaxTurns,
-                _ => Subtype::Execution,
-            };
-            (subtype, String::new(), Some(e.to_string()))
-        } else if let Some(response) = &final_response {
-            (Subtype::Success, response.output(), None)
-        } else {
-            (
-                Subtype::Execution,
-                String::new(),
-                Some("the run ended without an answer".to_string()),
-            )
-        };
-
-        let mut outcome = Outcome {
-            subtype,
-            text,
-            structured: None,
-            error,
-            started,
-        };
-        if outcome.subtype == Subtype::Success && self.options.json_schema.is_some() {
-            match serde_json::from_str::<Value>(&outcome.text) {
-                Ok(value) => outcome.structured = Some(value),
-                Err(e) => {
-                    outcome.subtype = Subtype::Execution;
-                    outcome.text.clear();
-                    outcome.error = Some(format!("the final answer is not valid JSON: {e}"));
+            SessionEvent::Assistant(text) => {
+                emit(event("assistant", sid, json!({ "text": text })));
+            }
+            SessionEvent::ToolCall { id, tool, args } => emit(event(
+                "tool_call",
+                sid,
+                json!({ "tool_use_id": id, "tool": tool, "args": args }),
+            )),
+            SessionEvent::Decision(record) => {
+                if record.decision == Decision::Deny {
+                    denials.push(json!({
+                        "tool": record.tool,
+                        "tier": record.tier.as_str(),
+                        "rule": record.rule,
+                        "explanation": record.explanation,
+                    }));
+                }
+                emit(gate_decision_event(sid, &record));
+            }
+            SessionEvent::ToolResult {
+                id,
+                tool,
+                success,
+                text,
+            } => emit(event(
+                "tool_result",
+                sid,
+                json!({ "tool_use_id": id, "tool": tool, "success": success, "text": text }),
+            )),
+            SessionEvent::Usage { usage, calls_tool } => {
+                totals.add(&usage);
+                // The cap is checked between turns: a spent budget stops the run before its
+                // tool calls run, but never discards an answer already complete.
+                if calls_tool
+                    && let (Some(cap), Some(spent)) = (options.max_budget_usd, totals.cost_usd)
+                    && spent > cap
+                {
+                    return Flow::Stop;
                 }
             }
         }
-        outcome
-    }
-}
-
-fn append_to_ledger(session: &Session, record: Record) {
-    if let Err(e) = session.ledger.append(record) {
-        tracing::warn!(error = %e, "the session ledger could not be written");
-        eprintln!("fontaine: warning: the session ledger could not be written: {e}");
-    }
-}
-
-/// The facts the ledger opens with: the roots, trust, git remotes and the pre-session file
-/// index.
-async fn record_session_start(ctx: &Context<'_>, options: &Options) {
-    let roots = options.roots.clone();
-    let (index, git_remotes) = tokio::task::spawn_blocking(move || {
-        let index = FileIndex::build(&roots, FILE_INDEX_CAP);
-        let mut remotes: Vec<String> = roots.iter().flat_map(|root| git_remotes(root)).collect();
-        remotes.sort();
-        remotes.dedup();
-        (index, remotes)
-    })
-    .await
-    .unwrap_or_default();
-    let trusted = trust::is_trusted(ctx.data_dir, &ctx.config.workspace);
-    append_to_ledger(
-        &options.session,
-        Record::SessionStart {
-            session_id: options.session.id.clone(),
-            permission_mode: mode_name(options.mode).to_string(),
-            workspace_roots: options
-                .roots
-                .iter()
-                .map(|root| root.display().to_string())
-                .collect(),
-            workspace_trust: if trusted { "trusted" } else { "untrusted" }.to_string(),
-            git_remotes,
+        Flow::Continue
+    };
+    let turn = run_turn(
+        TurnParams {
+            agent: &runtime.agent,
+            state: &runtime.state,
+            prompt: text,
+            max_turns: options.max_turns.unwrap_or(DEFAULT_MAX_TURNS),
         },
-    );
-    append_to_ledger(
-        &options.session,
-        Record::FileIndex {
-            paths: index.paths,
-            truncated: index.truncated,
-        },
-    );
+        &mut on_event,
+    )
+    .await;
+
+    let (subtype, text, error) = match turn {
+        TurnOutcome::Answer(text) => (Subtype::Success, text, None),
+        TurnOutcome::Stopped => (
+            Subtype::MaxBudget,
+            String::new(),
+            Some("the run's spend exceeded --max-budget-usd".to_string()),
+        ),
+        TurnOutcome::MaxTurns(message) => (Subtype::MaxTurns, String::new(), Some(message)),
+        TurnOutcome::Failed(message) => (Subtype::Execution, String::new(), Some(message)),
+    };
+    let mut outcome = Outcome {
+        subtype,
+        text,
+        structured: None,
+        error,
+        started,
+        denials,
+    };
+    if outcome.subtype == Subtype::Success && options.json_schema.is_some() {
+        match serde_json::from_str::<Value>(&outcome.text) {
+            Ok(value) => outcome.structured = Some(value),
+            Err(e) => {
+                outcome.subtype = Subtype::Execution;
+                outcome.text.clear();
+                outcome.error = Some(format!("the final answer is not valid JSON: {e}"));
+            }
+        }
+    }
+    outcome
 }
 
 /// Runs the headless session and returns the process exit code: 0 completed, 1 run error,
 /// 2 usage error.
-pub async fn run(mut options: Options, ctx: Context<'_>) -> u8 {
+pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -> u8 {
     let mut input = match open_input(&mut options).await {
         Ok(input) => input,
         Err(message) => {
@@ -617,39 +452,13 @@ pub async fn run(mut options: Options, ctx: Context<'_>) -> u8 {
         }
     };
 
-    let session_id = options.session.id.clone();
-    let scope = Arc::new(Scope::new(
-        options.roots[0].clone(),
-        options.roots[1..].iter().cloned(),
-    ));
-    let permissions = &ctx.config.permissions;
-    let state = Arc::new(SessionState {
-        mode: options.mode,
-        scope,
-        deny: permissions.deny.clone(),
-        ask: permissions.ask.clone(),
-        allow: permissions.allow.clone(),
-        ledger: options.session.ledger.clone(),
-    });
-    let (agent, tool_names) = match build_agent(&ctx, &options, &state) {
-        Ok(built) => built,
-        Err(message) => {
-            eprintln!("fontaine: {message}");
-            return 1;
-        }
-    };
-    record_session_start(&ctx, &options).await;
+    let session_id = runtime.session.id.clone();
+    runtime.record_session_start().await;
     let stream_events = options.output_format == OutputFormat::StreamJson;
     if stream_events {
-        emit_line(&init_event(&session_id, &ctx, &options, &tool_names));
+        emit_line(&init_event(&runtime, data_dir));
     }
 
-    let turn = TurnRun {
-        agent: &agent,
-        options: &options,
-        session_id: &session_id,
-        stream_events,
-    };
     let mut totals = Totals::default();
     let mut last: Option<Outcome> = None;
     let mut code = 0u8;
@@ -662,7 +471,7 @@ pub async fn run(mut options: Options, ctx: Context<'_>) -> u8 {
                 return 2;
             }
         };
-        append_to_ledger(&options.session, Record::UserMessage { text: text.clone() });
+        runtime.append(Record::UserMessage { text: text.clone() });
         // A text-only answer that crossed the cap ends its own turn as a success, so the cap is
         // enforced here before a further paid call starts. The summarizing call that may
         // precede a turn is paid too, so the cap is checked again after it.
@@ -678,13 +487,14 @@ pub async fn run(mut options: Options, ctx: Context<'_>) -> u8 {
             structured: None,
             error: Some("the run's spend exceeded --max-budget-usd".to_string()),
             started: std::time::Instant::now(),
+            denials: Vec::new(),
         };
         let outcome = if over_cap(&totals) {
             budget_stop()
         } else {
-            if let Some(usage) = options
+            if let Some(usage) = runtime
                 .session
-                .compact_if_needed(&ctx.models.main.completion)
+                .compact_if_needed(&runtime.models.main.completion)
                 .await
             {
                 totals.add(&usage);
@@ -692,7 +502,7 @@ pub async fn run(mut options: Options, ctx: Context<'_>) -> u8 {
             if over_cap(&totals) {
                 budget_stop()
             } else {
-                turn.run(text, &mut totals).await
+                run_one(&runtime, &options, text, &mut totals, stream_events).await
             }
         };
         let failed = outcome.subtype != Subtype::Success;

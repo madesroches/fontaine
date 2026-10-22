@@ -95,7 +95,7 @@ Both backends export the same tree: `fontaine.session` contains one `fontaine.in
 user message, and below it the model calls (`chat`) and tool executions (`execute_tool`). Each
 tool call also has a `fontaine.tool` span, with `tool_name`, `risk_class` (`read_only`,
 `workspace_write` or `arbitrary`), `tool_source` (`builtin` or `mcp`) and `success`.
-`fontaine.interaction` carries `prompt.id` and `prompt.length`. Model-call spans carry the
+`fontaine.interaction` carries `prompt.id` and `prompt.length`. Each tool call also has a `fontaine.permission` child span with `tool_name`, `permission_mode`, and the `tier` and `decision` of the pipeline's decision; while a human is asked, a `fontaine.tool.blocked_on_user` span below it measures the wait. Model-call spans carry the
 provider, the model, the response id and the token counts. Source file paths and thread names are
 not exported.
 
@@ -106,6 +106,7 @@ not exported.
 | `fontaine.session.count` | `{session}` | `start_type` |
 | `fontaine.token.usage` | `{token}` | `type` (`input`, `output`, `cacheRead`, `cacheCreation`, `reasoning`), `model`, `query_source` |
 | `fontaine.cost.usage` | USD | `model`, `query_source` |
+| `fontaine.tool_decision.count` | `{decision}` | `tier`, `decision` |
 
 `fontaine.cost.usage` is priced from the model catalog and is absent when the catalog has no price,
 which is always the case for an `openai-compatible` endpoint. `query_source` is `main` for the
@@ -152,4 +153,4 @@ the model layer adds in a later version is treated as content and stays out unti
 Telemetry is best effort: it is off by default, lossy under backpressure, redacted and bounded, and
 it can be switched off at any time. It is not a security record. The permission audit log is a
 separate, local, always-on record of every tool decision that does not depend on `[telemetry]` and
-is never derived from it; this build does not write one yet, and telemetry is not a substitute.
+is never derived from it (see [Permissions](permissions.md#the-pipeline)); telemetry is not a substitute.

@@ -14,6 +14,7 @@ use rig_memory::{
     load_async, save_async, summary_state,
 };
 
+use crate::audit::AuditLog;
 use crate::ledger::Ledger;
 use crate::owner_only;
 
@@ -62,6 +63,7 @@ pub struct Session {
     pub id: String,
     pub dir: PathBuf,
     pub ledger: Arc<Ledger>,
+    pub audit: Arc<AuditLog>,
     store: DirStore,
     policy: CompactionPolicy,
 }
@@ -85,11 +87,14 @@ impl Session {
             Err(e) => return Err(io_error(&dir)(e)),
         }
         let ledger = Ledger::create(&dir).map_err(io_error(&dir))?;
+        let audit = AuditLog::create(data_dir, id)
+            .map_err(io_error(&data_dir.join(crate::audit::AUDIT_DIR)))?;
         let store = DirStore::open(&dir).map_err(|e| SessionError::Store(e.to_string()))?;
         Ok(Session {
             id: id.to_string(),
             dir,
             ledger: Arc::new(ledger),
+            audit: Arc::new(audit),
             store,
             policy: CompactionPolicy::default(),
         })

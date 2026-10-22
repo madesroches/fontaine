@@ -20,7 +20,7 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 
 | Invocation | Meaning |
 |---|---|
-| `fontaine` | Starts and exits; the interactive terminal UI is not part of this build. |
+| `fontaine` | Starts the terminal UI; see [The terminal UI](tui.md). |
 | `fontaine -p "task"` | Runs the task headless and prints the result on stdout. |
 | `--permission-mode <manual\|acceptEdits\|plan\|auto\|dontAsk>` | Session mode, overriding `[permissions] default_mode`. There is no bypass mode. `auto` is a usage error (exit code 2), as is `default_mode = "auto"`, until the guardian ships. |
 | `--model <account>/<model>` | Overrides `[model] model`. See [Configuration](configuration.md#accountsname). |
@@ -30,6 +30,8 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `--max-turns <n>` | Stops each turn after `n` model calls with `error_max_turns` (exit code 1). Without it a turn is capped at 1000 calls. |
 | `--max-budget-usd <x>` | Stops the run once the main model's spend exceeds `x` with `error_max_budget_usd` (exit code 1). A model with no known price makes this a usage error (exit code 2). Only the main model's spend counts today. |
 | `--json-schema <schema>` | An inline JSON Schema the final answer must follow. The parsed answer is returned in `result.structured_output`. A schema that is not a JSON object is a usage error. |
+| `--allowed-tools <rule>` | Adds an allow rule in `Tool(specifier)` syntax for this session, such as `shell(npm test)`. Repeatable. Loaded as the CLI scope's `[permissions] allow`; an invalid rule is a usage error. |
+| `--disallowed-tools <rule>` | Adds a deny rule for this session, such as `read(.env)`. Repeatable. See [Permissions](permissions.md#rules). |
 | `--add-dir <path>` | Adds a directory to the workspace roots. Repeatable. See [Tools](tools.md#workspace-roots). |
 | `--session-id <uuid>` | Uses this UUID as the session id. A value that is not a UUID is a usage error (exit code 2), and so is an id whose session directory already exists. |
 | `--system-prompt <text>` | Replaces the base system prompt. |
@@ -64,15 +66,15 @@ harness did. Compaction never touches it. See [Architecture](architecture.md#the
 
 ## Denials
 
-Nothing prompts in a headless run. Every outcome that would ask a human, such as an `ask` rule, an
-escalated verdict or a protected-path prompt, becomes a denial that is returned to the model as the
-tool result; the run continues. External approval delegates are not supported: there is no
-second approval path around the permission rules.
+Nothing prompts in a headless run. Every outcome that would ask a human, such as an `ask` rule, a
+critical-path or protected-path call, or a call the mode does not pre-approve, becomes a denial
+that is returned to the model as the tool result; the run continues and exits 0. External approval
+delegates are not supported: there is no second approval path around the permission rules. See
+[Permissions](permissions.md).
 
-Tool calls already go through a deny-by-default gate (see [Tools](tools.md#permissions-today)),
-and a denied call comes back to the model as the tool result with the run exiting 0. That gate
-does not emit `gate_decision` events yet, so they are never emitted and `result.denials` is always
-empty. The schema defines both, so a consumer written today keeps working when they appear.
+Every adjudicated call emits a `gate_decision` event, and the `result` event's `denials` lists each
+denied call as `{tool, tier, rule, explanation}`, where `rule` names the rule and the scope it came
+from when a rule decided and `explanation` is what the model was told.
 
 ## Output
 

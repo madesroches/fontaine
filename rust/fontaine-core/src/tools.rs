@@ -3,14 +3,15 @@
 use std::ffi::OsString;
 use std::sync::Arc;
 
-use fontaine_tools::builtins::{self, BuiltinEnv, Registered, ShellSettings};
+use fontaine_tools::builtins::{self, BuiltinEnv, Registered, Seen, ShellSettings};
+use fontaine_tools::gate::ToolGate;
 use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::guarded::Guard;
 use fontaine_tools::result_pipeline::ResultPipeline;
+use fontaine_tools::scope::Scope;
 use fontaine_tools::webfetch::WebfetchConfig;
 
 use crate::config::Config;
-use crate::gate::{SessionState, StubGate};
 
 /// The variables the `shell` tool's child processes must not inherit: telemetry credentials,
 /// every configured account's API key variable and the scanner's token variable.
@@ -46,21 +47,24 @@ pub fn scrubbed_env(
     names
 }
 
-pub struct RegistryParams<'a> {
-    pub config: &'a Config,
-    pub state: Arc<SessionState>,
+pub struct RegistryParams {
+    pub gate: Arc<dyn ToolGate>,
+    pub scope: Arc<Scope>,
+    /// Read-before-edit tracking, kept across registry rebuilds.
+    pub seen: Seen,
     pub scrub_env: Vec<OsString>,
     pub git_bash: Option<GitBash>,
 }
 
-/// Every built-in tool, each wrapped so the stub gate decides before it runs.
-pub fn registry(params: RegistryParams<'_>) -> Result<Vec<Registered>, String> {
+/// Every built-in tool, each wrapped so the permission pipeline decides before it runs.
+pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
     let guard = Guard {
-        gate: Arc::new(StubGate::new(params.state.clone())),
+        gate: params.gate,
         results: Arc::new(ResultPipeline::new()),
     };
     builtins::build(&BuiltinEnv {
-        scope: params.state.scope.clone(),
+        scope: params.scope,
+        seen: params.seen,
         guard,
         shell: ShellSettings {
             scrub_env: params.scrub_env,

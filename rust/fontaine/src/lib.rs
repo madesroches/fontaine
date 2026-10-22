@@ -8,14 +8,18 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use fontaine_core::config::{self, Config, ConfigError, LoadParams, PermissionMode};
+use fontaine_core::agent::{AgentRuntime, AgentSetup};
+use fontaine_core::config::{self, CliRules, Config, ConfigError, LoadParams, PermissionMode};
 use fontaine_core::dirs::{self, Dirs};
-use fontaine_core::models::{self, ResolveParams};
+use fontaine_core::models::{self, Models, ResolveParams};
+use fontaine_core::permissions::DenyAll;
 use fontaine_core::session::Session;
 use fontaine_core::tools;
 use fontaine_core::workspace::{self, RootSource};
 use fontaine_tools::git_bash::GitBash;
 use rig_core::schemars::Schema;
+use std::io::IsTerminal;
+use std::sync::Arc;
 use uuid::Uuid;
 
 use cli::{AuthCommand, Cli, Command, InputFormat, OutputFormat};
@@ -84,6 +88,10 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
             config_dir: &dirs.config,
             data_dir: &dirs.data,
             settings_file: cli.settings.as_deref(),
+            cli_rules: CliRules {
+                allow: &cli.allowed_tools,
+                deny: &cli.disallowed_tools,
+            },
             env: &*host.env,
         };
         let config = if matches!(cli.command, Some(Command::Auth { .. })) {
@@ -113,8 +121,23 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
         };
     }
 
-    let headless = match prepare_headless(&cli, &config, &host, &dirs) {
-        Ok(options) => options,
+    let mode = match session_mode(&cli, &config) {
+        Ok(mode) => mode,
+        Err(code) => return code,
+    };
+    if !cli.print && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        return usage("the interactive UI needs a terminal; use `fontaine -p` for scripted runs");
+    }
+    let headless = if cli.print {
+        match prepare_headless(&cli) {
+            Ok(options) => Some(options),
+            Err(code) => return code,
+        }
+    } else {
+        None
+    };
+    let prep = match prepare_session(&cli, &config, &host, &dirs, mode) {
+        Ok(prep) => prep,
         Err(code) => return code,
     };
 
@@ -133,15 +156,13 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     );
     let entered = session.enter();
 
-    let Some(options) = headless else {
-        drop(entered);
-        drop(session);
-        export.finish(0);
-        return ExitCode::SUCCESS;
-    };
-
     let code = match export.runtime() {
-        Ok(runtime) => runtime.block_on(run_headless(&cli, options, &config, &dirs, &host)),
+        Ok(runtime) => runtime.block_on(async {
+            match headless {
+                Some(options) => run_headless(&cli, options, prep, &config, &dirs, &host).await,
+                None => run_interactive(&cli, prep, &config, &dirs, &host).await,
+            }
+        }),
         Err(e) => {
             eprintln!("fontaine: cannot start the async runtime: {e}");
             1
@@ -153,17 +174,8 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     ExitCode::from(code)
 }
 
-/// Validates everything about a headless invocation that needs no network, so a usage error
-/// never costs a provider call.
-fn prepare_headless(
-    cli: &Cli,
-    config: &Config,
-    host: &Host,
-    dirs: &Dirs,
-) -> Result<Option<headless::Options>, ExitCode> {
-    if !cli.print {
-        return Ok(None);
-    }
+/// The session's permission mode. `auto` waits for the guardian, on every surface.
+fn session_mode(cli: &Cli, config: &Config) -> Result<PermissionMode, ExitCode> {
     let mode = cli
         .permission_mode
         .map_or(config.permissions.default_mode, PermissionMode::from);
@@ -173,6 +185,12 @@ fn prepare_headless(
              use manual, acceptEdits, plan or dontAsk",
         ));
     }
+    Ok(mode)
+}
+
+/// Validates everything about a headless invocation that needs no network, so a usage error
+/// never costs a provider call.
+fn prepare_headless(cli: &Cli) -> Result<headless::Options, ExitCode> {
     if cli.prompt.is_some() && cli.input_format == InputFormat::StreamJson {
         return Err(usage(
             "a prompt argument cannot be combined with --input-format stream-json",
@@ -206,6 +224,36 @@ fn prepare_headless(
             Some(schema)
         }
     };
+    Ok(headless::Options {
+        prompt: cli.prompt.clone(),
+        input_format: cli.input_format,
+        output_format: cli.output_format,
+        include_partial_messages: cli.include_partial_messages,
+        max_turns: cli.max_turns,
+        max_budget_usd: cli.max_budget_usd,
+        json_schema,
+    })
+}
+
+/// What both surfaces need before the first model call: the session, its roots and the
+/// environment the shell tool runs in.
+pub struct SessionPrep {
+    pub session: Session,
+    /// The workspace roots, primary first, canonical.
+    pub roots: Vec<PathBuf>,
+    pub mode: PermissionMode,
+    pub scrub_env: Vec<OsString>,
+    pub git_bash: Option<GitBash>,
+    pub home: Option<PathBuf>,
+}
+
+fn prepare_session(
+    cli: &Cli,
+    config: &Config,
+    host: &Host,
+    dirs: &Dirs,
+    mode: PermissionMode,
+) -> Result<SessionPrep, ExitCode> {
     let session_id = match cli.session_id.as_deref() {
         None => Uuid::new_v4(),
         Some(text) => {
@@ -236,22 +284,19 @@ fn prepare_headless(
         eprintln!("fontaine: {e}");
         ExitCode::from(e.exit_code())
     })?;
-    Ok(Some(headless::Options {
-        prompt: cli.prompt.clone(),
-        input_format: cli.input_format,
-        output_format: cli.output_format,
-        include_partial_messages: cli.include_partial_messages,
-        max_turns: cli.max_turns,
-        max_budget_usd: cli.max_budget_usd,
-        json_schema,
-        system_prompt: cli.system_prompt.clone(),
-        append_system_prompt: cli.append_system_prompt.clone(),
-        mode,
-        roots: roots.roots,
+    let home = (host.env)(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(::dirs::home_dir)
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path));
+    Ok(SessionPrep {
         session,
+        roots: roots.roots,
+        mode,
         scrub_env: tools::scrubbed_env(config, (host.env_names)()),
         git_bash,
-    }))
+        home,
+    })
 }
 
 /// The shell tool runs through Git Bash on Windows; elsewhere it needs none.
@@ -271,26 +316,65 @@ fn git_bash(_host: &Host) -> Result<Option<GitBash>, ExitCode> {
     Ok(None)
 }
 
-async fn run_headless(
+async fn resolve_models(
     cli: &Cli,
-    options: headless::Options,
     config: &Config,
     dirs: &Dirs,
     host: &Host,
-) -> u8 {
-    let resolved = models::resolve(&ResolveParams {
+) -> Result<Models, u8> {
+    models::resolve(&ResolveParams {
         config,
         data_dir: &dirs.data,
         env: &*host.env,
         model_override: cli.model.as_deref(),
     })
-    .await;
-    let models = match resolved {
+    .await
+    .map_err(|e| {
+        eprintln!("fontaine: {e}");
+        e.exit_code()
+    })
+}
+
+fn agent_setup(
+    cli: &Cli,
+    prep: SessionPrep,
+    models: Models,
+    config: &Config,
+    dirs: &Dirs,
+    headless: bool,
+    json_schema: Option<Schema>,
+) -> AgentSetup {
+    AgentSetup {
+        config: config.clone(),
+        config_dir: dirs.config.clone(),
+        data_dir: dirs.data.clone(),
+        models,
+        session: prep.session,
+        roots: prep.roots,
+        mode: prep.mode,
+        scrub_env: prep.scrub_env,
+        git_bash: prep.git_bash,
+        system_prompt: cli.system_prompt.clone(),
+        append_system_prompt: cli.append_system_prompt.clone(),
+        json_schema,
+        headless,
+        approver: Arc::new(DenyAll),
+        home: prep.home,
+        user_config: Some(dirs.config.join(config::USER_FILE)),
+    }
+}
+
+async fn run_headless(
+    cli: &Cli,
+    options: headless::Options,
+    prep: SessionPrep,
+    config: &Config,
+    dirs: &Dirs,
+    host: &Host,
+) -> u8 {
+    let models = match resolve_models(cli, config, dirs, host).await {
         Ok(models) => models,
-        Err(e) => {
-            eprintln!("fontaine: {e}");
-            return e.exit_code();
-        }
+        Err(code) => return code,
     };
     if options.max_budget_usd.is_some() && !models.main.priced() {
         eprintln!(
@@ -299,14 +383,42 @@ async fn run_headless(
         );
         return EXIT_CONFIG;
     }
-    headless::run(
-        options,
-        headless::Context {
-            config,
-            models,
-            data_dir: &dirs.data,
-            config_dir: &dirs.config,
-        },
-    )
-    .await
+    let setup = agent_setup(
+        cli,
+        prep,
+        models,
+        config,
+        dirs,
+        true,
+        options.json_schema.clone(),
+    );
+    let runtime = match AgentRuntime::new(setup) {
+        Ok(runtime) => runtime,
+        Err(message) => {
+            eprintln!("fontaine: {message}");
+            return 1;
+        }
+    };
+    headless::run(options, runtime, &dirs.data).await
+}
+
+async fn run_interactive(
+    cli: &Cli,
+    prep: SessionPrep,
+    config: &Config,
+    dirs: &Dirs,
+    host: &Host,
+) -> u8 {
+    let models = match resolve_models(cli, config, dirs, host).await {
+        Ok(models) => models,
+        Err(code) => return code,
+    };
+    let setup = agent_setup(cli, prep, models, config, dirs, false, None);
+    match fontaine_tui::run(setup, host.cwd.clone()).await {
+        Ok(()) => 0,
+        Err(message) => {
+            eprintln!("fontaine: {message}");
+            1
+        }
+    }
 }

@@ -53,6 +53,35 @@ All notable changes are recorded here. The format follows
 - A versioned system prompt (steering toward the dedicated read tools, denial handling, the
   workspace roots) layered with `FONTAINE.md` from the user config directory and the primary root.
 - `docs/tools.md`, and extensions to the architecture, configuration, headless and telemetry pages.
+- Phase 3, permission pipeline and terminal UI: a real permission pipeline replaces the
+  deny-by-default stub. Modes `manual`, `acceptEdits`, `plan` and `dontAsk`; a deterministic floor
+  (deny rules, ask rules, critical-path `rm`/`rmdir`, protected paths) in every mode; the read-only
+  fast path; a shell pre-classifier on a real shell parser with a per-command flag allowlist and
+  `[shell_preclassifier] allow_extra`; allow rules, session grants and "always allow" written to
+  the user settings file; a `pre_tool_use` hook slot; an append-only audit log per session;
+  `tool_decision` events, `fontaine.permission` spans and the `fontaine.tool_decision.count`
+  metric; headless `gate_decision` events and `result.denials`; `--allowed-tools` and
+  `--disallowed-tools`.
+- The terminal UI (`fontaine` without `-p`): transcript, streaming output, approval prompts, mode
+  cycling with Shift+Tab and `/add-dir`. Agent setup and the turn runner moved into
+  `fontaine-core`, shared by headless and the UI.
+- `fontaine-evals`: `--guardian none` scores `pipeline` cases through the real pipeline, and
+  `baseline capture` / `baseline diff` compare it with `claude -p`; CI runs the `none` mode.
+- `docs/permissions.md`, `docs/tui.md` and a manual-mode cassette test (not yet recorded).
+
+### Changed
+
+- `fontaine` without `-p` starts the terminal UI and exits with code 2 when there is no terminal.
+- A file-tool call outside the workspace roots is denied with an `/add-dir` hint instead of
+  prompting; Fontaine's own config and data directories are protected paths; path case is folded
+  on macOS as well as Windows.
+- The critical-path check also covers `rm` reached through shell runners and launchers
+  (`bash -c`, `su -c`, `env -S`, …), `find -exec`/`xargs`, full-path and `.exe` program names,
+  command names built from expansions, and MSYS-style `/c/...` targets.
+- Approval prompts show the full call, scrollable, and ignore answer keys for a moment after they
+  open so type-ahead cannot answer them.
+- Permission rules now carry their source scope, and a rule listed in two scopes is kept once per
+  scope.
 
 ### Removed
 

@@ -60,7 +60,7 @@ them via `record_content_telemetry`.
 - Standard attributes: `session.id`, `agent.id`/`agent.type`, `app.version`; events add
   `prompt.id` and `event.sequence`.
 
-**Audit log vs telemetry.** The pipeline builds one typed `GateDecision` per tool call; it is
+**Audit log vs telemetry.** The pipeline builds one typed `DecisionRecord` per gate decision; it is
 written to the audit log **first** (append + flush, always on, unaffected by `[telemetry]`), then
 projected to the content-free `tool_decision` event. The audit log is the security record —
 complete, local, synchronous, keyed by agent id, feeding `/denied` and the agents panel;

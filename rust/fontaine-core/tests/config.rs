@@ -8,6 +8,7 @@ use fontaine_core::config::{
     AccountKind, Column, ConfigError, GuardianProfile, PermissionMode, parse_settings,
     validate_settings,
 };
+use fontaine_core::permission_rules::SourcedRule;
 
 fn user_ok(text: &str) {
     parse_settings(text, Path::new("user.toml"), Column::User)
@@ -123,13 +124,20 @@ fn lists_merge_as_a_union_across_scopes() {
         "[permissions]\ndeny = [\"webfetch\"]\nallow = [\"shell(ls)\"]\n[auto_mode]\nhard_deny = [\"b\", \"a\"]\n",
     );
     let c = w.load_with_settings(&cli).unwrap();
-    let deny: Vec<_> = c.permissions.deny.iter().map(ToString::to_string).collect();
-    assert_eq!(deny.len(), 3);
-    for rule in ["read(.env)", "shell(rm)", "webfetch"] {
+    // A rule listed in two scopes is kept once per scope, so each source stays attributable.
+    let deny: Vec<_> = c.permissions.deny.iter().map(SourcedRule::label).collect();
+    assert_eq!(deny.len(), 4, "{deny:?}");
+    for rule in [
+        "read(.env) [user]",
+        "read(.env) [project]",
+        "shell(rm) [project]",
+        "webfetch [cli]",
+    ] {
         assert!(deny.contains(&rule.to_string()), "{rule} in {deny:?}");
     }
     assert_eq!(c.permissions.ask.len(), 1);
-    assert_eq!(c.permissions.allow.len(), 1);
+    let allow: Vec<_> = c.permissions.allow.iter().map(SourcedRule::label).collect();
+    assert_eq!(allow, ["shell(ls) [project-local]", "shell(ls) [cli]"]);
     assert_eq!(c.auto_mode.hard_deny.len(), 2);
 }
 

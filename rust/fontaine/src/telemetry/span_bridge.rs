@@ -35,6 +35,12 @@ pub fn is_exported_event(meta: &Metadata<'_>) -> bool {
     meta.is_event() && meta.target() == TARGET
 }
 
+/// What the bridge itself observes: the allowlisted spans, plus Fontaine's events (the
+/// decision event is counted from the event, not from a span).
+pub fn is_bridged(meta: &Metadata<'_>) -> bool {
+    is_exported_span(meta) || is_exported_event(meta)
+}
+
 pub enum MetricValue {
     Int(u64),
     Float(f64),
@@ -239,6 +245,31 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
     E: Export,
 {
+    // Counted from the decision event, which every audit record emits, so the human's answer
+    // counts like any other tier's.
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+        if event.metadata().target() != TARGET {
+            return;
+        }
+        let mut fields = Vec::new();
+        event.record(&mut Collect(&mut fields));
+        if lookup(&fields, "message") != Some("tool_decision") {
+            return;
+        }
+        if let (Some(tier), Some(decision)) = (lookup(&fields, "tier"), lookup(&fields, "decision"))
+        {
+            self.export.metric(Metric {
+                name: "fontaine.tool_decision.count",
+                unit: "{decision}",
+                value: MetricValue::Int(1),
+                attrs: vec![
+                    ("tier", tier.to_string()),
+                    ("decision", decision.to_string()),
+                ],
+            });
+        }
+    }
+
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(id) else { return };
         let mut fields = Vec::new();
@@ -329,6 +360,7 @@ mod tests {
             config_dir: dir.path(),
             data_dir: dir.path(),
             settings_file: None,
+            cli_rules: Default::default(),
             env: &|_| None,
         })
         .unwrap();
@@ -447,6 +479,32 @@ mod tests {
         });
         assert!(recorder.0.lock().unwrap().is_empty());
         assert!(capture.events().is_empty());
+    }
+
+    #[test]
+    fn every_decision_event_counts_including_the_humans() {
+        let (recorder, _capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            for (tier, decision) in [("tier05", "allow"), ("mode", "prompt"), ("human", "allow")] {
+                tracing::info!(target: TARGET, tier = tier, decision = decision, "tool_decision");
+            }
+            tracing::info!(target: TARGET, tier = "x", "tool_decision");
+            tracing::info!(target: TARGET, tier = "x", decision = "allow", "something_else");
+        });
+        let metrics = recorder.0.lock().unwrap();
+        let counts: Vec<_> = metrics
+            .iter()
+            .filter(|(name, _, _)| name == "fontaine.tool_decision.count")
+            .collect();
+        assert_eq!(counts.len(), 3, "an event with no decision counts nothing");
+        for (tier, decision) in [("tier05", "allow"), ("mode", "prompt"), ("human", "allow")] {
+            assert!(counts.iter().any(|c| {
+                c.1 == 1.0
+                    && c.2.contains(&("tier".to_string(), tier.to_string()))
+                    && c.2
+                        .contains(&("decision".to_string(), decision.to_string()))
+            }));
+        }
     }
 
     #[test]

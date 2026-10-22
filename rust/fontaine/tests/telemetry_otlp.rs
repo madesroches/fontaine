@@ -155,7 +155,7 @@ async fn a_run_exports_spans_metrics_and_the_api_request_event() {
     );
 
     // Metrics: tokens and cost.
-    let metrics: Vec<String> = bodies(&collector, "/v1/metrics")
+    let all_metrics: Vec<_> = bodies(&collector, "/v1/metrics")
         .await
         .iter()
         .flat_map(|body| {
@@ -165,15 +165,29 @@ async fn a_run_exports_spans_metrics_and_the_api_request_event() {
         })
         .flat_map(|r| r.scope_metrics)
         .flat_map(|s| s.metrics)
-        .map(|m| m.name)
         .collect();
+    let metrics: Vec<String> = all_metrics.iter().map(|m| m.name.clone()).collect();
     for name in [
         "fontaine.token.usage",
         "fontaine.cost.usage",
         "fontaine.session.count",
+        "fontaine.tool_decision.count",
     ] {
         assert!(metrics.iter().any(|m| m == name), "{name} in {metrics:?}");
     }
+    let decision = all_metrics
+        .iter()
+        .find(|m| m.name == "fontaine.tool_decision.count")
+        .unwrap();
+    let Some(opentelemetry_proto::tonic::metrics::v1::metric::Data::Sum(sum)) = &decision.data
+    else {
+        panic!("a counter: {decision:?}");
+    };
+    assert!(sum.data_points.iter().any(|p| matches!(
+        (attr(&p.attributes, "tier"), attr(&p.attributes, "decision")),
+        (Some(AnyValue::StringValue(t)), Some(AnyValue::StringValue(d)))
+            if t == "read_only_fast_path" && d == "allow"
+    )));
 
     // Events: api_request with tokens and cost.
     let records: Vec<_> = bodies(&collector, "/v1/logs")

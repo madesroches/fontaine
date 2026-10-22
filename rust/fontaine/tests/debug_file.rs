@@ -2,6 +2,10 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
+/// The exit code of an interactive start with no terminal, which these runs end in: config
+/// and the debug sink are set up first.
+const NO_TERMINAL: i32 = 2;
+
 struct Sandbox {
     _tmp: TempDir,
     work: std::path::PathBuf,
@@ -44,7 +48,7 @@ fn debug_file_records_the_config_loaded_event() {
     let s = Sandbox::new();
     let file = s.work.join("debug.log");
     let out = s.run(&["--debug-file", file.to_str().unwrap()], None);
-    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(out.status.code(), Some(NO_TERMINAL));
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains("DEBUG"), "{text}");
     assert!(text.contains("config loaded"), "{text}");
@@ -64,7 +68,7 @@ fn the_debug_file_is_owner_only() {
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
     let out = s.run(&["--debug-file", file.to_str().unwrap()], None);
-    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(out.status.code(), Some(NO_TERMINAL));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -80,7 +84,7 @@ fn fontaine_log_warn_drops_the_debug_events() {
     let s = Sandbox::new();
     let file = s.work.join("debug.log");
     let out = s.run(&["--debug-file", file.to_str().unwrap()], Some("warn"));
-    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(out.status.code(), Some(NO_TERMINAL));
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(!text.contains("config loaded"), "{text}");
 }
@@ -89,8 +93,15 @@ fn fontaine_log_warn_drops_the_debug_events() {
 fn fontaine_log_alone_writes_no_file_and_nothing_to_stderr() {
     let s = Sandbox::new();
     let out = s.run(&[], Some("debug"));
-    assert_eq!(out.status.code(), Some(0));
-    assert!(out.stderr.is_empty() && out.stdout.is_empty());
+    assert_eq!(out.status.code(), Some(NO_TERMINAL));
+    // Only the start-up refusal: no debug output leaks to the terminal.
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr).lines().count(),
+        1,
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stdout.is_empty());
     let entries: Vec<_> = std::fs::read_dir(&s.work).unwrap().collect();
     assert!(entries.is_empty(), "{entries:?}");
 }
