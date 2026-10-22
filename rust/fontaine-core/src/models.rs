@@ -226,12 +226,14 @@ impl Client {
         }
     }
 
-    async fn list(&self) -> Result<Vec<String>, ProviderError> {
+    async fn list(&self) -> Result<Vec<String>, Box<ProviderError>> {
         let list = match self {
-            Client::Anthropic(c) => c.list_models().await?,
-            Client::OpenAi(c) | Client::OpenAiCompatible(c) => c.list_models().await?,
-            Client::Gemini(c) => c.list_models().await?,
-            Client::Ollama(c) => c.list_models().await?,
+            Client::Anthropic(c) => c.list_models().await.map_err(Box::new)?,
+            Client::OpenAi(c) | Client::OpenAiCompatible(c) => {
+                c.list_models().await.map_err(Box::new)?
+            }
+            Client::Gemini(c) => c.list_models().await.map_err(Box::new)?,
+            Client::Ollama(c) => c.list_models().await.map_err(Box::new)?,
         };
         Ok(list.data.into_iter().map(|m| m.id).collect())
     }
