@@ -283,12 +283,21 @@ async fn a_server_in_the_users_own_settings_starts_without_asking() {
     assert!(marker(&w).exists());
 }
 
+/// `path` as text for a hook command line. A Cygwin process (Git Bash's `sh`) started from a
+/// native one re-parses its command line and reads `\\` inside quotes as one escaped
+/// backslash, so the `\\?\` prefix a canonicalized Windows path carries would reach the hook
+/// as `\?\`, which names nothing.
+fn command_path(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy();
+    text.strip_prefix(r"\\?\").unwrap_or(&text).to_string()
+}
+
 fn hook_settings(w: &World, reply: Option<&str>) -> String {
     let reply = reply.map(|r| format!(" '{r}'")).unwrap_or_default();
     format!(
         "[[hooks.pre_tool_use]]\ncommand = '''\n'{}' '{}'{reply}\n'''\n",
         touch_marker(),
-        marker(w).display()
+        command_path(&marker(w))
     )
 }
 
