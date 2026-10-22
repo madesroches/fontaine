@@ -479,4 +479,13 @@ mod tests {
             ["shell", "write"]
         );
     }
+
+    #[test]
+    fn a_tool_list_continued_on_the_next_line_keeps_every_entry() {
+        let doc = frontmatter::parse("---\ndisallowedTools: Bash,\n  Write\n---\n").unwrap();
+        assert_eq!(
+            map_tool_list(&doc, "disallowedTools").unwrap().unwrap(),
+            ["shell", "write"]
+        );
+    }
 }

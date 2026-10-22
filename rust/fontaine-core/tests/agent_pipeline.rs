@@ -303,3 +303,29 @@ async fn guardian_spend_is_counted_per_agent_and_against_that_agents_budget() {
     let spend = fontaine_core::gate::spend_of(&usage);
     assert!(tight.debit(&id, &spend).is_some());
 }
+
+#[tokio::test]
+async fn an_ancestors_specifiers_bind_the_subagents_it_spawns() {
+    let rig = Rig::new(Manual);
+    let parent = child(&rig, Ladder::Manual);
+    rig.state.set_child_restrictions(
+        &parent,
+        ChildRestrictions {
+            only: Vec::new(),
+            deny: vec![parse_rule("shell(rm *)").unwrap()],
+        },
+    );
+    let grandchild = rig
+        .agents
+        .reserve(&parent, "worker", "m", Vec::new(), Ladder::Manual, false)
+        .unwrap();
+    let asked = rig.approver.asked();
+    assert!(!allowed(
+        &rig.check_as(&grandchild, "shell", shell("rm a.txt")).await
+    ));
+    assert_eq!(rig.approver.asked(), asked);
+    assert_eq!(
+        rig.audit().last().unwrap().rule.as_deref(),
+        Some("agent tools")
+    );
+}

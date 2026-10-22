@@ -607,7 +607,15 @@ impl AgentRuntime {
 
     /// `/name arguments`: the skill's text for the root agent, ready to be the next prompt.
     pub async fn expand_skill(&self, name: &str, arguments: &str) -> Result<String, String> {
-        self.skills.expand(name, arguments, ROOT_AGENT, false).await
+        // The grants the skill lends last for the turn its text starts; an expansion that is
+        // abandoned or fails never starts one.
+        let guard = crate::turn::EndTurnOnDrop(&self.state);
+        let text = self
+            .skills
+            .expand(name, arguments, ROOT_AGENT, false)
+            .await?;
+        std::mem::forget(guard);
+        Ok(text)
     }
 
     /// The reports and messages queued for the main conversation, as a prompt for a turn of

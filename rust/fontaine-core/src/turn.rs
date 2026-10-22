@@ -92,7 +92,9 @@ pub async fn run_turn(
         prompt.length = params.prompt.len() as u64,
     );
     let mut feed = params.state.feed().await;
-    let outcome = drive(
+    // A guard, not a trailing call: an interrupted turn drops this future at an await point.
+    let _grants = EndTurnOnDrop(params.state);
+    drive(
         Drive {
             agent: params.agent,
             state: params.state,
@@ -104,9 +106,16 @@ pub async fn run_turn(
         Some(&mut feed),
         on_event,
     )
-    .await;
-    params.state.end_turn();
-    outcome
+    .await
+}
+
+/// Ends the loan of skill rules when dropped, however the turn ends.
+pub struct EndTurnOnDrop<'a>(pub &'a SessionState);
+
+impl Drop for EndTurnOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.end_turn();
+    }
 }
 
 /// One agent's run: whose it is, what it is asked and under which span it runs.

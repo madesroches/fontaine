@@ -511,39 +511,21 @@ impl SessionState {
             .insert(agent.to_string(), restrictions);
     }
 
-    /// Why `agent`'s agent file forbids this call, if it does.
+    /// Why `agent`'s agent file, or any ancestor's, forbids this call: a subagent never holds
+    /// more authority than the agent that spawned it.
     pub fn child_restriction(&self, agent: &str, call: &CallContext<'_>) -> Option<String> {
         let held = self
             .child_restrictions
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let restrictions = held.get(agent)?;
-        if let Some(rule) = restrictions
-            .deny
-            .iter()
-            .find(|rule| matches(rule, call, Posture::Deny))
-        {
-            return Some(format!("this agent type may not use `{rule}`"));
-        }
-        let limits: Vec<&Rule> = restrictions
-            .only
-            .iter()
-            .filter(|rule| rule.tool == call.tool)
-            .collect();
-        if !limits.is_empty()
-            && !limits
-                .iter()
-                .any(|rule| matches(rule, call, Posture::Allow))
-        {
-            return Some(format!(
-                "this agent type may use `{}` only as {}",
-                call.tool,
-                limits
-                    .iter()
-                    .map(|rule| format!("`{rule}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+        let mut at = Some(agent.to_string());
+        // A tree is a few layers deep; the bound keeps a corrupt parent link finite.
+        for _ in 0..64 {
+            let id = at?;
+            if let Some(why) = held.get(&id).and_then(|r| restriction_on(r, call)) {
+                return Some(why);
+            }
+            at = self.agents().parent_of(&id);
         }
         None
     }
@@ -705,4 +687,35 @@ pub fn spend_of(usage: &Usage) -> Spend {
         output_tokens: usage.output_tokens.unwrap_or(0),
         cost_usd: usage.cost.map(|cost| cost.total),
     }
+}
+
+fn restriction_on(restrictions: &ChildRestrictions, call: &CallContext<'_>) -> Option<String> {
+    if let Some(rule) = restrictions
+        .deny
+        .iter()
+        .find(|rule| matches(rule, call, Posture::Deny))
+    {
+        return Some(format!("this agent type may not use `{rule}`"));
+    }
+    let limits: Vec<&Rule> = restrictions
+        .only
+        .iter()
+        .filter(|rule| rule.tool == call.tool)
+        .collect();
+    if !limits.is_empty()
+        && !limits
+            .iter()
+            .any(|rule| matches(rule, call, Posture::Allow))
+    {
+        return Some(format!(
+            "this agent type may use `{}` only as {}",
+            call.tool,
+            limits
+                .iter()
+                .map(|rule| format!("`{rule}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    None
 }

@@ -506,6 +506,11 @@ async fn a_skills_allowed_tools_last_to_the_end_of_the_turn_for_the_invoking_age
     rig.check("shell", json!({"command": "cargo test"})).await;
     assert_eq!(rig.approver.asked(), 4);
 
+    // An interrupted turn drops its future; the loan ends all the same.
+    s.runtime.load("tester", ROOT_AGENT).await.unwrap();
+    drop(fontaine_core::turn::EndTurnOnDrop(&rig.state));
+    assert!(rig.state.skill_grants(ROOT_AGENT).is_empty());
+
     // By the `skill` tool, the invoking agent gets it too.
     s.runtime.load("tester", ROOT_AGENT).await.unwrap();
     assert!(allowed(

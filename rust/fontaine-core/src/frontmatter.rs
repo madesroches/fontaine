@@ -225,15 +225,29 @@ pub fn parse(text: &str) -> Result<Document, String> {
             } else {
                 Value::Nested
             }
-        } else if rest.starts_with('[') && rest.ends_with(']') {
-            Value::List(
-                split_commas(&rest[1..rest.len() - 1])
-                    .into_iter()
-                    .map(|item| unquote(&item))
-                    .collect(),
-            )
         } else {
-            Value::Scalar(unquote(rest))
+            // A plain scalar or flow list may continue on indented lines; YAML folds them
+            // into the value with single spaces.
+            let mut folded = rest.to_string();
+            for line in block.iter().map(|l| strip_comment(l.trim())) {
+                if !line.is_empty() {
+                    folded.push(' ');
+                    folded.push_str(line);
+                }
+            }
+            let rest = folded.as_str();
+            if rest.starts_with('[') && rest.ends_with(']') {
+                Value::List(
+                    split_commas(&rest[1..rest.len() - 1])
+                        .into_iter()
+                        .map(|item| unquote(&item))
+                        .collect(),
+                )
+            } else if rest.starts_with('[') {
+                return Err(format!("the list under `{key}` is not closed with `]`"));
+            } else {
+                Value::Scalar(unquote(rest))
+            }
         };
         entries.push((key, value));
     }
@@ -246,6 +260,15 @@ pub fn parse(text: &str) -> Result<Document, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuation_lines_fold_into_a_plain_scalar_and_a_flow_list() {
+        let doc =
+            parse("---\ndisallowedTools: Bash,\n  Write\ntools: [Read,\n  Grep]\n---\n").unwrap();
+        assert_eq!(doc.text("disallowedTools").as_deref(), Some("Bash, Write"));
+        assert_eq!(doc.list("tools").unwrap(), ["Read", "Grep"]);
+        assert!(parse("---\ntools: [Read,\n  Grep\n---\n").is_err());
+    }
 
     #[test]
     fn scalars_lists_and_flags_read_as_claude_code_writes_them() {
