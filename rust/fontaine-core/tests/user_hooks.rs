@@ -290,6 +290,26 @@ async fn in_auto_a_narrow_matchers_allow_skips_the_guardian_and_a_broad_one_is_s
 }
 
 #[tokio::test]
+async fn a_later_hooks_rewrite_drops_an_earlier_hooks_allow() {
+    let rewrite = json!({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "updatedInput": {"command": "cargo build"},
+    }})
+    .to_string();
+    let rig = rig(
+        Manual,
+        "",
+        vec![
+            hook(None, command(&["--reply", &reply("allow")]), user()),
+            hook(None, command(&["--reply", &rewrite]), project()),
+        ],
+    );
+    rig.check("shell", shell("cargo test")).await;
+    assert_ne!(last(&rig).tier, Tier::Hook);
+    assert_eq!(rig.approver.asked(), 1);
+}
+
+#[tokio::test]
 async fn a_project_hooks_allow_is_ignored_but_its_deny_stands() {
     let rig = rig(
         Manual,

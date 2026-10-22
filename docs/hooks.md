@@ -106,7 +106,9 @@ pipeline.
   rule's matcher would match, so a `shell(git *)` hook does not allow `ls && git push`. In `auto`
   it follows Claude Code: a hook with a narrow matcher skips the guardian, and a hook with a broad
   one (no matcher, or one that is a [suspended allow rule](permissions.md#allow-rules)) is
-  suspended and the guardian decides.
+  suspended and the guardian decides. An `allow` stands only for the arguments the hook saw: if a
+  later hook rewrites the call with `updatedInput`, the allow is dropped and the call takes the
+  normal path (a hook that rewrites and allows in one reply allows its own rewrite).
 - **`guardian_context`** is shown to the guardian inside an untrusted block, as a note and never as
   an instruction.
 - **`post_tool_use`** runs last in the result pipeline, after anything that screens tool results,

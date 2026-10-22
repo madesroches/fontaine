@@ -458,6 +458,8 @@ impl PermissionPipeline {
             if let Some(updated) = decision.updated_input {
                 if updated.is_object() {
                     args = updated.clone();
+                    // An allow vouches for the arguments it saw, not for a rewrite.
+                    outcome.allow = None;
                     outcome.updated_input = Some(updated);
                 } else {
                     tracing::warn!(hook = %id, "a pre_tool_use hook returned input that is not an object; ignored");

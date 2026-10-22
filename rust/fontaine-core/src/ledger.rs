@@ -282,7 +282,11 @@ impl Ledger {
                 Err(e) => return Err(io::Error::other(e)),
             }
         }
-        let file = owner_only::open(&path, true)?;
+        let mut file = owner_only::open(&path, true)?;
+        // A complete last record can still lack its newline; the next append would join it.
+        if good_end == text.len() && !text.is_empty() && !text.ends_with('\n') {
+            file.write_all(b"\n")?;
+        }
         Ok(Ledger {
             path,
             tail: Mutex::new(Tail { file, next_seq }),
@@ -450,6 +454,25 @@ mod tests {
         let lines = std::fs::read_to_string(reopened.path()).unwrap();
         assert_eq!(lines.lines().count(), 3);
         assert!(lines.lines().last().unwrap().contains("three"));
+    }
+
+    #[test]
+    fn a_complete_last_record_without_its_newline_does_not_join_the_next_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ledger_with_two_messages(dir.path());
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.trim_end_matches('\n')).unwrap();
+
+        let ledger = Ledger::open(dir.path()).unwrap();
+        ledger
+            .append(Record::UserMessage {
+                text: "three".into(),
+            })
+            .unwrap();
+        drop(ledger);
+        let reopened = Ledger::open(dir.path()).unwrap();
+        let lines = std::fs::read_to_string(reopened.path()).unwrap();
+        assert_eq!(lines.lines().count(), 3);
     }
 
     #[test]

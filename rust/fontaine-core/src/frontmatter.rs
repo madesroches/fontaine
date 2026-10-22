@@ -249,6 +249,9 @@ pub fn parse(text: &str) -> Result<Document, String> {
                 Value::Scalar(unquote(rest))
             }
         };
+        if entries.iter().any(|(k, _)| *k == key) {
+            return Err(format!("`{key}` appears twice in the header"));
+        }
         entries.push((key, value));
     }
     Ok(Document {
@@ -260,6 +263,12 @@ pub fn parse(text: &str) -> Result<Document, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_repeated_header_key_is_an_error() {
+        let err = parse("---\ndisallowedTools: Bash\ndisallowedTools: Write\n---\n").unwrap_err();
+        assert!(err.contains("disallowedTools"), "{err}");
+    }
 
     #[test]
     fn continuation_lines_fold_into_a_plain_scalar_and_a_flow_list() {

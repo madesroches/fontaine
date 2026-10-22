@@ -106,7 +106,7 @@ command run when the skill loads, with its output put in its place. Arguments ar
 first. Each command goes through the permission pipeline **as a `shell` call by the agent that
 loaded the skill**: it asks, is judged by the guardian or is denied exactly as if the model had
 called `shell`. A denied command's place shows `[command failed: ...]` and the skill still loads.
-A repository's skill commands run only when the workspace is trusted.
+A repository's skill commands run only when the workspace is trusted; a headless run (`fontaine -p`) runs them without asking, as it does for hooks and MCP servers.
 
 ### `allowed-tools`
 
