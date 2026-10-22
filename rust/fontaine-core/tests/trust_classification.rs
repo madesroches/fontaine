@@ -267,3 +267,24 @@ fn a_repo_fsmonitor_command_is_never_executed() {
     let _ = w.load();
     assert!(!canary.exists(), "fsmonitor command ran");
 }
+
+#[test]
+fn a_file_under_a_submodule_gitlink_loads_as_project_scope() {
+    let w = World::new();
+    w.trusted_repo();
+    w.local_file(LOOSE);
+    let sha = "1111111111111111111111111111111111111111";
+    git(
+        &w.work,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{sha},.fontaine"),
+        ],
+    );
+    assert_eq!(
+        classify(&w),
+        LocalClassification::Project(ProjectDemotion::Tracked)
+    );
+}

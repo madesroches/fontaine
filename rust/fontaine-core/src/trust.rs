@@ -229,9 +229,19 @@ pub fn classify_project_local(
         return Project(GitError);
     };
     let lookup = index.prepare_icase_backing();
-    let tracked = index
-        .entry_by_path_icase(BStr::new(relative.as_ref()), true, &lookup)
-        .is_some();
+    // A submodule or sparse directory is one index entry for its whole subtree, so an ancestor
+    // entry covers files the index does not list individually.
+    let in_index = |path: &[u8]| {
+        index
+            .entry_by_path_icase(BStr::new(path), true, &lookup)
+            .is_some()
+    };
+    let bytes: &[u8] = relative.as_ref();
+    let tracked = in_index(bytes)
+        || bytes
+            .iter()
+            .enumerate()
+            .any(|(i, &b)| b == b'/' && in_index(&bytes[..i]));
     if tracked {
         return Project(Tracked);
     }

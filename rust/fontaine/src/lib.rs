@@ -43,7 +43,7 @@ impl Host {
     }
 }
 
-pub const EXIT_CONFIG: u8 = 2;
+pub const EXIT_CONFIG: u8 = fontaine_core::config::CONFIG_EXIT_CODE;
 
 pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     let cli = match Cli::try_parse_from(args) {

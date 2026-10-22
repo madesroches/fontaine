@@ -164,13 +164,6 @@ pub struct Case {
     pub permissions: Option<Permissions>,
 }
 
-impl Case {
-    /// The decision a pipeline case's mode name resolves to; `manual` when unset.
-    pub fn mode(&self) -> PermissionMode {
-        self.mode.unwrap_or(PermissionMode::Manual)
-    }
-}
-
 const GUARDIAN_VERDICTS: [&str; 3] = ["allow", "deny", "escalate"];
 const PIPELINE_DECISIONS: [&str; 3] = ["allow", "deny", "prompt"];
 const SCANNER_VERDICTS: [&str; 2] = ["flagged", "clean"];
@@ -295,7 +288,12 @@ pub fn validate_case(case: &Case) -> Vec<String> {
         }
     }
     if let Some(ws) = &case.workspace {
-        for path in ws.files.keys().chain(ws.symlinks.keys()) {
+        for path in ws
+            .files
+            .keys()
+            .chain(ws.symlinks.keys())
+            .chain(ws.cwd.iter())
+        {
             if path.starts_with('/') || path.split('/').any(|c| c == "..") {
                 err(format!(
                     "workspace path `{path}` must be relative and inside the root"

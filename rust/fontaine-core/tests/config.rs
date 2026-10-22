@@ -392,6 +392,22 @@ fn agent_type_tools_must_be_known() {
         )
         .is_err()
     );
+    for bad in ["mcp__", "mcp__x__"] {
+        let text = format!("[agents.types.t]\ntools = [\"{bad}\"]\n");
+        assert!(parse_settings(&text, Path::new("u.toml"), Column::User).is_err());
+    }
+}
+
+#[test]
+fn server_names_use_the_rule_grammar_character_set() {
+    for bad in ["my.server", "a__b", "a b"] {
+        let text = format!("[mcp.servers.\"{bad}\"]\ncommand = \"a\"\n");
+        assert!(
+            parse_settings(&text, Path::new("u.toml"), Column::User).is_err(),
+            "{bad}"
+        );
+    }
+    user_ok("[mcp.servers.my-server_1]\ncommand = \"a\"\n");
 }
 
 #[test]

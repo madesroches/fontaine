@@ -92,7 +92,7 @@ pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
     })
 }
 
-fn validate_mcp_name(name: &str) -> Result<(), String> {
+pub(crate) fn validate_mcp_name(name: &str) -> Result<(), String> {
     let rest = &name[fontaine_tools::names::MCP_TOOL_PREFIX.len()..];
     let (server, tool) = match rest.split_once("__") {
         Some((server, tool)) => (server, Some(tool)),

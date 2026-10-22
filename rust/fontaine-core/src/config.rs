@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::credentials;
-use crate::permission_rules::{Rule, RuleError, parse_rule};
+use crate::permission_rules::{Rule, RuleError, parse_rule, validate_mcp_name};
 use crate::trust::{self, LocalClassification, ProjectDemotion};
 use fontaine_tools::names::{is_builtin, is_mcp};
 
@@ -618,8 +618,16 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
             }
             _ => return bad(&key, "set exactly one of `command` (stdio) or `url`"),
         }
-        if name.is_empty() || name.contains("__") {
-            return bad(&key, "server names are non-empty and contain no `__`");
+        if name.is_empty()
+            || name.contains("__")
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return bad(
+                &key,
+                "server names are non-empty, contain no `__`, and use only letters, digits, `_` and `-`",
+            );
         }
     }
     if let Some(a) = &s.agents {
@@ -641,7 +649,7 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
                 .tools
                 .iter()
                 .flatten()
-                .find(|t| !is_builtin(t) && !is_mcp(t))
+                .find(|t| !(is_builtin(t) || is_mcp(t) && validate_mcp_name(t).is_ok()))
             {
                 return bad(&key, &format!("unknown tool `{tool}` in `tools`"));
             }
