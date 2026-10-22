@@ -477,15 +477,17 @@ fn prefix_anywhere(analysis: &ShellAnalysis, words: &[String]) -> bool {
 
 /// A command that cannot be read as a plain word stream (it failed to parse, hides something
 /// from the walk, or has an expanded word where the command name goes) matches every rule
-/// whose first word it contains as a whole word.
+/// whose first word it contains as a whole word; an expanded command name matches every rule.
 fn cannot_tell(analysis: &ShellAnalysis, command: &str, words: &[String]) -> bool {
-    let opaque = !analysis.parsed
-        || analysis.unanalyzed
-        || analysis
-            .commands
-            .iter()
-            .any(|c| c.words.first().is_some_and(|w| w.literal.is_none()));
-    opaque
+    // An expanded command name could be any program, whatever the rule's words are.
+    if analysis
+        .commands
+        .iter()
+        .any(|c| c.words.first().is_some_and(|w| w.literal.is_none()))
+    {
+        return true;
+    }
+    (!analysis.parsed || analysis.unanalyzed)
         && words.first().is_some_and(|first| {
             let plain = first
                 .chars()
@@ -709,6 +711,17 @@ mod tests {
         assert!(shell("shell(git push)", "git push origin"));
         assert!(shell("shell(rm)", "sh -c 'rm x'"));
         assert!(shell("shell(rm)", "echo 'unterminated; rm x"));
+    }
+
+    #[test]
+    fn an_expanded_command_name_matches_every_rule() {
+        let shell = |rule: &str, command: &str| {
+            denied(rule, "shell", serde_json::json!({ "command": command }))
+        };
+        assert!(shell("shell(rm)", "X=r; ${X}m -rf /"));
+        assert!(shell("shell(rm)", "$(printf r)m -rf ~"));
+        assert!(!shell("shell(rm)", "ls $HOME"));
+        assert!(!shell("shell(rm)", "echo $(date)"));
     }
 
     #[test]

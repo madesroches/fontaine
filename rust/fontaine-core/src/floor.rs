@@ -111,6 +111,13 @@ fn scan(analysis: &ShellAnalysis, base: &Path, env: &CriticalEnv<'_>) -> Option<
     }
     let mut mentions_deleter = false;
     for command in &analysis.commands {
+        // An expanded command name (`${X}m -rf /`) could be rm.
+        if command.words.first().is_some_and(|w| w.literal.is_none()) {
+            return Some(format!(
+                "command name `{}` cannot be resolved",
+                command.words[0].raw
+            ));
+        }
         for (at, word) in command.words.iter().enumerate() {
             if is_deleter(word) {
                 mentions_deleter = true;
@@ -252,6 +259,15 @@ mod tests {
             "sh -c 'rm -rf /'",
             "rm -rf -- /",
             "rm -r 'unterminated",
+            "su -c 'rm -rf /'",
+            "watch 'rm -rf ~'",
+            "flock /tmp/l -c 'rm -rf /'",
+            "script -c 'rm -rf /' /dev/null",
+            "env -S 'rm -rf /'",
+            "runuser -c 'rm -rf /' bob",
+            "ssh host 'rm -rf /'",
+            "X=r; ${X}m -rf /",
+            "$(printf r)m -rf ~",
         ] {
             assert!(critical_shell(cmd, None, &env).is_some(), "{cmd}");
         }
@@ -266,6 +282,8 @@ mod tests {
             "git rm src/a.rs",
             "git commit -m \"don't rm this\"",
             "git commit -m \"it's a format fix\"",
+            "ls $HOME",
+            "echo $(date)",
         ] {
             assert!(critical_shell(cmd, None, &env).is_none(), "{cmd}");
         }

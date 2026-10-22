@@ -37,8 +37,10 @@ A call goes through these steps in order and the first one that decides wins.
    - **critical path**: a `shell` command that removes the file system root, a top-level
      directory, your home directory, a workspace root or a parent of one asks. The command is
      parsed with a real shell parser, and every `rm` and `rmdir` word in any segment of a list,
-     pipe or substitution is inspected. A target that cannot be resolved (a variable, a glob, a
-     tilde, a brace pattern), a command that does not parse, and an `rm` inside a command that is
+     pipe or substitution is inspected. The string a launcher runs as a command line (`sh -c`,
+     `su -c`, `watch`, `flock -c`, `script -c`, `env -S`, `ssh host`) is parsed too; other quoted
+     text is data. A command name built from an expansion counts as critical.
+     A target that cannot be resolved (a variable, a glob, a tilde, a brace pattern), a command that does not parse, and an `rm` inside a command that is
      not one simple command all count as critical.
    - **protected path**: `write` and `edit` on a path with a component named `.git`, `.vscode`,
      `.idea`, `.husky` or `.fontaine`, or whose file name is `.gitconfig`, `.gitmodules`,

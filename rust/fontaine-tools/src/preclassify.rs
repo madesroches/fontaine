@@ -231,7 +231,7 @@ impl Walk<'_> {
         }
         // Only the arguments of a command runner hold a command line; any other quoted text
         // with spaces is data.
-        if let Some(runner) = words.iter().position(is_runner) {
+        if let Some(runner) = (0..words.len()).find(|&at| is_runner(&words, at)) {
             for word in &words[runner + 1..] {
                 self.nested(word);
             }
@@ -386,15 +386,27 @@ impl Walk<'_> {
 }
 
 /// Brace expansion (`{a,b}`, `{1..3}`) turns one word into several.
+/// Programs that run a string argument as a command line. Launchers that take an argv, such as
+/// `sudo` or `timeout`, are not here: their arguments are already words of the command.
 const RUNNERS: &[&str] = &[
-    "sh", "bash", "zsh", "dash", "ash", "ksh", "csh", "tcsh", "fish", "eval",
+    "sh", "bash", "zsh", "dash", "ash", "ksh", "csh", "tcsh", "fish", "eval", "su", "runuser",
+    "watch", "flock", "script", "ssh",
 ];
 
-fn is_runner(word: &ShellWord) -> bool {
-    word.literal.as_deref().is_some_and(|text| {
-        let name = text.rsplit('/').next().unwrap_or(text);
-        RUNNERS.contains(&name)
-    })
+fn is_runner(words: &[ShellWord], at: usize) -> bool {
+    let Some(text) = words[at].literal.as_deref() else {
+        return false;
+    };
+    let name = text.rsplit('/').next().unwrap_or(text);
+    if name == "env" {
+        // Only `env -S 'cmd args'` splits a string into a command; plain `env` takes an argv.
+        return words[at + 1..].iter().any(|w| {
+            w.literal
+                .as_deref()
+                .is_some_and(|a| a.starts_with("-S") || a.starts_with("--split-string"))
+        });
+    }
+    RUNNERS.contains(&name)
 }
 
 fn has_brace_pattern(raw: &str) -> bool {
@@ -849,6 +861,9 @@ mod tests {
         assert_eq!(count("git commit -m 'fix git push'"), 1);
         assert_eq!(count("sh -c 'rm x'"), 2);
         assert_eq!(count("sudo bash -c 'rm x'"), 2);
+        assert_eq!(count("su -c 'rm x'"), 2);
+        assert_eq!(count("env -S 'rm x'"), 2);
+        assert_eq!(count("env FOO=1 git commit -m 'a b'"), 1);
         assert!(analyze("git commit -m \"don't rm this\"").parsed);
         assert!(!analyze("git commit -m \"don't rm this\"").unanalyzed);
     }

@@ -78,8 +78,20 @@ impl<R: FnMut(&App)> Ui<R> {
 
     fn on_prompt(&mut self, prompt: Prompt) {
         match prompt {
+            // The call's turn was cut short while the prompt sat in the queue.
+            Prompt::Ask(_, reply) if reply.is_closed() => {}
             Prompt::Ask(request, reply) => self.app.begin_approval(*request, reply),
             Prompt::Notice(message) => self.app.transcript.notice(message),
+        }
+    }
+
+    /// Handles what queued up during a turn that has ended: the asks belong to calls that no
+    /// longer exist, so they are dropped, but notices still count.
+    fn drain_prompts(&mut self) {
+        while let Ok(prompt) = self.prompts.try_recv() {
+            if let Prompt::Notice(message) = prompt {
+                self.app.transcript.notice(message);
+            }
         }
     }
 
@@ -211,6 +223,7 @@ impl<R: FnMut(&App)> Ui<R> {
     async fn finish_turn(&mut self, runtime: &AgentRuntime, end: &TurnEnd) {
         self.app.running = false;
         self.app.deny_pending();
+        self.drain_prompts();
         match end {
             TurnEnd::Finished(TurnOutcome::Failed(message)) => {
                 self.app.transcript.error(message.clone());
@@ -303,4 +316,60 @@ pub async fn run(setup: AgentSetup, launch_dir: PathBuf) -> Result<(), String> {
     stop.store(true, Ordering::Relaxed);
     let _ = reader.await;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fontaine_core::config::PermissionMode;
+    use fontaine_core::permissions::Offers;
+    use fontaine_core::tier::Tier;
+
+    fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&App)> {
+        Ui {
+            app: App::new(PermissionMode::Manual, "m".into()),
+            input: unbounded_channel().1,
+            prompts,
+            render: |_: &App| {},
+        }
+    }
+
+    fn ask() -> (Prompt, oneshot::Receiver<Answer>) {
+        let (reply, answer) = oneshot::channel();
+        let request = ApprovalRequest {
+            tool: "shell".into(),
+            agent: "main".into(),
+            tool_use_id: None,
+            args: serde_json::json!({}),
+            summary: "ls".into(),
+            tier: Tier::AllowRule,
+            reason: "r".into(),
+            offers: Offers::default(),
+            proposed_rule: None,
+        };
+        (Prompt::Ask(Box::new(request), reply), answer)
+    }
+
+    #[test]
+    fn an_ask_queued_when_the_turn_ends_never_opens() {
+        let (tx, rx) = unbounded_channel();
+        let mut ui = ui(rx);
+        let (prompt, answer) = ask();
+        tx.send(prompt).unwrap();
+        tx.send(Prompt::Notice("kept".into())).unwrap();
+        ui.drain_prompts();
+        assert!(ui.app.approval.is_none());
+        assert!(ui.prompts.try_recv().is_err());
+        drop(answer);
+    }
+
+    #[test]
+    fn an_ask_whose_call_is_gone_is_ignored() {
+        let (_tx, rx) = unbounded_channel();
+        let mut ui = ui(rx);
+        let (prompt, answer) = ask();
+        drop(answer);
+        ui.on_prompt(prompt);
+        assert!(ui.app.approval.is_none());
+    }
 }
