@@ -15,7 +15,7 @@ All notable changes are recorded here. The format follows
   credentials lookup, directory resolution with `FONTAINE_CONFIG_DIR` and `FONTAINE_DATA_DIR`,
   owner-only file creation, and the `[telemetry]` required-inputs rule.
 - Tracing facade with an optional owner-only debug file (`--debug-file`, `FONTAINE_LOG`) and an
-  empty export slot.
+  inert export layer.
 - Golden dataset seed and the offline `fontaine-evals` fixture runner.
 - Documentation tree under `docs/`, root README, contributing guide and security policy.
 - GitHub Actions CI on Linux, macOS and Windows: format, clippy, tests, `cargo deny` and the offline
