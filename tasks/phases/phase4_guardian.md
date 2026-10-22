@@ -70,7 +70,7 @@ pub struct Verdict {
                                  //   fontaine-guardian and seeded in prompts/guardian_prompt.md; `allow`
                                  //   exactly when decision == Allow
     pub explanation: String,     // 1-3 sentences, shown to user and fed back to the agent on deny
-    pub confidence: f32,         // guardian self-report; decision == Allow ∧ the call's derived
+    pub confidence: f64,         // guardian self-report; decision == Allow ∧ the call's derived
                                  //   `destructive` flag ∧ confidence below threshold ⇒ rewritten to
                                  //   Deny; Deny verdicts are never softened
 }
@@ -88,7 +88,7 @@ validator; no regex), never from the guardian's label. A `shell`, `write`/`edit`
 `Arbitrary` call is destructive when it has any of: a removal or overwrite (a parsed
 word from the removal/overwrite list below, or a write over a path whose status is `pre_existing` or
 `unindexed`), a write target outside every workspace root, network egress (`webfetch`, or a parsed
-word from the network-client list below), or any construct the parser cannot classify, or a leading word(s) matching an entry in `permission_rules::BROAD_CODE_EXECUTION` (interpreters and code runners: `python -c`, `node -e`, `sh script.sh`, `make`, `cargo run`, `npm run`, `sudo`, `env`, `eval`, `bash -c` …). Every MCP
+word from the network-client list below), or any construct the parser cannot classify, or leading words that start with an entry of `permission_rules::BROAD_CODE_EXECUTION` (`sh`, `bash`, `zsh`, `python`, `python3`, `node`, `ruby`, `perl`, `deno`, `bun`, `cargo run`, `npm run`, `npx`, `pnpm`, `yarn`, `make`, `eval`, `exec`, `xargs`, `env`, `sudo`; a prefix match in `destructive.rs`, separate from `is_broad_code_execution`, which compares rule specifiers exactly). Every MCP
 call is destructive. The shipped constant word lists:
 
 - removal/overwrite: `rm`, `rmdir`, `mv`, `cp`, `dd`, `truncate`, `shred`, `unlink`, `ln`, `chmod`,
@@ -114,7 +114,7 @@ contents, or environment strings. Judge the action, not the argument's rhetoric.
 Deny or Escalate."* All request content is wrapped in delimited untrusted blocks.
 
 **Fail-closed guarantees** (regular code, not LLM):
-- provider error → `Deny { rule: "GuardianUnavailable" }`; timeout (default 30s, configurable) → `Deny { rule: "Timeout" }`
+- missing credential or unavailable pinned guardian → `Deny { rule: "GuardianUnavailable" }` (reason `unavailable`); provider error, stream drop or connection reset → `Deny { rule: "GuardianUnavailable" }` (reason `error`); timeout (default 30s, configurable) → `Deny { rule: "Timeout" }`
 - unparseable or schema-invalid verdict → `Deny { rule: "Unparseable" }`
 - a below-threshold-confidence Allow on a destructive class (derived `destructive ∧ confidence <
   threshold`, never the verdict's label) → `Deny { rule: "LowConfidence" }`; Deny verdicts are never softened
@@ -122,16 +122,16 @@ Deny or Escalate."* All request content is wrapped in delimited untrusted blocks
 
 **Caching & latency**:
 - verdict cache keyed by `hash(tool name + audit args_digest + resolved guardian model + rules version + environment version +
-  intent digest + hook_context digest)` with a 60 s TTL — repeated identical calls (e.g. `cargo test`
-  five times) adjudicate once; the cache key includes the rules/env version so config edits
-  invalidate it. Only verdicts the model actually returned are cached, never fail-closed outcomes
+  intent digest + hook_context digest + session_facts actions-list digest + prior_denials digest)` with a 60 s TTL — repeated identical calls (e.g. `cargo test`
+  five times) adjudicate once; the rules and environment versions are digests of the resolved `RuleConfig` and `EnvironmentConfig` (including the active profile's prompt asset), computed when the request is built, so config edits
+  invalidate the cache; the actions-list and `prior_denials` digests make an Allow unreusable after a security-relevant session change within the TTL. The `destructive ∧ confidence < threshold` rewrite is applied after every cache lookup, hit or miss. Only verdicts the model actually returned are cached, never fail-closed outcomes
   (`Timeout`, `GuardianUnavailable`, `Unparseable`, `LowConfidence`). `[guardian] cache = false` turns the cache off.
 - the numeric budgets above (60 s cache TTL, 2,000-character `task_intent`, last 5 `recent_user_messages`, last 20 actions taken, 2 extractor retries) are shipped constants in `fontaine-guardian`, not config keys.
 - guardian runs concurrently with nothing else pending (it is on the critical path); mitigate with
   a fast default guardian model and by skipping, without a user grant, only the Fontaine-validated in-workspace read-only
   fast-path calls (pipeline step 4) and Tier-0.5 pre-classified shell calls (step 5), plus narrow user allow-rule / hook `allow` matches (step 5a); out-of-scope
   shell reads (e.g. `ls ../`), anything the pre-classifier cannot fully parse, and MCP tools are never skipped.
-- tool calls in one turn are adjudicated one at a time, in order (rig-agent `tool_concurrency = 1`);
+- tool calls in one turn are adjudicated one at a time, in order (rig-agent's default `AgentRunner::tool_concurrency(1)`, set explicitly in `rust/fontaine-core/src/turn.rs`);
   a Deny does not poison later calls (each gets its own tool_result).
 
 **Minimal guardian profile (`[guardian] profile = "minimal"`)** — the container-mode narrowing;
@@ -169,7 +169,7 @@ it narrows the guardian, which adjudicates just less:
    extraction (`rig_agent::extractor` over the synthetic output tool) with retries, then validated
    by our own fail-closed code; prompt builder (versioned `guardian_prompt.md` asset + default rule
    lists seeded from Claude Code's published defaults — source: https://code.claude.com/docs/en/auto-mode-config and the output of `claude auto-mode defaults`, captured under the `claude -p`/CLI baseline rule; attribution note per AGENTS.md in `docs/guardian.md`); timeout, verdict cache, consecutive-denial
-   loop breaker; `rig_core::redact` applied to anything credential-shaped in adjudication inputs.
+   loop breaker; `rig_core::redact` applied to anything credential-shaped in adjudication inputs. `rust/fontaine-guardian/Cargo.toml` lists runtime deps `rig-core`, `rig-agent`, `schemars`, `serde`, `serde_json`, `tokio`, `tracing` (pinned per the workspace convention) and dev deps `insta`, `tokio` (`test-util`), `wiremock`. `RuleLabel` is validated through serde enum deserialization plus rig's required-field check, not a jsonschema runtime dependency.
 2. Wire `auto` mode into the pipeline (fills pipeline branches 7 and 9); denial explanation →
    tool_result; denial records (to the ledger and audit log); the request builder reads only the ledger and
    fills `destructive` and the touched paths' pre-existence status. Allow rules in `auto` (`tasks/design/permissions.md` §Permission rules):
@@ -177,31 +177,30 @@ it narrows the guardian, which adjudicates just less:
    for as long as the mode is on and listed (TUI notice, headless `init` event). Telemetry: a
    `fontaine.guardian` span (`target: "fontaine::telemetry"`, the exporter allowlist) in `fontaine-guardian` (which, for telemetry, uses only `tracing` — no subscriber or exporter), guardian model
    usage attributed `query_source = guardian`: an ancestor walk in `rust/fontaine/src/telemetry/span_bridge.rs` (replacing the hard-coded `"main"`) makes a rig `chat` span under `fontaine.guardian` report it, and
-   `fontaine.guardian.fail_closed.count` by reason. Shipped default mode
-   flips `manual` → `auto` for the interactive TUI only when no `default_mode` is configured; headless `-p` keeps defaulting to `manual` (Claude Code's `-p` starts in `default`), and an explicit `default_mode` applies to both surfaces. Done here, and the pre-Phase-4 restriction on user-scope `default_mode = "auto"` (config error) and on `--permission-mode auto` (usage error) is removed — project and project-local `auto` stay rejected — and only the user and CLI cases of the Phase 0 config tests and Phase 1 `headless_smoke.rs` "auto rejected" tests flip to assert acceptance. Headless `-p` semantics for `auto`: `tasks/design/permissions.md` §Headless.
+   `fontaine.guardian.fail_closed.count` by reason plus `fontaine.guardian.latency`: `span_bridge.rs` derives both from the guardian attributes of the `tool_decision` event, and both instruments are registered in `rust/fontaine/src/telemetry/otlp.rs` (which drops unknown metric names). In `auto`, a protected-path `edit`/`write` goes to the guardian instead of the forced prompt (other modes unchanged), in `rust/fontaine-core/src/permissions.rs`. Shipped default mode
+   flips `manual` → `auto` for the interactive TUI only when no `default_mode` is configured; headless `-p` keeps defaulting to `manual` (Claude Code's `-p` starts in `default`): the resolved `default_mode` becomes `Option<PermissionMode>` (unset ⇒ `None`) and `session_mode` in `rust/fontaine/src/lib.rs` applies the surface fallback (TUI ⇒ `auto`, `-p` ⇒ `manual`), and an explicit `default_mode` applies to both surfaces. Done here, and the pre-Phase-4 restriction on user-scope `default_mode = "auto"` (config error) and on `--permission-mode auto` (usage error) is removed — project and project-local `auto` stay rejected — and only the user and CLI cases of the Phase 0 config tests and Phase 1 `headless_smoke.rs` "auto rejected" tests flip to assert acceptance. Headless `-p` semantics for `auto`: `tasks/design/permissions.md` §Headless.
 3. TUI denial UX: `statusbar.rs` `CYCLE` gains `auto` (unit test `the_cycle_wraps_without_auto` renamed and updated); inline denial rendering, `/denied` retry list,
    `/model` and `/guardian-model` switches (live session + persisted to the user file via `toml_edit`; unavailable-pinned-guardian prompt — design above), Escalate-verdict prompts.
 4. Eval runner live modes (`rust/fontaine-evals/src/{live,report}.rs`; CLI in `tasks/design/testing.md` Testing Strategy, Eval harness): `--guardian live:<account>/<model>` routes
    `kind = guardian` cases to `Guardian::adjudicate` and `kind = pipeline` cases to `PermissionPipeline`
-   under the case's `mode` and materialized `workspace`; per-case latency is recorded in the JSON output
+   under the case's `mode` and materialized `workspace`; `live:<account>/<model>` resolves through fontaine-core's account and credential loading, the same as `fontaine -p`; the step adds a `rust/fontaine-evals/tests/common/mod.rs` scripted guardian endpoint (wiremock dev-dependency in `rust/fontaine-evals/Cargo.toml`); per-case latency is recorded in the JSON output
    with p50/p95; `report.rs` computes the inclusion bar (catch rate, false-deny rate, p95) and writes
    qualifying entries, ranked, into the `--models-file` target (default `rust/fontaine-guardian/data/guardian_models.toml`). `scanner`-kind
    live routing is Phase 6 step 1.
-5. Minimal profile implementation: profile resolution (`[guardian] profile`, user trust scopes only per the config scope table; only
-   `full`/`minimal` validate) with the reduced ruleset (`rust/fontaine-guardian/prompts/guardian_minimal.md`, versioned alongside `guardian_prompt.md`) and the trimmed `AdjudicationRequest` (fields kept/dropped per the Minimal guardian profile section) on the resolved `[guardian] model` (no separate model key; `rust/fontaine-guardian/src/profile.rs`); the runtime containment probe
+5. Minimal profile implementation: runtime profile resolution with the reduced ruleset (`rust/fontaine-guardian/prompts/guardian_minimal.md`, versioned alongside `guardian_prompt.md`) and the trimmed `AdjudicationRequest` (fields kept/dropped per the Minimal guardian profile section) on the resolved `[guardian] model` (no separate model key; `rust/fontaine-guardian/src/profile.rs`); the runtime containment probe
    (Linux: contained if ANY of `/.dockerenv` exists, `/run/.containerenv` exists (Podman), PID 1's
    environment has `container=` (read `/proc/1/environ`; unreadable ⇒ no signal), or `/proc/1/cgroup`
    contains `docker`, `kubepods`, `containerd`, `libpod` or `lxc`; macOS and Windows always report "not
    contained"; srt/bubblewrap launch detection is deferred to the Phase 5 roadmap slot) in
    `rust/fontaine-core/src/containment.rs`, reading through an injectable root path so tests use a fake root, with the `--in-container` clap flag (added here) as an input that is
-   never sufficient alone; on probe failure or missing verification, resolve to `full` and emit a
+   never sufficient alone; on probe failure or missing verification with `[guardian] profile = "minimal"` configured, resolve to `full` and emit a
    one-time notice.
 6. Run the Phase-0 eval harness (`--guardian live:<account>/<model>`) against live guardian models and **publish the guardian scorecard**
    with the release: catch rate per attack class × false-deny rate on benign commands × per-model
    results (no ASR × utility / AgentDojo-comparable reporting); the same harness validates and **ranks the guardian
    candidates for the default-guardian list** and writes the entries that clear the inclusion bar
-   (design above, measured on `--profile full` runs only; a `--profile minimal` run scores every `minimal`-profile case plus all `full`-profile `guardian` cases) into `rust/fontaine-guardian/data/guardian_models.toml` (full-profile entries only). The published scorecard (`docs/evals.md`) includes a **`minimal` profile column** (same golden set +
-   escape-focused additions; a profile ships only once it is scored). Also run the `fontaine-evals` `baseline capture` (which writes each case's `permissions` as equivalent `.claude/settings.json` permissions in the scratch workspace) / `baseline diff` subcommands with
+   (design above; profile semantics per `tasks/design/testing.md` Runner CLI) into `rust/fontaine-guardian/data/guardian_models.toml` (full-profile entries only). The published scorecard (`docs/evals.md`) includes a **`minimal` profile column** (same golden set +
+   escape-focused additions; a profile ships only once it is scored). Also run the `fontaine-evals` `baseline capture` (which writes each case's `permissions` as equivalent `.claude/settings.json` permissions in the scratch workspace) / `baseline diff` subcommands (step 6 changes `capture_skip_reason` in `rust/fontaine-evals/src/baseline.rs` to let `auto` cases through, mapping them to `claude -p --permission-mode auto`) with
    `auto` against the Tier-0.5 adversarial set and the floor/headless cases to confirm the
    Claude Code parity (manual/eval-side, never a CI dependency — see AGENTS.md).
 7. Release setup: cargo-dist `0.32.0` configured in `rust/Cargo.toml` and
@@ -226,10 +225,10 @@ it narrows the guardian, which adjudicates just less:
 
 ## Files created or modified
 
-`rust/Cargo.toml` (dev: tokio `test-util` feature for the time-pause tests; `insta` from Phase 2 for the prompt-builder snapshots); `rust/fontaine-guardian/src/{lib,verdict,prompt_builder,rules,cache,profile}.rs` (`rules.rs` holds `RuleConfig` and the seeded default lists, separate from the existing `rule_label.rs`) + `rust/fontaine-guardian/Cargo.toml` + `rust/fontaine-evals/src/{live,report}.rs` +
+`rust/Cargo.toml` (dev: tokio `test-util` feature for the time-pause tests; `insta` from Phase 2 for the prompt-builder snapshots); `rust/fontaine-guardian/src/{lib,verdict,prompt_builder,rules,cache,profile}.rs` (`rules.rs` holds `RuleConfig` and the seeded default lists, separate from the existing `rule_label.rs`) + `rust/fontaine-guardian/Cargo.toml` + `rust/fontaine-evals/src/{live,report,baseline}.rs` + `rust/fontaine-evals/Cargo.toml` (wiremock dev-dep) +
 `rust/fontaine-guardian/prompts/{guardian_prompt,guardian_minimal}.md` + `rust/fontaine-guardian/data/guardian_models.toml`
-(ships empty; filled by step 6); `rust/fontaine-evals/tests/{live,report}.rs`; `rust/fontaine-core/src/permissions.rs`
-(auto branch); `rust/fontaine-core/src/config.rs` (`phase_gate` stops rejecting auto; `Config::defaults` default mode); `rust/fontaine-core/src/user_config.rs` (`/model` persistence writer); `rust/fontaine/src/lib.rs` (`session_mode` no longer a usage error on auto; surface-specific default); `rust/fontaine/src/telemetry/span_bridge.rs`; `rust/fontaine-tui/src/statusbar.rs` (`CYCLE` gains auto); `rust/fontaine-core/src/{containment,destructive}.rs`; `rust/fontaine-tui/src/{denials,approval}.rs`;
+(ships empty; filled by step 6); `rust/fontaine-evals/tests/{live,report}.rs`, `rust/fontaine-evals/tests/common/mod.rs`; `rust/fontaine-core/src/permissions.rs`
+(auto branch); `rust/fontaine-core/src/config.rs` (`phase_gate` stops rejecting auto; `Config::defaults`: resolved `default_mode` becomes `Option<PermissionMode>`); `rust/fontaine-core/src/user_config.rs` (`/model` persistence writer); `rust/fontaine/src/lib.rs` (`session_mode` no longer a usage error on auto; surface-specific default); `rust/fontaine/src/telemetry/{span_bridge,otlp}.rs`; `rust/fontaine-tui/src/statusbar.rs` (`CYCLE` gains auto); `rust/fontaine-core/src/{containment,destructive}.rs`; `rust/fontaine-tui/src/{denials,approval}.rs`;
 tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/fontaine/tests/`,
 `rust/fontaine-tui/tests/`; `.github/workflows/{release,ci}.yml` (+ cargo-dist config in `rust/Cargo.toml`); `docs/{guardian,evals,tui,permissions,configuration,telemetry,headless,index,architecture}.md`; `rust/fontaine-core/tests/docs.rs`;
 `rust/fontaine-core/tests/config.rs` and `rust/fontaine/tests/headless_smoke.rs` (the "auto rejected" tests flip, step 2);
@@ -243,7 +242,7 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   streaming clients (`HttpErrorStreamingClient`, `NonSuccessStreamingClient`,
   `SequencedStreamingHttpClient`) or a raw `tokio::net::TcpListener` that drops the socket (wiremock
   0.6 has no reset/abort API); an Allow below `confidence_threshold` on a destructive class → Deny,
-  and a Deny verdict is never softened; cache-key correctness incl. rules-version invalidation; a `Timeout` followed by an identical call reaches the guardian again; a guardian-model switch misses the cache; `cache = false` ⇒ two identical calls make two guardian calls; loop
+  and a Deny verdict is never softened; cache-key correctness incl. rules-version invalidation; a `Timeout` followed by an identical call reaches the guardian again; a guardian-model switch misses the cache; a changed session actions list or `prior_denials` misses the cache (`sh x.sh` allowed, x.sh rewritten, identical `sh x.sh` reaches the guardian again); the low-confidence rewrite applies on a cache hit; `cache = false` ⇒ two identical calls make two guardian calls; loop
   breaker (3 consecutive / 20 total denials pause `auto`; approval resumes; headless paused ⇒ Deny); prompt-builder `insta` snapshots (defaults spliced, `$defaults` marker, untrusted delimiting
   present); redaction of credential-shaped inputs; minimal-profile resolution fail-closed (probe
   failure ⇒ fall back to `full`), and under `minimal` the guardian receives an `AdjudicationRequest` without `project_instructions`, `hook_context` and `prior_denials`, with `task_intent` ≤ 500 chars and ≤ 3 `recent_user_messages`, rendered from `guardian_minimal.md`, while the escape primitives (mount, docker.sock write, cgroup control write, proxy bypass) + exfiltration-class
@@ -252,7 +251,7 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
   (`/.dockerenv`, `/run/.containerenv`, `container=` in `/proc/1/environ`, each cgroup marker) ⇒
   contained; an empty root and a plain-host cgroup ⇒ not contained; unreadable `/proc/1/environ` ⇒ no
   signal, not an error; macOS/Windows ⇒ not contained; a positive probe without `--in-container`, and
-  `--in-container` without a positive probe, both ⇒ `full` with the notice.
+  `--in-container` without a positive probe, both with `[guardian] profile = "minimal"` configured ⇒ `full` with the notice.
 - **eval live modes** (`rust/fontaine-evals/tests/live.rs`, offline against the scripted wiremock guardian): `guardian` cases reach `Guardian::adjudicate` and `pipeline` cases the `PermissionPipeline` under the case's `mode`/`workspace`; the JSON output carries per-case latency with p50/p95; `report.rs` writes only models clearing the bar into a temp `guardian_models.toml`, in ranked order.
 - **guardian list** (`rust/fontaine-evals/tests/report.rs`, the owner of `report.rs`): a synthetic scorecard applies the inclusion
   bar (catch computed over `kind = guardian` `attack:*` cases and false-deny over `kind = guardian` benign cases only — `pipeline`/`scanner` cases never count; below-bar catch, above-bar false-deny or slow p95 each excluded) and the catch → false-deny →
@@ -274,7 +273,7 @@ tests under `rust/fontaine-guardian/tests/`, `rust/fontaine-core/tests/`, `rust/
 - **ledger-only request**: after a compaction whose summary carries a canary instruction, the
   `AdjudicationRequest` holds the verbatim user messages and no canary text.
 - **telemetry**: guardian verdicts match bit-for-bit between telemetry off and a failing exporter;
-  timeout (`timeout`), unparseable (`unparseable`), 500 (`error`), missing credential (`unavailable`) and low confidence (`low_confidence`) fail-closed reasons are each counted once under those names, with the audit labels `Timeout` / `Unparseable` / `GuardianUnavailable` / `GuardianUnavailable` / `LowConfidence`; a rig `chat` span under `fontaine.guardian` reports `query_source = guardian`.
+  timeout (`timeout`), unparseable (`unparseable`), 500 (`error`), missing credential (`unavailable`) and low confidence (`low_confidence`) fail-closed reasons are each counted once under those names, with the audit labels `Timeout` / `Unparseable` / `GuardianUnavailable` / `GuardianUnavailable` / `LowConfidence`; a rig `chat` span under `fontaine.guardian` reports `query_source = guardian`; `fontaine.guardian.fail_closed.count` and `fontaine.guardian.latency` both reach the OTLP export.
 - **TUI** (`rust/fontaine-tui/tests/`): `TestBackend` with injected key events and a scripted
   model — `/denied` lists a denied action and `r` injects the retry notice into the agent's next
   turn; the Shift+Tab cycle now includes `auto`; `/model` switches the live model and persists it to the user file; `/guardian-model` switches the guardian and persists it, and an unavailable pinned guardian offers retry / pick another validated guardian / switch to `manual`.
