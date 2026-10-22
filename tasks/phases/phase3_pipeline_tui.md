@@ -35,7 +35,7 @@ Phase 5; see those plans.)
 
 Conservative starting table; any flag not listed, any `--flag=value` whose flag is not listed, and
 any combined short-flag cluster containing an unlisted letter fall through to the guardian (`ls -la`
-is accepted as `-l -a`). Positional tokens are validated as paths. Numeric flag values are parsed as integers, not pattern-matched. Check the
+is accepted as `-l -a`). Positional tokens are validated as paths. Numeric flag values are parsed as integers, not pattern-matched. A path-valued flag (`FILE`) pre-classifies only when its value resolves in scope; an out-of-scope value falls through to the guardian. Check the
 table against `claude -p` baselines (step 3) and record differences in Decisions.
 
 | Command | Allowed flags | Values validated as paths |
@@ -43,11 +43,11 @@ table against `claude -p` baselines (step 3) and record differences in Decisions
 | `ls` | `-a -A -l -h -1 -d -t -r -S -F` | positionals |
 | `pwd` | none | — |
 | `wc` | `-l -w -c -m` | positionals |
-| `file` | `-b -i --mime --mime-type --brief` | positionals; `-m`/`--magic-file` value. `-f`/`--files-from` not allowed (indirect reads) |
+| `file` | `-b -i --mime --mime-type --brief -m FILE --magic-file FILE` | positionals; `-m`/`--magic-file` value. `-f`/`--files-from` not allowed (indirect reads) |
 | `cat` | `-n -b -s` | positionals |
 | `head`, `tail` | `-n N -c N -q -v` (`tail -f`/`-F` not allowed) | positionals |
-| `rg` | `-i -s -S -n -N -H -w -x -F -v -c -l -A N -B N -C N -m N -t TYPE -T TYPE --hidden --no-heading` | positionals; `-f`/`--file`, `--ignore-file` values. `--pre`, `--pre-glob`, `--hostname-bin`, `-z`/`--search-zip`, `-L`/`--follow`, `-g`/`--glob` not allowed |
-| `grep` | `-i -n -v -w -x -F -E -c -l -L -H -h -o -q -s -r -A N -B N -C N` | positionals; `-f`/`--file` value. `-R` and `--exclude-from` not allowed |
+| `rg` | `-i -s -S -n -N -H -w -x -F -v -c -l -A N -B N -C N -m N -t TYPE -T TYPE --hidden --no-heading -f FILE --file FILE --ignore-file FILE` | positionals; `-f`/`--file`, `--ignore-file` values. `--pre`, `--pre-glob`, `--hostname-bin`, `-z`/`--search-zip`, `-L`/`--follow`, `-g`/`--glob` not allowed |
+| `grep` | `-i -n -v -w -x -F -E -c -l -L -H -h -o -q -s -r -A N -B N -C N -f FILE --file FILE` | positionals; `-f`/`--file` value. `-R` and `--exclude-from` not allowed |
 
 No `git` subcommand is in the curated set: every git invocation goes to the guardian, because repo-controlled config and attributes can make a read-only subcommand execute a program.
 
@@ -81,11 +81,14 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
    and `fontaine.tool.blocked_on_user` spans, `permission_mode_changed` event; human-approval
    callback trait.
    Plan mode's step-9 guardian leg falls through to the human prompt until the guardian ships (audit `tier = mode`, including its headless Deny).
+   Delete `StubGate` and `rust/fontaine-core/tests/gate_stub.rs`; rewrite the stub-era tests in `rust/fontaine/tests/headless_tools.rs` under pipeline semantics; the pipeline keeps appending a ledger Action/Denial record for every decision (as `StubGate` did in `gate.rs`).
+   The interactive TUI rejects `--permission-mode auto` with the same usage error (exit 2) as `-p`: move the check in `rust/fontaine/src/lib.rs` above the `if !cli.print` early return.
+   Telemetry also emits the `fontaine.tool_decision.count` metric (attrs `tier`, `decision`; `tasks/design/observability.md`), derived in `rust/fontaine/src/telemetry/span_bridge.rs` from the same `GateDecision`.
    Interim default mode: `manual` — no auto without a guardian. Headless `-p` semantics: `tasks/design/permissions.md` §Headless.
-2. `fontaine-tui`: transcript, streaming render, input, approval prompts (incl. allow session /
-   always allow), status bar, mode cycling, `/add-dir`.
+2. First move the agent build and session/state setup (`build_agent`, `SessionState`/scope construction, `record_session_start`, the stream loop) out of `rust/fontaine/src/headless.rs` / `prepare_headless` in `lib.rs` into `fontaine-core` (next to `tools.rs`/`session.rs`), so headless and the TUI both call it (`fontaine-tui` cannot depend on the bin crate). Then `fontaine-tui`: transcript, streaming render, input, approval prompts (incl. allow session /
+   always allow), status bar, mode cycling, `/add-dir`. Add `rig-core`/`rig-agent` with `test-utils` as dev-dependencies of `fontaine-tui`.
 3. Differential baseline (manual/eval-side, never CI — see AGENTS.md): implement the `fontaine-evals`
-   runner mode `--guardian none` (`tasks/design/testing.md` Testing Strategy, Eval harness: `pipeline` cases through the real `PermissionPipeline` for the non-auto modes) and the
+   runner mode `--guardian none` (the runner is currently one clap struct with a required `--dataset` that rejects anything but `fixture`; `case.rs` must materialize the case `workspace`; `fontaine-evals` gains `fontaine-tools` and an async runtime as dependencies, and `tempfile` moves from dev-dependencies to `[dependencies]`) (`tasks/design/testing.md` Testing Strategy, Eval harness: `pipeline` cases through the real `PermissionPipeline` for the non-auto modes) and the
    `baseline capture` / `baseline diff` subcommands (Differential
    baselines; `diff` runs against a `--guardian none --out` file) and run them for manual/acceptEdits/plan/dontAsk over the Tier-0.5 adversarial set and
    the floor/headless cases (the cases' `permissions` field is written as equivalent `.claude/settings.json` permissions in `Tool(specifier)` syntax in the scratch workspace); also confirm the protected-path list and the allowlist table against
@@ -102,17 +105,17 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
    user trust scopes only (per the config scope table), flag-free, positionals must be in-scope paths); complete the full permission-pipeline diagram in `docs/architecture.md`, update its crate tree (add `preclassify`; `fontaine-tui` is no longer a skeleton) and module table (`permissions`/`audit` modules);
    start `docs/tui.md` (keybinds incl. Shift+Tab, approval-prompt options, `/add-dir`); add
    the `--allowed-tools` / `--disallowed-tools` flags to the `docs/headless.md` flag table and rewrite its Denials paragraph (no longer deny-by-default; `gate_decision` is emitted; `result.denials` is populated); add
-   the `tool_decision` event and permission spans to `docs/telemetry.md`; in `docs/tools.md` replace "Permissions today" with a pointer to `docs/permissions.md` and repoint the inbound links in `docs/headless.md` and `docs/configuration.md`; in `docs/configuration.md` update the `[permissions]` intro, the `allow_extra` "not yet active" note and the CLI table (add the two flags); add `docs/index.md` entries for `docs/permissions.md` and `docs/tui.md`; fill the README mode
-   table; append a CHANGELOG entry.
+   the `tool_decision` event, the `fontaine.tool_decision.count` metric and permission spans to `docs/telemetry.md`; in `docs/tools.md` replace "Permissions today" with a pointer to `docs/permissions.md` and repoint the inbound links in `docs/headless.md` and `docs/configuration.md`; in `docs/configuration.md` update the `[permissions]` intro, the `allow_extra` "not yet active" note and the CLI table (add the two flags); add `docs/index.md` entries for `docs/permissions.md` and `docs/tui.md`; fill the README mode
+   table; in `evals/README.md` document `--guardian none`, `baseline capture|diff` and the `none` exit-code rule (it currently calls `fixture` the only supported mode); rewrite the eval-runner paragraph of `docs/architecture.md` (it says the runner only scores fixtures); add the `--guardian none` command to `CONTRIBUTING.md` and fix its count of CI commands; append a CHANGELOG entry.
 
 ## Files created or modified
 
-`rust/Cargo.toml` (new crates: dev `rig-cassette =0.45.0` (features `http`, `agent`), `ratatui =0.30.2` (crossterm via `ratatui::crossterm`, no direct pin), `brush-parser =0.4.0`, `toml_edit =0.25.17`, `sha2 =0.11.1` (audit `args_digest`), `serde_jcs =0.2.0` (args canonicalization)); `rust/fontaine-core/src/{permissions,permission_rules,audit}.rs`; `.github/workflows/ci.yml` (adds the `--guardian none` eval step on all three OSes); `rust/fontaine-evals/src/baseline.rs`; `rust/fontaine-evals/tests/{baseline,none_mode}.rs`;
+`rust/Cargo.toml` (new crates: dev `rig-cassette =0.45.0` (features `http`, `agent`), `ratatui =0.30.2` (crossterm via `ratatui::crossterm`, no direct pin), `brush-parser =0.4.0`, `toml_edit =0.25.17`, `sha2 =0.11.1` (audit `args_digest`), `serde_jcs =0.2.0` (args canonicalization)); `rust/fontaine-core/src/{permissions,permission_rules,audit}.rs`; the agent/session setup moved from `rust/fontaine/src/headless.rs` into `rust/fontaine-core/src/` (step 2); `rust/fontaine-core/src/gate.rs` (StubGate removed); `rust/fontaine/src/telemetry/span_bridge.rs`; `rust/fontaine/tests/telemetry_otlp.rs` (metric assertion); `rust/fontaine-tui/Cargo.toml`; `.github/workflows/ci.yml` (adds the `--guardian none` eval step on all three OSes); `rust/fontaine-evals/{Cargo.toml,src/runner.rs,src/lib.rs,src/case.rs,src/baseline.rs}` (`--guardian none` flag form plus `baseline capture|diff` subcommands; deps per step 3); `rust/fontaine-evals/tests/{baseline,none_mode}.rs`;
 `rust/fontaine-tools/src/preclassify.rs`; `rust/fontaine/tests/cassettes.rs` (manual-mode cassette, built in step 4; the auto-mode cassette is added in Phase 4);
 `rust/fontaine-tui/src/{app,transcript,approval,statusbar}.rs`; tests under `rust/fontaine-core/tests/`,
 `rust/fontaine/tests/`, `rust/fontaine-tui/tests/`;
 `rust/fontaine/src/{lib,cli}.rs` (TUI wiring; the two rule flags); `rust/fontaine-core/src/config.rs` (CLI rule merge); `docs/{permissions,tui,headless,telemetry,tools,configuration}.md`, `docs/architecture.md`,
-`docs/index.md`, `README.md`.
+`docs/index.md`, `README.md`, `evals/README.md`, `CONTRIBUTING.md`.
 
 ## Tests owned by this phase
 
@@ -128,7 +131,7 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   `args_digest`, `agent_id`).
 - **permission rules** (`rust/fontaine-core/tests/permission_rules.rs`; the `auto` legs are Phase 4): grammar per tool kind; `shell` deny/ask hit compound, wrapped and
   unparseable commands; `shell` allow never matches a compound command; resolved-path matching incl.
-  symlinks (a symlink into a denied path is denied; an allow on a symlinked alias does not match); `webfetch(domain:)` normalization; a redirect leaving an allowed domain is returned, not followed; an allow rule never passes deny/ask/critical-path/
+  symlinks (a symlink into a denied path is denied; an allow on a symlinked alias does not match); `webfetch(domain:)` normalization; an allow rule never passes deny/ask/critical-path/
   protected-path and never lets an edit run in `plan`; an allow rule pre-approves in `dontAsk` and
   skips the prompt in `manual`; "allow session" lasts only for the session, "always allow" writes
   exactly the shown rule to the user file and the next matching call in the same session skips the prompt; `--allowed-tools` / `--disallowed-tools` act as CLI rules.
@@ -137,12 +140,13 @@ the `tool_decision` telemetry event and the headless `gate_decision` event; all 
   paths match across separators and case.
 - **baseline** (`rust/fontaine-evals/tests/baseline.rs`): `diff` over constructed baseline and run files reports exactly the cases whose outcomes differ under the mapping in `tasks/design/testing.md` (Fontaine `allow` ↔ CC allowed; `deny` and `prompt` ↔ CC denied in headless); denial extraction from a checked-in sample `claude -p --output-format json` result (fixture under `rust/fontaine-evals/tests/fixtures/`).
 - **eval `none` mode** (`rust/fontaine-evals/tests/none_mode.rs`): `pipeline` cases for manual/acceptEdits/plan/dontAsk run through the real `PermissionPipeline` and are scored against `expected`/`expected_tier`; `auto` cases are skipped; exit 1 on any mismatch.
+- **auto rejected in the TUI**: `fontaine --permission-mode auto` (no `-p`) exits 2 with the same usage error as `-p`.
 - **hook slot**: with a test-double decision source, `updated_input` is what the floor, rules and
   audit see; deny > ask > allow; an `allow` never passes the floor; error / timeout / malformed ⇒ no
   decision.
 - **audit/telemetry consistency**: over the mode × risk-class matrix, each audit entry has exactly one
   matching `tool_decision` event and one headless `gate_decision` event (same ids; `tier` and `decision` equal as strings);
-  the audit log is still written when telemetry is off or disabled by the project.
+  the audit log is still written when telemetry is off or disabled by the project; `rust/fontaine/tests/telemetry_otlp.rs` asserts the `fontaine.tool_decision.count` metric with `tier` and `decision` attrs.
 - **Tier 0.5 pre-classifier**: the golden adversarial set from `tasks/design/testing.md` Testing Strategy — the
   fail-through soundness property must hold for anything not fully parsed as one simple command; each
   allowlist-table row (listed flags pre-classify, the excluded flags fall through); in-scope `ls` → no
