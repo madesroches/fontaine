@@ -11,12 +11,12 @@ pub use rig_tools::Seen;
 use rig_tools::process::Launcher;
 use rig_tools::{
     Edit, List, ListArgs, MAX_FILES, MAX_MATCHES, OutputLimit, Read, Search, SearchArgs, Shell,
-    Write,
+    ShellArgs, ShellRun, Write,
 };
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::git_bash::GitBash;
+use crate::git_bash::{GitBash, sh_command};
 use crate::guarded::{Guard, GuardedTool};
 use crate::risk::{RiskClass, ToolSource, builtin_risk};
 use crate::scope::{Scope, glob_target};
@@ -159,6 +159,66 @@ impl Tool for Grep {
     }
 }
 
+/// rig's `shell`, with the command kept off the Windows command line when it runs through
+/// Git Bash.
+#[derive(Clone, Debug)]
+pub struct ShellTool {
+    pub shell: Shell,
+    pub through_env: bool,
+}
+
+impl ShellTool {
+    fn prepared(&self, args: ShellArgs) -> (Shell, ShellArgs) {
+        let sh = sh_command(&args.command, self.through_env);
+        let Some((name, value)) = sh.env else {
+            return (self.shell.clone(), args);
+        };
+        let mut shell = self.shell.clone();
+        shell.launcher = shell.launcher.with_env(name, value);
+        let script = sh.script.to_string();
+        (
+            shell,
+            ShellArgs {
+                command: script,
+                ..args
+            },
+        )
+    }
+
+    pub async fn run(&self, args: ShellArgs) -> Result<ShellRun, ToolExecutionError> {
+        let (shell, args) = self.prepared(args);
+        shell.run(args).await
+    }
+}
+
+impl Tool for ShellTool {
+    const NAME: &'static str = Shell::NAME;
+    type Args = ShellArgs;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        self.shell.description()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        self.shell.parameters()
+    }
+
+    fn annotations(&self) -> ToolAnnotations {
+        self.shell.annotations()
+    }
+
+    async fn call(
+        &self,
+        context: &mut ToolContext,
+        args: ShellArgs,
+    ) -> Result<String, ToolExecutionError> {
+        let (shell, args) = self.prepared(args);
+        shell.call(context, args).await
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ShellSettings {
     /// The longest timeout a call may ask for; a longer one is cut to it.
@@ -221,19 +281,22 @@ pub fn search_for(root: &Path) -> Search {
     }
 }
 
-pub fn shell_for(root: &Path, settings: &ShellSettings) -> Shell {
+pub fn shell_for(root: &Path, settings: &ShellSettings) -> ShellTool {
     let mut launcher = Launcher::default()
         .in_dir(root)
         .without_env(settings.scrub_env.iter().cloned());
     if let Some(git_bash) = &settings.git_bash {
         launcher = launcher.with_env("PATH", git_bash.path_value(std::env::var_os("PATH")));
     }
-    Shell {
-        launcher,
-        confine: true,
-        max_timeout: settings.max_timeout_secs,
-        cut: Some(OutputLimit::default()),
-        ..Shell::default()
+    ShellTool {
+        shell: Shell {
+            launcher,
+            confine: true,
+            max_timeout: settings.max_timeout_secs,
+            cut: Some(OutputLimit::default()),
+            ..Shell::default()
+        },
+        through_env: settings.git_bash.is_some(),
     }
 }
 
@@ -320,7 +383,7 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, reqwest::Error> {
         )),
         register(GuardedTool::per_root(
             scope.clone(),
-            risk_of(Shell::NAME),
+            risk_of(ShellTool::NAME),
             guard.clone(),
             |root| shell_for(root, &env.shell),
         )),

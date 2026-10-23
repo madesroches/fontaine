@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use common::{AllowAll, Dirs, env_with, registry, scope};
 use fontaine_tools::builtins::{self, ShellSettings};
+use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::names::{BUILTIN_TOOL_NAMES, is_builtin};
 use fontaine_tools::risk::{BUILTIN_RISK, RiskClass, builtin_risk};
 use rig_core::tool::{Tool, ToolContext};
@@ -133,7 +134,9 @@ fn the_shell_is_confined_clamped_and_cut() {
         scrub_env: vec![OsString::from("SECRET_ONE"), OsString::from("SECRET_TWO")],
         git_bash: None,
     };
-    let shell = builtins::shell_for(&root, &settings);
+    let tool = builtins::shell_for(&root, &settings);
+    assert!(!tool.through_env);
+    let shell = tool.shell;
     assert!(shell.confine);
     assert_eq!(shell.max_timeout, 7);
     assert_eq!(shell.cut, Some(OutputLimit::default()));
@@ -150,6 +153,15 @@ fn the_shell_is_confined_clamped_and_cut() {
             .unset_env
             .contains(&OsString::from("SECRET_TWO"))
     );
+
+    let with_git_bash = ShellSettings {
+        git_bash: Some(GitBash {
+            bin: root.join("bin"),
+            usr_bin: root.join("usr").join("bin"),
+        }),
+        ..settings
+    };
+    assert!(builtins::shell_for(&root, &with_git_bash).through_env);
 }
 
 #[cfg(unix)]
@@ -193,5 +205,71 @@ mod unix {
             rendered.lines().count()
         );
         assert!(rendered.contains("20000"), "the last lines are kept");
+    }
+
+    fn through_the_environment(d: &Dirs) -> Vec<builtins::Registered> {
+        let mut env = env_with(scope(&d.dir("work"), &[]), Arc::new(AllowAll::default()));
+        let nope = d.base.join("nope");
+        env.shell.git_bash = Some(GitBash {
+            bin: nope.join("bin"),
+            usr_bin: nope.join("usr").join("bin"),
+        });
+        registry(&env)
+    }
+
+    #[tokio::test]
+    async fn a_command_through_the_environment_runs_exactly_as_written() {
+        let d = Dirs::new();
+        let tools = through_the_environment(&d);
+        let command = r"printf '%s\n' '\\a' 'tail\\' '\\?\C:\x'";
+        let out = call(&tools, "shell", json!({ "command": command }))
+            .await
+            .unwrap();
+        let shown = text(&out);
+        let lines: Vec<&str> = shown.lines().collect();
+        for expected in [r"\\a", r"tail\\", r"\\?\C:\x"] {
+            assert!(lines.contains(&expected), "{expected} in {shown}");
+        }
+        let out = call(
+            &tools,
+            "shell",
+            json!({"command": "echo \"hello $((1 + 2))\" | cat"}),
+        )
+        .await
+        .unwrap();
+        assert!(text(&out).contains("hello 3"), "{}", text(&out));
+    }
+
+    #[tokio::test]
+    async fn a_command_through_the_environment_keeps_its_exit_code_and_sequencing() {
+        let d = Dirs::new();
+        let tools = through_the_environment(&d);
+        let out = call(&tools, "shell", json!({"command": "exit 3"}))
+            .await
+            .unwrap();
+        assert!(text(&out).contains("exit code 3"), "{}", text(&out));
+        let out = call(
+            &tools,
+            "shell",
+            json!({"command": "false && echo x; echo after"}),
+        )
+        .await
+        .unwrap();
+        let shown = text(&out);
+        assert!(shown.contains("after") && !shown.contains("x\n"), "{shown}");
+    }
+
+    #[tokio::test]
+    async fn the_command_variable_is_not_visible_to_the_command() {
+        let d = Dirs::new();
+        let tools = through_the_environment(&d);
+        let out = call(
+            &tools,
+            "shell",
+            json!({"command": "printf '%s' \"${FONTAINE_SH_COMMAND-absent}\""}),
+        )
+        .await
+        .unwrap();
+        assert!(text(&out).contains("absent"), "{}", text(&out));
     }
 }

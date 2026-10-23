@@ -104,7 +104,8 @@ are resolved.
   finds `git.exe` on `PATH`, then in the standard install locations, and puts Git's `usr\bin` and
   `bin` directories first on the shell's `PATH`. `FONTAINE_GIT_BASH_PATH` names a `bash.exe` and
   overrides the search. When Git for Windows cannot be found, Fontaine exits with code 2 and a
-  message naming Git for Windows and the variable.
+  message naming Git for Windows and the variable. The command reaches Git Bash as written,
+  including every `\\`; a syntax error names `eval` rather than `-c`.
 
 ## Web fetch
 

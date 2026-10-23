@@ -740,7 +740,7 @@ fn with_result_hook(s: &Sandbox, url: &str) {
         "{}\n[[hooks.post_tool_use]]\nmatcher = \"agent\"\ncommand = '''\n'{}' '{}' '{}'\n'''\n",
         config(url, ""),
         hook_example("hook_marker"),
-        common::command_path(&s.work.join("post-hook.json")),
+        s.work.join("post-hook.json").display(),
         note
     ));
 }

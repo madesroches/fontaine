@@ -127,7 +127,7 @@ async fn a_project_hook_runs_without_a_prompt_but_its_allow_decides_nothing() {
         &format!(
             "[[hooks.pre_tool_use]]\ncommand = '''\n'{}' '{}' '{}'\n'''\n",
             example("hook_marker"),
-            common::command_path(&marker),
+            marker.display(),
             allow
         ),
     );
@@ -167,7 +167,7 @@ async fn the_same_hook_in_the_users_own_settings_does_allow() {
     s.user_config(&format!(
         "{config}\n[[hooks.pre_tool_use]]\nmatcher = \"shell(echo from-a-hook-allowed-call)\"\ncommand = '''\n'{}' '{}' '{}'\n'''\n",
         example("hook_marker"),
-        common::command_path(&marker),
+        marker.display(),
         allow
     ));
     let out = s.headless(&["--output-format", "stream-json", "go"]).await;
