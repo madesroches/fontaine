@@ -27,6 +27,9 @@ It matches what model requests already do, keeps `webfetch` usable in the contai
 profile targets, and avoids a second, differently-shaped failure path. The warning naming the
 missing system roots is kept.
 
+- On Unix, reqwest 0.13.5's `build()` calls `rustls_platform_verifier::Verifier::new(...)`, which
+  errors with "No CA certificates were loaded from the system" at build time (Windows and macOS use
+  other verifiers), so retrying the build is the right place for the fallback.
 - Move the fallback into `fontaine-tools` (the lower crate) as a public helper, e.g.
   `fontaine_tools::tls::build_client(make: impl Fn() -> reqwest::ClientBuilder) -> reqwest::Result<reqwest::Client>`:
   build `make()`; on error retry `make().tls_certs_only(bundled roots)`; if that also fails return
@@ -37,18 +40,18 @@ missing system roots is kept.
   implementation. Keep its message wording for the warning.
 - `scanner_model::ensure` builds through the helper too.
 - If the bundled-root build also fails, the error still surfaces; make `registry()`'s message use
-  the error chain (`error_chain::chain`) rather than `{e}`, so it no longer reads `builder error`
-  alone.
+  the error chain rather than `{e}`, rendered as `chain(&e.without_url())`
+  (`error_chain::chain`), so it no longer reads `builder error` alone.
 
 ## Implementation Steps
-1. Add `fontaine-tools/src/tls.rs` with the helper; export it from `lib.rs`; add the dependency.
+1. Add `fontaine-tools/src/tls.rs` with the helper; export it from `lib.rs`; add `webpki-root-certs.workspace = true` to `fontaine-tools/Cargo.toml`.
 2. Switch `Webfetch::new`, `transport::reqwest_client`, and `scanner_model::ensure` to it; remove
-   `with_bundled_roots` and the core dependency on `webpki-root-certs`.
-3. Chain-render the registry error in `tools.rs`.
+   `with_bundled_roots` and the `webpki-root-certs` dependency line in `fontaine-core/Cargo.toml`.
+3. Chain-render the registry error in `tools.rs` as `chain(&e.without_url())`.
 4. Tests (below), `docs/` note, changelog entry.
 
 ## Files to Modify
-- `rust/Cargo.toml`, `rust/fontaine-tools/Cargo.toml`, `rust/fontaine-core/Cargo.toml`
+- `rust/fontaine-tools/Cargo.toml`, `rust/fontaine-core/Cargo.toml` (`Cargo.lock` follows)
 - `rust/fontaine-tools/src/{lib.rs,tls.rs,webfetch.rs}`
 - `rust/fontaine-core/src/{transport.rs,tools.rs,scanner_model.rs}`
 - `docs/tools.md` (webfetch trust-store behavior), `CHANGELOG.md`
@@ -72,16 +75,9 @@ warning when it cannot be loaded; `SSL_CERT_FILE`/`SSL_CERT_DIR` override.
   invalid configuration on the first call only, via a call counter), the helper returns a working
   client built with bundled roots; and when both fail it returns the original error. This pins
   issue #112 (no system roots stopped startup).
-- A `fontaine-tools` test that `Webfetch::new` succeeds when the system roots cannot load, if the
-  test can force that portably (e.g. `SSL_CERT_FILE` pointing at a missing file in a subprocess);
-  otherwise covered by the helper test above.
 - Existing transport and webfetch tests stay green.
 
 ## Manual Verification
 In `ubuntu:26.04` with no `ca-certificates`, run `fontaine -p "hi"` and confirm it starts, logs the
 fallback warning, and `webfetch` of an HTTPS URL succeeds. Not automated because it needs a bare
 container image.
-
-## Open Questions
-- Does reqwest 0.13's rustls platform verifier actually fail at `build()` when roots are missing,
-  or at request time? The issue's `builder error` says build time; confirm while writing the test.
