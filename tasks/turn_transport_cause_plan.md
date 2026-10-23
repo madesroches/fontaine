@@ -42,12 +42,12 @@ and the five `expect`s have messages. The guardian is fail-closed on every non-v
 The problems are:
 
 1. **Causes lost on the way to the user.**
-   - The top-level exits (`fontaine/src/lib.rs`, about 19 `eprintln!("fontaine: {e}")`) print
-     Display only.
+   - The top-level exits (`fontaine/src/lib.rs`, `eprintln!("fontaine: {e}")` exits) print
+     Display only; eight of them (~lines 165, 173, 206, 213, 255, 351, 429, 482) carry a value
+     that implements `Error`, the rest carry `String`s.
    - Guardian and scanner fail-closed explanations (`fontaine-guardian/src/guardian.rs:223-237`,
      `scanner.rs:124-126`) drop the error, which goes to `tracing::warn!` and is invisible
      without `--debug`.
-   - MCP connect (`fontaine-mcp/src/servers.rs:168-171, 223, 230`) flattens with `e.to_string()`.
    - `SessionError` holds an `io::Error` without implementing `source()` (`session.rs:52`).
    - `webfetch::describe` (`fontaine-tools/src/webfetch.rs:181`) is the only chain walk in the
      workspace.
@@ -93,8 +93,19 @@ becomes part of the `ProviderError::Http` Display. That Display is the `ErrorRep
 rig relays, so the cause survives into `PromptError::Report`, guardian and scanner failures,
 listing, and every surface that shows those strings. Nothing on rig's side changes.
 
-`Client::build` constructs every account client with `config.connect(caused_client())`, where
-`caused_client()` wraps a per-account `reqwest::Client::new()`. It uses the same per-account
+`ReqwestClient` is `rig_reqwest::ReqwestClient` (`reqwest::Client` does not implement
+`HttpClientExt` and rig-core does not re-export it), which is why the direct `rig-reqwest`
+dependency exists.
+
+`Client::build` constructs every account client with `config.connect(caused_client()?)`, where
+`caused_client()` wraps a per-account `ReqwestClient`. `ReqwestClient::default()` returns the
+process-wide shared client and `reqwest::Client::new()` panics if TLS can't initialise, so
+`caused_client()` replicates rig-reqwest's builder (`rig-reqwest-0.45.0/src/lib.rs:61-127`):
+`reqwest::Client::builder().build()`, and on error a second build with
+`.tls_certs_only(..)` over the bundled `webpki-root-certs` roots (rig's fallback for hosts with
+no system CA certs, with a `tracing::warn!`). The result goes through
+`ReqwestClient::from(client)`. If both builds fail, the error is mapped to the error
+`Client::build` already returns, never a panic. It uses the same per-account
 client #87 introduces, for the same reason: no pooled connection outlives the runtime that made
 it. The Decisions section covers how the two PRs merge.
 
@@ -114,25 +125,28 @@ design 1.
 
 - `webfetch::describe` becomes `chain(&error.without_url())`.
 - `WithCauses` (design 1) uses it.
-- The listing site in `models.rs` drops any special-case walk: `{e}` already carries the cause
-  through the caused client.
 
 ### 3. Render the chain where errors reach the user
 
-- `fontaine/src/lib.rs` exit paths: print `chain(&e)` instead of `{e}`.
+- `fontaine/src/lib.rs` exit paths whose value implements `Error` (~lines 165, 173, 206, 213,
+  255, 351, 429, 482): print `chain(&e)` instead of `{e}`. `String` exits are unchanged.
 - `turn.rs:256` keeps `other.to_string()`. With design 1 the string already names the cause,
   and an `ErrorReport` has no `source()` to walk.
 - Guardian and scanner fail-closed explanations append the error:
   `"the guardian model could not be reached: {error}"`, and likewise for an unusable verdict
   and the scanner. The outcome is still `FailClosed` (Deny). Only the explanation text changes.
-- MCP connect: replace `e.to_string()` with `chain(&e)` (`servers.rs:168-171, 223, 230`).
 - Add `SessionError::source()`, so `chain` reaches the io error.
 
 ### 4. Messages that say what failed
 
 - Split `ConfigError::Io` into `Read { path, source }` and `Write { path, source }`. Write
-  call sites (`credentials.rs`, `trust.rs` record/approve) use `Write`. Exit codes are unchanged.
-- `SessionError::Io` gains the operation: `Create` for new sessions, `Open` for resume. A
+  call sites (`credentials.rs`, `trust.rs` record/approve) use `Write`. Each of `credentials.rs:91`, `trust.rs:112` (`approve_server`) and `trust.rs:148` (`record`)
+  uses one `io_err` closure for reads and writes today; each gets separate read and write
+  mappings. Canonicalize sites stay `Read`. Exit codes are unchanged. The tests that
+  `matches!(err, ConfigError::Io { .. })` (`fontaine-core/tests/credentials.rs`,
+  `fontaine-core/tests/config.rs`) are updated.
+- `SessionError::Io` gains the operation: `Create` for new sessions, `Open` for resume. Fork sites (`session.rs:151` `create_dir`, `:153` `copy_tree`) use `Create`;
+  `open`'s `AuditLog::create` wrap (`:122`) uses `Open`. A
   corrupt ledger then reads "cannot open session <dir>: ...".
 
 ### 5. Write failures reach the human once
@@ -142,8 +156,10 @@ design 1.
 - To avoid a warning per decision on a full disk, the session warns once per sink (audit,
   ledger) using a `std::sync::Once`-style flag on `SessionState`. It keeps logging to `tracing`
   every time.
-- Compaction's `warn` (`session.rs:237`) goes through the approver instead of `eprintln!`. Its
-  callers (TUI and headless) already hold one.
+- Compaction's `warn` (`session.rs:237`) goes through the approver instead of `eprintln!`. `Session` has
+  no approver, so `compact_if_needed` takes an `&dyn Approver`; its callers
+  (`fontaine-tui/src/lib.rs:819`, `fontaine/src/headless.rs:601`) pass the one `AgentRuntime`
+  holds, exposed to them for this call.
 
 ### 6. Close the latent fail-open
 
@@ -151,13 +167,19 @@ design 1.
   `context.require::<AgentId>()` (or `get` with `None` treated as an error), and a missing or
   undecodable id fails the call before it is gated. This keeps "a child's mode is never looser
   than its parent's" true without depending on wiring elsewhere.
+- `spawn.rs` `caller_of` (`fontaine-agents/src/spawn.rs:23`) has the same fall-back-to-root
+  pattern and decides the child's toolset and depth check. It fails closed the same way.
+- The test helpers that run guarded tools with an empty `ToolContext`
+  (`fontaine-tools/tests/common/mod.rs:90-95`, `fontaine-core/tests/choke_point.rs:179`,
+  `fontaine-mcp/tests/common/mod.rs:87`) insert an `AgentId`. `the_gate_sees_the_agent_of_the_call`
+  (`fontaine-tools/tests/guarded.rs:156-169`) asserted an untagged call is "root"; it becomes
+  the fail-closed regression.
 - `turn.rs:149` handles the `insert` result. Failing to tag the context is a bug, so it
   `expect`s with a message.
 
 ### 7. No silent fallbacks for invariants
 
-- `validated_models`: `expect("the shipped validated-models table parses")`, plus a unit test
-  that parses it.
+- `validated_models`: `expect("the shipped validated-models table parses")`.
 - `parse_rule(..).ok()` at the three sites: `expect("validated when the definition was loaded")`.
 
 ### 8. Error handling strategy in AGENTS.md
@@ -191,29 +213,30 @@ micromegas conventions and the rule the user stated:
 2. **Rendering.**
    - Top-level `chain` in `fontaine/src/lib.rs`.
    - Guardian and scanner explanations with the cause.
-   - MCP connect with `chain`.
    - `SessionError::source()`.
 3. **Messages.** `ConfigError::Read`/`Write` split, `SessionError` operation, call-site updates.
 4. **Surfacing.** Warn-once audit and ledger failures through the approver; route compaction
    warnings through the approver.
 5. **Invariants.**
-   - `agent_of` fails closed.
+   - `agent_of` and `caller_of` fail closed; test helpers insert an `AgentId`; rewrite the
+     untagged-is-root test as the fail-closed regression.
    - `turn.rs:149` `expect`.
    - `validated_models` and `parse_rule` `expect`s.
 6. **Docs.**
    - `AGENTS.md` `## Error handling`.
-   - `docs/` page(s) that describe the guardian's fail-closed explanation, if they quote its text.
    - `CHANGELOG.md`.
 
 ## Files to Modify
 
 - `rust/Cargo.toml`, `rust/fontaine-core/Cargo.toml`
-- `rust/fontaine-tools/src/error_chain.rs` (new), `rust/fontaine-tools/src/lib.rs`, `rust/fontaine-tools/src/webfetch.rs`, `rust/fontaine-tools/src/guarded.rs`
+- `rust/fontaine-tools/src/error_chain.rs` (new), `rust/fontaine-tools/src/lib.rs`, `rust/fontaine-tools/src/webfetch.rs`, `rust/fontaine-tools/src/guarded.rs`, `rust/fontaine-tools/tests/common/mod.rs`, `rust/fontaine-tools/tests/guarded.rs`
 - `rust/fontaine-core/src/transport.rs` (new), `models.rs`, `turn.rs`, `session.rs`, `config.rs`, `credentials.rs`, `trust.rs`, `permissions.rs`, `gate.rs`, `child_runner.rs`, `steering.rs`, `extensions.rs`, `lib.rs`
 - `rust/fontaine-guardian/src/guardian.rs`, `scanner.rs`
-- `rust/fontaine-mcp/src/servers.rs`
-- `rust/fontaine/src/lib.rs`
-- `AGENTS.md`, `docs/` (as needed), `CHANGELOG.md`
+- `rust/fontaine-agents/src/spawn.rs`
+- `rust/fontaine-mcp/tests/common/mod.rs`, `rust/fontaine-core/tests/choke_point.rs`
+- `rust/fontaine/src/lib.rs`, `rust/fontaine/src/headless.rs`, `rust/fontaine-tui/src/lib.rs`
+- `rust/fontaine-core/tests/credentials.rs`, `rust/fontaine-core/tests/config.rs`, `rust/fontaine-core/tests/ledger.rs`, `rust/fontaine-core/tests/permissions_auto.rs`
+- `AGENTS.md`, `CHANGELOG.md`
 
 ## Trade-offs
 
@@ -246,34 +269,36 @@ micromegas conventions and the rule the user stated:
 - `guardian_default` / `candidates` turning a credentials load error into `None`
   (`models.rs:635, 662`), and `ChildContext::model_for`'s `$guardian_default` fallback
   (`child_runner.rs:171`). This is behavior Claude Code-parity work owns, with its own UX.
+- MCP connect errors (`fontaine-mcp/src/servers.rs`): rmcp doesn't expose the transport error as
+  a `source()`, so `chain` would recover nothing.
 - The PromptGuard download (`scanner_model.rs:126`) and the OTLP exporter error texts.
 
 ## Documentation
 
 - `AGENTS.md`: new `## Error handling` section (design 8).
-- `docs/guardian.md`: update if it quotes the fail-closed explanation text.
 - `CHANGELOG.md`: turn failures name their transport cause; error-message and warning
   improvements.
 
 ## Testing Strategy
 
 - **Regression for #88 (integration, headless):** in `fontaine/tests/headless_smoke.rs`,
-  `a_turn_that_cannot_connect_names_the_cause`. Point a `Sandbox` at a closed port with
-  `models = [...]` so listing is skipped, run `fontaine -p hi`, and assert exit 1 and that
-  stderr contains `tcp connect error`. This mirrors `a_listing_that_cannot_connect_names_the_cause`
-  and uses hyper's platform-neutral text, not the OS message.
+  `a_turn_that_cannot_connect_names_the_cause`. Build a `Sandbox::compatible` against a closed
+  port (as `headless_smoke.rs:296` does) with `models = [...]` so listing is skipped, run
+  `fontaine -p hi`, and assert exit 1 and that stderr contains `tcp connect error`. It uses
+  hyper's platform-neutral text, not the OS message.
 - **Unit:** `error_chain::chain` (dedupe, depth, no source). `WithCauses` Display/`source`.
   `CausedClient` rewrites `Instance` errors from `send` and from a failing stream chunk. Use a
   fake `HttpClientExt` returning canned errors; no network.
 - **Unit:** `ConfigError::Write` wording at a write site. `SessionError` open-vs-create wording.
   `SessionError::source()`.
 - **Unit:** guardian explanation contains the error text and the outcome is still
-  `FailClosed`/Deny, using rig's deterministic test model returning an error.
-- **Unit:** `agent_of` with no `AgentId` slot fails the call (fail-closed regression for the
-  security invariant).
+  `FailClosed`/Deny, by asserting the explanation text in the existing `FailClosed::Error` tests
+  (`fontaine-guardian/tests/guardian.rs:122-131, 210-222, 225-243`, wiremock/raw TCP).
+- **Unit:** `agent_of` and `caller_of` with no `AgentId` slot fail the call (fail-closed
+  regression for the security invariant). Existing tests that used an empty `ToolContext` get an
+  `AgentId` via the shared helpers.
 - **Unit:** audit/ledger write failure warns through a recording approver exactly once across
   two failures.
-- **Unit:** the shipped validated-models table parses.
 - Existing suites stay green, including the choke-point test and the fixture eval runs.
 
 ## Open Questions
