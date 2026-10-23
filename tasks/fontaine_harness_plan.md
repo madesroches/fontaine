@@ -30,16 +30,25 @@ Deliberate design choices and user decisions are recorded in `## Decisions`.
 
 ## Current State
 
-Repo `/home/mad/fontaine` is on branch `phase1-model-headless` (not `main`). The Rust workspace under
-`rust/` has all eight crates. Phase 0 delivered the settings scope stack, workspace trust store,
-credentials lookup, tracing facade and the eval runner (`rust/fontaine-evals`) with its seed dataset
-in `evals/dataset/`. Phase 1 added the model layer (`fontaine-core/src/models.rs`: config accounts →
-rig provider clients, `<account>/<model>` resolution and discovery), the credentials writer
-(`fontaine auth login`), the headless surface `fontaine -p` with its versioned output contract
-(`docs/schemas/headless-v1.schema.json`) driven by a minimal rig-agent loop with a test-only `echo`
-tool, and the micromegas and OTLP telemetry backends (`rust/fontaine/src/telemetry/`). The `docs/`
-tree covers configuration, architecture, headless runs and telemetry. Tools, the permission
-pipeline, the guardian and the TUI are not built yet — Phase 2 is next. `research/` holds seven companion docs that are this plan's precedent and inputs:
+**Built:** all six phases meet their definition of done locally (see the Phase Tracker and
+Progress log). Fontaine is a working agent: rig-backed multi-account model layer, headless `fontaine -p`
+with a versioned JSON Schema contract, wrapped built-in tools with a risk-class registry, the
+permission pipeline (deterministic floor, rule grammar, Tier-0.5 pre-classifier, audit log), the
+inline ratatui TUI, the guardian and `auto` mode (the interactive default; headless defaults to
+`manual`), parallel subagents, MCP, user hooks, skills / agent files / output styles, session
+resume/fork, the tool-result scanner (`pg2` / `llm` / `command`), micromegas and OTLP telemetry,
+the offline eval runner, and a `docs/` page per topic. CI (fmt, clippy, test, deny, offline evals,
+`cargo dist plan`, pg2 builds) is green on Linux, macOS and Windows.
+
+**Merged to `main`:** phases 0–4 (PRs #65–#68) plus TUI follow-ups #72, #76, #77. **Open PRs:**
+Phase 5 (#75, `phase_5_extensibility`) and Phase 6 (#79, `phase_6_hardening`, which contains
+Phase 5).
+
+**Not done:** no release has been cut, the guardian scorecard has not been run (so
+`guardian_models.toml` ships empty and the guardian falls back to the main model), and the
+live-key, live-model and maintainer checks are still open. See `## Remaining work`.
+
+`research/` holds seven companion docs that are this plan's precedent and inputs:
 `analysis-competitive-landscape.md` (market/permission-story survey),
 `analysis-guardian-market.md`, `analysis-differentiation.md`,
 `analysis-devils-advocate.md` (kill criteria), `analysis-strategic-verdict.md` (verdict and
@@ -81,6 +90,64 @@ phase plan are the work trail).
 - 2026-10-22: Phase 4 (guardian + scorecard) definition of done met locally: `fontaine-guardian` (typed verdicts over rig's extractor, prompt assets and builder, verdict cache, loop breaker, minimal profile), `auto` wired into the pipeline and `plan` branch 9, the ledger-only request builder with the structural destructive class, default-guardian selection and live `/model` / `/guardian-model`, the TUI denial UX, guardian telemetry and audit fields, headless `auto` semantics, the eval runner's `live:` mode and models-file writer, cargo-dist release setup, `docs/guardian.md` and `docs/evals.md`; the offline gates are green; the live scorecard run that fills `guardian_models.toml`, its publication, the auto-mode cassette, the `claude -p` baseline capture and diff, the Docker leg of the minimal-profile check, the dataset label sign-off and the first release tag are human steps.
 - 2026-10-22: Phase 5 (extensibility) definition of done met locally: parallel subagents (`agent`, `send_message`, agent types and files, mode ladder, budgets, depth cap, the agents panel), MCP over stdio and streamable HTTP with workspace trust and per-server approval, user hooks, skills / agent files / output styles, `--continue` / `--resume` / `--fork-session`, the trust prompt, per-agent telemetry and `docs/{agents,hooks,mcp,extensions}.md`; the offline gates are green; the live look-and-feel check of the agents panel (Manual Verification item 5), the `claude -p` hook-allow baseline, and the sandbox slot are human steps or not taken.
 - 2026-10-22: Phase 6 (guardian hardening) definition of done met locally: the tool-result scanner as the `Scanner` stage of `ResultPipeline` with `pg2` (candle, windowed, behind the `pg2` feature, startup download and load that never block a session), `llm` and `command` implementations, `ScanRecord` telemetry on `tool_result`, `scanner_notices` carrying the Llama 4 license notice in every mode, the resolved `HF_TOKEN` scrub default, live-mode scanner evals, CI pg2 steps, the release build enabling `pg2`, and the scanner docs; the offline gates are green; scanning with the real PromptGuard 2 weights (the logit spike against the model card, `FONTAINE_PG2_MODEL` inference test, a live session) needs a Hugging Face token and is a human step.
+- 2026-10-22: The three-OS CI matrix is green on every phase branch and `main`, which closes the Windows CI runs left open by phases 0, 2 and 3.
+
+## Remaining work
+
+The deferred human steps from the Progress log, gathered in one place, plus everything after v1.
+Tick an item by changing `[ ]` to `[x]` and adding the date. The merge and release-readiness
+checklists are tracked in GitHub issue #80; tick items in both places.
+
+### Merge
+
+- [ ] Merge the Phase 5 PR (#75), then the Phase 6 PR (#79).
+
+### Release readiness (gates the first release)
+
+Each item needs live provider keys, a live model, or a maintainer decision, so none of them runs in CI.
+
+- **Guardian scorecard**
+  - [ ] Maintainer signs off the eval dataset's `expected` labels against `claude -p` baselines
+        (`design/testing.md` §Eval harness).
+  - [ ] Live scorecard run (`fontaine-evals` `live:` mode, `--profile full` and `minimal`)
+        fills `rust/fontaine-guardian/data/guardian_models.toml`.
+  - [ ] Check the run against the Risk Gates' catch-rate kill floor.
+  - [ ] Publish the scorecard with the release (`docs/evals.md`).
+- **Claude Code baselines (`claude -p`)**
+  - [ ] Phase 3 pipeline-case capture.
+  - [ ] Phase 4 auto-mode capture and diff, including the destructive-class word lists.
+  - [ ] Phase 5 user-hook `allow` in `auto` baseline.
+- **Cassettes** (`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes`)
+  - [ ] Record the Phase 3 manual-mode cassette.
+  - [ ] Record the Phase 4 auto-mode cassette.
+- **Manual verification** (`design/testing.md` §Manual Verification)
+  - [ ] Item 1: live TUI, manual mode, Anthropic.
+  - [ ] Items 2–3: live guardian denial and `/denied` retry.
+  - [ ] Item 4: the same against Ollama, with a local model as both agent and guardian.
+  - [ ] Item 5: agents-panel look and feel.
+  - [ ] Item 6, Docker leg: minimal profile with `--in-container`.
+- **PromptGuard 2 with real weights** (needs a Hugging Face token)
+  - [ ] Logit spike against the model card.
+  - [ ] `FONTAINE_PG2_MODEL` inference test.
+  - [ ] A live session with `scanner = "pg2"`.
+- **Repository and release**
+  - [ ] Turn on GitHub private vulnerability reporting (`SECURITY.md` promises it; it is off today).
+  - [ ] Cut the first cargo-dist release tag with a `CHANGELOG.md` entry.
+
+### Roadmap slots (designed, deliberately not built in v1)
+
+- Sandbox interop: srt/bubblewrap, `docs/sandboxing.md`, and the srt leg of Manual Verification
+  item 6 (Phase 5 §Amendments A3–A4).
+- Screening tier: typed-decision screeners (Jev, Laya, DiffusionGemma) and further guardian-tree
+  tiers. v1 ships only the deterministic + LLM spine (Decisions 2026-10-21).
+
+### Backlog
+
+Everything else is a GitHub issue (`gh issue list`); a `phase-N` label means "can be taken after
+phase N", and every phase is now done. Open bugs: #78 (Git Bash collapses `\\` on Windows) and #73
+(`webfetch` 403 without a User-Agent). The `parity` issues are the Claude Code feature gap, triaged
+in `research/research-claude-code-parity.md`; the backlog has no priority order yet beyond the
+`priority:low` labels.
 
 ## Design docs
 
@@ -113,20 +180,23 @@ sits directly under `rust/`** — the root directories are only `rust/`, `evals/
 ```
 fontaine/
 ├── rust/
-│   ├── rust-toolchain.toml     # channel = "1.97.1" (rig 0.45.0 `rust-version`)
+│   ├── rust-toolchain.toml     # channel = "1.99.1" (rig 0.45.0 needs ≥ 1.97.1)
 │   ├── Cargo.toml              # workspace root (`[workspace] members = ["*"]`, `exclude = ["target", ".cargo", ".fontaine", ".config", ".claude"]`, resolver = "2",
-│   │                           #   workspace.package: edition 2024, rust-version 1.97.1); rig crates pinned to exact versions
+│   │                           #   workspace.package: edition 2024, rust-version 1.99.1); rig crates pinned to exact versions
+│   ├── deny.toml               # cargo-deny config (advisories, licenses, bans, sources)
 │   ├── fontaine/               # bin + lib crate (logic in `src/lib.rs`, thin `src/main.rs`): CLI (clap), wires core+tui, `-p` headless from Phase 1,
 │   │                           #   owns the tracing subscriber + telemetry export (`src/telemetry/`)
 │   ├── fontaine-core/          # session orchestration on rig-agent (AgentRun, rig bookkeeping hooks),
 │   │                           #   permission pipeline + rule grammar, settings scope stack, workspace
 │   │                           #   trust, user hooks, session ledger, extension loading, FONTAINE.md,
-│   │                           #   registry assembly (full choke-point test: `fontaine-core/tests/choke_point.rs`)
+│   │                           #   registry assembly (full choke-point test: `fontaine-core/tests/choke_point.rs`);
+│   │                           #   `prompts/system_prompt.md`
 │   ├── fontaine-tools/         # risk metadata registry + GuardedTool wrapper around
 │   │                           #   rig-core Tool (calls the `ToolGate` trait it defines); rig-tools built-ins re-exposed with risk
 │   │                           #   classes; workspace-scope validation over `rig_tools::fs::place`; confined rig tool config
 │   ├── fontaine-guardian/      # the guardian agent: verdict protocol (rig extractor),
-│   │                           #   prompt builder, rules config, caching, fail-closed logic
+│   │                           #   prompt builder, rules config, caching, fail-closed logic, result scanner;
+│   │                           #   `prompts/` (guardian, minimal, scanner) + `data/guardian_models.toml`
 │   ├── fontaine-agents/        # parallel subagent orchestration on rig-agent: spawn/list/
 │   │                           #   interrupt, per-type tool registries, budgets (v1); defines the
 │   │                           #   `ChildRunner` trait (implemented by core)
@@ -135,7 +205,8 @@ fontaine/
 │   ├── fontaine-tui/           # ratatui app: chat, approval prompts, denial/retry UI, modes
 │   └── fontaine-evals/         # eval runner (bin + lib crate, same split): scores guardian verdicts against the dataset
 ├── evals/                      # golden dataset (`evals/dataset/*.jsonl`) + README; runner is rust/fontaine-evals
-├── docs/                       # all product docs — one topic per page, website-ready (see `design/documentation.md` §Documentation)
+├── docs/                       # all product docs — one topic per page, website-ready (see `design/documentation.md` §Documentation);
+│                               #   `schemas/headless-v1.schema.json`
 ├── tasks/                      # this master plan + design/ (topic design docs) + phases/ (one plan per phase)
 └── research/                   # seven analysis/research companion docs
 ```
@@ -162,9 +233,10 @@ user hooks, extension files, session resume/fork (Phase 5), result scanning (Pha
 
 ## Files to Modify
 
-All new. Workspace-level files: `rust/Cargo.toml` (see Phase 0 step 1), `rust/rust-toolchain.toml`,
-`README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `.github/workflows/*`. Each phase plan lists its own
-file slice in dependency order.
+Every file named in the phase plans exists. Workspace-level files: `rust/Cargo.toml`,
+`rust/rust-toolchain.toml`, `rust/deny.toml`, `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`,
+`SECURITY.md`, `.github/workflows/{ci,release}.yml`. Each phase plan lists its own file slice. New work
+lists its files in its own plan or issue.
 
 ## Trade-offs
 
@@ -227,6 +299,9 @@ carries the reasoning:
   on the seeded attack classes at <10% benign false-deny; this kill floor is separate from the
   stricter guardian-list inclusion bar in the Phase 4 design) — meaning the "any model" promise is
   hollow for the feature that matters.
+
+Status (2026-10-22): no gate has fired. The catch-rate gate cannot be checked until the live
+scorecard run (see `## Remaining work`).
 
 ## Decisions
 
@@ -344,6 +419,15 @@ carries the reasoning:
 - 2026-10-22: `!` commands run only between turns. Reason: a user command racing the agent's own calls would interleave side effects the guardian is judging.
 - 2026-10-22: Queued messages become guardian intent when the model receives them, not when typed. Reason: at queue time the guardian would judge calls using words the model never read.
 - 2026-10-22: Nothing is queued while a `!` command runs: Enter shows a notice and keeps the input. Reason: no agent run consumes the queue then.
+- 2026-10-22: Toolchain and workspace `rust-version` raised from 1.97.1 to 1.99.1 (PR #69); rig 0.45.0's 1.97.1 is the floor, not the pin.
+- 2026-10-22: Each phase plan's own `## Decisions` section holds that phase's implementation-level choices; deviations from Claude Code are also copied here.
+- 2026-10-21: Deviation — with no main model configured (no `[model] model` or `--model`) Fontaine exits with a config error (exit 2) (Claude Code has a default model); reason: Fontaine is provider-agnostic with no default account (Phase 1).
+- 2026-10-22: Deviation (project-agent-file types only) — the `agent` tool's per-call `model` is an error tool result for a type defined by a project agent file; elsewhere Claude Code's precedence (per-call > type > session) holds; reason: a repo-defined type must not end up on a model the repo steered (Phase 5).
+- 2026-10-22: Deviation — `hooks` and `mcpServers` in agent or skill files and `permissionMode` in skill files are load errors naming the file, and an agent's `disallowedTools` is honoured as a subtraction; reason: these files load without workspace trust, and ignoring a narrowing key would widen authority (Phase 5).
+- 2026-10-22: Deviation — a stdio MCP server gets a scrubbed environment (a base set plus the variables in `env_vars`) and its stderr goes to the debug file; reason: provider keys and telemetry credentials must not reach a third-party process (Phase 5).
+- 2026-10-22: Exported MCP server and tool names read `third-party` unless `log_tool_details` is on; reason: those names can identify internal systems (Phase 5).
+- 2026-10-22: `fontaine.session.count` `start_type` takes Claude Code's values `fresh`/`resume`/`continue`, and the surface moves to a `headless` attribute; this corrects an earlier silent deviation (Phase 5).
+- 2026-10-22: Deviation from LlamaFirewall — pg2 scores the whole result in 512-token windows at stride 256 instead of truncating to the first 512 tokens; reason: an injection past the first window would otherwise pass unflagged (Phase 6).
 
 ## Open Questions
 
