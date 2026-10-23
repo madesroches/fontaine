@@ -100,8 +100,26 @@ async fn start_sends_the_client_id_and_scope_and_returns_the_code() {
 }
 
 #[tokio::test]
+async fn a_relative_verification_url_resolves_against_the_endpoint() {
+    let server = MockServer::start().await;
+    mount_code(
+        &server,
+        code_reply("/console/device?user_code=ABCD-1234&client_id=opencode-cli"),
+    )
+    .await;
+    let code = flow(&server).start().await.unwrap();
+    assert_eq!(
+        code.verification_url,
+        format!(
+            "{}/console/device?user_code=ABCD-1234&client_id=opencode-cli",
+            server.uri()
+        )
+    );
+}
+
+#[tokio::test]
 async fn a_verification_url_that_is_not_http_is_refused() {
-    for url in ["javascript:alert(1)", "file:///etc/passwd", "not a url"] {
+    for url in ["javascript:alert(1)", "file:///etc/passwd", "http://[::1"] {
         let server = MockServer::start().await;
         mount_code(&server, code_reply(url)).await;
         let err = flow(&server).start().await.unwrap_err();
