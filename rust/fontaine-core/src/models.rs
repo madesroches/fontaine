@@ -302,6 +302,27 @@ fn client_for(
     Ok(Client::build(account.kind, account, key))
 }
 
+/// A transport error's own message rarely says why the request failed; the reason (refused,
+/// reset, timed out) is further down the source chain. rig's `ProviderError::source` drops the
+/// transport error, so the walk starts from it directly. Causes whose text is already shown are
+/// skipped, since wrappers often repeat their source's message.
+fn with_causes(error: &ProviderError) -> String {
+    let mut text = error.to_string();
+    let mut source = match error {
+        ProviderError::Http(transport) => std::error::Error::source(&**transport),
+        other => std::error::Error::source(other),
+    };
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        if !text.contains(&cause_text) {
+            text.push_str(": ");
+            text.push_str(&cause_text);
+        }
+        source = cause.source();
+    }
+    text
+}
+
 fn known_accounts(config: &Config) -> String {
     if config.accounts.is_empty() {
         return "no accounts are configured; add an [accounts.<name>] table".to_string();
@@ -374,8 +395,9 @@ async fn resolve_main_model<E: Fn(&str) -> Option<std::ffi::OsString> + ?Sized>(
         Some(list) => list.clone(),
         None => main_client.list().await.map_err(|e| {
             ModelError::Provider(format!(
-                "cannot list the models of account `{}`: {e}",
-                main_ref.account
+                "cannot list the models of account `{}`: {}",
+                main_ref.account,
+                with_causes(&e)
             ))
         })?,
     };

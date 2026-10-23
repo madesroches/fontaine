@@ -321,3 +321,17 @@ async fn a_guardian_model_naming_an_unknown_account_or_model_is_a_config_error()
     assert_eq!(err.exit_code(), 2);
     assert!(message(&err).contains("zeta"), "{err}");
 }
+
+#[tokio::test]
+async fn a_listing_that_cannot_connect_names_the_cause() {
+    let unreachable = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap()
+    };
+    let w = World::new();
+    w.user_file(&format!(
+        "[accounts.gw]\nkind = \"openai-compatible\"\nbase_url = \"http://{unreachable}\"\n\n[model]\nmodel = \"gw/alpha\"\n"
+    ));
+    let err = resolve(&w, &env_of(&[]), None).await.unwrap_err();
+    assert!(message(&err).contains("tcp connect error"), "{err}");
+}
