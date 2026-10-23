@@ -22,12 +22,48 @@ pub enum StageKind {
     PostToolUse,
 }
 
+/// What the scanner stage concluded about one result, for the `tool_result` event. It carries
+/// no content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanRecord {
+    pub verdict: ScanVerdict,
+    pub latency_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanVerdict {
+    Clean,
+    Flagged,
+    /// The scanner could not judge, so the result went on unscanned.
+    Error,
+}
+
+impl ScanVerdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScanVerdict::Clean => "clean",
+            ScanVerdict::Flagged => "flagged",
+            ScanVerdict::Error => "error",
+        }
+    }
+}
+
 pub trait ResultStage: Send + Sync {
     fn process<'a>(
         &'a self,
         call: CallView<'a>,
         outcome: ToolOutcome,
     ) -> BoxFuture<'a, ToolOutcome>;
+
+    /// `process`, along with what the stage learned about the scan. Only the scanner stage
+    /// reports one.
+    fn process_reported<'a>(
+        &'a self,
+        call: CallView<'a>,
+        outcome: ToolOutcome,
+    ) -> BoxFuture<'a, (ToolOutcome, Option<ScanRecord>)> {
+        Box::pin(async move { (self.process(call, outcome).await, None) })
+    }
 }
 
 #[derive(Clone, Default)]
@@ -49,11 +85,18 @@ impl ResultPipeline {
         self
     }
 
-    pub async fn run(&self, call: CallView<'_>, mut outcome: ToolOutcome) -> ToolOutcome {
+    pub async fn run(
+        &self,
+        call: CallView<'_>,
+        mut outcome: ToolOutcome,
+    ) -> (ToolOutcome, Option<ScanRecord>) {
+        let mut record = None;
         for (_, stage) in &self.stages {
-            outcome = stage.process(call, outcome).await;
+            let (next, reported) = stage.process_reported(call, outcome).await;
+            outcome = next;
+            record = reported.or(record);
         }
-        outcome
+        (outcome, record)
     }
 }
 

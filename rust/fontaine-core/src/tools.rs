@@ -44,7 +44,7 @@ pub fn scrubbed_env(
                 .values()
                 .filter_map(|a| a.api_key_env.as_ref()),
         )
-        .chain(config.guardian.scanner_hf_token_env.iter());
+        .chain(std::iter::once(&config.guardian.scanner_hf_token_env));
     names.extend(configured.map(OsString::from));
     names.sort();
     names.dedup();

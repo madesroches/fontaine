@@ -40,8 +40,14 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Clippy (pg2)
+        run: cargo clippy --all-targets --features fontaine/pg2 -- -D warnings
+
       - name: Test
         run: cargo test
+
+      - name: Test (pg2)
+        run: cargo test --features fontaine/pg2
 
       - name: Dependency policy
         run: cargo deny check

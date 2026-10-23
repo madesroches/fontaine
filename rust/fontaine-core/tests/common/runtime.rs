@@ -34,6 +34,17 @@ pub fn build(
     turns: Vec<Vec<MockStreamEvent>>,
     project_executables: bool,
 ) -> Built {
+    build_with_scanner(world, mode, turns, project_executables, Default::default())
+}
+
+/// `build`, with the tool-result scanner as started.
+pub fn build_with_scanner(
+    world: &World,
+    mode: PermissionMode,
+    turns: Vec<Vec<MockStreamEvent>>,
+    project_executables: bool,
+    scanner: fontaine_core::scanner_stage::ScannerStart,
+) -> Built {
     let config = world.load().unwrap();
     let main = MockCompletionModel::from_stream_turns(turns);
     let handle = ModelHandle::new(
@@ -74,6 +85,7 @@ pub fn build(
         user_config: None,
         guardian_profile: fontaine_guardian::Profile::Full,
         notices: Vec::new(),
+        scanner,
         switcher: None,
         extensions: loaded,
         project_executables,

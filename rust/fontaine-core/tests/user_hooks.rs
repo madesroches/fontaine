@@ -368,7 +368,7 @@ async fn hook_children_get_the_scrubbed_environment() {
     }
     let w = common::World::new();
     w.user_file(
-        "[accounts.a]\nkind = \"openai\"\napi_key_env = \"FONTAINE_TEST_PROVIDER_KEY\"\n[telemetry]\napi_key_env = \"FONTAINE_TEST_TELEMETRY_KEY\"\n[guardian]\nscanner = \"pg2\"\nscanner_hf_token_env = \"FONTAINE_TEST_HF_TOKEN\"\n",
+        "[accounts.a]\nkind = \"openai\"\napi_key_env = \"FONTAINE_TEST_PROVIDER_KEY\"\n[telemetry]\napi_key_env = \"FONTAINE_TEST_TELEMETRY_KEY\"\n[guardian]\nscanner = \"llm\"\nscanner_hf_token_env = \"FONTAINE_TEST_HF_TOKEN\"\n",
     );
     let config = w.load().unwrap();
     let scrub = fontaine_core::tools::scrubbed_env(
@@ -447,7 +447,7 @@ async fn through(
         agent: ROOT_AGENT,
         annotations: None,
     };
-    match pipeline.run(view, outcome).await {
+    match pipeline.run(view, outcome).await.0 {
         Ok(output) => output.render(),
         Err(e) => e.model_output().render(),
     }

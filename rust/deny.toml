@@ -1,8 +1,18 @@
+[graph]
+features = ["fontaine/pg2"]
+
 [advisories]
 version = 2
 ignore = [
     # Reached only through rig-cassette's test-only replay server (httpmock); never in the shipped binary.
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml via httpmock in dev-only rig-cassette" },
+    # candle-core (the pg2 scanner) pins `zip` 8 and a macro crate that is only unmaintained. The
+    # zip advisories concern `extract()`, which candle never calls: it only reads single entries
+    # of PyTorch checkpoints, and the scanner loads safetensors.
+    { id = "RUSTSEC-2026-0367", reason = "zip via candle-core; extract() is never called" },
+    { id = "RUSTSEC-2026-0368", reason = "zip via candle-core; extract() is never called" },
+    { id = "RUSTSEC-2026-0369", reason = "zip via candle-core; extract() is never called" },
+    { id = "RUSTSEC-2024-0436", reason = "paste (unmaintained, compile-time only) via gemm in candle-core" },
 ]
 
 [licenses]

@@ -10,6 +10,8 @@ use fontaine_guardian::{
     AdjudicationRequest, EnvironmentConfig, Guardian, RuleConfig, SessionFacts, Settings,
     ToolCallSummary,
 };
+use rig_core::DynModel;
+use rig_core::operation::Completion;
 use rig_core::providers::openai::OpenAIConfig;
 use rig_core::providers::openai::wire::{Auth, Dialect};
 use serde_json::{Value, json};
@@ -135,12 +137,16 @@ impl Endpoint {
     }
 }
 
-pub fn guardian_at(url: &str, label: &str, settings: Settings) -> Guardian {
+pub fn model_at(url: &str) -> DynModel<Completion> {
     let client = OpenAIConfig::with_key(&GATEWAY, "key")
         .with_auth(Auth::OptionalBearer)
         .with_base_url(url)
         .client();
-    Guardian::new(client.completion("scripted").erase(), label, settings)
+    client.completion("scripted").erase()
+}
+
+pub fn guardian_at(url: &str, label: &str, settings: Settings) -> Guardian {
+    Guardian::new(model_at(url), label, settings)
 }
 
 pub fn request(command: &str, destructive: bool) -> AdjudicationRequest {

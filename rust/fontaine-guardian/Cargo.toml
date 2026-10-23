@@ -6,7 +6,16 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# PromptGuard 2 inference for the tool-result scanner; off by default to keep this crate light.
+pg2 = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
+
 [dependencies]
+futures.workspace = true
+candle-core = { workspace = true, optional = true }
+candle-nn = { workspace = true, optional = true }
+candle-transformers = { workspace = true, optional = true }
+tokenizers = { workspace = true, optional = true }
 rig-agent.workspace = true
 rig-core.workspace = true
 schemars.workspace = true
@@ -19,5 +28,6 @@ tracing.workspace = true
 insta.workspace = true
 rig-agent = { workspace = true, features = ["test-utils"] }
 rig-core = { workspace = true, features = ["test-utils"] }
+tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true

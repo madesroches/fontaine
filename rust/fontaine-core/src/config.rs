@@ -816,8 +816,13 @@ pub struct Guardian {
     pub scanner: Scanner,
     pub scanner_command: Option<String>,
     pub scanner_model_path: Option<String>,
-    pub scanner_hf_token_env: Option<String>,
+    /// The variable holding the Hugging Face token. Always set, so the shell and hook
+    /// environments are scrubbed of it whatever `scanner` is.
+    pub scanner_hf_token_env: String,
 }
+
+/// The variable `scanner_hf_token_env` names when the user sets none.
+pub const DEFAULT_HF_TOKEN_ENV: &str = "HF_TOKEN";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Permissions {
@@ -952,7 +957,7 @@ impl Config {
                 scanner: Scanner::Off,
                 scanner_command: None,
                 scanner_model_path: None,
-                scanner_hf_token_env: None,
+                scanner_hf_token_env: DEFAULT_HF_TOKEN_ENV.to_string(),
             },
             permissions: Permissions {
                 default_mode: None,
@@ -1030,7 +1035,7 @@ impl Config {
                 t.scanner_model_path = Some(v.clone());
             }
             if let Some(v) = &g.scanner_hf_token_env {
-                t.scanner_hf_token_env = Some(v.clone());
+                t.scanner_hf_token_env = v.clone();
             }
         }
         if let Some(p) = &s.permissions {
@@ -1312,7 +1317,7 @@ pub fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
         Layer {
             slot: Slot::User,
             column: Column::User,
-            path: user_path,
+            path: user_path.clone(),
             settings: user,
         },
     ];
@@ -1344,7 +1349,33 @@ pub fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
         config.apply(settings, layer.slot, layer.column);
     }
 
+    check_scanner(&config.guardian, &user_path)?;
     Ok(config)
+}
+
+/// Scanner settings come only from the user file, so that is where a bad combination is
+/// reported. Kept out of `validate_values` so the examples in the docs load under any feature set.
+fn check_scanner(guardian: &Guardian, user_path: &Path) -> Result<(), ConfigError> {
+    let bad = |key: &str, message: &str| Err(ConfigError::invalid(user_path, key, message));
+    match guardian.scanner {
+        Scanner::Command
+            if guardian
+                .scanner_command
+                .as_deref()
+                .is_none_or(str::is_empty) =>
+        {
+            bad(
+                "guardian.scanner_command",
+                "`scanner = \"command\"` requires `scanner_command`",
+            )
+        }
+        Scanner::Pg2 if !cfg!(feature = "pg2") => bad(
+            "guardian.scanner",
+            "`scanner = \"pg2\"` needs a build with the `pg2` feature; release binaries include it, \
+             a source build needs `--features pg2`",
+        ),
+        _ => Ok(()),
+    }
 }
 
 fn resolve_telemetry(t: &Telemetry, params: &LoadParams<'_>) -> Result<(), ConfigError> {

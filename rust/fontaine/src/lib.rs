@@ -16,6 +16,7 @@ use fontaine_core::dirs::{self, Dirs};
 use fontaine_core::extensions::{self, Extensions};
 use fontaine_core::models::{self, Models, ResolveParams, Switcher};
 use fontaine_core::permissions::DenyAll;
+use fontaine_core::scanner_stage::{self, ScannerStart};
 use fontaine_core::session::{self, Session, SessionError};
 use fontaine_core::tools;
 use fontaine_core::trust;
@@ -491,10 +492,25 @@ struct Launch<'a> {
     host: &'a Host,
 }
 
+/// Loads the tool-result scanner, which for `pg2` may download its model, before the session
+/// starts.
+async fn start_scanner(launch: &Launch<'_>, prep: &SessionPrep, models: &Models) -> ScannerStart {
+    scanner_stage::start(&scanner_stage::StartParams {
+        config: launch.config,
+        data_dir: &launch.dirs.data,
+        scrub_env: &prep.scrub_env,
+        env: &*launch.host.env,
+        guardian: models.guardian.as_ref(),
+        model_base_url: None,
+    })
+    .await
+}
+
 fn agent_setup(
     launch: &Launch<'_>,
     prep: SessionPrep,
     models: Models,
+    scanner: ScannerStart,
     headless: bool,
     json_schema: Option<Schema>,
 ) -> AgentSetup {
@@ -549,6 +565,7 @@ fn agent_setup(
         user_config: Some(dirs.config.join(config::USER_FILE)),
         guardian_profile: resolved.profile,
         notices,
+        scanner,
         switcher: Some(switcher),
         extensions: prep.extensions,
         project_executables: prep.project_executables,
@@ -583,7 +600,15 @@ async fn run_headless(
         dirs,
         host,
     };
-    let setup = agent_setup(&launch, prep, models, true, options.json_schema.clone());
+    let scanner = start_scanner(&launch, &prep, &models).await;
+    let setup = agent_setup(
+        &launch,
+        prep,
+        models,
+        scanner,
+        true,
+        options.json_schema.clone(),
+    );
     let mut runtime = match AgentRuntime::new(setup) {
         Ok(runtime) => runtime,
         Err(message) => {
@@ -613,7 +638,8 @@ async fn run_interactive(
         dirs,
         host,
     };
-    let setup = agent_setup(&launch, prep, models, false, None);
+    let scanner = start_scanner(&launch, &prep, &models).await;
+    let setup = agent_setup(&launch, prep, models, scanner, false, None);
     match fontaine_tui::run(setup, host.cwd.clone()).await {
         Ok(()) => 0,
         Err(message) => {

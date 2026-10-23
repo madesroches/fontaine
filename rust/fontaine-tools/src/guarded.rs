@@ -196,6 +196,7 @@ where
         agent: &agent,
         annotations,
     };
+    let mut scan = None;
     let outcome = match guard.gate.check(view).instrument(span.clone()).await {
         GateDecision::Deny { message } => Err(ToolExecutionError::refused(message)),
         GateDecision::Allow { args: allowed } => {
@@ -208,11 +209,13 @@ where
                 agent: &agent,
                 annotations,
             };
-            guard
+            let (outcome, record) = guard
                 .results
                 .run(view, outcome)
                 .instrument(span.clone())
-                .await
+                .await;
+            scan = record;
+            outcome
         }
     };
 
@@ -228,8 +231,10 @@ where
             duration_ms = started.elapsed().as_millis() as u64,
             args_bytes = args_bytes as u64,
             result_bytes = output_bytes(&outcome) as u64,
+            scanner_verdict = scan.as_ref().map(|s| s.verdict.as_str()),
+            scanner_latency_ms = scan.as_ref().map(|s| s.latency_ms),
             "tool_result"
-        );
+        )
     });
     outcome
 }

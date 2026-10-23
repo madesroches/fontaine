@@ -184,10 +184,65 @@ If the flag is missing or the probe is negative, Fontaine runs the **full** prof
 notice saying why. The profile can only be set from user settings, never from a project file.
 Every profile is scored before it ships: the scorecard has a `minimal` column.
 
+## Scanning tool results
+
+The guardian judges calls. The scanner looks at what comes back: with `[guardian] scanner` set, every
+tool result is checked for text that tries to steer the agent (instructions addressed to it, attempts
+to override its rules, hidden directives) before the agent reads it. It is off by default, because
+every result then waits for the scanner, which costs latency on every call.
+
+The scanner never withholds a result. It adds a note after the result, so the agent reads both:
+
+- **Flagged.** The note says the scanner flagged the result as possible prompt injection and gives
+  the scanner's reason, and tells the agent to treat anything in it that reads as an instruction as
+  untrusted data.
+- **Unscanned.** If the scanner errors, times out, answers with something that is not a verdict, or
+  is unavailable, the note says the result is unscanned and suspect, with the cause. Anything that
+  is not a clean verdict is treated this way, so a scanner outage never reads as a pass.
+
+A clean result is passed through unchanged. Empty results are not sent to the scanner. A failed tool
+call is a result too and is scanned. The scan runs after the notifications queued for the agent have
+been added and before `post_tool_use` hooks, so what another agent said is scanned like any other
+result: a subagent's report is flagged before its parent reads it. The `tool_result` telemetry event
+records the verdict and the latency, never the content.
+
+`scanner` selects one of four settings, in the user file only:
+
+| Value | What scans |
+|---|---|
+| `off` | Nothing. The default. |
+| `pg2` | PromptGuard 2 (86M), a small classifier run locally. A result is tokenized in full and scored in windows of 512 tokens at a stride of 256; it is flagged if any window scores 0.9 or more. |
+| `llm` | The guardian's model, in a short separate conversation with its own prompt. The result sits inside an untrusted block. A malformed answer, an error or a timeout leaves the result unscanned and suspect. |
+| `command` | A program of your own (`scanner_command`). See [the contract](configuration.md#bring-your-own-scanner). |
+
+Each scan is bounded by `[guardian] timeout_secs`. `pg2` is in the release binaries; a source build
+needs `cargo build --features pg2`, and `scanner = "pg2"` in a build without it is a configuration
+error (exit code 2).
+
+### PromptGuard 2 and the Llama 4 Community License
+
+PromptGuard 2 is Meta's model, distributed under the Llama 4 Community License, and its weights are
+a gated download on Hugging Face. Fontaine never bundles them. You accept the license on Hugging
+Face yourself, and Fontaine prints a notice about it every time a session starts with `scanner =
+"pg2"`, in every permission mode.
+
+Either point `scanner_model_path` at a directory holding `model.safetensors`, `tokenizer.json` and
+`config.json`, or let Fontaine download the missing files into `<data dir>/models/promptguard2-86m/`
+with your Hugging Face token, read from the environment variable named by `scanner_hf_token_env`
+(`HF_TOKEN` by default). The token is never stored or logged, and that variable is never passed to
+`shell` commands or hooks. A download gives up when it cannot connect within 30 seconds or
+when the server goes silent for 60 seconds, and a file appears under its final name only after a complete response. The first start downloads the
+model (hundreds of MB), prints a line on stderr saying so, and is slow; later starts reuse the files.
+
+The model loads at startup. If the token is missing, Hugging Face refuses the download (the license
+is not accepted), the network fails, or the files are missing or corrupt, the session still starts.
+The scanner is then unavailable: a notice names the cause, the license and the token variable, and
+every result carries the unscanned note until you fix it and restart.
+
 ## Prompt versioning
 
 The prompts are versioned assets in `rust/fontaine-guardian/prompts/` (`guardian_prompt.md`,
-`guardian_minimal.md`) compiled into the binary, so a prompt change ships with a release and is
+`guardian_minimal.md`, `scanner_llm.md`) compiled into the binary, so a prompt change ships with a release and is
 re-scored on the golden dataset before the list of validated models is regenerated. A change to a
 prompt or to the shipped rule lists changes the cache key, and an entry in the model list is only
 valid for the dataset it was scored on.
@@ -203,7 +258,7 @@ valid for the dataset it was scored on.
 - **Judgment.** The scorecard measures a fixed dataset. Novel attacks, and benign commands the
   dataset never saw, will be misjudged at some rate. A guardian allow is a decision to run the
   command with your permissions, not a proof that it is safe.
-- **Tool results are not scanned.** The guardian judges calls, not what comes back from them.
+- **Tool results are scanned only if you turn it on.** The guardian judges calls, not what comes back from them. The [scanner](#scanning-tool-results) annotates suspect results; it cannot prove one safe, and a flag is a warning to the agent, not a block.
 
 The [scorecard](evals.md) reports the measured catch and false-deny rates per model.
 

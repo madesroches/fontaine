@@ -39,6 +39,7 @@ use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
 use crate::models::{GuardianChoice, GuardianModel, ModelRef, Models, Switcher};
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
+use crate::scanner_stage::{Backend, ScannerStage, ScannerStart, llm_backend};
 use crate::session::{CONVERSATION_LOG, Session};
 use crate::skills::{self, SkillRuntime};
 use crate::steering::{Steering, SteeringHook};
@@ -89,6 +90,8 @@ pub struct AgentSetup {
     pub guardian_profile: Profile,
     /// What to tell the user once at startup.
     pub notices: Vec<String>,
+    /// The tool-result scanner as started, and what it has to tell the user.
+    pub scanner: ScannerStart,
     /// Resolves models again for `/model` and `/guardian-model`.
     pub switcher: Option<Switcher>,
     /// The skills, agent files and output styles that were loaded.
@@ -179,6 +182,9 @@ pub struct AgentRuntime {
     pub mode: PermissionMode,
     pub guardian_profile: Profile,
     pub notices: Vec<String>,
+    /// Scanner startup notices. Kept apart from `notices` because every surface shows them in
+    /// every permission mode.
+    pub scanner_notices: Vec<String>,
     pub origin: SessionOrigin,
     /// Messages typed while a turn runs, delivered with the next tool result.
     pub steering: Steering,
@@ -191,6 +197,8 @@ pub struct AgentRuntime {
     pub(crate) setup: Setup,
     tool_server: ToolServerHandle,
     results: Arc<ResultPipeline>,
+    /// The `llm` scanner's slot, which `install_guardian` keeps on the guardian's model.
+    llm_scanner: Option<Arc<RwLock<Backend>>>,
     skills: Arc<SkillRuntime>,
     agent_types: Arc<AgentTypes>,
     extensions: Arc<Extensions>,
@@ -387,6 +395,14 @@ impl AgentRuntime {
             StageKind::Notifications,
             Arc::new(NotificationStage { tree: tree.clone() }),
         );
+        let mut llm_scanner = None;
+        if let Some(backend) = setup.scanner.backend {
+            let stage = ScannerStage::new(backend);
+            if setup.config.guardian.scanner == crate::config::Scanner::Llm {
+                llm_scanner = Some(stage.handle());
+            }
+            results = results.with_stage(StageKind::Scanner, Arc::new(stage));
+        }
         if !hooks.post.is_empty() {
             results = results.with_stage(
                 StageKind::PostToolUse,
@@ -494,6 +510,7 @@ impl AgentRuntime {
             mode: setup.mode,
             guardian_profile: setup.guardian_profile,
             notices: setup.notices,
+            scanner_notices: setup.scanner.notices,
             origin: setup.origin,
             steering,
             files: Arc::default(),
@@ -503,6 +520,7 @@ impl AgentRuntime {
             setup: setup_rest,
             tool_server,
             results,
+            llm_scanner,
             skills,
             agent_types,
             extensions,
@@ -658,7 +676,8 @@ impl AgentRuntime {
             agent: ROOT_AGENT,
             annotations: None,
         };
-        let screened = match self.results.run(view, Ok(ToolOutput::text(text))).await {
+        let (screened, _) = self.results.run(view, Ok(ToolOutput::text(text))).await;
+        let screened = match screened {
             Ok(output) => output.render(),
             Err(error) => error.model_output().render(),
         };
@@ -820,6 +839,10 @@ impl AgentRuntime {
             &self.config,
             self.guardian_profile,
         )));
+        if let Some(slot) = &self.llm_scanner {
+            let timeout = std::time::Duration::from_secs(self.config.guardian.timeout_secs);
+            *slot.write().unwrap_or_else(|e| e.into_inner()) = llm_backend(Some(model), timeout);
+        }
     }
 
     fn switcher(&self) -> Result<&Switcher, String> {

@@ -15,7 +15,7 @@ fn names(list: &[OsString]) -> Vec<String> {
 fn the_shell_drops_telemetry_credentials_account_keys_and_the_scanner_token() {
     let w = World::new();
     w.user_file(
-        "[accounts.work]\nkind = \"anthropic\"\napi_key_env = \"WORK_KEY\"\n\n[accounts.home]\nkind = \"openai\"\napi_key_env = \"HOME_KEY\"\n\n[accounts.local]\nkind = \"ollama\"\n\n[telemetry]\napi_key_env = \"TELEMETRY_KEY\"\n\n[guardian]\nscanner = \"pg2\"\nscanner_hf_token_env = \"HF_TOKEN_NAME\"\n",
+        "[accounts.work]\nkind = \"anthropic\"\napi_key_env = \"WORK_KEY\"\n\n[accounts.home]\nkind = \"openai\"\napi_key_env = \"HOME_KEY\"\n\n[accounts.local]\nkind = \"ollama\"\n\n[telemetry]\napi_key_env = \"TELEMETRY_KEY\"\n\n[guardian]\nscanner = \"llm\"\nscanner_hf_token_env = \"HF_TOKEN_NAME\"\n",
     );
     let config = w.load().unwrap();
     let present = [
@@ -50,6 +50,14 @@ fn the_shell_drops_telemetry_credentials_account_keys_and_the_scanner_token() {
             "{name} in {scrubbed:?}"
         );
     }
+}
+
+#[test]
+fn hf_token_is_scrubbed_by_default_whatever_the_scanner() {
+    let w = World::new();
+    let config = w.load().unwrap();
+    let scrubbed = names(&scrubbed_env(&config, Vec::<OsString>::new()));
+    assert!(scrubbed.contains(&"HF_TOKEN".to_string()), "{scrubbed:?}");
 }
 
 #[test]

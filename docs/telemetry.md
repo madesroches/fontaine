@@ -118,7 +118,8 @@ not exported.
 
 `fontaine.cost.usage` is priced from the model catalog and is absent when the catalog has no price,
 which is always the case for an `openai-compatible` endpoint. `query_source` is `main` for the
-session model, `guardian` for the model calls made while a guardian adjudication is open, and
+session model, `guardian` for the model calls made while a guardian adjudication is open,
+`scanner` for the calls the `llm` tool-result scanner makes, and
 `subagent` for the calls made under a subagent's span.
 Both guardian metrics are derived from the guardian attributes of the decision event. No metric
 carries a prompt or tool-call id.
@@ -132,7 +133,7 @@ carries a prompt or tool-call id.
 | `subagent` | `event` (`spawn`, `complete`, `killed` or `budget_exhausted`), `agent.id`, `agent.type` |
 | `mcp_server_connection` | `server`, `transport` (`stdio` or `http`), `status` (`connected` or `failed`) |
 | `tool_decision` | `tool_name`, `agent.id`, `agent.type`, `tool_use_id`, `tier`, `decision`, `permission_mode`, `headless`, `latency_ms`; for guardian decisions also `guardian.model`, `guardian.profile`, `guardian.confidence`, `guardian.cache_hit`, `guardian.latency_ms` and, when it failed closed, `fail_closed_reason`. The rule label and explanation are not exported; they are in the audit log. |
-| `tool_result` | `tool_name`, `risk_class`, `tool_source`, `success`, `duration_ms`, `args_bytes`, `result_bytes` (sizes only: no arguments and no output). Emitted for every call, including a denied one. |
+| `tool_result` | `tool_name`, `risk_class`, `tool_source`, `success`, `duration_ms`, `args_bytes`, `result_bytes` (sizes only: no arguments and no output); when the [tool-result scanner](guardian.md#scanning-tool-results) scanned the result, also `scanner_verdict` (`clean`, `flagged` or `error`) and `scanner_latency_ms`, absent when no scan ran. Emitted for every call, including a denied one. |
 
 A command you run with `!` in the terminal UI is not a gate decision, but it is reported through the
 same event and counter: `tool_name = shell`, `tier = human`, `decision = allow`, and it counts with

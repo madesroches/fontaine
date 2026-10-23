@@ -123,6 +123,22 @@ All notable changes are recorded here. The format follows
 - Telemetry: `fontaine.subagent`, `fontaine.hook` and `fontaine.mcp.call` spans, `subagent` and
   `mcp_server_connection` events, `agent.id` on `tool_decision`, `query_source = subagent`.
 - `docs/agents.md`, `docs/hooks.md`, `docs/mcp.md` and `docs/extensions.md`.
+- Phase 6, guardian hardening: the tool-result scanner, selected by `[guardian] scanner` (`off`
+  by default, `pg2`, `llm` or `command`; user file only). A result it flags, or cannot scan, is
+  kept and followed by a note telling the agent it is possible prompt injection or unscanned and
+  suspect; subagent reports pass the same stage. `pg2` runs PromptGuard 2 (86M) locally through
+  candle, scoring a whole result in 512-token windows, behind the `pg2` cargo feature (on in
+  release binaries, `--features pg2` from source). Its gated weights are never bundled: a local
+  `scanner_model_path`, or a download with the token in `scanner_hf_token_env` (default
+  `HF_TOKEN`, now always removed from `shell` and hook environments), with the Llama 4 Community
+  License notice shown on every startup in every mode. `llm` uses the guardian's model;
+  `command` runs your own program (stdin `{tool, content}`, stdout `{verdict, reason}`).
+- Scanner telemetry: `scanner_verdict` and `scanner_latency_ms` on `tool_result`, and
+  `query_source = scanner` for the `llm` scanner's model calls.
+- The eval runner scores `scanner` cases in `live:` mode with the configured scanner;
+  `fontaine-evals` has a forwarding `pg2` feature.
+- Documentation: result scanning in `docs/guardian.md`, the scanner keys and the BYO contract in
+  `docs/configuration.md`, telemetry fields, the `pg2` feature and an install note.
 
 ### Changed
 
