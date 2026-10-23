@@ -43,7 +43,7 @@ and call `.user_agent(USER_AGENT)` on the client builder in `Webfetch::new`.
 - The constant stays private; the test builds the expected string itself from
   `env!("CARGO_PKG_VERSION")`, which in the test crate is the same workspace version.
 - Scope is the webfetch client only. The PromptGuard download client in
-  `fontaine-core/src/scanner_model.rs` talks to Hugging Face, which does not reject it; it is not
+  `rust/fontaine-core/src/scanner_model.rs` talks to Hugging Face, which does not reject it; it is not
   part of this issue.
 
 ## Implementation Steps
@@ -51,7 +51,8 @@ and call `.user_agent(USER_AGENT)` on the client builder in `Webfetch::new`.
 1. `rust/fontaine-tools/src/webfetch.rs`: add `USER_AGENT` and `.user_agent(USER_AGENT)` in
    `Webfetch::new`.
 2. `rust/fontaine-tools/tests/webfetch.rs`: add a test (below).
-3. `docs/tools.md`: one bullet in "Web fetch" stating the User-Agent sent.
+3. `docs/tools.md`: one bullet in "Web fetch" stating the User-Agent sent, e.g. "It identifies itself
+   with the User-Agent `fontaine/<version> (+https://github.com/madesroches/fontaine)`."
 4. `tasks/fontaine_harness_plan.md` `## Decisions`: one dated line recording the User-Agent string
    and why it differs from Claude Code's `Claude-User` identity.
 
@@ -70,20 +71,14 @@ and call `.user_agent(USER_AGENT)` on the client builder in `Webfetch::new`.
   Wikimedia's policy asks clients not to do, and some sites block spoofed browsers harder.
 - **Make the User-Agent configurable** — not needed by the issue; can come later if a site needs it.
 
-## Decisions
-
-## Documentation
-
-- `docs/tools.md` "Web fetch": add a bullet, e.g. "It identifies itself with the User-Agent
-  `fontaine/<version> (+https://github.com/madesroches/fontaine)`."
-
 ## Testing Strategy
 
 Unit-tier `wiremock` test in `rust/fontaine-tools/tests/webfetch.rs`, pinning the bug seen in the
 wild (Wikipedia 403 on a request with no User-Agent):
 
-- `requests_carry_a_fontaine_user_agent`: mount a mock with
-  `wiremock::matchers::header("user-agent", <expected>)` answering 200 with text, where
+- `requests_carry_a_fontaine_user_agent`: mount its own mock (the `serve` helper only matches
+  method and path) using `wiremock::matchers::header("user-agent", <expected>)`, added to the
+  `use wiremock::matchers::{method, path}` import, answering 200 with text, where
   `<expected>` is built from `env!("CARGO_PKG_VERSION")`; fetch succeeds and returns the body.
   An unmatched request gets wiremock's 404, so a missing or different User-Agent fails the test —
   the same shape as the real failure.
