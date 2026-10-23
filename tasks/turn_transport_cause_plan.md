@@ -42,9 +42,6 @@ and the five `expect`s have messages. The guardian is fail-closed on every non-v
 The problems are:
 
 1. **Causes lost on the way to the user.**
-   - The top-level exits (`fontaine/src/lib.rs`, `eprintln!("fontaine: {e}")` exits) print
-     Display only; eight of them (~lines 165, 173, 206, 213, 255, 351, 429, 482) carry a value
-     that implements `Error`, the rest carry `String`s.
    - Guardian and scanner fail-closed explanations (`fontaine-guardian/src/guardian.rs:223-237`,
      `scanner.rs:124-126`) drop the error, which goes to `tracing::warn!` and is invisible
      without `--debug`.
@@ -78,7 +75,11 @@ The problems are:
 
 Add `fontaine-core/src/transport.rs` with a `CausedClient(ReqwestClient)` that implements
 `rig_core::http_client::HttpClientExt` by delegating to the inner client. On the way out it
-rewrites any `Error::Instance(inner)` as `Error::Instance(Box::new(WithCauses(inner)))`.
+rewrites any `Error::Instance(inner)` as `Error::Instance(Box::new(WithCauses(inner)))`. Before
+wrapping, it downcasts `inner` to `reqwest::Error` and calls `without_url()` (as
+`webfetch::describe` does): rig's Gemini provider puts the API key in the request URL query
+(`rig-core-0.45.0/src/providers/gemini/mod.rs:94-100`) and reqwest's Display appends
+" for url (...)", so request URLs never appear in transport error text.
 `WithCauses`:
 
 - Display: the inner error's message followed by each `source()` link whose text isn't already
@@ -128,8 +129,6 @@ design 1.
 
 ### 3. Render the chain where errors reach the user
 
-- `fontaine/src/lib.rs` exit paths whose value implements `Error` (~lines 165, 173, 206, 213,
-  255, 351, 429, 482): print `chain(&e)` instead of `{e}`. `String` exits are unchanged.
 - `turn.rs:256` keeps `other.to_string()`. With design 1 the string already names the cause,
   and an `ErrorReport` has no `source()` to walk.
 - Guardian and scanner fail-closed explanations append the error:
@@ -152,10 +151,15 @@ design 1.
 ### 5. Write failures reach the human once
 
 - The audit append (`permissions.rs:1337`) and the ledger appends (`gate.rs:576`,
-  `child_runner.rs:99`, `steering.rs:80`) warn through `Approver::warn`, as `agent.rs:1014` does.
-- To avoid a warning per decision on a full disk, the session warns once per sink (audit,
-  ledger) using a `std::sync::Once`-style flag on `SessionState`. It keeps logging to `tracing`
-  every time.
+  `child_runner.rs:99`, `steering.rs:80`) warn through `Approver::warn`.
+- `SessionState` (`gate.rs:196-226`) carries the session's approver (an `Arc<dyn Approver>`, set
+  where `SessionState` is built) and one warn-once flag per sink (audit, ledger), with one method,
+  `SessionState::sink_failed(Sink, &io::Error)`. It logs to `tracing` every time and warns through
+  the approver once per sink, so a full disk doesn't warn per decision.
+- `record_decision(&SessionState)` (`permissions.rs:1336`) and the gate's ledger append call it.
+  `LedgerWindow` (`child_runner.rs:67`, built at `agent.rs:1056`) and `SteeringHook`
+  (`steering.rs`, built at `agent.rs:1101`) take an `Arc<SessionState>` instead of the bare
+  ledger. The existing warn at `agent.rs:1014` routes through the same method.
 - Compaction's `warn` (`session.rs:237`) goes through the approver instead of `eprintln!`. `Session` has
   no approver, so `compact_if_needed` takes an `&dyn Approver`; its callers
   (`fontaine-tui/src/lib.rs:819`, `fontaine/src/headless.rs:601`) pass the one `AgentRuntime`
@@ -168,14 +172,19 @@ design 1.
   undecodable id fails the call before it is gated. This keeps "a child's mode is never looser
   than its parent's" true without depending on wiring elsewhere.
 - `spawn.rs` `caller_of` (`fontaine-agents/src/spawn.rs:23`) has the same fall-back-to-root
-  pattern and decides the child's toolset and depth check. It fails closed the same way.
+  pattern and decides the child's toolset and depth check. It fails closed the same way, as does
+  its second caller, `SendMessageTool` (`spawn.rs:361`).
 - The test helpers that run guarded tools with an empty `ToolContext`
   (`fontaine-tools/tests/common/mod.rs:90-95`, `fontaine-core/tests/choke_point.rs:179`,
   `fontaine-mcp/tests/common/mod.rs:87`) insert an `AgentId`. `the_gate_sees_the_agent_of_the_call`
   (`fontaine-tools/tests/guarded.rs:156-169`) asserted an untagged call is "root"; it becomes
-  the fail-closed regression.
+  the fail-closed regression. Every direct `.run(..)` on a guarded tool in tests goes through a
+  tagged context, including `fontaine-tools/tests/result_pipeline.rs` (lines 57, 72, 81, 98, 135)
+  and the other `fontaine-tools/tests/guarded.rs` calls (110, 122, 134, 141, 150, 231, 244).
+  The `caller_of` regression test lives in `fontaine-agents/tests/seam.rs`.
 - `turn.rs:149` handles the `insert` result. Failing to tag the context is a bug, so it
-  `expect`s with a message.
+  `expect`s with a message. `fontaine-core/src/skills.rs:189-190` has the same ignored
+  `let _ = context.insert(AgentId(..))` and gets the same `expect`.
 
 ### 7. No silent fallbacks for invariants
 
@@ -184,7 +193,7 @@ design 1.
 
 ### 8. Error handling strategy in AGENTS.md
 
-Add an `## Error handling` section to `AGENTS.md` (the user asked for it). It draws on the
+Add an `## Error handling` section to `AGENTS.md`. It draws on the
 micromegas conventions and the rule the user stated:
 
 - Typed error enums (thiserror-style) only where a caller dispatches on the kind: exit codes,
@@ -197,21 +206,21 @@ micromegas conventions and the rule the user stated:
 - Don't swallow errors. A failure the user would care about (audit, ledger, config, credentials)
   reaches them through `Approver::warn` at least once. `let _ =` is only for best-effort cleanup
   and sends to closed channels.
-- Security paths stay fail-closed: the error text may explain a Deny, never change it.
-- `fontaine-guardian` stays dependency-light. It doesn't take the helper crate.
+- Error text may explain a Deny, never change it.
 
 ## Implementation Steps
 
 1. **Transport cause (#88).**
    - Add the `rig-reqwest` workspace dependency (`=0.45.0`) and make `reqwest` non-optional in
      `fontaine-core`.
+   - Add a direct `webpki-root-certs` dependency (`=1.0.10`, the version in Cargo.lock) to
+     `rust/Cargo.toml` and `rust/fontaine-core/Cargo.toml` for the TLS fallback.
    - Add `fontaine-tools/src/error_chain.rs` with unit tests: dedupe, a multi-level chain, an
      error with no source.
    - Add `fontaine-core/src/transport.rs` (`CausedClient`, `WithCauses`) and switch
      `Client::build` to it.
    - Rewrite `webfetch::describe` in terms of `chain`.
 2. **Rendering.**
-   - Top-level `chain` in `fontaine/src/lib.rs`.
    - Guardian and scanner explanations with the cause.
    - `SessionError::source()`.
 3. **Messages.** `ConfigError::Read`/`Write` split, `SessionError` operation, call-site updates.
@@ -230,11 +239,13 @@ micromegas conventions and the rule the user stated:
 
 - `rust/Cargo.toml`, `rust/fontaine-core/Cargo.toml`
 - `rust/fontaine-tools/src/error_chain.rs` (new), `rust/fontaine-tools/src/lib.rs`, `rust/fontaine-tools/src/webfetch.rs`, `rust/fontaine-tools/src/guarded.rs`, `rust/fontaine-tools/tests/common/mod.rs`, `rust/fontaine-tools/tests/guarded.rs`
-- `rust/fontaine-core/src/transport.rs` (new), `models.rs`, `turn.rs`, `session.rs`, `config.rs`, `credentials.rs`, `trust.rs`, `permissions.rs`, `gate.rs`, `child_runner.rs`, `steering.rs`, `extensions.rs`, `lib.rs`
+- `rust/fontaine-core/src/transport.rs` (new), `agent.rs`, `skills.rs`, `models.rs`, `turn.rs`, `session.rs`, `config.rs`, `credentials.rs`, `trust.rs`, `permissions.rs`, `gate.rs`, `child_runner.rs`, `steering.rs`, `extensions.rs`, `lib.rs`
 - `rust/fontaine-guardian/src/guardian.rs`, `scanner.rs`
-- `rust/fontaine-agents/src/spawn.rs`
+- `rust/fontaine-agents/src/spawn.rs`, `rust/fontaine-agents/tests/seam.rs`
+- `rust/fontaine-evals/src/none.rs`, `rust/fontaine-core/tests/common/pipeline.rs` (where `StateParams`/`SessionState` are built)
+- `rust/fontaine-tools/tests/result_pipeline.rs`
 - `rust/fontaine-mcp/tests/common/mod.rs`, `rust/fontaine-core/tests/choke_point.rs`
-- `rust/fontaine/src/lib.rs`, `rust/fontaine/src/headless.rs`, `rust/fontaine-tui/src/lib.rs`
+- `rust/fontaine/src/headless.rs`, `rust/fontaine-tui/src/lib.rs`
 - `rust/fontaine-core/tests/credentials.rs`, `rust/fontaine-core/tests/config.rs`, `rust/fontaine-core/tests/ledger.rs`, `rust/fontaine-core/tests/permissions_auto.rs`
 - `AGENTS.md`, `CHANGELOG.md`
 
@@ -289,6 +300,8 @@ micromegas conventions and the rule the user stated:
 - **Unit:** `error_chain::chain` (dedupe, depth, no source). `WithCauses` Display/`source`.
   `CausedClient` rewrites `Instance` errors from `send` and from a failing stream chunk. Use a
   fake `HttpClientExt` returning canned errors; no network.
+- **Unit:** a `reqwest::Error` whose URL has a `key=` query yields a rewritten error whose
+  Display does not contain the URL or the key.
 - **Unit:** `ConfigError::Write` wording at a write site. `SessionError` open-vs-create wording.
   `SessionError::source()`.
 - **Unit:** guardian explanation contains the error text and the outcome is still
@@ -298,7 +311,9 @@ micromegas conventions and the rule the user stated:
   regression for the security invariant). Existing tests that used an empty `ToolContext` get an
   `AgentId` via the shared helpers.
 - **Unit:** audit/ledger write failure warns through a recording approver exactly once across
-  two failures.
+  two failures. The `Scripted` test approver (`fontaine-core/tests/common/pipeline.rs:64-95`)
+  records `warn`; the test drives `SessionState::sink_failed` directly with a constructed
+  `io::Error`, since appends can't be made to fail portably.
 - Existing suites stay green, including the choke-point test and the fixture eval runs.
 
 ## Open Questions
