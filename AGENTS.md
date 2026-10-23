@@ -88,7 +88,8 @@ all tests pass:
 - `expect("why this cannot fail")` instead of `unwrap()` outside tests. An invariant panics
   loudly rather than falling back silently.
 - Don't swallow errors. A failure the user would care about (audit, ledger, config, credentials)
-  reaches them through `Approver::warn` at least once; core never writes to stderr itself.
+  reaches them through `Approver::warn` at least once; core reports warnings through the
+  `Approver` (whose default implementation writes to stderr) rather than writing to stderr directly.
   `let _ =` is only for best-effort cleanup and sends to closed channels.
 - Error text may explain a Deny, never change it.
 
