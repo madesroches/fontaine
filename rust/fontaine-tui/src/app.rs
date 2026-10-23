@@ -18,6 +18,7 @@ use crate::complete::{self, Mention};
 use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt};
 use crate::history::History;
 use crate::input::InputBuffer;
+use crate::model_picker::{ModelPicker, PickerKey, PickerPurpose};
 use crate::server_prompt::ServerPrompt;
 use crate::transcript::Transcript;
 
@@ -46,6 +47,8 @@ pub enum Action {
     RetryDenied(usize),
     /// The human answered the unavailable-guardian prompt.
     Guardian(UnavailableAnswer),
+    /// The human chose `<account>/<model>` in the model picker.
+    PickModel(PickerPurpose, String),
     /// The human asked to stop a subagent.
     KillAgent(String),
     /// The human answered the question about starting a repository's MCP server.
@@ -111,9 +114,9 @@ pub fn builtin_menu() -> Vec<MenuEntry> {
         entry(
             "guardian-model",
             Some("[account/model]"),
-            "show or change the guardian",
+            "choose the guardian model",
         ),
-        entry("model", Some("[account/model]"), "show or change the model"),
+        entry("model", Some("[account/model]"), "choose the model"),
         entry(
             "output-style",
             Some("[name|none]"),
@@ -151,6 +154,8 @@ pub struct App {
     pub agents: Option<AgentsPanel>,
     /// A repository's MCP server waiting for the human's say-so.
     pub server: Option<ServerPrompt>,
+    /// The `/model` or `/guardian-model` picker while it is open.
+    pub models: Option<ModelPicker>,
     /// The commands and user-invocable skills the `/` menu lists.
     pub menu: Vec<MenuEntry>,
     /// Subagents running right now, for the status bar.
@@ -193,6 +198,7 @@ impl App {
             queued_approvals: VecDeque::new(),
             agents: None,
             server: None,
+            models: None,
             menu: builtin_menu(),
             running_agents: 0,
             denied: None,
@@ -438,6 +444,7 @@ impl App {
             || self.denied.is_some()
             || self.unavailable.is_some()
             || self.server.is_some()
+            || self.models.is_some()
             || self.agents.is_some()
     }
 
@@ -483,6 +490,20 @@ impl App {
                     Action::Server(answer)
                 }
                 None => Action::None,
+            };
+        }
+        if let Some(picker) = &mut self.models {
+            let purpose = picker.purpose();
+            return match picker.handle_key(key) {
+                PickerKey::None => Action::None,
+                PickerKey::Close => {
+                    self.models = None;
+                    Action::None
+                }
+                PickerKey::Pick(_, reference) => {
+                    self.models = None;
+                    Action::PickModel(purpose, reference)
+                }
             };
         }
         // The panel can be open over a pending approval, and takes the keys while it is.

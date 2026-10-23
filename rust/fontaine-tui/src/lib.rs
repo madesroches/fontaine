@@ -9,6 +9,8 @@ pub mod complete;
 pub mod denials;
 pub mod history;
 pub mod input;
+pub mod model_picker;
+pub mod recent;
 pub mod screen;
 pub mod server_prompt;
 pub mod statusbar;
@@ -49,6 +51,8 @@ pub use denials::UnavailableAnswer;
 
 use agents_panel::{AgentsPanel, Detail, PanelRow};
 use denials::{DeniedList, UnavailablePrompt};
+use model_picker::{Group, ModelPicker, PickerPurpose};
+use recent::RecentModels;
 use screen::{Anchored, Screen};
 use server_prompt::ServerPrompt;
 
@@ -138,6 +142,10 @@ struct Ui<R> {
     input: UnboundedReceiver<Input>,
     prompts: UnboundedReceiver<Prompt>,
     render: R,
+    recent: RecentModels,
+    /// A model picked while a turn ran, applied once the turn is over: only the idle loop owns
+    /// the runtime mutably.
+    pending_pick: Option<(PickerPurpose, String)>,
 }
 
 impl<R: FnMut(&mut App)> Ui<R> {
@@ -275,6 +283,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let changed = tree.changed().notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
+            if let Some((purpose, reference)) = self.pending_pick.take() {
+                self.apply_pick(runtime, purpose, &reference).await;
+            }
             // A background agent that finished while nothing was running has news for the
             // main conversation, which gets a turn of its own to read it.
             if tree.has_notifications(ROOT_AGENT) {
@@ -317,6 +328,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Action::RetryDenied(index) => self.retry_denied(runtime, index),
                 Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
                 Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                Action::PickModel(purpose, reference) => {
+                    self.apply_pick(runtime, purpose, &reference).await;
+                }
                 Action::Server(_) | Action::None | Action::Interrupt | Action::Queue(_) => {}
             }
         }
@@ -465,6 +479,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::CycleMode => self.cycle_mode(runtime),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
                         Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                        Action::PickModel(purpose, reference) => {
+                            self.pending_pick = Some((purpose, reference));
+                        }
                         Action::RetryDenied(_)
                         | Action::Server(_)
                         | Action::None
@@ -594,6 +611,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             Action::RetryDenied(index) => self.retry_denied(runtime, index),
                             Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
                             Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                            Action::PickModel(purpose, reference) => {
+                                self.pending_pick = Some((purpose, reference));
+                            }
                             Action::Server(_)
                             | Action::None
                             | Action::Submit(_)
@@ -654,14 +674,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
-    /// `/model`: shows the model, or switches the live session to another and saves the choice.
+    /// `/model`: opens the picker, or switches the live session to the model named and saves
+    /// the choice.
     async fn model(&mut self, runtime: &mut AgentRuntime, reference: &str) {
         if reference.is_empty() {
-            self.app.transcript.notice(format!(
-                "model {} · guardian {}",
-                runtime.models.main.reference,
-                runtime.state.guardian().label()
-            ));
+            self.open_model_picker(runtime).await;
             return;
         }
         match runtime.switch_main_model(reference).await {
@@ -670,29 +687,42 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 if switched.guardian_followed {
                     message.push_str("; the guardian runs on it too");
                 }
+                self.remember_model(PickerPurpose::Main, &switched.reference);
                 self.finish_switch(message, switched.persist_error);
             }
             Err(e) => self.app.transcript.error(format!("/model: {e}")),
         }
     }
 
-    /// `/guardian-model`: shows the guardian and the models it could be, or pins it to one.
+    /// Lists the models of every account, which can take a while, then opens the picker.
+    async fn open_model_picker(&mut self, runtime: &mut AgentRuntime) {
+        self.app.transcript.notice("listing models…");
+        self.draw(runtime);
+        let groups: Vec<Group> = match runtime.model_listings().await {
+            Ok(listings) => listings.iter().map(Group::from).collect(),
+            Err(e) => {
+                self.app.transcript.error(format!("/model: {e}"));
+                return;
+            }
+        };
+        let current = runtime.models.main.reference.clone();
+        self.app.models = Some(ModelPicker::new(
+            PickerPurpose::Main,
+            format!(
+                "model {current} · guardian {}",
+                runtime.state.guardian().label()
+            ),
+            Some(current),
+            self.recent.list(PickerPurpose::Main),
+            groups,
+        ));
+    }
+
+    /// `/guardian-model`: opens the picker on the models the guardian could be, or pins the
+    /// guardian to the one named.
     fn guardian_model(&mut self, runtime: &mut AgentRuntime, reference: &str) {
         if reference.is_empty() {
-            let guardian = runtime.state.guardian();
-            let others: Vec<String> = runtime
-                .guardian_candidates()
-                .iter()
-                .map(ToString::to_string)
-                .collect();
-            let mut message = format!("guardian {}", guardian.label());
-            if let Some(reason) = guardian.unavailable_reason() {
-                message.push_str(&format!(" (unavailable: {reason})"));
-            }
-            if !others.is_empty() {
-                message.push_str(&format!(" · available: {}", others.join(", ")));
-            }
-            self.app.transcript.notice(message);
+            self.open_guardian_picker(runtime);
             return;
         }
         match runtime.set_guardian_model(reference) {
@@ -703,13 +733,75 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         "guardian is now {}, but it is unavailable: {reason}",
                         switched.reference
                     )),
-                    None => self.finish_switch(
-                        format!("guardian is now {}", switched.reference),
-                        switched.persist_error,
-                    ),
+                    None => {
+                        self.remember_model(PickerPurpose::Guardian, &switched.reference);
+                        self.finish_switch(
+                            format!("guardian is now {}", switched.reference),
+                            switched.persist_error,
+                        );
+                    }
                 }
             }
             Err(e) => self.app.transcript.error(format!("/guardian-model: {e}")),
+        }
+    }
+
+    fn open_guardian_picker(&mut self, runtime: &AgentRuntime) {
+        let guardian = runtime.state.guardian();
+        let mut header = format!("guardian {}", guardian.label());
+        if let Some(reason) = guardian.unavailable_reason() {
+            header.push_str(&format!(" (unavailable: {reason})"));
+        }
+        let mut by_account: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for candidate in runtime.guardian_candidates() {
+            by_account
+                .entry(candidate.account)
+                .or_default()
+                .push(candidate.model);
+        }
+        let groups: Vec<Group> = by_account
+            .into_iter()
+            .filter_map(|(account, models)| {
+                let kind = runtime.config.accounts.get(&account)?.kind;
+                Some(Group::new(account, kind, Ok(models)))
+            })
+            .collect();
+        if groups.is_empty() {
+            self.app.transcript.notice(header);
+            return;
+        }
+        // The runtime's own record of the guardian goes stale after a session-only change.
+        let current = fontaine_core::models::ModelRef::parse(guardian.label());
+        self.app.models = Some(ModelPicker::new(
+            PickerPurpose::Guardian,
+            header,
+            current,
+            self.recent.list(PickerPurpose::Guardian),
+            groups,
+        ));
+    }
+
+    /// A pick from the picker is the argument form of the command.
+    async fn apply_pick(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        purpose: PickerPurpose,
+        reference: &str,
+    ) {
+        match purpose {
+            PickerPurpose::Main => self.model(runtime, reference).await,
+            PickerPurpose::Guardian => self.guardian_model(runtime, reference),
+        }
+    }
+
+    /// Adds a model the human switched to into the picker's Recent group; a file that cannot be
+    /// written is reported once.
+    fn remember_model(&mut self, purpose: PickerPurpose, reference: &str) {
+        let Some(model) = fontaine_core::models::ModelRef::parse(reference) else {
+            return;
+        };
+        if let Some(error) = self.recent.record(purpose, &model) {
+            self.app.transcript.notice(error);
         }
     }
 
@@ -860,6 +952,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::RetryDenied(index) => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
                         Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                        Action::PickModel(purpose, reference) => {
+                            self.pending_pick = Some((purpose, reference));
+                        }
                         Action::Queue(text) => {
                             self.remember(&text);
                             runtime.steering.queue(text);
@@ -961,6 +1056,7 @@ pub async fn drive(
         &setup.data_dir.join("history.jsonl"),
         &primary_root.display().to_string(),
     );
+    let (recent, recent_error) = RecentModels::load(&setup.data_dir.join("recent_models.json"));
     let mut runtime = AgentRuntime::new(setup)?;
     runtime.record_session_start().await;
     let mut ui = Ui {
@@ -968,10 +1064,12 @@ pub async fn drive(
         input,
         prompts,
         render,
+        recent,
+        pending_pick: None,
     };
     ui.app.history = history;
     ui.app.primary_root = primary_root;
-    if let Some(error) = history_error {
+    for error in [history_error, recent_error].into_iter().flatten() {
         ui.app.transcript.notice(error);
     }
     for notice in runtime
@@ -1124,6 +1222,8 @@ mod tests {
             input: unbounded_channel().1,
             prompts,
             render: |_: &mut App| {},
+            recent: RecentModels::in_memory(),
+            pending_pick: None,
         }
     }
 

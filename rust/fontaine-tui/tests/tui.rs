@@ -1,5 +1,6 @@
 mod common;
 
+use common::routed::{Route, Turn, start};
 use common::{Ui, World, text_turn, tool_turn};
 use ratatui::crossterm::event::KeyCode;
 use serde_json::json;
@@ -487,7 +488,15 @@ async fn model_switches_the_live_session_and_saves_the_choice() {
         ui.send("/model other/missing");
         ui.wait_for("does not offer model `missing`").await;
         ui.send("/model");
-        ui.wait_for("guardian other/second").await;
+        ui.wait_until("the picker", |_| ui.live().contains("type to filter"))
+            .await;
+        let live = ui.live();
+        assert!(
+            live.contains("model other/second · guardian other/second"),
+            "{live}"
+        );
+        assert!(live.contains("second (current)"), "{live}");
+        ui.press(KeyCode::Esc);
     })
     .await;
     let saved = std::fs::read_to_string(&w.user_config).unwrap();
@@ -506,8 +515,13 @@ async fn guardian_model_pins_the_guardian_and_saves_the_choice() {
     w.run(|ui| async move {
         idle(&ui).await;
         ui.send("/guardian-model");
-        ui.wait_for("available: cloud/judge-b").await;
-        ui.send("/guardian-model cloud/judge-b");
+        ui.wait_until("the picker", |_| ui.live().contains("type to filter"))
+            .await;
+        let live = ui.live();
+        assert!(live.contains("guardian judge/mock"), "{live}");
+        assert!(live.contains("│cloud"), "{live}");
+        assert!(live.contains("  judge-b"), "{live}");
+        ui.press(KeyCode::Enter);
         ui.wait_for("guardian is now cloud/judge-b").await;
         assert!(
             ui.screen().contains("saved to your settings"),
@@ -835,4 +849,208 @@ async fn history_persists_across_runs() {
     let file = std::fs::read_to_string(w.data.join("history.jsonl")).unwrap();
     assert_eq!(file.lines().count(), 1, "{file}");
     assert_ne!(w.session_id(), "00000000-0000-4000-8000-000000000001");
+}
+
+const OTHER: &str = "\n[accounts.other]\nkind = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9\"\nmodels = [\"second\", \"third\"]\n";
+
+async fn picker_open(ui: &Ui) {
+    ui.wait_until("the picker", |_| ui.live().contains("type to filter"))
+        .await;
+}
+
+async fn picker_closed(ui: &Ui) {
+    ui.wait_until("the picker to close", |_| {
+        !ui.live().contains("type to filter")
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_model_picker_groups_filters_switches_and_remembers() {
+    let w = World::routed("http://127.0.0.1:9", OTHER);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/model");
+        picker_open(&ui).await;
+        let live = ui.live();
+        assert!(live.contains("model mock/scripted"), "{live}");
+        assert!(live.contains("scripted (current)"), "{live}");
+        assert!(live.contains("other"), "{live}");
+        assert!(live.contains("  third"), "{live}");
+        ui.type_text("sec");
+        ui.wait_until("the filter", |_| !ui.live().contains("  third"))
+            .await;
+        let live = ui.live();
+        assert!(live.contains("filter: sec"), "{live}");
+        assert!(!live.contains("  scripted"), "{live}");
+        ui.press(KeyCode::Enter);
+        ui.wait_for("model is now other/second").await;
+        assert!(ui.screen().contains("saved to your settings"));
+        picker_closed(&ui).await;
+        ui.send("/model");
+        picker_open(&ui).await;
+        let live = ui.live();
+        assert!(live.contains("Recent"), "{live}");
+        assert!(live.contains("other/second (current)"), "{live}");
+        ui.press(KeyCode::Esc);
+    })
+    .await;
+    let saved = std::fs::read_to_string(&w.user_config).unwrap();
+    assert!(saved.contains("model = \"other/second\""), "{saved}");
+    let recent = std::fs::read_to_string(w.data.join("recent_models.json")).unwrap();
+    assert!(recent.contains("\"main\":[\"other/second\"]"), "{recent}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn escape_closes_the_model_picker_without_switching() {
+    let w = World::routed("http://127.0.0.1:9", OTHER);
+    let before = std::fs::read_to_string(&w.user_config).unwrap();
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/model");
+        picker_open(&ui).await;
+        ui.press(KeyCode::Down);
+        ui.press(KeyCode::Esc);
+        picker_closed(&ui).await;
+        assert!(!ui.screen().contains("model is now"));
+    })
+    .await;
+    assert_eq!(std::fs::read_to_string(&w.user_config).unwrap(), before);
+    assert!(!w.data.join("recent_models.json").exists());
+}
+
+fn openai_models(ids: &[&str]) -> wiremock::ResponseTemplate {
+    let data: Vec<_> = ids
+        .iter()
+        .map(|id| json!({"id": id, "object": "model", "created": 0, "owned_by": "x"}))
+        .collect();
+    wiremock::ResponseTemplate::new(200).set_body_json(json!({"object": "list", "data": data}))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_account_keeps_its_heading_and_only_failures_are_listed_again() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let live = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(openai_models(&["fresh"]))
+        .expect(1)
+        .mount(&live)
+        .await;
+    let broken = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+        .expect(2)
+        .mount(&broken)
+        .await;
+    let extra = format!(
+        "\n[accounts.live]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\n\n[accounts.broken]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\n",
+        live.uri(),
+        broken.uri()
+    );
+    let w = World::routed("http://127.0.0.1:9", &extra);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/model");
+        picker_open(&ui).await;
+        let shown = ui.live();
+        assert!(shown.contains("broken"), "{shown}");
+        assert!(shown.contains("could not list:"), "{shown}");
+        assert!(shown.contains("  fresh"), "{shown}");
+        ui.press(KeyCode::Esc);
+        picker_closed(&ui).await;
+        ui.send("/model");
+        picker_open(&ui).await;
+        assert!(ui.live().contains("  fresh"));
+        ui.press(KeyCode::Esc);
+        picker_closed(&ui).await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pick_made_during_a_notification_turn_applies_when_the_turn_ends() {
+    let server = start(vec![
+        Route::new(
+            "root task",
+            vec![
+                Turn::tool(
+                    "c1",
+                    "agent",
+                    json!({"agent_type": "worker", "prompt": "child-A: finish", "background": true}),
+                ),
+                Turn::text("launched"),
+                Turn::text("noted the report"),
+            ],
+        )
+        .delay(2, 3000),
+        Route::new("child-A", vec![Turn::text("child done")]).delay(0, 1500),
+    ])
+    .await;
+    let w = World::routed(
+        &server.uri(),
+        &format!("{OTHER}\n[permissions]\nallow = [\"agent\"]\n"),
+    );
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("root task");
+        ui.wait_for("launched").await;
+        idle(&ui).await;
+        ui.send("/model");
+        picker_open(&ui).await;
+        ui.wait_for("a background agent reported back").await;
+        ui.type_text("third");
+        ui.press(KeyCode::Enter);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!ui.screen().contains("model is now"), "{}", ui.screen());
+        ui.wait_for("model is now other/third").await;
+        assert!(ui.screen().contains("noted the report"), "{}", ui.screen());
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approval_arriving_behind_the_picker_does_not_take_its_place() {
+    let server = start(vec![
+        Route::new(
+            "root task",
+            vec![
+                Turn::tool(
+                    "c1",
+                    "agent",
+                    json!({"agent_type": "worker", "prompt": "child-A: ask", "background": true}),
+                ),
+                Turn::text("launched"),
+            ],
+        ),
+        Route::new(
+            "child-A",
+            vec![Turn::tool("k1", "shell", json!({"command": "echo hi"}))],
+        )
+        .delay(0, 1500),
+    ])
+    .await;
+    let w = World::routed(
+        &server.uri(),
+        &format!("{OTHER}\n[permissions]\nallow = [\"agent\"]\n"),
+    );
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("root task");
+        ui.wait_for("launched").await;
+        idle(&ui).await;
+        ui.send("/model");
+        picker_open(&ui).await;
+        // The child's call asks while the picker is open.
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+        let live = ui.live();
+        assert!(live.contains("type to filter"), "{live}");
+        assert!(!live.contains("approval"), "{live}");
+        ui.press(KeyCode::Esc);
+        ui.wait_for_prompt("Allow shell (agent-1)?").await;
+        ui.press(KeyCode::Char('n'));
+    })
+    .await;
 }

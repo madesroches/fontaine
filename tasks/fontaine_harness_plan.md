@@ -444,6 +444,7 @@ scorecard run (see `## Remaining work`).
 - 2026-10-22: On Windows the command text reaches Git Bash in `FONTAINE_SH_COMMAND`, not on the command line, unlike Claude Code. Reason: the judged command must be the one that runs.
 - 2026-10-23: In auto, Fontaine suspends a broad PreToolUse allow hook; Claude Code 2.1.309 honors it (one `claude -p` run per variant). Kept stricter: a broad hook would otherwise bypass the guardian for every call it matches.
 - 2026-10-23 (user): Every phase is done, so the phase plans moved to `tasks/completed/phases/` and the live-checks plan to `tasks/completed/`; the master plan, `tasks/design/` and `## Decisions` stay live, and remaining work is tracked as GitHub issues (`release-blocker` for the first release).
+- 2026-10-23: The `/model` picker groups models by account, filters them with a fuzzy match and lists recently used models first, going beyond Claude Code's flat `/model` picker. Reason: Fontaine's model namespace is `<account>/<model>` across several accounts; the design follows opencode.
 
 ## Open Questions
 

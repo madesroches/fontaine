@@ -36,7 +36,7 @@ use crate::config::{AgentMode, Config, McpServer, PermissionMode};
 use crate::extensions::Extensions;
 use crate::gate::{AutoContext, SessionState, StateParams, no_guardian};
 use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
-use crate::models::{GuardianChoice, GuardianModel, ModelRef, Models, Switcher};
+use crate::models::{AccountListing, GuardianChoice, GuardianModel, ModelRef, Models, Switcher};
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
 use crate::scanner_stage::{Backend, ScannerStage, ScannerStart, llm_backend};
@@ -210,6 +210,8 @@ pub struct AgentRuntime {
     runner: Arc<CoreChildRunner>,
     output_style: Option<String>,
     mcp: Vec<Connected>,
+    /// What `model_listings` has fetched this session.
+    listings: Vec<AccountListing>,
 }
 
 /// The parts of the setup a rebuild needs again.
@@ -535,6 +537,7 @@ impl AgentRuntime {
             runner,
             output_style: None,
             mcp: Vec::new(),
+            listings: Vec::new(),
         })
     }
 
@@ -914,6 +917,43 @@ impl AgentRuntime {
             guardian_followed,
             persist_error,
         })
+    }
+
+    /// The models of every configured account, for the `/model` picker. The first call fetches
+    /// them; later calls fetch only the accounts that failed before, so a credential added
+    /// mid-session shows up while cached successes make no request. The main account's entry
+    /// always follows the current listing.
+    pub async fn model_listings(&mut self) -> Result<&[AccountListing], String> {
+        let switcher = self.switcher()?.clone();
+        let failed: Vec<String> = self
+            .listings
+            .iter()
+            .filter(|l| l.models.is_err())
+            .map(|l| l.account.clone())
+            .collect();
+        let only = (!self.listings.is_empty()).then_some(failed.as_slice());
+        let fetched = switcher
+            .listings(
+                (&self.models.main.reference, &self.models.main_listing),
+                only,
+            )
+            .await;
+        for listing in fetched {
+            match self
+                .listings
+                .iter_mut()
+                .find(|l| l.account == listing.account)
+            {
+                Some(slot) => *slot = listing,
+                None => self.listings.push(listing),
+            }
+        }
+        self.listings.sort_by(|a, b| a.account.cmp(&b.account));
+        let main = &self.models.main.reference.account;
+        if let Some(slot) = self.listings.iter_mut().find(|l| l.account == *main) {
+            slot.models = Ok(self.models.main_listing.clone());
+        }
+        Ok(&self.listings)
     }
 
     /// `/guardian-model`: pins the guardian to `text` for the live session and saves it as
