@@ -89,8 +89,8 @@ but not in others.
 
 ### Release notes (`.github/workflows/release.yml`)
 
-dist only reads a changelog from the package directory or the workspace root. So the two jobs that
-compute the announcement, `plan` and `host`, copy the root changelog into the workspace before any
+For a plain `vX.Y.Z` tag dist reads a changelog only from the workspace root (`rust/`). So the two
+jobs whose announcement is used, `plan` and `host`, copy the root changelog into the workspace before any
 `dist` command:
 
 ```yaml
@@ -100,30 +100,31 @@ compute the announcement, `plan` and `host`, copy the root changelog into the wo
         run: cp ../CHANGELOG.md CHANGELOG.md
 ```
 
-The step goes right after checkout in both jobs. The build jobs never compute an announcement and
-take the changelog through `include`, so they are not touched. The copy is never committed, because
+The step goes right after checkout in both jobs. The build jobs also compute an announcement, but the
+`host` job rebuilds the notes itself and ignores theirs; they take the changelog through `include`,
+so they are not touched. The copy is never committed, because
 it exists only in the runner's checkout. `rust/CHANGELOG.md` also goes into `.gitignore` for a
 maintainer who reproduces the step locally.
 
 ### Missing-notes guard (`.github/workflows/release.yml`, `plan` job)
 
-A new step runs between staging and the existing `id: plan` step, and only on a tag push
-(`if: ${{ !github.event.pull_request }}`):
+A new step runs right after the existing `id: plan` step, and only on a tag push
+(`if: ${{ !github.event.pull_request }}`). That step's `dist host --steps=create` writes
+`plan-dist-manifest.json`, which the guard reads:
 
 ```yaml
       - name: Require a changelog section for the tag
         if: ${{ !github.event.pull_request }}
         run: |
-          dist plan --tag=${{ github.ref_name }} --output-format=json > notes-check.json
-          if ! jq -e '.announcement_changelog != null' notes-check.json > /dev/null; then
+          if ! jq -e '.announcement_changelog != null' plan-dist-manifest.json > /dev/null; then
             echo "::error::CHANGELOG.md has no section for ${{ github.ref_name }}; add '## [X.Y.Z] - YYYY-MM-DD' before tagging"
             exit 1
           fi
 ```
 
-It uses `dist plan` rather than the `host --steps=create` that follows, so a missing section stops
-the run before dist does anything on the hosting side. On pull requests the guard is skipped,
-because the changelog legitimately has only `## [Unreleased]` there.
+`host --steps=create` writes nothing on GitHub; the release is created only by the `host` job, which
+never runs when `plan` fails. On pull requests the guard is skipped, because the changelog
+legitimately has only `## [Unreleased]` there.
 
 ### Changelog (`CHANGELOG.md`)
 
@@ -144,8 +145,10 @@ the release date is only known when the maintainer tags. The areas are:
   JSON Schema, and the exit codes.
 - **Extensibility**: subagents and the agents panel, MCP, user hooks, skills, agent files and
   output styles.
-- **Telemetry**: micromegas and OTLP, opt-in content, and the target allowlist.
-- **Evals**: the golden dataset and `fontaine-evals` (fixture, `none` and `live:` modes).
+- **Telemetry**: micromegas and OTLP, opt-in content, and which spans and events are exported (Fontaine's own target and the model
+  layer's completion and agent targets).
+- **Evals**: the golden dataset and `fontaine-evals` (fixture, `none` and `live:` modes, as
+  `evals/README.md` documents them).
 - **Distribution**: release binaries for Linux, macOS and Windows with `pg2`, and
   `cargo install --git`.
 
@@ -156,8 +159,8 @@ Rules for the rewrite:
   the old log.
 - Changes that only matter against earlier unreleased builds are dropped, such as the inline-TUI
   change, the removal of `echo`, error-text rewordings and the macOS CI fix.
-- Issue references (#70, #73, #74, #78, #85, #88) stay only where the entry still describes
-  shipped behavior, such as the `webfetch` User-Agent and `Accept` header and the Windows Git Bash
+- Issue references (#46, #73, #78, #85, #88) stay only where the entry still describes
+  shipped behavior, such as queued messages, the `webfetch` User-Agent and `Accept` header and the Windows Git Bash
   command passing.
 - No phase labels: the phase history lives in the plan and git.
 - `### Changed`, `### Removed` and `### Fixed` are dropped. A first release has nothing to change
@@ -186,10 +189,16 @@ The existing "add an entry under `## [Unreleased]`" bullet stays as it is.
 - Tick the Merge item with the date 2026-10-23.
 - Add a ticked **Bugs** group: #78 and #73 fixed, 2026-10-23.
 - Under **Repository and release**, split the last item into "`CHANGELOG.md` entry for 0.1.0",
-  which this plan ticks with the merge date of its PR, and "Cut the first cargo-dist release tag".
+  which this plan ticks with the commit date (2026-10-23), and "Cut the first cargo-dist release tag".
   Add a ticked line for "Release archives carry LICENSE/README/CHANGELOG; release notes from the
   changelog; missing-notes guard".
 - In the Backlog paragraph, drop "Open bugs: #78 … and #73 …".
+- Reword the sentence under "Release readiness" that says each item needs live provider keys, a live
+  model or a maintainer decision, so none runs in CI, to start "Apart from the ticked repo-side
+  items, each item needs …".
+- The master plan says the checklists are tracked in issue #80 and ticked in both places. The
+  maintainer mirrors the ticks there (Merge #75/#79, the bugs #78/#73, the CHANGELOG entry) and adds
+  the archives/notes/guard line. The implementing agent does not edit the GitHub issue.
 
 ### Release design doc (`tasks/design/platforms.md` §Releases)
 
@@ -206,7 +215,7 @@ from the version's section. A tag without that section fails in the `plan` job.
 3. **`.gitignore`.** Add `rust/CHANGELOG.md`.
 4. **Changelog.** Rewrite the `## [Unreleased]` body as the curated 0.1.0 entry.
 5. **Release procedure.** Add `## Releasing` to `CONTRIBUTING.md`.
-6. **Plan bookkeeping.** Update `tasks/fontaine_harness_plan.md` `## Remaining work` and
+6. **Plan bookkeeping.** Leave issue #80's checkboxes to the maintainer. Update `tasks/fontaine_harness_plan.md` `## Remaining work` and
    `tasks/design/platforms.md` §Releases.
 7. **Docs.** README: one clause in the Install section saying the archive also holds the license,
    readme and changelog. No `docs/` page describes the release archive contents, and none needs to.
@@ -230,11 +239,6 @@ from the version's section. A tag without that section fails in the `plan` job.
   runs on such a checkout. The copy is confined to the two Linux jobs that need it.
 - **Staging vs. moving `CHANGELOG.md` into `rust/`.** The root layout rule in `AGENTS.md` fixes
   `CHANGELOG.md` at the root.
-- **Explicit `include` with `auto-includes = false` vs. auto-include alone.** Auto-include cannot
-  reach the root files at all, and leaving it on would make the asset list depend on whether a job
-  staged the changelog.
-- **Guard via `dist plan` vs. checking the manifest after `host --steps=create`.** The guard runs
-  before any hosting step, so a forgotten heading leaves nothing behind on GitHub.
 - **Curated 0.1.0 entry vs. keeping the per-phase log.** The section becomes the public release
   notes, and most of the log describes changes between unreleased builds. Git history keeps the
   detailed record.
@@ -256,12 +260,13 @@ The changes are cargo-dist configuration, GitHub Actions steps and prose. No Rus
 there is nothing for a unit test to call.
 
 - `rust/fontaine-core/tests/docs.rs` already checks that `CHANGELOG.md` exists with content
-  (`the_required_pages_exist_with_content`), that relative links resolve, and that there are no
-  placeholder markers. It covers the rewritten changelog and the `CONTRIBUTING.md` section.
+  (`the_required_pages_exist_with_content`), and its link and placeholder checks (`checked_files`)
+  cover `docs/*.md`, `README.md` and `evals/README.md`, so the README's relative links are covered.
+  `CHANGELOG.md` and `CONTRIBUTING.md` are only checked to exist with content.
 - `release.yml` runs on every pull request in `pr-run-mode = "plan"`. The PR for this branch runs
-  the `plan` job with the staging step and with the guard skipped. The CI `release-plan` job runs
-  `dist plan` against the edited `[package.metadata.dist]`, so a bad key or a missing `include`
-  path fails CI.
+  the `plan` job with the staging step and with the guard skipped. A typo in an `include` path is not caught by
+  `dist plan`; it fails only at `dist build` time (a tag push) or locally with `dist build`. Manual
+  Verification step 1 confirms the asset names.
 - The full offline gate set from `AGENTS.md` (`fmt`, `clippy`, `test`, `deny`, the fixture eval
   runs) stays green.
 
@@ -273,16 +278,17 @@ same `dist plan` the workflow runs:
 
 1. From `rust/`: `dist plan --tag v0.1.0 --output-format=json | jq '.artifacts["fontaine-x86_64-unknown-linux-gnu.tar.xz"].assets | map(.name)'`.
    Expected: `["CHANGELOG.md", "LICENSE", "README.md", "fontaine"]`.
-2. `cp ../CHANGELOG.md CHANGELOG.md && dist plan --tag v0.1.0 --output-format=json | jq -e '.announcement_changelog != null'; rm CHANGELOG.md`.
-   Expected: exit 1. The changelog still says `## [Unreleased]`, so this is the guard's failing
+2. `cp ../CHANGELOG.md CHANGELOG.md && dist plan --tag v0.1.0 --output-format=json | jq -e '.announcement_changelog != null'; s=$?; rm CHANGELOG.md; echo "exit $s"`.
+   Expected: `exit 1`. The changelog still says `## [Unreleased]`, so this is the guard's failing
    case.
-3. Repeat step 2 with a scratch copy whose heading is renamed to `## [0.1.0] - 2026-10-23`.
-   Expected: exit 0, and `.announcement_github_body` starts with `## Release Notes` followed by
+3. Repeat step 2, in the same `s=$?; rm CHANGELOG.md; echo "exit $s"` form, with a scratch copy whose
+   heading is renamed to `## [0.1.0] - 2026-10-23`. Expected: `exit 0`, and `.announcement_github_body` starts with `## Release Notes` followed by
    the curated entry.
 
 ## Decisions
 
 - 2026-10-23: GitHub private vulnerability reporting is left for the maintainer to enable (a
   repository setting, outward-facing). It stays an open checklist item.
+- 2026-10-23: AFK: Issue #80's checkboxes are left for the maintainer to tick; editing the GitHub issue is outward-facing.
 - 2026-10-23: The live, keyed and maintainer items of #80 are not attempted here. Each needs
   credentials or a judgment this branch does not have.
