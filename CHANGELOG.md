@@ -145,6 +145,7 @@ All notable changes are recorded here. The format follows
 - `[permissions] default_mode` is optional: the terminal UI starts in `auto` and a headless run in
   `manual`. `auto` is now accepted from the user file, `--settings` and `--permission-mode`; shared
   project settings still cannot set it.
+- A failed model listing names the underlying transport cause (refused, reset, timed out).
 - In `plan` mode, consequential non-edit calls go to the guardian instead of the prompt; edits stay
   blocked whatever it says.
 - In `auto`, broad allow rules are suspended by program: interpreters, shells (including `pwsh`,

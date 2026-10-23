@@ -306,7 +306,7 @@ fn client_for(
 /// reset, timed out) is further down the source chain. rig's `ProviderError::source` drops the
 /// transport error, so the walk starts from it directly. Causes whose text is already shown are
 /// skipped, since wrappers often repeat their source's message.
-pub(crate) fn with_causes(error: &ProviderError) -> String {
+fn with_causes(error: &ProviderError) -> String {
     let mut text = error.to_string();
     let mut source = match error {
         ProviderError::Http(transport) => std::error::Error::source(&**transport),

@@ -253,7 +253,6 @@ pub async fn drive(
     } else if let Some(e) = failure {
         match e {
             e @ PromptError::MaxTurns { .. } => TurnOutcome::MaxTurns(e.to_string()),
-            PromptError::Provider(p) => TurnOutcome::Failed(crate::models::with_causes(&p)),
             other => TurnOutcome::Failed(other.to_string()),
         }
     } else if let Some(response) = final_response {
