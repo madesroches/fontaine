@@ -46,8 +46,9 @@ All notable changes are recorded here. The format follows
   - `webfetch` sends the User-Agent `fontaine/<version> (+https://github.com/madesroches/fontaine)`
     (#73) and `Accept: text/markdown, text/html, */*` (#85).
 - Permissions
-  - The modes `manual`, `acceptEdits`, `plan`, `dontAsk` and `auto`; cycle through them with
-    Shift+Tab. `plan` blocks every edit and sends consequential non-edit calls to the guardian.
+  - The modes `manual`, `acceptEdits`, `plan`, `dontAsk` and `auto`; Shift+Tab cycles `manual`,
+    `acceptEdits`, `plan` and `auto`, and `dontAsk` is set through settings or
+    `--permission-mode`. `plan` blocks every edit and sends consequential non-edit calls to the guardian.
   - A deterministic floor in every mode: deny rules, ask rules, critical-path `rm`/`rmdir` (also
     reached through shell runners, launchers, `find -exec`, `xargs` and MSYS-style paths) and
     protected paths, including Fontaine's own config and data directories. A file-tool call outside
@@ -57,7 +58,8 @@ All notable changes are recorded here. The format follows
     a bare `shell` or `agent`, interpreters, shells, package runners (`cargo run`, `npm run`,
     `npx`, `make`), `sudo`/`doas` and argv launchers, and any wildcard that can reach them.
   - A shell pre-classifier on a real shell parser with a per-command flag allowlist and
-    `[shell_preclassifier] allow_extra`; anything it cannot fully parse goes to the guardian.
+    `[shell_preclassifier] allow_extra`; anything it cannot fully parse is never pre-approved: it
+    falls through to the rules and the mode, and goes to the guardian in `auto` and `plan`.
   - An append-only audit log per session, `tool_decision` events, `fontaine.permission` spans, the
     `fontaine.tool_decision.count` metric, headless `gate_decision` events and `result.denials`,
     and `--allowed-tools` and `--disallowed-tools`.
