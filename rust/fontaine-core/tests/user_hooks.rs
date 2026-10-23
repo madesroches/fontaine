@@ -137,6 +137,34 @@ async fn the_event_carries_claude_codes_fields_and_ours() {
 }
 
 #[tokio::test]
+async fn a_double_backslash_in_a_hook_command_reaches_the_hook_as_written() {
+    let text = r"a\\b\\";
+    let h = hook(None, command(&["--stderr", text, "--exit", "2"]), user());
+    let rig = rig(Manual, "", vec![h]);
+    let d = rig.check("shell", shell("git push")).await;
+    assert!(
+        denied_message(&d).contains(&format!("({text})")),
+        "{}",
+        denied_message(&d)
+    );
+}
+
+#[tokio::test]
+async fn a_verbatim_windows_path_in_a_hook_command_reaches_the_hook() {
+    let dir = tempfile::tempdir().unwrap();
+    let record = dir.path().canonicalize().unwrap().join("event.json");
+    let h = hook(
+        None,
+        command(&["--record", &record.to_string_lossy()]),
+        user(),
+    );
+    let rig = rig(Manual, "", vec![h]);
+    std::fs::write(rig.work().join("a.txt"), "a").unwrap();
+    rig.check("read", json!({"path": "a.txt"})).await;
+    assert!(record.exists());
+}
+
+#[tokio::test]
 async fn updated_input_is_what_the_floor_the_rules_and_the_audit_see() {
     let settings = "[permissions]\ndeny = [\"read(.env)\"]\n";
     let rewrite = json!({"hookSpecificOutput": {

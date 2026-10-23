@@ -310,7 +310,7 @@ impl World {
             roots: vec![self.work.clone()],
             mode: self.mode,
             scrub_env: vec![],
-            git_bash: None,
+            git_bash: git_bash(),
             system_prompt: None,
             append_system_prompt: None,
             json_schema: None,
@@ -467,4 +467,19 @@ pub async fn verdict_endpoint(verdict: Value) -> wiremock::MockServer {
         .mount(&server)
         .await;
     server
+}
+
+/// Git Bash, which hooks run through on Windows; nothing elsewhere.
+#[cfg(windows)]
+fn git_bash() -> Option<fontaine_tools::git_bash::GitBash> {
+    let probe = fontaine_tools::git_bash::Probe {
+        env: &|name| std::env::var_os(name),
+        is_file: &|path| path.is_file(),
+    };
+    fontaine_tools::git_bash::discover(&probe).ok()
+}
+
+#[cfg(not(windows))]
+fn git_bash() -> Option<fontaine_tools::git_bash::GitBash> {
+    None
 }

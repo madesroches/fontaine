@@ -29,7 +29,7 @@ command = "/home/me/.config/fontaine/hooks/format.sh"
 | Key | Meaning | Default |
 |---|---|---|
 | `matcher` | A rule in the `Tool(specifier)` form. The hook runs for the calls it covers. | none: every call |
-| `command` | The command line, run by the shell: `sh -c` (through Git Bash on Windows, found the same way as for the `shell` tool, including `FONTAINE_GIT_BASH_PATH`). Required. | none |
+| `command` | The command line, run by the shell: `sh -c` (through Git Bash on Windows, found the same way as for the `shell` tool, including `FONTAINE_GIT_BASH_PATH`); the command reaches Git Bash as written, including every `\\`. Required. | none |
 | `timeout_secs` | At least 1. A hook that takes longer is cut off. | `30` |
 
 A hook without a `matcher` runs for every call and counts as broad, which matters for `allow` in

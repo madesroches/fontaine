@@ -11,7 +11,7 @@ check apply unchanged. Discovery: locate `git.exe` on PATH (then the standard Gi
 locations), derive `<Git>\usr\bin` and `<Git>\bin`, and prepend both to the shell launcher's PATH
 (rig-tools `Launcher::with_env`) so rig's `sh` resolves; `FONTAINE_GIT_BASH_PATH` overrides discovery
 (Claude Code's `CLAUDE_CODE_GIT_BASH_PATH`); not found ⇒ startup error on Windows (exit 2, message
-naming Git for Windows and the override). Hook commands use the same discovery. A PowerShell tool is backlog (GitHub issue #28); it would never
+naming Git for Windows and the override). Hook commands use the same discovery. The command text reaches Git Bash's `sh` in the `FONTAINE_SH_COMMAND` environment variable, which `sh -c` evaluates, rather than on the Windows command line, where the MSYS runtime re-parses it and halves every `\\`; the command that was judged is then the one that runs. A PowerShell tool is backlog (GitHub issue #28); it would never
 pre-classify. Path handling (scope validator, protected paths, critical-path) accepts drive
 letters, UNC paths, MSYS-style `/c/...` argv paths (translated to drive paths before validation; an
 untranslatable one is out of scope), compares case-insensitively, and resolves junctions and

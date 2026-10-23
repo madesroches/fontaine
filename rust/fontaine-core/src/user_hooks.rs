@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fontaine_tools::gate::CallView;
-use fontaine_tools::git_bash::GitBash;
+use fontaine_tools::git_bash::{GitBash, sh_command};
 use fontaine_tools::result_pipeline::{ResultStage, ToolOutcome, append_note};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
@@ -55,10 +55,11 @@ pub struct HookOutput {
 
 impl HookProcess {
     async fn run(&self, command: &str, stdin: &Value) -> Result<HookOutput, HookError> {
+        let sh = sh_command(command, self.git_bash.is_some());
         let mut process = tokio::process::Command::new("sh");
         process
             .arg("-c")
-            .arg(command)
+            .arg(sh.script)
             .current_dir(&self.project_dir)
             .env(PROJECT_DIR_VAR, &self.project_dir)
             .stdin(Stdio::piped())
@@ -67,6 +68,9 @@ impl HookProcess {
             .kill_on_drop(true);
         for name in &self.scrub_env {
             process.env_remove(name);
+        }
+        if let Some((name, value)) = sh.env {
+            process.env(name, value);
         }
         if let Some(git_bash) = &self.git_bash {
             process.env("PATH", git_bash.path_value(std::env::var_os("PATH")));

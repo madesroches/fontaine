@@ -190,3 +190,9 @@ All notable changes are recorded here. The format follows
 ### Removed
 
 - The test-only `echo` tool and its `FONTAINE_SPIKE_ECHO_TOOL` switch.
+
+### Fixed
+
+- On Windows, `shell`, `!` and hook commands reach Git Bash unchanged: `\\` (UNC paths, `\\?\`
+  paths, escaped backslashes) is no longer halved. The command now travels in
+  `FONTAINE_SH_COMMAND`, so a syntax error reads `sh: eval:` instead of `sh: -c:` (#78).

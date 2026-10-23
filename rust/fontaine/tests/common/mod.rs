@@ -474,15 +474,6 @@ impl Output {
     }
 }
 
-/// `path` as text for a hook command line. A Cygwin process (Git Bash's `sh`) started from a
-/// native one re-parses its command line and reads `\\` inside quotes as one escaped
-/// backslash, so the `\\?\` prefix a canonicalized Windows path carries would reach the hook
-/// as `\?\`, which names nothing.
-pub fn command_path(path: &Path) -> String {
-    let text = path.to_string_lossy();
-    text.strip_prefix(r"\\?\").unwrap_or(&text).to_string()
-}
-
 impl Sandbox {
     pub fn new() -> Sandbox {
         let tmp = tempfile::tempdir().unwrap();

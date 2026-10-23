@@ -1,5 +1,6 @@
-//! Git Bash discovery for the `shell` tool on Windows. Git for Windows is a prerequisite: its
-//! `usr\bin` and `bin` directories go in front of the shell launcher's PATH so `sh` resolves.
+//! Git Bash support for the `shell` tool and hooks on Windows: discovery, and passing commands to
+//! `sh` through the environment. Git for Windows is a prerequisite: its `usr\bin` and `bin`
+//! directories go in front of the shell launcher's PATH so `sh` resolves.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -7,6 +8,35 @@ use std::path::{Path, PathBuf};
 
 /// Overrides discovery with the path of Git Bash's `bash.exe`.
 pub const OVERRIDE_VAR: &str = "FONTAINE_GIT_BASH_PATH";
+
+/// Carries the command to Git Bash's `sh`, which would otherwise re-parse it off the Windows
+/// command line and halve every `\\`.
+pub const COMMAND_VAR: &str = "FONTAINE_SH_COMMAND";
+
+/// What `sh -c` runs in place of the command. The variable is expanded before `eval` runs, so
+/// the command itself never sees it.
+pub const RUN_COMMAND_SCRIPT: &str = "eval \"unset FONTAINE_SH_COMMAND\n$FONTAINE_SH_COMMAND\"";
+
+/// The `sh -c` script and the variable to set so `sh` runs `command` as written.
+pub struct ShCommand<'a> {
+    pub script: &'a str,
+    pub env: Option<(&'static str, &'a str)>,
+}
+
+/// `command` itself when it can go on the command line; through `COMMAND_VAR` for Git Bash.
+pub fn sh_command(command: &str, through_env: bool) -> ShCommand<'_> {
+    if through_env {
+        ShCommand {
+            script: RUN_COMMAND_SCRIPT,
+            env: Some((COMMAND_VAR, command)),
+        }
+    } else {
+        ShCommand {
+            script: command,
+            env: None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitBash {
@@ -121,6 +151,25 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    #[test]
+    fn the_command_goes_on_the_command_line_unless_it_goes_through_the_environment() {
+        let plain = sh_command(r"echo '\\a'", false);
+        assert_eq!(plain.script, r"echo '\\a'");
+        assert_eq!(plain.env, None);
+        let wrapped = sh_command(r"echo '\\a'", true);
+        assert_eq!(wrapped.script, RUN_COMMAND_SCRIPT);
+        assert_eq!(wrapped.env, Some((COMMAND_VAR, r"echo '\\a'")));
+    }
+
+    #[test]
+    fn the_wrapper_script_survives_the_windows_reparse() {
+        assert!(!RUN_COMMAND_SCRIPT.contains('\\'));
+        assert_eq!(
+            RUN_COMMAND_SCRIPT,
+            format!("eval \"unset {COMMAND_VAR}\n${COMMAND_VAR}\"")
+        );
+    }
 
     fn bash(root: &str) -> GitBash {
         GitBash {
