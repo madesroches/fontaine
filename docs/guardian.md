@@ -158,8 +158,8 @@ model = "work/claude-haiku-5-5"
   to switch to `manual`. In a headless run every adjudication is denied with `GuardianUnavailable`,
   and the `init` event and stderr say so.
 - For endpoints with no catalog match (a custom `openai-compatible` endpoint, Ollama, an
-  `opencode-go` account), only a model set explicitly in `guardian.model` is used. A small local model can be both the agent and the
-  guardian; judge it by its own scorecard run.
+  `opencode-go` account), only a model set explicitly in `guardian.model` is used. A small local
+  model can be both the agent and the guardian; judge it by its own scorecard run.
 
 ## The minimal profile
 

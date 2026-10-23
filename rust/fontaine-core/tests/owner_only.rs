@@ -76,3 +76,27 @@ fn a_new_directory_is_owner_only_and_creating_it_twice_reports_it_exists() {
     let orphan = owner_only::create_dir(&w.root.join("missing").join("child")).unwrap_err();
     assert_eq!(orphan.kind(), std::io::ErrorKind::NotFound);
 }
+
+#[test]
+fn an_atomic_write_replaces_the_content_and_stays_owner_only() {
+    let w = World::new();
+    let path = w.root.join("atomic.txt");
+    std::fs::write(&path, b"old content that is longer").unwrap();
+    owner_only::write_atomic(&path, b"new").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    #[cfg(unix)]
+    assert_eq!(mode(&path), 0o600);
+    #[cfg(windows)]
+    common::assert_current_user_only(&path);
+    let leftovers = std::fs::read_dir(&w.root)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        })
+        .count();
+    assert_eq!(leftovers, 0);
+}

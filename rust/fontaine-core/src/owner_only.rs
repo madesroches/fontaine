@@ -29,6 +29,29 @@ pub fn write(path: &Path, contents: &[u8]) -> io::Result<()> {
     file.flush()
 }
 
+/// Replaces the content of `path` all at once: a reader sees the old or the new content, and a
+/// failed write leaves the old file in place.
+pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let name = path
+        .file_name()
+        .map_or_else(Default::default, |n| n.to_owned());
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let tmp = path.with_file_name(tmp_name);
+    let result = (|| {
+        let mut file = open(&tmp, false)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 #[cfg(unix)]
 mod imp {
     use std::fs::{File, OpenOptions};

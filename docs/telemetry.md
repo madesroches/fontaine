@@ -101,10 +101,10 @@ the `fail_closed_reason` when it failed closed; the guardian's own model call si
 A subagent adds a `fontaine.subagent` span (`agent.id`, `agent.type`) under the span of the `agent`
 call that started it, and its own interactions, model calls and tool calls nest below it. A user
 hook adds a `fontaine.hook` span (`hook_event`, `success`) under the span of the call it ran for,
-and a call to an MCP tool a `fontaine.mcp.call` span (`mcp.server`, `mcp.tool`). A threshold compaction adds a `fontaine.compaction` span around the summarizer call, with `model.priced`: whether the cost of
-model calls under the span is counted. Model-call spans carry the
-provider, the model, the response id and the token counts. Source file paths and thread names are
-not exported.
+and a call to an MCP tool a `fontaine.mcp.call` span (`mcp.server`, `mcp.tool`). A threshold
+compaction adds a `fontaine.compaction` span around the summarizer call, with `model.priced`:
+whether the cost of model calls under the span is counted. Model-call spans carry the provider, the model, the response id and
+the token counts. Source file paths and thread names are not exported.
 
 ### Metrics
 
@@ -118,9 +118,9 @@ not exported.
 | `fontaine.guardian.fail_closed.count` | `{denial}` | `reason` (`error`, `timeout`, `unparseable`, `low_confidence`, `unavailable`) |
 
 `fontaine.cost.usage` is priced from the model catalog and is absent when the catalog has no price,
-which is always the case for an `openai-compatible` endpoint or an `opencode-go` account. `query_source` is `main` for the
-session model, `guardian` for the model calls made while a guardian adjudication is open,
-`scanner` for the calls the `llm` tool-result scanner makes, and
+which is always the case for an `openai-compatible` endpoint or an `opencode-go` account.
+`query_source` is `main` for the session model, `guardian` for the model calls made while a
+guardian adjudication is open, `scanner` for the calls the `llm` tool-result scanner makes, and
 `subagent` for the calls made under a subagent's span.
 Both guardian metrics are derived from the guardian attributes of the decision event. No metric
 carries a prompt or tool-call id.

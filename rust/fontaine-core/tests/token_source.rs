@@ -166,3 +166,42 @@ async fn a_transient_refresh_failure_serves_a_token_that_has_not_expired() {
     .unwrap();
     assert!(expired.token().await.is_err());
 }
+
+struct SlowRotation(Arc<tokio::sync::Notify>);
+
+impl Refresher for SlowRotation {
+    fn refresh<'a>(
+        &'a self,
+        _current: &'a OAuthTokens,
+    ) -> BoxFuture<'a, Result<OAuthTokens, RefreshError>> {
+        Box::pin(async move {
+            self.0.notify_one();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            Ok(tokens("at-new", "rt-new", now_unix() + 3600))
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_dropped_caller_does_not_lose_the_rotated_pair() {
+    let w = World::new();
+    let held = tokens("at-old", "rt-old", now_unix() + 10);
+    credentials::store_oauth(&w.data, "go", &held).unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let source = TokenSource::new(&w.data, "go", held, Arc::new(SlowRotation(started.clone())));
+
+    let caller = tokio::spawn({
+        let source = source.clone();
+        async move { source.token().await }
+    });
+    started.notified().await;
+    caller.abort();
+    let _ = caller.await;
+
+    assert_eq!(source.token().await.unwrap(), "at-new");
+    let stored = Credentials::load(&w.data).unwrap();
+    let Some(StoredCredential::OAuth(on_disk)) = stored.account("go") else {
+        panic!("the account keeps its sign-in");
+    };
+    assert_eq!(on_disk.refresh, "rt-new");
+}

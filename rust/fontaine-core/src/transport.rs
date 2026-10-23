@@ -164,13 +164,6 @@ pub struct Decorated<C = CausedClient> {
     decoration: Arc<Decoration>,
 }
 
-pub fn decorated_client(decoration: Decoration) -> std::result::Result<Decorated, String> {
-    Ok(Decorated {
-        inner: caused_client()?,
-        decoration: Arc::new(decoration),
-    })
-}
-
 impl<C> Decorated<C> {
     pub fn new(inner: C, decoration: Decoration) -> Self {
         Decorated {

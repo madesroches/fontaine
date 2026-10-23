@@ -171,10 +171,19 @@ impl TokenSource {
     }
 
     /// An access token with more than the refresh margin left.
-    pub async fn token(&self) -> Result<String, TokenError> {
+    pub async fn token(self: &Arc<Self>) -> Result<String, TokenError> {
         if let Some(token) = self.fresh() {
             return Ok(token);
         }
+        // Detached because callers drop their request futures mid-flight (timeouts, interrupts):
+        // a refresh abandoned after the server rotated the token would leave the dead one on disk.
+        let source = self.clone();
+        tokio::spawn(async move { source.refresh_serialized().await })
+            .await
+            .map_err(|e| TokenError::new(&self.account, TokenErrorKind::Lock(Box::new(e))))?
+    }
+
+    async fn refresh_serialized(&self) -> Result<String, TokenError> {
         let _turn = self.refreshing.lock().await;
         if let Some(token) = self.fresh() {
             return Ok(token);

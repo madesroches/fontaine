@@ -250,7 +250,7 @@ fn write_entry(data_dir: &Path, target: Target<'_>, entry: Entry) -> Result<(), 
         message: e.to_string(),
     })?;
     std::fs::create_dir_all(data_dir).map_err(write_err)?;
-    crate::owner_only::write(&path, text.as_bytes()).map_err(write_err)
+    crate::owner_only::write_atomic(&path, text.as_bytes()).map_err(write_err)
 }
 
 /// Schema check for `credentials.toml` text, used by the docs check.
