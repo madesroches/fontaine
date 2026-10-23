@@ -288,7 +288,7 @@ async fn sign_in_stores_the_tokens_and_names_the_account() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "device_code": "dc-1",
             "user_code": "ABCD-1234",
-            "verification_uri_complete": "https://opencode.ai/console/device?code=ABCD-1234",
+            "verification_uri_complete": "/console/device?user_code=ABCD-1234&client_id=opencode-cli",
             "expires_in": 600,
             "interval": 1,
         })))

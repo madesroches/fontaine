@@ -100,12 +100,47 @@ async fn start_sends_the_client_id_and_scope_and_returns_the_code() {
 }
 
 #[tokio::test]
+async fn a_relative_verification_url_resolves_against_the_endpoint() {
+    let server = MockServer::start().await;
+    mount_code(
+        &server,
+        code_reply("/console/device?user_code=ABCD-1234&client_id=opencode-cli"),
+    )
+    .await;
+    let code = flow(&server).start().await.unwrap();
+    assert_eq!(
+        code.verification_url,
+        format!(
+            "{}/console/device?user_code=ABCD-1234&client_id=opencode-cli",
+            server.uri()
+        )
+    );
+}
+
+#[tokio::test]
 async fn a_verification_url_that_is_not_http_is_refused() {
-    for url in ["javascript:alert(1)", "file:///etc/passwd", "not a url"] {
+    for url in ["javascript:alert(1)", "file:///etc/passwd", "http://[::1"] {
         let server = MockServer::start().await;
         mount_code(&server, code_reply(url)).await;
         let err = flow(&server).start().await.unwrap_err();
         assert!(matches!(err, FlowError::Invalid(_)), "{url}: {err:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_blank_verification_url_falls_back_or_is_refused() {
+    let server = MockServer::start().await;
+    let mut reply = code_reply("  ");
+    reply["verification_uri"] = json!("https://example.com/device");
+    mount_code(&server, reply).await;
+    let code = flow(&server).start().await.unwrap();
+    assert_eq!(code.verification_url, "https://example.com/device");
+
+    for blank in ["", "   "] {
+        let server = MockServer::start().await;
+        mount_code(&server, code_reply(blank)).await;
+        let err = flow(&server).start().await.unwrap_err();
+        assert!(matches!(err, FlowError::Invalid(_)), "{blank:?}: {err:?}");
     }
 }
 

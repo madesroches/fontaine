@@ -176,9 +176,14 @@ impl DeviceFlow {
         })?;
         let url = reply
             .verification_uri_complete
-            .or(reply.verification_uri)
+            .filter(|u| !u.trim().is_empty())
+            .or(reply.verification_uri.filter(|u| !u.trim().is_empty()))
             .ok_or_else(|| FlowError::Invalid("no verification URL".to_string()))?;
-        let parsed = Url::parse(&url)
+        let base = Url::parse(&self.endpoints.code_url).expect(
+            "reqwest already parsed code_url with the same url crate when the request was sent",
+        );
+        let parsed = base
+            .join(&url)
             .map_err(|_| FlowError::Invalid("the verification URL is not a URL".to_string()))?;
         if !matches!(parsed.scheme(), "http" | "https") {
             return Err(FlowError::Invalid(
