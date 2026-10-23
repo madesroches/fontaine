@@ -41,6 +41,7 @@ windows-sys = { version = "=0.61.2", features = [
 # Pre-1.0 families are pinned exactly and upgraded deliberately.
 rig-core = { version = "=0.45.0", features = ["reqwest"] }
 rig-agent = "=0.45.0"
+rig-reqwest = "=0.45.0"
 rig-memory = { version = "=0.45.0", features = ["fs"] }
 rig-tools = "=0.45.0"
 rig-rmcp = "=0.45.0"

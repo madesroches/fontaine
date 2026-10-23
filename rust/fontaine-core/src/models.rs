@@ -13,6 +13,7 @@ use rig_core::providers::gemini::{Gemini, GeminiConfig};
 use rig_core::providers::ollama::{Ollama, OllamaConfig};
 use rig_core::providers::openai::wire::{Auth, Dialect};
 use rig_core::providers::openai::{OpenAI, OpenAIConfig};
+use rig_reqwest::ReqwestClient;
 
 use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup};
 use crate::credentials::Credentials;
@@ -161,6 +162,13 @@ pub struct ResolveParams<'a> {
     pub model_override: Option<&'a str>,
 }
 
+// rig's shared client keeps pooled connections whose driver task lives on
+// the runtime that first used it; a dedicated client per account cannot be
+// left holding a connection from a dropped runtime.
+fn own_http_client() -> ReqwestClient {
+    reqwest::Client::new().into()
+}
+
 #[derive(Clone)]
 enum Client {
     Anthropic(Anthropic),
@@ -179,21 +187,21 @@ impl Client {
                 if let Some(url) = base_url {
                     config = config.with_base_url(url);
                 }
-                Client::Anthropic(config.client())
+                Client::Anthropic(config.connect(own_http_client()))
             }
             AccountKind::OpenAi => {
                 let mut config = OpenAIConfig::new(credential.unwrap_or_default());
                 if let Some(url) = base_url {
                     config = config.with_base_url(url);
                 }
-                Client::OpenAi(config.client())
+                Client::OpenAi(config.connect(own_http_client()))
             }
             AccountKind::Gemini => {
                 let mut config = GeminiConfig::new(credential.unwrap_or_default());
                 if let Some(url) = base_url {
                     config = config.with_base_url(url);
                 }
-                Client::Gemini(config.client())
+                Client::Gemini(config.connect(own_http_client()))
             }
             AccountKind::Ollama => {
                 let mut config = OllamaConfig::new();
@@ -203,7 +211,7 @@ impl Client {
                 if let Some(key) = credential {
                     config = config.with_api_key(key);
                 }
-                Client::Ollama(config.client())
+                Client::Ollama(config.connect(own_http_client()))
             }
             AccountKind::OpenAiCompatible => {
                 let mut config = OpenAIConfig::with_key(&GATEWAY, credential.unwrap_or_default())
@@ -211,7 +219,7 @@ impl Client {
                 if let Some(url) = base_url {
                     config = config.with_base_url(url);
                 }
-                Client::OpenAiCompatible(config.client())
+                Client::OpenAiCompatible(config.connect(own_http_client()))
             }
         }
     }

@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-pg2 = ["fontaine-guardian/pg2", "dep:reqwest"]
+pg2 = ["fontaine-guardian/pg2"]
 
 [dependencies]
 fontaine-agents.workspace = true
@@ -19,8 +19,9 @@ gix.workspace = true
 ignore.workspace = true
 rig-agent.workspace = true
 rig-core.workspace = true
-reqwest = { workspace = true, optional = true }
+reqwest.workspace = true
 rig-memory.workspace = true
+rig-reqwest.workspace = true
 rig-tools.workspace = true
 serde.workspace = true
 serde_json.workspace = true
