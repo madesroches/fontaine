@@ -181,7 +181,7 @@ pub fn lock(data_dir: &Path) -> Result<Lock, ConfigError> {
         source,
     };
     std::fs::create_dir_all(data_dir).map_err(write_err)?;
-    let file = crate::owner_only::open(&path, true).map_err(write_err)?;
+    let file = crate::owner_only::open_lock(&path).map_err(write_err)?;
     file.lock().map_err(write_err)?;
     Ok(Lock(file))
 }

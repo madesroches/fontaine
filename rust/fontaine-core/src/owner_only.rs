@@ -11,6 +11,13 @@ pub fn open(path: &Path, append: bool) -> io::Result<File> {
     imp::open(path, append)
 }
 
+/// Opens the append-mode lock file at `path`. Unlike `open`, other handles may hold it open for
+/// writing too: on Windows a write-denying share mode would fail a second holder's open with a
+/// sharing violation instead of letting `File::lock` block, so only the lock decides ownership.
+pub fn open_lock(path: &Path) -> io::Result<File> {
+    imp::open_lock(path)
+}
+
 /// Creates the directory `path`, whose parent must exist, readable only by the current user:
 /// mode 0700 on Unix, a protected current-user-only DACL that children inherit on Windows. An
 /// existing directory is an `AlreadyExists` error, so the caller learns it did not create it.
@@ -64,6 +71,10 @@ mod imp {
         std::fs::DirBuilder::new().mode(0o700).create(path)
     }
 
+    pub fn open_lock(path: &Path) -> io::Result<File> {
+        open(path, true)
+    }
+
     pub fn open(path: &Path, append: bool) -> io::Result<File> {
         let mut options = OpenOptions::new();
         options.write(true).create(true).mode(0o600);
@@ -104,7 +115,8 @@ mod imp {
         TokenUser,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, OPEN_ALWAYS,
+        CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        OPEN_ALWAYS,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -174,8 +186,16 @@ mod imp {
     }
 
     pub fn open(path: &Path, append: bool) -> io::Result<File> {
+        open_shared(path, append, FILE_SHARE_READ)
+    }
+
+    pub fn open_lock(path: &Path) -> io::Result<File> {
+        open_shared(path, true, FILE_SHARE_READ | FILE_SHARE_WRITE)
+    }
+
+    fn open_shared(path: &Path, append: bool, share: u32) -> io::Result<File> {
         let sd = descriptor(false)?;
-        let result = unsafe { open_with(path, append, sd) };
+        let result = unsafe { open_with(path, append, share, sd) };
         unsafe { LocalFree(sd) };
         result
     }
@@ -198,7 +218,12 @@ mod imp {
         result
     }
 
-    unsafe fn open_with(path: &Path, append: bool, sd: *mut c_void) -> io::Result<File> {
+    unsafe fn open_with(
+        path: &Path,
+        append: bool,
+        share: u32,
+        sd: *mut c_void,
+    ) -> io::Result<File> {
         let wide_path = wide(path);
         let attributes = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -209,7 +234,7 @@ mod imp {
             CreateFileW(
                 wide_path.as_ptr(),
                 GENERIC_WRITE,
-                FILE_SHARE_READ,
+                share,
                 &attributes,
                 OPEN_ALWAYS,
                 FILE_ATTRIBUTE_NORMAL,
