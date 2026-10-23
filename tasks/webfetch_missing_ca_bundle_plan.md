@@ -64,7 +64,7 @@ servers (rmcp builds its own client) are out of scope.
   Rejected: needs a deferred-error state in the tool, and leaves `webfetch` dead in containers
   where bundled roots would work.
 - Silent trust of bundled roots weakens "use the host's policy" for hosts with a custom CA setup;
-  mitigated because the fallback only applies when the system store fails to load, and it warns.
+  mitigated because the fallback only applies when the system store fails to load, and it is recorded in the debug log (`--debug-file`), not shown.
 
 ## Decisions
 - 2026-10-23 Bundled-roots fallback chosen over deferred error (issue #112 offered both).
