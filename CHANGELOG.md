@@ -71,7 +71,8 @@ All notable changes are recorded here. The format follows
   - Its request is built from the session ledger only, with a structurally derived destructive
     class, delimited untrusted blocks and redaction; a 60-second verdict cache, a loop breaker
     (3 in a row, 20 in total) and seeded default rule lists adapted from Claude Code's auto-mode
-    defaults.
+    defaults, including remote data stores, production hosts, secret managers and CI bypass under
+    the existing rule labels.
   - The `minimal` profile for containers, loaded only with `--in-container` and a positive runtime
     probe.
   - Default guardian selection from the ranked list of validated models (`guardian_models.toml`,

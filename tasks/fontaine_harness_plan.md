@@ -109,32 +109,37 @@ Apart from the ticked repo-side items, each item needs live provider keys, a liv
 - **Guardian scorecard**
   - [ ] Maintainer signs off the eval dataset's `expected` labels against `claude -p` baselines
         (`design/testing.md` §Eval harness).
-  - [ ] Live scorecard run (`fontaine-evals` `live:` mode, `--profile full` and `minimal`)
-        fills `rust/fontaine-guardian/data/guardian_models.toml`.
+  - [x] Live scorecard run (`fontaine-evals` `live:` mode, `--profile full` and `minimal`)
+        fills `rust/fontaine-guardian/data/guardian_models.toml`. (2026-10-23; run with
+        `kimi/kimi-for-coding` and `local/qwen3:4b`, no model cleared the inclusion bar, so the file stays
+        empty; see `release_live_checks_plan.md` `## Results`)
   - [ ] Check the run against the Risk Gates' catch-rate kill floor.
   - [ ] Publish the scorecard with the release (`docs/evals.md`).
 - **Claude Code baselines (`claude -p`)**
-  - [ ] Phase 3 pipeline-case capture.
+  - [x] Phase 3 pipeline-case capture. (2026-10-23; 44 of 54 captured, 14 divergences triaged in
+        `release_live_checks_plan.md`)
   - [ ] Phase 4 auto-mode capture and diff, including the destructive-class word lists.
-  - [ ] Phase 5 user-hook `allow` in `auto` baseline.
+  - [x] Phase 5 user-hook `allow` in `auto` baseline. (2026-10-23; observed once per variant; a broad hook
+        was also honored, unlike `docs/hooks.md` states)
 - **Cassettes** (`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes`)
   - [ ] Record the Phase 3 manual-mode cassette.
   - [ ] Record the Phase 4 auto-mode cassette.
 - **Manual verification** (`design/testing.md` §Manual Verification)
   - [ ] Item 1: live TUI, manual mode, Anthropic.
   - [ ] Items 2–3: live guardian denial and `/denied` retry.
-  - [ ] Item 4: the same against Ollama, with a local model as both agent and guardian.
+  - [ ] Item 4: the same against Ollama, with a local model as both agent and guardian. (Run
+        2026-10-23 with `local/qwen3:4b`: the guardian timed out at 30 s, so check 2 did not hold; open.)
   - [ ] Item 5: agents-panel look and feel.
-  - [ ] Item 6, Docker leg: minimal profile with `--in-container`.
+  - [x] Item 6, Docker leg: minimal profile with `--in-container`. (2026-10-23)
 - **PromptGuard 2 with real weights** (needs a Hugging Face token)
-  - [ ] Logit spike against the model card.
+  - [x] Logit spike against the model card. (2026-10-23; against a `transformers` reference, the model card itself is gated)
   - [x] `FONTAINE_PG2_MODEL` inference test. (2026-10-23; passed with the loader fix, run with `--release`)
-  - [ ] A live session with `scanner = "pg2"`.
+  - [x] A live session with `scanner = "pg2"`. (2026-10-23)
 - **Bugs to fix before tagging**
   - [x] #78 (Git Bash collapses `\\` on Windows) and #73 (`webfetch` 403 without a User-Agent)
         fixed. (2026-10-23)
 - **Repository and release**
-  - [ ] Turn on GitHub private vulnerability reporting (`SECURITY.md` promises it; it is off today).
+  - [x] Turn on GitHub private vulnerability reporting (`SECURITY.md` promises it; it is off today). (2026-10-23)
   - [x] `CHANGELOG.md` entry for 0.1.0. (2026-10-23)
   - [x] Release archives carry LICENSE/README/CHANGELOG; release notes from the changelog;
         missing-notes guard. (2026-10-23)

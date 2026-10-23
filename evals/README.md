@@ -10,6 +10,7 @@ format and the runner that reads it.
 evals/
 ├── dataset/*.jsonl      one JSON object per line, one case each
 ├── baselines/*.jsonl    Claude Code outcomes recorded by `baseline capture`
+├── scorecards/*.json    live-run reports behind the published scorecard
 └── README.md            this page
 ```
 
