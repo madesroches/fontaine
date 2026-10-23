@@ -181,6 +181,9 @@ All notable changes are recorded here. The format follows
   bottom rows across resizes (#74).
 - `webfetch` sends the User-Agent `fontaine/<version> (+https://github.com/madesroches/fontaine)`,
   so sites that refuse requests without one, such as Wikipedia, no longer answer 403 (#73).
+- `webfetch` sends `Accept: text/markdown, text/html, */*`, as Claude Code does, so sites that
+  can serve markdown send it and content-negotiating servers no longer pick a non-text default
+  (#85).
 
 ### Removed
 
