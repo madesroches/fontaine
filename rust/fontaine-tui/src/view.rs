@@ -45,7 +45,7 @@ fn input_view(buffer: &InputBuffer, width: usize) -> InputView {
 /// The rows the live area needs for the next frame, at most `max_height`.
 pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
     let inner_width = usize::from(width.saturating_sub(2)).max(1);
-    let Overlay { body, footer, .. } = overlay(app, inner_width);
+    let Overlay { body, footer, .. } = overlay(app, inner_width, max_height);
     let overlay_rows = if body.is_empty() {
         0
     } else {
@@ -66,7 +66,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         body,
         footer,
         approval: is_approval,
-    } = overlay(app, inner_width);
+    } = overlay(app, inner_width, area.height);
     let view = input_view(&app.input, inner_width);
     let input_height = view.rows.len() as u16 + 2;
     let queued = queued_lines(app, inner_width);
@@ -144,7 +144,7 @@ impl Overlay {
 /// prompt, the MCP server prompt, the model picker, the agents panel, the approval prompt, the
 /// history search or the file completion list, then the `/` menu, in that order of precedence,
 /// which is the order `App::handle_key` routes keys in.
-fn overlay(app: &App, width: usize) -> Overlay {
+fn overlay(app: &App, width: usize, height: u16) -> Overlay {
     if let Some(list) = &app.denied {
         return Overlay::new("denied", list.body(width), list.footer());
     }
@@ -159,7 +159,17 @@ fn overlay(app: &App, width: usize) -> Overlay {
             PickerPurpose::Main => "model",
             PickerPurpose::Guardian => "guardian model",
         };
-        return Overlay::new(title, picker.body(width), picker.footer());
+        let footer = picker.footer();
+        // Rows the picker may use so its header and the selection stay inside what `draw` allows.
+        let reserved = input_view(&app.input, width).rows.len()
+            + 2
+            + queued_lines(app, width).len()
+            + 1
+            + 2
+            + footer.len()
+            + 1;
+        let rows = usize::from(height).saturating_sub(reserved).max(1);
+        return Overlay::new(title, picker.body(width, rows), footer);
     }
     if let Some(panel) = &app.agents {
         return Overlay::new("agents", panel.body(width), panel.footer());

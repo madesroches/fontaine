@@ -118,7 +118,7 @@ impl ModelPicker {
         mut groups: Vec<Group>,
     ) -> ModelPicker {
         groups.sort_by(|a, b| a.account.cmp(&b.account));
-        ModelPicker {
+        let mut picker = ModelPicker {
             purpose,
             header,
             current,
@@ -126,7 +126,16 @@ impl ModelPicker {
             groups,
             query: String::new(),
             selected: 0,
-        }
+        };
+        picker.selected = picker.current_index().unwrap_or(0);
+        picker
+    }
+
+    fn current_index(&self) -> Option<usize> {
+        self.visible()
+            .iter()
+            .filter(|row| matches!(row, Row::Model { .. }))
+            .position(|row| matches!(row, Row::Model { current: true, .. }))
     }
 
     pub fn purpose(&self) -> PickerPurpose {
@@ -228,11 +237,14 @@ impl ModelPicker {
             KeyCode::Esc => return PickerKey::Close,
             KeyCode::Enter => {
                 let mut picked = self.visible().into_iter().filter_map(|row| match row {
-                    Row::Model { reference, .. } => Some(reference),
+                    Row::Model {
+                        reference, current, ..
+                    } => Some((reference, current)),
                     _ => None,
                 });
                 return match picked.nth(self.selected) {
-                    Some(reference) => PickerKey::Pick(self.purpose, reference),
+                    Some((_, true)) => PickerKey::Close,
+                    Some((reference, false)) => PickerKey::Pick(self.purpose, reference),
                     None => PickerKey::None,
                 };
             }
@@ -263,7 +275,9 @@ impl ModelPicker {
         PickerKey::None
     }
 
-    pub fn body(&self, width: usize) -> Vec<Line<'static>> {
+    /// `max_rows` bounds the rows under the header (headings included), so a short terminal
+    /// still shows the header and the selection.
+    pub fn body(&self, width: usize, max_rows: usize) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let dim = Style::default().add_modifier(Modifier::DIM);
         let clip = |text: String| -> String { text.chars().take(width).collect() };
@@ -307,18 +321,19 @@ impl ModelPicker {
                 }
             }
         }
+        let window = max_rows.clamp(1, MAX_ROWS);
         let mut start = 0;
-        if lines.len() > MAX_ROWS {
+        if lines.len() > window {
             start = selected_row
-                .saturating_sub(MAX_ROWS / 2)
-                .min(lines.len() - MAX_ROWS);
+                .saturating_sub(window / 2)
+                .min(lines.len() - window);
             if let Some(h) = selected_heading
-                && selected_row - h < MAX_ROWS
+                && selected_row - h < window
             {
                 start = start.min(h);
             }
         }
-        out.extend(lines.into_iter().skip(start).take(MAX_ROWS));
+        out.extend(lines.into_iter().skip(start).take(window));
         out
     }
 
@@ -381,7 +396,7 @@ mod tests {
 
     fn text(picker: &ModelPicker) -> Vec<String> {
         picker
-            .body(80)
+            .body(80, MAX_ROWS)
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
@@ -458,7 +473,13 @@ mod tests {
 
     #[test]
     fn up_and_down_skip_headings_and_wrap() {
-        let mut p = picker(&[], two_accounts());
+        let mut p = ModelPicker::new(
+            PickerPurpose::Main,
+            "header".to_string(),
+            None,
+            vec![],
+            two_accounts(),
+        );
         // cloud: haiku, sonnet, opus; local: llama3:latest, qwen3:4b
         let pick = |p: &mut ModelPicker| match p.handle_key(key(KeyCode::Enter)) {
             PickerKey::Pick(_, r) => r,
@@ -603,7 +624,7 @@ mod tests {
         let models: Vec<String> = (0..60).map(|i| format!("m{i:02}")).collect();
         let group = Group::new("big".into(), kind("openai-compatible"), Ok(models));
         let mut p = picker(&[], vec![group]);
-        let rows = p.body(80);
+        let rows = p.body(80, MAX_ROWS);
         assert_eq!(rows.len(), 1 + MAX_ROWS);
         assert_eq!(text(&p)[1], "big");
         for _ in 0..40 {
@@ -626,6 +647,38 @@ mod tests {
         );
         p.handle_key(key(KeyCode::Up));
         assert!(text(&p).contains(&"  m59".to_string()));
+    }
+
+    #[test]
+    fn a_short_terminal_keeps_the_header_and_selection() {
+        let group = Group::new(
+            "big".into(),
+            kind("openai-compatible"),
+            Ok((0..60).map(|i| format!("m{i:02}")).collect()),
+        );
+        let mut p = picker(&[], vec![group]);
+        for _ in 0..30 {
+            p.handle_key(key(KeyCode::Down));
+        }
+        let rows: Vec<String> = p
+            .body(80, 3)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0], "header");
+        assert!(rows.contains(&"  m30".to_string()), "{rows:?}");
+    }
+
+    #[test]
+    fn enter_on_the_current_model_closes_and_open_preselects_it() {
+        let mut p = picker(&[], two_accounts());
+        assert_eq!(p.handle_key(key(KeyCode::Enter)), PickerKey::Close);
+        p.handle_key(key(KeyCode::Up));
+        assert!(matches!(
+            p.handle_key(key(KeyCode::Enter)),
+            PickerKey::Pick(..)
+        ));
     }
 
     #[test]

@@ -971,6 +971,45 @@ async fn a_failed_account_keeps_its_heading_and_only_failures_are_listed_again()
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_main_account_is_listed_afresh_after_a_switch_to_it() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer};
+    let live = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(openai_models(&["fresh"]))
+        .up_to_n_times(1)
+        .mount(&live)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(openai_models(&["fresh", "newer"]))
+        .mount(&live)
+        .await;
+    let extra = format!(
+        "\n[accounts.live]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\n",
+        live.uri()
+    );
+    let w = World::routed("http://127.0.0.1:9", &extra);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/model");
+        picker_open(&ui).await;
+        ui.type_text("fresh");
+        ui.press(KeyCode::Enter);
+        ui.wait_for("model is now live/fresh").await;
+        picker_closed(&ui).await;
+        ui.send("/model");
+        picker_open(&ui).await;
+        let shown = ui.live();
+        assert!(shown.contains("  newer"), "{shown}");
+        ui.press(KeyCode::Esc);
+        picker_closed(&ui).await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_pick_made_during_a_notification_turn_applies_when_the_turn_ends() {
     let server = start(vec![
         Route::new(
