@@ -118,9 +118,13 @@ struct TokenReply {
     error: Option<String>,
 }
 
+/// Bounds every request, because a token refresh holds the cross-process credentials lock.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub struct DeviceFlow {
     endpoints: DeviceFlowEndpoints,
     http: reqwest::Client,
+    request_timeout: Option<Duration>,
 }
 
 impl DeviceFlow {
@@ -130,13 +134,22 @@ impl DeviceFlow {
         Ok(DeviceFlow {
             endpoints,
             http: crate::transport::reqwest_client()?,
+            request_timeout: Some(REQUEST_TIMEOUT),
         })
     }
 
+    /// Tests only: a paused clock auto-advances during real I/O and would fire any timeout.
+    pub fn with_request_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.request_timeout = timeout;
+        self
+    }
+
     async fn post(&self, url: &str, body: &Value) -> Result<(u16, Vec<u8>), FlowError> {
-        let response = self
-            .http
-            .post(url)
+        let mut request = self.http.post(url);
+        if let Some(timeout) = self.request_timeout {
+            request = request.timeout(timeout);
+        }
+        let response = request
             .header("content-type", "application/json")
             .header("accept", "application/json")
             .header("user-agent", fontaine_tools::FONTAINE_USER_AGENT)
@@ -172,10 +185,15 @@ impl DeviceFlow {
                 "the verification URL is not http or https".to_string(),
             ));
         }
+        if reply.user_code.chars().any(char::is_control) {
+            return Err(FlowError::Invalid(
+                "the user code contains control characters".to_string(),
+            ));
+        }
         Ok(DeviceCode {
             device_code: reply.device_code,
             user_code: reply.user_code,
-            verification_url: url,
+            verification_url: parsed.to_string(),
             expires_in: Duration::from_secs(reply.expires_in.unwrap_or(600)),
             interval: Duration::from_secs(reply.interval.unwrap_or(5).max(1)),
         })

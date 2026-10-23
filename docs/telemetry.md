@@ -101,7 +101,8 @@ the `fail_closed_reason` when it failed closed; the guardian's own model call si
 A subagent adds a `fontaine.subagent` span (`agent.id`, `agent.type`) under the span of the `agent`
 call that started it, and its own interactions, model calls and tool calls nest below it. A user
 hook adds a `fontaine.hook` span (`hook_event`, `success`) under the span of the call it ran for,
-and a call to an MCP tool a `fontaine.mcp.call` span (`mcp.server`, `mcp.tool`). Model-call spans carry the
+and a call to an MCP tool a `fontaine.mcp.call` span (`mcp.server`, `mcp.tool`). A threshold compaction adds a `fontaine.compaction` span around the summarizer call, with `model.priced`: whether the cost of
+model calls under the span is counted. Model-call spans carry the
 provider, the model, the response id and the token counts. Source file paths and thread names are
 not exported.
 

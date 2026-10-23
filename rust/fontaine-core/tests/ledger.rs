@@ -6,7 +6,7 @@ use fontaine_core::permissions::DenyAll;
 use fontaine_core::session::{CONVERSATION_LOG, Session, SessionError};
 use rig_core::DynModel;
 use rig_core::catalog::{Catalog, ModelSpec};
-use rig_core::completion::Message;
+use rig_core::completion::{Cost, Message, Usage};
 use rig_core::operation::Completion;
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use rig_memory::{CompactReason, load, save};
@@ -129,6 +129,25 @@ async fn a_threshold_compaction_between_runs_leaves_the_context_compacted_and_sa
     let after = saved_texts(&session);
     assert!(after.len() < before);
     assert!(after.iter().any(|m| m.contains("THRESHOLD-SUMMARY")));
+}
+
+#[tokio::test]
+async fn an_unpriced_threshold_compaction_returns_usage_without_a_cost() {
+    let cost: Cost = serde_json::from_value(serde_json::json!({"total": 0.25})).unwrap();
+    let turn = || {
+        MockTurn::text("THRESHOLD-SUMMARY")
+            .with_usage(Usage::new().input_tokens(10).output_tokens(5).cost(cost))
+    };
+    for (priced, expect_cost) in [(false, false), (true, true)] {
+        let w = World::new();
+        let (session, _) = session_with_history(&w, 8);
+        let (_, dynamic) = model(Some(small_window_spec(1_000)), vec![turn()]);
+        let usage = session
+            .compact_if_needed(&dynamic, priced, &DenyAll)
+            .await
+            .expect("the summarizer answered");
+        assert_eq!(usage.cost.is_some(), expect_cost, "priced = {priced}");
+    }
 }
 
 #[tokio::test]

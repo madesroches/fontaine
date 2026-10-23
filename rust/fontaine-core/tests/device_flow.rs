@@ -18,6 +18,23 @@ fn flow(server: &MockServer) -> DeviceFlow {
         code_params: vec![("supports_org_scope", json!(true))],
     })
     .unwrap()
+    .with_request_timeout(None)
+}
+
+#[tokio::test]
+async fn a_stalled_refresh_request_times_out() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/auth/device/token"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+        .mount(&server)
+        .await;
+    let err = flow(&server)
+        .with_request_timeout(Some(Duration::from_millis(100)))
+        .refresh("rt-1")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, RefreshError::Failed(FlowError::Request(_))));
 }
 
 fn code_reply(url: &str) -> serde_json::Value {

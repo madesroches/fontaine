@@ -316,7 +316,9 @@ async fn sign_in_stores_the_tokens_and_names_the_account() {
         .await;
 
     let w = World::new();
-    let summary = sign_in_at(&console.uri(), "go", &w.data).await.unwrap();
+    let summary = sign_in_at(&console.uri(), "go", &w.data, None)
+        .await
+        .unwrap();
     assert_eq!(summary, "signed in to OpenCode Go as me@example.com");
 
     let Some(StoredCredential::OAuth(tokens)) = Credentials::load(&w.data).unwrap().account("go")
@@ -355,7 +357,9 @@ async fn a_refused_sign_in_stores_nothing() {
         .mount(&console)
         .await;
     let w = World::new();
-    let err = sign_in_at(&console.uri(), "go", &w.data).await.unwrap_err();
+    let err = sign_in_at(&console.uri(), "go", &w.data, None)
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("access_denied"), "{err}");
     assert_eq!(Credentials::load(&w.data).unwrap().account("go"), None);
 }

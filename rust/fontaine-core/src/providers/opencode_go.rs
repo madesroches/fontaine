@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -21,14 +22,16 @@ use rig_core::providers::openai::{OpenAI, OpenAIConfig, Route};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::device_flow::{DeviceFlow, DeviceFlowEndpoints, FlowError, RefreshError};
+use super::device_flow::{
+    DeviceFlow, DeviceFlowEndpoints, FlowError, REQUEST_TIMEOUT, RefreshError,
+};
 use super::token_source::{Refresher, TokenSource};
 use super::{
     AccountClient, Billing, ConnectContext, CredentialPolicy, Provider, SignIn, SignInError,
 };
 use crate::config::{Account, Wire};
 use crate::credentials::{self, OAuthTokens, StoredCredential};
-use crate::transport::{AuthPlacement, Decoration, decorated_client, reqwest_client};
+use crate::transport::{AuthPlacement, Decorated, Decoration, caused_client, reqwest_client};
 
 pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/inference/go";
 pub const CONSOLE_URL: &str = "https://opencode.ai/console";
@@ -97,12 +100,16 @@ impl Provider for OpencodeGo {
                 .map_err(|_| "the session id cannot be sent as an HTTP header".to_string())?;
             headers.push((HeaderName::from_static("x-opencode-session"), value));
         }
+        let base_client = caused_client()?;
         let http = |placement: AuthPlacement| {
-            decorated_client(Decoration {
-                user_agent: Some(fontaine_tools::FONTAINE_USER_AGENT),
-                headers: headers.clone(),
-                auth: Some((source.clone(), placement)),
-            })
+            Ok::<_, String>(Decorated::new(
+                base_client.clone(),
+                Decoration {
+                    user_agent: Some(fontaine_tools::FONTAINE_USER_AGENT),
+                    headers: headers.clone(),
+                    auth: Some((source.clone(), placement)),
+                },
+            ))
         };
         let openai = |route: Option<Route>, root: String| -> Result<OpenAI, String> {
             let mut config = OpenAIConfig::with_key(&GO_DIALECT, "").with_base_url(root);
@@ -223,7 +230,7 @@ impl SignIn for OpencodeGo {
         _account: &'a Account,
         data_dir: &'a Path,
     ) -> BoxFuture<'a, Result<String, SignInError>> {
-        sign_in_at(CONSOLE_URL, account_name, data_dir).boxed()
+        sign_in_at(CONSOLE_URL, account_name, data_dir, Some(REQUEST_TIMEOUT)).boxed()
     }
 }
 
@@ -238,10 +245,13 @@ pub async fn sign_in_at(
     console: &str,
     account_name: &str,
     data_dir: &Path,
+    request_timeout: Option<Duration>,
 ) -> Result<String, SignInError> {
     let failed = |e: FlowError| SignInError(Box::new(e));
     let console = console.trim_end_matches('/');
-    let flow = DeviceFlow::new(endpoints(console)).map_err(|e| failed(FlowError::Invalid(e)))?;
+    let flow = DeviceFlow::new(endpoints(console))
+        .map_err(|e| failed(FlowError::Invalid(e)))?
+        .with_request_timeout(request_timeout);
     let code = flow.start().await.map_err(failed)?;
     eprintln!(
         "Open {} and confirm the code {}",
