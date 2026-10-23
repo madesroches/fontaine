@@ -4,7 +4,7 @@ This file is the **tracking task**: phase status and progress live here, togethe
 workspace layout, trade-offs, risk gates and every decision. The cross-cutting design every
 phase depends on (permission pipeline, config, sessions, observability, platforms, research
 findings, documentation, testing strategy) lives in topic docs under `tasks/design/` — see
-`## Design docs`. The build itself is split into **one plan per phase** under `tasks/phases/` — each phase plan owns
+`## Design docs`. The build itself was split into **one plan per phase**, now archived under `tasks/completed/phases/` — each phase plan owns
 its design excerpt, numbered steps (ending in a docs step), files, tests, and definition of done.
 
 ## Overview
@@ -40,13 +40,15 @@ resume/fork, the tool-result scanner (`pg2` / `llm` / `command`), micromegas and
 the offline eval runner, and a `docs/` page per topic. CI (fmt, clippy, test, deny, offline evals,
 `cargo dist plan`, pg2 builds) is green on Linux, macOS and Windows.
 
-**Merged to `main`:** phases 0–4 (PRs #65–#68) plus TUI follow-ups #72, #76, #77. **Open PRs:**
-Phase 5 (#75, `phase_5_extensibility`) and Phase 6 (#79, `phase_6_hardening`, which contains
-Phase 5).
+**Merged to `main`:** every phase, 0–6 (PRs #65–#68, #75, #79) plus follow-ups, including the
+release-readiness repo work (#92), streamed and resumable live evals (#95) and OpenCode Go
+accounts (#99).
 
-**Not done:** no release has been cut, the guardian scorecard has not been run (so
-`guardian_models.toml` ships empty and the guardian falls back to the main model), and the
-live-key, live-model and maintainer checks are still open. See `## Remaining work`.
+**Not done:** no release has been cut. A first dry run of the live checks (2026-10-23,
+`completed/release_live_checks_plan.md`) ran the scorecard, but no model cleared the inclusion
+bar, so `guardian_models.toml` still ships empty and the guardian falls back to the main model.
+The remaining live-key, live-model and maintainer steps are GitHub issues labelled
+`release-blocker`; see `## Remaining work`.
 
 `research/` holds seven companion docs that are this plan's precedent and inputs:
 `analysis-competitive-landscape.md` (market/permission-story survey),
@@ -68,13 +70,13 @@ product documentation lives under `docs/` (see `design/documentation.md` §Docum
 
 | Phase | Plan | Scope | Status | Exit milestone |
 |-------|------|-------|--------|----------------|
-| 0 — scaffold (eval first) | [phases/phase0_scaffold.md](phases/phase0_scaffold.md) | Cargo workspace, crate skeletons, CLI entry, tracing facade + `[telemetry]` config, CI, settings scope stack + workspace trust store + read-only credentials lookup; eval golden-dataset + runner skeleton; `docs/` tree started | done | CI green; eval runner green against verdict fixtures with no guardian in the tree |
-| 1 — model layer + headless | [phases/phase1_model_headless.md](phases/phase1_model_headless.md) | rig crates pinned; config → provider mapping; streaming spike; `fontaine -p` with the versioned headless I/O contract; telemetry backends (micromegas/OTLP) + `docs/telemetry.md`; provider docs | done | `fontaine -p` streams a prompt plus a spike tool round-trip against a mock endpoint |
-| 2 — agent runtime & tools | [phases/phase2_runtime_tools.md](phases/phase2_runtime_tools.md) | RiskClass registry, GuardedTool (gate stubbed), rig-tools built-ins + read tools + webfetch, multi-root scope validator, confined rig tool config; rig-agent session orchestration + session ledger; `docs/tools.md` | done | agent runs tools end-to-end headless through wrapped registry; choke-point test green |
-| 3 — pipeline & manual TUI | [phases/phase3_pipeline_tui.md](phases/phase3_pipeline_tui.md) | PermissionPipeline (manual/acceptEdits/plan/dontAsk; deterministic floor; `Tool(specifier)` rule grammar + allow rules; user-hook slot; Tier-0.5; audit log); headless `-p` denial semantics for manual/dontAsk; ratatui TUI; `docs/permissions.md` + pipeline diagram | done | **usable Claude-Code-like agent with manual approvals** |
-| 4 — guardian + scorecard | [phases/phase4_guardian.md](phases/phase4_guardian.md) | fontaine-guardian; `auto` wired into pipeline (incl. headless `-p` semantics for auto); denial UX; live evals; **published scorecard**; `docs/guardian.md` + `docs/evals.md` | done | shipped default flips `manual` → `auto`; scorecard public with the release |
-| 5 — extensibility | [phases/phase5_extensibility.md](phases/phase5_extensibility.md) | MCP (user + trust-gated project servers); session resume/fork; user hooks; skills/agent files/output styles; parallel subagents (v1) + budgets + agents panel; `docs/{mcp,agents,hooks,extensions}.md`; sandbox/sandboxing.md = **roadmap slot** | done | gated background subagents live in one session |
-| 6 — guardian hardening | [phases/phase6_hardening.md](phases/phase6_hardening.md) | tool-result scanner (`[guardian] scanner` = off/pg2/llm/command; PromptGuard 2 via candle, BYO command, cheap-LLM); scanner docs | done | scanning demonstrable behind config, license caveat surfaced |
+| 0 — scaffold (eval first) | [completed/phases/phase0_scaffold.md](completed/phases/phase0_scaffold.md) | Cargo workspace, crate skeletons, CLI entry, tracing facade + `[telemetry]` config, CI, settings scope stack + workspace trust store + read-only credentials lookup; eval golden-dataset + runner skeleton; `docs/` tree started | done | CI green; eval runner green against verdict fixtures with no guardian in the tree |
+| 1 — model layer + headless | [completed/phases/phase1_model_headless.md](completed/phases/phase1_model_headless.md) | rig crates pinned; config → provider mapping; streaming spike; `fontaine -p` with the versioned headless I/O contract; telemetry backends (micromegas/OTLP) + `docs/telemetry.md`; provider docs | done | `fontaine -p` streams a prompt plus a spike tool round-trip against a mock endpoint |
+| 2 — agent runtime & tools | [completed/phases/phase2_runtime_tools.md](completed/phases/phase2_runtime_tools.md) | RiskClass registry, GuardedTool (gate stubbed), rig-tools built-ins + read tools + webfetch, multi-root scope validator, confined rig tool config; rig-agent session orchestration + session ledger; `docs/tools.md` | done | agent runs tools end-to-end headless through wrapped registry; choke-point test green |
+| 3 — pipeline & manual TUI | [completed/phases/phase3_pipeline_tui.md](completed/phases/phase3_pipeline_tui.md) | PermissionPipeline (manual/acceptEdits/plan/dontAsk; deterministic floor; `Tool(specifier)` rule grammar + allow rules; user-hook slot; Tier-0.5; audit log); headless `-p` denial semantics for manual/dontAsk; ratatui TUI; `docs/permissions.md` + pipeline diagram | done | **usable Claude-Code-like agent with manual approvals** |
+| 4 — guardian + scorecard | [completed/phases/phase4_guardian.md](completed/phases/phase4_guardian.md) | fontaine-guardian; `auto` wired into pipeline (incl. headless `-p` semantics for auto); denial UX; live evals; **published scorecard**; `docs/guardian.md` + `docs/evals.md` | done | shipped default flips `manual` → `auto`; scorecard public with the release |
+| 5 — extensibility | [completed/phases/phase5_extensibility.md](completed/phases/phase5_extensibility.md) | MCP (user + trust-gated project servers); session resume/fork; user hooks; skills/agent files/output styles; parallel subagents (v1) + budgets + agents panel; `docs/{mcp,agents,hooks,extensions}.md`; sandbox/sandboxing.md = **roadmap slot** | done | gated background subagents live in one session |
+| 6 — guardian hardening | [completed/phases/phase6_hardening.md](completed/phases/phase6_hardening.md) | tool-result scanner (`[guardian] scanner` = off/pg2/llm/command; PromptGuard 2 via candle, BYO command, cheap-LLM); scanner docs | done | scanning demonstrable behind config, license caveat surfaced |
 
 GitHub `phase-N` labels mean "earliest phase after which the issue can be taken; not part of that phase's definition of done; Decisions win over issue text".
 
@@ -95,8 +97,9 @@ phase plan are the work trail).
 ## Remaining work
 
 The deferred human steps from the Progress log, gathered in one place, plus everything after v1.
-Tick an item by changing `[ ]` to `[x]` and adding the date. The merge and release-readiness
-checklists are tracked in GitHub issue #80; tick items in both places.
+Each open item is a GitHub issue; the ones that gate the first release carry the
+`release-blocker` label (`gh issue list --label release-blocker`), with #80 as the tracker. Tick
+an item here by changing `[ ]` to `[x]` and adding the date when its issue closes.
 
 ### Merge
 
@@ -108,28 +111,28 @@ Apart from the ticked repo-side items, each item needs live provider keys, a liv
 
 - **Guardian scorecard**
   - [ ] Maintainer signs off the eval dataset's `expected` labels against `claude -p` baselines
-        (`design/testing.md` §Eval harness).
+        (`design/testing.md` §Eval harness). (#102)
   - [x] Live scorecard run (`fontaine-evals` `live:` mode, `--profile full` and `minimal`)
         fills `rust/fontaine-guardian/data/guardian_models.toml`. (2026-10-23; run with
         `kimi/kimi-for-coding` and `local/qwen3:4b`, no model cleared the inclusion bar, so the file stays
-        empty; see `release_live_checks_plan.md` `## Results`)
-  - [ ] Check the run against the Risk Gates' catch-rate kill floor.
-  - [ ] Publish the scorecard with the release (`docs/evals.md`).
+        empty; see `completed/release_live_checks_plan.md` `## Results`)
+  - [ ] Check the run against the Risk Gates' catch-rate kill floor. (#105; needs #96, #97)
+  - [ ] Publish the scorecard with the release (`docs/evals.md`), rerun on the shipped rules. (#104)
 - **Claude Code baselines (`claude -p`)**
   - [x] Phase 3 pipeline-case capture. (2026-10-23; 44 of 54 captured, 14 divergences triaged in
-        `release_live_checks_plan.md`)
-  - [ ] Phase 4 auto-mode capture and diff, including the destructive-class word lists.
-  - [x] Phase 5 user-hook `allow` in `auto` baseline. (2026-10-23; observed once per variant; a broad hook
-        was also honored, unlike `docs/hooks.md` states)
-- **Cassettes** (`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes`)
+        `completed/release_live_checks_plan.md`; open divergences and 10 uncaptured cases: #101)
+  - [ ] Phase 4 auto-mode capture and diff, including the destructive-class word lists. (#103)
+  - [x] Phase 5 user-hook `allow` in `auto` baseline. (2026-10-23; observed once per variant; Claude Code
+        honors a broad hook, which Fontaine deliberately suspends: Decisions 2026-10-23)
+- **Cassettes** (`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes -- --ignored`; #106)
   - [ ] Record the Phase 3 manual-mode cassette.
   - [ ] Record the Phase 4 auto-mode cassette.
 - **Manual verification** (`design/testing.md` §Manual Verification)
-  - [ ] Item 1: live TUI, manual mode, Anthropic.
-  - [ ] Items 2–3: live guardian denial and `/denied` retry.
+  - [ ] Item 1: live TUI, manual mode, Anthropic. (#107)
+  - [ ] Items 2–3: live guardian denial and `/denied` retry. (#107)
   - [ ] Item 4: the same against Ollama, with a local model as both agent and guardian. (Run
-        2026-10-23 with `local/qwen3:4b`: the guardian timed out at 30 s, so check 2 did not hold; open.)
-  - [ ] Item 5: agents-panel look and feel.
+        2026-10-23 with `local/qwen3:4b`: the guardian timed out at 30 s, so check 2 did not hold; #108, needs #96.)
+  - [ ] Item 5: agents-panel look and feel. (#107)
   - [x] Item 6, Docker leg: minimal profile with `--in-container`. (2026-10-23)
 - **PromptGuard 2 with real weights** (needs a Hugging Face token)
   - [x] Logit spike against the model card. (2026-10-23; against a `transformers` reference, the model card itself is gated)
@@ -143,7 +146,7 @@ Apart from the ticked repo-side items, each item needs live provider keys, a liv
   - [x] `CHANGELOG.md` entry for 0.1.0. (2026-10-23)
   - [x] Release archives carry LICENSE/README/CHANGELOG; release notes from the changelog;
         missing-notes guard. (2026-10-23)
-  - [ ] Cut the first cargo-dist release tag.
+  - [ ] Rename `## [Unreleased]` to `## [0.1.0] - <date>` and cut the first cargo-dist release tag. (#109)
 
 ### Roadmap slots (designed, deliberately not built in v1)
 
@@ -217,7 +220,7 @@ fontaine/
 ├── evals/                      # golden dataset (`evals/dataset/*.jsonl`) + README; runner is rust/fontaine-evals
 ├── docs/                       # all product docs — one topic per page, website-ready (see `design/documentation.md` §Documentation);
 │                               #   `schemas/headless-v1.schema.json`
-├── tasks/                      # this master plan + design/ (topic design docs) + phases/ (one plan per phase)
+├── tasks/                      # this master plan + design/ (topic design docs) + completed/ (shipped plans, incl. phases/)
 └── research/                   # seven analysis/research companion docs
 ```
 
@@ -440,6 +443,7 @@ scorecard run (see `## Remaining work`).
 - 2026-10-22: Deviation from LlamaFirewall — pg2 scores the whole result in 512-token windows at stride 256 instead of truncating to the first 512 tokens; reason: an injection past the first window would otherwise pass unflagged (Phase 6).
 - 2026-10-22: On Windows the command text reaches Git Bash in `FONTAINE_SH_COMMAND`, not on the command line, unlike Claude Code. Reason: the judged command must be the one that runs.
 - 2026-10-23: In auto, Fontaine suspends a broad PreToolUse allow hook; Claude Code 2.1.309 honors it (one `claude -p` run per variant). Kept stricter: a broad hook would otherwise bypass the guardian for every call it matches.
+- 2026-10-23 (user): Every phase is done, so the phase plans moved to `tasks/completed/phases/` and the live-checks plan to `tasks/completed/`; the master plan, `tasks/design/` and `## Decisions` stay live, and remaining work is tracked as GitHub issues (`release-blocker` for the first release).
 
 ## Open Questions
 

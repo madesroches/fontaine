@@ -9,11 +9,13 @@ observability, platforms, testing strategy) lives in topic docs under `tasks/des
 from the master's `## Design docs`; `research/` holds the companion analysis docs the plan is grounded in, including
 `research-claude-code-parity.md` (Claude Code feature matrix). Backlog features not in the plan
 are GitHub issues (`gh issue list`); a `phase-N` label means "can be taken after phase N", not
-part of that phase's definition of done, and the plan's Decisions win over issue text. The build is
-split into one plan per phase under `tasks/phases/` (`phase0_scaffold.md` … `phase6_hardening.md`),
-each with its own design excerpt, steps (ending in a docs step), files, tests, and definition of
-done. Read the master and design-doc sections you touch **and** the phase plan you are implementing
-before changing design.
+part of that phase's definition of done, and the plan's Decisions win over issue text. All phases (0–6)
+are done; their plans (`phase0_scaffold.md` … `phase6_hardening.md`) are archived under
+`tasks/completed/phases/` as the record of each phase's design excerpt, steps, tests and
+definition of done. Remaining work is tracked as GitHub issues; the ones that gate the first
+release carry the `release-blocker` label. New work gets its own plan in `tasks/`, moved to
+`tasks/completed/` when it ships. Read the master and design-doc sections you touch before
+changing design.
 
 ## Critical Rules
 

@@ -1,6 +1,6 @@
 # Phase 3 — Permission pipeline & manual TUI
 
-**Status:** done · **Depends on:** [Phase 2](phase2_runtime_tools.md) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
+**Status:** done · **Depends on:** [Phase 2](phase2_runtime_tools.md) · **Master:** [fontaine_harness_plan.md](../../fontaine_harness_plan.md)
 
 Fills the Phase-2 `GuardedTool` stub with the real gate: the pipeline order is specified by the
 `tasks/design/permissions.md` §Core data flow diagram (steps 1–9). **Milestone: usable Claude-Code-like agent

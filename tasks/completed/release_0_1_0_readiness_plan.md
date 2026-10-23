@@ -59,7 +59,7 @@ only the tag:
   under `## [Unreleased]`.
 - **Release design.** `tasks/design/platforms.md` §Releases: tags `vX.Y.Z`, cargo-dist, tagging
   and pushing the tag are the maintainer's steps and never the agent's, and `## [Unreleased]`
-  moves under the version heading at release. `tasks/phases/phase4_guardian.md:308` lists cutting
+  moves under the version heading at release. `tasks/completed/phases/phase4_guardian.md:308` lists cutting
   the release as a human step.
 - **Version.** `rust/Cargo.toml` `[workspace.package] version = "0.1.0"`, and every crate inherits
   it. No bump is needed.

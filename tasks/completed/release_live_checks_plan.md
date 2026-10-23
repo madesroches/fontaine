@@ -30,10 +30,10 @@ throwaway venv). So these stay open:
   - The Phase 4 "auto-mode capture and diff" therefore has no cases to capture. This plan does only
     its static half: comparing the rule lists seeded in `rust/fontaine-guardian/src/rules.rs`
     (`DEFAULT_HARD_DENY`, `DEFAULT_SOFT_DENY`, `DEFAULT_ALLOW`, `DEFAULT_ENVIRONMENT`) label by label
-    with `claude auto-mode defaults` (`tasks/phases/phase4_guardian.md:175`). The behavioural capture
+    with `claude auto-mode defaults` (`tasks/completed/phases/phase4_guardian.md:175`). The behavioural capture
     and diff, and the destructive-class word-list check, are deferred, so the master-plan item stays
     unticked.
-  - The Phase 5 hook-`allow` baseline (`tasks/phases/phase5_extensibility.md:234`) is not something
+  - The Phase 5 hook-`allow` baseline (`tasks/completed/phases/phase5_extensibility.md:234`) is not something
     `capture` can express. It is a direct `claude -p` observation with a PreToolUse hook in a scratch
     `.claude/settings.json`.
 - **Live scorecard.** I ran a probe on 2026-10-23, `--filter attack:git-destructive`, with
@@ -346,10 +346,10 @@ usable: the model refused the first and the classifier allowed the second with n
 | narrow (`"if": "Bash(<probe>)"`) | `hook_started`, `hook_response` outcome success, exit 0, allow | bypassed | empty | yes (git exit 128, bad refspec) |
 | broad (no `if`) | same | bypassed | empty | yes |
 
-The narrow hook skipped the classifier as `docs/hooks.md` says. The broad hook did too, which differs
-from `docs/hooks.md` (a broad hook "is suspended and the guardian decides"). One run per variant, so
-this is an observation, not a rate; `docs/hooks.md` was not changed and the maintainer should
-decide whether it or the implementation follows.
+In Claude Code, the narrow hook skipped the classifier, as Fontaine's does. The broad hook did too,
+while Fontaine suspends a broad hook and lets the guardian decide. One run per variant, so this is
+an observation, not a rate. Fontaine keeps the stricter behaviour: `docs/hooks.md` now says so,
+and the deviation is a dated line in the master plan's Decisions (2026-10-23).
 
 ### Live scorecards (default `[guardian]`, 30 s timeout, cache turned off by the runner)
 
