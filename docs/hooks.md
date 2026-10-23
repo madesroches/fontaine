@@ -104,9 +104,9 @@ pipeline.
 - **`allow` is an allow rule, no more.** It acts after the floor and never past it: a deny rule, an
   ask rule, a critical path or a protected path still stands. It also only counts where an allow
   rule's matcher would match, so a `shell(git *)` hook does not allow `ls && git push`. In `auto`
-  it follows Claude Code: a hook with a narrow matcher skips the guardian, and a hook with a broad
-  one (no matcher, or one that is a [suspended allow rule](permissions.md#allow-rules)) is
-  suspended and the guardian decides. An `allow` stands only for the arguments the hook saw: if a
+  a hook with a narrow matcher skips the guardian, and a hook with a broad one (no matcher, or one
+  that is a [suspended allow rule](permissions.md#allow-rules)) is suspended and the guardian
+  decides; Claude Code honors a broad hook, so this is stricter. An `allow` stands only for the arguments the hook saw: if a
   later hook rewrites the call with `updatedInput`, the allow is dropped and the call takes the
   normal path (a hook that rewrites and allows in one reply allows its own rewrite).
 - **`guardian_context`** is shown to the guardian inside an untrusted block, as a note and never as

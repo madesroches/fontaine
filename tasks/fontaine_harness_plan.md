@@ -361,7 +361,7 @@ scorecard run (see `## Remaining work`).
 - 2026-10-21: Audit `args_digest` canonicalizes with exact-pinned `serde_jcs` (RFC 8785).
 - 2026-10-21: `/permissions` leaves Phase 4 for backlog GitHub issue #47 (core slash commands); users edit the config file, and "always allow" grants still write to the user file; supersedes the Phase 4 ownership of `/permissions`.
 - 2026-10-21: CI runs `cargo deny check` (advisories, licenses, bans, sources) with a checked-in `rust/deny.toml` on all three OSes; cargo-deny version-pinned.
-- 2026-10-21 (user): `[permissions] allow` plus one `Tool(specifier)` grammar for deny/ask/allow (`design/permissions.md` §Permission rules); allow acts after the floor, narrow rules skip the guardian in `auto`, broad code-execution rules are suspended in `auto` (Claude Code parity); a user allow rule or user hook `allow` is a user grant distinct from the containment fast path.
+- 2026-10-21 (user): `[permissions] allow` plus one `Tool(specifier)` grammar for deny/ask/allow (`design/permissions.md` §Permission rules); allow acts after the floor, narrow rules skip the guardian in `auto`, broad code-execution rules are suspended in `auto` (Claude Code parity for allow rules; for broad hooks see 2026-10-23); a user allow rule or user hook `allow` is a user grant distinct from the containment fast path.
 - 2026-10-21: Deviation — shared project settings cannot hold allow rules, a project hook's `allow` and a project skill's `allowed-tools` are ignored; reason: project scope can only tighten.
 - 2026-10-21: Deviation — `shell` deny/ask rules match as a prefix anywhere in the parsed word stream (and on unparseable commands containing the first word) while allow matches only one simple command; reason: no regex and no operator-level parser in v1, so deny fails toward matching and allow toward not matching.
 - 2026-10-21: Settings scope stack managed (reserved) > CLI > project-local > project > user (Claude Code parity). Deviation: endpoint/credential keys (`[accounts.*]`, `[telemetry]` except `enabled = false`) are never read from project-local; reason: a file in the repo must not redirect session data.
@@ -387,7 +387,7 @@ scorecard run (see `## Remaining work`).
 - 2026-10-21: Deviation — provider and telemetry credential variables are scrubbed from the `shell` and hook child environment (list: Phase 2 step 1); reason: a model-run command must not read provider keys.
 - 2026-10-21: AgentDojo-comparable (ASR × utility) reporting is dropped; the scorecard reports per-class catch rate and false-deny rate.
 - 2026-10-21: Workspace trust (Claude Code parity: folder trust covers the whole folder — bounded at the enclosing git work-tree root, as in Claude Code; unbounded outside a repo) — in the TUI, project and project-local executables (hooks, MCP servers, skill `!cmd`) load only after the trust prompt; headless loads them without one; they never change a permission decision (`design/config.md` §Config, Workspace trust).
-- 2026-10-21: A user-scope hook `allow` in `auto` follows Claude Code (like an allow rule; broad matchers suspended); the `claude -p` baseline confirms it.
+- 2026-10-21: A user-scope hook `allow` in `auto` follows Claude Code (like an allow rule; broad matchers suspended; the `claude -p` baseline confirms narrow hooks only, see 2026-10-23 for broad ones).
 - 2026-10-21: The `skill` tool stays `ReadOnly` on the fast path; a skill's `!cmd` is gated as a `shell` call.
 - 2026-10-21 (user): Shell parsing uses exact-pinned `brush-parser` for Tier 0.5, critical-path and rule matching; no hand-rolled lexer, no `shlex`; anything not exactly one simple command falls through.
 - 2026-10-21 (user): Windows Git Bash discovery follows Claude Code's pattern with `FONTAINE_GIT_BASH_PATH` override (`design/platforms.md`).
@@ -439,6 +439,7 @@ scorecard run (see `## Remaining work`).
 - 2026-10-22: `fontaine.session.count` `start_type` takes Claude Code's values `fresh`/`resume`/`continue`, and the surface moves to a `headless` attribute; this corrects an earlier silent deviation (Phase 5).
 - 2026-10-22: Deviation from LlamaFirewall — pg2 scores the whole result in 512-token windows at stride 256 instead of truncating to the first 512 tokens; reason: an injection past the first window would otherwise pass unflagged (Phase 6).
 - 2026-10-22: On Windows the command text reaches Git Bash in `FONTAINE_SH_COMMAND`, not on the command line, unlike Claude Code. Reason: the judged command must be the one that runs.
+- 2026-10-23: In auto, Fontaine suspends a broad PreToolUse allow hook; Claude Code 2.1.309 honors it (one `claude -p` run per variant). Kept stricter: a broad hook would otherwise bypass the guardian for every call it matches.
 
 ## Open Questions
 

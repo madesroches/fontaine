@@ -352,7 +352,7 @@ mod model_tests {
 
     /// Prints Fontaine's score per window and overall for each string in the JSON array at
     /// `FONTAINE_PG2_SPIKE_TEXTS`, to compare with the reference implementation. Run with
-    /// `FONTAINE_PG2_MODEL=<dir> cargo test --release -p fontaine-guardian --features pg2 -- --ignored --nocapture`.
+    /// `FONTAINE_PG2_MODEL=<dir> FONTAINE_PG2_SPIKE_TEXTS=<file> cargo test --release -p fontaine-guardian --features pg2 -- --ignored --nocapture`.
     #[test]
     #[ignore = "needs the real weights and a text list"]
     fn print_scores_for_the_reference_comparison() {

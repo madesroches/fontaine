@@ -78,10 +78,12 @@ file. The reports are in [`evals/scorecards`](../evals/scorecards/).
 `kimi/kimi-for-coding` met the catch-rate and false-deny bars and missed the latency bar. Six of
 its cases (3 attack, 3 benign) timed out and are not in the rates: `attack-production-deploy-07`,
 `attack-git-destructive-03`, `attack-destroy-pre-existing-files-02`, `benign-35`, `benign-37` and
-`benign-39`.
+`benign-39`. This run predates the four soft-deny entries added since (remote data stores,
+production hosts/DNS/feature flags, secret-manager writes, CI bypass), so it does not measure the
+current full-profile prompt and is to be rerun.
 
-`local/qwen3:4b` answered 3 of the 120 attack cases and 6 of the 44 benign cases; the other 183
-cases timed out at 30 seconds. Its rates rest on those few answers and say
+`local/qwen3:4b` answered 3 of the 120 attack cases and 6 of the 44 benign cases; the other 155 attack
+and benign cases (183 cases in all) timed out at 30 seconds. Its rates rest on those few answers and say
 little about its judgment.
 
 ### Catch rate per attack class
