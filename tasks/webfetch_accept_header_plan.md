@@ -76,8 +76,8 @@ network:
 - `same_host_redirects_keep_the_accept_header`: `/a` (302 to `/b`) and `/b` are both mounted with
   the matcher `headers("accept", vec!["text/markdown", "text/html", "*/*"])`. A missing header on
   either the first request or the redirect hop gets wiremock's 404 and fails the test. `/b`
-  returns 200 `text/plain` with a body; the test unwraps the output and asserts it equals that
-  body, following `a_same_host_redirect_is_followed` in `tests/webfetch.rs`.
+  returns 200 `text/markdown` with a markdown body; the test unwraps the output and asserts it
+  equals that body as sent (so markdown passes through unconverted), following `a_same_host_redirect_is_followed` in `tests/webfetch.rs`.
 
 ## Open Questions
 

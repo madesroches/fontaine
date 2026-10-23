@@ -199,13 +199,15 @@ async fn same_host_redirects_keep_the_accept_header() {
     Mock::given(method("GET"))
         .and(path("/b"))
         .and(accept())
-        .respond_with(ResponseTemplate::new(200).set_body_raw(b"negotiated".to_vec(), "text/plain"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(b"# Title\n\n*x*".to_vec(), "text/markdown"),
+        )
         .mount(&server)
         .await;
     let out = fetch(config(), &format!("{}/a", server.uri()))
         .await
         .unwrap();
-    assert_eq!(out, "negotiated");
+    assert_eq!(out, "# Title\n\n*x*");
 }
 
 #[tokio::test]
