@@ -3,7 +3,7 @@ use std::time::Duration;
 use fontaine_tools::webfetch::{Webfetch, WebfetchArgs, WebfetchConfig};
 use rig_core::tool::{Tool, ToolContext, ToolErrorKind};
 use serde_json::json;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn config() -> WebfetchConfig {
@@ -253,4 +253,25 @@ fn only_a_url_is_accepted() {
     let properties = schema["properties"].as_object().unwrap();
     assert_eq!(properties.keys().collect::<Vec<_>>(), ["url"]);
     assert_eq!(schema["additionalProperties"], json!(false));
+}
+
+#[tokio::test]
+async fn requests_carry_a_fontaine_user_agent() {
+    let server = MockServer::start().await;
+    let expected = concat!(
+        "fontaine/",
+        env!("CARGO_PKG_VERSION"),
+        " (+https://github.com/madesroches/fontaine)"
+    );
+    Mock::given(method("GET"))
+        .and(path("/ua"))
+        .and(header("user-agent", expected))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(b"hello".to_vec(), "text/plain"))
+        .mount(&server)
+        .await;
+
+    let out = fetch(config(), &format!("{}/ua", server.uri()))
+        .await
+        .unwrap();
+    assert!(out.contains("hello"), "{out}");
 }
