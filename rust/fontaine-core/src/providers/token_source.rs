@@ -224,10 +224,19 @@ impl TokenSource {
                 return Err(TokenError::new(&self.account, TokenErrorKind::Refresh(e)));
             }
         };
-        credentials::store_oauth_locked(&self.data_dir, &self.account, &refreshed, &lock)
-            .map_err(|e| TokenError::new(&self.account, TokenErrorKind::Store(e)))?;
+        // The server has already invalidated the old refresh token, so the new pair must survive
+        // in memory even when it cannot reach disk.
         let access = refreshed.access.clone();
+        let stored =
+            credentials::store_oauth_locked(&self.data_dir, &self.account, &refreshed, &lock);
         *self.cached.lock().expect("the token lock is not poisoned") = refreshed;
+        if let Err(e) = stored {
+            tracing::warn!(
+                account = %self.account,
+                error = %fontaine_tools::error_chain::chain(&e),
+                "could not save the refreshed sign-in; it is kept in memory for this session only"
+            );
+        }
         Ok(access)
     }
 }

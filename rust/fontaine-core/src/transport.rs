@@ -219,7 +219,7 @@ async fn decorate<B>(decoration: &Decoration, mut req: Request<B>) -> Result<Req
         let token = source
             .token()
             .await
-            .map_err(|e| Error::Instance(Box::new(e)))?;
+            .map_err(|e| Error::Instance(Box::new(WithCauses(Box::new(e)))))?;
         let headers = req.headers_mut();
         match placement {
             AuthPlacement::Bearer => {

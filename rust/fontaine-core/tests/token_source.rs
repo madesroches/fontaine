@@ -205,3 +205,40 @@ async fn a_dropped_caller_does_not_lose_the_rotated_pair() {
     };
     assert_eq!(on_disk.refresh, "rt-new");
 }
+
+#[cfg(unix)]
+struct RotateThenLockDisk(std::path::PathBuf, std::sync::atomic::AtomicU32);
+
+#[cfg(unix)]
+impl Refresher for RotateThenLockDisk {
+    fn refresh<'a>(
+        &'a self,
+        _current: &'a OAuthTokens,
+    ) -> BoxFuture<'a, Result<OAuthTokens, RefreshError>> {
+        use std::os::unix::fs::PermissionsExt;
+        Box::pin(async move {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o555)).unwrap();
+            Ok(tokens("at-new", "rt-new", now_unix() + 3600))
+        })
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_rotated_pair_that_cannot_be_saved_is_still_served_and_kept() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = World::new();
+    let held = tokens("at-1", "rt-1", now_unix() + 60);
+    credentials::store_oauth(&w.data, "go", &held).unwrap();
+    let refresher = Arc::new(RotateThenLockDisk(w.data.clone(), Default::default()));
+    let source = TokenSource::new(&w.data, "go", held, refresher.clone());
+
+    let result = source.token().await;
+    let again = source.token().await;
+    std::fs::set_permissions(&w.data, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(result.unwrap(), "at-new");
+    assert_eq!(again.unwrap(), "at-new");
+    assert_eq!(refresher.1.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
