@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,6 +17,10 @@ use crate::credentials::{self, Credentials, OAuthTokens, StoredCredential};
 
 /// A token with less than this left is refreshed before use.
 const REFRESH_MARGIN_SECS: u64 = 5 * 60;
+
+/// After a transient refresh failure the still-valid token is served for this long before
+/// another refresh is attempted.
+const RETRY_BACKOFF_SECS: u64 = 30;
 
 pub fn now_unix() -> u64 {
     SystemTime::now()
@@ -45,6 +50,7 @@ enum TokenErrorKind {
     NoSignIn,
     Refresh(FlowError),
     Lock(Box<dyn std::error::Error + Send + Sync>),
+    Task(tokio::task::JoinError),
 }
 
 impl TokenError {
@@ -83,6 +89,10 @@ impl fmt::Display for TokenError {
                 f,
                 "could not lock the credentials file to refresh the sign-in for account `{account}`"
             ),
+            TokenErrorKind::Task(_) => write!(
+                f,
+                "the refresh of the sign-in for account `{account}` stopped unexpectedly"
+            ),
         }
     }
 }
@@ -92,6 +102,7 @@ impl std::error::Error for TokenError {
         match &*self.kind {
             TokenErrorKind::Refresh(e) => Some(e),
             TokenErrorKind::Lock(e) => Some(&**e),
+            TokenErrorKind::Task(e) => Some(e),
             _ => None,
         }
     }
@@ -104,6 +115,9 @@ pub struct TokenSource {
     cached: Mutex<OAuthTokens>,
     /// Single flight: callers that find the token stale queue here, and the first one refreshes.
     refreshing: tokio::sync::Mutex<()>,
+    /// Unix time before which a failed refresh is not retried while the token is still valid.
+    retry_after: AtomicU64,
+    backoff_secs: AtomicU64,
 }
 
 type WarnSink = Arc<dyn Fn(&str) + Send + Sync>;
@@ -141,6 +155,8 @@ impl TokenSource {
             refresher,
             cached: Mutex::new(tokens),
             refreshing: tokio::sync::Mutex::new(()),
+            retry_after: AtomicU64::new(0),
+            backoff_secs: AtomicU64::new(RETRY_BACKOFF_SECS),
         })
     }
 
@@ -173,6 +189,22 @@ impl TokenSource {
         }
     }
 
+    /// Shortens the pause after a failed refresh.
+    pub fn set_retry_backoff_secs(&self, secs: u64) {
+        self.backoff_secs.store(secs, Ordering::Relaxed);
+    }
+
+    /// The cached token, when a recent refresh failure says not to try again yet and it has not
+    /// expired.
+    fn serve_during_backoff(&self) -> Option<String> {
+        let now = now_unix();
+        if now >= self.retry_after.load(Ordering::Relaxed) {
+            return None;
+        }
+        let cached = self.cached.lock().expect("the token lock is not poisoned");
+        (cached.expires_at > now).then(|| cached.access.clone())
+    }
+
     fn fresh(&self) -> Option<String> {
         let cached = self.cached.lock().expect("the token lock is not poisoned");
         (cached.expires_at > now_unix() + REFRESH_MARGIN_SECS).then(|| cached.access.clone())
@@ -183,24 +215,27 @@ impl TokenSource {
         if let Some(token) = self.fresh() {
             return Ok(token);
         }
+        if let Some(token) = self.serve_during_backoff() {
+            return Ok(token);
+        }
         // Detached because callers drop their request futures mid-flight (timeouts, interrupts):
         // a refresh abandoned after the server rotated the token would leave the dead one on disk.
         let source = self.clone();
         tokio::spawn(async move { source.refresh_serialized().await })
             .await
-            .map_err(|e| TokenError::new(&self.account, TokenErrorKind::Lock(Box::new(e))))?
+            .map_err(|e| TokenError::new(&self.account, TokenErrorKind::Task(e)))?
     }
 
     async fn refresh_serialized(&self) -> Result<String, TokenError> {
         let _turn = self.refreshing.lock().await;
-        if let Some(token) = self.fresh() {
+        if let Some(token) = self.fresh().or_else(|| self.serve_during_backoff()) {
             return Ok(token);
         }
         let account = self.account.clone();
         let data_dir = self.data_dir.clone();
         let lock = tokio::task::spawn_blocking(move || credentials::lock(&data_dir))
             .await
-            .map_err(|e| TokenError::new(&account, TokenErrorKind::Lock(Box::new(e))))?
+            .map_err(|e| TokenError::new(&account, TokenErrorKind::Task(e)))?
             .map_err(|e| TokenError::new(&account, TokenErrorKind::Lock(Box::new(e))))?;
 
         // Another process may have rotated the pair since this one read it, so the disk can be
@@ -233,6 +268,9 @@ impl TokenSource {
             // A transient failure inside the refresh margin is not worth failing a request the
             // still-valid token can serve.
             Err(RefreshError::Failed(_)) if current.expires_at > now_unix() => {
+                let retry = (now_unix() + self.backoff_secs.load(Ordering::Relaxed))
+                    .min(current.expires_at);
+                self.retry_after.store(retry, Ordering::Relaxed);
                 let access = current.access.clone();
                 *self.cached.lock().expect("the token lock is not poisoned") = current;
                 return Ok(access);
@@ -243,6 +281,7 @@ impl TokenSource {
         };
         // The server has already invalidated the old refresh token, so the new pair must survive
         // in memory even when it cannot reach disk.
+        self.retry_after.store(0, Ordering::Relaxed);
         let access = refreshed.access.clone();
         let stored =
             credentials::store_oauth_locked(&self.data_dir, &self.account, &refreshed, &lock);

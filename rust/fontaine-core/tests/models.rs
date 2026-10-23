@@ -431,6 +431,32 @@ async fn a_validated_model_on_an_account_without_its_credential_is_not_picked() 
     assert_eq!(handle.reference.to_string(), "main/qwen3:4b");
 }
 
+#[tokio::test]
+async fn a_stored_sign_in_is_no_credential_for_a_key_based_account() {
+    let w = World::new();
+    w.user_file(
+        "[accounts.cloud]\nkind = \"anthropic\"\n\n[model]\nmodel = \"cloud/claude-haiku-5-5\"\n",
+    );
+    std::fs::write(
+        w.data.join("credentials.toml"),
+        "[accounts.cloud.oauth]\naccess = \"at\"\nrefresh = \"rt\"\nexpires_at = 4102444800\n",
+    )
+    .unwrap();
+    let config = w.load().unwrap();
+    let Err(err) = models::resolve(&ResolveParams {
+        config: &config,
+        data_dir: &w.data,
+        env: &env_of(&[]),
+        model_override: None,
+        session_id: None,
+    })
+    .await
+    else {
+        panic!("a sign-in is no key");
+    };
+    assert!(err.to_string().contains("has no credential"), "{err}");
+}
+
 #[test]
 fn the_switcher_offers_the_validated_and_the_explicit_models_the_accounts_have() {
     let w = World::new();

@@ -363,3 +363,18 @@ async fn a_refused_sign_in_stores_nothing() {
     assert!(err.to_string().contains("access_denied"), "{err}");
     assert_eq!(Credentials::load(&w.data).unwrap().account("go"), None);
 }
+
+#[tokio::test]
+async fn a_stored_api_key_is_not_a_sign_in() {
+    let w = World::new();
+    w.user_file("[accounts.go]\nkind = \"opencode-go\"\n");
+    std::fs::write(
+        w.data.join("credentials.toml"),
+        "[accounts.go]\napi_key = \"sk-abc123\"\n",
+    )
+    .unwrap();
+    let Err(err) = resolve(&w, "kimi-k3").await else {
+        panic!("a key is no sign-in");
+    };
+    assert!(err.to_string().contains("not signed in"), "{err}");
+}

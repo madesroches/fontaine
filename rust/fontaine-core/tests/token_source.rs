@@ -167,6 +167,47 @@ async fn a_transient_refresh_failure_serves_a_token_that_has_not_expired() {
     assert!(expired.token().await.is_err());
 }
 
+struct CountingFailure(Arc<std::sync::atomic::AtomicU64>);
+
+impl Refresher for CountingFailure {
+    fn refresh<'a>(
+        &'a self,
+        _current: &'a OAuthTokens,
+    ) -> BoxFuture<'a, Result<OAuthTokens, RefreshError>> {
+        Box::pin(async move {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(RefreshError::Failed(
+                fontaine_core::providers::device_flow::FlowError::Expired,
+            ))
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_failed_refresh_is_not_retried_until_the_backoff_has_passed() {
+    let w = World::new();
+    let calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let held = tokens("at-1", "rt-1", now_unix() + 60);
+    credentials::store_oauth(&w.data, "go", &held).unwrap();
+    let source = TokenSource::new(
+        &w.data,
+        "go",
+        held,
+        Arc::new(CountingFailure(calls.clone())),
+    );
+    source.set_retry_backoff_secs(1);
+    let seen = || calls.load(std::sync::atomic::Ordering::SeqCst);
+
+    assert_eq!(source.token().await.unwrap(), "at-1");
+    assert_eq!(seen(), 1);
+    assert_eq!(source.token().await.unwrap(), "at-1");
+    assert_eq!(seen(), 1, "served from the cache during the backoff");
+
+    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+    assert_eq!(source.token().await.unwrap(), "at-1");
+    assert_eq!(seen(), 2, "retried after the backoff");
+}
+
 struct SlowRotation(Arc<tokio::sync::Notify>);
 
 impl Refresher for SlowRotation {

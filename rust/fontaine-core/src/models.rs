@@ -213,6 +213,12 @@ fn credential(
             {
                 Credential::NoSource
             }
+            // A key left by a changed `kind` is no sign-in for a provider that needs one.
+            Some(StoredCredential::ApiKey(_))
+                if account.kind.provider().credential() == CredentialPolicy::SignIn =>
+            {
+                Credential::NoSource
+            }
             Some(found) => Credential::Found(found),
             None => Credential::NoSource,
         },
