@@ -24,7 +24,8 @@ All notable changes are recorded here. The format follows
     wire formats with one sign-in (`fontaine auth login <account>`, the opencode CLI's device
     flow). Access tokens refresh silently, requests carry a `fontaine/<version>` User-Agent and
     the session id, and the models are unpriced. Account kinds now sit behind a provider
-    registry, so a new kind is one module and one registry line (#93).
+    registry, so a new kind is one module and one registry line (#93). The sign-in resolves the
+    relative verification URL the Console sends against the Console, rather than refusing it (#118).
   - A model request that cannot connect names its transport cause (connection refused, reset,
     TLS, DNS, timeout) without the request URL (#88).
 - Configuration
