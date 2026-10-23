@@ -38,7 +38,7 @@ In `DeviceFlow::start`, replace `Url::parse(&url)` with a resolution against the
 
 ```rust
 let base = Url::parse(&self.endpoints.code_url)
-    .map_err(|_| FlowError::Invalid("the device-code endpoint is not a URL".to_string()))?;
+    .expect("reqwest already parsed code_url with the same url crate when the request was sent");
 let parsed = base
     .join(&url)
     .map_err(|_| FlowError::Invalid("the verification URL is not a URL".to_string()))?;
@@ -49,15 +49,16 @@ behavior), an absolute-path reference keeps the endpoint's scheme and host
 (`/console/device` against `https://opencode.ai/console/auth/device/code` →
 `https://opencode.ai/console/device`), and a malformed absolute URL still errors. The existing
 `http`/`https` check runs on the resolved URL, so `javascript:` and `file:` stay refused. The
-endpoint parse cannot fail in practice (the request to it just succeeded), but it maps to
-`Invalid` rather than `expect`, since the URL is caller data.
+endpoint parse is an invariant, so it uses `expect`: `post` already parsed the same string with the
+same `url` crate before this point.
 
-RFC 8628 §3.2 does not require absolute URIs to be rejected by clients, and resolving against the
-request URL is the standard interpretation of a relative reference, so this is not a behavior
-deviation needing a `## Decisions` line in the master plan.
+RFC 8628 §3.2 does not require `verification_uri` to be absolute, and resolving a relative
+reference against the request URL is the standard RFC 3986 interpretation, so this is not a
+behavior deviation needing a `## Decisions` line in the master plan.
 
-Security: a relative reference can only resolve onto the Console's own origin, so it cannot point
-the user anywhere an absolute URL from the same server could not already.
+Security: resolution can change the host (a scheme-relative `//other.host/…` takes a new
+authority), but the result still has to pass the `http`/`https` check, so a relative reference
+cannot point the user anywhere an absolute URL from the same server could not already.
 
 ## Implementation Steps
 
