@@ -128,6 +128,23 @@ async fn a_verification_url_that_is_not_http_is_refused() {
 }
 
 #[tokio::test]
+async fn a_blank_verification_url_falls_back_or_is_refused() {
+    let server = MockServer::start().await;
+    let mut reply = code_reply("  ");
+    reply["verification_uri"] = json!("https://example.com/device");
+    mount_code(&server, reply).await;
+    let code = flow(&server).start().await.unwrap();
+    assert_eq!(code.verification_url, "https://example.com/device");
+
+    for blank in ["", "   "] {
+        let server = MockServer::start().await;
+        mount_code(&server, code_reply(blank)).await;
+        let err = flow(&server).start().await.unwrap_err();
+        assert!(matches!(err, FlowError::Invalid(_)), "{blank:?}: {err:?}");
+    }
+}
+
+#[tokio::test]
 async fn polling_waits_through_pending_and_slows_down_by_five_seconds() {
     let server = MockServer::start().await;
     let answered = Arc::new(Mutex::new(0));
