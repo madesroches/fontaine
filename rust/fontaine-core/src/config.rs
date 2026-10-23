@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::credentials;
 use crate::permission_rules::{RuleError, RuleSource, SourcedRule, parse_rule, validate_mcp_name};
+use crate::providers::{self, Provider};
 use crate::trust::{self, LocalClassification, ProjectDemotion};
 use fontaine_tools::names::{is_builtin, is_mcp};
 
@@ -210,31 +211,65 @@ impl PermissionMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-pub enum AccountKind {
-    #[serde(rename = "anthropic")]
-    Anthropic,
-    #[serde(rename = "openai")]
-    OpenAi,
-    #[serde(rename = "gemini")]
-    Gemini,
-    #[serde(rename = "openai-compatible")]
-    OpenAiCompatible,
-    #[serde(rename = "ollama")]
-    Ollama,
-}
+/// The provider an account talks to: a handle on one entry of the provider registry.
+#[derive(Clone, Copy)]
+pub struct AccountKind(&'static dyn Provider);
 
 impl AccountKind {
     /// The name the kind has in settings and in the guardian model list.
     pub fn as_str(self) -> &'static str {
-        match self {
-            AccountKind::Anthropic => "anthropic",
-            AccountKind::OpenAi => "openai",
-            AccountKind::Gemini => "gemini",
-            AccountKind::OpenAiCompatible => "openai-compatible",
-            AccountKind::Ollama => "ollama",
-        }
+        self.0.name()
     }
+
+    pub fn provider(self) -> &'static dyn Provider {
+        self.0
+    }
+
+    /// The kind registered under `name`, if any.
+    pub fn find(name: &str) -> Option<AccountKind> {
+        providers::find(name).map(AccountKind)
+    }
+
+    /// For tests: the kind registered under `name`.
+    pub fn named(name: &str) -> AccountKind {
+        Self::find(name).unwrap_or_else(|| panic!("no provider is registered as `{name}`"))
+    }
+}
+
+impl PartialEq for AccountKind {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for AccountKind {}
+
+impl std::fmt::Debug for AccountKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AccountKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        AccountKind::find(&name).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "unknown account kind `{name}`; expected one of: {}",
+                providers::names().collect::<Vec<_>>().join(", ")
+            ))
+        })
+    }
+}
+
+/// One of the wire formats a gateway can serve a model on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Wire {
+    Chat,
+    Responses,
+    Messages,
+    Gemini,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -277,6 +312,8 @@ pub struct Account {
     pub api_key_env: Option<String>,
     pub base_url: Option<String>,
     pub models: Option<Vec<String>>,
+    /// Per-model wire overrides, for kinds that route one account over several wires.
+    pub wires: Option<BTreeMap<String, Wire>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -650,13 +687,15 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
                 "account names are non-empty and contain no `/`",
             );
         }
-        if account.kind == AccountKind::OpenAiCompatible
-            && account.base_url.as_deref().is_none_or(str::is_empty)
-        {
+        let provider = account.kind.provider();
+        if account.wires.is_some() && !provider.accepts_wires() {
             return bad(
-                &format!("accounts.{name}.base_url"),
-                "required for kind = \"openai-compatible\"",
+                &format!("accounts.{name}.wires"),
+                &format!("not used by kind = \"{}\"", provider.name()),
             );
+        }
+        if let Err((key, message)) = provider.validate(account) {
+            return bad(&format!("accounts.{name}.{key}"), &message);
         }
     }
     if let Some(model) = s.model.as_ref().and_then(|m| m.model.as_deref())

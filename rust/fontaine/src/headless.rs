@@ -446,6 +446,7 @@ async fn run_one(
             state: &runtime.state,
             prompt: text,
             max_turns: options.max_turns.unwrap_or(DEFAULT_MAX_TURNS),
+            priced: runtime.models.main.catalog_billed(),
         },
         &mut on_event,
     )

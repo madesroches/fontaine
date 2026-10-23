@@ -174,7 +174,7 @@ tools = ["grep"]
     );
     let c = w.load_with_settings(&cli).unwrap();
     let account = &c.accounts["work"];
-    assert_eq!(account.kind, AccountKind::Ollama);
+    assert_eq!(account.kind, AccountKind::named("ollama"));
     assert_eq!(account.api_key_env, None);
     assert_eq!(account.models, None);
     let server = &c.mcp_servers["gh"];

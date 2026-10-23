@@ -18,6 +18,7 @@ pub mod owner_only;
 pub mod permission_rules;
 pub mod permissions;
 pub mod prompt;
+pub mod providers;
 #[cfg(feature = "pg2")]
 pub mod scanner_model;
 pub mod scanner_stage;

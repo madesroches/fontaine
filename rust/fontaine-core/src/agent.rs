@@ -118,6 +118,10 @@ pub fn build_guardian(
         confidence_threshold: config.guardian.confidence_threshold,
         cache: config.guardian.cache,
         profile,
+        priced: match model {
+            Some(GuardianModel::Ready(handle)) => handle.catalog_billed(),
+            _ => true,
+        },
     };
     match model {
         Some(GuardianModel::Ready(handle)) => Guardian::new(

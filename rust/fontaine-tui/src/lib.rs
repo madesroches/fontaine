@@ -824,6 +824,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     state: &runtime.state,
                     prompt,
                     max_turns: DEFAULT_MAX_TURNS,
+                    priced: runtime.models.main.catalog_billed(),
                 },
                 &mut on_event,
             )

@@ -181,7 +181,11 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     {
         return match auth::login(account.as_deref(), *telemetry, &config, &dirs.data) {
             Ok(()) => ExitCode::SUCCESS,
-            Err(e) => usage(e),
+            Err(auth::LoginError::Config(e)) => usage(e),
+            Err(auth::LoginError::SignIn(e)) => {
+                eprintln!("fontaine: {}", fontaine_tools::error_chain::chain(&e));
+                ExitCode::from(1)
+            }
         };
     }
 
@@ -470,12 +474,14 @@ async fn resolve_models(
     config: &Config,
     dirs: &Dirs,
     host: &Host,
+    session_id: &str,
 ) -> Result<Models, u8> {
     models::resolve(&ResolveParams {
         config,
         data_dir: &dirs.data,
         env: &*host.env,
         model_override: cli.model.as_deref(),
+        session_id: Some(session_id.to_string()),
     })
     .await
     .map_err(|e| {
@@ -538,7 +544,12 @@ fn agent_setup(
         .collect();
     let lookup: fontaine_core::agent::EnvLookup =
         Arc::new(move |name: &str| env.get(name).cloned());
-    let switcher = Switcher::new(config.clone(), dirs.data.clone(), lookup.clone());
+    let switcher = Switcher::new(
+        config.clone(),
+        dirs.data.clone(),
+        lookup.clone(),
+        Some(prep.session.id.clone()),
+    );
     let mut config = config.clone();
     if headless && let Some(cap) = cli.max_budget_usd {
         // The tree's session ceiling counts root, guardian and child spend alike, so a running
@@ -583,7 +594,7 @@ async fn run_headless(
     dirs: &Dirs,
     host: &Host,
 ) -> u8 {
-    let models = match resolve_models(cli, config, dirs, host).await {
+    let models = match resolve_models(cli, config, dirs, host, &prep.session.id).await {
         Ok(models) => models,
         Err(code) => return code,
     };
@@ -628,7 +639,7 @@ async fn run_interactive(
     dirs: &Dirs,
     host: &Host,
 ) -> u8 {
-    let models = match resolve_models(cli, config, dirs, host).await {
+    let models = match resolve_models(cli, config, dirs, host, &prep.session.id).await {
         Ok(models) => models,
         Err(code) => return code,
     };

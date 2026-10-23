@@ -102,11 +102,17 @@ fn failed(reason: impl Into<String>) -> Scan {
 pub struct LlmScanner {
     model: DynModel<Completion>,
     timeout: Duration,
+    /// Whether the cost its calls report is counted; telemetry skips it for an unpriced model.
+    priced: bool,
 }
 
 impl LlmScanner {
-    pub fn new(model: DynModel<Completion>, timeout: Duration) -> LlmScanner {
-        LlmScanner { model, timeout }
+    pub fn new(model: DynModel<Completion>, timeout: Duration, priced: bool) -> LlmScanner {
+        LlmScanner {
+            model,
+            timeout,
+            priced,
+        }
     }
 
     async fn run(&self, tool: &str, content: &str) -> Scan {
@@ -132,7 +138,12 @@ impl LlmScanner {
 
 impl Scanner for LlmScanner {
     fn scan<'a>(&'a self, tool: &'a str, content: &'a str) -> BoxFuture<'a, Scan> {
-        let span = tracing::info_span!(target: TARGET, "fontaine.scanner", scanner = "llm");
+        let span = tracing::info_span!(
+            target: TARGET,
+            "fontaine.scanner",
+            scanner = "llm",
+            model.priced = self.priced,
+        );
         Box::pin(self.run(tool, content).instrument(span))
     }
 }

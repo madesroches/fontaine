@@ -6,14 +6,18 @@
 
 use std::error::Error as StdError;
 use std::fmt;
+use std::sync::Arc;
 
 use fontaine_tools::error_chain::chain;
 use futures::StreamExt;
+use http::header::{AUTHORIZATION, HeaderName, USER_AGENT};
 use rig_core::http_client::{
-    Bytes, Error, HttpClientExt, LazyBody, MultipartForm, Request, Response, Result,
-    StreamingResponse,
+    Bytes, Error, HeaderValue, HttpClientExt, LazyBody, MultipartForm, Request, Response, Result,
+    StreamingResponse, Uri,
 };
 use rig_reqwest::ReqwestClient;
+
+use crate::providers::token_source::TokenSource;
 
 type Cause = Box<dyn StdError + Send + Sync + 'static>;
 
@@ -117,7 +121,12 @@ fn named_body<U: Send + 'static>(response: Response<LazyBody<U>>) -> Response<La
 /// connection outlives the runtime that made it. Mirrors rig's default build, including its
 /// fallback to the bundled roots on a host with no system CA certificates.
 pub fn caused_client() -> std::result::Result<CausedClient, String> {
-    let built = reqwest::Client::builder()
+    Ok(CausedClient::new(ReqwestClient::from(reqwest_client()?)))
+}
+
+/// The plain client behind [`caused_client`], for requests that do not go through rig.
+pub fn reqwest_client() -> std::result::Result<reqwest::Client, String> {
+    reqwest::Client::builder()
         .build()
         .or_else(with_bundled_roots)
         .map_err(|e| {
@@ -125,8 +134,166 @@ pub fn caused_client() -> std::result::Result<CausedClient, String> {
                 "could not build the HTTP client: {}",
                 chain(&e.without_url())
             )
-        })?;
-    Ok(CausedClient::new(ReqwestClient::from(built)))
+        })
+}
+
+/// How an access token is put on a request, replacing the placeholder key rig put there.
+#[derive(Clone, Debug)]
+pub enum AuthPlacement {
+    /// `Authorization: Bearer <token>`.
+    Bearer,
+    /// The token alone in this header, with no `Authorization`.
+    Header(HeaderName),
+    /// Gemini's `?key=` becomes `x-goog-api-key`, so the token never sits in a URL.
+    GoogleKey,
+}
+
+/// What [`Decorated`] adds to every request.
+#[derive(Clone, Default)]
+pub struct Decoration {
+    pub user_agent: Option<&'static str>,
+    pub headers: Vec<(HeaderName, HeaderValue)>,
+    pub auth: Option<(Arc<TokenSource>, AuthPlacement)>,
+}
+
+/// Delegates to `C` after decorating the request. Headers are replaced, never appended, so what
+/// rig set (the placeholder key) cannot survive next to the real one.
+#[derive(Clone)]
+pub struct Decorated<C = CausedClient> {
+    inner: C,
+    decoration: Arc<Decoration>,
+}
+
+pub fn decorated_client(decoration: Decoration) -> std::result::Result<Decorated, String> {
+    Ok(Decorated {
+        inner: caused_client()?,
+        decoration: Arc::new(decoration),
+    })
+}
+
+impl<C> Decorated<C> {
+    pub fn new(inner: C, decoration: Decoration) -> Self {
+        Decorated {
+            inner,
+            decoration: Arc::new(decoration),
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn token_header(value: &str) -> Result<HeaderValue> {
+    let mut header = HeaderValue::from_str(value).map_err(|_| {
+        Error::Instance(Box::<dyn StdError + Send + Sync>::from(
+            "the access token cannot be sent as an HTTP header",
+        ))
+    })?;
+    header.set_sensitive(true);
+    Ok(header)
+}
+
+#[allow(clippy::result_large_err)]
+fn without_key_param(uri: &Uri) -> Result<Uri> {
+    let Some(query) = uri.query() else {
+        return Ok(uri.clone());
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| pair.split('=').next() != Some("key"))
+        .collect();
+    let mut path = uri.path().to_string();
+    if !kept.is_empty() {
+        path.push('?');
+        path.push_str(&kept.join("&"));
+    }
+    let mut parts = uri.clone().into_parts();
+    parts.path_and_query = Some(
+        path.parse()
+            .map_err(|e: http::uri::InvalidUri| Error::Protocol(e.into()))?,
+    );
+    Uri::from_parts(parts).map_err(|e| Error::Protocol(e.into()))
+}
+
+#[allow(clippy::result_large_err)]
+async fn decorate<B>(decoration: &Decoration, mut req: Request<B>) -> Result<Request<B>> {
+    if let Some(agent) = decoration.user_agent {
+        req.headers_mut()
+            .insert(USER_AGENT, HeaderValue::from_static(agent));
+    }
+    for (name, value) in &decoration.headers {
+        req.headers_mut().insert(name.clone(), value.clone());
+    }
+    if let Some((source, placement)) = &decoration.auth {
+        let token = source
+            .token()
+            .await
+            .map_err(|e| Error::Instance(Box::new(e)))?;
+        let headers = req.headers_mut();
+        match placement {
+            AuthPlacement::Bearer => {
+                headers.insert(AUTHORIZATION, token_header(&format!("Bearer {token}"))?);
+            }
+            AuthPlacement::Header(name) => {
+                headers.remove(AUTHORIZATION);
+                headers.insert(name.clone(), token_header(&token)?);
+            }
+            AuthPlacement::GoogleKey => {
+                headers.remove(AUTHORIZATION);
+                headers.insert(
+                    HeaderName::from_static("x-goog-api-key"),
+                    token_header(&token)?,
+                );
+                *req.uri_mut() = without_key_param(req.uri())?;
+            }
+        }
+    }
+    Ok(req)
+}
+
+impl<C: HttpClientExt + Clone + 'static> HttpClientExt for Decorated<C> {
+    fn send<T, U>(
+        &self,
+        req: Request<T>,
+    ) -> impl Future<Output = Result<Response<LazyBody<U>>>> + Send + 'static
+    where
+        T: Into<Bytes> + Send,
+        U: From<Bytes> + Send + 'static,
+    {
+        let req = req.map(Into::<Bytes>::into);
+        let (inner, decoration) = (self.inner.clone(), self.decoration.clone());
+        async move {
+            let req = decorate(&decoration, req).await?;
+            inner.send::<Bytes, U>(req).await
+        }
+    }
+
+    fn send_multipart<U>(
+        &self,
+        req: Request<MultipartForm>,
+    ) -> impl Future<Output = Result<Response<LazyBody<U>>>> + Send + 'static
+    where
+        U: From<Bytes> + Send + 'static,
+    {
+        let (inner, decoration) = (self.inner.clone(), self.decoration.clone());
+        async move {
+            let req = decorate(&decoration, req).await?;
+            inner.send_multipart::<U>(req).await
+        }
+    }
+
+    fn send_streaming<T>(
+        &self,
+        req: Request<T>,
+    ) -> impl Future<Output = Result<StreamingResponse>> + Send
+    where
+        T: Into<Bytes> + Send,
+    {
+        let req = req.map(Into::<Bytes>::into);
+        let (inner, decoration) = (self.inner.clone(), self.decoration.clone());
+        async move {
+            let req = decorate(&decoration, req).await?;
+            inner.send_streaming::<Bytes>(req).await
+        }
+    }
 }
 
 fn with_bundled_roots(error: reqwest::Error) -> reqwest::Result<reqwest::Client> {
@@ -296,5 +463,229 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("tcp connect error"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod decoration_tests {
+    use std::sync::{Arc, Mutex};
+
+    use futures::future::BoxFuture;
+    use rig_core::http_client::HeaderMap;
+
+    use super::*;
+    use crate::credentials::OAuthTokens;
+    use crate::providers::device_flow::RefreshError;
+    use crate::providers::token_source::{Refresher, now_unix};
+
+    type Seen = Arc<Mutex<Vec<(Uri, HeaderMap)>>>;
+
+    #[derive(Clone, Default)]
+    struct Capture(Seen);
+
+    #[allow(clippy::manual_async_fn)]
+    impl HttpClientExt for Capture {
+        fn send<T, U>(
+            &self,
+            req: Request<T>,
+        ) -> impl Future<Output = Result<Response<LazyBody<U>>>> + Send + 'static
+        where
+            T: Into<Bytes> + Send,
+            U: From<Bytes> + Send + 'static,
+        {
+            self.0
+                .lock()
+                .unwrap()
+                .push((req.uri().clone(), req.headers().clone()));
+            async {
+                let body: LazyBody<U> = Box::pin(async { Ok(U::from(Bytes::new())) });
+                Ok(Response::new(body))
+            }
+        }
+
+        fn send_multipart<U>(
+            &self,
+            _req: Request<MultipartForm>,
+        ) -> impl Future<Output = Result<Response<LazyBody<U>>>> + Send + 'static
+        where
+            U: From<Bytes> + Send + 'static,
+        {
+            async { Err(Error::StreamEnded) }
+        }
+
+        fn send_streaming<T>(
+            &self,
+            req: Request<T>,
+        ) -> impl Future<Output = Result<StreamingResponse>> + Send
+        where
+            T: Into<Bytes> + Send,
+        {
+            self.0
+                .lock()
+                .unwrap()
+                .push((req.uri().clone(), req.headers().clone()));
+            async {
+                let body: rig_core::http_client::BoxedStream = Box::pin(futures::stream::empty());
+                Ok(Response::new(body))
+            }
+        }
+    }
+
+    struct SignedOut;
+
+    impl Refresher for SignedOut {
+        fn refresh<'a>(
+            &'a self,
+            _current: &'a OAuthTokens,
+        ) -> BoxFuture<'a, std::result::Result<OAuthTokens, RefreshError>> {
+            Box::pin(async { Err(RefreshError::SignedOut) })
+        }
+    }
+
+    fn source(dir: &std::path::Path, expires_at: u64) -> Arc<TokenSource> {
+        let tokens = OAuthTokens {
+            access: "the-token".to_string(),
+            refresh: "the-refresh".to_string(),
+            expires_at,
+            extra: Default::default(),
+        };
+        crate::credentials::store_oauth(dir, "go", &tokens).unwrap();
+        TokenSource::new(dir, "go", tokens, Arc::new(SignedOut))
+    }
+
+    fn decorated(placement: AuthPlacement, source: Arc<TokenSource>) -> (Decorated<Capture>, Seen) {
+        let capture = Capture::default();
+        let seen = capture.0.clone();
+        let decoration = Decoration {
+            user_agent: Some("fontaine/test"),
+            headers: vec![(
+                HeaderName::from_static("x-opencode-session"),
+                HeaderValue::from_static("sess-1"),
+            )],
+            auth: Some((source, placement)),
+        };
+        (Decorated::new(capture, decoration), seen)
+    }
+
+    async fn send(client: &Decorated<Capture>, uri: &str, placeholder: &[(&str, &str)]) {
+        let mut req = Request::post(uri).body(Bytes::new()).unwrap();
+        for (name, value) in placeholder {
+            req.headers_mut().insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        client.send::<Bytes, Bytes>(req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn user_agent_session_and_a_bearer_token_replace_what_rig_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, seen) =
+            decorated(AuthPlacement::Bearer, source(dir.path(), now_unix() + 3600));
+        send(
+            &client,
+            "http://gateway.test/openai/v1/chat/completions",
+            &[
+                ("authorization", "Bearer placeholder"),
+                ("user-agent", "rig"),
+            ],
+        )
+        .await;
+        let seen = seen.lock().unwrap();
+        let headers = &seen[0].1;
+        assert_eq!(headers["user-agent"], "fontaine/test");
+        assert_eq!(headers["x-opencode-session"], "sess-1");
+        assert_eq!(headers.get_all("authorization").iter().count(), 1);
+        assert_eq!(headers["authorization"], "Bearer the-token");
+        assert!(headers["authorization"].is_sensitive());
+    }
+
+    #[tokio::test]
+    async fn a_named_header_carries_the_token_and_authorization_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let placement = AuthPlacement::Header(HeaderName::from_static("x-api-key"));
+        let (client, seen) = decorated(placement, source(dir.path(), now_unix() + 3600));
+        send(
+            &client,
+            "http://gateway.test/anthropic/v1/messages",
+            &[("authorization", "Bearer placeholder"), ("x-api-key", "")],
+        )
+        .await;
+        let seen = seen.lock().unwrap();
+        assert!(seen[0].1.get("authorization").is_none());
+        assert_eq!(seen[0].1["x-api-key"], "the-token");
+    }
+
+    #[tokio::test]
+    async fn the_google_key_moves_from_the_url_to_a_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, seen) = decorated(
+            AuthPlacement::GoogleKey,
+            source(dir.path(), now_unix() + 3600),
+        );
+        send(
+            &client,
+            "http://gateway.test/google/v1beta/models/m:generateContent?alt=sse&key=&x=1",
+            &[],
+        )
+        .await;
+        send(
+            &client,
+            "http://gateway.test/google/v1beta/models?key=placeholder",
+            &[],
+        )
+        .await;
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen[0].0.to_string(),
+            "http://gateway.test/google/v1beta/models/m:generateContent?alt=sse&x=1"
+        );
+        assert_eq!(
+            seen[1].0.to_string(),
+            "http://gateway.test/google/v1beta/models"
+        );
+        for (_, headers) in seen.iter() {
+            assert_eq!(headers["x-goog-api-key"], "the-token");
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_requests_are_decorated_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, seen) =
+            decorated(AuthPlacement::Bearer, source(dir.path(), now_unix() + 3600));
+        let req = Request::post("http://gateway.test/x")
+            .body(Bytes::new())
+            .unwrap();
+        client.send_streaming(req).await.unwrap();
+        assert_eq!(
+            seen.lock().unwrap()[0].1["authorization"],
+            "Bearer the-token"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_token_that_cannot_be_had_is_a_transport_error_with_the_sign_in_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, seen) = decorated(
+            AuthPlacement::Bearer,
+            source(dir.path(), now_unix().saturating_sub(10)),
+        );
+        let req = Request::post("http://gateway.test/x")
+            .body(Bytes::new())
+            .unwrap();
+        let Err(error) = client.send::<Bytes, Bytes>(req).await else {
+            panic!("expected a failure");
+        };
+        assert!(matches!(error, Error::Instance(_)));
+        assert!(
+            error.to_string().contains("fontaine auth login go"),
+            "{error}"
+        );
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "nothing is sent without a token"
+        );
     }
 }

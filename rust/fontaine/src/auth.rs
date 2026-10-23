@@ -3,15 +3,30 @@ use std::path::Path;
 
 use fontaine_core::config::{Config, ConfigError};
 use fontaine_core::credentials::{self, Target};
+use fontaine_core::providers::SignInError;
 
-/// `fontaine auth login`: stores a secret read from a hidden prompt, or from stdin when stdin
-/// is not a terminal.
+/// Why a login did not finish. The two differ in exit code: a config problem is the user's to
+/// fix, a failed sign-in is the run's.
+pub enum LoginError {
+    Config(ConfigError),
+    SignIn(SignInError),
+}
+
+impl From<ConfigError> for LoginError {
+    fn from(e: ConfigError) -> Self {
+        LoginError::Config(e)
+    }
+}
+
+/// `fontaine auth login`: runs the account kind's interactive sign-in when it has one;
+/// otherwise stores a secret read from a hidden prompt, or from stdin when stdin is not a
+/// terminal.
 pub fn login(
     account: Option<&str>,
     telemetry: bool,
     config: &Config,
     data_dir: &Path,
-) -> Result<(), ConfigError> {
+) -> Result<(), LoginError> {
     let target = match (account, telemetry) {
         (_, true) => Target::Telemetry,
         (Some(name), false) => {
@@ -24,14 +39,30 @@ pub fn login(
                     } else {
                         known.join(", ")
                     }
-                )));
+                ))
+                .into());
             }
             Target::Account(name)
         }
         (None, false) => {
-            return Err(ConfigError::usage("name an account or pass --telemetry"));
+            return Err(ConfigError::usage("name an account or pass --telemetry").into());
         }
     };
+
+    if let Target::Account(name) = target
+        && let Some(sign_in) = config.accounts[name].kind.provider().sign_in()
+    {
+        // The dispatch runs before the session's runtime exists, so the sign-in brings its own.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| ConfigError::usage(format!("cannot start the sign-in: {e}")))?;
+        let summary = runtime
+            .block_on(sign_in.sign_in(name, &config.accounts[name], data_dir))
+            .map_err(LoginError::SignIn)?;
+        eprintln!("{summary}");
+        return Ok(());
+    }
 
     let secret = read_secret(&target)?;
     credentials::store(data_dir, target, &secret)?;

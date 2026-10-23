@@ -65,6 +65,8 @@ pub struct TurnParams<'a> {
     pub state: &'a SessionState,
     pub prompt: String,
     pub max_turns: usize,
+    /// Whether the cost the model's calls report is counted; see `ModelHandle::catalog_billed`.
+    pub priced: bool,
 }
 
 fn tool_text(content: &[ToolResultContent]) -> String {
@@ -90,6 +92,7 @@ pub async fn run_turn(
         "fontaine.interaction",
         prompt.id = %Uuid::new_v4(),
         prompt.length = params.prompt.len() as u64,
+        model.priced = params.priced,
     );
     let mut feed = params.state.feed().await;
     // A guard, not a trailing call: an interrupted turn drops this future at an await point.
@@ -101,6 +104,7 @@ pub async fn run_turn(
             agent_id: ROOT_AGENT,
             prompt: params.prompt,
             max_turns: params.max_turns,
+            priced: params.priced,
             span: interaction,
         },
         Some(&mut feed),
@@ -125,6 +129,9 @@ pub struct Drive<'a> {
     pub agent_id: &'a str,
     pub prompt: String,
     pub max_turns: usize,
+    /// Whether the cost the model's calls report is counted. An unpriced model's is dropped
+    /// here, where usage enters, because rig attaches it inside the wire.
+    pub priced: bool,
     /// The run adopts this span as its own agent span.
     pub span: tracing::Span,
 }
@@ -208,13 +215,17 @@ pub async fn drive(
                 _ => Flow::Continue,
             },
             MultiTurnStreamItem::CompletionCall(call) => {
-                let spend = spend_of(&call.usage);
+                let mut usage = call.usage;
+                if !params.priced {
+                    usage.cost = None;
+                }
+                let spend = spend_of(&usage);
                 params.state.agents().debit(params.agent_id, &spend);
                 if params.agent_id != ROOT_AGENT {
-                    params.state.add_subagent_usage(&call.usage);
+                    params.state.add_subagent_usage(&usage);
                 }
                 let flow = on_event(SessionEvent::Usage {
-                    usage: call.usage,
+                    usage,
                     calls_tool: turn_calls_tool,
                 });
                 turn_calls_tool = false;

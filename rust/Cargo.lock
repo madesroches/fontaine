@@ -1576,6 +1576,7 @@ dependencies = [
  "fontaine-tools",
  "futures",
  "gix",
+ "http",
  "ignore",
  "insta",
  "reqwest 0.13.5",
@@ -1617,6 +1618,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "uuid",
  "wiremock",
 ]
 

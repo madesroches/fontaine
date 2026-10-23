@@ -117,7 +117,7 @@ not exported.
 | `fontaine.guardian.fail_closed.count` | `{denial}` | `reason` (`error`, `timeout`, `unparseable`, `low_confidence`, `unavailable`) |
 
 `fontaine.cost.usage` is priced from the model catalog and is absent when the catalog has no price,
-which is always the case for an `openai-compatible` endpoint. `query_source` is `main` for the
+which is always the case for an `openai-compatible` endpoint or an `opencode-go` account. `query_source` is `main` for the
 session model, `guardian` for the model calls made while a guardian adjudication is open,
 `scanner` for the calls the `llm` tool-result scanner makes, and
 `subagent` for the calls made under a subagent's span.

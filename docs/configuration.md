@@ -123,10 +123,11 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 
 | Key | Meaning | Default |
 |---|---|---|
-| `kind` | `anthropic`, `openai`, `gemini`, `openai-compatible` or `ollama`. Required. | none |
-| `api_key_env` | The name of the environment variable that holds the key. Omit it to use the stored credential. Raw keys are never accepted inline. | unset |
+| `kind` | `anthropic`, `openai`, `gemini`, `openai-compatible`, `ollama` or `opencode-go`. Required. | none |
+| `api_key_env` | The name of the environment variable that holds the key. Omit it to use the stored credential. Raw keys are never accepted inline. Refused for `opencode-go`, which signs in instead. | unset |
 | `base_url` | Endpoint override. Required for `openai-compatible`. | the provider's public endpoint |
 | `models` | Explicit model list. Without it the provider is asked which models it offers. | unset |
+| `wires` | `opencode-go` only: a table from model id to the wire it is served on (`chat`, `responses`, `messages` or `gemini`), for a model the built-in routing gets wrong. | unset |
 
 Account names are not empty and contain no `/`. Accounts can be set from the user file or from
 `--settings` only: a project file cannot choose an endpoint or a credential source.
@@ -140,6 +141,7 @@ What each kind talks to:
 | `gemini` | `generateContent` | `https://generativelanguage.googleapis.com` | required |
 | `ollama` | Ollama's native `/api/chat` | `http://localhost:11434` | optional |
 | `openai-compatible` | Chat Completions | none; `base_url` is required | optional |
+| `opencode-go` | Chat Completions, Responses, Messages and `generateContent`, per model | `https://opencode.ai/inference/go` | sign-in |
 
 An `openai-compatible` endpoint speaks Chat Completions, not the Responses API, and its models are
 unpriced, so `--max-budget-usd` does not apply to them.
@@ -154,6 +156,10 @@ unpriced, so `--max-budget-usd` does not apply to them.
 3. With neither, an `ollama` or `openai-compatible` account sends no `Authorization` header. An
    `anthropic`, `openai` or `gemini` account with no key is a configuration error (exit code 2)
    when the main model uses it.
+
+An `opencode-go` account has no key. Its credential is the sign-in that
+`fontaine auth login <account>` stores, and an account that has not signed in is a configuration
+error (exit code 2) that names that command.
 
 The guardian is different: a missing or invalid credential on the account of `[guardian] model`
 never stops startup. The guardian is then unavailable, and every decision that needs it fails
@@ -290,6 +296,34 @@ api_key_env = "LITELLM_API_KEY"
 [model]
 model = "litellm/gpt-4o-mini"
 ```
+
+OpenCode Go, one subscription serving about thirty models on four wire formats:
+
+```toml
+[accounts.go]
+kind = "opencode-go"
+```
+
+Sign in once with `fontaine auth login go`, which prints a URL and a code to approve in a browser,
+then pick a model with `--model go/kimi-k3`. Each request goes to the wire its model is served on,
+chosen from a built-in table by model id: `gpt-`, `grok-` and `muse-spark-` models use the Responses
+API, `claude-`, `qwen` and `minimax-m3` use the Messages API, `gemini-` models use `generateContent`
+and everything else uses Chat Completions. Every request carries a `fontaine/<version>`
+`User-Agent` and the session id in `x-opencode-session`. The access token is refreshed silently.
+
+A model the table gets wrong is routed with `wires`:
+
+```toml
+[accounts.go]
+kind = "opencode-go"
+
+[accounts.go.wires]
+"some-new-model" = "messages"
+```
+
+Go usage is billed against the subscription's allowances, so its models are unpriced: the cost Go
+reports, including Extra usage, is not shown or counted, and `--max-budget-usd` with a Go main
+model is a usage error (exit code 2).
 
 ### `[model]`
 
@@ -572,12 +606,21 @@ may set, Fontaine exits with code 2, names the root, and prints the `trust.toml`
 
 ## Credentials
 
-`<data dir>/credentials.toml` holds stored API keys. Each account has an `api_key`, and the
-telemetry key is kept separately, so an account named `telemetry` cannot shadow it:
+`<data dir>/credentials.toml` holds stored credentials. Each account has either an `api_key` or,
+after a sign-in, an `oauth` entry, and the telemetry key is kept separately, so an account named
+`telemetry` cannot shadow it:
 
 ```toml credentials.toml
 [accounts.work]
 api_key = "sk-..."
+
+[accounts.go.oauth]
+access = "..."
+refresh = "..."
+expires_at = 1798000000
+server = "https://opencode.ai/console"
+org_id = "org_..."
+email = "me@example.com"
 
 [telemetry]
 api_key = "ingestion-key"
@@ -589,6 +632,14 @@ stdin is not a terminal (`printf %s "$KEY" | fontaine auth login work`). The acc
 the loaded configuration; an empty secret is a usage error. The file is written through the
 owner-only writer and every other entry in it is kept. A file that cannot be parsed is never
 overwritten.
+
+On an `opencode-go` account, `fontaine auth login <account>` starts a device sign-in instead of
+asking for a key: it prints a verification URL and a code, waits while you approve it in a browser,
+and stores the token pair as an `oauth` entry. It reads nothing from stdin, so it also works from a
+non-terminal. Fontaine refreshes the access token as it expires and writes the rotated pair back;
+writers of the file take a lock beside it (`credentials.lock`), so concurrent sessions and logins
+do not overwrite each other's rotation. A sign-in that has ended is reported with the login command
+to run again. A failed sign-in exits with code 1.
 
 A missing file or entry means no credential. A file that cannot be parsed, or that cannot be read
 for any reason other than not existing, is a configuration error naming the path.
@@ -604,7 +655,7 @@ for any reason other than not existing, is a configuration error naming the path
 | `--in-container` | States that the process runs inside a container. With `[guardian] profile = "minimal"` it lets the minimal guardian load, after a runtime probe also finds a container; the flag alone is never enough. |
 | `--continue`, `--resume <id>`, `--fork-session` | Reopen the latest session of the launch directory, reopen one by id, or copy the one that would have been reopened under a new id. See [Headless runs](headless.md#continuing-a-session). |
 | `--allowed-tools <rule>`, `--disallowed-tools <rule>` | Adds an allow or deny rule for the session (CLI scope). Repeatable. |
-| `fontaine auth login` | Stores a credential; see [Credentials](#credentials). |
+| `fontaine auth login` | Stores a credential or, for an `opencode-go` account, signs in; see [Credentials](#credentials). |
 | `FONTAINE_LOG` | An `EnvFilter` directive that replaces the default `debug` filter of the debug file. On its own it creates no file and prints nothing. |
 | `FONTAINE_CONFIG_DIR`, `FONTAINE_DATA_DIR` | Directory overrides, described above. |
 

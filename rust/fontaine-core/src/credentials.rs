@@ -21,10 +21,69 @@ struct File {
     telemetry: Option<Entry>,
 }
 
+/// Exactly one of the two is set; [`check`] enforces it after parsing.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Entry {
-    api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    oauth: Option<OAuthEntry>,
+}
+
+/// `extra` is flattened so provider metadata sits beside the tokens in the file. Unknown keys
+/// are therefore kept rather than refused.
+#[derive(Serialize, Deserialize)]
+struct OAuthEntry {
+    access: String,
+    refresh: String,
+    expires_at: u64,
+    #[serde(flatten)]
+    extra: BTreeMap<String, String>,
+}
+
+/// A sign-in's token pair. Not `Debug`-derived: the values are secrets.
+#[derive(Clone, PartialEq, Eq)]
+pub struct OAuthTokens {
+    pub access: String,
+    pub refresh: String,
+    /// Unix seconds.
+    pub expires_at: u64,
+    /// Provider metadata such as `server`, `org_id` and `email`.
+    pub extra: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for OAuthTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OAuthTokens(..)")
+    }
+}
+
+impl From<&OAuthTokens> for OAuthEntry {
+    fn from(t: &OAuthTokens) -> Self {
+        OAuthEntry {
+            access: t.access.clone(),
+            refresh: t.refresh.clone(),
+            expires_at: t.expires_at,
+            extra: t.extra.clone(),
+        }
+    }
+}
+
+/// What an account has stored.
+#[derive(Clone, PartialEq, Eq)]
+pub enum StoredCredential {
+    ApiKey(String),
+    OAuth(OAuthTokens),
+}
+
+impl std::fmt::Debug for StoredCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StoredCredential::ApiKey(_) => f.write_str("ApiKey(..)"),
+            StoredCredential::OAuth(_) => f.write_str("OAuth(..)"),
+        }
+    }
 }
 
 /// `toml`'s message echoes wrongly typed values and unknown field names, either of which can be
@@ -48,25 +107,51 @@ impl Credentials {
         parse(&text, path).map(Credentials)
     }
 
-    pub fn account(&self, name: &str) -> Option<&str> {
-        non_empty(self.0.accounts.get(name))
+    pub fn account(&self, name: &str) -> Option<StoredCredential> {
+        let entry = self.0.accounts.get(name)?;
+        match (&entry.api_key, &entry.oauth) {
+            (Some(key), _) if !key.is_empty() => Some(StoredCredential::ApiKey(key.clone())),
+            (_, Some(oauth)) => Some(StoredCredential::OAuth(OAuthTokens {
+                access: oauth.access.clone(),
+                refresh: oauth.refresh.clone(),
+                expires_at: oauth.expires_at,
+                extra: oauth.extra.clone(),
+            })),
+            _ => None,
+        }
     }
 
     /// Kept apart from accounts, so an account named `telemetry` cannot shadow it.
     pub fn telemetry(&self) -> Option<&str> {
-        non_empty(self.0.telemetry.as_ref())
+        self.0
+            .telemetry
+            .as_ref()
+            .and_then(|e| e.api_key.as_deref())
+            .filter(|k| !k.is_empty())
     }
 }
 
+/// An entry holds exactly one of `api_key` and `oauth`, and `[telemetry]` only an `api_key`.
+fn check(file: &File) -> bool {
+    let one = |e: &Entry| e.api_key.is_some() != e.oauth.is_some();
+    file.accounts.values().all(one)
+        && file
+            .telemetry
+            .as_ref()
+            .is_none_or(|e| one(e) && e.oauth.is_none())
+}
+
+fn parse_toml(text: &str) -> Result<File, (usize, usize)> {
+    let file: File = toml::from_str(text).map_err(|e| line_col(text, &e))?;
+    if check(&file) { Ok(file) } else { Err((1, 1)) }
+}
+
 fn parse(text: &str, path: PathBuf) -> Result<File, ConfigError> {
-    toml::from_str(text).map_err(|e| {
-        let (line, column) = line_col(text, &e);
-        ConfigError::Credentials {
-            path,
-            line,
-            column,
-            message: MALFORMED.to_string(),
-        }
+    parse_toml(text).map_err(|(line, column)| ConfigError::Credentials {
+        path,
+        line,
+        column,
+        message: MALFORMED.to_string(),
     })
 }
 
@@ -75,6 +160,30 @@ fn parse(text: &str, path: PathBuf) -> Result<File, ConfigError> {
 pub enum Target<'a> {
     Account(&'a str),
     Telemetry,
+}
+
+/// Holds the exclusive lock on `<data_dir>/credentials.lock` until dropped. Every writer of
+/// `credentials.toml` takes it, so a rotated refresh token is never overwritten by a stale
+/// read-modify-write.
+pub struct Lock(std::fs::File);
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+/// Blocks until the lock is held.
+pub fn lock(data_dir: &Path) -> Result<Lock, ConfigError> {
+    let path = data_dir.join("credentials.lock");
+    let write_err = |source| ConfigError::Write {
+        path: path.clone(),
+        source,
+    };
+    std::fs::create_dir_all(data_dir).map_err(write_err)?;
+    let file = crate::owner_only::open(&path, true).map_err(write_err)?;
+    file.lock().map_err(write_err)?;
+    Ok(Lock(file))
 }
 
 /// Stores `secret` for `target`, keeping every other entry. Read-modify-write through the
@@ -87,6 +196,35 @@ pub fn store(data_dir: &Path, target: Target<'_>, secret: &str) -> Result<(), Co
             "the secret is empty; nothing was stored",
         ));
     }
+    let entry = Entry {
+        api_key: Some(secret.to_string()),
+        oauth: None,
+    };
+    let _lock = lock(data_dir)?;
+    write_entry(data_dir, target, entry)
+}
+
+/// Stores a sign-in's tokens for `name`, replacing whatever the account had.
+pub fn store_oauth(data_dir: &Path, name: &str, tokens: &OAuthTokens) -> Result<(), ConfigError> {
+    let lock = lock(data_dir)?;
+    store_oauth_locked(data_dir, name, tokens, &lock)
+}
+
+/// [`store_oauth`] for a caller that already holds the lock, which it proves by passing it.
+pub fn store_oauth_locked(
+    data_dir: &Path,
+    name: &str,
+    tokens: &OAuthTokens,
+    _lock: &Lock,
+) -> Result<(), ConfigError> {
+    let entry = Entry {
+        api_key: None,
+        oauth: Some(tokens.into()),
+    };
+    write_entry(data_dir, Target::Account(name), entry)
+}
+
+fn write_entry(data_dir: &Path, target: Target<'_>, entry: Entry) -> Result<(), ConfigError> {
     let path = credentials_path(data_dir);
     let read_err = |source| ConfigError::Read {
         path: path.clone(),
@@ -100,9 +238,6 @@ pub fn store(data_dir: &Path, target: Target<'_>, secret: &str) -> Result<(), Co
         Ok(text) => parse(&text, path.clone())?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => File::default(),
         Err(e) => return Err(read_err(e)),
-    };
-    let entry = Entry {
-        api_key: secret.to_string(),
     };
     match target {
         Target::Account(name) => {
@@ -118,16 +253,11 @@ pub fn store(data_dir: &Path, target: Target<'_>, secret: &str) -> Result<(), Co
     crate::owner_only::write(&path, text.as_bytes()).map_err(write_err)
 }
 
-fn non_empty(entry: Option<&Entry>) -> Option<&str> {
-    entry.map(|e| e.api_key.as_str()).filter(|k| !k.is_empty())
-}
-
 /// Schema check for `credentials.toml` text, used by the docs check.
 pub fn validate_credentials_toml(text: &str) -> Result<(), String> {
-    toml::from_str::<File>(text).map(|_| ()).map_err(|e| {
-        let (line, column) = line_col(text, &e);
-        format!("{line}:{column}: {MALFORMED}")
-    })
+    parse_toml(text)
+        .map(|_| ())
+        .map_err(|(line, column)| format!("{line}:{column}: {MALFORMED}"))
 }
 
 /// 1-based position of the error. `toml::de::Error`'s `Display` quotes the source line, which

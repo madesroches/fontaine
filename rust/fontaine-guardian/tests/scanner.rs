@@ -11,7 +11,7 @@ fn answer(verdict: &str, reason: &str) -> Value {
 }
 
 fn llm(endpoint: &Endpoint, timeout: Duration) -> LlmScanner {
-    LlmScanner::new(model_at(&endpoint.url()), timeout)
+    LlmScanner::new(model_at(&endpoint.url()), timeout, true)
 }
 
 fn failed(scan: &Scan) -> bool {

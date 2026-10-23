@@ -33,6 +33,7 @@ async fn resolve_main(world: &World, env: &dyn Fn(&str) -> Option<OsString>) -> 
         data_dir: &world.data,
         env,
         model_override: None,
+        session_id: None,
     })
     .await
     .unwrap()
@@ -69,7 +70,7 @@ async fn anthropic_uses_the_messages_wire_and_the_env_key() {
         server.uri()
     ));
     let handle = resolve_main(&w, &env_of(&[("WORK_KEY", "key-from-env")])).await;
-    assert_eq!(handle.kind, AccountKind::Anthropic);
+    assert_eq!(handle.kind, AccountKind::named("anthropic"));
     assert_eq!(handle.reference.to_string(), "work/claude-haiku-4-5");
     assert_eq!(say_hi(&handle).await, "hi from anthropic");
 }
@@ -102,7 +103,7 @@ async fn openai_uses_the_responses_wire_and_a_bearer_key() {
         "[accounts.main]\napi_key = \"stored-key\"\n",
     );
     let handle = resolve_main(&w, &env_of(&[])).await;
-    assert_eq!(handle.kind, AccountKind::OpenAi);
+    assert_eq!(handle.kind, AccountKind::named("openai"));
     assert!(handle.priced(), "gpt-4o-mini has a catalog price");
     assert_eq!(say_hi(&handle).await, "hi from openai");
 }
@@ -128,7 +129,7 @@ async fn gemini_uses_generate_content_with_the_key_in_the_query() {
         server.uri()
     ));
     let handle = resolve_main(&w, &env_of(&[("GEM", "gem-key")])).await;
-    assert_eq!(handle.kind, AccountKind::Gemini);
+    assert_eq!(handle.kind, AccountKind::named("gemini"));
     assert_eq!(say_hi(&handle).await, "hi from gemini");
 }
 
@@ -152,7 +153,7 @@ async fn ollama_uses_the_native_chat_route_without_a_key() {
         server.uri()
     ));
     let handle = resolve_main(&w, &env_of(&[])).await;
-    assert_eq!(handle.kind, AccountKind::Ollama);
+    assert_eq!(handle.kind, AccountKind::named("ollama"));
     assert_eq!(say_hi(&handle).await, "hi from ollama");
     let requests = server.received_requests().await.unwrap();
     assert!(
@@ -181,7 +182,7 @@ async fn openai_compatible_uses_chat_completions_and_is_unpriced() {
         server.uri()
     ));
     let handle = resolve_main(&w, &env_of(&[])).await;
-    assert_eq!(handle.kind, AccountKind::OpenAiCompatible);
+    assert_eq!(handle.kind, AccountKind::named("openai-compatible"));
     // The model id keeps its own slash: the account is whatever precedes the first one.
     assert_eq!(handle.reference.account, "gw");
     assert_eq!(handle.reference.model, "openai/gpt-4o-mini");
@@ -233,14 +234,15 @@ async fn the_guardian_model_may_sit_on_another_account() {
         data_dir: &w.data,
         env: &env,
         model_override: None,
+        session_id: None,
     })
     .await
     .unwrap();
-    assert_eq!(resolved.main.kind, AccountKind::Ollama);
+    assert_eq!(resolved.main.kind, AccountKind::named("ollama"));
     let Some(GuardianModel::Ready(guardian)) = resolved.guardian else {
         panic!("the guardian is ready: {:?}", resolved.guardian);
     };
-    assert_eq!(guardian.kind, AccountKind::Anthropic);
+    assert_eq!(guardian.kind, AccountKind::named("anthropic"));
     assert_eq!(guardian.reference.to_string(), "safety/claude-haiku-4-5");
 }
 
@@ -268,6 +270,7 @@ async fn resolve_listed(
             data_dir: &w.data,
             env,
             model_override: None,
+            session_id: None,
         },
         list,
     )
@@ -291,6 +294,7 @@ async fn an_empty_list_means_the_main_model_judges_with_a_one_time_notice() {
                 data_dir: &w.data,
                 env: &env_of(&[]),
                 model_override: None,
+                session_id: None,
             })
             .await
             .unwrap()
@@ -437,6 +441,7 @@ fn the_switcher_offers_the_validated_and_the_explicit_models_the_accounts_have()
         w.load().unwrap(),
         w.data.clone(),
         std::sync::Arc::new(|name: &str| (name == "CLOUD_KEY").then(|| OsString::from("k"))),
+        None,
     );
     let main = ModelRef::parse("main/qwen3:4b").unwrap();
     let names: Vec<String> = switcher
@@ -487,7 +492,7 @@ async fn a_handle_over_a_scripted_model_answers_without_any_endpoint() {
     let script = MockCompletionModel::default();
     let handle = ModelHandle::new(
         ModelRef::parse("test/scripted").unwrap(),
-        AccountKind::OpenAiCompatible,
+        AccountKind::named("openai-compatible"),
         script.into(),
     );
     assert!(!handle.priced());
