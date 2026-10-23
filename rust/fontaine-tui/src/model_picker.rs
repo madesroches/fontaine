@@ -236,15 +236,14 @@ impl ModelPicker {
         match key.code {
             KeyCode::Esc => return PickerKey::Close,
             KeyCode::Enter => {
+                // The current model is picked too: that is how a model given by `--model`, or
+                // one the settings file no longer names, becomes the saved default.
                 let mut picked = self.visible().into_iter().filter_map(|row| match row {
-                    Row::Model {
-                        reference, current, ..
-                    } => Some((reference, current)),
+                    Row::Model { reference, .. } => Some(reference),
                     _ => None,
                 });
                 return match picked.nth(self.selected) {
-                    Some((_, true)) => PickerKey::Close,
-                    Some((reference, false)) => PickerKey::Pick(self.purpose, reference),
+                    Some(reference) => PickerKey::Pick(self.purpose, reference),
                     None => PickerKey::None,
                 };
             }
@@ -671,14 +670,12 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_the_current_model_closes_and_open_preselects_it() {
+    fn open_preselects_the_current_model_and_enter_picks_it() {
         let mut p = picker(&[], two_accounts());
-        assert_eq!(p.handle_key(key(KeyCode::Enter)), PickerKey::Close);
-        p.handle_key(key(KeyCode::Up));
-        assert!(matches!(
+        assert_eq!(
             p.handle_key(key(KeyCode::Enter)),
-            PickerKey::Pick(..)
-        ));
+            PickerKey::Pick(PickerPurpose::Main, "cloud/sonnet".into())
+        );
     }
 
     #[test]

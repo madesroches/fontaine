@@ -538,6 +538,34 @@ async fn guardian_model_pins_the_guardian_and_saves_the_choice() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn picking_the_current_guardian_saves_it() {
+    let config = "[accounts.cloud]\nkind = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9\"\nmodels = [\"judge-b\"]\n";
+    let w = World::new(vec![])
+        .with_config(config)
+        .with_guardian(vec![verdict("allow", "allow", 0.9)]);
+    let user_config = w.user_config.clone();
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/guardian-model cloud/judge-b");
+        ui.wait_for("guardian is now cloud/judge-b").await;
+        // The live guardian is now one the settings file does not name, as after a session-only
+        // change.
+        std::fs::write(&user_config, config).unwrap();
+        ui.send("/guardian-model");
+        ui.wait_until("the picker", |_| ui.live().contains("judge-b (current)"))
+            .await;
+        ui.press(KeyCode::Enter);
+        ui.wait_until("the guardian to be saved again", |screen| {
+            screen.matches("guardian is now cloud/judge-b").count() == 2
+        })
+        .await;
+    })
+    .await;
+    let saved = std::fs::read_to_string(&w.user_config).unwrap();
+    assert!(saved.contains("model = \"cloud/judge-b\""), "{saved}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_unavailable_pinned_guardian_offers_retry_another_or_manual() {
     let alt = verdict_endpoint(verdict("allow", "allow", 0.95)).await;
     let config = format!(
@@ -576,7 +604,8 @@ async fn an_unavailable_pinned_guardian_offers_retry_another_or_manual() {
         ui.press(KeyCode::Enter);
         ui.wait_for("first done").await;
         assert!(
-            ui.screen().contains("guardian is now cloud/flash"),
+            ui.screen()
+                .contains("guardian is now cloud/flash (saved to your settings)"),
             "{}",
             ui.screen()
         );
@@ -584,6 +613,9 @@ async fn an_unavailable_pinned_guardian_offers_retry_another_or_manual() {
     .await;
     assert!(w.work.join("picked.txt").exists());
     assert_eq!(alt.received_requests().await.unwrap().len(), 1);
+    let saved = std::fs::read_to_string(&w.user_config).unwrap();
+    assert!(saved.contains("[guardian]"), "{saved}");
+    assert!(saved.contains("model = \"cloud/flash\""), "{saved}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

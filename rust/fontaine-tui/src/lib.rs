@@ -854,13 +854,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
             },
             UnavailableAnswer::Pick(reference) => match runtime.use_guardian(&reference) {
-                Ok(true) => {
-                    self.app
-                        .transcript
-                        .notice(format!("guardian is now {reference} for this session"));
+                Ok(Some(switched)) => {
+                    self.remember_model(PickerPurpose::Guardian, &switched.reference);
+                    self.finish_switch(
+                        format!("guardian is now {}", switched.reference),
+                        switched.persist_error,
+                    );
                     UnavailableChoice::Retry
                 }
-                Ok(false) => {
+                Ok(None) => {
                     self.app
                         .transcript
                         .error(format!("{reference} is unavailable too"));

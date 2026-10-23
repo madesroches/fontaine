@@ -982,12 +982,25 @@ impl AgentRuntime {
         Ok(matches!(model, GuardianModel::Ready(_)))
     }
 
-    /// Switches the guardian for this session only, without saving it: the "pick another"
-    /// answer to an unavailable guardian.
-    pub fn use_guardian(&self, text: &str) -> Result<bool, String> {
+    /// The "pick another" answer to an unavailable guardian: switches the guardian and, when it
+    /// can be asked, saves it as `[guardian] model`. `None` when the pick is unavailable too,
+    /// which is not saved so the next session does not open on it.
+    ///
+    /// It takes `&self` because it answers a prompt raised mid-turn, so the runtime's own record
+    /// of the guardian is not updated; the live guardian is the gate state's.
+    pub fn use_guardian(&self, text: &str) -> Result<Option<Switched>, String> {
         let model = self.guardian_for(text)?;
         self.install_guardian(&model);
-        Ok(matches!(model, GuardianModel::Ready(_)))
+        if !matches!(model, GuardianModel::Ready(_)) {
+            return Ok(None);
+        }
+        let reference = model.reference().to_string();
+        let persist_error = self.persist(|path| user_config::set_guardian_model(path, &reference));
+        Ok(Some(Switched {
+            reference,
+            guardian_followed: false,
+            persist_error,
+        }))
     }
 
     /// Guardian models to offer in place of an unavailable one.

@@ -157,7 +157,7 @@ unknown account), nothing is substituted silently. A prompt offers:
 
 - `r` retry: look the pinned model up again, for when its credential has appeared.
 - `p` pick another validated guardian: the models of `guardian_models.toml` and the models your
-  accounts list explicitly, for this session. `/guardian-model` makes the choice permanent.
+  accounts list explicitly. The pick is saved as `[guardian] model`, so later sessions use it too.
 - `m` switch the session to `manual` and ask you about this call.
 - `n` leave the call denied.
 
@@ -189,8 +189,8 @@ narrowing as you type; a skill marked `user-invocable: false` does not appear.
 
 `/model` with no argument opens an overlay above the message box. The first line shows the current
 model and the guardian. Below it, the models of every configured account sit under a heading per
-account, sorted by account name, and the current model is marked `(current)`. A `Recent` group
-comes first with the models you switched to lately, up to five. They are kept in
+account, sorted by account name, and the current model is marked `(current)` and selected. A
+`Recent` group comes first with the models you switched to lately, up to five. They are kept in
 `recent_models.json` in the data directory, separately for `/model` and `/guardian-model`, and an
 entry drops out when its account no longer offers the model.
 
@@ -199,7 +199,9 @@ better matches (contiguous runs, a match at the start of a model id or after `/ 
 Every printable key is text, including `j`, `k` and `q`. Backspace deletes. Up and Down move between
 models, skipping headings and wrapping around. Enter switches exactly as `/model <account>/<model>`
 does, so the choice is saved, the guardian follows only when it is on the main-model fallback, and
-the model joins Recent. Esc closes the overlay without switching.
+the model joins Recent. That holds for the current model too: Enter on it saves it as the
+default, for when it came from `--model` or the settings file no longer names it. Esc closes the
+overlay without switching.
 
 An account lists its models from its `models` setting when it has one, and from the provider
 otherwise. The first time the overlay opens in a session it asks the accounts that have to be
