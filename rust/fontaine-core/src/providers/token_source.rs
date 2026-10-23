@@ -60,13 +60,6 @@ impl TokenError {
             kind: Box::new(kind),
         }
     }
-
-    pub fn is_signed_out(&self) -> bool {
-        matches!(
-            *self.kind,
-            TokenErrorKind::SignedOut | TokenErrorKind::NoSignIn
-        )
-    }
 }
 
 impl fmt::Display for TokenError {

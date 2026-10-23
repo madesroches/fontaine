@@ -122,7 +122,7 @@ async fn a_dead_refresh_token_says_to_sign_in_again() {
         tokens("at-1", "rt-1", now_unix().saturating_sub(10)),
     );
     let err = source.token().await.unwrap_err();
-    assert!(err.is_signed_out());
+    assert!(err.to_string().contains("has ended"), "{err}");
     assert!(err.to_string().contains("fontaine auth login go"), "{err}");
 }
 

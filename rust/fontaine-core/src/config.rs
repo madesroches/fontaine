@@ -42,8 +42,8 @@ pub enum ConfigError {
     /// the offending line, which here would be the key.
     Credentials {
         path: PathBuf,
-        line: usize,
-        column: usize,
+        /// `None` for structural failures, which have no single source position.
+        position: Option<(usize, usize)>,
         message: String,
     },
     /// A value that parses but is not acceptable.
@@ -112,14 +112,16 @@ impl fmt::Display for ConfigError {
             }
             ConfigError::Credentials {
                 path,
-                line,
-                column,
+                position,
                 message,
-            } => write!(
-                f,
-                "invalid credentials file {}:{line}:{column}: {message}",
-                path.display()
-            ),
+            } => match position {
+                Some((line, column)) => write!(
+                    f,
+                    "invalid credentials file {}:{line}:{column}: {message}",
+                    path.display()
+                ),
+                None => write!(f, "invalid credentials file {}: {message}", path.display()),
+            },
             ConfigError::Scope {
                 path,
                 column,

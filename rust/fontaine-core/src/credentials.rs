@@ -141,16 +141,15 @@ fn check(file: &File) -> bool {
             .is_none_or(|e| one(e) && e.oauth.is_none())
 }
 
-fn parse_toml(text: &str) -> Result<File, (usize, usize)> {
-    let file: File = toml::from_str(text).map_err(|e| line_col(text, &e))?;
-    if check(&file) { Ok(file) } else { Err((1, 1)) }
+fn parse_toml(text: &str) -> Result<File, Option<(usize, usize)>> {
+    let file: File = toml::from_str(text).map_err(|e| Some(line_col(text, &e)))?;
+    if check(&file) { Ok(file) } else { Err(None) }
 }
 
 fn parse(text: &str, path: PathBuf) -> Result<File, ConfigError> {
-    parse_toml(text).map_err(|(line, column)| ConfigError::Credentials {
+    parse_toml(text).map_err(|position| ConfigError::Credentials {
         path,
-        line,
-        column,
+        position,
         message: MALFORMED.to_string(),
     })
 }
@@ -257,7 +256,10 @@ fn write_entry(data_dir: &Path, target: Target<'_>, entry: Entry) -> Result<(), 
 pub fn validate_credentials_toml(text: &str) -> Result<(), String> {
     parse_toml(text)
         .map(|_| ())
-        .map_err(|(line, column)| format!("{line}:{column}: {MALFORMED}"))
+        .map_err(|position| match position {
+            Some((line, column)) => format!("{line}:{column}: {MALFORMED}"),
+            None => MALFORMED.to_string(),
+        })
 }
 
 /// 1-based position of the error. `toml::de::Error`'s `Display` quotes the source line, which

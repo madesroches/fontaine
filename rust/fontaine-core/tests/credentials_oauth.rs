@@ -76,6 +76,7 @@ fn an_entry_with_both_or_neither_is_malformed_and_never_echoes_values() {
         assert!(!err.contains("sk-abc123"), "{err}");
         let err = validate_credentials_toml(body).unwrap_err();
         assert!(!err.contains("sk-abc123"), "{err}");
+        assert!(!err.contains("1:1"), "{err}");
     }
 }
 
