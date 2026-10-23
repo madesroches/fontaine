@@ -35,7 +35,7 @@ grouping, the filter box and the Recent group come from opencode's model dialog.
   `(title, body, footer)`, and `draw_overlay` renders the body's **tail** when it is too tall.
   `DeniedList` (`denials.rs`) and `AgentsPanel` are the list-with-selection precedents. Their
   `handle_key` returns a small enum that `App` maps to an `Action`, and the driver dispatches
-  that `Action` in its idle loop (`lib.rs:302`) and in two in-turn loops (`lib.rs:464`, `:592`,
+  that `Action` in its idle loop (`lib.rs:302`) and in three in-turn loops (`lib.rs:464`, `:592`,
   `:858`), which must stay exhaustive.
 - Persistence precedent: `fontaine-tui/src/history.rs` keeps an owner-only file under
   `data_dir` (`lib.rs:961`). When the file cannot be used, it degrades to in-memory and reports
@@ -53,6 +53,7 @@ grouping, the filter box and the Recent group come from opencode's model dialog.
 /// One configured account's models, or why they could not be listed.
 pub struct AccountListing {
     pub account: String,
+    pub kind: AccountKind,
     pub models: Result<Vec<String>, String>,
 }
 ```
@@ -67,7 +68,10 @@ visits every account in `config.accounts` order:
 - Otherwise, `client_for` → `client.list()`. An `Err` from `client_for` (missing credential,
   not signed in) or from the listing call (rendered with `with_causes`) becomes `Err(reason)`.
   These listings run concurrently (`futures::future::join_all`), each under
-  `LISTING_TIMEOUT = 10 s` (`tokio::time::timeout`). A timeout becomes
+  `LISTING_TIMEOUT = 10 s` (`tokio::time::timeout`). `listings` delegates to
+  `pub async fn listings_within(main, timeout)` (documented "Tests only", like
+  `with_request_timeout` in `providers/device_flow.rs`), which `listings` calls with
+  `LISTING_TIMEOUT`. A timeout becomes
   `Err("listing timed out after 10 s")`.
 
 A failed account keeps its entry, so its heading still shows. `Sources::load` failing makes
@@ -100,7 +104,7 @@ pub struct ModelPicker {
     query: String,
     selected: usize,           // index into the visible *model* rows
 }
-struct Group { account: String, models: Result<Vec<String>, String> }
+struct Group { account: String, kind: AccountKind, models: Result<Vec<String>, String> }
 
 pub enum PickerKey { None, Close, Pick(PickerPurpose, String) }
 ```
@@ -113,25 +117,29 @@ pub enum PickerKey { None, Close, Pick(PickerPurpose, String) }
   guardian mode, Recent keeps only entries that are among the candidates.
 - **Filter.** A case-insensitive fuzzy subsequence match on `account/model`. Matching models
   are ordered by score: contiguous runs and matches at the start of the model id or after
-  `/ - _ .` score higher, and config or listing order breaks ties. A heading stays while any of
+  `/ - _ .` score higher, and config or listing order breaks ties. `(current)` marking and
+  Recent pruning match with `kind.provider().lists(models, id)`, not plain equality, because
+  providers accept aliases (Ollama's bare `llama3` for the listed `llama3:latest`). A heading stays while any of
   its models match. A failed account stays when the query matches its account name or the
   query is empty. Recent filters the same way. The matcher is a small pure function in the
   module, and no crate is added.
 - **Keys.**
-  - Printable characters edit `query` (so `j`/`k`/`q` are text here, unlike the other panels),
-    and Backspace deletes.
+  - Printable characters without CONTROL or ALT edit `query` (SHIFT is allowed; other modified
+    characters are ignored, as in `search_key`, `app.rs:321`, because the picker is routed
+    before the Ctrl-T and Ctrl-D checks). `j`/`k`/`q` are text here, unlike the other panels.
+    Backspace deletes.
   - Up/Down move between model rows only, skipping headings and wrapping around. The selection
     resets to the first match when the query changes.
   - Enter returns `Pick(purpose, "<account>/<model>")` when there is a selection.
   - Esc returns `Close`. Release events are ignored.
   - Ctrl-C keeps its global meaning through `App::handle_key`.
-- **Rendering.** `body(width)` emits `header`, a `filter: <query>▏` line, then the rows. The
+- **Rendering.** `body(width)` emits `header`, then the rows. The
   selected row is bold and reversed. The current model gets a trailing `(current)`. A model row
   is `  <model>` under its heading; a Recent row is `  <account>/<model>`. Because
   `draw_overlay` shows the tail of a long body, the picker windows its own rows to
   `MAX_ROWS = 14` around the selection, keeping the selected row's heading visible when it
-  fits, so `body` never exceeds what the overlay shows. `footer()`:
-  `type to filter · ↑/↓ select · Enter switch · Esc cancel`. With no matches the body says
+  fits. `footer()` carries the `filter: <query>▏` line, since the footer is always laid out in
+  full, followed by `type to filter · ↑/↓ select · Enter switch · Esc cancel`. With no matches the body says
   `no model matches "<query>"`.
 
 ### TUI: recent models (`fontaine-tui/src/recent.rs`, new)
@@ -148,7 +156,8 @@ capped at `RECENT_CAP = 5`.
 Every successful switch records it: `/model <ref>`, `/guardian-model <ref>` and picks from the
 picker. The guardian list is recorded only when the guardian ends up ready, not when it is
 unavailable. Recording happens in `Driver::model` and `Driver::guardian_model` after `Ok`, so
-the argument form and the picker share it. The picker form is the argument form.
+the argument form and the picker share it. The picker form is the argument form. The recorded
+value is `ModelRef::parse(&switched.reference)`, since `Switched.reference` is a `String`.
 
 ### Wiring (`app.rs`, `lib.rs`, `view.rs`)
 
@@ -164,7 +173,8 @@ the argument form and the picker share it. The picker form is the argument form.
      recent `main` list and the groups.
 - `Driver::guardian_model` with an empty argument opens the picker with
   `PickerPurpose::Guardian`. Its groups are `guardian_candidates()` grouped by account, and
-  `current` is the guardian's reference. The header keeps the unavailable reason when there is
+  `current = ModelRef::parse(runtime.state.guardian().label())` (`None` for `"none"`), because
+  `runtime.models.guardian` goes stale after `use_guardian`/`retry_guardian`. The header keeps the unavailable reason when there is
   one. An empty candidate list keeps today's one-line notice, since there is nothing to pick.
 - Idle loop `Action::PickModel(Main, r)` → `self.model(runtime, &r).await`.
   `Action::PickModel(Guardian, r)` → `self.guardian_model(runtime, &r)`. Persistence, the
@@ -181,8 +191,8 @@ the argument form and the picker share it. The picker form is the argument form.
 ## Implementation Steps
 
 1. **Core listings.** Add `AccountListing`, `LISTING_TIMEOUT` and `Switcher::listings` in
-   `models.rs`. Add the `listings` cache and `model_listings` in `agent.rs`, and re-export from
-   the crate root if `Switcher` is.
+   `models.rs`. Add the `listings` cache and `model_listings` in `agent.rs`, reached as
+   `fontaine_core::models::AccountListing`; no crate-root re-export.
 2. **Recent store.** Create `fontaine-tui/src/recent.rs`, load it next to the history in
    `lib.rs` (`setup.data_dir.join("recent_models.json")`), and show a load error once in the
    transcript.
@@ -194,7 +204,8 @@ the argument form and the picker share it. The picker form is the argument form.
    picker, and record recents after successful switches.
 5. **Docs.** Update `docs/tui.md` (command table rows 178–179, plus a short "Choosing a model"
    subsection covering the keys, grouping, Recent, failed accounts and the 10 s listing
-   timeout). Add a master-plan `## Decisions` line (see Decisions).
+   timeout), and `docs/configuration.md` (a `<data dir>/recent_models.json` row, owner-only, in
+   the data-directory file list). Add a master-plan `## Decisions` line (see Decisions).
 6. **Tests** (see Testing Strategy), then `cargo fmt --check`,
    `cargo clippy --all-targets -- -D warnings`, `cargo test`, and the Windows clippy check.
 
@@ -208,6 +219,7 @@ the argument form and the picker share it. The picker form is the argument form.
 - `rust/fontaine-tui/src/app.rs`, `lib.rs`, `view.rs`
 - `rust/fontaine-tui/tests/tui.rs`: picker flows, and the updated no-argument assertions
 - `docs/tui.md`
+- `docs/configuration.md`: `recent_models.json` row
 - `tasks/fontaine_harness_plan.md`: `## Decisions`
 
 ## Trade-offs
@@ -246,6 +258,9 @@ add a "Choosing a model" subsection covering the overlay's keys, the account gro
 (stored in `recent_models.json` in the data directory), failed-account headings and the
 listing timeout.
 
+`docs/configuration.md`: add a `<data dir>/recent_models.json` row (owner-only) next to
+`trust.toml`, `credentials.toml` and `history.jsonl`.
+
 ## Testing Strategy
 
 Unit (`model_picker.rs`):
@@ -258,6 +273,8 @@ Unit (`model_picker.rs`):
 - Enter returns `Pick` with the full reference, and returns nothing when nothing matches.
   Esc returns `Close`. `j`/`q` are typed into the filter.
 - `(current)` marks the current model in both Recent and its account group.
+- An Ollama-kind group: after switching to bare `local/llama3`, the `llama3:latest` row is
+  marked `(current)` and its Recent entry is not pruned.
 - Windowing keeps the selected row inside `MAX_ROWS` for a long list, including a selection
   past the first window.
 - Guardian mode's Recent keeps only candidates.
@@ -277,8 +294,9 @@ Integration (`fontaine-core/tests/models.rs`, wiremock):
 - Another OpenAI-compatible account is listed via `/models`.
 - A 500 response gives `Err` with the cause, and an account with no credential gives the
   `client_for` reason. The order follows config.
-- A delayed response beyond a shortened timeout gives the timeout reason. The timeout is a
-  parameter of a crate-private helper so the test does not wait 10 s.
+- A delayed response beyond a shortened timeout gives the timeout reason. The test calls
+  `Switcher::listings_within` with a short timeout on a real clock plus a wiremock
+  `set_delay`, not paused time, so it does not wait 10 s.
 
 These run against a wiremock HTTP server rather than a fake client, because the listing goes
 through the real provider client's request and error mapping.
