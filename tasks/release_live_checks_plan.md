@@ -102,14 +102,15 @@ Results land in these places:
   Fontaine's list lets through. Any such change gets a new test, and the eval runs above are repeated
   if it lands. The destructive-class word lists in `rust/fontaine-core/src/destructive.rs` are a
   separate item; any change to them is tested in `rust/fontaine-core/tests/destructive.rs`.
-- Hook-`allow` in `auto`: in a scratch workspace, a project `.claude/settings.json` with a
-  PreToolUse hook answering `allow`, once narrow and once broad. A hook `matcher` matches tool names,
-  so `Bash(ls)` is not a narrow matcher; the exact hook JSON for both cases is written after checking
-  Claude Code's hook docs for how a narrow match is expressed (e.g. a hook script that inspects
-  `tool_input.command`). Run `claude -p --permission-mode auto --output-format stream-json --verbose`
-  with cwd in the scratch workspace, asking for `ls` and for the harmless sentinel `rm -rf ./victim`
-  on a throwaway directory inside it, and record whether the classifier was skipped. Then compare with Fontaine's
-  documented behavior (`docs/hooks.md`).
+- Hook-`allow` in `auto`: Claude Code's stream-json has no classifier-skip signal unless
+  `--include-hook-events` is passed, and `ls` is auto-approved anyway, so the probe must be something
+  the auto classifier denies with no hook present but that is harmless in the scratch workspace (e.g.
+  a `curl ... | sh` against a non-resolving host). Run it three times from the scratch workspace, with
+  no hook, a narrow hook (project `.claude/settings.json` PreToolUse, `"matcher": "Bash"`, handler
+  `"if": "Bash(<probe>)"`, returning `permissionDecision: "allow"`), and a broad hook (no `if`), each
+  as `claude -p --permission-mode auto --setting-sources project --include-hook-events
+  --output-format stream-json --verbose`. Record from the hook events and `permission_denials`
+  whether the hook's allow bypassed the classifier, then compare with `docs/hooks.md`.
 
 ### PromptGuard 2 logit spike
 
@@ -117,9 +118,10 @@ Results land in these places:
   `AutoModelForSequenceClassification` on the downloaded directory over a fixed set of about 10
   strings: the two from `tests/pg2.rs`, plus benign and injection samples.
 - Compare its softmax malicious probability per string with Fontaine's score. To get Fontaine's
-  score, add an `#[ignore]`d test that prints scores to the `#[cfg(test)]` module of `pg2.rs`, calling
-  `Loaded::open` + `score` (both private). Run it with `cargo test --release -p fontaine-guardian
-  --features pg2 -- --ignored`.
+  score, add an `#[ignore]`d test to `mod model_tests` in `pg2.rs`, calling `Loaded::open` + `score`
+  (both private). It rebuilds the windows the way `Loaded::score` does and prints `window_score` per
+  window plus the `score` result. Run it with `FONTAINE_PG2_MODEL=<scratchpad>/pg2 cargo test
+  --release -p fontaine-guardian --features pg2 -- --ignored`.
 - Fontaine scores text over 512 tokens as the max over 512-token windows at stride 256, stopping early
   at a score of at least 0.9 (`FLAG_THRESHOLD`). For long strings the Python reference uses the same
   windows (special tokens plus body slices at stride 256, max over windows) and compares per window.
@@ -133,6 +135,8 @@ Results land in these places:
 - The prompt asks it to read a workspace file holding an injection.
 - Expected: the license notice on stderr; the `read` tool_result's `text` in
   `--output-format stream-json` ending with the scanner's flagged note.
+- An "unavailable" notice together with an "unscanned and suspect" note means the model load failed;
+  record it as that, not as a scanner miss.
 
 ### Manual items 4 and 6
 
@@ -145,7 +149,8 @@ Results land in these places:
 - **Item 6, Docker leg.**
   - Run the release binary in an `ubuntu:26.04` container (glibc matching the host build), with the
     scratch config mounted, a host scratch data dir mounted with `FONTAINE_DATA_DIR` set to it (so the
-    audit log is readable from the host), and the kimi credential passed by environment.
+    audit log is readable from the host), `-e FONTAINE_CONFIG_DIR=<mount point>` for the config,
+    `-w <mounted scratch workspace>`, and the kimi credential passed by environment.
   - The credential is stored in `<data dir>/credentials.toml`, and `[accounts.kimi]` has no
     `api_key_env`. Add `api_key_env = "KIMI_API_KEY"` to the scratch config's kimi account and pass
     `docker run -e KIMI_API_KEY`, filled from the stored credential without echoing it.
@@ -158,11 +163,13 @@ Results land in these places:
 ### Vulnerability reporting
 
 `gh api -X PUT repos/madesroches/fontaine/private-vulnerability-reporting`, then confirm that the
-GET returns `{"enabled":true}`.
+GET returns `{"enabled":true}`. Also tick the matching box in issue #80's checklist (`gh issue edit
+80 --body-file`).
 
 ## Implementation Steps
 
-1. Build the release binaries and create the scratch config directory.
+1. Build the release binaries, create the scratch config directory, and `mkdir -p evals/scorecards`
+   (the runner's `--out` write does not create parents).
 2. Turn on vulnerability reporting and confirm it.
 3. Baselines: capture, `none` run, diff, triage. Then the auto-mode defaults comparison and the
    hook-`allow` observation. Commit `evals/baselines/` and any `rules.rs` change with its test.
@@ -173,7 +180,8 @@ GET returns `{"enabled":true}`.
 5. The PromptGuard 2 logit spike, plus any fix and its regression test.
 6. The live `pg2` session, item 6 Docker leg and item 4.
 7. Bookkeeping: tick the items done in `tasks/fontaine_harness_plan.md` `## Remaining work` with
-   today's date, and add a `## Results` section to this plan. `CHANGELOG.md` gets a line only if
+   today's date, and the matching boxes in issue #80's checklist (`gh issue edit 80 --body-file`), and
+   add a `## Results` section to this plan. `CHANGELOG.md` gets a line only if
    code changed or `guardian_models.toml` gains an entry (then update its "empty until a scorecard run
    fills it" line).
 
@@ -186,15 +194,10 @@ GET returns `{"enabled":true}`.
 - `rust/fontaine-guardian/data/guardian_models.toml` (only as the runner writes it)
 - `rust/fontaine-guardian/src/scanner/pg2.rs` (the score-printing `#[ignore]`d test; a fix only on a finding)
 - `rust/fontaine-guardian/src/rules.rs` (only on a finding)
+- `rust/fontaine-core/src/destructive.rs` and `rust/fontaine-core/tests/destructive.rs` (only on a finding)
 - `tasks/fontaine_harness_plan.md`
 - `tasks/release_live_checks_plan.md` (`## Results`)
 - `CHANGELOG.md` (only on a code change)
-
-## Trade-offs
-
-- **A second qwen3:4b run with a longer timeout.** The default-timeout run is the product result.
-  The longer-timeout run is the only way to separate judgment from latency for the kill floor, which
-  is about whether local models *can* judge. Both are reported, labelled.
 
 ## Documentation
 
