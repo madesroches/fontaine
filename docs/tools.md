@@ -117,6 +117,7 @@ are resolved.
 - It never follows a redirect to another host. The new URL is returned to the model, which may
   ask for it. Redirects within one host are followed.
 - It identifies itself with the User-Agent `fontaine/<version> (+https://github.com/madesroches/fontaine)`.
+- It asks for `text/markdown, text/html, */*`, so a site that can serve markdown sends it.
 - It has no `prompt` argument and does no summarizing.
 
 ## Permissions

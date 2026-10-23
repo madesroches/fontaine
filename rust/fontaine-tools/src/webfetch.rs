@@ -18,6 +18,9 @@ const USER_AGENT: &str = concat!(
     " (+https://github.com/madesroches/fontaine)"
 );
 
+/// Claude Code's WebFetch value, so sites tuned for it respond the same way.
+const ACCEPT: &str = "text/markdown, text/html, */*";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebfetchConfig {
     pub timeout: Duration,
@@ -51,8 +54,14 @@ pub struct Webfetch {
 
 impl Webfetch {
     pub fn new(config: WebfetchConfig) -> Result<Self, reqwest::Error> {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::ACCEPT,
+            reqwest::header::HeaderValue::from_static(ACCEPT),
+        );
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
+            .default_headers(headers)
             .redirect(reqwest::redirect::Policy::none())
             .timeout(config.timeout)
             .build()?;

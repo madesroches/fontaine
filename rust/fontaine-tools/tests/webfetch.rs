@@ -3,7 +3,7 @@ use std::time::Duration;
 use fontaine_tools::webfetch::{Webfetch, WebfetchArgs, WebfetchConfig};
 use rig_core::tool::{Tool, ToolContext, ToolErrorKind};
 use serde_json::json;
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{header, headers, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn config() -> WebfetchConfig {
@@ -184,6 +184,28 @@ async fn a_same_host_redirect_is_followed() {
         .await
         .unwrap();
     assert_eq!(out, "moved");
+}
+
+#[tokio::test]
+async fn same_host_redirects_keep_the_accept_header() {
+    let server = MockServer::start().await;
+    let accept = || headers("accept", vec!["text/markdown", "text/html", "*/*"]);
+    Mock::given(method("GET"))
+        .and(path("/a"))
+        .and(accept())
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/b"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/b"))
+        .and(accept())
+        .respond_with(ResponseTemplate::new(200).set_body_raw(b"negotiated".to_vec(), "text/plain"))
+        .mount(&server)
+        .await;
+    let out = fetch(config(), &format!("{}/a", server.uri()))
+        .await
+        .unwrap();
+    assert_eq!(out, "negotiated");
 }
 
 #[tokio::test]
