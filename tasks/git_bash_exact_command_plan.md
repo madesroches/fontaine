@@ -109,9 +109,11 @@ pub struct ShellTool {
 
 - `NAME = Shell::NAME` and `Args = ShellArgs`. `description`, `parameters` and `annotations`
   delegate to `self.shell`, so the model-facing definition is unchanged.
-- `prepared(&self, args) -> (Shell, ShellArgs)`: when `through_env`, a clone of `self.shell`
-  whose launcher has `with_env(COMMAND_VAR, args.command)`, and `args` with `command` replaced by
-  `RUN_COMMAND_VAR`. Otherwise the shell and the args unchanged.
+- `prepared(&self, args) -> (Shell, ShellArgs)`: calls `sh_command(&args.command,
+  self.through_env)`, so hooks and the shell tool share one route. When it returns an `env`, a
+  clone of `self.shell` whose launcher has `with_env(name, value)` (`Launcher::with_env` takes
+  `impl Into<OsString>`; rig applies env after unset_env), and `args` with `command` replaced by
+  `script`. Otherwise the shell and the args unchanged.
 - `call` runs `prepared` and then rig's `Shell::call`, so the `ExitStatus` and `OutputCut` results
   are still inserted into the context. `pub async fn run(&self, args)` does the same with
   `Shell::run`, for `run_user_shell`.
@@ -119,10 +121,7 @@ pub struct ShellTool {
 
 The rewrite happens inside the gated tool, after `GuardedTool` has run the floor, the hooks, the
 guardian and the audit on the original `args`. What they judge and what Git Bash runs are the same
-text. `user_shell.rs` changes no code beyond the type it gets from `shell_for`.
-
-Linux and macOS keep `sh -c <command>`. Nothing re-parses their command line, and the plain form
-matches Claude Code's.
+text. `user_shell.rs` needs no change.
 
 ## Implementation Steps
 
@@ -132,31 +131,31 @@ matches Claude Code's.
 2. `rust/fontaine-core/src/user_hooks.rs`: run the hook through `sh_command`.
 3. `rust/fontaine-tools/src/builtins.rs`: add `ShellTool`. `shell_for` returns it, and `build`
    registers it.
-4. `rust/fontaine-core/src/user_shell.rs`: keep the `.run(...)` call working against `ShellTool`
-   (no other change expected).
-5. `rust/fontaine-tools/tests/choke_point.rs`: read the fields through `.shell`, and assert
+4. `rust/fontaine-tools/tests/choke_point.rs`: read the fields through `.shell`, and assert
    `through_env` follows `git_bash`.
-6. Remove the test workarounds: delete `command_path` from `rust/fontaine/tests/common/mod.rs` and
+5. Remove the test workarounds: delete `command_path` from `rust/fontaine/tests/common/mod.rs` and
    `rust/fontaine-tui/tests/agents.rs`, and put the paths into the hook commands as they were before
    73e121a / de65b56 (`git show` those commits for the original lines). These tests then fail on
-   Windows CI again if the fix regresses.
-7. Add the tests in **Testing Strategy**.
-8. Record the deviation in `tasks/fontaine_harness_plan.md` `## Decisions` (see **Decisions**).
-9. Docs (see **Documentation**).
+   Windows CI again if the fix regresses. The TUI test world
+   (`rust/fontaine-tui/tests/common/mod.rs:313`) builds `AgentSetup { git_bash: None, .. }`, so hooks
+   would still take the command-line route; have it set `git_bash` on Windows from discovery, the way
+   `fontaine-core/tests/common::git_bash()` does. The `rust/fontaine` tests already run the real
+   binary, which discovers Git Bash itself.
+6. Add the tests in **Testing Strategy**.
+7. Record the deviation in `tasks/fontaine_harness_plan.md` `## Decisions` (see **Decisions**).
+8. Docs (see **Documentation**).
 
 ## Files to Modify
 
 - `rust/fontaine-tools/src/git_bash.rs`
 - `rust/fontaine-tools/src/builtins.rs`
 - `rust/fontaine-core/src/user_hooks.rs`
-- `rust/fontaine-core/src/user_shell.rs` (only if the type change needs it)
-- `rust/fontaine-tools/tests/choke_point.rs`
+- `rust/fontaine-tools/tests/choke_point.rs` (also holds the cross-platform `ShellTool` tests)
 - `rust/fontaine-tools/tests/shell.rs`
-- `rust/fontaine-tools/tests/` new cross-platform test file for `ShellTool` (or extend an existing
-  one that already builds a registry)
 - `rust/fontaine-core/tests/user_hooks.rs`
 - `rust/fontaine/tests/common/mod.rs`, `rust/fontaine/tests/parallel_agents.rs`,
-  `rust/fontaine/tests/project_executables.rs`, `rust/fontaine-tui/tests/agents.rs`
+  `rust/fontaine/tests/project_executables.rs`, `rust/fontaine-tui/tests/agents.rs`,
+  `rust/fontaine-tui/tests/common/mod.rs`
 - `docs/tools.md`, `docs/hooks.md`, `tasks/design/platforms.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
@@ -179,9 +178,8 @@ matches Claude Code's.
 
 ## Decisions
 
-- 2026-10-22: On Windows the command text reaches Git Bash in `FONTAINE_SH_COMMAND` rather than on
-  the command line. Claude Code also halves `\\` there; this is a deliberate deviation, because the
-  judged command must be the one that runs. Recorded in the master plan's `## Decisions`.
+- 2026-10-22: On Windows the command text reaches Git Bash in `FONTAINE_SH_COMMAND`, not on the
+  command line, unlike Claude Code. Reason: the judged command must be the one that runs.
 
 ## Documentation
 
@@ -199,10 +197,13 @@ halves the backslashes.
 - **Unit (`git_bash.rs`)**: `sh_command(c, false)` gives `script == c` and no env.
   `sh_command(c, true)` gives `RUN_COMMAND_VAR` and `(COMMAND_VAR, c)`. Also assert
   `RUN_COMMAND_VAR` contains no `\`, since that is the property that makes it survive the re-parse.
-- **Cross-platform `ShellTool` semantics** (a new test in `fontaine-tools/tests/`): a registry
-  whose `ShellSettings.git_bash` is a fake `GitBash` (nonexistent dirs prepended to `PATH`, so the
-  system `sh` still resolves) forces the environment route on Linux and macOS too. Through the
-  `shell` tool, check that:
+  Assert `RUN_COMMAND_VAR == format!("eval \"unset {COMMAND_VAR}\n${COMMAND_VAR}\"")` so the two
+  constants cannot drift apart.
+- **Cross-platform `ShellTool` semantics** (in `fontaine-tools/tests/choke_point.rs`'s
+  `#[cfg(unix)] mod unix`, around line 150, which drives `shell` via `env_with`/`registry`/`call`):
+  `env.shell.git_bash = Some(GitBash { bin: <tmp>/nope/bin, usr_bin: <tmp>/nope/usr/bin })`
+  (nonexistent dirs prepended to `PATH`, so the system `sh` still resolves) forces the environment
+  route on Linux and macOS; these tests do not run on Windows. Through the `shell` tool, check that:
   - output of `printf '%s\n' '\\a' 'tail\\' '\\?\C:\x'` is exact;
   - `exit 3` reports exit code 3;
   - `printf '%s' "${FONTAINE_SH_COMMAND-absent}"` prints `absent`;
@@ -213,13 +214,15 @@ halves the backslashes.
   `printf '%s\n' '\\a' '\\server\share' 'tail\\' '\\?\C:\x'` comes back exactly. This pins #78 for
   the `shell` tool and, through `shell_for`, for `!` commands.
 - **Regression, hooks (`fontaine-core/tests/user_hooks.rs`)**:
-  - a hook `hook_double --stderr 'a\\b\\' --exit 2` denies with exactly `a\\b\\` in the message;
+  - a hook `hook_double --stderr 'a\\b\\' --exit 2` denies with `(a\\b\\)`, parentheses included,
+    in the message (the hook command in the deny message already contains `a\\b\\`, so the bare
+    text proves nothing), or the hook is called directly and `reason == Some(r"a\\b\\")`;
   - a hook `--record` to a canonicalized temp path (`\\?\`-prefixed on Windows) writes the event
     there. This is the failure PR #75's Windows CI hit.
 
   Both run on every OS, and on Windows they go through the real Git Bash.
 - **Restored integration tests**: `parallel_agents`, `project_executables` and the TUI `agents`
-  test go back to canonicalized paths in hook commands (step 6), so the original failure from the
+  test go back to canonicalized paths in hook commands (step 5), so the original failure from the
   wild is pinned at the tier where it was seen.
 - **Choke point**: the updated `the_shell_is_confined_clamped_and_cut`.
 
