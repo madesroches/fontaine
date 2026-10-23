@@ -55,7 +55,11 @@ login or listing code.
   (line 226), **before** `resolve_models` (lines 586/631). The id is therefore known when models
   are resolved, but `ResolveParams` / `Switcher::new` do not carry it. `fontaine-evals`'s live
   driver (`rust/fontaine-evals/src/live.rs:85`) builds a `Switcher` with no session.
-- Cost: rig attaches a catalog price per response. It reaches spend through
+- Cost: rig attaches a cost per response, from several sources: the catalog price (`anthropic`
+  on the messages wire, `gcp.gemini` on the gemini wire) and, for OpenCode Go on the chat wire,
+  the gateway-reported `{"x-opencode-type":"inference-cost","cost":...}` chunk (rig-core-0.45.0
+  `providers/openai/wire/chat.rs:1651`); the responses wire reads `usage.cost`
+  (`responses_api/streaming.rs:323-335`). It reaches spend through
   `headless.rs:213` (`cost.total`) and the span bridge (`telemetry/span_bridge.rs:250-255`, looked
   up by `gen_ai.provider.name`). An Anthropic-wire model behind a gateway would be priced as
   `anthropic` today.
@@ -90,6 +94,8 @@ pub trait Provider: Send + Sync + 'static {
     fn billing(&self) -> Billing { Billing::Catalog }  // Catalog | Unpriced
     /// Account-shape checks beyond serde: required `base_url`, keys this kind refuses.
     fn validate(&self, name: &str, account: &Account) -> Result<(), String> { Ok(()) }
+    /// Whether the account may set `wires`; `validate_values` rejects it otherwise.
+    fn accepts_wires(&self) -> bool { false }
     /// Whether a listed id satisfies a requested model (Ollama's `:latest`).
     fn lists(&self, available: &[String], model: &str) -> bool { available.iter().any(|id| id == model) }
     fn connect(&self, ctx: ConnectContext<'_>) -> Result<Arc<dyn AccountClient>, String>;
@@ -170,13 +176,16 @@ kinds need; steps 2, 4 and 5 add `StoredCredential::OAuth`, `session_id` and `si
   clients and the guardian share one refresh. `token().await`:
   - returns the cached access token while more than 5 minutes remain;
   - otherwise refreshes single-flight under a `tokio::sync::Mutex`:
-    1. take an exclusive `std::fs::File::lock` on `<data_dir>/credentials.lock`;
+    1. take the exclusive `std::fs::File::lock` on `<data_dir>/credentials.lock`;
     2. re-read `credentials.toml`; if another process already rotated the entry, adopt it;
-    3. otherwise call the provider's refresh and write the rotated pair back through
-       `credentials::store_oauth`.
+    3. otherwise call the provider's refresh and write the rotated pair back (inner unlocked
+       write of `store_oauth`, since the lock is already held).
 
-  Refresh tokens rotate, so an unlocked concurrent refresh would invalidate one process's
-  session. A `SignedOut` refresh surfaces as an error naming `fontaine auth login <account>`.
+  The exclusive lock on `<data_dir>/credentials.lock` is taken inside `credentials::store` and
+  `store_oauth` themselves, so a concurrent `auth login` or API-key store cannot overwrite a
+  rotated refresh token. Refresh holds the lock across re-read + refresh + write (calling an inner
+  unlocked write). Refresh tokens rotate, so an unlocked concurrent refresh would invalidate one
+  process's session. A `SignedOut` refresh surfaces as an error naming `fontaine auth login <account>`.
 
   The refresh HTTP client is built per refresh, not cached in `TokenSource`, so nothing pooled
   outlives a runtime; `connect` needs no tokio context (fontaine-tui tests resolve under
@@ -223,7 +232,7 @@ email = "me@example.com"
   (`credentials.rs:104-106`) and `rust/fontaine-core/tests/credentials.rs` need updating.
 - `Credentials::account(name)` returns `Option<StoredCredential>`.
 - `store_oauth(data_dir, name, &OAuthTokens)` uses the same owner-only read-modify-write as
-  `store`.
+  `store`; both take the `credentials.lock` exclusive lock themselves.
 - `validate_credentials_toml` accepts the new shape.
 - Old files (`api_key` only) parse unchanged.
 
@@ -231,8 +240,9 @@ email = "me@example.com"
 
 - `name` `opencode-go`, `credential` `SignIn`, `billing` `Unpriced`.
 - `validate`: rejects `api_key_env` with "`opencode-go` accounts sign in with `fontaine auth login
-  <name>`; `api_key_env` is not used". `wires` is accepted only here; every other provider's
-  `validate` rejects it.
+  <name>`; `api_key_env` is not used". `opencode-go` overrides a default-false
+  `Provider::accepts_wires()`; `validate_values` rejects `wires` once, for any provider that does
+  not accept it.
 - `base_url` defaults to `https://opencode.ai/inference/go`. A trailing `/` is trimmed.
 - `Account` gains `wires: Option<BTreeMap<String, Wire>>` with `Wire = chat | responses |
   messages | gemini`. It is the per-model override for Go's routing.
@@ -241,12 +251,12 @@ email = "me@example.com"
 
   | Model id | Wire |
   |---|---|
-  | starts with `gpt-` or `grok-` | `responses` |
+  | starts with `gpt-`, `grok-` or `muse-spark-` | `responses` |
   | starts with `claude-` or `qwen`, or is exactly `minimax-m3` | `messages` |
   | starts with `gemini-` | `gemini` |
   | anything else | `chat` |
 
-  The table is the issue's published mapping. `wires` covers a model the table gets wrong
+  The table is the model/endpoint table in the OpenCode Go docs (https://opencode.ai/docs/go/). `wires` covers a model the table gets wrong
   without a release.
 - **Clients.** `connect` builds one `Decorated` HTTP client per auth placement, sharing one
   `TokenSource` and the decoration (User-Agent, `x-opencode-session` when `session_id` is set):
@@ -270,11 +280,12 @@ email = "me@example.com"
 
   Stdin is not read, so it also works from a non-terminal.
 - **Pricing.** `billing() == Unpriced` makes `priced()` false. The handle must also report no cost
-  for usage, including the `messages` wire, where rig attaches Anthropic catalog prices. Cost is
+  for usage, whatever its source: Go-reported cost on the chat and responses wires, and catalog
+  prices rig attaches on the messages (`anthropic`) and gemini (`gcp.gemini`) wires. Cost is
   dropped where rig's per-response cost is summed: headless `Totals` (`headless.rs:213`), the
   guardian/subagent usage accumulators and the span bridge. Each of those already knows, or is
   given, the handle's `Billing`. The implementer threads `Billing` to the accumulation points
-  found by `grep -n "cost.total\|cost_usd(" rust/`.
+  listed under Files to Modify.
 
 ### 5. Session id plumbing
 
@@ -289,8 +300,9 @@ email = "me@example.com"
 
 - with `sign_in()`, it runs that sign-in and skips the secret prompt; `--telemetry` is unchanged.
   `auth::login` is sync and dispatched (`lib.rs:182`) before the runtime is built (`lib.rs:247-248`),
-  so the sign-in branch builds its own current-thread tokio runtime. A sign-in network or provider
-  failure exits 1; an unknown account and similar stay usage errors (exit 2, via `usage(e)`);
+  so the sign-in branch builds its own current-thread tokio runtime. `auth::login` returns an error enum distinguishing
+  `ConfigError` (mapped through `usage`, exit 2: unknown account and similar) from a sign-in
+  network/provider failure (exit 1); the dispatch at `lib.rs:182` matches on it;
 - otherwise it stores an API key as today.
 
 The `api_key_env` warning stays for key-based kinds.
@@ -315,7 +327,9 @@ The `api_key_env` warning stays for key-based kinds.
    `fontaine-evals`.
 5. **`opencode-go` provider.** Add the module with routing, clients and the `SignIn` impl, plus
    the `wires` key on `Account` and its validation.
-6. **Billing.** Drop cost for `Unpriced` handles at every accumulation point.
+6. **Billing.** Drop cost for `Unpriced` handles at every accumulation point: `gate.rs`
+   (`add_guardian_usage`, `add_subagent_usage`, `spend_of`), `turn.rs`, `permissions.rs`,
+   `headless.rs` and the span bridge.
 7. **`auth login`.** Dispatch to `sign_in()`.
 8. **Docs** (see Documentation).
 
@@ -326,6 +340,9 @@ The `api_key_env` warning stays for key-based kinds.
 - `rust/fontaine-core/src/lib.rs` (module)
 - `rust/fontaine-core/src/config.rs` (`AccountKind`, `Account::wires`, validation hook)
 - `rust/fontaine-core/src/models.rs` (use the registry; `Billing`; `session_id`)
+- `rust/fontaine-core/src/gate.rs` (cost accumulation: `add_guardian_usage` :445-446,
+  `add_subagent_usage` :489-490, `spend_of` :727-731), fed from `rust/fontaine-core/src/turn.rs`
+  (:211-214) and `rust/fontaine-core/src/permissions.rs` (:1074)
 - `rust/fontaine-core/src/transport.rs` (`Decorated`)
 - `rust/fontaine-core/src/credentials.rs` (oauth entry, lock, `store_oauth`)
 - `rust/fontaine-tools/src/webfetch.rs` + `rust/fontaine-tools/src/lib.rs` (shared User-Agent)
@@ -423,7 +440,7 @@ All automated tests run offline with `wiremock`. No test touches opencode.ai.
   - `api_key_env` on `opencode-go` is refused with the sign-in hint;
   - `wires` on any other kind is refused;
   - `openai-compatible` without `base_url` keeps its existing error.
-- **Routing** (unit): every row of the table, and an override that beats the table.
+- **Routing** (unit): every row of the table (including `muse-spark-1.3-contributor` on `responses`), and an override that beats the table.
 - **Device flow** (wiremock):
   - pending → slow_down → success; the poll interval grows by 5 s after `slow_down` (use
     `tokio::time::pause`);
@@ -449,9 +466,11 @@ All automated tests run offline with `wiremock`. No test touches opencode.ai.
   - an old api_key-only file still parses;
   - an entry with both or neither of `api_key` and `oauth` is malformed (and the message never
     echoes values);
-  - `validate_credentials_toml` accepts the docs example.
-- **Billing** (unit): an `opencode-go` handle on each wire is unpriced and contributes no cost,
-  including a `messages`-wire response that carries a rig catalog cost.
+  - `validate_credentials_toml` accepts the docs example;
+  - an `api_key` store under the lock does not lose a concurrent oauth rotation.
+- **Billing** (unit): an `opencode-go` handle on each wire is unpriced and contributes no cost.
+  The fixture covers a chat response carrying a Go-reported cost and a `messages`-wire response
+  priced from rig's catalog.
 - **End to end** (`fontaine -p` against wiremock standing in for the Go gateway, with a stored
   oauth credential and `base_url` pointed at the mock):
   - a `kimi-k3` turn hits `/openai/v1/chat/completions`, and a `claude-haiku-5-5` turn hits
