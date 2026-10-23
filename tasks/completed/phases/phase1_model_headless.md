@@ -1,6 +1,6 @@
 # Phase 1 — Model layer + headless surface (mostly dependency wiring)
 
-**Status:** done · **Depends on:** [Phase 0](phase0_scaffold.md) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
+**Status:** done · **Depends on:** [Phase 0](phase0_scaffold.md) · **Master:** [fontaine_harness_plan.md](../../fontaine_harness_plan.md)
 
 ## Design (excerpt owned by this phase)
 

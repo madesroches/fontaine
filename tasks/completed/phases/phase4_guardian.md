@@ -1,6 +1,6 @@
 # Phase 4 — The guardian (the feature) + its published scorecard
 
-**Status:** done · **Depends on:** [Phase 3](phase3_pipeline_tui.md) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
+**Status:** done · **Depends on:** [Phase 3](phase3_pipeline_tui.md) · **Master:** [fontaine_harness_plan.md](../../fontaine_harness_plan.md)
 
 This is the product. Guardian grounding is in `tasks/design/research-findings.md` §Research Findings (GuardAgent,
 Dual-LLM/CaMeL, AgentDojo, typed-decision judges); the pipeline legs it fills are in

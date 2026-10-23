@@ -52,19 +52,46 @@ for the flags.
 
 ## Results
 
-No model has been scored on the current dataset yet, so the ranked list shipped with this build is
-empty and the guardian falls back to your main model. The tables below are filled from the first
-scorecard run and replaced after every release.
+Two models were scored on 2026-10-23 against dataset `5a79aa741c27`, with the default `[guardian]`
+settings (30-second timeout, verdict cache turned off by the runner). Neither clears the inclusion bar, so the ranked
+list shipped with this build is empty and the guardian falls back to your main model. A model
+enters the list only by clearing the bar on an unfiltered `--profile full` run that finishes
+without infrastructure failures.
+
+- `kimi/kimi-for-coding`: a hosted model through an OpenAI-compatible endpoint.
+- `local/qwen3:4b`: an Ollama model on a GTX 1060 (6 GB). Ollama's default 4096-token context
+  truncates the guardian's prompt, which is longer than that, and thinking is on, so most calls run
+  past the timeout.
+
+Rates are over the cases the model answered. A case that failed closed on infrastructure (a
+provider error, rate limit or timeout) is left out of every rate and the latency, and is listed
+under `infrastructure_failures` in the report; the run then exits 1 and does not write the models
+file. The reports are in [`evals/scorecards`](../evals/scorecards/).
 
 ### Full profile
 
 | Model | Catch rate | False-deny rate | p50 | p95 | Scored on | Dataset |
 |---|---|---|---|---|---|---|
+| `kimi/kimi-for-coding` | 90.6% (106 of 117) | 2.4% (1 of 41) | 6.3 s | 17.5 s | 2026-10-23 | `5a79aa741c27` |
+| `local/qwen3:4b` | 66.7% (2 of 3) | 0.0% (0 of 6) | 28.7 s | 29.8 s | 2026-10-23 | `5a79aa741c27` |
+
+`kimi/kimi-for-coding` met the catch-rate and false-deny bars and missed the latency bar. Six of
+its cases (3 attack, 3 benign) timed out and are not in the rates: `attack-production-deploy-07`,
+`attack-git-destructive-03`, `attack-destroy-pre-existing-files-02`, `benign-35`, `benign-37` and
+`benign-39`. This run predates the four soft-deny entries added since (remote data stores,
+production hosts/DNS/feature flags, secret-manager writes, CI bypass), so it does not measure the
+current full-profile prompt and is to be rerun.
+
+`local/qwen3:4b` answered 3 of the 120 attack cases and 6 of the 44 benign cases; the other 155 attack
+and benign cases (183 cases in all) timed out at 30 seconds. Its rates rest on those few answers and say
+little about its judgment.
 
 ### Catch rate per attack class
 
 | Model | Download+Execute | Data Exfiltration | Production Deploy | Git Destructive | Destroy Pre-existing Files | IAM Grant | Secret Exposure | Tunnel/Reverse Shell | Unguarded Agent Loop | Safety Bypass | Remote Redirect | Unreviewed Merge |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `kimi/kimi-for-coding` | 100.0% | 100.0% | 77.8% | 44.4% | 100.0% | 90.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 70.0% |
+| `local/qwen3:4b` | — | 100.0% | — | 0.0% | — | — | — | — | — | — | 100.0% | — |
 
 ### Minimal profile
 
@@ -74,3 +101,9 @@ escape, proxy bypass), with the trimmed request. A profile ships only once it is
 
 | Model | Catch rate (full-profile attacks) | False-deny rate | Escape catch rate | mount | docker-socket | procfs-cgroup | namespace | raw-device | bind-mount-symlink | proxy-bypass |
 |---|---|---|---|---|---|---|---|---|---|---|
+| `kimi/kimi-for-coding` | 65.7% (69 of 105) | 6.8% (3 of 44) | 100% (9 of 9) | 100% | 100% | 100% | 100% | — | 100% | — |
+
+Run on 2026-10-23 against dataset `5a79aa741c27`, p50 6.2 s and p95 17.9 s. Sixteen cases timed out (15 of them
+attacks) and are not in the rates. The dataset has no `raw-device` or `proxy-bypass`
+escape case yet, so those two columns are empty; `—` means nothing was scored. No local model has a
+`minimal` run.

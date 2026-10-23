@@ -68,6 +68,27 @@ fn window_ranges(len: usize, size: usize, stride: usize) -> Vec<Range<usize>> {
     }
 }
 
+/// The token windows `ids` is scored in. The first and last ids are the special tokens the
+/// tokenizer wraps the text in; every window carries them, so a window is `WINDOW_TOKENS` tokens
+/// in all.
+fn windows(ids: &[u32]) -> Vec<Vec<u32>> {
+    if ids.len() <= WINDOW_TOKENS {
+        return vec![ids.to_vec()];
+    }
+    let (first, last) = (ids[0], ids[ids.len() - 1]);
+    let body = &ids[1..ids.len() - 1];
+    window_ranges(body.len(), WINDOW_TOKENS - 2, STRIDE_TOKENS)
+        .into_iter()
+        .map(|range| {
+            let mut window = Vec::with_capacity(range.len() + 2);
+            window.push(first);
+            window.extend_from_slice(&body[range]);
+            window.push(last);
+            window
+        })
+        .collect()
+}
+
 impl Loaded {
     fn open(dir: &Path) -> Result<Loaded, String> {
         let read = |name: &str| {
@@ -127,26 +148,8 @@ impl Loaded {
             .tokenizer
             .encode(content, true)
             .map_err(|e| format!("cannot tokenize the result: {e}"))?;
-        let ids = encoding.get_ids();
         let mut highest = 0.0_f64;
-        // The first and last ids are the special tokens the tokenizer wraps the text in; every
-        // window carries them, so a window is `WINDOW_TOKENS` tokens in all.
-        let windows: Vec<Vec<u32>> = if ids.len() <= WINDOW_TOKENS {
-            vec![ids.to_vec()]
-        } else {
-            let (first, last) = (ids[0], ids[ids.len() - 1]);
-            let body = &ids[1..ids.len() - 1];
-            window_ranges(body.len(), WINDOW_TOKENS - 2, STRIDE_TOKENS)
-                .into_iter()
-                .map(|range| {
-                    let mut window = Vec::with_capacity(range.len() + 2);
-                    window.push(first);
-                    window.extend_from_slice(&body[range]);
-                    window.push(last);
-                    window
-                })
-                .collect()
-        };
+        let windows = windows(encoding.get_ids());
         for window in windows {
             if cancel.load(Ordering::Relaxed) {
                 return Err("the scan was abandoned after its time ran out".into());
@@ -345,5 +348,33 @@ mod model_tests {
         let loaded = tiny();
         let cancel = AtomicBool::new(true);
         assert!(loaded.score("a b a b", &cancel).is_err());
+    }
+
+    /// Prints Fontaine's score per window and overall for each string in the JSON array at
+    /// `FONTAINE_PG2_SPIKE_TEXTS`, to compare with the reference implementation. Run with
+    /// `FONTAINE_PG2_MODEL=<dir> FONTAINE_PG2_SPIKE_TEXTS=<file> cargo test --release -p fontaine-guardian --features pg2 -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "needs the real weights and a text list"]
+    fn print_scores_for_the_reference_comparison() {
+        let dir = std::env::var_os("FONTAINE_PG2_MODEL").expect("FONTAINE_PG2_MODEL is set");
+        let texts = std::env::var_os("FONTAINE_PG2_SPIKE_TEXTS").expect("a text list is set");
+        let texts: Vec<String> =
+            serde_json::from_slice(&std::fs::read(texts).expect("the text list is readable"))
+                .expect("the text list is a JSON array of strings");
+        let loaded = Loaded::open(Path::new(&dir)).expect("the model loads");
+        let cancel = AtomicBool::new(false);
+        for (index, text) in texts.iter().enumerate() {
+            let encoding = loaded.tokenizer.encode(text.as_str(), true).unwrap();
+            let per_window: Vec<f64> = windows(encoding.get_ids())
+                .iter()
+                .map(|window| loaded.window_score(window).unwrap())
+                .collect();
+            let score = loaded.score(text, &cancel).unwrap();
+            println!(
+                "SPIKE {index} tokens={} windows={per_window:?} score={score} flagged={}",
+                encoding.get_ids().len(),
+                score >= FLAG_THRESHOLD
+            );
+        }
     }
 }

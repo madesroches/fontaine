@@ -4,7 +4,7 @@ This file is the **tracking task**: phase status and progress live here, togethe
 workspace layout, trade-offs, risk gates and every decision. The cross-cutting design every
 phase depends on (permission pipeline, config, sessions, observability, platforms, research
 findings, documentation, testing strategy) lives in topic docs under `tasks/design/` — see
-`## Design docs`. The build itself is split into **one plan per phase** under `tasks/phases/` — each phase plan owns
+`## Design docs`. The build itself was split into **one plan per phase**, now archived under `tasks/completed/phases/` — each phase plan owns
 its design excerpt, numbered steps (ending in a docs step), files, tests, and definition of done.
 
 ## Overview
@@ -40,13 +40,15 @@ resume/fork, the tool-result scanner (`pg2` / `llm` / `command`), micromegas and
 the offline eval runner, and a `docs/` page per topic. CI (fmt, clippy, test, deny, offline evals,
 `cargo dist plan`, pg2 builds) is green on Linux, macOS and Windows.
 
-**Merged to `main`:** phases 0–4 (PRs #65–#68) plus TUI follow-ups #72, #76, #77. **Open PRs:**
-Phase 5 (#75, `phase_5_extensibility`) and Phase 6 (#79, `phase_6_hardening`, which contains
-Phase 5).
+**Merged to `main`:** every phase, 0–6 (PRs #65–#68, #75, #79) plus follow-ups, including the
+release-readiness repo work (#92), streamed and resumable live evals (#95) and OpenCode Go
+accounts (#99).
 
-**Not done:** no release has been cut, the guardian scorecard has not been run (so
-`guardian_models.toml` ships empty and the guardian falls back to the main model), and the
-live-key, live-model and maintainer checks are still open. See `## Remaining work`.
+**Not done:** no release has been cut. A first dry run of the live checks (2026-10-23,
+`completed/release_live_checks_plan.md`) ran the scorecard, but no model cleared the inclusion
+bar, so `guardian_models.toml` still ships empty and the guardian falls back to the main model.
+The remaining live-key, live-model and maintainer steps are GitHub issues labelled
+`release-blocker`; see `## Remaining work`.
 
 `research/` holds seven companion docs that are this plan's precedent and inputs:
 `analysis-competitive-landscape.md` (market/permission-story survey),
@@ -68,13 +70,13 @@ product documentation lives under `docs/` (see `design/documentation.md` §Docum
 
 | Phase | Plan | Scope | Status | Exit milestone |
 |-------|------|-------|--------|----------------|
-| 0 — scaffold (eval first) | [phases/phase0_scaffold.md](phases/phase0_scaffold.md) | Cargo workspace, crate skeletons, CLI entry, tracing facade + `[telemetry]` config, CI, settings scope stack + workspace trust store + read-only credentials lookup; eval golden-dataset + runner skeleton; `docs/` tree started | done | CI green; eval runner green against verdict fixtures with no guardian in the tree |
-| 1 — model layer + headless | [phases/phase1_model_headless.md](phases/phase1_model_headless.md) | rig crates pinned; config → provider mapping; streaming spike; `fontaine -p` with the versioned headless I/O contract; telemetry backends (micromegas/OTLP) + `docs/telemetry.md`; provider docs | done | `fontaine -p` streams a prompt plus a spike tool round-trip against a mock endpoint |
-| 2 — agent runtime & tools | [phases/phase2_runtime_tools.md](phases/phase2_runtime_tools.md) | RiskClass registry, GuardedTool (gate stubbed), rig-tools built-ins + read tools + webfetch, multi-root scope validator, confined rig tool config; rig-agent session orchestration + session ledger; `docs/tools.md` | done | agent runs tools end-to-end headless through wrapped registry; choke-point test green |
-| 3 — pipeline & manual TUI | [phases/phase3_pipeline_tui.md](phases/phase3_pipeline_tui.md) | PermissionPipeline (manual/acceptEdits/plan/dontAsk; deterministic floor; `Tool(specifier)` rule grammar + allow rules; user-hook slot; Tier-0.5; audit log); headless `-p` denial semantics for manual/dontAsk; ratatui TUI; `docs/permissions.md` + pipeline diagram | done | **usable Claude-Code-like agent with manual approvals** |
-| 4 — guardian + scorecard | [phases/phase4_guardian.md](phases/phase4_guardian.md) | fontaine-guardian; `auto` wired into pipeline (incl. headless `-p` semantics for auto); denial UX; live evals; **published scorecard**; `docs/guardian.md` + `docs/evals.md` | done | shipped default flips `manual` → `auto`; scorecard public with the release |
-| 5 — extensibility | [phases/phase5_extensibility.md](phases/phase5_extensibility.md) | MCP (user + trust-gated project servers); session resume/fork; user hooks; skills/agent files/output styles; parallel subagents (v1) + budgets + agents panel; `docs/{mcp,agents,hooks,extensions}.md`; sandbox/sandboxing.md = **roadmap slot** | done | gated background subagents live in one session |
-| 6 — guardian hardening | [phases/phase6_hardening.md](phases/phase6_hardening.md) | tool-result scanner (`[guardian] scanner` = off/pg2/llm/command; PromptGuard 2 via candle, BYO command, cheap-LLM); scanner docs | done | scanning demonstrable behind config, license caveat surfaced |
+| 0 — scaffold (eval first) | [completed/phases/phase0_scaffold.md](completed/phases/phase0_scaffold.md) | Cargo workspace, crate skeletons, CLI entry, tracing facade + `[telemetry]` config, CI, settings scope stack + workspace trust store + read-only credentials lookup; eval golden-dataset + runner skeleton; `docs/` tree started | done | CI green; eval runner green against verdict fixtures with no guardian in the tree |
+| 1 — model layer + headless | [completed/phases/phase1_model_headless.md](completed/phases/phase1_model_headless.md) | rig crates pinned; config → provider mapping; streaming spike; `fontaine -p` with the versioned headless I/O contract; telemetry backends (micromegas/OTLP) + `docs/telemetry.md`; provider docs | done | `fontaine -p` streams a prompt plus a spike tool round-trip against a mock endpoint |
+| 2 — agent runtime & tools | [completed/phases/phase2_runtime_tools.md](completed/phases/phase2_runtime_tools.md) | RiskClass registry, GuardedTool (gate stubbed), rig-tools built-ins + read tools + webfetch, multi-root scope validator, confined rig tool config; rig-agent session orchestration + session ledger; `docs/tools.md` | done | agent runs tools end-to-end headless through wrapped registry; choke-point test green |
+| 3 — pipeline & manual TUI | [completed/phases/phase3_pipeline_tui.md](completed/phases/phase3_pipeline_tui.md) | PermissionPipeline (manual/acceptEdits/plan/dontAsk; deterministic floor; `Tool(specifier)` rule grammar + allow rules; user-hook slot; Tier-0.5; audit log); headless `-p` denial semantics for manual/dontAsk; ratatui TUI; `docs/permissions.md` + pipeline diagram | done | **usable Claude-Code-like agent with manual approvals** |
+| 4 — guardian + scorecard | [completed/phases/phase4_guardian.md](completed/phases/phase4_guardian.md) | fontaine-guardian; `auto` wired into pipeline (incl. headless `-p` semantics for auto); denial UX; live evals; **published scorecard**; `docs/guardian.md` + `docs/evals.md` | done | shipped default flips `manual` → `auto`; scorecard public with the release |
+| 5 — extensibility | [completed/phases/phase5_extensibility.md](completed/phases/phase5_extensibility.md) | MCP (user + trust-gated project servers); session resume/fork; user hooks; skills/agent files/output styles; parallel subagents (v1) + budgets + agents panel; `docs/{mcp,agents,hooks,extensions}.md`; sandbox/sandboxing.md = **roadmap slot** | done | gated background subagents live in one session |
+| 6 — guardian hardening | [completed/phases/phase6_hardening.md](completed/phases/phase6_hardening.md) | tool-result scanner (`[guardian] scanner` = off/pg2/llm/command; PromptGuard 2 via candle, BYO command, cheap-LLM); scanner docs | done | scanning demonstrable behind config, license caveat surfaced |
 
 GitHub `phase-N` labels mean "earliest phase after which the issue can be taken; not part of that phase's definition of done; Decisions win over issue text".
 
@@ -95,8 +97,9 @@ phase plan are the work trail).
 ## Remaining work
 
 The deferred human steps from the Progress log, gathered in one place, plus everything after v1.
-Tick an item by changing `[ ]` to `[x]` and adding the date. The merge and release-readiness
-checklists are tracked in GitHub issue #80; tick items in both places.
+Each open item is a GitHub issue; the ones that gate the first release carry the
+`release-blocker` label (`gh issue list --label release-blocker`), with #80 as the tracker. Tick
+an item here by changing `[ ]` to `[x]` and adding the date when its issue closes.
 
 ### Merge
 
@@ -108,37 +111,42 @@ Apart from the ticked repo-side items, each item needs live provider keys, a liv
 
 - **Guardian scorecard**
   - [ ] Maintainer signs off the eval dataset's `expected` labels against `claude -p` baselines
-        (`design/testing.md` §Eval harness).
-  - [ ] Live scorecard run (`fontaine-evals` `live:` mode, `--profile full` and `minimal`)
-        fills `rust/fontaine-guardian/data/guardian_models.toml`.
-  - [ ] Check the run against the Risk Gates' catch-rate kill floor.
-  - [ ] Publish the scorecard with the release (`docs/evals.md`).
+        (`design/testing.md` §Eval harness). (#102)
+  - [x] Live scorecard run (`fontaine-evals` `live:` mode, `--profile full` and `minimal`)
+        fills `rust/fontaine-guardian/data/guardian_models.toml`. (2026-10-23; run with
+        `kimi/kimi-for-coding` and `local/qwen3:4b`, no model cleared the inclusion bar, so the file stays
+        empty; see `completed/release_live_checks_plan.md` `## Results`)
+  - [ ] Check the run against the Risk Gates' catch-rate kill floor. (#105; needs #96, #97)
+  - [ ] Publish the scorecard with the release (`docs/evals.md`), rerun on the shipped rules. (#104)
 - **Claude Code baselines (`claude -p`)**
-  - [ ] Phase 3 pipeline-case capture.
-  - [ ] Phase 4 auto-mode capture and diff, including the destructive-class word lists.
-  - [ ] Phase 5 user-hook `allow` in `auto` baseline.
-- **Cassettes** (`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes`)
+  - [x] Phase 3 pipeline-case capture. (2026-10-23; 44 of 54 captured, 14 divergences triaged in
+        `completed/release_live_checks_plan.md`; open divergences and 10 uncaptured cases: #101)
+  - [ ] Phase 4 auto-mode capture and diff, including the destructive-class word lists. (#103)
+  - [x] Phase 5 user-hook `allow` in `auto` baseline. (2026-10-23; observed once per variant; Claude Code
+        honors a broad hook, which Fontaine deliberately suspends: Decisions 2026-10-23)
+- **Cassettes** (`RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes -- --ignored`; #106)
   - [ ] Record the Phase 3 manual-mode cassette.
   - [ ] Record the Phase 4 auto-mode cassette.
 - **Manual verification** (`design/testing.md` §Manual Verification)
-  - [ ] Item 1: live TUI, manual mode, Anthropic.
-  - [ ] Items 2–3: live guardian denial and `/denied` retry.
-  - [ ] Item 4: the same against Ollama, with a local model as both agent and guardian.
-  - [ ] Item 5: agents-panel look and feel.
-  - [ ] Item 6, Docker leg: minimal profile with `--in-container`.
+  - [ ] Item 1: live TUI, manual mode, Anthropic. (#107)
+  - [ ] Items 2–3: live guardian denial and `/denied` retry. (#107)
+  - [ ] Item 4: the same against Ollama, with a local model as both agent and guardian. (Run
+        2026-10-23 with `local/qwen3:4b`: the guardian timed out at 30 s, so check 2 did not hold; #108, needs #96.)
+  - [ ] Item 5: agents-panel look and feel. (#107)
+  - [x] Item 6, Docker leg: minimal profile with `--in-container`. (2026-10-23)
 - **PromptGuard 2 with real weights** (needs a Hugging Face token)
-  - [ ] Logit spike against the model card.
+  - [x] Logit spike against the model card. (2026-10-23; against a `transformers` reference, the model card itself is gated)
   - [x] `FONTAINE_PG2_MODEL` inference test. (2026-10-23; passed with the loader fix, run with `--release`)
-  - [ ] A live session with `scanner = "pg2"`.
+  - [x] A live session with `scanner = "pg2"`. (2026-10-23)
 - **Bugs to fix before tagging**
   - [x] #78 (Git Bash collapses `\\` on Windows) and #73 (`webfetch` 403 without a User-Agent)
         fixed. (2026-10-23)
 - **Repository and release**
-  - [ ] Turn on GitHub private vulnerability reporting (`SECURITY.md` promises it; it is off today).
+  - [x] Turn on GitHub private vulnerability reporting (`SECURITY.md` promises it; it is off today). (2026-10-23)
   - [x] `CHANGELOG.md` entry for 0.1.0. (2026-10-23)
   - [x] Release archives carry LICENSE/README/CHANGELOG; release notes from the changelog;
         missing-notes guard. (2026-10-23)
-  - [ ] Cut the first cargo-dist release tag.
+  - [ ] Rename `## [Unreleased]` to `## [0.1.0] - <date>` and cut the first cargo-dist release tag. (#109)
 
 ### Roadmap slots (designed, deliberately not built in v1)
 
@@ -212,7 +220,7 @@ fontaine/
 ├── evals/                      # golden dataset (`evals/dataset/*.jsonl`) + README; runner is rust/fontaine-evals
 ├── docs/                       # all product docs — one topic per page, website-ready (see `design/documentation.md` §Documentation);
 │                               #   `schemas/headless-v1.schema.json`
-├── tasks/                      # this master plan + design/ (topic design docs) + phases/ (one plan per phase)
+├── tasks/                      # this master plan + design/ (topic design docs) + completed/ (shipped plans, incl. phases/)
 └── research/                   # seven analysis/research companion docs
 ```
 
@@ -356,7 +364,7 @@ scorecard run (see `## Remaining work`).
 - 2026-10-21: Audit `args_digest` canonicalizes with exact-pinned `serde_jcs` (RFC 8785).
 - 2026-10-21: `/permissions` leaves Phase 4 for backlog GitHub issue #47 (core slash commands); users edit the config file, and "always allow" grants still write to the user file; supersedes the Phase 4 ownership of `/permissions`.
 - 2026-10-21: CI runs `cargo deny check` (advisories, licenses, bans, sources) with a checked-in `rust/deny.toml` on all three OSes; cargo-deny version-pinned.
-- 2026-10-21 (user): `[permissions] allow` plus one `Tool(specifier)` grammar for deny/ask/allow (`design/permissions.md` §Permission rules); allow acts after the floor, narrow rules skip the guardian in `auto`, broad code-execution rules are suspended in `auto` (Claude Code parity); a user allow rule or user hook `allow` is a user grant distinct from the containment fast path.
+- 2026-10-21 (user): `[permissions] allow` plus one `Tool(specifier)` grammar for deny/ask/allow (`design/permissions.md` §Permission rules); allow acts after the floor, narrow rules skip the guardian in `auto`, broad code-execution rules are suspended in `auto` (Claude Code parity for allow rules; for broad hooks see 2026-10-23); a user allow rule or user hook `allow` is a user grant distinct from the containment fast path.
 - 2026-10-21: Deviation — shared project settings cannot hold allow rules, a project hook's `allow` and a project skill's `allowed-tools` are ignored; reason: project scope can only tighten.
 - 2026-10-21: Deviation — `shell` deny/ask rules match as a prefix anywhere in the parsed word stream (and on unparseable commands containing the first word) while allow matches only one simple command; reason: no regex and no operator-level parser in v1, so deny fails toward matching and allow toward not matching.
 - 2026-10-21: Settings scope stack managed (reserved) > CLI > project-local > project > user (Claude Code parity). Deviation: endpoint/credential keys (`[accounts.*]`, `[telemetry]` except `enabled = false`) are never read from project-local; reason: a file in the repo must not redirect session data.
@@ -382,7 +390,7 @@ scorecard run (see `## Remaining work`).
 - 2026-10-21: Deviation — provider and telemetry credential variables are scrubbed from the `shell` and hook child environment (list: Phase 2 step 1); reason: a model-run command must not read provider keys.
 - 2026-10-21: AgentDojo-comparable (ASR × utility) reporting is dropped; the scorecard reports per-class catch rate and false-deny rate.
 - 2026-10-21: Workspace trust (Claude Code parity: folder trust covers the whole folder — bounded at the enclosing git work-tree root, as in Claude Code; unbounded outside a repo) — in the TUI, project and project-local executables (hooks, MCP servers, skill `!cmd`) load only after the trust prompt; headless loads them without one; they never change a permission decision (`design/config.md` §Config, Workspace trust).
-- 2026-10-21: A user-scope hook `allow` in `auto` follows Claude Code (like an allow rule; broad matchers suspended); the `claude -p` baseline confirms it.
+- 2026-10-21: A user-scope hook `allow` in `auto` follows Claude Code (like an allow rule; broad matchers suspended; the `claude -p` baseline confirms narrow hooks only, see 2026-10-23 for broad ones).
 - 2026-10-21: The `skill` tool stays `ReadOnly` on the fast path; a skill's `!cmd` is gated as a `shell` call.
 - 2026-10-21 (user): Shell parsing uses exact-pinned `brush-parser` for Tier 0.5, critical-path and rule matching; no hand-rolled lexer, no `shlex`; anything not exactly one simple command falls through.
 - 2026-10-21 (user): Windows Git Bash discovery follows Claude Code's pattern with `FONTAINE_GIT_BASH_PATH` override (`design/platforms.md`).
@@ -434,6 +442,8 @@ scorecard run (see `## Remaining work`).
 - 2026-10-22: `fontaine.session.count` `start_type` takes Claude Code's values `fresh`/`resume`/`continue`, and the surface moves to a `headless` attribute; this corrects an earlier silent deviation (Phase 5).
 - 2026-10-22: Deviation from LlamaFirewall — pg2 scores the whole result in 512-token windows at stride 256 instead of truncating to the first 512 tokens; reason: an injection past the first window would otherwise pass unflagged (Phase 6).
 - 2026-10-22: On Windows the command text reaches Git Bash in `FONTAINE_SH_COMMAND`, not on the command line, unlike Claude Code. Reason: the judged command must be the one that runs.
+- 2026-10-23: In auto, Fontaine suspends a broad PreToolUse allow hook; Claude Code 2.1.309 honors it (one `claude -p` run per variant). Kept stricter: a broad hook would otherwise bypass the guardian for every call it matches.
+- 2026-10-23 (user): Every phase is done, so the phase plans moved to `tasks/completed/phases/` and the live-checks plan to `tasks/completed/`; the master plan, `tasks/design/` and `## Decisions` stay live, and remaining work is tracked as GitHub issues (`release-blocker` for the first release).
 
 ## Open Questions
 

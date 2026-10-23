@@ -1,7 +1,7 @@
 # Phase 6 — Guardian hardening: tool-result scanner
 
 **Status:** done (offline gates green; the real-weights steps are human) · **Depends on:** [Phase 4](phase4_guardian.md) (evals already public;
-Phase 5 for the subagent-result path) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
+Phase 5 for the subagent-result path) · **Master:** [fontaine_harness_plan.md](../../fontaine_harness_plan.md)
 
 ## Design (excerpt owned by this phase)
 

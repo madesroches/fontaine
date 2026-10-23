@@ -1,6 +1,6 @@
 # Phase 2 — Agent runtime & tools
 
-**Status:** done · **Depends on:** [Phase 1](phase1_model_headless.md) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
+**Status:** done · **Depends on:** [Phase 1](phase1_model_headless.md) · **Master:** [fontaine_harness_plan.md](../../fontaine_harness_plan.md)
 
 ## Design (excerpt owned by this phase)
 

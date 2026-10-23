@@ -1,6 +1,6 @@
 # Phase 5 — Extensibility: MCP, sessions, parallel agents, hooks, extension files
 
-**Status:** done (offline gates green; live steps are human) · **Depends on:** [Phase 4](phase4_guardian.md) · **Master:** [fontaine_harness_plan.md](../fontaine_harness_plan.md)
+**Status:** done (offline gates green; live steps are human) · **Depends on:** [Phase 4](phase4_guardian.md) · **Master:** [fontaine_harness_plan.md](../../fontaine_harness_plan.md)
 
 ## Design (excerpt owned by this phase)
 
