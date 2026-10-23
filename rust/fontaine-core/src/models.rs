@@ -574,6 +574,17 @@ fn default_guardian(
         })
 }
 
+/// How long one account may take to list its models before the picker shows it as failed.
+pub const LISTING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// One configured account's models, or why they could not be listed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountListing {
+    pub account: String,
+    pub kind: AccountKind,
+    pub models: Result<Vec<String>, String>,
+}
+
 /// Resolves models again while a session runs, for `/model` and `/guardian-model`. It owns what
 /// it needs, so it can be used from an interface that holds no borrow of the startup state.
 #[derive(Clone)]
@@ -650,6 +661,67 @@ impl Switcher {
                 _ => None,
             }
         })
+    }
+
+    /// The models of every account, or only of those named in `only`, sorted by account name.
+    /// An explicit `models` list and the main account's already-fetched `main` listing cost no
+    /// call; the others are listed concurrently. A failure keeps the account's entry.
+    pub async fn listings(
+        &self,
+        main: (&ModelRef, &[String]),
+        only: Option<&[String]>,
+    ) -> Vec<AccountListing> {
+        self.listings_within(main, only, LISTING_TIMEOUT).await
+    }
+
+    /// Tests only: [`Switcher::listings`] with its own per-account timeout.
+    pub async fn listings_within(
+        &self,
+        main: (&ModelRef, &[String]),
+        only: Option<&[String]>,
+        timeout: std::time::Duration,
+    ) -> Vec<AccountListing> {
+        let wanted = self
+            .config
+            .accounts
+            .iter()
+            .filter(|(name, _)| only.is_none_or(|only| only.contains(name)));
+        let stored = match self.sources() {
+            Ok(stored) => stored,
+            Err(e) => {
+                let reason = e.to_string();
+                return wanted
+                    .map(|(name, account)| AccountListing {
+                        account: name.clone(),
+                        kind: account.kind,
+                        models: Err(reason.clone()),
+                    })
+                    .collect();
+            }
+        };
+        let stored = &stored;
+        futures::future::join_all(wanted.map(|(name, account)| async move {
+            let models = if let Some(list) = &account.models {
+                Ok(list.clone())
+            } else if *name == main.0.account {
+                Ok(main.1.to_vec())
+            } else {
+                match client_for(name, account, &*self.env, stored) {
+                    Err(reason) => Err(reason),
+                    Ok(client) => match tokio::time::timeout(timeout, client.list()).await {
+                        Ok(Ok(models)) => Ok(models),
+                        Ok(Err(e)) => Err(with_causes(&e)),
+                        Err(_) => Err(format!("listing timed out after {timeout:?}")),
+                    },
+                }
+            };
+            AccountListing {
+                account: name.clone(),
+                kind: account.kind,
+                models,
+            }
+        }))
+        .await
     }
 
     /// Guardian models to offer when the pinned one is unavailable: the validated list entries

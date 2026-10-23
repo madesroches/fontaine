@@ -538,3 +538,108 @@ fn the_shipped_model_list_parses_and_every_entry_clears_the_bar() {
         );
     }
 }
+
+fn openai_models(ids: &[&str]) -> ResponseTemplate {
+    let data: Vec<_> = ids
+        .iter()
+        .map(|id| json!({"id": id, "object": "model", "created": 0, "owned_by": "x"}))
+        .collect();
+    ResponseTemplate::new(200).set_body_json(json!({"object": "list", "data": data}))
+}
+
+fn listing_switcher(w: &World, env: &[(&str, &str)]) -> Switcher {
+    let map: HashMap<String, String> = env
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    Switcher::new(
+        w.load().unwrap(),
+        w.data.clone(),
+        std::sync::Arc::new(move |name: &str| map.get(name).map(OsString::from)),
+        None,
+    )
+}
+
+#[tokio::test]
+async fn listings_use_config_and_the_main_listing_without_a_request_and_list_the_rest() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(openai_models(&["zeta", "alpha"]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let w = World::new();
+    // `main` and `fixed` would fail if called: nothing listens on port 9.
+    w.user_file(&format!(
+        "[accounts.main]\nkind = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9\"\n\n[accounts.fixed]\nkind = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9\"\nmodels = [\"one\", \"two\"]\n\n[accounts.live]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\n\n[model]\nmodel = \"main/m1\"\n",
+        server.uri()
+    ));
+    let switcher = listing_switcher(&w, &[]);
+    let main = ModelRef::parse("main/m1").unwrap();
+    let listings = switcher.listings((&main, &["m1".to_string()]), None).await;
+    let names: Vec<&str> = listings.iter().map(|l| l.account.as_str()).collect();
+    assert_eq!(names, ["fixed", "live", "main"]);
+    assert_eq!(listings[0].models, Ok(vec!["one".into(), "two".into()]));
+    assert_eq!(listings[1].models, Ok(vec!["zeta".into(), "alpha".into()]));
+    assert_eq!(listings[2].models, Ok(vec!["m1".into()]));
+
+    // `only` narrows the accounts visited.
+    let only = switcher
+        .listings((&main, &["m1".to_string()]), Some(&["fixed".to_string()]))
+        .await;
+    assert_eq!(only.len(), 1);
+}
+
+#[tokio::test]
+async fn a_failing_account_keeps_its_entry_with_the_reason() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+        .mount(&server)
+        .await;
+    let w = World::new();
+    w.user_file(&format!(
+        "[accounts.main]\nkind = \"ollama\"\nmodels = [\"m1\"]\n\n[accounts.broken]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\n\n[accounts.nokey]\nkind = \"openai\"\napi_key_env = \"MISSING\"\n\n[model]\nmodel = \"main/m1\"\n",
+        server.uri()
+    ));
+    let switcher = listing_switcher(&w, &[]);
+    let main = ModelRef::parse("main/m1").unwrap();
+    let listings = switcher.listings((&main, &["m1".to_string()]), None).await;
+    let names: Vec<&str> = listings.iter().map(|l| l.account.as_str()).collect();
+    assert_eq!(names, ["broken", "main", "nokey"]);
+    let broken = listings[0].models.as_ref().unwrap_err();
+    assert!(
+        broken.contains("500") || broken.contains("boom"),
+        "{broken}"
+    );
+    let nokey = listings[2].models.as_ref().unwrap_err();
+    assert!(nokey.contains("MISSING"), "{nokey}");
+}
+
+#[tokio::test]
+async fn a_slow_account_times_out_without_stopping_the_others() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(openai_models(&["late"]).set_delay(std::time::Duration::from_secs(5)))
+        .mount(&server)
+        .await;
+    let w = World::new();
+    w.user_file(&format!(
+        "[accounts.main]\nkind = \"ollama\"\nmodels = [\"m1\"]\n\n[accounts.slow]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\n\n[model]\nmodel = \"main/m1\"\n",
+        server.uri()
+    ));
+    let switcher = listing_switcher(&w, &[]);
+    let main = ModelRef::parse("main/m1").unwrap();
+    let timeout = std::time::Duration::from_millis(200);
+    let listings = switcher
+        .listings_within((&main, &["m1".to_string()]), None, timeout)
+        .await;
+    assert_eq!(
+        listings[1].models,
+        Err("listing timed out after 200ms".to_string())
+    );
+    assert!(listings[0].models.is_ok());
+}

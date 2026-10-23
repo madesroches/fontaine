@@ -106,6 +106,8 @@ All notable changes are recorded here. The format follows
     ledger and the audit log; `@` completes workspace file paths; Up/Down and Ctrl-R recall and
     search a persistent prompt history; messages typed during a turn are queued and delivered with
     the agent's next tool result (#46).
+  - `/model` and `/guardian-model` without an argument open a picker: models grouped under their
+    account, recently used ones first, a fuzzy filter, and the current model marked (#117).
   - `fontaine -p` with `--output-format text|json|stream-json`, `--input-format stream-json`,
     `--include-partial-messages`, `--max-turns`, `--max-budget-usd`, `--json-schema`,
     `--system-prompt`, `--append-system-prompt`, `--model` and `--permission-mode`. The output is

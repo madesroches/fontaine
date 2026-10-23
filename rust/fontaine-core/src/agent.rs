@@ -36,7 +36,7 @@ use crate::config::{AgentMode, Config, McpServer, PermissionMode};
 use crate::extensions::Extensions;
 use crate::gate::{AutoContext, SessionState, StateParams, no_guardian};
 use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
-use crate::models::{GuardianChoice, GuardianModel, ModelRef, Models, Switcher};
+use crate::models::{AccountListing, GuardianChoice, GuardianModel, ModelRef, Models, Switcher};
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
 use crate::scanner_stage::{Backend, ScannerStage, ScannerStart, llm_backend};
@@ -210,6 +210,8 @@ pub struct AgentRuntime {
     runner: Arc<CoreChildRunner>,
     output_style: Option<String>,
     mcp: Vec<Connected>,
+    /// What `model_listings` has fetched this session.
+    listings: Vec<AccountListing>,
 }
 
 /// The parts of the setup a rebuild needs again.
@@ -535,6 +537,7 @@ impl AgentRuntime {
             runner,
             output_style: None,
             mcp: Vec::new(),
+            listings: Vec::new(),
         })
     }
 
@@ -916,6 +919,43 @@ impl AgentRuntime {
         })
     }
 
+    /// The models of every configured account, for the `/model` picker. The first call fetches
+    /// them; later calls fetch only the accounts that failed before, so a credential added
+    /// mid-session shows up while cached successes make no request. The main account's entry
+    /// always follows the current listing.
+    pub async fn model_listings(&mut self) -> Result<&[AccountListing], String> {
+        let switcher = self.switcher()?.clone();
+        let failed: Vec<String> = self
+            .listings
+            .iter()
+            .filter(|l| l.models.is_err())
+            .map(|l| l.account.clone())
+            .collect();
+        let only = (!self.listings.is_empty()).then_some(failed.as_slice());
+        let fetched = switcher
+            .listings(
+                (&self.models.main.reference, &self.models.main_listing),
+                only,
+            )
+            .await;
+        for listing in fetched {
+            match self
+                .listings
+                .iter_mut()
+                .find(|l| l.account == listing.account)
+            {
+                Some(slot) => *slot = listing,
+                None => self.listings.push(listing),
+            }
+        }
+        self.listings.sort_by(|a, b| a.account.cmp(&b.account));
+        let main = &self.models.main.reference.account;
+        if let Some(slot) = self.listings.iter_mut().find(|l| l.account == *main) {
+            slot.models = Ok(self.models.main_listing.clone());
+        }
+        Ok(&self.listings)
+    }
+
     /// `/guardian-model`: pins the guardian to `text` for the live session and saves it as
     /// `[guardian] model`. An account with no credential gives an unavailable guardian rather
     /// than an error, which the next adjudication reports.
@@ -942,12 +982,25 @@ impl AgentRuntime {
         Ok(matches!(model, GuardianModel::Ready(_)))
     }
 
-    /// Switches the guardian for this session only, without saving it: the "pick another"
-    /// answer to an unavailable guardian.
-    pub fn use_guardian(&self, text: &str) -> Result<bool, String> {
+    /// The "pick another" answer to an unavailable guardian: switches the guardian and, when it
+    /// can be asked, saves it as `[guardian] model`. `None` when the pick is unavailable too,
+    /// which is not saved so the next session does not open on it.
+    ///
+    /// It takes `&self` because it answers a prompt raised mid-turn, so the runtime's own record
+    /// of the guardian is not updated; the live guardian is the gate state's.
+    pub fn use_guardian(&self, text: &str) -> Result<Option<Switched>, String> {
         let model = self.guardian_for(text)?;
         self.install_guardian(&model);
-        Ok(matches!(model, GuardianModel::Ready(_)))
+        if !matches!(model, GuardianModel::Ready(_)) {
+            return Ok(None);
+        }
+        let reference = model.reference().to_string();
+        let persist_error = self.persist(|path| user_config::set_guardian_model(path, &reference));
+        Ok(Some(Switched {
+            reference,
+            guardian_followed: false,
+            persist_error,
+        }))
     }
 
     /// Guardian models to offer in place of an unavailable one.

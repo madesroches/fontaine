@@ -157,7 +157,7 @@ unknown account), nothing is substituted silently. A prompt offers:
 
 - `r` retry: look the pinned model up again, for when its credential has appeared.
 - `p` pick another validated guardian: the models of `guardian_models.toml` and the models your
-  accounts list explicitly, for this session. `/guardian-model` makes the choice permanent.
+  accounts list explicitly. The pick is saved as `[guardian] model`, so later sessions use it too.
 - `m` switch the session to `manual` and ask you about this call.
 - `n` leave the call denied.
 
@@ -175,8 +175,8 @@ conversation. The session starts in the mode your settings give, with no grants 
 |---|---|
 | `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Until then a file-tool call outside the roots is denied with a hint naming this command. Only between turns. |
 | `/denied` | Lists the calls the guardian denied this session, with their rule label and explanation. Up and Down select; `r` approves the selected call once, as if you had approved it at a prompt, and tells the agent on its next turn that it may retry exactly that call. The retry runs without asking the guardian, never enters the verdict cache and does not count toward the denial limits. The deterministic floor still runs first, so an `ask` rule or a critical path still prompts. Esc closes the list. |
-| `/model [<account>/<model>]` | Without an argument, shows the model and the guardian. With one, switches the live session to that model, rebuilds the agent on it with the conversation kept, and saves it as `[model] model` in your user settings file. The guardian moves with it only when it is on the main-model fallback (no `[guardian] model` and no validated model available); a pinned or validated guardian stays. |
-| `/guardian-model [<account>/<model>]` | Without an argument, shows the guardian and the models it could be. With one, pins the guardian to that model for the live session and saves it as `[guardian] model`. A model whose account has no credential becomes an unavailable guardian, which the next adjudication reports. |
+| `/model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model). With one, switches the live session to that model, rebuilds the agent on it with the conversation kept, and saves it as `[model] model` in your user settings file. The guardian moves with it only when it is on the main-model fallback (no `[guardian] model` and no validated model available); a pinned or validated guardian stays. |
+| `/guardian-model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model) limited to the models the guardian could be. With one, pins the guardian to that model for the live session and saves it as `[guardian] model`. A model whose account has no credential becomes an unavailable guardian, which the next adjudication reports. |
 | `/agents` | Opens the [agents panel](#the-agents-panel). |
 | `/output-style [<name>\|none]` | Without an argument, lists the [output styles](extensions.md#output-styles). With one, switches to it for the next turn; `none` removes it. |
 | `/<skill> [arguments]` | Runs a [skill](extensions.md#slash-commands-and-arguments). |
@@ -184,6 +184,36 @@ conversation. The session starts in the mode your settings give, with no grants 
 
 Typing `/` lists the built-in commands and your user-invocable skills with their argument hints,
 narrowing as you type; a skill marked `user-invocable: false` does not appear.
+
+## Choosing a model
+
+`/model` with no argument opens an overlay above the message box. The first line shows the current
+model and the guardian. Below it, the models of every configured account sit under a heading per
+account, sorted by account name, and the current model is marked `(current)` and selected. A
+`Recent` group comes first with the models you switched to lately, up to five. They are kept in
+`recent_models.json` in the data directory, separately for `/model` and `/guardian-model`, and an
+entry drops out when its account no longer offers the model.
+
+Typing filters the list: the text matches `<account>/<model>` as a case-insensitive subsequence, and
+better matches (contiguous runs, a match at the start of a model id or after `/ - _ .`) come first.
+Every printable key is text, including `j`, `k` and `q`. Backspace deletes. Up and Down move between
+models, skipping headings and wrapping around. Enter switches exactly as `/model <account>/<model>`
+does, so the choice is saved, the guardian follows only when it is on the main-model fallback, and
+the model joins Recent. That holds for the current model too: Enter on it saves it as the
+default, for when it came from `--model` or the settings file no longer names it. Esc closes the
+overlay without switching.
+
+An account lists its models from its `models` setting when it has one, and from the provider
+otherwise. The first time the overlay opens in a session it asks the accounts that have to be
+asked, all at once and for at most 10 seconds each, and says `listing models…` while it waits.
+Successful listings are kept for the session; an account that failed is asked again the next time
+the overlay opens, so a credential added in the meantime shows up. An account that cannot be listed
+keeps its heading and shows why (`could not list: ...`), for example a missing credential, a
+provider error or the timeout.
+
+`/guardian-model` with no argument opens the same overlay with only the models the guardian could
+use: the benchmark-validated models your accounts offer and every model an account lists in its
+`models` setting. A pick pins the guardian and saves it as `[guardian] model`.
 
 ## MCP server approvals
 

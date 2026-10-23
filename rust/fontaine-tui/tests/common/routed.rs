@@ -37,6 +37,8 @@ impl Turn {
 pub struct Route {
     pub marker: String,
     pub turns: Vec<Turn>,
+    /// Turns (by index) whose answer is held back this long.
+    pub delays: Vec<(usize, std::time::Duration)>,
 }
 
 impl Route {
@@ -44,7 +46,15 @@ impl Route {
         Route {
             marker: marker.to_string(),
             turns,
+            delays: Vec::new(),
         }
+    }
+
+    /// Holds back the answer to turn `at` by `millis`.
+    pub fn delay(mut self, at: usize, millis: u64) -> Route {
+        self.delays
+            .push((at, std::time::Duration::from_millis(millis)));
+        self
     }
 }
 
@@ -118,9 +128,13 @@ impl Respond for Routed {
             })
         ));
         frames.push("data: [DONE]\n\n".to_string());
-        ResponseTemplate::new(200)
+        let mut response = ResponseTemplate::new(200)
             .insert_header("content-type", "text/event-stream")
-            .set_body_raw(frames.concat().into_bytes(), "text/event-stream")
+            .set_body_raw(frames.concat().into_bytes(), "text/event-stream");
+        if let Some((_, delay)) = route.delays.iter().find(|(turn, _)| *turn == at) {
+            response = response.set_delay(*delay);
+        }
+        response
     }
 }
 

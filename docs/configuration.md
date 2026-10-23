@@ -30,6 +30,7 @@ Files in these directories:
 | `<data dir>/trust.toml` | Workspace trust record (see [Workspace trust](#workspace-trust)). |
 | `<data dir>/credentials.toml` | Stored API keys (see [Credentials](#credentials)). |
 | `<data dir>/history.jsonl` | What you submitted in the terminal UI, for Up and Ctrl-R recall (see [History](tui.md#history)). Readable by the current user only. |
+| `<data dir>/recent_models.json` | The models you last switched to with `/model` and `/guardian-model`, for the picker's Recent group (see [Choosing a model](tui.md#choosing-a-model)). Readable by the current user only. |
 
 Files that hold secrets or trust decisions are created readable by the current user only: mode
 `0600` on Unix, a current-user-only ACL on Windows.

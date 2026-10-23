@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
 use crate::input::{InputBuffer, wrap};
+use crate::model_picker::PickerPurpose;
 use crate::statusbar;
 
 const MAX_INPUT_ROWS: usize = 6;
@@ -44,7 +45,7 @@ fn input_view(buffer: &InputBuffer, width: usize) -> InputView {
 /// The rows the live area needs for the next frame, at most `max_height`.
 pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
     let inner_width = usize::from(width.saturating_sub(2)).max(1);
-    let (_, body, footer) = overlay(app, inner_width);
+    let Overlay { body, footer, .. } = overlay(app, inner_width, max_height);
     let overlay_rows = if body.is_empty() {
         0
     } else {
@@ -60,7 +61,12 @@ pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let inner_width = usize::from(area.width.saturating_sub(2)).max(1);
-    let (title, body, footer) = overlay(app, inner_width);
+    let Overlay {
+        title,
+        body,
+        footer,
+        approval: is_approval,
+    } = overlay(app, inner_width, area.height);
     let view = input_view(&app.input, inner_width);
     let input_height = view.rows.len() as u16 + 2;
     let queued = queued_lines(app, inner_width);
@@ -83,7 +89,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     draw_transcript(frame, transcript, app);
     if approval_height > 0 {
-        if app.approval.is_some() && app.agents.is_none() {
+        if is_approval {
             draw_approval(frame, approval, app, body, footer);
         } else {
             draw_overlay(frame, approval, title, body, footer);
@@ -113,31 +119,73 @@ fn queued_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-/// What sits above the message box, if anything: the approval prompt, the unavailable-guardian
-/// prompt, the denied list, the history search or the file completion list, in that order of
-/// precedence.
-fn overlay(app: &App, width: usize) -> (&'static str, Vec<Line<'static>>, Vec<Line<'static>>) {
-    if let Some(panel) = &app.agents {
-        return ("agents", panel.body(width), panel.footer());
+/// What sits above the message box.
+struct Overlay {
+    title: &'static str,
+    body: Vec<Line<'static>>,
+    footer: Vec<Line<'static>>,
+    /// The approval prompt is the overlay, so it needs the scrolling and cursor handling only it
+    /// has.
+    approval: bool,
+}
+
+impl Overlay {
+    fn new(title: &'static str, body: Vec<Line<'static>>, footer: Vec<Line<'static>>) -> Overlay {
+        Overlay {
+            title,
+            body,
+            footer,
+            approval: false,
+        }
     }
-    if let Some(approval) = &app.approval {
-        return ("approval", approval.body(width), approval.footer(width));
+}
+
+/// What sits above the message box, if anything: the denied list, the unavailable-guardian
+/// prompt, the MCP server prompt, the model picker, the agents panel, the approval prompt, the
+/// history search or the file completion list, then the `/` menu, in that order of precedence,
+/// which is the order `App::handle_key` routes keys in.
+fn overlay(app: &App, width: usize, height: u16) -> Overlay {
+    if let Some(list) = &app.denied {
+        return Overlay::new("denied", list.body(width), list.footer());
     }
     if let Some(prompt) = &app.unavailable {
-        return ("guardian unavailable", prompt.body(width), prompt.footer());
+        return Overlay::new("guardian unavailable", prompt.body(width), prompt.footer());
     }
     if let Some(prompt) = &app.server {
-        return ("MCP server", prompt.body(width), prompt.footer());
+        return Overlay::new("MCP server", prompt.body(width), prompt.footer());
     }
-    if let Some(list) = &app.denied {
-        return ("denied", list.body(width), list.footer());
+    if let Some(picker) = &app.models {
+        let title = match picker.purpose() {
+            PickerPurpose::Main => "model",
+            PickerPurpose::Guardian => "guardian model",
+        };
+        let footer = picker.footer();
+        // Rows the picker may use so its header and the selection stay inside what `draw` allows.
+        let reserved = input_view(&app.input, width).rows.len()
+            + 2
+            + queued_lines(app, width).len()
+            + 1
+            + 2
+            + footer.len()
+            + 1;
+        let rows = usize::from(height).saturating_sub(reserved).max(1);
+        return Overlay::new(title, picker.body(width, rows), footer);
+    }
+    if let Some(panel) = &app.agents {
+        return Overlay::new("agents", panel.body(width), panel.footer());
+    }
+    if let Some(approval) = &app.approval {
+        return Overlay {
+            approval: true,
+            ..Overlay::new("approval", approval.body(width), approval.footer(width))
+        };
     }
     if let Some(search) = &app.search {
         let found = app.search_match().map_or_else(
             || Line::styled("no match", Style::default().add_modifier(Modifier::DIM)),
             |text| Line::raw(text.lines().next().unwrap_or("").to_string()),
         );
-        return (
+        return Overlay::new(
             "history search",
             vec![
                 Line::raw(format!("history search: {}", search.query)),
@@ -165,7 +213,7 @@ fn overlay(app: &App, width: usize) -> (&'static str, Vec<Line<'static>>, Vec<Li
                 }
             })
             .collect();
-        return (
+        return Overlay::new(
             "files",
             body,
             vec![Line::styled(
@@ -176,9 +224,9 @@ fn overlay(app: &App, width: usize) -> (&'static str, Vec<Line<'static>>, Vec<Li
     }
     let menu = menu_lines(app, width);
     if !menu.is_empty() {
-        return ("commands", menu, Vec::new());
+        return Overlay::new("commands", menu, Vec::new());
     }
-    ("", Vec::new(), Vec::new())
+    Overlay::new("", Vec::new(), Vec::new())
 }
 
 /// The `/` menu: the commands and skills the text typed so far could be. Shown while the
