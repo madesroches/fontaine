@@ -95,6 +95,11 @@ All notable changes are recorded here. The format follows
 - Release setup: cargo-dist builds and publishes binaries for Linux, macOS and Windows on a
   `vX.Y.Z` tag, and CI runs `cargo dist plan`.
 - `docs/guardian.md` and the scorecard page `docs/evals.md`.
+- Terminal UI input modes: `!` runs a shell command as the user, outside the permission pipeline
+  and recorded in the ledger and the audit log (`tier = human`, `rule = user_shell`); `@` completes
+  workspace file paths; Up/Down and Ctrl-R recall and search a persistent prompt history
+  (`history.jsonl`); messages typed during a turn are queued and delivered with the agent's next
+  tool result, becoming guardian-visible intent only then (#46).
 
 - Phase 5, extensibility. Parallel subagents: the `agent` tool (blocking, or `background: true`
   with the report delivered as a notification) and `send_message`, agent types from `[agents.types]`
@@ -155,6 +160,9 @@ All notable changes are recorded here. The format follows
 - The terminal UI draws inline instead of on the alternate screen: finished output goes into the
   terminal's own scrollback, so mouse selection and wheel scrolling work, including under tmux.
   PageUp/PageDown now only scroll an open approval prompt (#70).
+- The terminal UI takes the whole terminal on start: earlier shell output scrolls into the
+  terminal's history, the transcript reads top-down, and the input box and status bar stay on the
+  bottom rows across resizes (#74).
 
 ### Removed
 

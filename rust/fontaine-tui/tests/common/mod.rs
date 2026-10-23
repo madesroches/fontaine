@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -69,11 +69,15 @@ pub struct World {
     pub confirm_servers: bool,
     /// The main model is resolved from the settings, against this routed endpoint.
     routed: bool,
-    /// How many sessions this world has started, so a second run gets a new id.
-    runs: std::sync::atomic::AtomicUsize,
+    /// How many times the interface has been driven.
+    runs: Cell<usize>,
 }
 
-pub const SESSION_ID: &str = "00000000-0000-4000-8000-000000000001";
+/// The id of the session the `n`th drive run of a world uses: a session directory cannot be
+/// reused, so each run needs its own.
+fn session_id(n: usize) -> String {
+    format!("00000000-0000-4000-8000-{n:012}")
+}
 
 /// A verdict the scripted guardian answers with.
 pub fn verdict(decision: &str, rule: &str, confidence: f64) -> Value {
@@ -117,7 +121,7 @@ impl World {
             project_executables: true,
             confirm_servers: true,
             routed: false,
-            runs: std::sync::atomic::AtomicUsize::new(0),
+            runs: Cell::new(0),
         };
         world.mock = MockCompletionModel::from_stream_turns(turns(&world));
         world
@@ -195,9 +199,29 @@ impl World {
             .map_or(0, MockCompletionModel::request_count)
     }
 
-    /// The audit records of the session, in order.
+    /// The id of the latest run's session.
+    pub fn session_id(&self) -> String {
+        session_id(self.runs.get().max(1))
+    }
+
+    /// The latest run's ledger, as text.
+    pub fn ledger_text(&self) -> String {
+        std::fs::read_to_string(
+            self.data
+                .join("sessions")
+                .join(self.session_id())
+                .join("ledger")
+                .join("ledger.jsonl"),
+        )
+        .unwrap()
+    }
+
+    /// The audit records of the latest run's session, in order.
     pub fn audit(&self) -> Vec<Value> {
-        let path = self.data.join("audit").join(format!("{SESSION_ID}.jsonl"));
+        let path = self
+            .data
+            .join("audit")
+            .join(format!("{}.jsonl", self.session_id()));
         std::fs::read_to_string(path)
             .unwrap_or_default()
             .lines()
@@ -282,15 +306,7 @@ impl World {
                 },
                 notices: Vec::new(),
             }),
-            session: {
-                let n = self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let id = if n == 0 {
-                    SESSION_ID.to_string()
-                } else {
-                    format!("00000000-0000-4000-8000-0000000001{n:02}")
-                };
-                Session::create(&self.data, &id).unwrap()
-            },
+            session: Session::create(&self.data, &session_id(self.runs.get())).unwrap(),
             roots: vec![self.work.clone()],
             mode: self.mode,
             scrub_env: vec![],
@@ -320,6 +336,7 @@ impl World {
         F: FnOnce(Ui) -> Fut,
         Fut: Future<Output = ()>,
     {
+        self.runs.set(self.runs.get() + 1);
         let (keys, rx) = unbounded_channel();
         let screen = Rc::new(RefCell::new(String::new()));
         let live = Rc::new(RefCell::new(String::new()));
@@ -342,6 +359,16 @@ impl World {
             script(ui)
         );
         result.unwrap();
+    }
+
+    /// What the scripted guardian was asked, one entry per request.
+    pub fn guardian_requests(&self) -> Vec<String> {
+        self.guardian.as_ref().map_or_else(Vec::new, |mock| {
+            mock.requests()
+                .iter()
+                .map(|r: &CompletionRequest| format!("{r:?}"))
+                .collect()
+        })
     }
 
     pub fn requests(&self) -> Vec<String> {

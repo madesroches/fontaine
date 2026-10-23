@@ -71,7 +71,7 @@ async fn a_skill_runs_as_a_command_with_its_arguments_and_the_users_words_are_wh
     let ledger = std::fs::read_to_string(
         w.data
             .join("sessions")
-            .join(common::SESSION_ID)
+            .join(w.session_id())
             .join("ledger/ledger.jsonl"),
     )
     .unwrap();

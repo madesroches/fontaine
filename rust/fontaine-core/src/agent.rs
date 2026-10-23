@@ -41,6 +41,7 @@ use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
 use crate::session::{CONVERSATION_LOG, Session};
 use crate::skills::{self, SkillRuntime};
+use crate::steering::{Steering, SteeringHook};
 use crate::tools::{self, ExtensionTools, RegistryParams};
 use crate::trust;
 use crate::user_config;
@@ -179,10 +180,15 @@ pub struct AgentRuntime {
     pub guardian_profile: Profile,
     pub notices: Vec<String>,
     pub origin: SessionOrigin,
+    /// Messages typed while a turn runs, delivered with the next tool result.
+    pub steering: Steering,
+    /// The workspace files `@` completion offers: the session-start index, rebuilt by
+    /// [`AgentRuntime::refresh_files`].
+    pub files: Arc<RwLock<Arc<Vec<String>>>>,
     pipeline: Arc<PermissionPipeline>,
     approver: Arc<dyn Approver>,
     seen: Seen,
-    setup: Setup,
+    pub(crate) setup: Setup,
     tool_server: ToolServerHandle,
     results: Arc<ResultPipeline>,
     skills: Arc<SkillRuntime>,
@@ -195,11 +201,11 @@ pub struct AgentRuntime {
 }
 
 /// The parts of the setup a rebuild needs again.
-struct Setup {
+pub(crate) struct Setup {
     config_dir: PathBuf,
     data_dir: PathBuf,
-    scrub_env: Vec<OsString>,
-    git_bash: Option<GitBash>,
+    pub(crate) scrub_env: Vec<OsString>,
+    pub(crate) git_bash: Option<GitBash>,
     system_prompt: Option<String>,
     append_system_prompt: Option<String>,
     json_schema: Option<Schema>,
@@ -460,6 +466,7 @@ impl AgentRuntime {
             });
         }
         let seen = Seen::default();
+        let steering = Steering::default();
         let agent = build_agent(&Parts {
             setup: &setup_rest,
             roots: &setup.roots,
@@ -475,6 +482,7 @@ impl AgentRuntime {
             types: &agent_types,
             runner: &runner,
             output_style: None,
+            steering: &steering,
         })?;
         Ok(AgentRuntime {
             agent,
@@ -487,6 +495,8 @@ impl AgentRuntime {
             guardian_profile: setup.guardian_profile,
             notices: setup.notices,
             origin: setup.origin,
+            steering,
+            files: Arc::default(),
             pipeline,
             approver: setup.approver,
             seen,
@@ -521,6 +531,7 @@ impl AgentRuntime {
             types: &self.agent_types,
             runner: &self.runner,
             output_style: self.output_style_text(),
+            steering: &self.steering,
         })?;
         self.agent = agent;
         Ok(())
@@ -934,6 +945,7 @@ impl AgentRuntime {
         })
         .await
         .unwrap_or_default();
+        self.set_files(index.paths.clone());
         let trusted = trust::is_trusted(&self.setup.data_dir, &self.config.workspace);
         self.append(Record::SessionStart {
             session_id: self.session.id.clone(),
@@ -960,6 +972,21 @@ impl AgentRuntime {
         }
     }
 
+    fn set_files(&self, paths: Vec<String>) {
+        *self.files.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(paths);
+    }
+
+    /// Rebuilds the completion file list in the background, so files the agent created and
+    /// directories added since start become completable. Never blocks the caller.
+    pub fn refresh_files(&self) {
+        let roots = self.roots.clone();
+        let slot = self.files.clone();
+        tokio::task::spawn_blocking(move || {
+            let index = FileIndex::build(&roots, FILE_INDEX_CAP);
+            *slot.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(index.paths);
+        });
+    }
+
     pub fn append(&self, record: Record) {
         if let Err(e) = self.session.ledger.append(record) {
             tracing::warn!(error = %e, "the session ledger could not be written");
@@ -984,6 +1011,7 @@ struct Parts<'a> {
     types: &'a Arc<AgentTypes>,
     runner: &'a Arc<CoreChildRunner>,
     output_style: Option<(String, String)>,
+    steering: &'a Steering,
 }
 
 /// The agent, with its wrapped tools registered in the session's tool server.
@@ -1047,6 +1075,10 @@ fn build_agent(p: &Parts<'_>) -> Result<Agent, String> {
         .add_hook(CurrentCall {
             state: p.state.clone(),
         })
+        .add_hook(SteeringHook::new(
+            p.steering.clone(),
+            p.session.ledger.clone(),
+        ))
         .tool_server_handle(p.tool_server.clone());
     if let Some(schema) = &p.setup.json_schema {
         builder = builder.output_schema_raw(schema.clone());

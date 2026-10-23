@@ -156,8 +156,10 @@ Each session keeps two stores in `<data dir>/sessions/<session id>/`:
   Compaction rewrites it: when the conversation outgrows the model's context window, the older part
   is replaced by a summary the model wrote.
 - the **session ledger**, `ledger/ledger.jsonl`: an append-only record, written by the harness and
-  never by the model. It holds the user's messages verbatim, mode changes, approvals and grants,
-  denials, actions taken, the workspace roots, the trust state, the repository's git remotes
+  never by the model. It holds the user's messages verbatim (a message typed while a turn runs is
+  recorded when the agent receives it with a tool result, not when it is typed), mode changes, approvals and grants,
+  denials, actions taken, `!` commands you ran in the terminal UI (`user_shell`, the command and its
+  exit code), the workspace roots, the trust state, the repository's git remotes
   (read from the repository's own config, without credentials) and an index of the files present
   when the session started. The index respects `.gitignore` and holds at most 50,000 paths, after
   which it records that it was cut short.

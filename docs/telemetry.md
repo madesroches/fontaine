@@ -134,6 +134,11 @@ carries a prompt or tool-call id.
 | `tool_decision` | `tool_name`, `agent.id`, `agent.type`, `tool_use_id`, `tier`, `decision`, `permission_mode`, `headless`, `latency_ms`; for guardian decisions also `guardian.model`, `guardian.profile`, `guardian.confidence`, `guardian.cache_hit`, `guardian.latency_ms` and, when it failed closed, `fail_closed_reason`. The rule label and explanation are not exported; they are in the audit log. |
 | `tool_result` | `tool_name`, `risk_class`, `tool_source`, `success`, `duration_ms`, `args_bytes`, `result_bytes` (sizes only: no arguments and no output). Emitted for every call, including a denied one. |
 
+A command you run with `!` in the terminal UI is not a gate decision, but it is reported through the
+same event and counter: `tool_name = shell`, `tier = human`, `decision = allow`, and it counts with
+the human approvals in `fontaine.tool_decision.count`. Its `user_shell` rule and its agent id (`user`)
+are only in the audit log.
+
 ## Privacy
 
 Fontaine's own fields carry no content: no prompts, no replies, no file contents, no command
@@ -146,6 +151,9 @@ unless you opt in, one key per kind of content:
 | `log_assistant_responses` | The model's reply |
 | `log_tool_details` | Tool-call arguments |
 | `log_tool_content` | Tool results |
+
+A message you type while a turn runs reaches the agent inside a tool result, so `log_tool_content`
+exports it along with that result.
 
 ```toml
 [telemetry]

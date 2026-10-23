@@ -96,6 +96,12 @@ pub enum Record {
         #[serde(default)]
         detail: Option<String>,
     },
+    /// A `!` command the human ran in their own shell, outside the permission pipeline. `None`
+    /// when it did not exit with a code, such as when it was interrupted.
+    UserShell {
+        command: String,
+        exit_code: Option<i32>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,7 +232,8 @@ impl LedgerView {
             | Record::Approval { .. }
             | Record::Grant { .. }
             | Record::Resumed { .. }
-            | Record::Agent { .. } => {}
+            | Record::Agent { .. }
+            | Record::UserShell { .. } => {}
         }
     }
 }
@@ -495,5 +502,35 @@ mod tests {
         std::fs::write(&path, &text).unwrap();
         assert!(Ledger::open(dir.path()).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+
+    #[test]
+    fn a_user_shell_record_round_trips_and_is_not_user_intent() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        for exit_code in [Some(2), None] {
+            ledger
+                .append(Record::UserShell {
+                    command: "make".into(),
+                    exit_code,
+                })
+                .unwrap();
+        }
+        let entries = ledger.read().unwrap();
+        assert_eq!(
+            entries[0].record,
+            Record::UserShell {
+                command: "make".into(),
+                exit_code: Some(2)
+            }
+        );
+        assert_eq!(
+            entries[1].record,
+            Record::UserShell {
+                command: "make".into(),
+                exit_code: None
+            }
+        );
+        assert!(ledger.view().user_messages.is_empty());
     }
 }

@@ -17,6 +17,30 @@ impl InputBuffer {
         self.chars.is_empty()
     }
 
+    pub fn first_char(&self) -> Option<char> {
+        self.chars.first().copied()
+    }
+
+    /// The cursor as a char offset into the text.
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    /// Replaces the text, leaving the cursor at its end.
+    pub fn set_text(&mut self, text: &str) {
+        self.chars = text.chars().collect();
+        self.cursor = self.chars.len();
+    }
+
+    /// Replaces the chars in `start..end` with `text`, leaving the cursor after it.
+    pub fn replace_range(&mut self, start: usize, end: usize, text: &str) {
+        let end = end.min(self.chars.len());
+        let start = start.min(end);
+        let inserted: Vec<char> = text.chars().collect();
+        self.cursor = start + inserted.len();
+        self.chars.splice(start..end, inserted);
+    }
+
     pub fn take(&mut self) -> String {
         self.cursor = 0;
         std::mem::take(&mut self.chars).into_iter().collect()
@@ -211,6 +235,17 @@ mod tests {
         assert_eq!(b.text(), "one ");
         b.kill_to_start();
         assert_eq!(b.text(), "");
+    }
+
+    #[test]
+    fn set_text_and_replace_range_move_the_cursor() {
+        let mut b = buffer("see @sr here");
+        b.replace_range(4, 7, "@src/main.rs ");
+        assert_eq!(b.text(), "see @src/main.rs  here");
+        assert_eq!(b.cursor(), 17);
+        b.set_text("new");
+        assert_eq!((b.text().as_str(), b.cursor()), ("new", 3));
+        assert_eq!(b.first_char(), Some('n'));
     }
 
     #[test]
