@@ -69,6 +69,7 @@ pub fn env_with(scope: Arc<Scope>, gate: Arc<dyn ToolGate>) -> BuiltinEnv {
         guard: Guard {
             gate,
             results: Arc::new(ResultPipeline::new()),
+            hide_mcp_names: false,
         },
         shell: ShellSettings::default(),
         webfetch: WebfetchConfig::default(),

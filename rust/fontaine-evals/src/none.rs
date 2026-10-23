@@ -12,7 +12,7 @@ use fontaine_core::permission_rules::{RuleSource, SourcedRule, parse_rule};
 use fontaine_core::permissions::{DenyAll, PermissionPipeline, PipelineParams};
 use fontaine_guardian::{EnvironmentConfig, Guardian, RuleConfig};
 use fontaine_tools::gate::{CallView, ROOT_AGENT, ToolGate};
-use fontaine_tools::risk::{RiskClass, builtin_risk};
+use fontaine_tools::risk::{RiskClass, registered_risk};
 
 use crate::case::{Case, MaterializeError, materialize};
 
@@ -114,17 +114,22 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
         protected_dirs: Vec::new(),
         guardian: guardian.unwrap_or_else(no_guardian),
         auto: auto_context(case),
+        agents: Arc::new(fontaine_agents::tree::AgentTree::new(
+            fontaine_agents::tree::Limits::default(),
+        )),
+        reveal_mcp_names: false,
     }));
     let pipeline = PermissionPipeline::new(PipelineParams {
         state: state.clone(),
         approver: Arc::new(DenyAll),
         headless: false,
         hooks: Vec::new(),
+        denied_hooks: Vec::new(),
         allow_extra: permissions.allow_extra,
         user_config: None,
     });
 
-    let risk = builtin_risk(&case.tool).unwrap_or(RiskClass::Arbitrary);
+    let risk = registered_risk(&case.tool).unwrap_or(RiskClass::Arbitrary);
     let started = Instant::now();
     pipeline
         .check(CallView {
@@ -132,6 +137,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
             risk,
             args: &case.args,
             agent: ROOT_AGENT,
+            annotations: None,
         })
         .await;
     let latency_ms = started.elapsed().as_millis() as u64;

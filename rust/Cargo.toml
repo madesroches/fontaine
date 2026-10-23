@@ -43,6 +43,8 @@ rig-core = { version = "=0.45.0", features = ["reqwest"] }
 rig-agent = "=0.45.0"
 rig-memory = { version = "=0.45.0", features = ["fs"] }
 rig-tools = "=0.45.0"
+rig-rmcp = "=0.45.0"
+rmcp = { version = "=3.6.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 rig-cassette = { version = "=0.45.0", features = ["http", "agent"] }
 micromegas-tracing = "=0.32.0"
 micromegas-telemetry-sink = "=0.32.0"

@@ -29,8 +29,8 @@ A call goes through these steps in order and the first one that decides wins.
 
 1. **Hooks.** Pre-tool-use hooks may deny, ask, allow or rewrite the call's arguments; every later
    step judges the rewritten call. Deny beats ask beats allow. A hook that fails, times out or
-   answers something unreadable decides nothing. No hook is configurable in this build; the slot
-   exists and is tested.
+   answers something unreadable decides nothing. Hooks are configured under `[[hooks.*]]`; see
+   [User hooks](hooks.md).
 2. **The deterministic floor**, in this order:
    - a `[permissions] deny` rule: denied.
    - in `plan`, an edit tool: blocked.

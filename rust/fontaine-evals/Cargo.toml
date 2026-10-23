@@ -12,6 +12,7 @@ dist = false
 [dependencies]
 clap.workspace = true
 dirs.workspace = true
+fontaine-agents.workspace = true
 fontaine-core.workspace = true
 fontaine-guardian.workspace = true
 fontaine-tools.workspace = true

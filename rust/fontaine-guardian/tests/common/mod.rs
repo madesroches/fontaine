@@ -156,6 +156,7 @@ pub fn request(command: &str, destructive: bool) -> AdjudicationRequest {
             args_digest: format!("digest-of-{command}"),
             args,
             destructive,
+            annotations: None,
         },
         session_facts: SessionFacts {
             workspace_roots: vec!["/work/proj".into()],

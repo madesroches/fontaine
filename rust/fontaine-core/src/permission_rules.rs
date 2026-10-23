@@ -38,6 +38,8 @@ pub enum RuleSource {
     Config(Slot),
     /// An "allow session" answer at an approval prompt.
     Session,
+    /// The `allowed-tools` of a skill that is active this turn.
+    Skill,
 }
 
 impl RuleSource {
@@ -45,6 +47,7 @@ impl RuleSource {
         match self {
             RuleSource::Config(slot) => slot.label(),
             RuleSource::Session => "session",
+            RuleSource::Skill => "skill",
         }
     }
 }

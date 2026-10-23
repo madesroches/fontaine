@@ -80,6 +80,22 @@ pub enum Record {
     AddDir {
         root: String,
     },
+    /// This session continues another one: `resume` and `continue` reopen it, `fork` copies it
+    /// under a new id. Session grants are never carried over.
+    Resumed {
+        source: String,
+        how: String,
+    },
+    /// A subagent started or ended, or two agents exchanged a message. What an agent was told
+    /// to do is not recorded here as anything the human said.
+    Agent {
+        event: String,
+        agent: String,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        detail: Option<String>,
+    },
     /// A `!` command the human ran in their own shell, outside the permission pipeline. `None`
     /// when it did not exit with a code, such as when it was interrupted.
     UserShell {
@@ -215,6 +231,8 @@ impl LedgerView {
             Record::ModeChange { .. }
             | Record::Approval { .. }
             | Record::Grant { .. }
+            | Record::Resumed { .. }
+            | Record::Agent { .. }
             | Record::UserShell { .. } => {}
         }
     }
@@ -237,6 +255,50 @@ impl Ledger {
             path,
             tail: Mutex::new(Tail { file, next_seq: 0 }),
             view: Mutex::new(LedgerView::default()),
+        })
+    }
+
+    /// Reopens the ledger of an earlier session: its records rebuild the view, and new ones
+    /// continue the sequence.
+    pub fn open(session_dir: &Path) -> io::Result<Ledger> {
+        let path = session_dir.join(LEDGER_DIR).join(LEDGER_FILE);
+        let text = std::fs::read_to_string(&path)?;
+        let mut view = LedgerView::default();
+        let mut next_seq = 0;
+        let mut good_end = 0;
+        let mut offset = 0;
+        let mut lines = text.split_inclusive('\n').peekable();
+        while let Some(raw) = lines.next() {
+            offset += raw.len();
+            if raw.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Entry>(raw) {
+                Ok(entry) => {
+                    view.apply(&entry.record);
+                    next_seq = entry.seq + 1;
+                    good_end = offset;
+                }
+                // A write cut short (full disk, power loss) can only damage the end, and leaves no
+                // newline; a complete line that fails to parse is something else (say, a newer
+                // build's record) and is not ours to cut.
+                Err(e) if lines.peek().is_none() && !raw.ends_with('\n') => {
+                    tracing::warn!(error = %e, "dropping the torn last line of the session ledger");
+                    let file = std::fs::OpenOptions::new().write(true).open(&path)?;
+                    file.set_len(good_end as u64)?;
+                }
+                Err(e) => return Err(io::Error::other(e)),
+            }
+        }
+        let mut file = owner_only::open(&path, true)?;
+        // A complete last record can still lack its newline; the next append would join it.
+        if good_end == text.len() && !text.is_empty() && !text.ends_with('\n') {
+            file.write_all(b"\n")?;
+        }
+        Ok(Ledger {
+            path,
+            tail: Mutex::new(Tail { file, next_seq }),
+            view: Mutex::new(view),
         })
     }
 
@@ -369,6 +431,77 @@ mod tests {
             "git@github.com:org/repo.git"
         );
         assert_eq!(without_credentials("ssh://git@host"), "ssh://host");
+    }
+
+    fn ledger_with_two_messages(dir: &Path) -> PathBuf {
+        let ledger = Ledger::create(dir).unwrap();
+        for text in ["one", "two"] {
+            ledger
+                .append(Record::UserMessage { text: text.into() })
+                .unwrap();
+        }
+        ledger.path().to_path_buf()
+    }
+
+    #[test]
+    fn a_torn_last_line_is_cut_off_and_appends_continue_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ledger_with_two_messages(dir.path());
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("{\"seq\":2,\"ts_ms\":1,\"rec");
+        std::fs::write(&path, &text).unwrap();
+
+        let ledger = Ledger::open(dir.path()).unwrap();
+        ledger
+            .append(Record::UserMessage {
+                text: "three".into(),
+            })
+            .unwrap();
+        drop(ledger);
+        let reopened = Ledger::open(dir.path()).unwrap();
+        let lines = std::fs::read_to_string(reopened.path()).unwrap();
+        assert_eq!(lines.lines().count(), 3);
+        assert!(lines.lines().last().unwrap().contains("three"));
+    }
+
+    #[test]
+    fn a_complete_last_record_without_its_newline_does_not_join_the_next_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ledger_with_two_messages(dir.path());
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.trim_end_matches('\n')).unwrap();
+
+        let ledger = Ledger::open(dir.path()).unwrap();
+        ledger
+            .append(Record::UserMessage {
+                text: "three".into(),
+            })
+            .unwrap();
+        drop(ledger);
+        let reopened = Ledger::open(dir.path()).unwrap();
+        let lines = std::fs::read_to_string(reopened.path()).unwrap();
+        assert_eq!(lines.lines().count(), 3);
+    }
+
+    #[test]
+    fn a_bad_line_before_the_last_still_fails_the_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ledger_with_two_messages(dir.path());
+        let text = std::fs::read_to_string(&path).unwrap();
+        let (first, rest) = text.split_once('\n').unwrap();
+        std::fs::write(&path, format!("{first}\nnot json\n{rest}")).unwrap();
+        assert!(Ledger::open(dir.path()).is_err());
+    }
+
+    #[test]
+    fn a_complete_unparseable_last_line_fails_the_open_and_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ledger_with_two_messages(dir.path());
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("{\"seq\":2,\"ts_ms\":1,\"record\":{\"kind\":\"from_the_future\"}}\n");
+        std::fs::write(&path, &text).unwrap();
+        assert!(Ledger::open(dir.path()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
     }
 
     #[test]

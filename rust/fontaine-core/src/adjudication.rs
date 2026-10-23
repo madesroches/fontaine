@@ -100,6 +100,7 @@ pub fn build(
     tool: &str,
     args: &Value,
     hook_context: Vec<String>,
+    annotations: Option<&str>,
 ) -> AdjudicationRequest {
     let scope = state.scope();
     let view = state.ledger.view();
@@ -128,6 +129,7 @@ pub fn build(
             args: args.clone(),
             args_digest: args_digest(args),
             destructive,
+            annotations: annotations.map(str::to_string),
         },
         session_facts: facts(&view, &scope, tool, args),
         hook_context,

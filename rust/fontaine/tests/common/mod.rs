@@ -291,6 +291,95 @@ impl Respond for Scripted {
     }
 }
 
+/// One conversation of a routed endpoint: the requests whose first user message contains
+/// `marker` are answered from `turns` in order, the last repeating, each after `delay`.
+#[derive(Clone, Debug)]
+pub struct Route {
+    pub marker: String,
+    pub turns: Vec<Turn>,
+    pub delay: std::time::Duration,
+}
+
+impl Route {
+    pub fn new(marker: &str, turns: Vec<Turn>) -> Route {
+        Route {
+            marker: marker.to_string(),
+            turns,
+            delay: std::time::Duration::ZERO,
+        }
+    }
+
+    pub fn slow(mut self, delay: std::time::Duration) -> Route {
+        self.delay = delay;
+        self
+    }
+}
+
+/// An endpoint for tests with several agents talking at once: which conversation a request
+/// belongs to is read from its first user message, so the order requests arrive in does not
+/// matter.
+struct Routed {
+    wire: Wire,
+    routes: Vec<(Route, AtomicUsize)>,
+    usage: Usage,
+}
+
+fn text_of(content: &Value) -> Option<String> {
+    match content {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(parts) => Some(
+            parts
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<Vec<_>>()
+                .join(""),
+        ),
+        _ => None,
+    }
+}
+
+/// The first user message of a request body, on either wire.
+fn first_user(body: &Value) -> String {
+    let items = body["messages"]
+        .as_array()
+        .or_else(|| body["input"].as_array());
+    items
+        .into_iter()
+        .flatten()
+        .filter(|m| m["role"] == "user")
+        .find_map(|m| text_of(&m["content"]))
+        .unwrap_or_default()
+}
+
+impl Respond for Routed {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        let first = first_user(&body);
+        let Some((route, next)) = self
+            .routes
+            .iter()
+            .find(|(route, _)| first.contains(&route.marker))
+        else {
+            return ResponseTemplate::new(500).set_body_string(format!("no route for: {first}"));
+        };
+        let at = next.fetch_add(1, Ordering::SeqCst);
+        let turn = route.turns.get(at).or(route.turns.last()).cloned();
+        let streamed = body["stream"] == json!(true);
+        let reply = match (self.wire, turn) {
+            (_, None) => ResponseTemplate::new(500).set_body_string("empty route"),
+            (Wire::Chat, Some(turn)) if !streamed => chat_json(&turn, self.usage),
+            (Wire::Chat, Some(turn)) => chat_response(&turn, self.usage),
+            (Wire::Responses, Some(turn)) if !streamed => responses_json(&turn, self.usage, at),
+            (Wire::Responses, Some(turn)) => responses_response(&turn, self.usage, at),
+        };
+        if route.delay.is_zero() {
+            reply
+        } else {
+            reply.set_delay(route.delay)
+        }
+    }
+}
+
 /// A scripted model endpoint.
 pub struct Endpoint {
     pub server: MockServer,
@@ -314,6 +403,28 @@ impl Endpoint {
                 turns,
                 usage,
                 next: AtomicUsize::new(0),
+            })
+            .mount(&server)
+            .await;
+        Endpoint { server }
+    }
+
+    /// An endpoint that answers each conversation from its own route.
+    pub async fn start_routed(wire: Wire, routes: Vec<Route>) -> Endpoint {
+        let server = MockServer::start().await;
+        let path_for = match wire {
+            Wire::Chat => "/chat/completions",
+            Wire::Responses => "/responses",
+        };
+        Mock::given(method("POST"))
+            .and(path(path_for))
+            .respond_with(Routed {
+                wire,
+                routes: routes
+                    .into_iter()
+                    .map(|r| (r, AtomicUsize::new(0)))
+                    .collect(),
+                usage: Usage::default(),
             })
             .mount(&server)
             .await;
@@ -361,6 +472,15 @@ impl Output {
             .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("`{l}`: {e}")))
             .collect()
     }
+}
+
+/// `path` as text for a hook command line. A Cygwin process (Git Bash's `sh`) started from a
+/// native one re-parses its command line and reads `\\` inside quotes as one escaped
+/// backslash, so the `\\?\` prefix a canonicalized Windows path carries would reach the hook
+/// as `\?\`, which names nothing.
+pub fn command_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    text.strip_prefix(r"\\?\").unwrap_or(&text).to_string()
 }
 
 impl Sandbox {
@@ -433,7 +553,17 @@ impl Sandbox {
     }
 
     pub async fn run_with_stdin(&self, args: &[&str], stdin: &str) -> Output {
+        self.run_in_with_stdin(&self.work, args, stdin).await
+    }
+
+    /// A run started from `dir` instead of the sandbox's workspace.
+    pub async fn run_in(&self, dir: &Path, args: &[&str]) -> Output {
+        self.run_in_with_stdin(dir, args, "").await
+    }
+
+    async fn run_in_with_stdin(&self, dir: &Path, args: &[&str], stdin: &str) -> Output {
         let mut cmd = self.command(args);
+        cmd.current_dir(dir);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

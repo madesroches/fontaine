@@ -61,7 +61,7 @@ impl AgentRuntime {
             exit_code,
         });
         record_decision(
-            &self.session.audit,
+            &self.state,
             &DecisionRecord {
                 ts: now_rfc3339(),
                 session_id: self.session.id.clone(),

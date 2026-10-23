@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod pipeline;
+pub mod runtime;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -84,6 +85,49 @@ impl World {
         git_init(&self.work);
         fontaine_core::trust::record(&self.data, &self.work).unwrap();
     }
+}
+
+/// A decision record for audit-log tests that need one.
+pub fn audit_record(session_id: &str) -> fontaine_core::audit::DecisionRecord {
+    use fontaine_core::audit::{Decision, DecisionRecord};
+    DecisionRecord {
+        ts: fontaine_core::audit::now_rfc3339(),
+        session_id: session_id.to_string(),
+        agent_id: "root".to_string(),
+        tool_use_id: None,
+        tool: "read".to_string(),
+        args_digest: String::new(),
+        original_args_digest: None,
+        tier: fontaine_core::tier::Tier::ReadOnlyFastPath,
+        decision: Decision::Allow,
+        rule: None,
+        confidence: None,
+        guardian_model: None,
+        latency_ms: 0,
+        guardian_profile: None,
+        guardian_verdict: None,
+        guardian_cache_hit: None,
+        guardian_latency_ms: None,
+        fail_closed_reason: None,
+        permission_mode: "manual".to_string(),
+        headless: false,
+        explanation: None,
+    }
+}
+
+/// Git Bash, which the shell and the hooks run through on Windows; nothing elsewhere.
+#[cfg(windows)]
+pub fn git_bash() -> Option<fontaine_tools::git_bash::GitBash> {
+    let probe = fontaine_tools::git_bash::Probe {
+        env: &|name| std::env::var_os(name),
+        is_file: &|path| path.is_file(),
+    };
+    fontaine_tools::git_bash::discover(&probe).ok()
+}
+
+#[cfg(not(windows))]
+pub fn git_bash() -> Option<fontaine_tools::git_bash::GitBash> {
+    None
 }
 
 pub fn no_env(_: &str) -> Option<OsString> {

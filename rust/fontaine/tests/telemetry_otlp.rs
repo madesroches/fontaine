@@ -4,11 +4,12 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use common::{Endpoint, Sandbox, Turn, Wire};
+use common::{Endpoint, Route, Sandbox, Turn, Wire};
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::any_value::Value as AnyValue;
+use opentelemetry_proto::tonic::metrics::v1::metric::Data;
 use opentelemetry_proto::tonic::trace::v1::Span;
 use prost::Message;
 use serde_json::json;
@@ -229,8 +230,6 @@ async fn a_run_exports_spans_metrics_and_the_api_request_event() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn guardian_metrics_and_spans_reach_the_collector_attributed_to_the_guardian() {
-    use opentelemetry_proto::tonic::metrics::v1::metric::Data;
-
     let judge = Endpoint::start(
         Wire::Chat,
         vec![Turn::tool(
@@ -523,5 +522,247 @@ async fn the_micromegas_recipe_over_otlp_appends_signal_paths_to_the_endpoint() 
         "/ingestion/otlp/v1/logs",
     ] {
         assert!(paths.iter().any(|p| p == path), "{path} in {paths:?}");
+    }
+}
+
+async fn metric_points(
+    server: &MockServer,
+    name: &str,
+) -> Vec<Vec<opentelemetry_proto::tonic::common::v1::KeyValue>> {
+    bodies(server, "/v1/metrics")
+        .await
+        .iter()
+        .flat_map(|body| {
+            ExportMetricsServiceRequest::decode(&body[..])
+                .unwrap()
+                .resource_metrics
+        })
+        .flat_map(|r| r.scope_metrics)
+        .flat_map(|s| s.metrics)
+        .filter(|m| m.name == name)
+        .flat_map(|m| match m.data {
+            Some(Data::Sum(sum)) => sum.data_points,
+            _ => Vec::new(),
+        })
+        .map(|p| p.attributes)
+        .collect()
+}
+
+async fn log_records(
+    server: &MockServer,
+    event: &str,
+) -> Vec<opentelemetry_proto::tonic::logs::v1::LogRecord> {
+    bodies(server, "/v1/logs")
+        .await
+        .iter()
+        .flat_map(|body| {
+            ExportLogsServiceRequest::decode(&body[..])
+                .unwrap()
+                .resource_logs
+        })
+        .flat_map(|r| r.scope_logs)
+        .flat_map(|s| s.log_records)
+        .filter(|r| {
+            matches!(r.body.as_ref().and_then(|b| b.value.as_ref()),
+                     Some(AnyValue::StringValue(text)) if text == event)
+        })
+        .collect()
+}
+
+fn text(value: Option<&AnyValue>) -> Option<&str> {
+    match value {
+        Some(AnyValue::StringValue(text)) => Some(text.as_str()),
+        _ => None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_session_count_carries_the_start_type_and_whether_the_run_was_headless() {
+    let model = Endpoint::start(Wire::Responses, vec![Turn::text("done")]).await;
+    let collector = collector().await;
+    let s = sandbox(&model.url(), &collector.uri(), "");
+    let first = s.headless(&["--output-format", "stream-json", "one"]).await;
+    assert_eq!(first.code, Some(0), "{}", first.stderr);
+    let id = first.lines()[0]["session_id"].as_str().unwrap().to_string();
+    let second = s.headless(&["--continue", "two"]).await;
+    assert_eq!(second.code, Some(0), "{}", second.stderr);
+    let third = s
+        .headless(&["--resume", &id, "--fork-session", "three"])
+        .await;
+    assert_eq!(third.code, Some(0), "{}", third.stderr);
+
+    let points = metric_points(&collector, "fontaine.session.count").await;
+    let mut seen: Vec<(String, String)> = points
+        .iter()
+        .map(|attrs| {
+            (
+                text(attr(attrs, "start_type")).unwrap_or("").to_string(),
+                text(attr(attrs, "headless")).unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    seen.sort();
+    // A fork takes the value of the flag it forks from.
+    assert_eq!(
+        seen,
+        [
+            ("continue".to_string(), "true".to_string()),
+            ("fresh".to_string(), "true".to_string()),
+            ("resume".to_string(), "true".to_string()),
+        ]
+    );
+}
+
+fn agent_routes() -> Vec<Route> {
+    vec![
+        Route::new(
+            "root task",
+            vec![
+                Turn::tool(
+                    "c1",
+                    "agent",
+                    json!({"agent_type": "explore", "prompt": "child-T: look", "background": false}),
+                ),
+                Turn::text("done"),
+            ],
+        ),
+        Route::new(
+            "child-T",
+            vec![
+                Turn::tool("k1", "read", json!({"path": "note.txt"})),
+                Turn::text("saw it"),
+            ],
+        ),
+    ]
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subagents_have_spans_under_their_spawning_call_and_decisions_keyed_by_agent() {
+    let model = Endpoint::start_routed(Wire::Responses, agent_routes()).await;
+    let collector = collector().await;
+    let s = sandbox(&model.url(), &collector.uri(), "");
+    s.add_file("note.txt", "x\n");
+    let out = s.headless(&["--allowed-tools", "agent", "root task"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+
+    let spans = spans(&collector).await;
+    let subagent = spans
+        .iter()
+        .find(|s| s.name == "fontaine.subagent")
+        .expect("a subagent span");
+    assert_eq!(
+        text(attr(&subagent.attributes, "agent.id")),
+        Some("agent-1")
+    );
+    assert_eq!(
+        text(attr(&subagent.attributes, "agent.type")),
+        Some("explore")
+    );
+    let parent = spans
+        .iter()
+        .find(|s| s.span_id == subagent.parent_span_id)
+        .expect("a parent");
+    assert_eq!(parent.name, "fontaine.tool");
+    assert_eq!(text(attr(&parent.attributes, "tool_name")), Some("agent"));
+    assert_eq!(parent.trace_id, subagent.trace_id);
+
+    // The child's model calls are the subagent's, and its decisions carry its id like the audit
+    // log's records do.
+    let tokens = metric_points(&collector, "fontaine.token.usage").await;
+    let sources: Vec<&str> = tokens
+        .iter()
+        .filter_map(|a| text(attr(a, "query_source")))
+        .collect();
+    assert!(
+        sources.contains(&"subagent") && sources.contains(&"main"),
+        "{sources:?}"
+    );
+    let decisions = log_records(&collector, "tool_decision").await;
+    let by_agent = |agent: &str| {
+        decisions
+            .iter()
+            .filter(|r| text(attr(&r.attributes, "agent.id")) == Some(agent))
+            .count()
+    };
+    assert_eq!(by_agent("root"), 1);
+    assert_eq!(by_agent("agent-1"), 1);
+    let events = log_records(&collector, "subagent").await;
+    let kinds: Vec<&str> = events
+        .iter()
+        .filter_map(|r| text(attr(&r.attributes, "event")))
+        .collect();
+    assert_eq!(kinds, ["spawn", "complete"]);
+}
+
+fn example(name: &str) -> String {
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
+    let file = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
+    let path = dir.join(file);
+    assert!(path.exists(), "{} is not built", path.display());
+    path.to_string_lossy().into_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_names_are_exported_only_when_tool_details_are_on() {
+    for details in [false, true] {
+        let model = Endpoint::start(
+            Wire::Responses,
+            vec![
+                Turn::tool("c1", "mcp__repo__echo", json!({})),
+                Turn::text("done"),
+            ],
+        )
+        .await;
+        let collector = collector().await;
+        let s = sandbox(
+            &model.url(),
+            &collector.uri(),
+            &format!("log_tool_details = {details}\n"),
+        );
+        s.add_file(
+            ".fontaine/settings.toml",
+            &format!(
+                "[mcp.servers.repo]\ncommand = '{}'\n",
+                example("repo_mcp_server")
+            ),
+        );
+        let out = s
+            .headless(&["--allowed-tools", "mcp__repo__echo", "go"])
+            .await;
+        assert_eq!(out.code, Some(0), "{}", out.stderr);
+
+        let everything = all_bytes(&collector).await;
+        let shown = |needle: &str| contains(&everything, needle);
+        assert_eq!(
+            shown("mcp__repo__echo"),
+            details,
+            "tool name, details = {details}"
+        );
+        let connection = log_records(&collector, "mcp_server_connection").await;
+        assert_eq!(connection.len(), 1);
+        let server = text(attr(&connection[0].attributes, "server")).unwrap();
+        assert_eq!(server, if details { "repo" } else { "third-party" });
+        let decision = &log_records(&collector, "tool_decision").await[0];
+        let tool = text(attr(&decision.attributes, "tool_name")).unwrap();
+        assert_eq!(
+            tool,
+            if details {
+                "mcp__repo__echo"
+            } else {
+                "third-party"
+            }
+        );
+        // The call span exists either way.
+        assert!(
+            spans(&collector)
+                .await
+                .iter()
+                .any(|s| s.name == "fontaine.mcp.call")
+        );
     }
 }

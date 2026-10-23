@@ -7,6 +7,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub mod routed;
+
 use fontaine_core::agent::AgentSetup;
 use fontaine_core::config::{self, AccountKind, LoadParams, PermissionMode};
 use fontaine_core::models::{
@@ -61,6 +63,12 @@ pub struct World {
     guardian_on_main: bool,
     /// Environment variables the switcher resolves models with.
     pub env: Vec<(String, String)>,
+    /// Whether the repository's executables may start (the trust prompt was accepted).
+    pub project_executables: bool,
+    /// Whether the repository's MCP servers wait for the human's approval.
+    pub confirm_servers: bool,
+    /// The main model is resolved from the settings, against this routed endpoint.
+    routed: bool,
     /// How many times the interface has been driven.
     runs: Cell<usize>,
 }
@@ -110,6 +118,9 @@ impl World {
             guardian_unavailable: None,
             guardian_on_main: false,
             env: Vec::new(),
+            project_executables: true,
+            confirm_servers: true,
+            routed: false,
             runs: Cell::new(0),
         };
         world.mock = MockCompletionModel::from_stream_turns(turns(&world));
@@ -141,6 +152,38 @@ impl World {
 
     pub fn with_config(self, text: &str) -> World {
         std::fs::write(&self.user_config, text).unwrap();
+        self
+    }
+
+    /// A world whose main model is the endpoint at `url`, which answers each conversation from
+    /// its own route. `extra` is more user settings.
+    pub fn routed(url: &str, extra: &str) -> World {
+        let mut world = World::new(Vec::new());
+        world.routed = true;
+        world.with_config(&format!(
+            "[accounts.mock]\nkind = \"openai-compatible\"\nbase_url = \"{url}\"\nmodels = [\"scripted\"]\n\n[model]\nmodel = \"mock/scripted\"\n{extra}"
+        ))
+    }
+
+    /// The workspace's settings file, as a repository would carry it.
+    pub fn with_project_settings(self, text: &str) -> World {
+        let dir = self.work.join(".fontaine");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("settings.toml"), text).unwrap();
+        self
+    }
+
+    /// The user declined to trust the workspace.
+    pub fn untrusted(mut self) -> World {
+        self.project_executables = false;
+        self
+    }
+
+    /// Writes `text` to `relative` under the user's config directory.
+    pub fn with_user_file(self, relative: &str, text: &str) -> World {
+        let path = self.config_dir.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
         self
     }
 
@@ -201,6 +244,21 @@ impl World {
             AccountKind::OpenAiCompatible,
             self.mock.clone().into(),
         );
+        let resolved = if self.routed {
+            Some(
+                futures::executor::block_on(fontaine_core::models::resolve(
+                    &fontaine_core::models::ResolveParams {
+                        config: &config,
+                        data_dir: &self.data,
+                        env: &|_| None,
+                        model_override: None,
+                    },
+                ))
+                .unwrap(),
+            )
+        } else {
+            None
+        };
         let guardian = if self.guardian_on_main {
             Some(GuardianModel::Ready(model.clone()))
         } else if let Some(spec) = &self.guardian_unavailable {
@@ -223,16 +281,21 @@ impl World {
             .iter()
             .map(|(k, v)| (k.clone(), v.into()))
             .collect();
-        let switcher = Switcher::new(
-            config.clone(),
-            self.data.clone(),
-            Arc::new(move |name: &str| env.get(name).cloned()),
-        );
+        let env: fontaine_core::agent::EnvLookup =
+            Arc::new(move |name: &str| env.get(name).cloned());
+        let switcher = Switcher::new(config.clone(), self.data.clone(), env.clone());
+        let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
+        let extensions = fontaine_core::extensions::load(&fontaine_core::extensions::LoadParams {
+            config_dir: &self.config_dir,
+            project_root: &self.work,
+            servers: &servers,
+        })
+        .unwrap();
         AgentSetup {
             config,
             config_dir: self.config_dir.clone(),
             data_dir: self.data.clone(),
-            models: Models {
+            models: resolved.unwrap_or(Models {
                 main: model,
                 main_listing: Vec::new(),
                 guardian,
@@ -242,7 +305,7 @@ impl World {
                     GuardianChoice::Pinned
                 },
                 notices: Vec::new(),
-            },
+            }),
             session: Session::create(&self.data, &session_id(self.runs.get())).unwrap(),
             roots: vec![self.work.clone()],
             mode: self.mode,
@@ -258,6 +321,11 @@ impl World {
             guardian_profile: fontaine_guardian::Profile::Full,
             notices: Vec::new(),
             switcher: Some(switcher),
+            extensions,
+            project_executables: self.project_executables,
+            confirm_project_servers: self.confirm_servers,
+            origin: fontaine_core::agent::SessionOrigin::Fresh,
+            env,
         }
     }
 

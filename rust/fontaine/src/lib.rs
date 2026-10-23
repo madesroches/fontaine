@@ -8,14 +8,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
+use fontaine_core::agent::SessionOrigin;
 use fontaine_core::agent::{AgentRuntime, AgentSetup};
 use fontaine_core::config::{self, CliRules, Config, ConfigError, LoadParams, PermissionMode};
 use fontaine_core::containment;
 use fontaine_core::dirs::{self, Dirs};
+use fontaine_core::extensions::{self, Extensions};
 use fontaine_core::models::{self, Models, ResolveParams, Switcher};
 use fontaine_core::permissions::DenyAll;
-use fontaine_core::session::Session;
+use fontaine_core::session::{self, Session, SessionError};
 use fontaine_core::tools;
+use fontaine_core::trust;
 use fontaine_core::workspace::{self, RootSource};
 use fontaine_tools::git_bash::GitBash;
 use rig_core::schemars::Schema;
@@ -59,26 +62,13 @@ fn usage(message: impl std::fmt::Display) -> ExitCode {
     ExitCode::from(EXIT_CONFIG)
 }
 
-pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
-    let cli = match Cli::try_parse_from(args) {
-        Ok(cli) => cli,
-        Err(e) => {
-            // clap exits 0 for --help/--version and 2 for usage errors.
-            let code = if e.use_stderr() { EXIT_CONFIG } else { 0 };
-            let _ = e.print();
-            return ExitCode::from(code);
-        }
-    };
-
-    let sink = match DebugSink::open(cli.debug_file.as_deref(), (host.env)(telemetry::LOG_VAR)) {
-        Ok(sink) => sink,
-        Err(e) => {
-            eprintln!("fontaine: {e}");
-            return ExitCode::from(EXIT_CONFIG);
-        }
-    };
-
-    let loaded = telemetry::with_debug_only(sink.as_ref(), || {
+/// Loads the settings, and the directories they come from.
+fn load_config(
+    cli: &Cli,
+    host: &Host,
+    sink: Option<&DebugSink>,
+) -> Result<(Config, Dirs), ConfigError> {
+    telemetry::with_debug_only(sink, || {
         let dirs = dirs::resolve(
             &*host.env,
             host.default_config_dir.clone(),
@@ -103,8 +93,80 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
         let stack: Vec<String> = config.scopes.iter().map(ToString::to_string).collect();
         tracing::debug!(scope_stack = ?stack, workspace = %config.workspace.display(), "config loaded");
         Ok::<_, ConfigError>((config, dirs))
-    });
-    let (config, dirs) = match loaded {
+    })
+}
+
+/// What the session flags ask for.
+fn check_session_flags(cli: &Cli) -> Result<(), ExitCode> {
+    let continuing = cli.continue_session || cli.resume.is_some();
+    if cli.fork_session && !continuing {
+        return Err(usage("--fork-session needs --continue or --resume"));
+    }
+    if continuing && cli.session_id.is_some() && !cli.fork_session {
+        return Err(usage(
+            "--session-id cannot be combined with --continue or --resume unless --fork-session is also given",
+        ));
+    }
+    Ok(())
+}
+
+/// What the workspace holds that the trust prompt is about.
+fn trust_summary(config: &Config) -> fontaine_tui::trust_prompt::Summary {
+    let hooks = config
+        .hooks
+        .pre_tool_use
+        .iter()
+        .chain(&config.hooks.post_tool_use)
+        .chain(&config.hooks.permission_denied)
+        .filter(|hook| hook.origin.is_project())
+        .count();
+    let servers = config
+        .mcp_servers
+        .keys()
+        .filter(|name| {
+            config
+                .mcp_origins
+                .get(*name)
+                .is_some_and(|o| o.is_project())
+        })
+        .cloned()
+        .collect();
+    let project = config.workspace.join(config::PROJECT_DIR);
+    fontaine_tui::trust_prompt::Summary {
+        hooks,
+        servers,
+        skills: project.join(extensions::SKILLS_DIR).is_dir(),
+        settings_files: [config::PROJECT_FILE, config::PROJECT_LOCAL_FILE]
+            .iter()
+            .filter(|name| project.join(name).is_file())
+            .map(|name| format!("{}/{name}", config::PROJECT_DIR))
+            .collect(),
+    }
+}
+
+pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(e) => {
+            // clap exits 0 for --help/--version and 2 for usage errors.
+            let code = if e.use_stderr() { EXIT_CONFIG } else { 0 };
+            let _ = e.print();
+            return ExitCode::from(code);
+        }
+    };
+    if let Err(code) = check_session_flags(&cli) {
+        return code;
+    }
+
+    let sink = match DebugSink::open(cli.debug_file.as_deref(), (host.env)(telemetry::LOG_VAR)) {
+        Ok(sink) => sink,
+        Err(e) => {
+            eprintln!("fontaine: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    let (mut config, dirs) = match load_config(&cli, &host, sink.as_ref()) {
         Ok(loaded) => loaded,
         Err(e) => {
             eprintln!("fontaine: {e}");
@@ -126,6 +188,32 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     if !cli.print && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         return usage("the interactive UI needs a terminal; use `fontaine -p` for scripted runs");
     }
+    // The interactive UI asks before anything the repository defines may run. A headless run
+    // loads it without asking, as Claude Code's `-p` does.
+    let mut project_executables = true;
+    if !cli.print && !trust::is_trusted(&dirs.data, &config.workspace) {
+        match fontaine_tui::trust_prompt::ask(&config.workspace, &trust_summary(&config)) {
+            Ok(fontaine_tui::trust_prompt::Choice::Trust) => {
+                if let Err(e) = trust::record(&dirs.data, &config.workspace) {
+                    eprintln!("fontaine: could not save the trust decision: {e}");
+                    return ExitCode::from(1);
+                }
+                // An untracked settings.local.toml now loads with the user's trust.
+                match load_config(&cli, &host, sink.as_ref()) {
+                    Ok((reloaded, _)) => config = reloaded,
+                    Err(e) => {
+                        eprintln!("fontaine: {e}");
+                        return ExitCode::from(e.exit_code());
+                    }
+                }
+            }
+            Ok(fontaine_tui::trust_prompt::Choice::DontTrust) => project_executables = false,
+            Err(e) => {
+                eprintln!("fontaine: cannot show the trust prompt: {e}");
+                return ExitCode::from(1);
+            }
+        }
+    }
     let headless = if cli.print {
         match prepare_headless(&cli) {
             Ok(options) => Some(options),
@@ -134,7 +222,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     } else {
         None
     };
-    let prep = match prepare_session(&cli, &config, &host, &dirs, mode) {
+    let prep = match prepare_session(&cli, &config, &host, &dirs, mode, project_executables) {
         Ok(prep) => prep,
         Err(code) => return code,
     };
@@ -150,7 +238,8 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     let session = tracing::info_span!(
         target: telemetry::span_bridge::TARGET,
         "fontaine.session",
-        start_type = if cli.print { "headless" } else { "interactive" },
+        start_type = prep.start_type,
+        headless = cli.print,
     );
     let entered = session.enter();
 
@@ -243,6 +332,61 @@ pub struct SessionPrep {
     pub scrub_env: Vec<OsString>,
     pub git_bash: Option<GitBash>,
     pub home: Option<PathBuf>,
+    pub extensions: Extensions,
+    pub origin: SessionOrigin,
+    /// Whether repository-defined executables may start.
+    pub project_executables: bool,
+    /// Claude Code's `start_type`: `fresh`, `resume` or `continue`.
+    pub start_type: &'static str,
+}
+
+/// Opens, copies or creates the session the flags ask for.
+fn open_session(
+    cli: &Cli,
+    config: &Config,
+    dirs: &Dirs,
+) -> Result<(Session, SessionOrigin, &'static str), ExitCode> {
+    let fail = |e: SessionError| {
+        eprintln!("fontaine: {e}");
+        ExitCode::from(e.exit_code())
+    };
+    let requested = match cli.session_id.as_deref() {
+        None => Uuid::new_v4(),
+        Some(text) => {
+            Uuid::parse_str(text).map_err(|e| usage(format!("--session-id must be a UUID: {e}")))?
+        }
+    }
+    .hyphenated()
+    .to_string();
+    let (source, start_type) = match (&cli.resume, cli.continue_session) {
+        (Some(id), _) => (Some(id.clone()), "resume"),
+        (None, true) => (
+            session::latest_for_root(&dirs.data, &config.workspace),
+            "continue",
+        ),
+        (None, false) => (None, "fresh"),
+    };
+    let Some(source) = source else {
+        // `--continue` with nothing to continue is a fresh start.
+        let session = Session::create(&dirs.data, &requested).map_err(fail)?;
+        return Ok((session, SessionOrigin::Fresh, "fresh"));
+    };
+    if cli.fork_session {
+        let session = Session::fork(&dirs.data, &source, &requested).map_err(fail)?;
+        let how = format!("fork ({start_type})");
+        return Ok((
+            session,
+            SessionOrigin::Continued { source, how },
+            start_type,
+        ));
+    }
+    let session = Session::open(&dirs.data, &source).map_err(fail)?;
+    let how = start_type.to_string();
+    Ok((
+        session,
+        SessionOrigin::Continued { source, how },
+        start_type,
+    ))
 }
 
 fn prepare_session(
@@ -251,15 +395,8 @@ fn prepare_session(
     host: &Host,
     dirs: &Dirs,
     mode: PermissionMode,
+    project_executables: bool,
 ) -> Result<SessionPrep, ExitCode> {
-    let session_id = match cli.session_id.as_deref() {
-        None => Uuid::new_v4(),
-        Some(text) => {
-            Uuid::parse_str(text).map_err(|e| usage(format!("--session-id must be a UUID: {e}")))?
-        }
-    }
-    .hyphenated()
-    .to_string();
     let git_bash = git_bash(host)?;
 
     let added = cli
@@ -278,7 +415,16 @@ fn prepare_session(
         eprintln!("fontaine: warning: {warning}");
     }
 
-    let session = Session::create(&dirs.data, &session_id).map_err(|e| {
+    let (session, origin, start_type) = open_session(cli, config, dirs)?;
+    // Declined trust keeps a repository's servers from starting, but its agent files may still
+    // name their tools: toolset cutting drops them.
+    let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
+    let extensions = extensions::load(&extensions::LoadParams {
+        config_dir: &dirs.config,
+        project_root: &config.workspace,
+        servers: &servers,
+    })
+    .map_err(|e| {
         eprintln!("fontaine: {e}");
         ExitCode::from(e.exit_code())
     })?;
@@ -294,6 +440,10 @@ fn prepare_session(
         scrub_env: tools::scrubbed_env(config, (host.env_names)()),
         git_bash,
         home,
+        extensions,
+        origin,
+        project_executables,
+        start_type,
     })
 }
 
@@ -370,13 +520,18 @@ fn agent_setup(
             Some((name, value))
         })
         .collect();
-    let switcher = Switcher::new(
-        config.clone(),
-        dirs.data.clone(),
-        Arc::new(move |name: &str| env.get(name).cloned()),
-    );
+    let lookup: fontaine_core::agent::EnvLookup =
+        Arc::new(move |name: &str| env.get(name).cloned());
+    let switcher = Switcher::new(config.clone(), dirs.data.clone(), lookup.clone());
+    let mut config = config.clone();
+    if headless && let Some(cap) = cli.max_budget_usd {
+        // The tree's session ceiling counts root, guardian and child spend alike, so a running
+        // child is stopped at the headless cap instead of finishing its own budget first.
+        let ceiling = &mut config.agents.session_cost_budget_usd;
+        *ceiling = Some(ceiling.map_or(cap, |c| c.min(cap)));
+    }
     AgentSetup {
-        config: config.clone(),
+        config,
         config_dir: dirs.config.clone(),
         data_dir: dirs.data.clone(),
         models,
@@ -395,6 +550,11 @@ fn agent_setup(
         guardian_profile: resolved.profile,
         notices,
         switcher: Some(switcher),
+        extensions: prep.extensions,
+        project_executables: prep.project_executables,
+        confirm_project_servers: !headless,
+        origin: prep.origin,
+        env: lookup,
     }
 }
 
@@ -424,13 +584,15 @@ async fn run_headless(
         host,
     };
     let setup = agent_setup(&launch, prep, models, true, options.json_schema.clone());
-    let runtime = match AgentRuntime::new(setup) {
+    let mut runtime = match AgentRuntime::new(setup) {
         Ok(runtime) => runtime,
         Err(message) => {
             eprintln!("fontaine: {message}");
             return 1;
         }
     };
+    // Servers that fail to start are reported on stderr and skipped.
+    runtime.connect_mcp(&[]).await;
     headless::run(options, runtime, &dirs.data).await
 }
 

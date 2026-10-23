@@ -16,8 +16,17 @@ describe what the current build does; each page covers one topic.
   allow rules, and the shell pre-classifier.
 - [The guardian](guardian.md): what `auto` mode asks a separate model, what it sees, how every
   failure becomes a denial, how to choose the guardian model, and the container-mode profile.
+- [Subagents](agents.md): the `agent` and `send_message` tools, background subagents, agent types
+  and agent files, the permission-mode rules, budgets, and the agents panel.
+- [User hooks](hooks.md): the `pre_tool_use`, `post_tool_use` and `permission_denied` hooks, their
+  JSON input and output, and what a hook can and cannot decide.
+- [MCP servers](mcp.md): declaring stdio and streamable-HTTP servers, workspace trust and
+  per-server approval, and how MCP tools are gated.
+- [Skills, agent files and output styles](extensions.md): the extension files, their
+  frontmatter, slash commands and porting from `.claude/`.
 - [The terminal UI](tui.md): keys, the status bar, approval prompts, the guardian's denials,
-  `/denied`, `/model` and `/guardian-model`, and `/add-dir`.
+  `/denied`, `/model`, `/guardian-model`, `/add-dir`, `/output-style`, the agents panel and the
+  workspace trust prompt.
 - [Headless runs](headless.md): `fontaine -p`, its flags, exit codes, and the versioned JSON output
   that CI and the eval runner consume.
 - [Telemetry](telemetry.md): enabling export, the micromegas and OTLP backends, what is exported,

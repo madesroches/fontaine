@@ -54,4 +54,11 @@ Instructions from /work/project/FONTAINE.md:
 
 Run `cargo test` before finishing.
 
+Skills you can load with the `skill` tool, each a set of instructions for a kind of task:
+- review: Review a pull request
+
+Output style `terse`:
+
+Answer in at most two sentences.
+
 Keep answers under ten lines.

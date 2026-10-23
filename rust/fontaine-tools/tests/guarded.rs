@@ -88,6 +88,7 @@ fn guard(gate: Arc<dyn ToolGate>) -> Guard {
     Guard {
         gate,
         results: Arc::new(ResultPipeline::new()),
+        hide_mcp_names: false,
     }
 }
 
@@ -205,6 +206,7 @@ fn mcp_tool(
         Guard {
             gate,
             results: Arc::new(results),
+            hide_mcp_names: false,
         },
     );
     (runs, tool)

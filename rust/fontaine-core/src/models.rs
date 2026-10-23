@@ -354,17 +354,22 @@ fn unknown_model(reference: &ModelRef, available: &[String]) -> ModelError {
 }
 
 /// The main model's client, its model ids and its handle.
-async fn resolve_main_model(
+///
+/// Generic over the environment lookup so a caller whose lookup is `Sync` gets a future it can
+/// send to another task.
+async fn resolve_main_model<E: Fn(&str) -> Option<std::ffi::OsString> + ?Sized>(
     config: &Config,
     stored: &Credentials,
-    env: EnvLookup<'_>,
+    env: &E,
     text: &str,
     what: &str,
 ) -> Result<(ModelRef, Client, Vec<String>, ModelHandle), ModelError> {
     let main_ref = parse_reference(text, what)?;
     let main_account = account_of(config, &main_ref, what)?;
-    let main_client =
-        client_for(&main_ref.account, main_account, env, stored).map_err(config_error)?;
+    let main_client = {
+        let lookup = |name: &str| env(name);
+        client_for(&main_ref.account, main_account, &lookup, stored).map_err(config_error)?
+    };
     let main_models = match &main_account.models {
         Some(list) => list.clone(),
         None => main_client.list().await.map_err(|e| {
@@ -622,6 +627,33 @@ impl Switcher {
     ) -> Result<GuardianModel, ModelError> {
         let stored = Credentials::load(&self.data_dir)?;
         build_guardian(&self.config, &stored, &*self.env, text, main, None)
+    }
+
+    /// The model `$guardian_default` stands for: the top-ranked validated guardian model an
+    /// account offers, or `None` when none is available.
+    pub fn guardian_default(&self, main: &ModelRef, main_models: &[String]) -> Option<ModelHandle> {
+        let stored = Credentials::load(&self.data_dir).ok()?;
+        available_validated(
+            &validated_models(),
+            &self.config,
+            &stored,
+            &*self.env,
+            (main, main_models),
+        )
+        .into_iter()
+        .find_map(|reference| {
+            match build_guardian(
+                &self.config,
+                &stored,
+                &*self.env,
+                &reference.to_string(),
+                Some((main, main_models)),
+                None,
+            ) {
+                Ok(GuardianModel::Ready(handle)) => Some(handle),
+                _ => None,
+            }
+        })
     }
 
     /// Guardian models to offer when the pinned one is unavailable: the validated list entries

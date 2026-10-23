@@ -88,6 +88,11 @@ impl Approval {
         }
     }
 
+    /// Whether nobody waits for the answer any more, such as when the agent was killed.
+    pub fn is_closed(&self) -> bool {
+        self.reply.as_ref().is_none_or(oneshot::Sender::is_closed)
+    }
+
     pub fn scroll(&self) -> usize {
         self.scroll.min(self.max_scroll.get())
     }
@@ -207,8 +212,12 @@ impl Approval {
     /// The question and the whole call, wrapped; the part that scrolls.
     pub fn body(&self, width: usize) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
+        let who = match self.request.agent.as_str() {
+            "" | fontaine_tools::gate::ROOT_AGENT => String::new(),
+            agent => format!(" ({agent})"),
+        };
         let mut out = vec![Line::styled(
-            format!("Allow {}?", self.request.tool),
+            format!("Allow {}{who}?", self.request.tool),
             bold.fg(Color::Yellow),
         )];
         for text in [&self.request.summary, &self.request.reason] {

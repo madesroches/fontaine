@@ -2,6 +2,7 @@
 //! loop with the terminal swapped for an input channel and a render callback, which is how the
 //! tests exercise it.
 
+pub mod agents_panel;
 pub mod app;
 pub mod approval;
 pub mod complete;
@@ -9,8 +10,10 @@ pub mod denials;
 pub mod history;
 pub mod input;
 pub mod screen;
+pub mod server_prompt;
 pub mod statusbar;
 pub mod transcript;
+pub mod trust_prompt;
 pub mod view;
 
 use std::io::Stdout;
@@ -30,6 +33,7 @@ use fontaine_core::tier::Tier;
 use fontaine_core::turn::{
     DEFAULT_MAX_TURNS, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
 };
+use fontaine_tools::gate::ROOT_AGENT;
 use futures::future::BoxFuture;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::Show;
@@ -40,11 +44,13 @@ use ratatui::crossterm::terminal::{
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 
-pub use app::{Action, App, Command, Input, parse_command};
+pub use app::{Action, App, Command, Input, MenuEntry, builtin_menu, parse_command};
 pub use denials::UnavailableAnswer;
 
+use agents_panel::{AgentsPanel, Detail, PanelRow};
 use denials::{DeniedList, UnavailablePrompt};
 use screen::{Anchored, Screen};
+use server_prompt::ServerPrompt;
 
 /// What the permission pipeline sends to the interface.
 enum Prompt {
@@ -138,6 +144,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
     fn draw(&mut self, runtime: &AgentRuntime) {
         self.app.mode = runtime.state.mode();
         self.app.model = runtime.models.main.reference.to_string();
+        self.app.prune_closed();
+        let rows = runtime.state.agents().rows();
+        self.app.running_agents = rows.iter().filter(|r| r.status.is_running()).count();
+        if self.app.agents.is_some() {
+            self.refresh_panel(runtime, &rows);
+        }
         self.app.queued = runtime.steering.queued();
         let files = runtime
             .files
@@ -146,6 +158,54 @@ impl<R: FnMut(&mut App)> Ui<R> {
             .clone();
         self.app.set_files(files);
         (self.render)(&mut self.app);
+    }
+
+    /// Brings the agents panel up to date with the tree, the decisions and the queue.
+    fn refresh_panel(&mut self, runtime: &AgentRuntime, rows: &[fontaine_agents::tree::AgentRow]) {
+        let panel_rows: Vec<PanelRow> = rows
+            .iter()
+            .map(|row| PanelRow {
+                id: row.id.clone(),
+                agent_type: row.agent_type.clone(),
+                model: row.model.clone(),
+                status: row.status,
+                tokens: row.spend.tokens(),
+                token_budget: row.budget.tokens,
+                cost_usd: row.spend.cost_usd,
+                cost_budget: row.budget.cost_usd,
+                depth: row.depth,
+                stopped_because: row.exhausted.map(|why| why.describe()),
+            })
+            .collect();
+        let selected = self.app.agents.as_ref().and_then(AgentsPanel::selected_id);
+        let detail = match (&self.app.agents, selected) {
+            (Some(panel), Some(id)) if panel.is_inspecting() => Some(Detail {
+                pending: self.app.pending_for(&id),
+                decisions: runtime
+                    .state
+                    .decisions_of(&id)
+                    .iter()
+                    .map(|d| {
+                        format!(
+                            "{} {} ({}{})",
+                            d.tool,
+                            d.decision,
+                            d.tier,
+                            d.rule
+                                .as_deref()
+                                .map_or(String::new(), |r| format!(": {r}"))
+                        )
+                    })
+                    .collect(),
+                log: runtime.state.agent_log(&id),
+                id,
+            }),
+            _ => None,
+        };
+        if let Some(panel) = &mut self.app.agents {
+            panel.set_rows(panel_rows);
+            panel.detail = detail;
+        }
     }
 
     fn on_prompt(&mut self, runtime: Option<&AgentRuntime>, prompt: Prompt) {
@@ -167,8 +227,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// longer exist, so they are dropped, but notices still count.
     fn drain_prompts(&mut self) {
         while let Ok(prompt) = self.prompts.try_recv() {
-            if let Prompt::Notice(message) = prompt {
-                self.app.transcript.notice(message);
+            match prompt {
+                Prompt::Notice(message) => self.app.transcript.notice(message),
+                // A background agent's call is still waiting for its answer.
+                Prompt::Ask(request, reply)
+                    if request.agent != ROOT_AGENT && !reply.is_closed() =>
+                {
+                    self.app.begin_approval(*request, reply);
+                }
+                Prompt::Ask(..) | Prompt::Unavailable(..) => {}
             }
         }
     }
@@ -201,7 +268,24 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     async fn run(&mut self, runtime: &mut AgentRuntime, launch_dir: &Path) {
+        let tree = runtime.state.agents().clone();
         loop {
+            // Registered before the tree is read: a child that finishes between the read and
+            // the wait would otherwise go unseen until the next key.
+            let changed = tree.changed().notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            // A background agent that finished while nothing was running has news for the
+            // main conversation, which gets a turn of its own to read it.
+            if tree.has_notifications(ROOT_AGENT) {
+                if matches!(
+                    self.notification_turn(runtime).await,
+                    Some(TurnEnd::InputClosed)
+                ) {
+                    return;
+                }
+                continue;
+            }
             self.draw(runtime);
             let action = tokio::select! {
                 input = self.input.recv() => match input {
@@ -212,6 +296,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.on_prompt(Some(runtime), prompt);
                     Action::None
                 }
+                _ = &mut changed => Action::None,
             };
             match action {
                 Action::Quit => return,
@@ -231,9 +316,81 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Action::EditQueued => self.edit_queued(runtime),
                 Action::RetryDenied(index) => self.retry_denied(runtime, index),
                 Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
-                Action::None | Action::Interrupt | Action::Queue(_) => {}
+                Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                Action::Server(_) | Action::None | Action::Interrupt | Action::Queue(_) => {}
             }
         }
+    }
+
+    /// Starts the MCP servers: the ones in the user's own settings at once, a repository's only
+    /// after the human approves each. Returns false when the input closed meanwhile.
+    async fn start_mcp(&mut self, runtime: &mut AgentRuntime) -> bool {
+        let mut approved = Vec::new();
+        for plan in runtime.mcp_plan().into_iter().filter(|p| p.needs_approval) {
+            self.app.begin_server(ServerPrompt::new(
+                plan.name.clone(),
+                plan.description.clone(),
+            ));
+            let answer = loop {
+                self.draw(runtime);
+                let Some(input) = self.input.recv().await else {
+                    return false;
+                };
+                match self.app.handle_input(input) {
+                    Action::Server(answer) => break answer,
+                    Action::Quit => return false,
+                    _ => {}
+                }
+            };
+            if answer {
+                match runtime.approve_mcp_server(&plan) {
+                    Ok(()) => {}
+                    Err(e) => self.app.transcript.error(format!(
+                        "could not remember the approval of `{}`: {e}",
+                        plan.name
+                    )),
+                }
+                approved.push(plan.name.clone());
+            } else {
+                self.app
+                    .transcript
+                    .notice(format!("MCP server `{}` was left off", plan.name));
+            }
+        }
+        if runtime
+            .mcp_plan()
+            .iter()
+            .any(|p| !p.needs_approval || approved.contains(&p.name))
+        {
+            self.app.transcript.notice("starting MCP servers");
+            self.draw(runtime);
+        }
+        for outcome in runtime.connect_mcp(&approved).await {
+            match outcome.error {
+                None => self
+                    .app
+                    .transcript
+                    .notice(format!("MCP server `{}` is connected", outcome.server)),
+                Some(e) => self.app.transcript.error(e),
+            }
+        }
+        true
+    }
+
+    fn kill_agent(&mut self, runtime: &AgentRuntime, id: &str) {
+        if runtime.state.agents().kill(id) {
+            self.app.transcript.notice(format!("killed {id}"));
+        }
+    }
+
+    /// A turn on what the background agents reported. It is not the user speaking, so it is not
+    /// recorded as a user message.
+    async fn notification_turn(&mut self, runtime: &AgentRuntime) -> Option<TurnEnd> {
+        let prompt = runtime.notification_prompt().await?;
+        self.app
+            .transcript
+            .notice("a background agent reported back");
+        Some(self.turn(runtime, prompt, None).await)
     }
 
     async fn submit(
@@ -249,27 +406,130 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(Command::Denied) => {
                 self.app.denied = Some(DeniedList::new(runtime.state.denied_calls()));
             }
+            Some(Command::Agents) => self.app.agents = Some(AgentsPanel::new()),
+            Some(Command::OutputStyle(name)) => self.output_style(runtime, &name),
             Some(Command::Model(reference)) => self.model(runtime, &reference).await,
             Some(Command::GuardianModel(reference)) => self.guardian_model(runtime, &reference),
-            Some(Command::Unknown(name)) => self.app.transcript.error(format!(
-                "unknown command /{name}; try /add-dir <path>, /denied, /model [account/model], /guardian-model [account/model] or /exit"
-            )),
-            None => return self.converse(runtime, text).await,
+            Some(Command::Other { name, argument }) => {
+                let known = runtime
+                    .slash_skills()
+                    .iter()
+                    .any(|(skill, _, _)| *skill == name);
+                if !known {
+                    self.app.transcript.error(format!(
+                        "unknown command /{name}; type / to see the commands and skills"
+                    ));
+                    return Continue(());
+                }
+                // Recorded before the skill's commands run so the guardian judging them has
+                // this turn's intent in the ledger.
+                runtime.append(Record::UserMessage { text: text.clone() });
+                let prompt = match self.expand_serving(runtime, &name, &argument).await {
+                    Ok(Ok(prompt)) => prompt,
+                    Ok(Err(e)) => {
+                        self.app.transcript.error(format!("/{name}: {e}"));
+                        return Continue(());
+                    }
+                    Err(TurnEnd::InputClosed) => return Break(()),
+                    Err(_) => {
+                        self.app.transcript.notice("interrupted");
+                        return Continue(());
+                    }
+                };
+                return self.converse(runtime, text, Some(prompt)).await;
+            }
+            None => return self.converse(runtime, text, None).await,
         }
         Continue(())
     }
 
+    /// Expands a skill while still serving prompts and keys: its `!` commands can need a
+    /// human answer, and nothing else would be listening for it. `Err` is the user leaving or
+    /// interrupting.
+    async fn expand_serving(
+        &mut self,
+        runtime: &AgentRuntime,
+        name: &str,
+        argument: &str,
+    ) -> Result<Result<String, String>, TurnEnd> {
+        let mut expansion = Box::pin(runtime.expand_skill(name, argument));
+        let end = loop {
+            self.draw(runtime);
+            tokio::select! {
+                biased;
+                result = &mut expansion => return Ok(result),
+                input = self.input.recv() => match input {
+                    None => break TurnEnd::InputClosed,
+                    Some(input) => match self.app.handle_input(input) {
+                        Action::Interrupt | Action::Quit => break TurnEnd::Interrupted,
+                        Action::CycleMode => self.cycle_mode(runtime),
+                        Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
+                        Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                        Action::RetryDenied(_)
+                        | Action::Server(_)
+                        | Action::None
+                        | Action::Submit(_)
+                        | Action::Queue(_)
+                        | Action::EditQueued
+                        | Action::Shell(_) => {}
+                    },
+                },
+                Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
+            }
+        };
+        drop(expansion);
+        self.app.deny_pending();
+        self.drain_prompts();
+        Err(end)
+    }
+
+    /// `/output-style`: shows the styles, or switches to one for the next turn.
+    fn output_style(&mut self, runtime: &mut AgentRuntime, name: &str) {
+        if name.is_empty() {
+            let known: Vec<String> = runtime
+                .extensions()
+                .output_styles
+                .iter()
+                .map(|s| format!("{} ({})", s.name, s.description))
+                .collect();
+            let current = runtime.output_style().unwrap_or("none");
+            self.app.transcript.notice(format!(
+                "output style: {current} · available: {}",
+                if known.is_empty() {
+                    "none".to_string()
+                } else {
+                    known.join(", ")
+                }
+            ));
+            return;
+        }
+        let choice = (name != "none").then_some(name);
+        match runtime.set_output_style(choice) {
+            Ok(()) => self
+                .app
+                .transcript
+                .notice(format!("output style is now {}", choice.unwrap_or("none"))),
+            Err(e) => self.app.transcript.error(format!("/output-style: {e}")),
+        }
+    }
+
     /// Runs `text` as a turn, then whatever the human queued during it that the agent did not
     /// receive: sent as the next turn after an answer, handed back to the input otherwise.
+    /// `expanded` is the prompt a skill expanded `text` into, already recorded as the user's
+    /// message.
     async fn converse(
         &mut self,
         runtime: &mut AgentRuntime,
         mut text: String,
+        mut expanded: Option<String>,
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
         loop {
             self.app.transcript.user(text.clone());
-            let end = self.turn(runtime, text).await;
+            let end = match expanded.take() {
+                Some(prompt) => self.turn(runtime, prompt, None).await,
+                None => self.turn(runtime, text.clone(), Some(&text)).await,
+            };
             if matches!(end, TurnEnd::InputClosed) {
                 return Break(());
             }
@@ -333,7 +593,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             Action::CycleMode => self.cycle_mode(runtime),
                             Action::RetryDenied(index) => self.retry_denied(runtime, index),
                             Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
-                            Action::None
+                            Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                            Action::Server(_)
+                            | Action::None
                             | Action::Submit(_)
                             | Action::Queue(_)
                             | Action::EditQueued
@@ -529,8 +791,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     /// Runs one user message while still serving keys and prompts.
-    async fn turn(&mut self, runtime: &AgentRuntime, text: String) -> TurnEnd {
-        runtime.append(Record::UserMessage { text: text.clone() });
+    ///
+    /// `human` is what the user typed, recorded in the ledger as theirs; `None` is a turn the
+    /// harness started, whose prompt is not.
+    async fn turn(&mut self, runtime: &AgentRuntime, text: String, human: Option<&str>) -> TurnEnd {
+        if let Some(typed) = human {
+            runtime.append(Record::UserMessage {
+                text: typed.to_string(),
+            });
+        }
         // What the agent reads is the user's words behind any note the harness owes it.
         let mut prompt = String::new();
         for note in self.app.pending_notices.drain(..) {
@@ -560,10 +829,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
             )
             .await
         });
+        let tree = runtime.state.agents().clone();
         let end = loop {
+            let changed = tree.changed().notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
             self.draw(runtime);
             tokio::select! {
                 biased;
+                _ = &mut changed => {}
                 Some(event) = seen.recv() => {
                     self.on_event(runtime, event);
                     // One redraw for everything already queued, not one per streamed delta.
@@ -580,12 +854,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::CycleMode => self.cycle_mode(runtime),
                         Action::RetryDenied(index) => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
+                        Action::KillAgent(id) => self.kill_agent(runtime, &id),
                         Action::Queue(text) => {
                             self.remember(&text);
                             runtime.steering.queue(text);
                         }
                         Action::EditQueued => self.edit_queued(runtime),
-                        Action::None | Action::Submit(_) | Action::Shell(_) => {}
+                        Action::Server(_) | Action::None | Action::Submit(_) | Action::Shell(_) => {}
                     },
                 },
                 Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
@@ -697,10 +972,28 @@ pub async fn drive(
     for notice in runtime.notices.clone() {
         ui.app.transcript.notice(notice);
     }
+    if let fontaine_core::agent::SessionOrigin::Continued { source, how } = &runtime.origin {
+        ui.app.transcript.notice(format!(
+            "continuing session {source} ({how}) in {mode} mode, with no grants carried over",
+            mode = mode.as_str()
+        ));
+    }
+    for (name, hint, description) in runtime.slash_skills() {
+        ui.app.menu.push(MenuEntry {
+            name,
+            hint,
+            description,
+        });
+    }
+    ui.app.menu.sort_by(|a, b| a.name.cmp(&b.name));
     if mode == PermissionMode::Auto {
         ui.announce_auto(&runtime);
     }
-    ui.run(&mut runtime, &launch_dir).await;
+    if ui.start_mcp(&mut runtime).await {
+        ui.run(&mut runtime, &launch_dir).await;
+    }
+    // Whatever is still running is stopped with the session.
+    runtime.state.agents().kill_all();
     Ok(())
 }
 
@@ -828,7 +1121,7 @@ mod tests {
         let (reply, answer) = oneshot::channel();
         let request = ApprovalRequest {
             tool: "shell".into(),
-            agent: "main".into(),
+            agent: ROOT_AGENT.into(),
             tool_use_id: None,
             args: serde_json::json!({}),
             summary: "ls".into(),

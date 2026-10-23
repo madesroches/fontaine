@@ -7,19 +7,20 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use fontaine_agents::tree::{AgentTree, Limits};
 use fontaine_core::audit::DecisionRecord;
 use fontaine_core::config::PermissionMode;
 use fontaine_core::gate::{AutoContext, SessionState, StateParams};
 use fontaine_core::permissions::{
-    Answer, ApprovalRequest, Approver, GuardianUnavailable, PermissionPipeline, PipelineParams,
-    PreToolUseHook, UnavailableChoice,
+    Answer, ApprovalRequest, Approver, GuardianUnavailable, PermissionDeniedHook,
+    PermissionPipeline, PipelineParams, PreToolUseHook, UnavailableChoice,
 };
 use fontaine_core::session::Session;
 use fontaine_guardian::{Guardian, Settings};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 
 use fontaine_tools::gate::{CallView, GateDecision, ROOT_AGENT, ToolGate};
-use fontaine_tools::risk::{RiskClass, builtin_risk};
+use fontaine_tools::risk::{RiskClass, registered_risk};
 use fontaine_tools::scope::Scope;
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -98,6 +99,7 @@ pub struct Options {
     pub allow_extra: Vec<String>,
     pub home: Option<PathBuf>,
     pub hooks: Vec<Arc<dyn PreToolUseHook>>,
+    pub denied_hooks: Vec<Arc<dyn PermissionDeniedHook>>,
     pub always_allow_file: bool,
     pub guardian: Option<Arc<Guardian>>,
 }
@@ -111,6 +113,7 @@ impl Options {
             allow_extra: Vec::new(),
             home: None,
             hooks: Vec::new(),
+            denied_hooks: Vec::new(),
             always_allow_file: true,
             guardian: None,
         }
@@ -134,8 +137,9 @@ impl Options {
 
 pub struct Rig {
     pub world: World,
+    pub agents: Arc<AgentTree>,
     pub state: Arc<SessionState>,
-    pub pipeline: PermissionPipeline,
+    pub pipeline: Arc<PermissionPipeline>,
     pub approver: Arc<Scripted>,
     pub session: Session,
     pub user_config: PathBuf,
@@ -153,6 +157,7 @@ impl Rig {
         let config = world.load().unwrap();
         let session = Session::create(&world.data, "00000000-0000-4000-8000-000000000001").unwrap();
         let scope = Arc::new(Scope::new(config.workspace.clone(), []));
+        let agents = Arc::new(AgentTree::new(Limits::default()));
         let state = Arc::new(SessionState::new(StateParams {
             session_id: session.id.clone(),
             mode: options.mode,
@@ -169,19 +174,23 @@ impl Rig {
                 .clone()
                 .unwrap_or_else(fontaine_core::gate::no_guardian),
             auto: AutoContext::default(),
+            agents: agents.clone(),
+            reveal_mcp_names: false,
         }));
         let approver = Arc::new(Scripted::default());
         let user_config = world.config.join("config.toml");
-        let pipeline = PermissionPipeline::new(PipelineParams {
+        let pipeline = Arc::new(PermissionPipeline::new(PipelineParams {
             state: state.clone(),
             approver: approver.clone(),
             headless: options.headless,
             hooks: options.hooks,
+            denied_hooks: options.denied_hooks,
             allow_extra: options.allow_extra,
             user_config: options.always_allow_file.then(|| user_config.clone()),
-        });
+        }));
         Rig {
             world,
+            agents,
             state,
             pipeline,
             approver,
@@ -196,19 +205,25 @@ impl Rig {
     }
 
     pub fn risk(tool: &str) -> RiskClass {
-        builtin_risk(tool).unwrap_or(RiskClass::Arbitrary)
+        registered_risk(tool).unwrap_or(RiskClass::Arbitrary)
     }
 
     /// One call through the pipeline as the root agent, with a fresh call id.
     pub async fn check(&self, tool: &str, args: Value) -> GateDecision {
+        self.check_as(ROOT_AGENT, tool, args).await
+    }
+
+    /// One call through the pipeline as `agent`, with a fresh call id.
+    pub async fn check_as(&self, agent: &str, tool: &str, args: Value) -> GateDecision {
         let id = format!("call-{}", self.next.fetch_add(1, Ordering::SeqCst));
-        self.state.set_current_call(ROOT_AGENT, id);
+        self.state.set_current_call(agent, id);
         self.pipeline
             .check(CallView {
                 tool,
                 risk: Rig::risk(tool),
                 args: &args,
-                agent: ROOT_AGENT,
+                agent,
+                annotations: None,
             })
             .await
     }

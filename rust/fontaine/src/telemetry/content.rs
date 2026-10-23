@@ -13,6 +13,9 @@ enum Class {
     Response,
     ToolDetails,
     ToolContent,
+    /// A tool's name: open, except that an MCP tool's names its server and the tool, which
+    /// belong to the tool-details opt-in.
+    ToolName,
     /// A `gen_ai.*` or `rig.*` field this build does not know: treated as content.
     Unknown,
 }
@@ -23,6 +26,7 @@ fn classify(key: &str) -> Class {
         "gen_ai.completion" | "gen_ai.output.messages" => Class::Response,
         "gen_ai.tool.call.arguments" => Class::ToolDetails,
         "gen_ai.tool.call.result" => Class::ToolContent,
+        "gen_ai.tool.name" => Class::ToolName,
         "gen_ai.operation.name"
         | "gen_ai.provider.name"
         | "gen_ai.request.model"
@@ -30,7 +34,6 @@ fn classify(key: &str) -> Class {
         | "gen_ai.response.model"
         | "gen_ai.response.id"
         | "gen_ai.agent.name"
-        | "gen_ai.tool.name"
         | "gen_ai.tool.type"
         | "gen_ai.tool.call.id"
         | "gen_ai.tool.call.outcome"
@@ -72,6 +75,10 @@ impl ContentPolicy {
     pub fn keep(&self, key: &str, value: &str) -> Option<String> {
         let allowed = match classify(key) {
             Class::Open => return Some(value.to_string()),
+            Class::ToolName if self.tool_details || !value.starts_with("mcp__") => {
+                return Some(value.to_string());
+            }
+            Class::ToolName => return Some("third-party".to_string()),
             Class::Prompt => self.prompts,
             Class::Response => self.responses,
             Class::ToolDetails => self.tool_details,
@@ -144,6 +151,23 @@ mod tests {
     #[test]
     fn truncation_respects_char_boundaries() {
         assert_eq!(truncate("héllo".to_string(), 2), "h");
+    }
+
+    #[test]
+    fn an_mcp_tool_name_is_third_party_without_the_tool_details_opt_in() {
+        let p = policy(false, 100);
+        assert_eq!(
+            p.keep("gen_ai.tool.name", "mcp__github__create_issue"),
+            Some("third-party".to_string())
+        );
+        assert_eq!(p.keep("gen_ai.tool.name", "read"), Some("read".to_string()));
+        assert!(!p.is_open("gen_ai.tool.name"));
+        let mut on = policy(false, 100);
+        on.tool_details = true;
+        assert_eq!(
+            on.keep("gen_ai.tool.name", "mcp__github__create_issue"),
+            Some("mcp__github__create_issue".to_string())
+        );
     }
 
     #[test]

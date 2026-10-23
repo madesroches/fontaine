@@ -34,7 +34,10 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `--allowed-tools <rule>` | Adds an allow rule in `Tool(specifier)` syntax for this session, such as `shell(npm test)`. Repeatable. Loaded as the CLI scope's `[permissions] allow`; an invalid rule is a usage error. |
 | `--disallowed-tools <rule>` | Adds a deny rule for this session, such as `read(.env)`. Repeatable. See [Permissions](permissions.md#rules). |
 | `--add-dir <path>` | Adds a directory to the workspace roots. Repeatable. See [Tools](tools.md#workspace-roots). |
-| `--session-id <uuid>` | Uses this UUID as the session id. A value that is not a UUID is a usage error (exit code 2), and so is an id whose session directory already exists. |
+| `--session-id <uuid>` | Uses this UUID as the session id. A value that is not a UUID is a usage error (exit code 2), and so is an id whose session directory already exists. With `--continue` or `--resume` it is accepted only together with `--fork-session`, where it names the copy; otherwise it is a usage error. |
+| `--continue`, `-c` | Reopens the most recently updated session that was started in the launch directory; starts a fresh session when there is none. |
+| `--resume <id>`, `-r <id>` | Reopens the session with this id. An id with no session is a usage error (exit code 2). |
+| `--fork-session` | With `--continue` or `--resume`, starts a new session that is a copy of the one that would have been reopened. Alone it is a usage error. |
 | `--system-prompt <text>` | Replaces the base system prompt. |
 | `--append-system-prompt <text>` | Appends to the system prompt after every other layer. |
 | `--settings <file>` | A settings file layered over the others (CLI scope). |
@@ -43,7 +46,8 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `fontaine auth login --telemetry` | Stores the telemetry ingestion key. |
 
 The budget is checked between model calls. A call that pushes the spend over the cap stops the
-run before its tool calls execute; an answer that was already complete is kept.
+run before its tool calls execute; an answer that was already complete is kept. The spend includes
+the guardian's calls and the subagents' model calls.
 
 ## Sessions
 
@@ -56,6 +60,24 @@ conversation as it was, prints a warning on stderr and does not stop the run.
 
 A separate, append-only ledger beside it records what the user said, verbatim, and what the
 harness did. Compaction never touches it. See [Architecture](architecture.md#the-session-ledger).
+
+### Continuing a session
+
+`--continue` and `--resume <id>` reopen a session: the conversation and the ledger come back, and
+the new messages continue both. The run starts in the permission mode the settings and flags
+resolve to, as a new session does, not in the mode the session ended in, and none of the earlier
+session's "allow session" grants carry over. `--fork-session` copies both stores under a new id
+(`--session-id` chooses it) and leaves the original untouched; the audit log of the copy starts
+empty. `--continue` looks only at sessions whose primary workspace root is the launch directory.
+
+## Subagents
+
+When the main conversation has given its final answer but background
+[subagents](agents.md#watching-and-stopping-subagents) are still running, the run waits for them.
+Their reports reach the main conversation as notifications, each batch in a further turn, until
+none is running; then the `result` is emitted. `--max-turns` and `--max-budget-usd` count those
+turns and the subagents' spend, and a run stopped by either kills the running subagents and drops
+their reports.
 
 ## Exit codes
 
@@ -99,7 +121,7 @@ these is one line, in this order:
 | `assistant` | A complete assistant message | `text` |
 | `assistant_delta` | With `--include-partial-messages`, for each text fragment | `text` |
 | `tool_call` | The model called a tool | `tool_use_id`, `tool`, `args` |
-| `gate_decision` | A tool call was adjudicated | `tool_use_id`, `tier`, `decision`, `rule`; for guardian decisions also `explanation`, `confidence`, `guardian_model` and, when the guardian failed closed, `fail_closed_reason` (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`) |
+| `gate_decision` | A tool call was adjudicated | `tool_use_id`, `agent_id` (`root` for the main conversation, `agent-N` for a subagent), `tier`, `decision`, `rule`; for guardian decisions also `explanation`, `confidence`, `guardian_model` and, when the guardian failed closed, `fail_closed_reason` (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`) |
 | `tool_result` | A tool answered | `tool_use_id`, `tool`, `success`, `text` (what the model received) |
 | `result` | At the end of every turn | see below |
 
@@ -118,8 +140,8 @@ The `result` object:
 | `structured_output` | With `--json-schema`, the answer parsed as JSON |
 | `num_turns` | Model calls made so far in the session |
 | `duration_ms` | Wall time of the turn |
-| `total_cost_usd` | Spend so far, main model plus guardian, or null when neither is priced |
-| `usage` | `main`, `guardian` and `subagents`, each with `input_tokens`, `output_tokens` and `cost_usd`; `guardian` totals every adjudication that reached the model (cached verdicts cost nothing) |
+| `total_cost_usd` | Spend so far, main model plus guardian plus subagents, or null when none is priced |
+| `usage` | `main`, `guardian` and `subagents`, each with `input_tokens`, `output_tokens` and `cost_usd`; `guardian` totals every adjudication that reached the model, subagents' included (cached verdicts cost nothing); `subagents` is their model calls |
 | `denials` | One entry per denied call: `tool`, `tier`, `rule`, `explanation` |
 
 Usage and cost accumulate over the session, so each turn's `result` reports the totals so far.

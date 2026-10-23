@@ -46,6 +46,7 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+rmcp = { workspace = true, features = ["server", "transport-io"] }
 jsonschema.workspace = true
 micromegas-tracing.workspace = true
 micromegas-transit.workspace = true

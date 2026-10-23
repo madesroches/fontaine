@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
+use fontaine_agents::budget::Spend;
+use fontaine_agents::mode::{Ladder, RootMode};
+use fontaine_agents::tree::AgentTree;
 use fontaine_guardian::{EnvironmentConfig, Guardian, LoopBreaker, RuleConfig, Settings};
 use fontaine_tools::scope::Scope;
 use rig_core::completion::Usage;
@@ -14,9 +17,67 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::audit::{AuditLog, DecisionRecord};
 use crate::config::{PermissionMode, Slot};
 use crate::ledger::{Ledger, Record};
-use crate::permission_rules::{Rule, RuleSource, SourcedRule, is_broad_code_execution};
+use crate::permission_rules::{
+    CallContext, Posture, Rule, RuleSource, SourcedRule, is_broad_code_execution, matches,
+};
 
 const TARGET: &str = "fontaine::telemetry";
+
+/// Decisions kept per agent for the panel.
+const DECISIONS_PER_AGENT: usize = 200;
+
+/// Lines of activity kept per agent for the panel.
+const AGENT_LOG_LINES: usize = 500;
+
+pub struct WaitGuard {
+    state: Arc<SessionState>,
+    agent: String,
+}
+
+impl Drop for WaitGuard {
+    fn drop(&mut self) {
+        if let Some(n) = self
+            .state
+            .waiting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(&self.agent)
+        {
+            *n = n.saturating_sub(1);
+        }
+        self.state.agents.poke();
+    }
+}
+
+/// The root session's mode as the agent tree sees it.
+pub fn root_mode(mode: PermissionMode) -> RootMode {
+    match mode {
+        PermissionMode::Plan => RootMode::Plan,
+        PermissionMode::DontAsk => RootMode::Ladder(Ladder::DontAsk),
+        PermissionMode::Manual => RootMode::Ladder(Ladder::Manual),
+        PermissionMode::AcceptEdits => RootMode::Ladder(Ladder::AcceptEdits),
+        PermissionMode::Auto => RootMode::Ladder(Ladder::Auto),
+    }
+}
+
+/// The permission mode a rung of the ladder stands for.
+pub fn permission_mode(rung: Ladder) -> PermissionMode {
+    match rung {
+        Ladder::DontAsk => PermissionMode::DontAsk,
+        Ladder::Manual => PermissionMode::Manual,
+        Ladder::AcceptEdits => PermissionMode::AcceptEdits,
+        Ladder::Auto => PermissionMode::Auto,
+    }
+}
+
+/// What an agent file narrows about one child's tools, applied on top of the mode.
+#[derive(Clone, Debug, Default)]
+pub struct ChildRestrictions {
+    /// Calls of a tool named here must match one of that tool's rules.
+    pub only: Vec<Rule>,
+    /// Calls matching any of these are denied.
+    pub deny: Vec<Rule>,
+}
 
 pub struct StateParams {
     pub session_id: String,
@@ -33,6 +94,10 @@ pub struct StateParams {
     pub protected_dirs: Vec<PathBuf>,
     pub guardian: Arc<Guardian>,
     pub auto: AutoContext,
+    /// The session's agents, root included.
+    pub agents: Arc<AgentTree>,
+    /// Telemetry may carry MCP server and tool names (`log_tool_details`).
+    pub reveal_mcp_names: bool,
 }
 
 /// The guardian's standing inputs, fixed for the session: the expanded rule lists, the
@@ -69,10 +134,20 @@ pub struct DeniedCall {
     pub retried: bool,
 }
 
-/// A one-shot human approval of a call the guardian denied: the same agent, tool and
+/// Who granted a one-shot retry. The audit record names it, and only a human's grant counts as a
+/// human approval.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RetrySource {
+    Human,
+    /// A user `permission_denied` hook, by id.
+    Hook(String),
+}
+
+/// A one-shot approval of a call the guardian denied: the same agent, tool and
 /// arguments, consumed by the next matching call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RetryApproval {
+    source: RetrySource,
     agent: String,
     tool: String,
     args_digest: String,
@@ -96,7 +171,6 @@ pub struct Rules {
 }
 
 struct Inner {
-    mode: PermissionMode,
     scope: Arc<Scope>,
     deny: Vec<SourcedRule>,
     ask: Vec<SourcedRule>,
@@ -126,12 +200,22 @@ pub struct SessionState {
     pub home: Option<PathBuf>,
     pub protected_dirs: Vec<PathBuf>,
     inner: RwLock<Inner>,
+    mode: Arc<RwLock<PermissionMode>>,
+    agents: Arc<AgentTree>,
+    reveal_mcp_names: bool,
+    decisions_by_agent: Mutex<HashMap<String, std::collections::VecDeque<DecisionRecord>>>,
+    waiting: Mutex<HashMap<String, usize>>,
+    agent_logs: Mutex<HashMap<String, Vec<String>>>,
     guardian: RwLock<Arc<Guardian>>,
     pub auto: AutoContext,
     breaker: Mutex<LoopBreaker>,
     denied: Mutex<Vec<DeniedCall>>,
     retries: Mutex<Vec<RetryApproval>>,
     guardian_usage: Mutex<GuardianUsage>,
+    guardian_usage_by: Mutex<HashMap<String, GuardianUsage>>,
+    subagent_usage: Mutex<GuardianUsage>,
+    skill_grants: Mutex<HashMap<String, Vec<SourcedRule>>>,
+    child_restrictions: Mutex<HashMap<String, ChildRestrictions>>,
     current_calls: Mutex<HashMap<String, String>>,
     decisions: UnboundedSender<DecisionRecord>,
     feed: tokio::sync::Mutex<DecisionFeed>,
@@ -140,14 +224,26 @@ pub struct SessionState {
 impl SessionState {
     pub fn new(params: StateParams) -> SessionState {
         let (decisions, rx) = unbounded_channel();
+        let mode = Arc::new(RwLock::new(params.mode));
+        {
+            let cell = mode.clone();
+            params
+                .agents
+                .set_root_mode(move || root_mode(*cell.read().unwrap_or_else(|e| e.into_inner())));
+        }
         SessionState {
             session_id: params.session_id,
             ledger: params.ledger,
             audit: params.audit,
             home: params.home,
             protected_dirs: params.protected_dirs,
+            mode,
+            agents: params.agents,
+            reveal_mcp_names: params.reveal_mcp_names,
+            decisions_by_agent: Mutex::default(),
+            waiting: Mutex::default(),
+            agent_logs: Mutex::default(),
             inner: RwLock::new(Inner {
-                mode: params.mode,
                 scope: params.scope,
                 deny: params.deny,
                 ask: params.ask,
@@ -159,6 +255,10 @@ impl SessionState {
             denied: Mutex::default(),
             retries: Mutex::default(),
             guardian_usage: Mutex::default(),
+            guardian_usage_by: Mutex::default(),
+            subagent_usage: Mutex::default(),
+            skill_grants: Mutex::default(),
+            child_restrictions: Mutex::default(),
             current_calls: Mutex::new(HashMap::new()),
             decisions,
             feed: tokio::sync::Mutex::new(DecisionFeed { rx }),
@@ -174,13 +274,21 @@ impl SessionState {
     }
 
     pub fn mode(&self) -> PermissionMode {
-        self.read().mode
+        *self.mode.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The session's agents.
+    pub fn agents(&self) -> &Arc<AgentTree> {
+        &self.agents
     }
 
     /// Switches the mode for the next call. The change is recorded in the ledger and reported
     /// as a `permission_mode_changed` event; setting the mode it already has does neither.
     pub fn set_mode(&self, to: PermissionMode) {
-        let from = std::mem::replace(&mut self.write().mode, to);
+        let from = std::mem::replace(
+            &mut *self.mode.write().unwrap_or_else(|e| e.into_inner()),
+            to,
+        );
         if from == to {
             return;
         }
@@ -267,6 +375,7 @@ impl SessionState {
         }
         call.retried = true;
         let approval = RetryApproval {
+            source: RetrySource::Human,
             agent: call.agent.clone(),
             tool: call.tool.clone(),
             args_digest: call.args_digest.clone(),
@@ -280,24 +389,75 @@ impl SessionState {
         Some(call)
     }
 
-    /// Consumes the retry approval matching this call, if there is one.
-    pub fn take_retry(&self, agent: &str, tool: &str, args_digest: &str) -> bool {
-        let mut retries = self.retries.lock().unwrap_or_else(|e| e.into_inner());
-        match retries
-            .iter()
-            .position(|r| r.agent == agent && r.tool == tool && r.args_digest == args_digest)
-        {
-            Some(at) => {
-                retries.remove(at);
-                true
-            }
-            None => false,
-        }
+    /// Queues a one-shot retry approval for a call by `agent` with this tool and arguments digest,
+    /// the same grant `/denied` then `r` makes, without a list entry to point at.
+    pub fn grant_retry(&self, source: RetrySource, agent: &str, tool: &str, args_digest: &str) {
+        self.retries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(RetryApproval {
+                source,
+                agent: agent.to_string(),
+                tool: tool.to_string(),
+                args_digest: args_digest.to_string(),
+            });
     }
 
-    pub fn add_guardian_usage(&self, usage: &Usage) {
-        let mut total = self
+    /// Consumes the retry approval matching this call, if there is one.
+    pub fn take_retry(&self, agent: &str, tool: &str, args_digest: &str) -> Option<RetrySource> {
+        let mut retries = self.retries.lock().unwrap_or_else(|e| e.into_inner());
+        retries
+            .iter()
+            .position(|r| r.agent == agent && r.tool == tool && r.args_digest == args_digest)
+            .map(|at| retries.remove(at).source)
+    }
+
+    /// Counts a guardian call made for `agent`: in the session total, in the agent's own tally
+    /// and against the agent's budget.
+    pub fn add_guardian_usage(&self, agent: &str, usage: &Usage) {
+        let add = |total: &mut GuardianUsage| {
+            total.input_tokens += usage.input_tokens.unwrap_or(0);
+            total.output_tokens += usage.output_tokens.unwrap_or(0);
+            if let Some(cost) = usage.cost {
+                *total.cost_usd.get_or_insert(0.0) += cost.total;
+            }
+        };
+        add(&mut self
             .guardian_usage
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()));
+        add(self
+            .guardian_usage_by
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(agent.to_string())
+            .or_default());
+        self.agents.debit(agent, &spend_of(usage));
+    }
+
+    /// What the guardian has cost across the whole tree.
+    pub fn guardian_usage(&self) -> GuardianUsage {
+        *self
+            .guardian_usage
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// What the guardian has cost for `agent` alone.
+    pub fn guardian_usage_of(&self, agent: &str) -> GuardianUsage {
+        self.guardian_usage_by
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(agent)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Counts a subagent's model call. The agent's own tally is the tree's; this is the
+    /// session-wide total the headless result reports.
+    pub fn add_subagent_usage(&self, usage: &Usage) {
+        let mut total = self
+            .subagent_usage
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         total.input_tokens += usage.input_tokens.unwrap_or(0);
@@ -307,11 +467,67 @@ impl SessionState {
         }
     }
 
-    pub fn guardian_usage(&self) -> GuardianUsage {
+    pub fn subagent_usage(&self) -> GuardianUsage {
         *self
-            .guardian_usage
+            .subagent_usage
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Lets `agent` use the rules a skill carries until the end of the user turn. The invoking
+    /// agent only: a subagent it spawns holds none of them.
+    pub fn grant_skill_rules(&self, agent: &str, rules: Vec<Rule>) {
+        let mut grants = self.skill_grants.lock().unwrap_or_else(|e| e.into_inner());
+        let held = grants.entry(agent.to_string()).or_default();
+        for rule in rules {
+            let rule = SourcedRule::new(rule, RuleSource::Skill);
+            if !held.contains(&rule) {
+                held.push(rule);
+            }
+        }
+    }
+
+    pub fn skill_grants(&self, agent: &str) -> Vec<SourcedRule> {
+        self.skill_grants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(agent)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// A user turn ended: the rules skills lent for it end too.
+    pub fn end_turn(&self) {
+        self.skill_grants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
+    pub fn set_child_restrictions(&self, agent: &str, restrictions: ChildRestrictions) {
+        self.child_restrictions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(agent.to_string(), restrictions);
+    }
+
+    /// Why `agent`'s agent file, or any ancestor's, forbids this call: a subagent never holds
+    /// more authority than the agent that spawned it.
+    pub fn child_restriction(&self, agent: &str, call: &CallContext<'_>) -> Option<String> {
+        let held = self
+            .child_restrictions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut at = Some(agent.to_string());
+        // A tree is a few layers deep; the bound keeps a corrupt parent link finite.
+        for _ in 0..64 {
+            let id = at?;
+            if let Some(why) = held.get(&id).and_then(|r| restriction_on(r, call)) {
+                return Some(why);
+            }
+            at = self.agents().parent_of(&id);
+        }
+        None
     }
 
     /// The allow rules `auto` sets aside while it is on: broad code-execution rules, whether
@@ -371,6 +587,15 @@ impl SessionState {
             .insert(agent.to_string(), call_id);
     }
 
+    /// Forgets the call, so work the harness starts on its own is not attributed to the last
+    /// real one.
+    pub fn clear_current_call(&self, agent: &str) {
+        self.current_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(agent);
+    }
+
     pub fn current_call(&self, agent: &str) -> Option<String> {
         self.current_calls
             .lock()
@@ -380,12 +605,126 @@ impl SessionState {
     }
 
     pub fn publish(&self, record: DecisionRecord) {
+        {
+            let mut by_agent = self
+                .decisions_by_agent
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let list = by_agent.entry(record.agent_id.clone()).or_default();
+            if list.len() == DECISIONS_PER_AGENT {
+                list.pop_front();
+            }
+            list.push_back(record.clone());
+        }
         // No consumer is not an error: the audit log already holds the record.
         let _ = self.decisions.send(record);
+    }
+
+    /// The decisions made for `agent`, oldest first, for the agents panel.
+    pub fn decisions_of(&self, agent: &str) -> Vec<DecisionRecord> {
+        self.decisions_by_agent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(agent)
+            .map(|list| list.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// `agent` is waiting on a human. The guard ends the wait however the call ends, a cancelled
+    /// one included.
+    pub fn wait_on_human(self: &Arc<Self>, agent: &str) -> WaitGuard {
+        *self
+            .waiting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(agent.to_string())
+            .or_default() += 1;
+        self.agents.poke();
+        WaitGuard {
+            state: self.clone(),
+            agent: agent.to_string(),
+        }
+    }
+
+    /// Adds a line to what `agent` has been doing, for the agents panel.
+    pub fn log_agent_line(&self, agent: &str, line: String) {
+        let mut logs = self.agent_logs.lock().unwrap_or_else(|e| e.into_inner());
+        let list = logs.entry(agent.to_string()).or_default();
+        if list.len() == AGENT_LOG_LINES {
+            list.remove(0);
+        }
+        list.push(line);
+    }
+
+    pub fn agent_log(&self, agent: &str) -> Vec<String> {
+        self.agent_logs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(agent)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn is_waiting(&self, agent: &str) -> bool {
+        self.waiting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(agent)
+            .is_some_and(|n| *n > 0)
+    }
+
+    /// The name telemetry carries for a tool: an MCP tool is `third-party` unless names are
+    /// opted in.
+    pub fn telemetry_tool_name<'a>(&self, tool: &'a str) -> &'a str {
+        if !self.reveal_mcp_names && fontaine_tools::names::is_mcp(tool) {
+            fontaine_tools::guarded::HIDDEN
+        } else {
+            tool
+        }
     }
 
     /// The decision feed. One consumer at a time holds it.
     pub async fn feed(&self) -> tokio::sync::MutexGuard<'_, DecisionFeed> {
         self.feed.lock().await
     }
+}
+
+/// A usage report as the agent tree counts it.
+pub fn spend_of(usage: &Usage) -> Spend {
+    Spend {
+        input_tokens: usage.input_tokens.unwrap_or(0),
+        output_tokens: usage.output_tokens.unwrap_or(0),
+        cost_usd: usage.cost.map(|cost| cost.total),
+    }
+}
+
+fn restriction_on(restrictions: &ChildRestrictions, call: &CallContext<'_>) -> Option<String> {
+    if let Some(rule) = restrictions
+        .deny
+        .iter()
+        .find(|rule| matches(rule, call, Posture::Deny))
+    {
+        return Some(format!("this agent type may not use `{rule}`"));
+    }
+    let limits: Vec<&Rule> = restrictions
+        .only
+        .iter()
+        .filter(|rule| rule.tool == call.tool)
+        .collect();
+    if !limits.is_empty()
+        && !limits
+            .iter()
+            .any(|rule| matches(rule, call, Posture::Allow))
+    {
+        return Some(format!(
+            "this agent type may use `{}` only as {}",
+            call.tool,
+            limits
+                .iter()
+                .map(|rule| format!("`{rule}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    None
 }

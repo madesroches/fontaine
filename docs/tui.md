@@ -25,9 +25,26 @@ already scrolled off is kept. Lines still on screen at that moment are kept only
 screen saves it to history (tmux by default) and may be lost elsewhere. Lines already in scrollback
 keep the width they were written at.
 
+## Workspace trust
+
+Before the screen opens, a folder you have not trusted gets the trust prompt. It names what the
+folder defines that would run (hooks, [MCP servers](mcp.md), the commands in skills and its
+settings files) and asks:
+
+- `y` trust the folder. It is written to `trust.toml` (see
+  [Workspace trust](configuration.md#workspace-trust)), the folder's untracked
+  `settings.local.toml` is read with your trust, and what the repository defines starts. Each
+  repository-defined MCP server is still asked about before it starts.
+- `n` or Esc do not trust it. The session runs without the repository's hooks, MCP servers and
+  skill commands, and the question comes back next session. Nothing is written.
+
+Enter acts on the highlighted answer, which starts on "do not trust". Whatever you answer, nothing
+the repository defines can approve a tool call: a repository's hook `allow` is ignored and its MCP
+tools are checked like any `arbitrary` tool. A headless run does not ask and loads them.
+
 ## Status bar
 
-The bar shows the permission mode, the model and a key hint. The mode labels are `manual`,
+The bar shows the permission mode, the model, how many subagents are running, and a key hint. The mode labels are `manual`,
 `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on` and `dontAsk`.
 
 ## Keys
@@ -43,6 +60,8 @@ The bar shows the permission mode, the model and a key hint. The mode labels are
 | Ctrl-C, or Ctrl-D on an empty input, when idle | Quit. |
 | PageUp, PageDown | Scroll the command in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/U/K/W/B/F | Edit the input. |
+| Ctrl-T | Open or close the [agents panel](#the-agents-panel), even over an approval prompt. |
+| `/` as the first character | Lists the commands and skills that match what you typed. |
 
 ## Shell commands
 
@@ -116,6 +135,9 @@ When a call needs approval, a prompt lists the call and why it asked:
 - `n` deny. Enter on the deny row opens an optional reason, which is sent to the model with the
   denial.
 
+When several agents ask at once their prompts queue and are shown one at a time, and a prompt that
+belongs to a subagent names it: `Allow shell (agent-2)?`. A prompt whose agent was killed goes away.
+
 Up, Down and Tab move the highlight, Enter confirms. Prompts forced by the floor (an `ask` rule, a
 critical path, a protected path) and shell calls that are not one literal simple command offer
 only allow once and deny. Enter and the letter keys are ignored for the first 400 ms after a prompt
@@ -139,6 +161,14 @@ unknown account), nothing is substituted silently. A prompt offers:
 - `m` switch the session to `manual` and ask you about this call.
 - `n` leave the call denied.
 
+## Resuming
+
+`fontaine --continue` reopens the most recently updated session that was started in this folder,
+`--resume <id>` a session by id, and `--fork-session` with either starts a copy under a new id. The
+transcript starts empty with a note saying which session continues; the model has the earlier
+conversation. The session starts in the mode your settings give, with no grants from before. See
+[Headless runs](headless.md#continuing-a-session) for the details.
+
 ## Commands
 
 | Command | Action |
@@ -147,4 +177,36 @@ unknown account), nothing is substituted silently. A prompt offers:
 | `/denied` | Lists the calls the guardian denied this session, with their rule label and explanation. Up and Down select; `r` approves the selected call once, as if you had approved it at a prompt, and tells the agent on its next turn that it may retry exactly that call. The retry runs without asking the guardian, never enters the verdict cache and does not count toward the denial limits. The deterministic floor still runs first, so an `ask` rule or a critical path still prompts. Esc closes the list. |
 | `/model [<account>/<model>]` | Without an argument, shows the model and the guardian. With one, switches the live session to that model, rebuilds the agent on it with the conversation kept, and saves it as `[model] model` in your user settings file. The guardian moves with it only when it is on the main-model fallback (no `[guardian] model` and no validated model available); a pinned or validated guardian stays. |
 | `/guardian-model [<account>/<model>]` | Without an argument, shows the guardian and the models it could be. With one, pins the guardian to that model for the live session and saves it as `[guardian] model`. A model whose account has no credential becomes an unavailable guardian, which the next adjudication reports. |
+| `/agents` | Opens the [agents panel](#the-agents-panel). |
+| `/output-style [<name>\|none]` | Without an argument, lists the [output styles](extensions.md#output-styles). With one, switches to it for the next turn; `none` removes it. |
+| `/<skill> [arguments]` | Runs a [skill](extensions.md#slash-commands-and-arguments). |
 | `/exit`, `/quit` | Leave. |
+
+Typing `/` lists the built-in commands and your user-invocable skills with their argument hints,
+narrowing as you type; a skill marked `user-invocable: false` does not appear.
+
+## MCP server approvals
+
+A repository-defined [MCP server](mcp.md#servers-a-repository-defines) in a trusted folder is asked
+about before it starts: `y` starts it and remembers the answer for this exact definition, `n`
+leaves it off for this session. Servers from your own settings start without a question; a server
+that cannot start is reported in the transcript and skipped.
+
+## The agents panel
+
+`/agents` or Ctrl-T opens a list with one row per [subagent](agents.md): its id and type, its
+model, its status (`running`, `waiting-on-permission`, `done`, `killed`, `budget-exhausted` or
+`failed`) and what it has used against its budget, such as `1500 / 200000 tok · $0.0021 / $2.00`
+(`cost n/a` when the model has no known price). Up and Down select a row; Enter looks inside it:
+
+- the calls it is **waiting for you** to decide, so an approval cannot hide behind the main
+  transcript;
+- its **gate decisions**, with the tier and rule of each (the same records as the audit log);
+- its **transcript**: what it said and which tools it called.
+
+`x` kills the selected subagent: its row shows `killed` and what it had spent, and its pending
+approval prompts are cancelled as denied. Esc goes back, and closes the panel. While the panel is
+open it has the keyboard, so a pending approval waits until you close it.
+
+When a background subagent finishes while nothing is running, the main conversation gets a turn of
+its own to read the report.

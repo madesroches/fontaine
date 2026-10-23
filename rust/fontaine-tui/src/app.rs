@@ -2,6 +2,7 @@
 //! session: key handling returns an [`Action`] for the driver to carry out, so tests can feed
 //! keys directly.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -11,11 +12,13 @@ use fontaine_core::turn::SessionEvent;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::oneshot;
 
+use crate::agents_panel::{AgentsPanel, PanelKey};
 use crate::approval::Approval;
 use crate::complete::{self, Mention};
 use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt};
 use crate::history::History;
 use crate::input::InputBuffer;
+use crate::server_prompt::ServerPrompt;
 use crate::transcript::Transcript;
 
 /// One thing the terminal told us.
@@ -43,6 +46,10 @@ pub enum Action {
     RetryDenied(usize),
     /// The human answered the unavailable-guardian prompt.
     Guardian(UnavailableAnswer),
+    /// The human asked to stop a subagent.
+    KillAgent(String),
+    /// The human answered the question about starting a repository's MCP server.
+    Server(bool),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,9 +57,15 @@ pub enum Command {
     Exit,
     AddDir(String),
     Denied,
+    Agents,
+    OutputStyle(String),
     Model(String),
     GuardianModel(String),
-    Unknown(String),
+    /// A name no built-in command has; it may be a skill.
+    Other {
+        name: String,
+        argument: String,
+    },
 }
 
 /// Reads a slash command from a submitted message; `None` when it is an ordinary message.
@@ -64,10 +77,49 @@ pub fn parse_command(text: &str) -> Option<Command> {
         "exit" | "quit" => Command::Exit,
         "add-dir" => Command::AddDir(argument.trim().to_string()),
         "denied" => Command::Denied,
+        "agents" => Command::Agents,
+        "output-style" => Command::OutputStyle(argument.trim().to_string()),
         "model" => Command::Model(argument.trim().to_string()),
         "guardian-model" => Command::GuardianModel(argument.trim().to_string()),
-        _ => Command::Unknown(name.to_string()),
+        _ => Command::Other {
+            name: name.to_string(),
+            argument: argument.trim().to_string(),
+        },
     })
+}
+
+/// One line of the `/` menu.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuEntry {
+    pub name: String,
+    pub hint: Option<String>,
+    pub description: String,
+}
+
+/// The built-in commands, as the `/` menu lists them.
+pub fn builtin_menu() -> Vec<MenuEntry> {
+    let entry = |name: &str, hint: Option<&str>, description: &str| MenuEntry {
+        name: name.to_string(),
+        hint: hint.map(str::to_string),
+        description: description.to_string(),
+    };
+    vec![
+        entry("add-dir", Some("<path>"), "add a workspace root"),
+        entry("agents", None, "the background agents panel"),
+        entry("denied", None, "calls the guardian denied"),
+        entry("exit", None, "leave Fontaine"),
+        entry(
+            "guardian-model",
+            Some("[account/model]"),
+            "show or change the guardian",
+        ),
+        entry("model", Some("[account/model]"), "show or change the model"),
+        entry(
+            "output-style",
+            Some("[name|none]"),
+            "show or change the output style",
+        ),
+    ]
 }
 
 /// Ctrl-R: the query typed so far and the history entry it found.
@@ -93,6 +145,16 @@ pub struct App {
     pub model: String,
     pub running: bool,
     pub approval: Option<Approval>,
+    /// Approvals waiting behind the open one: several agents can ask at once.
+    pub queued_approvals: VecDeque<Approval>,
+    /// The `/agents` panel while it is open.
+    pub agents: Option<AgentsPanel>,
+    /// A repository's MCP server waiting for the human's say-so.
+    pub server: Option<ServerPrompt>,
+    /// The commands and user-invocable skills the `/` menu lists.
+    pub menu: Vec<MenuEntry>,
+    /// Subagents running right now, for the status bar.
+    pub running_agents: usize,
     /// `/denied` while it is open.
     pub denied: Option<DeniedList>,
     /// The pinned guardian cannot be used, and the human has to say what to do.
@@ -128,6 +190,11 @@ impl App {
             model,
             running: false,
             approval: None,
+            queued_approvals: VecDeque::new(),
+            agents: None,
+            server: None,
+            menu: builtin_menu(),
+            running_agents: 0,
             denied: None,
             unavailable: None,
             pending_notices: Vec::new(),
@@ -166,13 +233,9 @@ impl App {
     }
 
     /// Search and completion yield to anything that needs an answer.
-    fn prompt_open(&self) -> bool {
-        self.approval.is_some() || self.denied.is_some() || self.unavailable.is_some()
-    }
-
     fn refresh_completion(&mut self) {
         let previous = self.completion.take();
-        if self.search.is_some() || self.prompt_open() {
+        if self.search.is_some() || self.covered() {
             return;
         }
         let Some(mention) = complete::mention_at(&self.input.text(), self.input.cursor()) else {
@@ -274,19 +337,69 @@ impl App {
         self.transcript.on_event(event);
     }
 
+    /// Shows the approval, or queues it behind the one the human is answering.
     pub fn begin_approval(&mut self, request: ApprovalRequest, reply: oneshot::Sender<Answer>) {
-        self.approval = Some(Approval::new(request, reply));
+        let approval = Approval::new(request, reply);
+        if self.approval.is_none() {
+            self.approval = Some(approval);
+        } else {
+            self.queued_approvals.push_back(approval);
+        }
+    }
+
+    /// Drops the approvals whose call is gone, such as those of an agent that was killed, and
+    /// opens the next one when the open one went away.
+    pub fn prune_closed(&mut self) {
+        self.queued_approvals
+            .retain(|approval| !approval.is_closed());
+        if self.approval.as_ref().is_some_and(Approval::is_closed) {
+            self.approval = None;
+        }
+        if self.approval.is_none() {
+            self.approval = self.queued_approvals.pop_front();
+        }
+    }
+
+    /// The calls `agent` is waiting for the human to decide, as the call text.
+    pub fn pending_for(&self, agent: &str) -> Vec<String> {
+        self.approval
+            .iter()
+            .chain(self.queued_approvals.iter())
+            .filter(|approval| approval.request.agent == agent)
+            .map(|approval| format!("{} {}", approval.request.tool, approval.request.summary))
+            .collect()
+    }
+
+    pub fn begin_server(&mut self, prompt: ServerPrompt) {
+        self.server = Some(prompt);
     }
 
     pub fn begin_unavailable(&mut self, prompt: UnavailablePrompt) {
         self.unavailable = Some(prompt);
     }
 
-    /// Answers the open prompts with a denial, as when their turn is interrupted.
+    /// Answers the open prompts of the main conversation with a denial, as when its turn is
+    /// interrupted. A background agent's prompts stay: its run goes on.
     pub fn deny_pending(&mut self) {
-        if let Some(mut approval) = self.approval.take() {
-            approval.reply(Answer::Deny { feedback: None });
+        let root = |approval: &Approval| {
+            approval.request.agent.is_empty()
+                || approval.request.agent == fontaine_tools::gate::ROOT_AGENT
+        };
+        let mut kept: VecDeque<Approval> = VecDeque::new();
+        for mut approval in self
+            .approval
+            .take()
+            .into_iter()
+            .chain(self.queued_approvals.drain(..))
+        {
+            if root(&approval) {
+                approval.reply(Answer::Deny { feedback: None });
+            } else {
+                kept.push_back(approval);
+            }
         }
+        self.approval = kept.pop_front();
+        self.queued_approvals = kept;
         if let Some(mut prompt) = self.unavailable.take() {
             prompt.reply(UnavailableChoice::Deny);
         }
@@ -303,7 +416,7 @@ impl App {
         match input {
             Input::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
             Input::Paste(text) => {
-                if !self.prompt_open() {
+                if !self.covered() {
                     if let Some(search) = &mut self.search {
                         search.query.push_str(&text.replace(['\r', '\n'], " "));
                         self.search_step(false);
@@ -319,13 +432,22 @@ impl App {
         }
     }
 
+    /// Whether an overlay has the keyboard.
+    pub fn covered(&self) -> bool {
+        self.approval.is_some()
+            || self.denied.is_some()
+            || self.unavailable.is_some()
+            || self.server.is_some()
+            || self.agents.is_some()
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> Action {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         if is_cycle_key(&key) {
             return Action::CycleMode;
         }
         if control && key.code == KeyCode::Char('c') {
-            if !self.prompt_open() && self.close_palette() {
+            if !self.covered() && self.close_palette() {
                 return Action::None;
             }
             return if self.running {
@@ -353,6 +475,30 @@ impl App {
                 Some(answer) => Action::Guardian(answer),
                 None => Action::None,
             };
+        }
+        if let Some(prompt) = &mut self.server {
+            return match prompt.handle_key(key) {
+                Some(answer) => {
+                    self.server = None;
+                    Action::Server(answer)
+                }
+                None => Action::None,
+            };
+        }
+        // The panel can be open over a pending approval, and takes the keys while it is.
+        if let Some(panel) = &mut self.agents {
+            return match panel.handle_key(key) {
+                PanelKey::None => Action::None,
+                PanelKey::Close => {
+                    self.agents = None;
+                    Action::None
+                }
+                PanelKey::Kill(id) => Action::KillAgent(id),
+            };
+        }
+        if control && key.code == KeyCode::Char('t') && !typing_reason {
+            self.agents = Some(AgentsPanel::new());
+            return Action::None;
         }
         if key.code == KeyCode::Esc && self.approval.is_none() && self.close_palette() {
             return Action::None;
@@ -434,9 +580,14 @@ impl App {
             } => format!("denied: {why}"),
         };
         let tool = approval.request.tool.clone();
+        let agent = approval.request.agent.clone();
         approval.reply(answer);
-        self.approval = None;
-        self.transcript.notice(format!("{tool} {note}"));
+        self.approval = self.queued_approvals.pop_front();
+        if agent.is_empty() || agent == fontaine_tools::gate::ROOT_AGENT {
+            self.transcript.notice(format!("{tool} {note}"));
+        } else {
+            self.transcript.notice(format!("{agent}: {tool} {note}"));
+        }
     }
 
     fn message_key(&mut self, key: KeyEvent) -> Action {
@@ -560,8 +711,16 @@ mod tests {
             Some(Command::AddDir("/tmp/x".into()))
         );
         assert_eq!(
-            parse_command("/nope"),
-            Some(Command::Unknown("nope".into()))
+            parse_command("/nope  with args "),
+            Some(Command::Other {
+                name: "nope".into(),
+                argument: "with args".into()
+            })
+        );
+        assert_eq!(parse_command("/agents"), Some(Command::Agents));
+        assert_eq!(
+            parse_command("/output-style terse"),
+            Some(Command::OutputStyle("terse".into()))
         );
         assert_eq!(parse_command("/denied"), Some(Command::Denied));
         assert_eq!(

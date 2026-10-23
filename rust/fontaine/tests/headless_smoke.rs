@@ -28,7 +28,17 @@ async fn the_registered_tools_are_advertised_to_the_model() {
     let out = s.headless(&["--output-format", "stream-json", "hi"]).await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let names = [
-        "read", "ls", "glob", "grep", "write", "edit", "shell", "webfetch",
+        "read",
+        "ls",
+        "glob",
+        "grep",
+        "write",
+        "edit",
+        "shell",
+        "webfetch",
+        "agent",
+        "skill",
+        "send_message",
     ];
     assert_eq!(out.lines()[0]["tools"], json!(names));
 
