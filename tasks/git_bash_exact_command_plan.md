@@ -157,6 +157,7 @@ text. `user_shell.rs` needs no change.
   `rust/fontaine/tests/project_executables.rs`, `rust/fontaine-tui/tests/agents.rs`,
   `rust/fontaine-tui/tests/common/mod.rs`
 - `docs/tools.md`, `docs/hooks.md`, `tasks/design/platforms.md`, `tasks/fontaine_harness_plan.md`
+- `CHANGELOG.md` (via the PR step)
 
 ## Trade-offs
 
@@ -170,9 +171,6 @@ text. `user_shell.rs` needs no change.
   change one. The `Ls`-style wrapper is the existing pattern and is smaller.
 - **The environment route on every OS.** Rejected. Linux and macOS have no re-parse, and keeping
   `sh -c <command>` there keeps Claude Code's error text and `$LINENO` exactly.
-- **Switching the Windows shell to `cmd` or PowerShell.** Out of scope. Git Bash is Claude Code
-  parity (a 2026-10-21 decision), and model-issued and hook commands are POSIX. `cmd` re-parses
-  its command line too, with rules that are harder to quote for. A PowerShell tool is issue #28.
 - **`eval "$FONTAINE_SH_COMMAND"` without the `unset`.** Rejected. The command, and every
   process it starts, would inherit a copy of its own text.
 
