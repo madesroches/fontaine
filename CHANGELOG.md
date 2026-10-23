@@ -179,6 +179,8 @@ All notable changes are recorded here. The format follows
 - The terminal UI takes the whole terminal on start: earlier shell output scrolls into the
   terminal's history, the transcript reads top-down, and the input box and status bar stay on the
   bottom rows across resizes (#74).
+- `webfetch` sends the User-Agent `fontaine/<version> (+https://github.com/madesroches/fontaine)`,
+  so sites that refuse requests without one, such as Wikipedia, no longer answer 403 (#73).
 
 ### Removed
 

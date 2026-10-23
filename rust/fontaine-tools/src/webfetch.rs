@@ -11,6 +11,13 @@ use url::Url;
 /// Redirects within one host that a fetch follows before giving up.
 const MAX_SAME_HOST_REDIRECTS: usize = 10;
 
+// Wikimedia and many CDNs answer a request without a User-Agent with 403.
+const USER_AGENT: &str = concat!(
+    "fontaine/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/madesroches/fontaine)"
+);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebfetchConfig {
     pub timeout: Duration,
@@ -45,6 +52,7 @@ pub struct Webfetch {
 impl Webfetch {
     pub fn new(config: WebfetchConfig) -> Result<Self, reqwest::Error> {
         let client = reqwest::Client::builder()
+            .user_agent(USER_AGENT)
             .redirect(reqwest::redirect::Policy::none())
             .timeout(config.timeout)
             .build()?;
