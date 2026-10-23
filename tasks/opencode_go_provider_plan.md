@@ -421,6 +421,12 @@ The `api_key_env` warning stays for key-based kinds.
 - AFK: 2026-10-23: The end-to-end test is one `kimi-k3` chat turn checking `x-opencode-session`,
   User-Agent and Bearer; per-wire path and auth checks live in `fontaine-core/tests/opencode_go.rs`,
   so the headless helper gets no Messages responder or `/anthropic` routing.
+- 2026-10-23: Cost is dropped on `ModelHandle::catalog_billed()` (false only for `Unpriced`
+  providers), not on `priced()`, which is also false for `openai-compatible` and would have dropped
+  the cost those endpoints report today.
+- 2026-10-23: The Messages wire uses rig's gateway dialect named `opencode-go`, not Anthropic's,
+  which refuses non-catalog models without an explicit `max_tokens`; those models get the
+  gateway's 4096 default.
 
 ## Security
 
