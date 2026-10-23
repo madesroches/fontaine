@@ -7,7 +7,8 @@ On a host with no system CA bundle (a bare `ubuntu` container), `Webfetch::new` 
 construction and `registry()` turns that into `cannot set up the webfetch tool: builder error`,
 which aborts the whole session. The model transport already survives this by falling back to the
 bundled Mozilla roots; `webfetch` and the scanner-model downloader do not. Give them the same
-fallback so startup never depends on the host's trust store.
+fallback so startup no longer fails on a missing trust store through these two paths. HTTP MCP
+servers (rmcp builds its own client) are out of scope.
 
 ## Current State
 - `rust/fontaine-core/src/transport.rs`: `reqwest_client()` builds a default client and, on
@@ -68,6 +69,9 @@ fallback so startup never depends on the host's trust store.
 ## Decisions
 - 2026-10-23 Bundled-roots fallback chosen over deferred error (issue #112 offered both).
 
+- 2026-10-23 AFK: Helper test injects the first-build failure with an invalid user agent on the first call only and drops the "both builds fail" assertion, avoiding a new `build_client_with` seam.
+- 2026-10-23 AFK: HTTP MCP / OAuth client construction declared out of scope (rmcp 3.6.0 `from_uri` and OAuth build their own clients and can panic on a bare host); `with_client` exists but rmcp's same-origin redirect policy is private, so passing our own client would silently change redirect behavior. Follow-up issue: route MCP HTTP through the tls helper.
+
 ## Documentation
 `docs/tools.md`: webfetch trusts the system CA store, falling back to bundled Mozilla roots with a
 warning when it cannot be loaded; `SSL_CERT_FILE`/`SSL_CERT_DIR` override.
@@ -75,8 +79,7 @@ warning when it cannot be loaded; `SSL_CERT_FILE`/`SSL_CERT_DIR` override.
 ## Testing Strategy
 - Unit test in `tls.rs`: with a builder closure whose first build is made to fail (an invalid user
   agent, `user_agent("bad\nvalue")`, on the first call only, via a call counter), the helper
-  returns a working client built with bundled roots; and when both fail it returns the original
-  error. The retry is unconditional (any build error, not only TLS), as `with_bundled_roots` is
+  returns a working client built with bundled roots. The retry is unconditional (any build error, not only TLS), as `with_bundled_roots` is
   today. This pins issue #112 (no system roots stopped startup).
 - Existing transport and webfetch tests stay green.
 
