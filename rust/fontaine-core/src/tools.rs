@@ -104,7 +104,12 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
         },
         webfetch: WebfetchConfig::default(),
     })
-    .map_err(|e| format!("cannot set up the webfetch tool: {e}"))?;
+    .map_err(|e| {
+        format!(
+            "cannot set up the webfetch tool: {}",
+            fontaine_tools::error_chain::chain(&e.without_url())
+        )
+    })?;
     if let Some(extension) = params.extension {
         tools.push(register_extension(extension.agent, &guard));
         tools.push(register_extension(extension.skill, &guard));

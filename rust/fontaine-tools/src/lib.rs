@@ -9,6 +9,7 @@ pub mod result_pipeline;
 pub mod risk;
 pub mod scope;
 pub mod skill;
+pub mod tls;
 pub mod webfetch;
 
 // Wikimedia and many CDNs answer a request without a User-Agent with 403; gateways that ask

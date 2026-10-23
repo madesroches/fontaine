@@ -89,11 +89,12 @@ pub async fn ensure(dir: &Path, base_url: &str, token: Option<&str>) -> Result<(
         .await
         .map_err(|e| FetchError::Failed(format!("cannot create {}: {e}", dir.display())))?;
     sweep_stale(dir, STALE_AFTER);
-    let client = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(READ_TIMEOUT)
-        .build()
-        .map_err(|e| FetchError::Failed(e.to_string()))?;
+    let client = fontaine_tools::tls::build_client(|| {
+        reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(READ_TIMEOUT)
+    })
+    .map_err(|e| FetchError::Failed(fontaine_tools::error_chain::chain(&e.without_url())))?;
     for name in missing {
         let target = dir.join(name);
         // A temp file of its own, so a second session fetching the same files never writes

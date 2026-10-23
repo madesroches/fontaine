@@ -52,12 +52,13 @@ impl Webfetch {
             reqwest::header::ACCEPT,
             reqwest::header::HeaderValue::from_static(ACCEPT),
         );
-        let client = reqwest::Client::builder()
-            .user_agent(crate::FONTAINE_USER_AGENT)
-            .default_headers(headers)
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(config.timeout)
-            .build()?;
+        let client = crate::tls::build_client(|| {
+            reqwest::Client::builder()
+                .user_agent(crate::FONTAINE_USER_AGENT)
+                .default_headers(headers.clone())
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(config.timeout)
+        })?;
         Ok(Webfetch { client, config })
     }
 

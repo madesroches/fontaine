@@ -155,3 +155,9 @@ All notable changes are recorded here. The format follows
     tag, each archive carrying the license, readme and changelog; `cargo install --git
     https://github.com/madesroches/fontaine fontaine` from source.
   - Documentation under `docs/`, a README quickstart, contributing guide and security policy.
+
+### Fixed
+
+- A host with no system CA bundle no longer stops startup: `webfetch` and the scanner-model
+  download fall back to the bundled Mozilla roots, as the model transport does, and a client that
+  still cannot be built reports its cause (#112).
