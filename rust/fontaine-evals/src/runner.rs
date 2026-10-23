@@ -1,15 +1,17 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fontaine_core::config::PermissionMode;
-use serde::Serialize;
+use fontaine_tools::error_chain::chain;
+use serde::{Deserialize, Serialize};
 
 use crate::baseline;
 use crate::case::{Case, FixtureVerdict, Kind, Profile, load_dataset};
 use crate::live::{self, Live, Scored};
 use crate::none::{self, Outcome};
+use crate::output::{self, Header, Sidecar};
 use crate::report::{self, Scorecard};
 use crate::{EXIT_FAIL, EXIT_USAGE};
 
@@ -99,16 +101,21 @@ struct RunArgs {
     #[arg(long, value_name = "PATH")]
     out: Option<PathBuf>,
 
+    /// Continue an interrupted live run from its `<out>.partial.jsonl` sidecar, scoring only the
+    /// cases it does not hold a result for
+    #[arg(long, value_name = "PARTIAL.JSONL", requires = "out")]
+    resume: Option<PathBuf>,
+
     /// Where an unfiltered `--profile full` live run writes the guardian models that clear the
     /// inclusion bar
     #[arg(long, value_name = "PATH", default_value = DEFAULT_MODELS_FILE)]
     models_file: PathBuf,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CaseResult {
     pub id: String,
-    pub kind: &'static str,
+    pub kind: String,
     pub category: String,
     pub expected: String,
     pub actual: String,
@@ -249,6 +256,9 @@ fn run_score(args: &RunArgs) -> u8 {
             "unsupported --guardian `{guardian}`; supported modes are `fixture`, `none` and `live:<account>/<model>`"
         ));
     }
+    if args.resume.is_some() && live_spec.is_none() {
+        return usage("`--resume` continues a `live:` run");
+    }
     let cases = match load_or_report(dataset) {
         Ok(cases) => cases,
         Err(code) => return code,
@@ -266,10 +276,55 @@ fn run_score(args: &RunArgs) -> u8 {
     if selected.is_empty() {
         return usage("no cases selected by --profile/--filter");
     }
+    if let Some(out) = &args.out
+        && let Err(e) = output::prepare(out)
+    {
+        return usage(&chain(&e));
+    }
 
     let mut skipped = Vec::new();
     let mut live_run = None;
     let results: Vec<CaseResult> = if let Some(spec) = live_spec {
+        let header = Header {
+            dataset_version: match report::dataset_version(dataset) {
+                Ok(version) => version,
+                Err(e) => {
+                    return usage(&format!(
+                        "cannot read the dataset {}: {}",
+                        dataset.display(),
+                        chain(&e)
+                    ));
+                }
+            },
+            guardian: guardian.clone(),
+            profile: profile_name(profile).to_string(),
+            filter: args.filter.clone(),
+        };
+        let kept = match &args.resume {
+            Some(from) => match output::resume(from, &header) {
+                Ok((kept, dropped)) => {
+                    if let Some(stray) =
+                        kept.iter().find(|r| !selected.iter().any(|c| c.id == r.id))
+                    {
+                        return usage(&format!(
+                            "cannot resume from {}: case {} is not in this run",
+                            from.display(),
+                            stray.id
+                        ));
+                    }
+                    eprintln!(
+                        "fontaine-evals: resuming from {}: {} case(s) kept, {} unscored case(s) to retry, {} to run in all",
+                        from.display(),
+                        kept.len(),
+                        dropped,
+                        selected.len() - kept.len()
+                    );
+                    kept
+                }
+                Err(e) => return usage(&chain(&e)),
+            },
+            None => Vec::new(),
+        };
         let connected = match live::connect(
             spec,
             match profile {
@@ -285,13 +340,25 @@ fn run_score(args: &RunArgs) -> u8 {
             Ok(rt) => rt,
             Err(code) => return code,
         };
-        let (results, scored, missed) = match rt.block_on(score_live(&selected, &connected)) {
-            Ok(done) => done,
-            Err(e) => return usage(&e),
-        };
+        // Only once setup has succeeded: a sidecar left by a run that never started would block
+        // the next one.
+        let mut sidecar = None;
+        if let Some(out) = &args.out {
+            match Sidecar::start(
+                &output::sidecar_path(out),
+                &header,
+                &kept,
+                args.resume.as_deref(),
+            ) {
+                Ok(started) => sidecar = Some(started),
+                Err(e) => return usage(&chain(&e)),
+            }
+        }
+        let (results, scored, missed) =
+            rt.block_on(score_live(&selected, &connected, kept, &mut sidecar));
         skipped = missed;
         selected = scored;
-        live_run = Some(connected);
+        live_run = Some((connected, header.dataset_version));
         results
     } else if guardian == "none" {
         // The guardian and the scanner do not exist in this mode, and `auto` needs the guardian.
@@ -345,13 +412,13 @@ fn run_score(args: &RunArgs) -> u8 {
         live: live_run.is_some(),
     });
 
-    if let Some(live) = &live_run {
-        match dataset_version_and_models(args, dataset, live, profile, &summary) {
-            Ok(version) => summary.dataset_version = Some(version),
-            Err(e) => return usage(&e),
+    if let Some((live, version)) = &live_run {
+        if let Err(e) = update_models(args, live, profile, &summary, version) {
+            return usage(&e);
         }
+        summary.dataset_version = Some(version.clone());
     }
-    print_summary(&summary, &results);
+    print_summary(&summary, &results, live_run.is_some());
     if let Some(out) = &args.out {
         let report = Report {
             summary: &summary,
@@ -360,6 +427,27 @@ fn run_score(args: &RunArgs) -> u8 {
         let json = serde_json::to_string_pretty(&report).expect("report serializes");
         if let Err(e) = std::fs::write(out, json + "\n") {
             return usage(&format!("cannot write {}: {e}", out.display()));
+        }
+    }
+    if live_run.is_some()
+        && let Some(out) = &args.out
+    {
+        let path = output::sidecar_path(out);
+        // The report now holds every result; the sidecar is only worth keeping while some case
+        // still has none.
+        if summary.infrastructure_failures.is_empty() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                eprintln!(
+                    "fontaine-evals: cannot remove {}: {}",
+                    path.display(),
+                    chain(&e)
+                );
+            }
+        } else {
+            eprintln!(
+                "fontaine-evals: pass `--resume {}` to retry the unscored case(s)",
+                path.display()
+            );
         }
     }
     // A live run reports and exits 0 whatever it scored: it is a measurement, not a gate. Only an
@@ -371,14 +459,23 @@ fn run_score(args: &RunArgs) -> u8 {
     }
 }
 
-/// Scores `selected` against the live guardian, one case at a time so each latency is its own.
-/// Returns the results, the cases they belong to and the cases that could not be scored.
+/// Scores `selected` against the live guardian, one case at a time so each latency is its own,
+/// reporting and recording each case as it is scored. A case in `kept` already has its result
+/// from an earlier run. Returns the results, the cases they belong to and the cases that could
+/// not be scored.
 async fn score_live<'a>(
     selected: &[&'a Case],
     live: &Live,
-) -> Result<(Vec<CaseResult>, Vec<&'a Case>, Vec<Skipped>), String> {
+    kept: Vec<CaseResult>,
+    sidecar: &mut Option<Sidecar>,
+) -> (Vec<CaseResult>, Vec<&'a Case>, Vec<Skipped>) {
     let (mut results, mut scored, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
-    let scanner = if selected.iter().any(|c| c.kind == Kind::Scanner) {
+    let mut kept: HashMap<String, CaseResult> =
+        kept.into_iter().map(|r| (r.id.clone(), r)).collect();
+    let scanner = if selected
+        .iter()
+        .any(|c| c.kind == Kind::Scanner && !kept.contains_key(&c.id))
+    {
         live::start_scanner(live).await
     } else {
         Default::default()
@@ -386,68 +483,108 @@ async fn score_live<'a>(
     for notice in &scanner.notices {
         eprintln!("fontaine-evals: {notice}");
     }
-    for case in selected {
-        match case.kind {
-            Kind::Guardian => match live::adjudicate(case, live).await? {
-                Scored::Result(result) => {
-                    results.push(*result);
-                    scored.push(*case);
-                }
-                Scored::Skipped(reason) => skipped.push(Skipped {
-                    id: case.id.clone(),
-                    reason,
-                }),
-            },
+    let total = selected.len();
+    for (n, case) in selected.iter().enumerate() {
+        if let Some(result) = kept.remove(&case.id) {
+            print_case(&result);
+            results.push(result);
+            scored.push(*case);
+            continue;
+        }
+        let outcome = match case.kind {
+            Kind::Guardian => live::adjudicate(case, live)
+                .await
+                .unwrap_or_else(|e| unscored(case, e)),
             Kind::Pipeline => match none::decide(case, Some(live.guardian.clone())).await {
                 Ok(Outcome::Decided {
                     decision,
                     tier,
                     latency_ms,
-                }) => {
-                    results.push(score_pipeline(case, decision, tier, latency_ms));
-                    scored.push(*case);
-                }
-                Ok(Outcome::Skipped(reason)) => skipped.push(Skipped {
-                    id: case.id.clone(),
-                    reason,
-                }),
-                Err(e) => return Err(format!("case {}: {e}", case.id)),
+                }) => Scored::Result(Box::new(score_pipeline(case, decision, tier, latency_ms))),
+                Ok(Outcome::Skipped(reason)) => Scored::Skipped(reason),
+                Err(e) => unscored(case, e),
             },
             Kind::Scanner => match &scanner.backend {
-                Some(backend) => {
-                    results.push(live::scan(case, backend).await);
-                    scored.push(*case);
-                }
-                None => skipped.push(Skipped {
-                    id: case.id.clone(),
-                    reason: "`scanner` is `off` in the user configuration".into(),
-                }),
+                Some(backend) => Scored::Result(Box::new(live::scan(case, backend).await)),
+                None => Scored::Skipped("`scanner` is `off` in the user configuration".into()),
             },
+        };
+        match outcome {
+            Scored::Result(result) => {
+                eprintln!("[{}/{total}] {}", n + 1, progress(&result));
+                print_case(&result);
+                if let Some(file) = sidecar
+                    && let Err(e) = file.append(&result)
+                {
+                    eprintln!(
+                        "fontaine-evals: cannot write {}: {}; the run goes on without it",
+                        file.path.display(),
+                        chain(&e)
+                    );
+                    *sidecar = None;
+                }
+                results.push(*result);
+                scored.push(*case);
+            }
+            Scored::Skipped(reason) => {
+                eprintln!("[{}/{total}] {} skipped", n + 1, case.id);
+                println!("SKIP {}: {reason}", case.id);
+                skipped.push(Skipped {
+                    id: case.id.clone(),
+                    reason,
+                });
+            }
         }
     }
-    Ok((results, scored, skipped))
+    (results, scored, skipped)
 }
 
-/// The dataset version of this run, and, on an unfiltered full-profile run, the update of the
-/// models file.
-fn dataset_version_and_models(
+/// A case the runner itself could not pose, such as one whose workspace cannot be written. Like a
+/// provider failure, it says nothing about the model.
+fn unscored(case: &Case, error: String) -> Scored {
+    Scored::Result(Box::new(CaseResult {
+        id: case.id.clone(),
+        kind: case.kind.as_str().to_string(),
+        category: case.category.to_string(),
+        expected: case.expected.clone(),
+        actual: "unscored".to_string(),
+        expected_tier: case.expected_tier.map(|t| t.to_string()),
+        actual_tier: None,
+        mode: None,
+        pass: false,
+        latency_ms: 0,
+        explanation: Some(error),
+        escape_class: None,
+        fail_closed: Some("runner_error".to_string()),
+    }))
+}
+
+fn progress(r: &CaseResult) -> String {
+    match r.fail_closed.as_deref() {
+        Some(reason) if r.infrastructure_failure() => {
+            format!("{} unscored ({reason}) {}ms", r.id, r.latency_ms)
+        }
+        _ => format!("{} {} {}ms", r.id, r.actual, r.latency_ms),
+    }
+}
+
+/// On an unfiltered full-profile run, the update of the models file.
+fn update_models(
     args: &RunArgs,
-    dataset: &std::path::Path,
     live: &Live,
     profile: Profile,
     summary: &Summary,
-) -> Result<String, String> {
-    let version = report::dataset_version(dataset)
-        .map_err(|e| format!("cannot read the dataset {}: {e}", dataset.display()))?;
+    version: &str,
+) -> Result<(), String> {
     if profile != Profile::Full || args.filter.is_some() {
-        return Ok(version);
+        return Ok(());
     }
     if !summary.infrastructure_failures.is_empty() {
         eprintln!(
             "fontaine-evals: {} case(s) failed closed on infrastructure; the models file is left as it was",
             summary.infrastructure_failures.len()
         );
-        return Ok(version);
+        return Ok(());
     }
     let p95 = summary
         .latency_ms
@@ -465,7 +602,7 @@ fn dataset_version_and_models(
         rates: &rates,
         p95_ms: p95,
         scored_on: &today,
-        dataset_version: &version,
+        dataset_version: version,
     };
     let existing = report::read(&args.models_file)?;
     let merged = report::merge(existing, &card);
@@ -485,14 +622,14 @@ fn dataset_version_and_models(
         merged.file.models.len(),
         args.models_file.display()
     );
-    Ok(version)
+    Ok(())
 }
 
 fn score_pipeline(case: &Case, decision: String, tier: String, latency_ms: u64) -> CaseResult {
     let expected_tier = case.expected_tier.map(|t| t.to_string());
     CaseResult {
         id: case.id.clone(),
-        kind: case.kind.as_str(),
+        kind: case.kind.as_str().to_string(),
         category: case.category.to_string(),
         pass: decision == case.expected && expected_tier.as_deref() == Some(tier.as_str()),
         expected: case.expected.clone(),
@@ -647,7 +784,7 @@ fn score_fixture(case: &Case) -> CaseResult {
     };
     CaseResult {
         id: case.id.clone(),
-        kind: case.kind.as_str(),
+        kind: case.kind.as_str().to_string(),
         category: case.category.to_string(),
         expected: case.expected.clone(),
         actual,
@@ -718,10 +855,7 @@ fn summarize(params: SummaryParams<'_>) -> Summary {
     Summary {
         infrastructure_failures,
         guardian: guardian.to_string(),
-        profile: match profile {
-            Profile::Full => "full",
-            Profile::Minimal => "minimal",
-        },
+        profile: profile_name(profile),
         filter,
         dataset_cases,
         scored: results.len(),
@@ -744,27 +878,58 @@ fn summarize(params: SummaryParams<'_>) -> Summary {
     }
 }
 
-fn print_summary(summary: &Summary, results: &[CaseResult]) {
-    for r in results.iter().filter(|r| !r.pass) {
-        println!(
-            "FAIL {} ({} / {}): expected {}{}, got {}{}",
-            r.id,
-            r.kind,
-            r.category,
-            r.expected,
-            r.expected_tier
-                .as_ref()
-                .map(|t| format!(" [{t}]"))
-                .unwrap_or_default(),
-            r.actual,
-            r.actual_tier
-                .as_ref()
-                .map(|t| format!(" [{t}]"))
-                .unwrap_or_default(),
-        );
+fn profile_name(profile: Profile) -> &'static str {
+    match profile {
+        Profile::Full => "full",
+        Profile::Minimal => "minimal",
     }
-    for s in &summary.skipped {
-        println!("SKIP {}: {}", s.id, s.reason);
+}
+
+fn fail_line(r: &CaseResult) -> String {
+    format!(
+        "FAIL {} ({} / {}): expected {}{}, got {}{}",
+        r.id,
+        r.kind,
+        r.category,
+        r.expected,
+        r.expected_tier
+            .as_ref()
+            .map(|t| format!(" [{t}]"))
+            .unwrap_or_default(),
+        r.actual,
+        r.actual_tier
+            .as_ref()
+            .map(|t| format!(" [{t}]"))
+            .unwrap_or_default(),
+    )
+}
+
+/// The line a live run prints for a case as soon as it is scored; a passing case prints none.
+fn print_case(r: &CaseResult) {
+    if r.infrastructure_failure() {
+        println!(
+            "UNSCORED {} ({}){}",
+            r.id,
+            r.fail_closed.as_deref().unwrap_or_default(),
+            r.explanation
+                .as_ref()
+                .map(|e| format!(": {e}"))
+                .unwrap_or_default()
+        );
+    } else if !r.pass {
+        println!("{}", fail_line(r));
+    }
+}
+
+/// A live run has already printed each case's line as it was scored.
+fn print_summary(summary: &Summary, results: &[CaseResult], streamed: bool) {
+    if !streamed {
+        for r in results.iter().filter(|r| !r.pass) {
+            println!("{}", fail_line(r));
+        }
+        for s in &summary.skipped {
+            println!("SKIP {}: {}", s.id, s.reason);
+        }
     }
     if !summary.infrastructure_failures.is_empty() {
         println!(
