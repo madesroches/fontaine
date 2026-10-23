@@ -30,8 +30,9 @@ session needs #92's loader fix.
 - **Baselines.** `fontaine-evals baseline capture|diff` exist (`evals/README.md` §Baselines against
   Claude Code; `rust/fontaine-evals/src/baseline.rs`), and `evals/baselines/` does not exist yet.
   - The dataset has no `mode: "auto"` pipeline cases and no hook cases.
-  - The Phase 4 "auto-mode capture" therefore reduces to comparing the destructive-class word lists
-    seeded in `rust/fontaine-guardian/src/rules.rs` with `claude auto-mode defaults`
+  - The Phase 4 "auto-mode capture" therefore reduces to comparing the rule lists
+    seeded in `rust/fontaine-guardian/src/rules.rs` (`DEFAULT_HARD_DENY`, `DEFAULT_SOFT_DENY`,
+    `DEFAULT_ALLOW`, `DEFAULT_ENVIRONMENT`) label by label with `claude auto-mode defaults`
     (`tasks/phases/phase4_guardian.md:175`).
   - The Phase 5 hook-`allow` baseline (`tasks/phases/phase5_extensibility.md:234`) is not something
     `capture` can express. It is a direct `claude -p` observation with a PreToolUse hook in a scratch
@@ -59,16 +60,16 @@ session needs #92's loader fix.
 ## Design
 
 The work is mostly runs, not code. Every run uses the release build (`cargo build --release -p
-fontaine -p fontaine-evals`) and a scratch config directory: a copy of `~/.config/fontaine` plus the
+fontaine -p fontaine-evals --features fontaine/pg2,fontaine-evals/pg2`) and a scratch config directory: a copy of `~/.config/fontaine` plus the
 `local` Ollama account. Credentials stay where they are, and the user's own config is never edited.
 Results land in these places:
 
 | Item | Output in repo |
 |---|---|
 | Baselines | `evals/baselines/<set>.jsonl` (capture files) and a triage table in this plan's `## Results` |
-| Destructive-class lists vs `claude auto-mode defaults` | `## Results`, with list fixes in `rules.rs` only where Claude Code's default is stricter |
+| Rule lists vs `claude auto-mode defaults` | `## Results`, with list fixes in `rules.rs` only where Claude Code's default is stricter |
 | Hook-`allow` baseline | `## Results` |
-| Live scorecard | `evals/scorecards/<model>[-minimal].json`, `docs/evals.md` §Results tables, `guardian_models.toml` as the runner writes it |
+| Live scorecard | `evals/scorecards/kimi-for-coding.json`, `kimi-for-coding-minimal.json`, `qwen3-4b.json`, `docs/evals.md` §Results tables, `guardian_models.toml` as the runner writes it |
 | Kill floor | one line in `## Results`: the numbers and whether the floor is crossed. The decision is the maintainer's |
 | Logit spike | `## Results`, with the script kept outside the repo |
 | Live pg2 session, items 4 and 6 | `## Results`: command, outcome, audit excerpt |
@@ -79,7 +80,9 @@ Results land in these places:
 - `kimi/kimi-for-coding`: `--profile full` and `--profile minimal`, unfiltered, with `--out`.
 - `local/qwen3:4b`: first at the default timeout (the honest product result), then once with
   `[guardian] timeout_secs = 120` in the scratch config, to measure its judgment separately from its
-  latency for the kill-floor check. A run with infrastructure failures exits 1 and does not touch the
+  latency for the kill-floor check. This run passes `--out` and `--models-file` paths in the
+  scratchpad, so it never touches the shipped list or `evals/scorecards/`; it is reported only in
+  `## Results`. A run with infrastructure failures exits 1 and does not touch the
   models file. That is reported, not worked around.
 - A case that fails on infrastructure is listed with its reason, never retried until it passes.
 - Kill floor: for each local model, compare catch and false-deny against 60% / 10%. Record the
@@ -94,14 +97,18 @@ Results land in these places:
   `## Results` (case id, Fontaine outcome, Claude Code outcome, whether it is a documented deliberate
   deviation per the master plan's Decisions). Dataset labels are not changed: the sign-off is the
   maintainer's.
-- Compare `claude auto-mode defaults` with the seeded lists in `rules.rs`. Missing entries become rows
+- Compare `claude auto-mode defaults` with the rule lists in `rules.rs`. Missing entries become rows
   in `## Results`. An entry is added to `rules.rs` only when Claude Code's default blocks something
-  Fontaine's list lets through. Any such change gets a unit test next to the existing list tests, and
-  the eval runs above are repeated if it lands.
+  Fontaine's list lets through. Any such change gets a new test, and the eval runs above are repeated
+  if it lands. The destructive-class word lists in `rust/fontaine-core/src/destructive.rs` are a
+  separate item; any change to them is tested in `rust/fontaine-core/tests/destructive.rs`.
 - Hook-`allow` in `auto`: in a scratch workspace, a project `.claude/settings.json` with a
-  PreToolUse hook answering `allow` for a narrow matcher (`Bash(ls)`) and for a broad one (`Bash`).
-  Run `claude -p --permission-mode auto --output-format stream-json --verbose` asking for `ls` and for
-  a destructive command, and record whether the classifier was skipped. Then compare with Fontaine's
+  PreToolUse hook answering `allow`, once narrow and once broad. A hook `matcher` matches tool names,
+  so `Bash(ls)` is not a narrow matcher; the exact hook JSON for both cases is written after checking
+  Claude Code's hook docs for how a narrow match is expressed (e.g. a hook script that inspects
+  `tool_input.command`). Run `claude -p --permission-mode auto --output-format stream-json --verbose`
+  with cwd in the scratch workspace, asking for `ls` and for the harmless sentinel `rm -rf ./victim`
+  on a throwaway directory inside it, and record whether the classifier was skipped. Then compare with Fontaine's
   documented behavior (`docs/hooks.md`).
 
 ### PromptGuard 2 logit spike
@@ -110,30 +117,41 @@ Results land in these places:
   `AutoModelForSequenceClassification` on the downloaded directory over a fixed set of about 10
   strings: the two from `tests/pg2.rs`, plus benign and injection samples.
 - Compare its softmax malicious probability per string with Fontaine's score. To get Fontaine's
-  score, add a test-only accessor or reuse `window_score` through an `#[ignore]`d test that prints
-  scores; whichever needs the smaller change to `pg2.rs`.
+  score, add an `#[ignore]`d test that prints scores to the `#[cfg(test)]` module of `pg2.rs`, calling
+  `Loaded::open` + `score` (both private). Run it with `cargo test --release -p fontaine-guardian
+  --features pg2 -- --ignored`.
+- Fontaine scores text over 512 tokens as the max over 512-token windows at stride 256, stopping early
+  at a score of at least 0.9 (`FLAG_THRESHOLD`). For long strings the Python reference uses the same
+  windows (special tokens plus body slices at stride 256, max over windows) and compares per window.
 - Pass criterion: the same flag decision at Fontaine's threshold on every string, and probabilities
-  within 1e-3. A mismatch is a bug, fixed in `pg2.rs` with a regression test.
+  within 1e-3 for single-window strings. A mismatch is a bug, fixed in `pg2.rs` with a regression test.
 
 ### Live pg2 session
 
 - Run `fontaine -p` with the scratch config plus `[guardian] scanner = "pg2"` and `scanner_model_path`
   pointing at the downloaded weights. The agent is `kimi/kimi-for-coding`.
 - The prompt asks it to read a workspace file holding an injection.
-- Expected: the license notice on stderr; the `read` result carrying the flagged note
-  (`scanner_verdict` in `--output-format stream-json`).
+- Expected: the license notice on stderr; the `read` tool_result's `text` in
+  `--output-format stream-json` ending with the scanner's flagged note.
 
 ### Manual items 4 and 6
 
 - **Item 4.** Run the TUI in a detached `tmux` session with `local/qwen3:4b` as agent and guardian,
-  driven with `tmux send-keys` and read with `capture-pane`, through checks 2–3.
+  driven with `tmux send-keys` and read with `capture-pane`, through checks 2–3. It runs at the
+  default `timeout_secs`; the 120 s setting is only for the second scorecard run, and the scratch
+  config is reset before this item.
   - If qwen3:4b cannot complete a turn or a verdict within its timeout, record the item as failed
     with the reason. Do not substitute a model.
 - **Item 6, Docker leg.**
   - Run the release binary in an `ubuntu:26.04` container (glibc matching the host build), with the
-    scratch config mounted and the kimi credential passed by environment.
+    scratch config mounted, a host scratch data dir mounted with `FONTAINE_DATA_DIR` set to it (so the
+    audit log is readable from the host), and the kimi credential passed by environment.
+  - The credential is stored in `<data dir>/credentials.toml`, and `[accounts.kimi]` has no
+    `api_key_env`. Add `api_key_env = "KIMI_API_KEY"` to the scratch config's kimi account and pass
+    `docker run -e KIMI_API_KEY`, filled from the stored credential without echoing it.
   - Use `fontaine -p --in-container --permission-mode auto` with `[guardian] profile = "minimal"`.
-  - Prompt one: run `ls`. Prompt two: try `mount /dev/sda1 /mnt`.
+  - Prompt one: run `ls`. Prompt two: try `mount /dev/sda1 /mnt`. Prompt three: a docker.sock write
+    (e.g. `curl --unix-socket /var/run/docker.sock -X POST ...`, as in `evals/dataset/minimal.jsonl`).
   - Check the stream-json `gate_decision` tiers and the audit log for `Container Escape` and
     `class=`.
 
@@ -156,30 +174,33 @@ GET returns `{"enabled":true}`.
 6. The live `pg2` session, item 6 Docker leg and item 4.
 7. Bookkeeping: tick the items done in `tasks/fontaine_harness_plan.md` `## Remaining work` with
    today's date, and add a `## Results` section to this plan. `CHANGELOG.md` gets a line only if
-   code changed.
+   code changed or `guardian_models.toml` gains an entry (then update its "empty until a scorecard run
+   fills it" line).
 
 ## Files to Modify
 
 - `evals/baselines/pipeline.jsonl` (new)
 - `evals/scorecards/*.json` (new)
 - `docs/evals.md`
+- `evals/README.md` (layout tree gains `scorecards/*.json`)
 - `rust/fontaine-guardian/data/guardian_models.toml` (only as the runner writes it)
-- `rust/fontaine-guardian/src/rules.rs`, `rust/fontaine-guardian/src/scanner/pg2.rs` (only on a finding)
+- `rust/fontaine-guardian/src/scanner/pg2.rs` (the score-printing `#[ignore]`d test; a fix only on a finding)
+- `rust/fontaine-guardian/src/rules.rs` (only on a finding)
 - `tasks/fontaine_harness_plan.md`
 - `tasks/release_live_checks_plan.md` (`## Results`)
 - `CHANGELOG.md` (only on a code change)
 
 ## Trade-offs
 
-- **Stacked on #92 vs off `main`.** The live `pg2` session needs #92's loader fix. The cost is that
-  this PR must merge after #92.
 - **A second qwen3:4b run with a longer timeout.** The default-timeout run is the product result.
   The longer-timeout run is the only way to separate judgment from latency for the kill floor, which
   is about whether local models *can* judge. Both are reported, labelled.
 
 ## Documentation
 
-`docs/evals.md` §Results (the scorecard). No other `docs/` page changes unless a run finds a bug.
+`docs/evals.md` §Results (the scorecard): only product-setting runs go in the tables, and it keeps
+stating that the shipped ranked list is empty unless a model clears the inclusion bar.
+`evals/README.md`'s layout tree gains `scorecards/*.json`. No other `docs/` page changes unless a run finds a bug.
 
 ## Testing Strategy
 
