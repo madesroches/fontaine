@@ -27,10 +27,12 @@ throwaway venv). So these stay open:
 - **Baselines.** `fontaine-evals baseline capture|diff` exist (`evals/README.md` §Baselines against
   Claude Code; `rust/fontaine-evals/src/baseline.rs`), and `evals/baselines/` does not exist yet.
   - The dataset has no `mode: "auto"` pipeline cases and no hook cases.
-  - The Phase 4 "auto-mode capture" therefore reduces to comparing the rule lists
-    seeded in `rust/fontaine-guardian/src/rules.rs` (`DEFAULT_HARD_DENY`, `DEFAULT_SOFT_DENY`,
-    `DEFAULT_ALLOW`, `DEFAULT_ENVIRONMENT`) label by label with `claude auto-mode defaults`
-    (`tasks/phases/phase4_guardian.md:175`).
+  - The Phase 4 "auto-mode capture and diff" therefore has no cases to capture. This plan does only
+    its static half: comparing the rule lists seeded in `rust/fontaine-guardian/src/rules.rs`
+    (`DEFAULT_HARD_DENY`, `DEFAULT_SOFT_DENY`, `DEFAULT_ALLOW`, `DEFAULT_ENVIRONMENT`) label by label
+    with `claude auto-mode defaults` (`tasks/phases/phase4_guardian.md:175`). The behavioural capture
+    and diff, and the destructive-class word-list check, are deferred, so the master-plan item stays
+    unticked.
   - The Phase 5 hook-`allow` baseline (`tasks/phases/phase5_extensibility.md:234`) is not something
     `capture` can express. It is a direct `claude -p` observation with a PreToolUse hook in a scratch
     `.claude/settings.json`.
@@ -102,8 +104,8 @@ Results land in these places:
 - Compare `claude auto-mode defaults` with the rule lists in `rules.rs`. Missing entries become rows
   in `## Results`. An entry is added to `rules.rs` only when Claude Code's default blocks something
   Fontaine's list lets through. A new entry uses an existing rule label. Any such change gets a new test, and the eval runs above are repeated
-  if it lands. The destructive-class word lists in `rust/fontaine-core/src/destructive.rs` are a
-  separate item; any change to them is tested in `rust/fontaine-core/tests/destructive.rs`.
+  if it lands. The destructive-class word lists in `rust/fontaine-core/src/destructive.rs` are not
+  compared and stay open: Claude Code publishes no such list.
 - Hook-`allow` in `auto`: Claude Code's stream-json has no classifier-skip signal unless
   `--include-hook-events` is passed, and `ls` is auto-approved anyway, so the probe must be a single
   simple command (compound commands don't match a narrow rule; `docs/hooks.md`) that the auto
@@ -204,7 +206,6 @@ GET returns `{"enabled":true}`. Also tick the matching box in issue #80's checkl
 - `rust/fontaine-guardian/src/scanner/pg2.rs` (the score-printing `#[ignore]`d test; a fix only on a finding)
 - `rust/fontaine-guardian/src/rules.rs` (only on a finding)
 - `rust/fontaine-guardian/src/snapshots/fontaine_guardian__prompt_builder__tests__the_defaults_marker_snapshot.snap` (only on a finding)
-- `rust/fontaine-core/src/destructive.rs` and `rust/fontaine-core/tests/destructive.rs` (only on a finding)
 - `tasks/fontaine_harness_plan.md`
 - `tasks/release_live_checks_plan.md` (`## Results`)
 - `CHANGELOG.md` (only on a code change)
@@ -212,7 +213,10 @@ GET returns `{"enabled":true}`. Also tick the matching box in issue #80's checkl
 ## Documentation
 
 `docs/evals.md` §Results (the scorecard): only product-setting runs go in the tables, and it keeps
-stating that the shipped ranked list is empty unless a model clears the inclusion bar.
+stating that the shipped ranked list is empty unless a model clears the inclusion bar. A
+product-setting run with unscored infrastructure failures (the default-timeout qwen3:4b run) still
+gets its row: rates over the scored cases only, `—` where nothing was scored, and a note under the
+table giving the scored and unscored counts and the failure reason.
 `evals/README.md`'s layout tree gains `scorecards/*.json`. No other `docs/` page changes unless a run finds a bug.
 
 ## Testing Strategy
@@ -230,3 +234,12 @@ fixture and `none` eval runs) stay green.
   OpenAI key is available; rewriting them to another provider is a design change, not a recording.
 - 2026-10-23: AFK: No local model is pulled beyond the installed `qwen3:4b`; the kill-floor result
   is reported for that model only.
+- 2026-10-23: AFK: The behavioural half of the Phase 4 auto-mode capture and diff is deferred, not
+  done: the dataset has no `mode: "auto"` pipeline cases and new ones are not added here; only the
+  rule-list comparison runs, and the master-plan item stays unticked.
+- 2026-10-23: AFK: A product-setting scorecard run with unscored infrastructure failures goes in the
+  `docs/evals.md` tables, rates over scored cases only, with scored/unscored counts and the reason
+  noted under the table; hiding it in `## Results` would under-report the shipped default.
+- 2026-10-23: AFK: The destructive-class word-list check stays open: Claude Code exposes no
+  destructive class, and a per-command `claude -p` auto probe measures its classifier verdict, not a
+  class, so it cannot honestly confirm or refute a list entry.
