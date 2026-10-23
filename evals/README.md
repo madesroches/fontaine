@@ -115,7 +115,8 @@ cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:work/c
 | `--models-file <path>` | Where an unfiltered `--profile full` live run writes the models that clear the inclusion bar. Default `fontaine-guardian/data/guardian_models.toml`. |
 | `--profile full\|minimal` | Profile under test; default `full`. A profile run scores the cases with that profile. A `minimal` run also scores every `full`-profile `guardian` case, because the minimal guardian must still catch what the full one does. |
 | `--filter <kind\|category-glob>` | Restrict scoring to a kind (`guardian`, `pipeline`, `scanner`) or to categories matching a glob, where `*` matches any run of characters: `attack:*`, `tier05-adversarial`. |
-| `--out <path>` | Also write a JSON report with every scored case and the summary. |
+| `--out <path>` | Also write a JSON report with every scored case and the summary. Missing parent directories are created, and the path is checked for writing before the first case runs. |
+| `--resume <partial.jsonl>` | Continue an interrupted live run from its sidecar. Needs `--out` and a `live:` guardian. See [Live mode](#live-mode). |
 
 Every case in the dataset is validated against the schema on every run, whatever `--profile` and
 `--filter` select. Every rule string in a case's `permissions` is parsed with the same code that
@@ -184,6 +185,36 @@ the models file is not touched, and the run exits 1. A `low_confidence` denial i
 answer and counts. The published results are on the
 [scorecard page](../docs/evals.md).
 
+A live run reports each case as it is scored. On stderr, a progress line
+`[n/total] <id> <verdict> <latency>ms` (`unscored (<reason>)` in place of the verdict for an
+infrastructure failure, `skipped` for a skipped case). On stdout, the case's `FAIL`, `SKIP` or
+`UNSCORED <id> (<reason>): <explanation>` line, so the end of the run prints only the summary. A
+case the runner itself cannot pose, such as one whose workspace cannot be written, does not stop
+the run: it is `UNSCORED` with the reason `runner_error` and the error as its explanation, and
+counts as an infrastructure failure. Only setup errors, such as an unknown account or a bad
+dataset, stop a run, and they do so before the first case.
+
+With `--out`, each scored case is also appended, as it is scored, to a JSON Lines sidecar next to
+the report, `<out>.partial.jsonl`. Its first line names what the run measures:
+
+```json
+{"dataset_version": "3f2a9c1b7e04", "guardian": "live:work/claude-haiku-5-5", "profile": "full", "filter": null}
+```
+
+Each line after it is one case, in the shape of an entry of the report's `cases`. The `--out`
+report and the models file are still written once, at the end, from every result. The sidecar is
+then removed, unless a case failed closed on infrastructure: it is kept so the run can retry them.
+A run refuses to start, before asking the model anything, while a sidecar is in its way; pass
+`--resume` or delete the file.
+
+`--resume <partial.jsonl>` continues an interrupted run. The sidecar must have been written for
+the same dataset version, guardian, profile and filter, or the run is a usage error. The cases it
+holds a result for are not asked again; the cases it lists as infrastructure failures, and the
+cases it does not list, are. The sidecar is rewritten with the kept results and grows as before,
+and the report, the rates, the latency and the models file cover the cases of both runs. The
+models-file rules are unchanged: while any case of the union is still unscored, the file is not
+touched.
+
 ### Baselines against Claude Code
 
 The `baseline` subcommands compare Fontaine's pipeline with Claude Code's. They are manual: they
@@ -241,7 +272,7 @@ file cannot be read.
 | 0 | `live:`: the report was written, whatever the scores. A live run is a measurement, not a gate. |
 | 1 | `live:`: a case failed closed on infrastructure (`error`, `unavailable`, `timeout` or `unparseable`), so the measurement is unreliable. |
 | 1 | A case failed schema validation, a rule string did not parse, a `fixture_verdict` differs from `expected`, or a pipeline `fixture_verdict.tier` differs from `expected_tier`. In `none` mode: a pipeline decision differs from `expected` or its tier from `expected_tier`. |
-| 2 | Usage error: bad flags, an unreadable or empty dataset directory, an unsupported `--guardian`, a `live:` account that is unknown or has no credential, a filter that selects nothing, or an unwritable `--out` or `--models-file`. |
+| 2 | Usage error: bad flags, an unreadable or empty dataset directory, an unsupported `--guardian`, a `live:` account that is unknown or has no credential, a filter that selects nothing, an unwritable `--out` or `--models-file`, a `--resume` sidecar written for another dataset version, guardian, profile or filter, or a sidecar left in the way of a live run started without `--resume`. |
 
 `baseline capture` and `baseline diff` use the same codes for usage errors, and exit 1 as
 described above.

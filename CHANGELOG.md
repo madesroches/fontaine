@@ -139,6 +139,10 @@ All notable changes are recorded here. The format follows
     `--guardian none` (cases through the real pipeline) and `--guardian live:<account>/<model>`
     (a live guardian or scanner, with latency; writes the models that clear the inclusion bar to
     `--models-file`). `baseline capture` and `baseline diff` compare cases with `claude -p`.
+  - A live run streams: a progress line per case on stderr, each case's result line as it is
+    scored, and a flushed `<out>.partial.jsonl` sidecar that `--resume` continues from after an
+    interruption. A case the runner cannot pose is `UNSCORED` instead of aborting the run, and
+    `--out`'s parent directory is created and checked before the first case (#94).
 - Distribution
   - Release binaries for Linux, macOS and Windows built with `pg2` by cargo-dist on a `vX.Y.Z`
     tag, each archive carrying the license, readme and changelog; `cargo install --git
