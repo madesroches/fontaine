@@ -105,8 +105,10 @@ process-wide shared client and `reqwest::Client::new()` panics if TLS can't init
 `reqwest::Client::builder().build()`, and on error a second build with
 `.tls_certs_only(..)` over the bundled `webpki-root-certs` roots (rig's fallback for hosts with
 no system CA certs, with a `tracing::warn!`). The result goes through
-`ReqwestClient::from(client)`. If both builds fail, the error is mapped to the error
-`Client::build` already returns, never a panic. It uses the same per-account
+`ReqwestClient::from(client)`. If both builds fail, the build error is formatted into a
+`String` and returned, never a panic. `Client::build` (`models.rs:174`) returns a plain `Client`
+today and becomes `Result<Client, String>`; `client_for` (`models.rs:285-302`, already
+`Result<Client, String>`) calls it with `?`. It uses the same per-account
 client #87 introduces, for the same reason: no pooled connection outlives the runtime that made
 it. The Decisions section covers how the two PRs merge.
 
@@ -152,8 +154,10 @@ design 1.
 
 - The audit append (`permissions.rs:1337`) and the ledger appends (`gate.rs:576`,
   `child_runner.rs:99`, `steering.rs:80`) warn through `Approver::warn`.
-- `SessionState` (`gate.rs:196-226`) carries the session's approver (an `Arc<dyn Approver>`, set
-  where `SessionState` is built) and one warn-once flag per sink (audit, ledger), with one method,
+- `SessionState` (`gate.rs:196-226`) carries the session's approver (an `Arc<dyn Approver>`, arriving as a new
+  `StateParams.approver` field, `gate.rs:82-101`; `fontaine-evals/src/none.rs` (`DenyAll` at
+  `:124`, state at `:104`) and `fontaine-core/tests/common/pipeline.rs` (`Scripted` at `:180`,
+  state at `:161`) build their approver before the state) and one warn-once flag per sink (audit, ledger), with one method,
   `SessionState::sink_failed(Sink, &io::Error)`. It logs to `tracing` every time and warns through
   the approver once per sink, so a full disk doesn't warn per decision.
 - `record_decision(&SessionState)` (`permissions.rs:1336`) and the gate's ledger append call it.
@@ -201,6 +205,8 @@ micromegas conventions and the rule the user stated:
   context, or a `source()`), not a flattened `String`.
 - Keep the cause as `source()`. Never `format!("{e}")` an error into another error's message.
   Render the full chain once, where the error reaches a human, with `error_chain::chain`.
+  Exception: wrapping a third-party error whose own type drops `source()` (rig's
+  `ProviderError::Http`) may put the chain into Display, as `CausedClient` does.
 - `expect("why this cannot fail")` instead of `unwrap()` outside tests. Invariants panic loudly
   instead of falling back silently.
 - Don't swallow errors. A failure the user would care about (audit, ledger, config, credentials)
@@ -212,7 +218,8 @@ micromegas conventions and the rule the user stated:
 
 1. **Transport cause (#88).**
    - Add the `rig-reqwest` workspace dependency (`=0.45.0`) and make `reqwest` non-optional in
-     `fontaine-core`.
+     `fontaine-core`, and drop `"dep:reqwest"` from the `pg2` feature
+     (`rust/fontaine-core/Cargo.toml:10`).
    - Add a direct `webpki-root-certs` dependency (`=1.0.10`, the version in Cargo.lock) to
      `rust/Cargo.toml` and `rust/fontaine-core/Cargo.toml` for the TLS fallback.
    - Add `fontaine-tools/src/error_chain.rs` with unit tests: dedupe, a multi-level chain, an
@@ -261,7 +268,7 @@ micromegas conventions and the rule the user stated:
   the error's own Display needs no shared state.
 - **In-house `chain` vs. adopting anyhow now.** Most existing errors are hand-written enums
   whose callers dispatch on `exit_code()`, and the 77 `String` errors work. Converting them all
-  is churn with no user-visible gain. The strategy in AGENTS.md applies to new and touched code.
+  is churn with no user-visible gain.
 
 ## Decisions
 
@@ -280,6 +287,8 @@ micromegas conventions and the rule the user stated:
 - `guardian_default` / `candidates` turning a credentials load error into `None`
   (`models.rs:635, 662`), and `ChildContext::model_for`'s `$guardian_default` fallback
   (`child_runner.rs:171`). This is behavior Claude Code-parity work owns, with its own UX.
+- The attribution-only fall-backs to the root agent in `agent.rs:154-158` (`CurrentCall`) and
+  `steering.rs:95-99` stay as they are, since they make no permission decision.
 - MCP connect errors (`fontaine-mcp/src/servers.rs`): rmcp doesn't expose the transport error as
   a `source()`, so `chain` would recover nothing.
 - The PromptGuard download (`scanner_model.rs:126`) and the OTLP exporter error texts.
