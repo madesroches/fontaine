@@ -57,8 +57,9 @@ pub struct AccountListing {
 }
 ```
 
-`Switcher::listings(&self, main: (&ModelRef, &[String])) -> Vec<AccountListing>` (async)
-visits every account, sorted by account name:
+`Switcher::listings(&self, main: (&ModelRef, &[String]), only: Option<&[String]>) ->
+Vec<AccountListing>` (async) visits every account, or only those named in `only`, sorted by
+account name:
 
 - When the account has an explicit `models` list, use it with no call. This is the "models
   named in config" from the issue.
@@ -68,7 +69,7 @@ visits every account, sorted by account name:
   not signed in) or from the listing call (rendered with `with_causes`) becomes `Err(reason)`.
   These listings run concurrently (`futures::future::join_all`), each under
   `LISTING_TIMEOUT = 10 s` (`tokio::time::timeout`). `listings` delegates to
-  `pub async fn listings_within(main, timeout)` (documented "Tests only", like
+  `pub async fn listings_within(main, only, timeout)` (documented "Tests only", like
   `with_request_timeout` in `providers/device_flow.rs`), which `listings` calls with
   `LISTING_TIMEOUT`. A timeout becomes
   `Err("listing timed out after <timeout>")`, formatted from the `timeout` argument.
@@ -82,7 +83,10 @@ failure.
 
 - It returns the `switcher()` error when models cannot be switched.
 - It fetches on the first call.
-- Later calls refetch only the `Err` entries, so a credential added mid-session shows up.
+- Later calls pass the names of the `Err` entries as `only` and splice the results back in by
+  account name, so a credential added mid-session shows up and cached successes make no
+  request. It clones the switcher before awaiting, as `switch_main_model` does
+  (`agent.rs:884-888`).
 - The main account's entry is always replaced from `models.main_listing`, which stays current
   after a switch.
 
@@ -163,8 +167,11 @@ value is `ModelRef::parse(&switched.reference)`, since `Switched.reference` is a
 
 - `App.models: Option<ModelPicker>`. `covered()` includes it, and `handle_key` routes to it
   right after `server`, mapping `PickerKey::Pick` to `Action::PickModel(purpose, reference)`
-  and closing the picker. `Action::PickModel` is ignored (`=> {}`) in the in-turn loops, where
-  the picker cannot be open anyway: commands are only parsed from an idle submit.
+  and closing the picker. The picker can stay open during a background-agent notification turn
+  (the idle loop starts it without closing overlays), and `notification_turn` only has
+  `&AgentRuntime`. In the in-turn loops `Action::PickModel` is therefore stored as
+  `pending_pick: Option<(PickerPurpose, String)>` on the driver, and the idle loop applies it
+  through the same `model`/`guardian_model` path right after the turn returns.
 - `Driver::model` with an empty argument:
   1. Post the notice `listing models…` and draw, since listing other accounts may take up to
      the timeout.
@@ -187,6 +194,11 @@ value is `ModelRef::parse(&switched.reference)`, since `Switched.reference` is a
   draws agents and approval first, so reorder its branches to that same order (then search,
   completion, menu). Update the precedence doc comment above `overlay()` (`view.rs:116-118`) to
   list every overlay.
+- `draw()` (`view.rs:86-87`) calls `draw_approval` whenever `app.approval.is_some() &&
+  app.agents.is_none()`, which hardcodes the " approval " title, sets the approval's max scroll
+  and places the feedback cursor. It must choose `draw_approval` only when `overlay()` actually
+  returned the approval (e.g. `overlay` also returns which overlay it picked), so an approval
+  arriving while idle never makes the picker draw inside an approval box.
 
 ### Not in scope
 
@@ -206,7 +218,9 @@ value is `ModelRef::parse(&switched.reference)`, since `Switched.reference` is a
 4. **Wiring.** Add `App.models`, `covered`, key routing and `Action::PickModel` in `app.rs`.
    Update every exhaustive `match` on `Action` in `lib.rs`. Add the `overlay` branch in
    `view.rs` at the picker's key-precedence position, reordering the existing branches to match
-   and refreshing the doc comment. Make the no-argument `Driver::model` and `Driver::guardian_model` open the
+   and refreshing the doc comment. Make `draw()` use `draw_approval` only when `overlay()`
+   returned the approval. Store `Action::PickModel` as `pending_pick` in the in-turn loops and
+   apply it in the idle loop. Make the no-argument `Driver::model` and `Driver::guardian_model` open the
    picker, and record recents after successful switches.
 5. **Docs.** As in `## Documentation`, plus the master-plan `## Decisions` line (see Decisions).
 6. **Tests** (see Testing Strategy), then `cargo fmt --check`,
@@ -294,7 +308,8 @@ Unit (`recent.rs`, with `tempfile`):
 Integration (`fontaine-core/tests/models.rs`, wiremock):
 
 - `Switcher::listings`: an explicit `models` list makes no request, and the main account reuses
-  `main_listing` with no request.
+  `main_listing` with no request. `model_listings` called twice makes no second request for a
+  cached success and refetches only the `Err` entries.
 - Another OpenAI-compatible account is listed via `/models`.
 - A 500 response gives `Err` with the cause, and an account with no credential gives the
   `client_for` reason. The order is sorted by account name.
@@ -311,6 +326,9 @@ Integration (`fontaine-tui/tests/tui.rs`, through the `World` harness):
   Enter switches, and the transcript shows `model is now other/second`, the settings file is
   saved, and a second `/model` lists `other/second` under Recent.
 - Esc closes the overlay without switching.
+- Picking during a background-agent notification turn switches once the turn ends.
+- An approval arriving while the picker is open and the app is idle leaves the picker drawn
+  as the picker, with the approval's scroll state untouched.
 - An account whose wiremock `/models` returns 500 still shows its heading with the reason.
 - `/guardian-model` opens the overlay with only the candidates, and Enter pins the guardian
   (`guardian is now cloud/judge-b`).
