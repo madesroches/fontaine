@@ -1,5 +1,6 @@
 # Rust
 rust/target/
+rust/CHANGELOG.md
 
 # Fontaine local settings (personal, never committed)
 **/.fontaine/settings.local.toml

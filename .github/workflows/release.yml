@@ -15,7 +15,9 @@
 
 # Hand-adapted from the generated file (`allow-dirty = ["ci"]` in rust/Cargo.toml): the Cargo
 # workspace lives in `rust/`, so every command runs there and the artifact paths that GitHub's
-# actions resolve from the repository root are prefixed with `rust/`.
+# actions resolve from the repository root are prefixed with `rust/`. The `plan` and `host` jobs also copy the root `CHANGELOG.md` into
+# `rust/`, where dist looks for release notes, and `plan` fails a tag with no changelog
+# section.
 name: Release
 permissions:
   "contents": "write"
@@ -67,6 +69,10 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      # dist reads release notes only from the workspace root (`rust/`); the changelog lives at
+      # the repository root.
+      - name: Stage the changelog for dist
+        run: cp ../CHANGELOG.md CHANGELOG.md
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
@@ -88,6 +94,13 @@ jobs:
           echo "dist ran successfully"
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
+      - name: Require a changelog section for the tag
+        if: ${{ !github.event.pull_request }}
+        run: |
+          if ! jq -e '.announcement_changelog != null' plan-dist-manifest.json > /dev/null; then
+            echo "::error::CHANGELOG.md has no section for ${{ github.ref_name }}; add '## [X.Y.Z] - YYYY-MM-DD' before tagging"
+            exit 1
+          fi
       - name: "Upload dist-manifest.json"
         uses: actions/upload-artifact@v7
         with:
@@ -236,6 +249,10 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      # dist reads release notes only from the workspace root (`rust/`); the changelog lives at
+      # the repository root.
+      - name: Stage the changelog for dist
+        run: cp ../CHANGELOG.md CHANGELOG.md
       - name: Install cached dist
         uses: actions/download-artifact@v8
         with:
