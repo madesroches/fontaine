@@ -162,7 +162,9 @@ credential, is a usage error (exit code 2).
   `escalate`, every other case needs its exact label.
 - `pipeline` cases run through the real permission pipeline, in the case's `mode` and materialized
   `workspace`, with that guardian behind the `auto` branch.
-- `scanner` cases are skipped: the tool-result scanner is not part of this runner yet.
+- `scanner` cases go to the tool-result scanner the configuration selects, set up the way a
+  session sets it up; an `llm` scanner uses the live guardian model. With `scanner = "off"` they
+  are skipped, and a scanner that cannot judge is an infrastructure failure.
 - `--profile minimal` builds the minimal profile directly, without resolving containment, because
   eval cases never execute a tool. The `minimal` column therefore scores the minimal guardian even
   on a host that is not a container.
