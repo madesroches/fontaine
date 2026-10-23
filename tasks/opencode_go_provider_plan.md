@@ -207,7 +207,8 @@ kinds need; steps 2, 4 and 5 add `StoredCredential::OAuth`, `session_id` and `si
   `Arc<TokenSource>` into the `Send + 'static` future, and inserts (replaces) headers rather than
   appending.
 
-  No org header is sent on gateway traffic, as opencode does.
+  No org header is sent on gateway traffic, as opencode does; the token's `org_id` is stored as
+  metadata only, and `/api/orgs` is not called.
 
   Make webfetch's private `USER_AGENT` (`rust/fontaine-tools/src/webfetch.rs:15-19`) a public
   shared constant, `FONTAINE_USER_AGENT`, in `fontaine-tools`, which `fontaine-core` already
@@ -275,17 +276,31 @@ email = "me@example.com"
      automatically.
   3. Poll for the tokens.
   4. `GET {server}/api/user` for the email.
-  5. Store the tokens via `store_oauth` with `extra` = server, org id, email.
+  5. Store the tokens via `store_oauth` with `extra` = server, org id (when the token has one),
+     email.
   6. Print "signed in to OpenCode Go as <email>".
 
   Stdin is not read, so it also works from a non-terminal.
-- **Pricing.** `billing() == Unpriced` makes `priced()` false. The handle must also report no cost
-  for usage, whatever its source: Go-reported cost on the chat and responses wires, and catalog
-  prices rig attaches on the messages (`anthropic`) and gemini (`gcp.gemini`) wires. Cost is
-  dropped where rig's per-response cost is summed: headless `Totals` (`headless.rs:213`), the
-  guardian/subagent usage accumulators and the span bridge. Each of those already knows, or is
-  given, the handle's `Billing`. The implementer threads `Billing` to the accumulation points
-  listed under Files to Modify.
+- **Pricing.** `billing() == Unpriced` makes `priced()` false, and a Go call reports no cost
+  from any source: Go's own cost on the chat and responses wires, or the catalog price rig
+  attaches on the messages (`anthropic`) and gemini (`gcp.gemini`) wires. rig's `DynModel` cannot
+  be wrapped (its `ErasedModel` is crate-private) and reported cost is parsed inside the wire, so
+  cost is dropped where Fontaine receives each call's usage, keyed on the handle's `priced()`:
+  - Agent turns: `TurnParams` and `Drive` gain `priced: bool`, set by their callers from the
+    handle the agent was built from. `drive` clears `call.usage.cost` before `spend_of`,
+    `add_subagent_usage` and `SessionEvent::Usage` (`turn.rs:211-219`), so agent budgets, the
+    subagent total and headless `Totals` never see it.
+  - Guardian: `GuardianSettings` gains `priced`, set in `build_guardian` (`agent.rs:116`) from the
+    handle. An unpriced guardian returns `Adjudication.usage` without cost, so
+    `add_guardian_usage` (`permissions.rs:1074`) needs no change.
+  - Span bridge: the span each model call runs under records `model.priced` —
+    `fontaine.interaction` (from `TurnParams.priced`), `fontaine.subagent` (from the child's
+    handle), `fontaine.guardian` (from `GuardianSettings.priced`) and `fontaine.scanner` (from a
+    `priced` argument to `LlmScanner::new`, passed in `scanner_stage.rs:56`). The bridge's
+    `completion` skips `cost_usd` when the nearest ancestor carrying `model.priced` says `false`;
+    it already walks ancestors for `query_source` (`span_bridge.rs:345-363`).
+
+  The gate accumulators, `spend_of` and headless `Totals` are unchanged.
 
 ### 5. Session id plumbing
 
@@ -327,9 +342,8 @@ The `api_key_env` warning stays for key-based kinds.
    `fontaine-evals`.
 5. **`opencode-go` provider.** Add the module with routing, clients and the `SignIn` impl, plus
    the `wires` key on `Account` and its validation.
-6. **Billing.** Drop cost for `Unpriced` handles at every accumulation point: `gate.rs`
-   (`add_guardian_usage`, `add_subagent_usage`, `spend_of`), `turn.rs`, `permissions.rs`,
-   `headless.rs` and the span bridge.
+6. **Billing.** Drop cost for unpriced handles where usage enters (`drive`, the guardian) and
+   mark spans with `model.priced` for the span bridge (see Pricing).
 7. **`auth login`.** Dispatch to `sign_in()`.
 8. **Docs** (see Documentation).
 
@@ -340,9 +354,13 @@ The `api_key_env` warning stays for key-based kinds.
 - `rust/fontaine-core/src/lib.rs` (module)
 - `rust/fontaine-core/src/config.rs` (`AccountKind`, `Account::wires`, validation hook)
 - `rust/fontaine-core/src/models.rs` (use the registry; `Billing`; `session_id`)
-- `rust/fontaine-core/src/gate.rs` (cost accumulation: `add_guardian_usage` :445-446,
-  `add_subagent_usage` :489-490, `spend_of` :727-731), fed from `rust/fontaine-core/src/turn.rs`
-  (:211-214) and `rust/fontaine-core/src/permissions.rs` (:1074)
+- `rust/fontaine-core/src/turn.rs` (`TurnParams`/`Drive` `priced`, cost cleared in `drive`,
+  `model.priced` on `fontaine.interaction`), `rust/fontaine-core/src/child_runner.rs` (`Drive`
+  caller, `model.priced` on `fontaine.subagent`), `rust/fontaine-core/src/agent.rs`
+  (`build_guardian`), `rust/fontaine-core/src/scanner_stage.rs` (`LlmScanner::new`)
+- `rust/fontaine-guardian/src/guardian.rs` (`GuardianSettings.priced`: span field, cost-free
+  usage), `rust/fontaine-guardian/src/scanner.rs` (span field)
+- `rust/fontaine-tui/src/lib.rs` (`TurnParams` caller)
 - `rust/fontaine-core/src/transport.rs` (`Decorated`)
 - `rust/fontaine-core/src/credentials.rs` (oauth entry, lock, `store_oauth`)
 - `rust/fontaine-tools/src/webfetch.rs` + `rust/fontaine-tools/src/lib.rs` (shared User-Agent)
@@ -351,12 +369,12 @@ The `api_key_env` warning stays for key-based kinds.
 - `rust/fontaine-evals/src/live.rs`, `rust/fontaine-evals/Cargo.toml` (`uuid.workspace = true`)
 - Tests: `rust/fontaine-core/tests/{models,config,accounts,credentials}.rs`, test helpers that
   name `AccountKind::*` (`rust/fontaine-tui/tests/common/mod.rs`,
-  `rust/fontaine-core/tests/common/runtime.rs`, `rust/fontaine-core/tests/scanner.rs`), a new
+  `rust/fontaine-core/tests/common/runtime.rs`, `rust/fontaine-core/tests/scanner.rs`),
+  `rust/fontaine-core/tests/output_styles.rs` (`TurnParams`), a new
   `rust/fontaine-core/tests/opencode_go.rs`, `rust/fontaine/tests/` (headless), and
-  `rust/fontaine/tests/common/mod.rs` (an Anthropic Messages responder, path-prefix routing for
-  `/openai/v1/...` and `/anthropic/v1/messages`, and request-header capture; today `Wire` is
-  Chat|Responses at :48-51, paths are exact at :395-398 and `requests()` returns bodies only at
-  :439)
+  `rust/fontaine/tests/common/mod.rs` (a path prefix for the chat route, so it answers
+  `/openai/v1/chat/completions`, and request-header capture; today paths are exact at :395-398
+  and `requests()` returns bodies only at :439)
 - `docs/configuration.md`, `docs/architecture.md`, `docs/guardian.md`, `docs/telemetry.md`,
   `CHANGELOG.md`
 
@@ -387,6 +405,22 @@ The `api_key_env` warning stays for key-based kinds.
   behind one account. Account addressing and per-account credentials (master plan Decision,
   `tasks/fontaine_harness_plan.md:316`) are unchanged, and the `Provider` trait is a seam over rig
   clients, not a custom provider layer.
+- AFK: 2026-10-23: Go cost is dropped where usage enters Fontaine (`drive` via a `priced` flag on
+  `TurnParams`/`Drive`, the guardian via `GuardianSettings.priced`) and the span bridge skips cost
+  under an ancestor span recording `model.priced = false`; rig's `DynModel` cannot be wrapped and
+  facts binding misses Go-reported cost and the span bridge.
+- AFK: 2026-10-23: Go stays unpriced: its self-reported cost (including Extra usage) is dropped, not
+  shown or budgeted, and `--max-budget-usd` with a Go main model stays a usage error, keeping the
+  contract that a budget applies only where every wire's cost is known.
+- AFK: 2026-10-23: The Console URL gets no override knob; the `SignIn` body takes the server as a
+  parameter and is tested in `fontaine-core` against wiremock, and the binary-level `auth login`
+  test is dropped (sign-in dispatch is manually verified).
+- AFK: 2026-10-23: No org header on gateway traffic and no `/api/orgs` lookup, following upstream
+  opencode (the reference client) over a third-party one; manual verification would surface a
+  gateway that needs it.
+- AFK: 2026-10-23: The end-to-end test is one `kimi-k3` chat turn checking `x-opencode-session`,
+  User-Agent and Bearer; per-wire path and auth checks live in `fontaine-core/tests/opencode_go.rs`,
+  so the headless helper gets no Messages responder or `/anthropic` routing.
 
 ## Security
 
@@ -415,8 +449,8 @@ The `api_key_env` warning stays for key-based kinds.
     ```
 
     followed by `fontaine auth login go` and `--model go/kimi-k3`. Then a `wires` override
-    example, and the note that Go models are unpriced, so `--max-budget-usd` with a Go main
-    model is a usage error (exit 2).
+    example, and the note that Go models are unpriced (Go's own reported cost, including Extra
+    usage, is not shown), so `--max-budget-usd` with a Go main model is a usage error (exit 2).
   - Credentials section: the `oauth` entry shape, and that `fontaine auth login` on an
     `opencode-go` account opens a device sign-in instead of a prompt.
 - `docs/architecture.md`: add `providers` to the fontaine-core module list (line 31), and update
@@ -468,20 +502,27 @@ All automated tests run offline with `wiremock`. No test touches opencode.ai.
     echoes values);
   - `validate_credentials_toml` accepts the docs example;
   - an `api_key` store under the lock does not lose a concurrent oauth rotation.
-- **Billing** (unit): an `opencode-go` handle on each wire is unpriced and contributes no cost.
-  The fixture covers a chat response carrying a Go-reported cost and a `messages`-wire response
-  priced from rig's catalog.
+- **Provider wiring** (`fontaine-core/tests/opencode_go.rs`, wiremock, in the style of
+  `tests/models.rs`): one completion per wire through `connect` hits its path with its auth
+  placement — Bearer on `/openai/v1/chat/completions` and `/openai/v1/responses`, `x-api-key` on
+  `/anthropic/v1/messages`, `x-goog-api-key` and no `key` query parameter on `/google/...`.
+- **Billing**:
+  - (unit) an unpriced `drive` reports usage without cost: a chat response carrying a
+    Go-reported cost and a `messages`-wire response rig prices from its catalog both reach
+    `SessionEvent::Usage`, the agent spend and the subagent total with `cost: None`;
+  - (unit) an unpriced guardian's `Adjudication.usage` has no cost;
+  - (unit, span bridge) a completion span under an ancestor with `model.priced = false` emits no
+    `cost_usd` or `fontaine.cost.usage`, even with provider `anthropic`.
 - **End to end** (`fontaine -p` against wiremock standing in for the Go gateway, with a stored
-  oauth credential and `base_url` pointed at the mock):
-  - a `kimi-k3` turn hits `/openai/v1/chat/completions`, and a `claude-haiku-5-5` turn hits
-    `/anthropic/v1/messages`;
-  - both carry the session id from `--session-id` in `x-opencode-session`, the Fontaine
-    User-Agent and the right auth header.
-
-  This catches plumbing (session id through `lib.rs`, provider dispatch) that unit tests against
-  a fake client cannot.
-- **`auth login`** (integration): against a wiremock Console, `fontaine auth login go` with stdin
-  closed prints the URL and code, stores the oauth entry, and prints the email.
+  oauth credential and `base_url` pointed at the mock): a `kimi-k3` turn hits
+  `/openai/v1/chat/completions` carrying the session id from `--session-id` in
+  `x-opencode-session`, the Fontaine User-Agent and Bearer auth. This catches plumbing (session
+  id through `lib.rs`, provider dispatch) that unit tests against a fake client cannot.
+- **Sign-in** (`fontaine-core/tests/opencode_go.rs`): the `SignIn` impl's body takes the Console
+  URL as a parameter (the trait impl passes `https://opencode.ai/console`); against a wiremock
+  Console it stores the oauth entry and returns "signed in to OpenCode Go as <email>". There is
+  no binary-level `auth login` test, since nothing points the binary at a mock Console; the
+  dispatch is covered by Manual Verification step 1.
 
 ## Manual Verification
 
@@ -493,7 +534,7 @@ These need a real Go subscription, which CI cannot hold.
    `go/claude-haiku-5-5` and `go/gemini-4-argon-contributor`. Each answers. This confirms the
    gateway accepts the Console access token on each wire, which is inferred from third-party
    clients, not documented. If the gateway rejects the token on a wire, that wire needs a token
-  exchange, which is not designed here.
+  exchange or an org header, neither of which is designed here.
 3. Edit `expires_at` in `credentials.toml` to the past and rerun step 2's first command. It
    answers, and the stored `refresh` value has changed (rotation persisted).
 4. Guardian scorecard candidates (`glm-5.3-flash`, `deepseek-v4.1-flash`, `mimo-v2.6-flash`):
