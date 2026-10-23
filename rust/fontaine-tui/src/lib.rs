@@ -816,7 +816,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let mut run = Box::pin(async {
             runtime
                 .session
-                .compact_if_needed(&runtime.models.main.completion)
+                .compact_if_needed(&runtime.models.main.completion, runtime.approver())
                 .await;
             run_turn(
                 TurnParams {

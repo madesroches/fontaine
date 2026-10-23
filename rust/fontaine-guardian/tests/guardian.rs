@@ -127,6 +127,14 @@ async fn an_endpoint_error_is_denied_as_guardian_unavailable() {
         .await;
     assert_eq!(names(&result), (Decision::Deny, "GuardianUnavailable"));
     assert_eq!(result.fail_closed, Some(FailClosed::Error));
+    assert!(
+        result
+            .explanation
+            .starts_with("the guardian model could not be reached: ")
+            && result.explanation.len() > "the guardian model could not be reached: ".len(),
+        "{}",
+        result.explanation
+    );
     assert_eq!(endpoint.calls().await, 3);
 }
 
@@ -217,6 +225,11 @@ async fn a_connection_reset_is_denied_without_hanging() {
     .expect("no hang");
     assert_eq!(names(&result), (Decision::Deny, "GuardianUnavailable"));
     assert_eq!(result.fail_closed, Some(FailClosed::Error));
+    assert!(
+        result.explanation.contains("could not be reached: "),
+        "{}",
+        result.explanation
+    );
 }
 
 #[tokio::test]

@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use fontaine_agents::budget::Spend;
@@ -20,6 +21,7 @@ use crate::ledger::{Ledger, Record};
 use crate::permission_rules::{
     CallContext, Posture, Rule, RuleSource, SourcedRule, is_broad_code_execution, matches,
 };
+use crate::permissions::Approver;
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -88,6 +90,8 @@ pub struct StateParams {
     pub allow: Vec<SourcedRule>,
     pub ledger: Arc<Ledger>,
     pub audit: Arc<AuditLog>,
+    /// Told once when the audit log or the ledger cannot be written.
+    pub approver: Arc<dyn Approver>,
     /// The user's home directory, for `~/` rules and the critical-path check.
     pub home: Option<PathBuf>,
     /// Fontaine's own config and data directories, which file writes never reach unprompted.
@@ -193,10 +197,28 @@ impl DecisionFeed {
     }
 }
 
+/// A write-only record the session keeps; each reaches the human at most once when it fails.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sink {
+    Audit,
+    Ledger,
+}
+
+impl Sink {
+    fn what(self) -> &'static str {
+        match self {
+            Sink::Audit => "the audit log",
+            Sink::Ledger => "the session ledger",
+        }
+    }
+}
+
 pub struct SessionState {
     pub session_id: String,
     pub ledger: Arc<Ledger>,
     pub audit: Arc<AuditLog>,
+    approver: Arc<dyn Approver>,
+    sink_warned: [AtomicBool; 2],
     pub home: Option<PathBuf>,
     pub protected_dirs: Vec<PathBuf>,
     inner: RwLock<Inner>,
@@ -235,6 +257,8 @@ impl SessionState {
             session_id: params.session_id,
             ledger: params.ledger,
             audit: params.audit,
+            approver: params.approver,
+            sink_warned: Default::default(),
             home: params.home,
             protected_dirs: params.protected_dirs,
             mode,
@@ -574,7 +598,17 @@ impl SessionState {
 
     pub fn append(&self, record: Record) {
         if let Err(e) = self.ledger.append(record) {
-            tracing::warn!(error = %e, "the session ledger could not be written");
+            self.sink_failed(Sink::Ledger, &e);
+        }
+    }
+
+    /// Logs every failure, and warns the human on the first one per sink, so a full disk does
+    /// not warn on every decision.
+    pub fn sink_failed(&self, sink: Sink, error: &std::io::Error) {
+        tracing::warn!(error = %error, "{} could not be written", sink.what());
+        if !self.sink_warned[sink as usize].swap(true, Ordering::Relaxed) {
+            self.approver
+                .warn(&format!("{} could not be written: {error}", sink.what()));
         }
     }
 

@@ -221,7 +221,7 @@ fn load_skill(path: &Path, dir_name: &str, scope: Scope) -> Result<Skill, Extens
     let allowed_tools = match (scope, allowed) {
         (Scope::User, Some(entries)) => entries
             .iter()
-            .filter_map(|entry| parse_rule(entry).ok())
+            .map(|entry| parse_rule(entry).expect("validated when the definition was loaded"))
             .collect(),
         // Validated above; a repository's skill cannot approve anything.
         _ => Vec::new(),

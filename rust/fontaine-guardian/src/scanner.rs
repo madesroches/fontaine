@@ -123,7 +123,7 @@ impl LlmScanner {
             )),
             Ok(Err(error)) => {
                 tracing::warn!(error = %error, "the scanner model gave no usable verdict");
-                failed("the scanner model gave no usable verdict")
+                failed(format!("the scanner model gave no usable verdict: {error}"))
             }
             Ok(Ok(response)) => response.output.into_scan(),
         }

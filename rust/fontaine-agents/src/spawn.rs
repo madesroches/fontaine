@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use fontaine_tools::gate::{AgentId, ROOT_AGENT};
+use fontaine_tools::gate::AgentId;
 use rig_core::tool::{Tool, ToolContext, ToolExecutionError, ToolOutput};
 use serde::Deserialize;
 use serde_json::json;
@@ -20,12 +20,12 @@ const TARGET: &str = "fontaine::telemetry";
 /// The longest `send_message` body.
 pub const MESSAGE_CAP_CHARS: usize = 50_000;
 
-fn caller_of(context: &ToolContext) -> String {
-    context
-        .get::<AgentId>()
-        .ok()
-        .flatten()
-        .map_or_else(|| ROOT_AGENT.to_string(), |id| id.0)
+/// Who is calling. A call that does not say would get the root agent's toolset and depth, so it
+/// fails instead.
+fn caller_of(context: &ToolContext) -> Result<String, ToolExecutionError> {
+    context.require::<AgentId>().map(|id| id.0).map_err(|e| {
+        ToolExecutionError::other(format!("the call does not say which agent made it: {e}"))
+    })
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -173,7 +173,7 @@ impl Tool for AgentTool {
         context: &mut ToolContext,
         args: AgentArgs,
     ) -> Result<ToolOutput, ToolExecutionError> {
-        let caller = caller_of(context);
+        let caller = caller_of(context)?;
         let Some(agent_type) = self.types.get(&args.agent_type) else {
             return Err(ToolExecutionError::invalid_args(format!(
                 "no agent type `{}`; available:\n{}",
@@ -358,7 +358,7 @@ impl Tool for SendMessageTool {
         context: &mut ToolContext,
         args: SendMessageArgs,
     ) -> Result<ToolOutput, ToolExecutionError> {
-        let from = caller_of(context);
+        let from = caller_of(context)?;
         if args.message.chars().count() > MESSAGE_CAP_CHARS {
             return Err(ToolExecutionError::invalid_args(format!(
                 "a message is at most {MESSAGE_CAP_CHARS} characters"

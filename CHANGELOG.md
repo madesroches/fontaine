@@ -186,6 +186,19 @@ All notable changes are recorded here. The format follows
 - `webfetch` sends `Accept: text/markdown, text/html, */*`, as Claude Code does, so sites that
   can serve markdown send it and content-negotiating servers no longer pick a non-text default
   (#85).
+- A model request that cannot connect names its transport cause (connection refused, reset, TLS,
+  DNS, timeout) in the turn, guardian, scanner and model-listing errors, without the request URL
+  (#88).
+- The guardian and scanner fail-closed explanations include the underlying error; the decision is
+  unchanged.
+- Config write failures read "cannot write", and a corrupt session ledger on resume reads "cannot
+  open", instead of "cannot read" and "cannot create".
+- A failed audit-log or ledger write, and a skipped compaction, reach the human once through the
+  frontend's warning channel instead of only the debug log or raw stderr.
+- A tool call that does not say which agent made it fails instead of being gated as the root
+  agent's; the same holds for `agent` and `send_message`.
+- An unparseable shipped guardian-model table or an unvalidated tool rule panics instead of being
+  silently dropped.
 
 ### Removed
 

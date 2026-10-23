@@ -701,3 +701,27 @@ async fn a_child_that_finishes_stops_its_own_background_children() {
     assert!(*handle.killed.lock().unwrap());
     assert!(!rig.tree.background_running());
 }
+
+#[tokio::test]
+async fn a_call_that_does_not_say_whose_it_is_is_not_served_as_the_root_agents() {
+    let rig = rig();
+    let error = rig
+        .agent
+        .call(&mut ToolContext::new(), args("explore", "a"))
+        .await
+        .unwrap_err();
+    assert!(error.model_output().render().contains("which agent"));
+    let error = rig
+        .send
+        .clone()
+        .call(
+            &mut ToolContext::new(),
+            SendMessageArgs {
+                to: "main".to_string(),
+                message: "hi".to_string(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(error.model_output().render().contains("which agent"));
+}

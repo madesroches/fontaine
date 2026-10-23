@@ -224,7 +224,7 @@ impl Guardian {
                 tracing::warn!(error = %error, "the guardian model call failed");
                 finish(Outcome::FailClosed(
                     FailClosed::Error,
-                    "the guardian model could not be reached".to_string(),
+                    format!("the guardian model could not be reached: {error}"),
                     tally(),
                 ))
             }
@@ -232,7 +232,7 @@ impl Guardian {
                 tracing::warn!(error = %error, "the guardian's answer could not be used");
                 finish(Outcome::FailClosed(
                     FailClosed::Unparseable,
-                    "the guardian's answer was not a valid verdict".to_string(),
+                    format!("the guardian's answer was not a valid verdict: {error}"),
                     tally(),
                 ))
             }

@@ -179,15 +179,7 @@ impl Webfetch {
 
 /// The error without its URL, which the model already has, and with its causes.
 fn describe(error: reqwest::Error) -> String {
-    let error = error.without_url();
-    let mut text = error.to_string();
-    let mut source = std::error::Error::source(&error);
-    while let Some(cause) = source {
-        text.push_str(": ");
-        text.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    text
+    crate::error_chain::chain(&error.without_url())
 }
 
 fn looks_like_html(text: &str) -> bool {

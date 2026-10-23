@@ -353,6 +353,7 @@ impl AgentRuntime {
             allow: permissions.allow.clone(),
             ledger: setup.session.ledger.clone(),
             audit: setup.session.audit.clone(),
+            approver: setup.approver.clone(),
             home: setup.home,
             protected_dirs: [&setup.config_dir, &setup.data_dir]
                 .into_iter()
@@ -1010,12 +1011,13 @@ impl AgentRuntime {
         });
     }
 
+    /// The session's approver, for warnings from work done outside the permission pipeline.
+    pub fn approver(&self) -> &dyn Approver {
+        self.approver.as_ref()
+    }
+
     pub fn append(&self, record: Record) {
-        if let Err(e) = self.session.ledger.append(record) {
-            tracing::warn!(error = %e, "the session ledger could not be written");
-            self.approver
-                .warn(&format!("the session ledger could not be written: {e}"));
-        }
+        self.state.append(record);
     }
 }
 
@@ -1053,7 +1055,7 @@ fn build_agent(p: &Parts<'_>) -> Result<Agent, String> {
         append: p.setup.append_system_prompt.as_deref(),
     });
     let ledger_window: Arc<dyn fontaine_agents::root_ledger::RootLedger> =
-        Arc::new(LedgerWindow(p.session.ledger.clone()));
+        Arc::new(LedgerWindow(p.state.clone()));
     let registered = tools::registry(RegistryParams {
         gate: p.pipeline.clone(),
         scope: p.state.scope(),
@@ -1098,10 +1100,7 @@ fn build_agent(p: &Parts<'_>) -> Result<Agent, String> {
         .add_hook(CurrentCall {
             state: p.state.clone(),
         })
-        .add_hook(SteeringHook::new(
-            p.steering.clone(),
-            p.session.ledger.clone(),
-        ))
+        .add_hook(SteeringHook::new(p.steering.clone(), p.state.clone()))
         .tool_server_handle(p.tool_server.clone());
     if let Some(schema) = &p.setup.json_schema {
         builder = builder.output_schema_raw(schema.clone());

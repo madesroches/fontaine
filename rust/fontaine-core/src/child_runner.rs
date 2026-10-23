@@ -20,7 +20,7 @@ use tracing::Instrument;
 
 use crate::agent::CurrentCall;
 use crate::gate::{ChildRestrictions, SessionState, spend_of};
-use crate::ledger::{Ledger, Record};
+use crate::ledger::Record;
 use crate::models::{ModelHandle, Switcher};
 use crate::permission_rules::parse_rule;
 use crate::permissions::Approver;
@@ -64,11 +64,11 @@ impl ResultStage for NotificationStage {
 }
 
 /// The root ledger, as the agent tree sees it.
-pub struct LedgerWindow(pub Arc<Ledger>);
+pub struct LedgerWindow(pub Arc<SessionState>);
 
 impl RootLedger for LedgerWindow {
     fn human_messages(&self) -> Vec<String> {
-        self.0.view().user_messages.clone()
+        self.0.ledger.view().user_messages.clone()
     }
 
     fn append_event(&self, event: AgentEvent) {
@@ -96,9 +96,7 @@ impl RootLedger for LedgerWindow {
                 detail: Some(to),
             },
         };
-        if let Err(e) = self.0.append(record) {
-            tracing::warn!(error = %e, "the session ledger could not be written");
-        }
+        self.0.append(record);
     }
 }
 
@@ -141,7 +139,7 @@ fn restrictions(agent_type: &AgentType) -> ChildRestrictions {
         entries
             .iter()
             .filter(|entry| entry_has_specifier(entry))
-            .filter_map(|entry| parse_rule(entry).ok())
+            .map(|entry| parse_rule(entry).expect("validated when the definition was loaded"))
             .collect::<Vec<_>>()
     };
     // A tool listed bare is allowed whole, so a specifier for it in the same list adds nothing.
@@ -149,7 +147,7 @@ fn restrictions(agent_type: &AgentType) -> ChildRestrictions {
         let bare: Vec<String> = entries
             .iter()
             .filter(|entry| !entry_has_specifier(entry))
-            .filter_map(|entry| parse_rule(entry).ok())
+            .map(|entry| parse_rule(entry).expect("validated when the definition was loaded"))
             .map(|rule| rule.tool)
             .collect();
         rules(entries)

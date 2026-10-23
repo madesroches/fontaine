@@ -10,7 +10,8 @@ use rig_core::effect::Answered;
 use rig_core::error::ErrorReport;
 use rig_core::tool::ToolOutput;
 
-use crate::ledger::{Ledger, Record};
+use crate::gate::SessionState;
+use crate::ledger::Record;
 
 #[derive(Clone, Default)]
 pub struct Steering {
@@ -51,12 +52,12 @@ impl Steering {
 /// Appends the queued messages to the root agent's next tool result.
 pub struct SteeringHook {
     steering: Steering,
-    ledger: Arc<Ledger>,
+    state: Arc<SessionState>,
 }
 
 impl SteeringHook {
-    pub fn new(steering: Steering, ledger: Arc<Ledger>) -> SteeringHook {
-        SteeringHook { steering, ledger }
+    pub fn new(steering: Steering, state: Arc<SessionState>) -> SteeringHook {
+        SteeringHook { steering, state }
     }
 
     fn steer(&self, agent: &str, outcome: &Result<Answered, ErrorReport>) -> OutcomeAction {
@@ -74,11 +75,9 @@ impl SteeringHook {
         let messages = std::mem::take(&mut state.queued);
         let mut text = result.output().render();
         for message in &messages {
-            if let Err(e) = self.ledger.append(Record::UserMessage {
+            self.state.append(Record::UserMessage {
                 text: message.clone(),
-            }) {
-                tracing::warn!(error = %e, "the session ledger could not be written");
-            }
+            });
             text.push_str(
                 "\n\n[The user sent this message while you were working. Address it, then continue:]\n",
             );
@@ -104,15 +103,38 @@ impl AgentHook for SteeringHook {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit::AuditLog;
+    use crate::config::PermissionMode;
+    use crate::gate::{AutoContext, StateParams, no_guardian};
     use crate::ledger::Ledger;
+    use crate::permissions::DenyAll;
+    use fontaine_agents::tree::{AgentTree, Limits};
+    use fontaine_tools::scope::Scope;
     use rig_core::tool::{ToolExecutionError, ToolResult};
 
     fn hook() -> (SteeringHook, Steering, Arc<Ledger>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let ledger = Arc::new(Ledger::create(dir.path()).unwrap());
+        let state = Arc::new(SessionState::new(StateParams {
+            session_id: "steering-test".into(),
+            mode: PermissionMode::Manual,
+            scope: Arc::new(Scope::new(dir.path().to_path_buf(), [])),
+            deny: Vec::new(),
+            ask: Vec::new(),
+            allow: Vec::new(),
+            ledger: ledger.clone(),
+            audit: Arc::new(AuditLog::create(dir.path(), "steering-test").unwrap()),
+            approver: Arc::new(DenyAll),
+            home: None,
+            protected_dirs: Vec::new(),
+            guardian: no_guardian(),
+            auto: AutoContext::default(),
+            agents: Arc::new(AgentTree::new(Limits::default())),
+            reveal_mcp_names: false,
+        }));
         let steering = Steering::default();
         (
-            SteeringHook::new(steering.clone(), ledger.clone()),
+            SteeringHook::new(steering.clone(), state),
             steering,
             ledger,
             dir,

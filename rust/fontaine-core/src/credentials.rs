@@ -43,7 +43,7 @@ impl Credentials {
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(source) => return Err(ConfigError::Io { path, source }),
+            Err(source) => return Err(ConfigError::Read { path, source }),
         };
         parse(&text, path).map(Credentials)
     }
@@ -88,14 +88,18 @@ pub fn store(data_dir: &Path, target: Target<'_>, secret: &str) -> Result<(), Co
         ));
     }
     let path = credentials_path(data_dir);
-    let io_err = |source| ConfigError::Io {
+    let read_err = |source| ConfigError::Read {
+        path: path.clone(),
+        source,
+    };
+    let write_err = |source| ConfigError::Write {
         path: path.clone(),
         source,
     };
     let mut file = match std::fs::read_to_string(&path) {
         Ok(text) => parse(&text, path.clone())?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => File::default(),
-        Err(e) => return Err(io_err(e)),
+        Err(e) => return Err(read_err(e)),
     };
     let entry = Entry {
         api_key: secret.to_string(),
@@ -110,8 +114,8 @@ pub fn store(data_dir: &Path, target: Target<'_>, secret: &str) -> Result<(), Co
         path: path.clone(),
         message: e.to_string(),
     })?;
-    std::fs::create_dir_all(data_dir).map_err(io_err)?;
-    crate::owner_only::write(&path, text.as_bytes()).map_err(io_err)
+    std::fs::create_dir_all(data_dir).map_err(write_err)?;
+    crate::owner_only::write(&path, text.as_bytes()).map_err(write_err)
 }
 
 fn non_empty(entry: Option<&Entry>) -> Option<&str> {

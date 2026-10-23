@@ -26,6 +26,7 @@ pub mod skills;
 pub mod steering;
 pub mod tier;
 pub mod tools;
+pub mod transport;
 pub mod trust;
 pub mod turn;
 pub mod user_config;

@@ -145,8 +145,10 @@ pub async fn drive(
     on_event: &mut (dyn FnMut(SessionEvent) -> Flow + Send),
 ) -> TurnOutcome {
     let mut tool_context = ToolContext::new();
-    // The root agent's id is the default, but a call should say whose it is.
-    let _ = tool_context.insert(AgentId(params.agent_id.to_string()));
+    // Every tool call must name its agent; an untagged call is refused.
+    tool_context
+        .insert(AgentId(params.agent_id.to_string()))
+        .expect("the agent id serializes");
     let runner = params
         .agent
         .prompt(rig_core::message::Message::user(params.prompt))

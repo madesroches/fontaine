@@ -75,6 +75,24 @@ all tests pass:
   in `docs/`.** Docs and comments describe current behavior, not the history of how it got
   there. Such citations belong in `CHANGELOG.md` and the plan itself.
 
+## Error handling
+
+- Typed error enums only where a caller dispatches on the kind: exit codes, retry, fail-closed
+  classification. Everywhere else, carry context as a chain (a `source()`), not a flattened
+  `String`.
+- Keep the cause as `source()`; never `format!("{e}")` an error into another error's message.
+  Render the full chain once, where the error reaches a human, with
+  `fontaine_tools::error_chain::chain`. The exception is wrapping a third-party error whose own
+  type drops `source()` (rig's `ProviderError::Http`): its chain may go into Display, as
+  `CausedClient` does.
+- `expect("why this cannot fail")` instead of `unwrap()` outside tests. An invariant panics
+  loudly rather than falling back silently.
+- Don't swallow errors. A failure the user would care about (audit, ledger, config, credentials)
+  reaches them through `Approver::warn` at least once; core reports warnings through the
+  `Approver` (whose default implementation writes to stderr) rather than writing to stderr directly.
+  `let _ =` is only for best-effort cleanup and sends to closed channels.
+- Error text may explain a Deny, never change it.
+
 ## Testing
 
 - **Unit and integration tests never touch live APIs.** Use `rig_core::test_utils`

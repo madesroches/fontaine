@@ -320,3 +320,15 @@ async fn auth_login_rejects_an_unknown_account_and_an_empty_secret() {
     assert_eq!(out.code, Some(2));
     assert!(!s.data.join("credentials.toml").exists());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_that_cannot_connect_names_the_cause() {
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let s = Sandbox::compatible(&format!("http://127.0.0.1:{closed}/v1"));
+    let out = s.headless(&["hi"]).await;
+    assert_eq!(out.code, Some(1), "{}", out.stderr);
+    assert!(out.stderr.contains("tcp connect error"), "{}", out.stderr);
+}

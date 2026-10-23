@@ -3,7 +3,7 @@ mod common;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use common::{Dirs, call, env_with, registry, scope};
+use common::{Dirs, as_root, call, env_with, registry, scope};
 use fontaine_tools::gate::{AgentId, CallView, GateDecision, ToolGate};
 use fontaine_tools::guarded::{Guard, GuardedTool, guard_callback};
 use fontaine_tools::result_pipeline::{ResultPipeline, ResultStage, StageKind, ToolOutcome};
@@ -107,7 +107,10 @@ fn counter_tool(gate: Arc<dyn ToolGate>) -> (Arc<AtomicUsize>, rig_core::tool::D
 async fn the_inner_tool_runs_exactly_once_and_only_after_the_gate_allows() {
     let gate = Scripted::new(allow);
     let (runs, tool) = counter_tool(gate.clone());
-    let output = tool.run(json!({"n": 4})).await.unwrap();
+    let output = tool
+        .run_with(&mut as_root(), json!({"n": 4}))
+        .await
+        .unwrap();
     assert_eq!(output.render(), "ran 4");
     assert_eq!(runs.load(Ordering::SeqCst), 1);
     assert_eq!(gate.seen.lock().unwrap().len(), 1);
@@ -119,7 +122,10 @@ async fn a_denied_call_never_runs_the_tool_and_the_model_gets_the_reason() {
         message: "not today".to_string(),
     });
     let (runs, tool) = counter_tool(gate);
-    let error = tool.run(json!({"n": 1})).await.unwrap_err();
+    let error = tool
+        .run_with(&mut as_root(), json!({"n": 1}))
+        .await
+        .unwrap_err();
     assert_eq!(error.message(), "not today");
     assert_eq!(error.model_output().render(), "not today");
     assert_eq!(runs.load(Ordering::SeqCst), 0);
@@ -131,14 +137,23 @@ async fn the_tool_runs_with_the_arguments_the_gate_allowed() {
         args: json!({"n": 99}),
     });
     let (_, tool) = counter_tool(gate);
-    assert_eq!(tool.run(json!({"n": 1})).await.unwrap().render(), "ran 99");
+    assert_eq!(
+        tool.run_with(&mut as_root(), json!({"n": 1}))
+            .await
+            .unwrap()
+            .render(),
+        "ran 99"
+    );
 }
 
 #[tokio::test]
 async fn allowed_arguments_that_do_not_fit_the_tool_are_an_error_and_the_tool_does_not_run() {
     let gate = Scripted::new(allow);
     let (runs, tool) = counter_tool(gate);
-    let error = tool.run(json!({"n": "seven"})).await.unwrap_err();
+    let error = tool
+        .run_with(&mut as_root(), json!({"n": "seven"}))
+        .await
+        .unwrap_err();
     assert_eq!(error.kind(), rig_core::tool::ToolErrorKind::InvalidArgs);
     assert_eq!(runs.load(Ordering::SeqCst), 0);
 }
@@ -147,7 +162,10 @@ async fn allowed_arguments_that_do_not_fit_the_tool_are_an_error_and_the_tool_do
 async fn null_arguments_are_read_as_an_empty_object() {
     let gate = Scripted::new(allow);
     let (_, tool) = counter_tool(gate.clone());
-    let error = tool.run(Value::Null).await.unwrap_err();
+    let error = tool
+        .run_with(&mut as_root(), Value::Null)
+        .await
+        .unwrap_err();
     // `n` is required, so the empty object fails to deserialize; the gate saw `{}`.
     assert_eq!(error.kind(), rig_core::tool::ToolErrorKind::InvalidArgs);
     assert_eq!(gate.seen.lock().unwrap()[0].2, json!({}));
@@ -157,7 +175,9 @@ async fn null_arguments_are_read_as_an_empty_object() {
 async fn the_gate_sees_the_agent_of_the_call() {
     let gate = Scripted::new(allow);
     let (_, tool) = counter_tool(gate.clone());
-    tool.run(json!({"n": 1})).await.unwrap();
+    tool.run_with(&mut as_root(), json!({"n": 1}))
+        .await
+        .unwrap();
     let mut context = ToolContext::new();
     context.insert(AgentId("agent-7".to_string())).unwrap();
     tool.run_with(&mut context, json!({"n": 1})).await.unwrap();
@@ -169,6 +189,19 @@ async fn the_gate_sees_the_agent_of_the_call() {
         .map(|c| c.1.clone())
         .collect();
     assert_eq!(agents, ["root", "agent-7"]);
+}
+
+#[tokio::test]
+async fn a_call_that_does_not_say_whose_it_is_fails_before_the_gate() {
+    let gate = Scripted::new(allow);
+    let (runs, tool) = counter_tool(gate.clone());
+    let error = tool.run(json!({"n": 1})).await.unwrap_err();
+    assert!(
+        error.model_output().render().contains("which agent"),
+        "{error:?}"
+    );
+    assert!(gate.seen.lock().unwrap().is_empty());
+    assert_eq!(runs.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -228,7 +261,10 @@ async fn a_wrapped_mcp_callback_runs_once_after_allow_and_its_result_passes_the_
     let pipeline = ResultPipeline::new().with_stage(StageKind::Scanner, Arc::new(Suffix));
     let (runs, tool) = mcp_tool(gate.clone(), pipeline);
     assert_eq!(tool.definition().name.to_string(), "mcp__demo__ping");
-    let output = tool.run(json!({"x": 1})).await.unwrap();
+    let output = tool
+        .run_with(&mut as_root(), json!({"x": 1}))
+        .await
+        .unwrap();
     assert_eq!(output.render(), "mcp saw {\"x\":1} [scanned]");
     assert_eq!(runs.load(Ordering::SeqCst), 1);
     let seen = gate.seen.lock().unwrap();
@@ -241,7 +277,7 @@ async fn a_wrapped_mcp_callback_never_runs_on_a_deny() {
         message: "blocked".to_string(),
     });
     let (runs, tool) = mcp_tool(gate, ResultPipeline::new());
-    let error = tool.run(json!({})).await.unwrap_err();
+    let error = tool.run_with(&mut as_root(), json!({})).await.unwrap_err();
     assert_eq!(error.message(), "blocked");
     assert_eq!(runs.load(Ordering::SeqCst), 0);
 }
