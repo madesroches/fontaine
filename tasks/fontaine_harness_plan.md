@@ -100,11 +100,11 @@ checklists are tracked in GitHub issue #80; tick items in both places.
 
 ### Merge
 
-- [ ] Merge the Phase 5 PR (#75), then the Phase 6 PR (#79).
+- [x] Merge the Phase 5 PR (#75), then the Phase 6 PR (#79). (2026-10-23)
 
 ### Release readiness (gates the first release)
 
-Each item needs live provider keys, a live model, or a maintainer decision, so none of them runs in CI.
+Apart from the ticked repo-side items, each item needs live provider keys, a live model, or a maintainer decision, so none of them runs in CI.
 
 - **Guardian scorecard**
   - [ ] Maintainer signs off the eval dataset's `expected` labels against `claude -p` baselines
@@ -128,11 +128,17 @@ Each item needs live provider keys, a live model, or a maintainer decision, so n
   - [ ] Item 6, Docker leg: minimal profile with `--in-container`.
 - **PromptGuard 2 with real weights** (needs a Hugging Face token)
   - [ ] Logit spike against the model card.
-  - [ ] `FONTAINE_PG2_MODEL` inference test.
+  - [x] `FONTAINE_PG2_MODEL` inference test. (2026-10-23; passed with the loader fix, run with `--release`)
   - [ ] A live session with `scanner = "pg2"`.
+- **Bugs to fix before tagging**
+  - [x] #78 (Git Bash collapses `\\` on Windows) and #73 (`webfetch` 403 without a User-Agent)
+        fixed. (2026-10-23)
 - **Repository and release**
   - [ ] Turn on GitHub private vulnerability reporting (`SECURITY.md` promises it; it is off today).
-  - [ ] Cut the first cargo-dist release tag with a `CHANGELOG.md` entry.
+  - [x] `CHANGELOG.md` entry for 0.1.0. (2026-10-23)
+  - [x] Release archives carry LICENSE/README/CHANGELOG; release notes from the changelog;
+        missing-notes guard. (2026-10-23)
+  - [ ] Cut the first cargo-dist release tag.
 
 ### Roadmap slots (designed, deliberately not built in v1)
 
@@ -144,8 +150,7 @@ Each item needs live provider keys, a live model, or a maintainer decision, so n
 ### Backlog
 
 Everything else is a GitHub issue (`gh issue list`); a `phase-N` label means "can be taken after
-phase N", and every phase is now done. Open bugs: #78 (Git Bash collapses `\\` on Windows) and #73
-(`webfetch` 403 without a User-Agent). The `parity` issues are the Claude Code feature gap, triaged
+phase N", and every phase is now done. The `parity` issues are the Claude Code feature gap, triaged
 in `research/research-claude-code-parity.md`; the backlog has no priority order yet beyond the
 `priority:low` labels.
 

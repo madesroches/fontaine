@@ -28,6 +28,10 @@ maintainer cuts releases — tagging and pushing the tag are human steps, never 
 `CHANGELOG.md` follows Keep a Changelog: entries accumulate under `## [Unreleased]`, which moves under
 the version heading at release. The README install section lists both install paths.
 
+Archives carry the root `LICENSE`, `README.md` and `CHANGELOG.md` through `include`. The release
+workflow stages the changelog into `rust/` so dist builds the release notes from the version's
+section. A tag without that section fails in the `plan` job.
+
 Directories come from the `dirs` crate: config dir = `dirs::config_dir()/fontaine` (Linux
 `~/.config/fontaine`; macOS and Windows platform defaults, Windows under `%APPDATA%`), data dir =
 `dirs::data_dir()/fontaine` (Linux `~/.local/share/fontaine`). `FONTAINE_CONFIG_DIR` and

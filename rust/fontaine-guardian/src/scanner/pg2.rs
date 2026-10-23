@@ -46,7 +46,7 @@ fn malicious_class(id2label: &HashMap<u32, String>) -> Result<usize, String> {
     let id = named
         .map(|(id, _)| *id)
         .or_else(|| id2label.keys().max().copied())
-        .ok_or("config.json has no id2label")?;
+        .ok_or("config.json has an empty id2label")?;
     Ok(id as usize)
 }
 
@@ -76,10 +76,11 @@ impl Loaded {
         let config_bytes = read("config.json")?;
         let config: Config = serde_json::from_slice(&config_bytes)
             .map_err(|e| format!("config.json is not a DeBERTa configuration: {e}"))?;
-        let id2label = config
-            .id2label
-            .clone()
-            .ok_or("config.json has no id2label")?;
+        // The published PromptGuard 2 config has no label map; transformers defaults it the same
+        // way.
+        let id2label = config.id2label.clone().unwrap_or_else(|| {
+            HashMap::from([(0, "LABEL_0".to_string()), (1, "LABEL_1".to_string())])
+        });
         let malicious = malicious_class(&id2label)?;
 
         let mut tokenizer = Tokenizer::from_bytes(read("tokenizer.json")?)
@@ -98,8 +99,9 @@ impl Loaded {
             &Device::Cpu,
         )
         .map_err(|e| format!("model.safetensors is unusable: {e}"))?;
-        let model = DebertaV2SeqClassificationModel::load(weights, &config, Some(id2label))
-            .map_err(|e| format!("the model cannot be built from its files: {e}"))?;
+        let model =
+            DebertaV2SeqClassificationModel::load(weights.pp("deberta"), &config, Some(id2label))
+                .map_err(|e| format!("the model cannot be built from its files: {e}"))?;
         Ok(Loaded {
             model,
             tokenizer,
@@ -300,6 +302,31 @@ mod model_tests {
             tokenizer,
             malicious: 1,
         }
+    }
+
+    #[test]
+    fn a_checkpoint_in_the_published_layout_loads() {
+        let config_json = SMALL_CONFIG.replace(
+            ",\n        \"id2label\": {\"0\": \"LABEL_0\", \"1\": \"LABEL_1\"}",
+            "",
+        );
+        assert!(!config_json.contains("id2label"));
+        let config: Config = serde_json::from_str(&config_json).unwrap();
+        let varmap = candle_nn::VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &Device::Cpu);
+        let labels = HashMap::from([(0, "LABEL_0".to_string()), (1, "LABEL_1".to_string())]);
+        DebertaV2SeqClassificationModel::load(vb.pp("deberta"), &config, Some(labels)).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        varmap.save(dir.path().join("model.safetensors")).unwrap();
+        std::fs::write(dir.path().join("config.json"), config_json).unwrap();
+        tiny()
+            .tokenizer
+            .save(dir.path().join("tokenizer.json"), false)
+            .unwrap();
+
+        let loaded = Loaded::open(dir.path()).unwrap();
+        assert_eq!(loaded.malicious, 1);
     }
 
     #[test]

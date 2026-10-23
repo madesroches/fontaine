@@ -10,6 +10,10 @@ repository.workspace = true
 [package.metadata.dist]
 dist = true
 features = ["pg2"]
+# The license, readme and changelog live at the repository root, outside the dist workspace
+# (`rust/`), so auto-include cannot find them.
+auto-includes = false
+include = ["../../LICENSE", "../../README.md", "../../CHANGELOG.md"]
 
 [features]
 pg2 = ["fontaine-core/pg2"]
