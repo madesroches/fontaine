@@ -1,4 +1,5 @@
 pub mod builtins;
+pub mod error_chain;
 pub mod gate;
 pub mod git_bash;
 pub mod guarded;

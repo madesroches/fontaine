@@ -10,7 +10,7 @@ use common::pipeline::{
 use fontaine_core::audit::Decision;
 use fontaine_core::config::PermissionMode::{Auto, DontAsk, Manual};
 use fontaine_core::ledger::Record;
-use fontaine_core::permissions::{Answer, UnavailableChoice};
+use fontaine_core::permissions::{Answer, DenyAll, UnavailableChoice};
 use fontaine_core::tier::Tier;
 use fontaine_guardian::Settings;
 use serde_json::{Value, json};
@@ -592,6 +592,7 @@ async fn the_request_is_built_from_the_ledger_and_never_from_a_compaction_summar
             CompactReason::Asked {
                 focus: String::new(),
             },
+            &DenyAll,
         )
         .await
         .expect("compacted");
@@ -815,4 +816,24 @@ async fn a_hooks_guardian_context_note_is_in_the_guardian_request() {
         .map(|r| format!("{r:?}"))
         .collect();
     assert!(sent.contains("HOOKNOTE"), "{sent}");
+}
+
+#[test]
+fn a_failing_sink_warns_the_human_once_and_each_sink_has_its_own_warning() {
+    use fontaine_core::gate::Sink;
+    let rig = Rig::new(Manual);
+    let error = std::io::Error::other("disk full");
+    rig.state.sink_failed(Sink::Audit, &error);
+    rig.state.sink_failed(Sink::Audit, &error);
+    {
+        let warnings = rig.approver.warnings.lock().unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("the audit log"), "{warnings:?}");
+        assert!(warnings[0].contains("disk full"), "{warnings:?}");
+    }
+    rig.state.sink_failed(Sink::Ledger, &error);
+    rig.state.sink_failed(Sink::Ledger, &error);
+    let warnings = rig.approver.warnings.lock().unwrap();
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(warnings[1].contains("the session ledger"), "{warnings:?}");
 }

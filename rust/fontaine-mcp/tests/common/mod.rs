@@ -4,7 +4,7 @@ pub mod server;
 
 use std::sync::{Arc, Mutex};
 
-use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
+use fontaine_tools::gate::{AgentId, CallView, GateDecision, ROOT_AGENT, ToolGate};
 use fontaine_tools::guarded::Guard;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::RiskClass;
@@ -82,12 +82,17 @@ pub fn names(handle: &ToolServerHandle) -> Vec<String> {
 
 /// Calls the registered tool `name` as the model would.
 pub async fn call(handle: &ToolServerHandle, name: &str, args: &str) -> Result<String, String> {
-    let result = handle
-        .toolset()
-        .execute(name, args, &mut ToolContext::new())
-        .await;
+    let result = handle.toolset().execute(name, args, &mut as_root()).await;
     match result.into_result() {
         Ok(output) => Ok(output.render()),
         Err(e) => Err(e.model_output().render()),
     }
+}
+
+fn as_root() -> ToolContext {
+    let mut context = ToolContext::new();
+    context
+        .insert(AgentId(ROOT_AGENT.to_string()))
+        .expect("the agent id serializes");
+    context
 }

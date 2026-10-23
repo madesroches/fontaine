@@ -2,6 +2,7 @@ mod common;
 
 use common::World;
 use fontaine_core::ledger::{FILE_INDEX_CAP, FileIndex, Ledger, Record};
+use fontaine_core::permissions::DenyAll;
 use fontaine_core::session::{CONVERSATION_LOG, Session, SessionError};
 use rig_core::DynModel;
 use rig_core::catalog::{Catalog, ModelSpec};
@@ -94,6 +95,7 @@ async fn the_ledger_survives_a_compaction_the_user_asked_for() {
             CompactReason::Asked {
                 focus: "the lorem".to_string(),
             },
+            &DenyAll,
         )
         .await;
     assert!(usage.is_some(), "the summarizer answered");
@@ -121,7 +123,7 @@ async fn a_threshold_compaction_between_runs_leaves_the_context_compacted_and_sa
         vec![MockTurn::text("THRESHOLD-SUMMARY")],
     );
     let before = saved_texts(&session).len();
-    let usage = session.compact_if_needed(&dynamic).await;
+    let usage = session.compact_if_needed(&dynamic, &DenyAll).await;
     assert!(usage.is_some());
     assert_eq!(mock.request_count(), 1);
     let after = saved_texts(&session);
@@ -137,7 +139,12 @@ async fn a_conversation_that_fits_is_not_compacted() {
         Some(small_window_spec(1_000_000)),
         vec![MockTurn::text("unused")],
     );
-    assert!(session.compact_if_needed(&dynamic).await.is_none());
+    assert!(
+        session
+            .compact_if_needed(&dynamic, &DenyAll)
+            .await
+            .is_none()
+    );
     assert_eq!(mock.request_count(), 0);
 }
 
@@ -148,10 +155,20 @@ async fn compaction_is_skipped_when_the_window_is_unknown() {
     let mut spec = small_window_spec(1_000);
     spec.context_window = None;
     let (mock, dynamic) = model(Some(spec), vec![MockTurn::text("unused")]);
-    assert!(session.compact_if_needed(&dynamic).await.is_none());
+    assert!(
+        session
+            .compact_if_needed(&dynamic, &DenyAll)
+            .await
+            .is_none()
+    );
     assert_eq!(mock.request_count(), 0);
     let (mock, dynamic) = model(None, vec![MockTurn::text("unused")]);
-    assert!(session.compact_if_needed(&dynamic).await.is_none());
+    assert!(
+        session
+            .compact_if_needed(&dynamic, &DenyAll)
+            .await
+            .is_none()
+    );
     assert_eq!(mock.request_count(), 0);
 }
 
@@ -161,7 +178,7 @@ async fn an_empty_summary_leaves_the_context_unchanged() {
     let (session, _) = session_with_history(&w, 8);
     let (mock, dynamic) = model(Some(small_window_spec(1_000)), vec![MockTurn::text("")]);
     let before = saved_texts(&session);
-    let usage = session.compact_if_needed(&dynamic).await;
+    let usage = session.compact_if_needed(&dynamic, &DenyAll).await;
     assert_eq!(mock.request_count(), 1);
     assert!(usage.is_some(), "a call that answered is still paid for");
     assert_eq!(saved_texts(&session), before);
@@ -173,7 +190,12 @@ async fn a_failed_summarizer_call_leaves_the_context_unchanged_and_does_not_fail
     let (session, _) = session_with_history(&w, 8);
     let (mock, dynamic) = model(Some(small_window_spec(1_000)), vec![]);
     let before = saved_texts(&session);
-    assert!(session.compact_if_needed(&dynamic).await.is_none());
+    assert!(
+        session
+            .compact_if_needed(&dynamic, &DenyAll)
+            .await
+            .is_none()
+    );
     assert_eq!(mock.request_count(), 1);
     assert_eq!(saved_texts(&session), before);
 }

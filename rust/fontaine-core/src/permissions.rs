@@ -1335,7 +1335,7 @@ impl PermissionPipeline {
 /// The audit append and the `tool_decision` event for one decision, without the decision feed.
 pub(crate) fn record_decision(state: &SessionState, record: &DecisionRecord) {
     if let Err(e) = state.audit.append(record) {
-        tracing::warn!(error = %e, "the audit log could not be written");
+        state.sink_failed(crate::gate::Sink::Audit, &e);
     }
     tracing::info!(
         target: TARGET,

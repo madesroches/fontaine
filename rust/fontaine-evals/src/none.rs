@@ -101,6 +101,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
         append(Record::UserMessage { text: message })?;
     }
     let audit = AuditLog::create(&data, &session_id).map_err(|e| format!("audit log: {e}"))?;
+    let approver = Arc::new(DenyAll);
     let state = Arc::new(SessionState::new(StateParams {
         session_id,
         mode: case.mode.unwrap_or(PermissionMode::Manual),
@@ -110,6 +111,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
         allow: sourced(&permissions.allow)?,
         ledger: Arc::new(ledger),
         audit: Arc::new(audit),
+        approver: approver.clone(),
         home: Some(home),
         protected_dirs: Vec::new(),
         guardian: guardian.unwrap_or_else(no_guardian),
@@ -121,7 +123,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
     }));
     let pipeline = PermissionPipeline::new(PipelineParams {
         state: state.clone(),
-        approver: Arc::new(DenyAll),
+        approver,
         headless: false,
         hooks: Vec::new(),
         denied_hooks: Vec::new(),

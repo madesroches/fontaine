@@ -13,10 +13,10 @@ use rig_core::providers::gemini::{Gemini, GeminiConfig};
 use rig_core::providers::ollama::{Ollama, OllamaConfig};
 use rig_core::providers::openai::wire::{Auth, Dialect};
 use rig_core::providers::openai::{OpenAI, OpenAIConfig};
-use rig_reqwest::ReqwestClient;
 
 use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup};
 use crate::credentials::Credentials;
+use crate::transport::caused_client;
 use fontaine_guardian::models::{ModelEntry, ModelsFile};
 
 /// The one gateway dialect every `openai-compatible` account speaks. Its name is the vendor
@@ -162,13 +162,6 @@ pub struct ResolveParams<'a> {
     pub model_override: Option<&'a str>,
 }
 
-// rig's shared client keeps pooled connections whose driver task lives on
-// the runtime that first used it; a dedicated client per account cannot be
-// left holding a connection from a dropped runtime.
-fn own_http_client() -> ReqwestClient {
-    reqwest::Client::new().into()
-}
-
 #[derive(Clone)]
 enum Client {
     Anthropic(Anthropic),
@@ -179,7 +172,12 @@ enum Client {
 }
 
 impl Client {
-    fn build(kind: AccountKind, account: &Account, credential: Option<String>) -> Client {
+    fn build(
+        kind: AccountKind,
+        account: &Account,
+        credential: Option<String>,
+    ) -> Result<Client, String> {
+        let http = caused_client()?;
         let base_url = account.base_url.as_deref().filter(|u| !u.is_empty());
         match kind {
             AccountKind::Anthropic => {
@@ -187,21 +185,21 @@ impl Client {
                 if let Some(url) = base_url {
                     config = config.with_base_url(url);
                 }
-                Client::Anthropic(config.connect(own_http_client()))
+                Ok(Client::Anthropic(config.connect(http)))
             }
             AccountKind::OpenAi => {
                 let mut config = OpenAIConfig::new(credential.unwrap_or_default());
                 if let Some(url) = base_url {
                     config = config.with_base_url(url);
                 }
-                Client::OpenAi(config.connect(own_http_client()))
+                Ok(Client::OpenAi(config.connect(http)))
             }
             AccountKind::Gemini => {
                 let mut config = GeminiConfig::new(credential.unwrap_or_default());
                 if let Some(url) = base_url {
                     config = config.with_base_url(url);
                 }
-                Client::Gemini(config.connect(own_http_client()))
+                Ok(Client::Gemini(config.connect(http)))
             }
             AccountKind::Ollama => {
                 let mut config = OllamaConfig::new();
@@ -211,7 +209,7 @@ impl Client {
                 if let Some(key) = credential {
                     config = config.with_api_key(key);
                 }
-                Client::Ollama(config.connect(own_http_client()))
+                Ok(Client::Ollama(config.connect(http)))
             }
             AccountKind::OpenAiCompatible => {
                 let mut config = OpenAIConfig::with_key(&GATEWAY, credential.unwrap_or_default())
@@ -219,7 +217,7 @@ impl Client {
                 if let Some(url) = base_url {
                     config = config.with_base_url(url);
                 }
-                Client::OpenAiCompatible(config.connect(own_http_client()))
+                Ok(Client::OpenAiCompatible(config.connect(http)))
             }
         }
     }
@@ -307,7 +305,7 @@ fn client_for(
         }
         Credential::Unresolved(why) => return Err(format!("account `{name}`: {why}")),
     };
-    Ok(Client::build(account.kind, account, key))
+    Client::build(account.kind, account, key)
 }
 
 /// A transport error's own message rarely says why the request failed; the reason (refused,
@@ -546,11 +544,8 @@ fn build_guardian(
 
 /// The shipped list of validated guardian models, best first.
 pub fn validated_models() -> Vec<ModelEntry> {
-    let file: ModelsFile =
-        toml::from_str(fontaine_guardian::models::MODELS_TOML).unwrap_or_else(|e| {
-            tracing::warn!("the shipped guardian model list does not parse: {e}");
-            ModelsFile::default()
-        });
+    let file: ModelsFile = toml::from_str(fontaine_guardian::models::MODELS_TOML)
+        .expect("the shipped validated-models table parses");
     fontaine_guardian::models::ranked(&file.models)
 }
 

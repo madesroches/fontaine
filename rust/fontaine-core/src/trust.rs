@@ -109,11 +109,15 @@ pub fn approve_server(
     digest: &str,
 ) -> Result<(), ConfigError> {
     let path = trust_path(data_dir);
-    let io_err = |source| ConfigError::Io {
+    let read_err = |source| ConfigError::Read {
         path: path.clone(),
         source,
     };
-    let root = canonical_root(root).ok_or_else(|| ConfigError::Io {
+    let write_err = |source| ConfigError::Write {
+        path: path.clone(),
+        source,
+    };
+    let root = canonical_root(root).ok_or_else(|| ConfigError::Read {
         path: root.to_path_buf(),
         source: io::Error::other("the root cannot be resolved"),
     })?;
@@ -123,7 +127,7 @@ pub fn approve_server(
     let mut text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(io_err(e)),
+        Err(e) => return Err(read_err(e)),
     };
     toml::from_str::<TrustFile>(&text).map_err(|e| ConfigError::Parse {
         path: path.clone(),
@@ -138,18 +142,22 @@ pub fn approve_server(
         toml_literal(name),
         toml_literal(digest)
     ));
-    std::fs::create_dir_all(data_dir).map_err(io_err)?;
-    owner_only::write(&path, text.as_bytes()).map_err(io_err)
+    std::fs::create_dir_all(data_dir).map_err(write_err)?;
+    owner_only::write(&path, text.as_bytes()).map_err(write_err)
 }
 
 /// Records `root` (canonicalized) as trusted. Nothing but "trust" is persisted.
 pub fn record(data_dir: &Path, root: &Path) -> Result<(), ConfigError> {
     let path = trust_path(data_dir);
-    let io_err = |source| ConfigError::Io {
+    let read_err = |source| ConfigError::Read {
         path: path.clone(),
         source,
     };
-    let root = std::fs::canonicalize(root).map_err(|source| ConfigError::Io {
+    let write_err = |source| ConfigError::Write {
+        path: path.clone(),
+        source,
+    };
+    let root = std::fs::canonicalize(root).map_err(|source| ConfigError::Read {
         path: root.to_path_buf(),
         source,
     })?;
@@ -158,7 +166,7 @@ pub fn record(data_dir: &Path, root: &Path) -> Result<(), ConfigError> {
     let existing = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(io_err(e)),
+        Err(e) => return Err(read_err(e)),
     };
     let parsed: TrustFile = toml::from_str(&existing).map_err(|e| ConfigError::Parse {
         path: path.clone(),
@@ -174,8 +182,8 @@ pub fn record(data_dir: &Path, root: &Path) -> Result<(), ConfigError> {
     }
     text.push_str(&format!("[[trusted]]\nroot = {}\n", toml_literal(&root)));
 
-    std::fs::create_dir_all(data_dir).map_err(io_err)?;
-    owner_only::write(&path, text.as_bytes()).map_err(io_err)
+    std::fs::create_dir_all(data_dir).map_err(write_err)?;
+    owner_only::write(&path, text.as_bytes()).map_err(write_err)
 }
 
 enum Boundary {

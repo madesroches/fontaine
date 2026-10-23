@@ -187,7 +187,9 @@ impl SkillRuntime {
             return "[command not run: the shell tool is not available]".to_string();
         };
         let mut context = ToolContext::new();
-        let _ = context.insert(AgentId(agent.to_string()));
+        context
+            .insert(AgentId(agent.to_string()))
+            .expect("the agent id serializes");
         match shell
             .run_with(&mut context, json!({ "command": command }))
             .await

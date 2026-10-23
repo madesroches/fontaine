@@ -503,7 +503,7 @@ fn a_missing_settings_path_is_a_config_error_naming_the_path() {
     let w = World::new();
     let missing = w.root.join("nope.toml");
     let err = w.load_with_settings(&missing).unwrap_err();
-    assert!(matches!(err, ConfigError::Io { .. }), "{err:?}");
+    assert!(matches!(err, ConfigError::Read { .. }), "{err:?}");
     assert!(err.to_string().contains("nope.toml"));
     assert_eq!(err.exit_code(), 2);
 }
@@ -513,19 +513,19 @@ fn a_directory_in_place_of_a_settings_file_is_a_config_error_naming_the_path() {
     let w = World::new();
     std::fs::create_dir_all(w.work.join(".fontaine/settings.toml")).unwrap();
     let err = w.load().unwrap_err();
-    assert!(matches!(err, ConfigError::Io { .. }), "{err:?}");
+    assert!(matches!(err, ConfigError::Read { .. }), "{err:?}");
     assert!(err.to_string().contains("settings.toml"));
     std::fs::remove_dir(w.work.join(".fontaine/settings.toml")).unwrap();
 
     std::fs::create_dir_all(w.work.join(".fontaine/settings.local.toml")).unwrap();
     let err = w.load().unwrap_err();
-    assert!(matches!(err, ConfigError::Io { .. }), "{err:?}");
+    assert!(matches!(err, ConfigError::Read { .. }), "{err:?}");
     assert!(err.to_string().contains("settings.local.toml"));
     std::fs::remove_dir(w.work.join(".fontaine/settings.local.toml")).unwrap();
 
     std::fs::create_dir_all(w.config.join("config.toml")).unwrap();
     let err = w.load().unwrap_err();
-    assert!(matches!(err, ConfigError::Io { .. }), "{err:?}");
+    assert!(matches!(err, ConfigError::Read { .. }), "{err:?}");
     assert!(err.to_string().contains("config.toml"));
 }
 

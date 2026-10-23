@@ -17,6 +17,7 @@ use rig_memory::{
 use crate::audit::AuditLog;
 use crate::ledger::Ledger;
 use crate::owner_only;
+use crate::permissions::Approver;
 
 pub const SESSIONS_DIR: &str = "sessions";
 
@@ -30,10 +31,27 @@ pub enum SessionError {
     /// There is no session with this id to resume or fork.
     Missing(String),
     Io {
+        op: SessionOp,
         path: PathBuf,
         source: io::Error,
     },
     Store(String),
+}
+
+/// What was being done to the session's files when the io error happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionOp {
+    Create,
+    Open,
+}
+
+impl fmt::Display for SessionOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            SessionOp::Create => "create",
+            SessionOp::Open => "open",
+        })
+    }
 }
 
 impl fmt::Display for SessionError {
@@ -41,15 +59,22 @@ impl fmt::Display for SessionError {
         match self {
             SessionError::InUse(id) => write!(f, "session ID {id} is already in use"),
             SessionError::Missing(id) => write!(f, "no session with ID {id} to resume"),
-            SessionError::Io { path, source } => {
-                write!(f, "cannot create {}: {source}", path.display())
+            SessionError::Io { op, path, source } => {
+                write!(f, "cannot {op} {}: {source}", path.display())
             }
             SessionError::Store(message) => f.write_str(message),
         }
     }
 }
 
-impl std::error::Error for SessionError {}
+impl std::error::Error for SessionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            SessionError::Io { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
 
 impl SessionError {
     /// A reused or unknown session id is a usage error; anything else is a failure of the run.
@@ -78,7 +103,11 @@ impl Session {
         let sessions = data_dir.join(SESSIONS_DIR);
         let io_error = |path: &Path| {
             let path = path.to_path_buf();
-            move |source| SessionError::Io { path, source }
+            move |source| SessionError::Io {
+                op: SessionOp::Create,
+                path,
+                source,
+            }
         };
         std::fs::create_dir_all(&sessions).map_err(io_error(&sessions))?;
         let dir = sessions.join(id);
@@ -115,7 +144,11 @@ impl Session {
         }
         let io_error = |path: &Path| {
             let path = path.to_path_buf();
-            move |source| SessionError::Io { path, source }
+            move |source| SessionError::Io {
+                op: SessionOp::Open,
+                path,
+                source,
+            }
         };
         let ledger = Ledger::open(&dir).map_err(io_error(&dir))?;
         let audit = AuditLog::create(data_dir, id)
@@ -148,9 +181,16 @@ impl Session {
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 return Err(SessionError::InUse(id.to_string()));
             }
-            Err(source) => return Err(SessionError::Io { path: to, source }),
+            Err(source) => {
+                return Err(SessionError::Io {
+                    op: SessionOp::Create,
+                    path: to,
+                    source,
+                });
+            }
         }
         copy_tree(&from, &to).map_err(|source| SessionError::Io {
+            op: SessionOp::Create,
             path: to.clone(),
             source,
         })?;
@@ -163,8 +203,13 @@ impl Session {
 
     /// Compacts the conversation when it has outgrown the model's window. Nothing happens
     /// when the model's window is not known.
-    pub async fn compact_if_needed(&self, model: &DynModel<Completion>) -> Option<Usage> {
-        self.compact(model, CompactReason::Threshold).await
+    pub async fn compact_if_needed(
+        &self,
+        model: &DynModel<Completion>,
+        approver: &dyn Approver,
+    ) -> Option<Usage> {
+        self.compact(model, CompactReason::Threshold, approver)
+            .await
     }
 
     /// Summarizes the older part of the conversation with one call to `model` and saves the
@@ -174,7 +219,9 @@ impl Session {
         &self,
         model: &DynModel<Completion>,
         reason: CompactReason,
+        approver: &dyn Approver,
     ) -> Option<Usage> {
+        let warn = |message: &str| warn(approver, message);
         let spec = model.spec()?;
         if reason == CompactReason::Threshold && spec.context_window.is_none() {
             return None;
@@ -234,9 +281,9 @@ impl Session {
     }
 }
 
-fn warn(message: &str) {
+fn warn(approver: &dyn Approver, message: &str) {
     tracing::warn!("compaction skipped: {message}");
-    eprintln!("fontaine: warning: compaction skipped: {message}");
+    approver.warn(&format!("compaction skipped: {message}"));
 }
 
 /// Whether `id` can name a session directory: ids are UUIDs, and nothing that climbs out of the

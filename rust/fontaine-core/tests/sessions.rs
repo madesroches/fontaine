@@ -201,3 +201,32 @@ async fn the_sessions_files_are_owner_only() {
     }
     let _ = fork;
 }
+
+#[tokio::test]
+async fn a_corrupt_ledger_reads_as_a_failure_to_open_not_to_create() {
+    use std::error::Error;
+    let w = World::new();
+    let session = Session::create(&w.data, A).unwrap();
+    start(&session, &w.root);
+    drop(session);
+    let ledger = w
+        .data
+        .join("sessions")
+        .join(A)
+        .join(fontaine_core::ledger::LEDGER_DIR)
+        .join(fontaine_core::ledger::LEDGER_FILE);
+    std::fs::write(&ledger, "not a record\nnot a record either\n").unwrap();
+    let err = Session::open(&w.data, A).err().unwrap();
+    assert!(err.to_string().starts_with("cannot open "), "{err}");
+    assert!(err.source().is_some());
+    assert_eq!(err.exit_code(), 1);
+}
+
+#[tokio::test]
+async fn creating_over_a_file_where_the_directory_belongs_says_create() {
+    let w = World::new();
+    std::fs::create_dir_all(&w.data).unwrap();
+    std::fs::write(w.data.join("sessions"), "x").unwrap();
+    let err = Session::create(&w.data, A).err().unwrap();
+    assert!(err.to_string().starts_with("cannot create "), "{err}");
+}

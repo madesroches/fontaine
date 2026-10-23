@@ -4,13 +4,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use fontaine_tools::builtins::{self, BuiltinEnv, Registered, ShellSettings};
-use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
+use fontaine_tools::gate::{AgentId, CallView, GateDecision, ROOT_AGENT, ToolGate};
 use fontaine_tools::guarded::Guard;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::scope::Scope;
 use fontaine_tools::webfetch::WebfetchConfig;
 use futures::future::BoxFuture;
-use rig_core::tool::{ToolExecutionError, ToolOutput};
+use rig_core::tool::{ToolContext, ToolExecutionError, ToolOutput};
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -92,7 +92,20 @@ pub async fn call(
     name: &str,
     args: Value,
 ) -> Result<ToolOutput, ToolExecutionError> {
-    tool(registered, name).tool.run(args).await
+    tool(registered, name)
+        .tool
+        .run_with(&mut as_root(), args)
+        .await
+}
+
+/// A context that says whose call it is, as a turn's does. Guarded tools refuse one that
+/// does not.
+pub fn as_root() -> ToolContext {
+    let mut context = ToolContext::new();
+    context
+        .insert(AgentId(ROOT_AGENT.to_string()))
+        .expect("the agent id serializes");
+    context
 }
 
 pub fn text(output: &ToolOutput) -> String {

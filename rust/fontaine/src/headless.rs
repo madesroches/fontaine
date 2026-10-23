@@ -598,7 +598,7 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
         } else {
             if let Some(usage) = runtime
                 .session
-                .compact_if_needed(&runtime.models.main.completion)
+                .compact_if_needed(&runtime.models.main.completion, runtime.approver())
                 .await
             {
                 totals.add(&usage);

@@ -12,7 +12,7 @@ use rig_core::tool::{
 use serde_json::Value;
 use tracing::Instrument;
 
-use crate::gate::{AgentId, CallView, GateDecision, ROOT_AGENT, ToolGate};
+use crate::gate::{AgentId, CallView, GateDecision, ToolGate};
 use crate::result_pipeline::{ResultPipeline, ToolOutcome};
 use crate::risk::{RiskClass, ToolSource};
 use crate::scope::Scope;
@@ -122,12 +122,12 @@ impl<T: Tool> GuardedTool<T> {
     }
 }
 
-fn agent_of(context: &ToolContext) -> String {
-    context
-        .get::<AgentId>()
-        .ok()
-        .flatten()
-        .map_or_else(|| ROOT_AGENT.to_string(), |id| id.0)
+/// Whose call this is. A call that does not say would be gated as the root agent, with none of
+/// a child's own mode or restrictions, so it fails instead.
+fn agent_of(context: &ToolContext) -> Result<String, ToolExecutionError> {
+    context.require::<AgentId>().map(|id| id.0).map_err(|e| {
+        ToolExecutionError::other(format!("the call does not say which agent made it: {e}"))
+    })
 }
 
 fn normalize(args: Value) -> Value {
@@ -172,7 +172,7 @@ where
         annotations,
     } = meta;
     let args = normalize(args);
-    let agent = agent_of(context);
+    let agent = agent_of(context)?;
     let shown = if source == ToolSource::Mcp && guard.hide_mcp_names {
         HIDDEN
     } else {

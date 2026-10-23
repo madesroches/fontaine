@@ -146,7 +146,9 @@ pub async fn drive(
 ) -> TurnOutcome {
     let mut tool_context = ToolContext::new();
     // The root agent's id is the default, but a call should say whose it is.
-    let _ = tool_context.insert(AgentId(params.agent_id.to_string()));
+    tool_context
+        .insert(AgentId(params.agent_id.to_string()))
+        .expect("the agent id serializes");
     let runner = params
         .agent
         .prompt(rig_core::message::Message::user(params.prompt))

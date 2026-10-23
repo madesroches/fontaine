@@ -280,6 +280,12 @@ micromegas conventions and the rule the user stated:
 - 2026-10-22: the error-handling review is in scope (user request). Items from the review that
   are not in this plan are listed under Out of scope, so they aren't re-raised.
 
+- 2026-10-22: `CausedClient` is generic over the inner client (default `ReqwestClient`) so the
+  unit tests can wrap a fake; `caused_client()` is the only constructor the product uses.
+- 2026-10-22: `Sink` is a public enum in `gate.rs` and `SessionState::sink_failed` warns through
+  a per-sink `AtomicBool`; `Session::compact` also takes the `&dyn Approver` (not only
+  `compact_if_needed`), and `AgentRuntime::approver()` exposes the session's approver.
+
 ## Out of scope
 
 - Converting the 77 `Result<_, String>` functions or the remaining enums to thiserror/anyhow.

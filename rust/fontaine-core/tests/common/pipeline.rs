@@ -34,6 +34,7 @@ pub struct Scripted {
     unavailable: Mutex<VecDeque<UnavailableChoice>>,
     pub requests: Mutex<Vec<ApprovalRequest>>,
     pub notices: Mutex<Vec<String>>,
+    pub warnings: Mutex<Vec<String>>,
     pub unavailable_asked: Mutex<Vec<GuardianUnavailable>>,
 }
 
@@ -75,6 +76,10 @@ impl Approver for Scripted {
 
     fn notice(&self, message: &str) {
         self.notices.lock().unwrap().push(message.to_string());
+    }
+
+    fn warn(&self, message: &str) {
+        self.warnings.lock().unwrap().push(message.to_string());
     }
 
     fn guardian_unavailable<'a>(
@@ -158,6 +163,7 @@ impl Rig {
         let session = Session::create(&world.data, "00000000-0000-4000-8000-000000000001").unwrap();
         let scope = Arc::new(Scope::new(config.workspace.clone(), []));
         let agents = Arc::new(AgentTree::new(Limits::default()));
+        let approver = Arc::new(Scripted::default());
         let state = Arc::new(SessionState::new(StateParams {
             session_id: session.id.clone(),
             mode: options.mode,
@@ -167,6 +173,7 @@ impl Rig {
             allow: config.permissions.allow.clone(),
             ledger: session.ledger.clone(),
             audit: session.audit.clone(),
+            approver: approver.clone(),
             home: options.home.clone(),
             protected_dirs: vec![world.config.clone(), world.data.clone()],
             guardian: options
@@ -177,7 +184,6 @@ impl Rig {
             agents: agents.clone(),
             reveal_mcp_names: false,
         }));
-        let approver = Arc::new(Scripted::default());
         let user_config = world.config.join("config.toml");
         let pipeline = Arc::new(PermissionPipeline::new(PipelineParams {
             state: state.clone(),

@@ -16,7 +16,11 @@ pub const CONFIG_EXIT_CODE: u8 = 2;
 
 #[derive(Debug)]
 pub enum ConfigError {
-    Io {
+    Read {
+        path: PathBuf,
+        source: io::Error,
+    },
+    Write {
         path: PathBuf,
         source: io::Error,
     },
@@ -96,8 +100,11 @@ impl ConfigError {
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ConfigError::Io { path, source } => {
+            ConfigError::Read { path, source } => {
                 write!(f, "cannot read {}: {source}", path.display())
+            }
+            ConfigError::Write { path, source } => {
+                write!(f, "cannot write {}: {source}", path.display())
             }
             ConfigError::Parse { path, message } => {
                 write!(f, "invalid settings in {}: {message}", path.display())
@@ -146,7 +153,7 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            ConfigError::Io { source, .. } => Some(source),
+            ConfigError::Read { source, .. } | ConfigError::Write { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -1226,10 +1233,11 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
 /// Every check `load` makes except the telemetry ingestion key, which `auth login --telemetry`
 /// must be able to supply.
 pub fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
-    let workspace = std::fs::canonicalize(params.launch_dir).map_err(|source| ConfigError::Io {
-        path: params.launch_dir.to_path_buf(),
-        source,
-    })?;
+    let workspace =
+        std::fs::canonicalize(params.launch_dir).map_err(|source| ConfigError::Read {
+            path: params.launch_dir.to_path_buf(),
+            source,
+        })?;
 
     let user_path = params.config_dir.join(USER_FILE);
     let user = read_optional(&user_path)?
@@ -1262,7 +1270,7 @@ pub fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
     let cli = match cli_path {
         None => None,
         Some(path) => {
-            let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
                 path: path.to_path_buf(),
                 source,
             })?;
@@ -1434,7 +1442,7 @@ fn read_optional(path: &Path) -> Result<Option<String>, ConfigError> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(ConfigError::Io {
+        Err(source) => Err(ConfigError::Read {
             path: path.to_path_buf(),
             source,
         }),

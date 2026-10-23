@@ -21,6 +21,7 @@ use fontaine_core::config::PermissionMode::Manual;
 use fontaine_core::tier::Tier;
 use fontaine_core::tools::{ExtensionTools, RegistryParams, registry};
 use fontaine_mcp::connect_transport;
+use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::guarded::Guard;
 use fontaine_tools::names::BUILTIN_TOOL_NAMES;
 use fontaine_tools::result_pipeline::ResultPipeline;
@@ -176,7 +177,7 @@ async fn call(
 ) -> Result<String, String> {
     match handle
         .toolset()
-        .execute(name, "{}", &mut ToolContext::new())
+        .execute(name, "{}", &mut as_root())
         .await
         .into_result()
     {
@@ -246,4 +247,12 @@ async fn tools_added_or_replaced_by_a_refresh_are_wrapped_and_none_is_reachable_
             "{record:?}"
         );
     }
+}
+
+fn as_root() -> ToolContext {
+    let mut context = ToolContext::new();
+    context
+        .insert(AgentId(ROOT_AGENT.to_string()))
+        .expect("the agent id serializes");
+    context
 }

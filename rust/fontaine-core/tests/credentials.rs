@@ -80,7 +80,7 @@ fn a_non_not_found_io_error_is_a_config_error_naming_the_path() {
     let w = World::new();
     std::fs::create_dir_all(w.data.join("credentials.toml")).unwrap();
     let err = Credentials::load(&w.data).err().unwrap();
-    assert!(matches!(err, ConfigError::Io { .. }), "{err:?}");
+    assert!(matches!(err, ConfigError::Read { .. }), "{err:?}");
     assert!(err.to_string().contains("credentials.toml"));
     assert_eq!(err.exit_code(), 2);
 }
@@ -199,5 +199,20 @@ mod writer {
         assert!(matches!(err, ConfigError::Credentials { .. }), "{err:?}");
         assert_eq!(err.exit_code(), 2);
         assert_eq!(std::fs::read_to_string(file(&w)).unwrap(), broken);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_write_says_it_could_not_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let w = World::new();
+        std::fs::create_dir_all(&w.data).unwrap();
+        std::fs::set_permissions(&w.data, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let result = credentials::store(&w.data, Target::Account("work"), "k");
+        std::fs::set_permissions(&w.data, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Permission bits do not bind root.
+        let Err(err) = result else { return };
+        assert!(matches!(err, ConfigError::Write { .. }), "{err:?}");
+        assert!(err.to_string().starts_with("cannot write "), "{err}");
     }
 }
