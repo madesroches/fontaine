@@ -262,6 +262,7 @@ impl ChildRunner for CoreChildRunner {
                     model.reference
                 ));
             }
+            let priced = model.catalog_billed();
             let state = context.state.clone();
             let tools = fork_tools(&context.tool_server, &request.tools);
             let agent = AgentBuilder::new(model.completion.clone())
@@ -281,6 +282,7 @@ impl ChildRunner for CoreChildRunner {
                 "fontaine.subagent",
                 agent.id = request.id.as_str(),
                 agent.type = request.agent_type.name.as_str(),
+                model.priced = priced,
             );
             let (kill, kill_rx) = watch::channel(false);
             let (report_tx, report_rx) = watch::channel(None);
@@ -298,7 +300,7 @@ impl ChildRunner for CoreChildRunner {
             let task_state = state.clone();
             tokio::spawn(
                 async move {
-                    let report = run_child(&task_state, &agent, &id, prompt, kill_rx).await;
+                    let report = run_child(&task_state, &agent, &id, prompt, priced, kill_rx).await;
                     *status.lock().unwrap_or_else(|e| e.into_inner()) = report.status;
                     report_tx.send_replace(Some(report));
                 }
@@ -315,6 +317,7 @@ async fn run_child(
     agent: &Agent,
     id: &str,
     prompt: String,
+    priced: bool,
     mut kill: watch::Receiver<bool>,
 ) -> ChildReport {
     let tree = state.agents().clone();
@@ -364,6 +367,7 @@ async fn run_child(
             agent_id: id,
             prompt,
             max_turns: DEFAULT_MAX_TURNS,
+            priced,
             span: tracing::Span::current(),
         },
         None,

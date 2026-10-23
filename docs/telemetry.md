@@ -95,15 +95,19 @@ Both backends export the same tree: `fontaine.session` contains one `fontaine.in
 user message, and below it the model calls (`chat`) and tool executions (`execute_tool`). Each
 tool call also has a `fontaine.tool` span, with `tool_name`, `risk_class` (`read_only`,
 `workspace_write` or `arbitrary`), `tool_source` (`builtin` or `mcp`) and `success`.
-`fontaine.interaction` carries `prompt.id` and `prompt.length`. Each tool call also has a `fontaine.permission` child span with `tool_name`, `permission_mode`, and the `tier` and `decision` of the pipeline's decision; while a human is asked, a `fontaine.tool.blocked_on_user` span below it measures the wait. Calls that reach the guardian add a `fontaine.guardian` span below `fontaine.permission` with
-`tool_name`, `guardian_model`, `guardian_profile`, the `decision`, whether it was a `cache_hit` and
+`fontaine.interaction` carries `prompt.id`, `prompt.length` and `model.priced`. Each tool call also has a `fontaine.permission` child span with `tool_name`, `permission_mode`, and the `tier` and `decision` of the pipeline's decision; while a human is asked, a `fontaine.tool.blocked_on_user` span below it measures the wait. Calls that reach the guardian add a `fontaine.guardian` span below `fontaine.permission` with
+`tool_name`, `guardian_model`, `guardian_profile`, `model.priced`, the `decision`, whether it was a `cache_hit` and
 the `fail_closed_reason` when it failed closed; the guardian's own model call sits under it.
-A subagent adds a `fontaine.subagent` span (`agent.id`, `agent.type`) under the span of the `agent`
+A subagent adds a `fontaine.subagent` span (`agent.id`, `agent.type`, `model.priced`) under the span of the `agent`
 call that started it, and its own interactions, model calls and tool calls nest below it. A user
 hook adds a `fontaine.hook` span (`hook_event`, `success`) under the span of the call it ran for,
-and a call to an MCP tool a `fontaine.mcp.call` span (`mcp.server`, `mcp.tool`). Model-call spans carry the
-provider, the model, the response id and the token counts. Source file paths and thread names are
-not exported.
+and a call to an MCP tool a `fontaine.mcp.call` span (`mcp.server`, `mcp.tool`). A threshold
+compaction adds a `fontaine.compaction` span around the summarizer call, and each scan by the
+`llm` tool-result scanner a `fontaine.scanner` span (`scanner`) around the scanner's model call.
+Those two also carry `model.priced`. `model.priced` says whether the model it bills by is priced;
+the cost of a model call is dropped under the nearest ancestor span that records
+`model.priced = false`. Model-call spans carry the provider, the model, the response id and
+the token counts. Source file paths and thread names are not exported.
 
 ### Metrics
 
@@ -117,9 +121,9 @@ not exported.
 | `fontaine.guardian.fail_closed.count` | `{denial}` | `reason` (`error`, `timeout`, `unparseable`, `low_confidence`, `unavailable`) |
 
 `fontaine.cost.usage` is priced from the model catalog and is absent when the catalog has no price,
-which is always the case for an `openai-compatible` endpoint. `query_source` is `main` for the
-session model, `guardian` for the model calls made while a guardian adjudication is open,
-`scanner` for the calls the `llm` tool-result scanner makes, and
+which is always the case for an `openai-compatible` endpoint or an `opencode-go` account.
+`query_source` is `main` for the session model, `guardian` for the model calls made while a
+guardian adjudication is open, `scanner` for the calls the `llm` tool-result scanner makes, and
 `subagent` for the calls made under a subagent's span.
 Both guardian metrics are derived from the guardian attributes of the decision event. No metric
 carries a prompt or tool-call id.

@@ -1,0 +1,173 @@
+//! The account kinds. Each kind is one module implementing [`Provider`]; resolution, login and
+//! listing code only ever talk to the trait, so a new kind is a module and one registry line.
+
+use std::path::Path;
+use std::sync::Arc;
+
+use futures::future::BoxFuture;
+use rig_core::DynModel;
+use rig_core::error::ProviderError;
+use rig_core::operation::Completion;
+
+use crate::config::Account;
+use crate::credentials::StoredCredential;
+
+pub mod anthropic;
+pub mod device_flow;
+pub mod gemini;
+pub mod ollama;
+pub mod openai;
+pub mod openai_compatible;
+pub mod opencode_go;
+pub mod token_source;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialPolicy {
+    /// The account is unusable without one.
+    Required,
+    /// A keyless endpoint is normal; a key is sent when present.
+    Optional,
+    /// The credential comes from `fontaine auth login`'s interactive sign-in.
+    SignIn,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Billing {
+    /// rig's catalog may know a price for the model.
+    Catalog,
+    /// Usage is billed outside per-token prices: any cost a response carries is dropped.
+    Unpriced,
+}
+
+pub trait Provider: Send + Sync + 'static {
+    /// The `kind` value in settings.
+    fn name(&self) -> &'static str;
+
+    fn credential(&self) -> CredentialPolicy;
+
+    fn billing(&self) -> Billing {
+        Billing::Catalog
+    }
+
+    /// Account-shape checks beyond serde: a required `base_url`, keys this kind refuses. The
+    /// error names the offending key under `accounts.<name>` and says what is wrong with it.
+    fn validate(&self, _account: &Account) -> Result<(), (&'static str, String)> {
+        Ok(())
+    }
+
+    /// Whether the account may set `wires`.
+    fn accepts_wires(&self) -> bool {
+        false
+    }
+
+    /// Whether a listed id satisfies a requested model.
+    fn lists(&self, available: &[String], model: &str) -> bool {
+        available.iter().any(|id| id == model)
+    }
+
+    fn connect(&self, ctx: ConnectContext<'_>) -> Result<Arc<dyn AccountClient>, String>;
+
+    /// The sign-in `fontaine auth login` runs instead of prompting for a key.
+    fn sign_in(&self) -> Option<&dyn SignIn> {
+        None
+    }
+}
+
+pub trait SignIn: Send + Sync {
+    /// Runs the interactive sign-in, printing progress to stderr; returns the summary line.
+    fn sign_in<'a>(
+        &'a self,
+        account_name: &'a str,
+        account: &'a Account,
+        data_dir: &'a Path,
+    ) -> BoxFuture<'a, Result<String, SignInError>>;
+}
+
+/// Why a sign-in did not finish. Never carries a token.
+#[derive(Debug)]
+pub struct SignInError(pub Box<dyn std::error::Error + Send + Sync>);
+
+impl SignInError {
+    /// The credentials-file error behind this failure, so a caller can treat a broken file as a
+    /// configuration problem.
+    pub fn into_config(self) -> Result<crate::config::ConfigError, SignInError> {
+        self.0
+            .downcast::<crate::config::ConfigError>()
+            .map(|e| *e)
+            .map_err(SignInError)
+    }
+}
+
+impl std::fmt::Display for SignInError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for SignInError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+}
+
+pub trait AccountClient: Send + Sync {
+    fn completion(&self, model: &str) -> DynModel<Completion>;
+    fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>>;
+}
+
+pub struct ConnectContext<'a> {
+    pub account_name: &'a str,
+    pub account: &'a Account,
+    pub credential: Option<StoredCredential>,
+    pub data_dir: &'a Path,
+    pub session_id: Option<&'a str>,
+}
+
+impl ConnectContext<'_> {
+    /// The API key, when the credential is one.
+    pub(crate) fn api_key(&self) -> Option<String> {
+        match &self.credential {
+            Some(StoredCredential::ApiKey(key)) => Some(key.clone()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn base_url(&self) -> Option<&str> {
+        self.account.base_url.as_deref().filter(|u| !u.is_empty())
+    }
+}
+
+const PROVIDERS: &[&dyn Provider] = &[
+    &anthropic::Anthropic,
+    &openai::OpenAi,
+    &gemini::Gemini,
+    &openai_compatible::OpenAiCompatible,
+    &ollama::Ollama,
+    &opencode_go::OpencodeGo,
+];
+
+pub fn find(name: &str) -> Option<&'static dyn Provider> {
+    PROVIDERS.iter().copied().find(|p| p.name() == name)
+}
+
+pub fn names() -> impl Iterator<Item = &'static str> {
+    PROVIDERS.iter().map(|p| p.name())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_unique_and_found() {
+        let all: Vec<&str> = names().collect();
+        let mut sorted = all.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), all.len());
+        for name in all {
+            assert_eq!(find(name).map(|p| p.name()), Some(name));
+        }
+        assert!(find("nope").is_none());
+    }
+}

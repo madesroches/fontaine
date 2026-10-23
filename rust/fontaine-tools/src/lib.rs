@@ -10,3 +10,11 @@ pub mod risk;
 pub mod scope;
 pub mod skill;
 pub mod webfetch;
+
+// Wikimedia and many CDNs answer a request without a User-Agent with 403; gateways that ask
+// clients to identify themselves read it too.
+pub const FONTAINE_USER_AGENT: &str = concat!(
+    "fontaine/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/madesroches/fontaine)"
+);

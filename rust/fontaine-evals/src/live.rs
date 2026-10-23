@@ -86,6 +86,7 @@ pub fn connect(
         config.clone(),
         dirs.data.clone(),
         Arc::new(move |name: &str| held.get(name).cloned()),
+        Some(uuid::Uuid::new_v4().to_string()),
     );
     let guardian_model = switcher.guardian(spec, None).map_err(|e| e.to_string())?;
     let handle = match &guardian_model {
@@ -103,6 +104,7 @@ pub fn connect(
         // A cached verdict would hide the latency being measured.
         cache: false,
         profile,
+        priced: handle.catalog_billed(),
     };
     let mut snapshot = snapshot;
     if let Some(value) = env(&config.guardian.scanner_hf_token_env) {

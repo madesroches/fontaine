@@ -265,7 +265,7 @@ async fn the_llm_scanner_follows_a_guardian_installed_after_startup() {
         .runtime
         .install_guardian(&GuardianModel::Ready(ModelHandle::new(
             ModelRef::parse("test/fixed").unwrap(),
-            AccountKind::OpenAiCompatible,
+            AccountKind::named("openai-compatible"),
             model.into(),
         )));
     queue_report(&built.runtime);

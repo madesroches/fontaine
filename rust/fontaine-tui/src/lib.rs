@@ -816,7 +816,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let mut run = Box::pin(async {
             runtime
                 .session
-                .compact_if_needed(&runtime.models.main.completion, runtime.approver())
+                .compact_if_needed(
+                    &runtime.models.main.completion,
+                    runtime.models.main.catalog_billed(),
+                    runtime.approver(),
+                )
                 .await;
             run_turn(
                 TurnParams {
@@ -824,6 +828,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     state: &runtime.state,
                     prompt,
                     max_turns: DEFAULT_MAX_TURNS,
+                    priced: runtime.models.main.catalog_billed(),
                 },
                 &mut on_event,
             )

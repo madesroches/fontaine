@@ -35,6 +35,8 @@ pub struct Settings {
     /// `[guardian] cache`.
     pub cache: bool,
     pub profile: Profile,
+    /// Whether the cost a call reports is counted. An unpriced model's calls report none.
+    pub priced: bool,
 }
 
 impl Default for Settings {
@@ -44,6 +46,7 @@ impl Default for Settings {
             confidence_threshold: 0.7,
             cache: true,
             profile: Profile::Full,
+            priced: true,
         }
     }
 }
@@ -144,6 +147,7 @@ impl Guardian {
             tool_name = request.tool_call.tool.as_str(),
             guardian_model = self.label.as_str(),
             guardian_profile = self.settings.profile.as_str(),
+            model.priced = self.settings.priced,
             decision = tracing::field::Empty,
             fail_closed_reason = tracing::field::Empty,
             cache_hit = tracing::field::Empty,
@@ -263,6 +267,10 @@ impl Guardian {
         let latency_ms = started.elapsed().as_millis() as u64;
         let base =
             |decision, rule, explanation: String, confidence, fail_closed, cache_hit, usage| {
+                let mut usage: Usage = usage;
+                if !self.settings.priced {
+                    usage.cost = None;
+                }
                 Adjudication {
                     decision,
                     rule,

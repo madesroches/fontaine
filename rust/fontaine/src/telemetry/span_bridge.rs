@@ -148,9 +148,10 @@ impl<E: Export> SpanBridge<E> {
         fields: &[(String, String)],
         elapsed: std::time::Duration,
         query_source: &'static str,
+        priced: bool,
     ) {
         match name {
-            "chat" | "generate_content" => self.completion(fields, elapsed, query_source),
+            "chat" | "generate_content" => self.completion(fields, elapsed, query_source, priced),
             "fontaine.session" => self.export.metric(Metric {
                 name: "fontaine.session.count",
                 unit: "{session}",
@@ -180,6 +181,7 @@ impl<E: Export> SpanBridge<E> {
         fields: &[(String, String)],
         elapsed: std::time::Duration,
         query_source: &'static str,
+        priced: bool,
     ) {
         let input = count(fields, "gen_ai.usage.input_tokens");
         let output = count(fields, "gen_ai.usage.output_tokens");
@@ -199,7 +201,13 @@ impl<E: Export> SpanBridge<E> {
             .output_tokens(output)
             .cached_input_tokens(cache_read)
             .cache_creation_input_tokens(cache_write);
-        let cost = cost_usd(provider, model, &usage);
+        // The catalog may price a model that the account bills outside per-token prices, as a
+        // gateway serving an Anthropic-wire model does.
+        let cost = if priced {
+            cost_usd(provider, model, &usage)
+        } else {
+            None
+        };
 
         for (kind, tokens) in [
             ("input", input),
@@ -361,11 +369,22 @@ where
         } else {
             "main"
         };
+        // The nearest span that says what its model bills by decides.
+        let priced = span
+            .scope()
+            .skip(1)
+            .find_map(|ancestor| {
+                let extensions = ancestor.extensions();
+                let fields = &extensions.get::<BridgeSpan>()?.fields;
+                lookup(fields, "model.priced").map(|v| v != "false")
+            })
+            .unwrap_or(true);
         self.derive(
             span.name(),
             &bridge.fields,
             bridge.started.elapsed(),
             query_source,
+            priced,
         );
         let fields = self.policy.export_fields(&bridge.fields);
         self.export.span_end(SpanEnd {
@@ -507,6 +526,42 @@ mod tests {
             .find(|e| e.message() == "api_request")
             .unwrap();
         assert!(!event.fields.contains_key("cost_usd"));
+    }
+
+    #[test]
+    fn a_completion_under_an_unpriced_model_carries_no_cost_even_when_the_catalog_prices_it() {
+        let (recorder, capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            let turn =
+                tracing::info_span!(target: TARGET, "fontaine.interaction", model.priced = false);
+            let _entered = turn.enter();
+            completion("anthropic", "claude-haiku-4-5");
+        });
+        let metrics = recorder.0.lock().unwrap();
+        assert!(metric(&metrics, "fontaine.token.usage", Some("input")).is_some());
+        assert!(metric(&metrics, "fontaine.cost.usage", None).is_none());
+        let events = capture.events();
+        let event = events
+            .iter()
+            .find(|e| e.message() == "api_request")
+            .unwrap();
+        assert!(!event.fields.contains_key("cost_usd"));
+    }
+
+    #[test]
+    fn the_nearest_span_naming_a_billing_wins() {
+        let (recorder, _capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            let turn =
+                tracing::info_span!(target: TARGET, "fontaine.interaction", model.priced = false);
+            let _entered = turn.enter();
+            let child =
+                tracing::info_span!(target: TARGET, "fontaine.subagent", model.priced = true);
+            let _inner = child.enter();
+            completion("openai", "gpt-4o-mini");
+        });
+        let metrics = recorder.0.lock().unwrap();
+        assert!(metric(&metrics, "fontaine.cost.usage", None).is_some());
     }
 
     #[test]

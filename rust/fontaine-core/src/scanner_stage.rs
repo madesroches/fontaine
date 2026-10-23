@@ -56,6 +56,7 @@ pub fn llm_backend(guardian: Option<&GuardianModel>, timeout: Duration) -> Backe
         Some(GuardianModel::Ready(handle)) => Backend::Ready(Arc::new(LlmScanner::new(
             handle.completion.clone(),
             timeout,
+            handle.catalog_billed(),
         ))),
         Some(GuardianModel::Unavailable { reference, reason }) => Backend::Unavailable(format!(
             "the scanner model {reference} is unavailable: {reason}"

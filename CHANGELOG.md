@@ -20,6 +20,11 @@ All notable changes are recorded here. The format follows
   - A versioned system prompt steers the agent toward the dedicated read tools, denial handling
     and the workspace roots, layered with `FONTAINE.md` from the user config directory and the
     primary root.
+  - An `opencode-go` account kind reaches the OpenCode Go subscription's models over their four
+    wire formats with one sign-in (`fontaine auth login <account>`, the opencode CLI's device
+    flow). Access tokens refresh silently, requests carry a `fontaine/<version>` User-Agent and
+    the session id, and the models are unpriced. Account kinds now sit behind a provider
+    registry, so a new kind is one module and one registry line (#93).
   - A model request that cannot connect names its transport cause (connection refused, reset,
     TLS, DNS, timeout) without the request URL (#88).
 - Configuration

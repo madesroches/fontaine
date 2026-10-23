@@ -32,6 +32,7 @@ async fn resolve(
         data_dir: &world.data,
         env,
         model_override,
+        session_id: None,
     })
     .await
 }

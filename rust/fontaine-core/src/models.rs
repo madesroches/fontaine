@@ -4,24 +4,36 @@
 
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 
 use rig_core::DynModel;
 use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
-use rig_core::providers::anthropic::{Anthropic, AnthropicConfig};
-use rig_core::providers::gemini::{Gemini, GeminiConfig};
-use rig_core::providers::ollama::{Ollama, OllamaConfig};
-use rig_core::providers::openai::wire::{Auth, Dialect};
-use rig_core::providers::openai::{OpenAI, OpenAIConfig};
 
 use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup};
-use crate::credentials::Credentials;
-use crate::transport::caused_client;
+use crate::credentials::{Credentials, StoredCredential};
+use crate::providers::{AccountClient, Billing, ConnectContext, CredentialPolicy};
 use fontaine_guardian::models::{ModelEntry, ModelsFile};
 
-/// The one gateway dialect every `openai-compatible` account speaks. Its name is the vendor
-/// rig prices by, so it is the kind name and never an account name: such endpoints are unpriced.
-const GATEWAY: Dialect = Dialect::gateway("openai-compatible", "", "");
+type Client = Arc<dyn AccountClient>;
+
+/// What a client is built from besides the account: the stored credentials, where the data
+/// directory is and the session the requests belong to.
+struct Sources<'a> {
+    stored: Credentials,
+    data_dir: &'a Path,
+    session_id: Option<&'a str>,
+}
+
+impl<'a> Sources<'a> {
+    fn load(data_dir: &'a Path, session_id: Option<&'a str>) -> Result<Self, ConfigError> {
+        Ok(Sources {
+            stored: Credentials::load(data_dir)?,
+            data_dir,
+            session_id,
+        })
+    }
+}
 
 /// Why a model could not be resolved. The exit code tells the two apart: a config problem is
 /// the user's to fix, a provider failure is the run's.
@@ -106,11 +118,19 @@ impl ModelHandle {
         }
     }
 
+    /// Whether the cost a call reports is counted. An unpriced kind is billed outside per-token
+    /// prices, so whatever cost reaches us for it is dropped.
+    pub fn catalog_billed(&self) -> bool {
+        self.kind.provider().billing() == Billing::Catalog
+    }
+
     /// Whether rig's catalog knows a price for this model; a spend cap needs one.
     pub fn priced(&self) -> bool {
-        self.completion
-            .spec()
-            .is_some_and(|spec| spec.pricing.is_some())
+        self.catalog_billed()
+            && self
+                .completion
+                .spec()
+                .is_some_and(|spec| spec.pricing.is_some())
     }
 }
 
@@ -160,94 +180,13 @@ pub struct ResolveParams<'a> {
     pub env: EnvLookup<'a>,
     /// `--model`, which wins over `[model] model`.
     pub model_override: Option<&'a str>,
-}
-
-#[derive(Clone)]
-enum Client {
-    Anthropic(Anthropic),
-    OpenAi(OpenAI),
-    Gemini(Gemini),
-    Ollama(Ollama),
-    OpenAiCompatible(OpenAI),
-}
-
-impl Client {
-    fn build(
-        kind: AccountKind,
-        account: &Account,
-        credential: Option<String>,
-    ) -> Result<Client, String> {
-        let http = caused_client()?;
-        let base_url = account.base_url.as_deref().filter(|u| !u.is_empty());
-        match kind {
-            AccountKind::Anthropic => {
-                let mut config = AnthropicConfig::new(credential.unwrap_or_default());
-                if let Some(url) = base_url {
-                    config = config.with_base_url(url);
-                }
-                Ok(Client::Anthropic(config.connect(http)))
-            }
-            AccountKind::OpenAi => {
-                let mut config = OpenAIConfig::new(credential.unwrap_or_default());
-                if let Some(url) = base_url {
-                    config = config.with_base_url(url);
-                }
-                Ok(Client::OpenAi(config.connect(http)))
-            }
-            AccountKind::Gemini => {
-                let mut config = GeminiConfig::new(credential.unwrap_or_default());
-                if let Some(url) = base_url {
-                    config = config.with_base_url(url);
-                }
-                Ok(Client::Gemini(config.connect(http)))
-            }
-            AccountKind::Ollama => {
-                let mut config = OllamaConfig::new();
-                if let Some(url) = base_url {
-                    config = config.with_base_url(url);
-                }
-                if let Some(key) = credential {
-                    config = config.with_api_key(key);
-                }
-                Ok(Client::Ollama(config.connect(http)))
-            }
-            AccountKind::OpenAiCompatible => {
-                let mut config = OpenAIConfig::with_key(&GATEWAY, credential.unwrap_or_default())
-                    .with_auth(Auth::OptionalBearer);
-                if let Some(url) = base_url {
-                    config = config.with_base_url(url);
-                }
-                Ok(Client::OpenAiCompatible(config.connect(http)))
-            }
-        }
-    }
-
-    fn completion(&self, model: &str) -> DynModel<Completion> {
-        match self {
-            Client::Anthropic(c) => c.completion(model).erase(),
-            Client::OpenAi(c) | Client::OpenAiCompatible(c) => c.completion(model).erase(),
-            Client::Gemini(c) => c.completion(model).erase(),
-            // The native route: `completion()` would target the daemon's `/v1` API.
-            Client::Ollama(c) => c.native_completion(model).erase(),
-        }
-    }
-
-    async fn list(&self) -> Result<Vec<String>, Box<ProviderError>> {
-        let list = match self {
-            Client::Anthropic(c) => c.list_models().await.map_err(Box::new)?,
-            Client::OpenAi(c) | Client::OpenAiCompatible(c) => {
-                c.list_models().await.map_err(Box::new)?
-            }
-            Client::Gemini(c) => c.list_models().await.map_err(Box::new)?,
-            Client::Ollama(c) => c.list_models().await.map_err(Box::new)?,
-        };
-        Ok(list.data.into_iter().map(|m| m.id).collect())
-    }
+    /// Sent to gateways that ask which session a request belongs to.
+    pub session_id: Option<String>,
 }
 
 /// Where an account's credential comes from, and what it resolved to.
 enum Credential {
-    Found(String),
+    Found(StoredCredential),
     /// Nothing is configured to supply one.
     NoSource,
     /// A source is configured but yields nothing.
@@ -262,24 +201,33 @@ fn credential(
 ) -> Credential {
     match &account.api_key_env {
         Some(var) => match env(var).and_then(|v| v.into_string().ok()) {
-            Some(value) if !value.is_empty() => Credential::Found(value),
+            Some(value) if !value.is_empty() => Credential::Found(StoredCredential::ApiKey(value)),
             _ => Credential::Unresolved(format!(
                 "environment variable {var}, named by `api_key_env`, is unset or empty"
             )),
         },
         None => match stored.account(name) {
-            Some(key) => Credential::Found(key.to_string()),
+            // A sign-in left by a changed `kind` is no key for a provider that takes keys.
+            Some(StoredCredential::OAuth(_))
+                if account.kind.provider().credential() != CredentialPolicy::SignIn =>
+            {
+                Credential::NoSource
+            }
+            // A key left by a changed `kind` is no sign-in for a provider that needs one.
+            Some(StoredCredential::ApiKey(_))
+                if account.kind.provider().credential() == CredentialPolicy::SignIn =>
+            {
+                Credential::NoSource
+            }
+            Some(found) => Credential::Found(found),
             None => Credential::NoSource,
         },
     }
 }
 
-/// Whether the kind needs a credential to be usable at all.
+/// Whether the kind cannot be used without a credential.
 fn needs_credential(kind: AccountKind) -> bool {
-    matches!(
-        kind,
-        AccountKind::Anthropic | AccountKind::OpenAi | AccountKind::Gemini
-    )
+    kind.provider().credential() != CredentialPolicy::Optional
 }
 
 fn missing_credential_hint(name: &str) -> String {
@@ -292,20 +240,34 @@ fn client_for(
     name: &str,
     account: &Account,
     env: EnvLookup<'_>,
-    stored: &Credentials,
+    src: &Sources<'_>,
 ) -> Result<Client, String> {
-    let key = match credential(name, account, env, stored) {
-        Credential::Found(key) => Some(key),
-        Credential::NoSource if !needs_credential(account.kind) => None,
-        Credential::NoSource => {
-            return Err(format!(
-                "account `{name}` has no credential; {}",
-                missing_credential_hint(name)
-            ));
-        }
+    let provider = account.kind.provider();
+    let credential = match credential(name, account, env, &src.stored) {
+        Credential::Found(found) => Some(found),
+        Credential::NoSource => match provider.credential() {
+            CredentialPolicy::Optional => None,
+            CredentialPolicy::Required => {
+                return Err(format!(
+                    "account `{name}` has no credential; {}",
+                    missing_credential_hint(name)
+                ));
+            }
+            CredentialPolicy::SignIn => {
+                return Err(format!(
+                    "account `{name}` is not signed in; run `fontaine auth login {name}`"
+                ));
+            }
+        },
         Credential::Unresolved(why) => return Err(format!("account `{name}`: {why}")),
     };
-    Client::build(account.kind, account, key)
+    provider.connect(ConnectContext {
+        account_name: name,
+        account,
+        credential,
+        data_dir: src.data_dir,
+        session_id: src.session_id,
+    })
 }
 
 /// A transport error's own message rarely says why the request failed; the reason (refused,
@@ -356,11 +318,8 @@ fn parse_reference(text: &str, what: &str) -> Result<ModelRef, ModelError> {
         .ok_or_else(|| config_error(format!("{what} `{text}`: expected `<account>/<model>`")))
 }
 
-/// Ollama lists `name:tag`; a bare name means the `latest` tag.
 fn lists(kind: AccountKind, available: &[String], model: &str) -> bool {
-    available.iter().any(|id| {
-        id == model || (kind == AccountKind::Ollama && id.strip_suffix(":latest") == Some(model))
-    })
+    kind.provider().lists(available, model)
 }
 
 fn unknown_model(reference: &ModelRef, available: &[String]) -> ModelError {
@@ -386,7 +345,7 @@ fn unknown_model(reference: &ModelRef, available: &[String]) -> ModelError {
 /// send to another task.
 async fn resolve_main_model<E: Fn(&str) -> Option<std::ffi::OsString> + ?Sized>(
     config: &Config,
-    stored: &Credentials,
+    src: &Sources<'_>,
     env: &E,
     text: &str,
     what: &str,
@@ -395,7 +354,7 @@ async fn resolve_main_model<E: Fn(&str) -> Option<std::ffi::OsString> + ?Sized>(
     let main_account = account_of(config, &main_ref, what)?;
     let main_client = {
         let lookup = |name: &str| env(name);
-        client_for(&main_ref.account, main_account, &lookup, stored).map_err(config_error)?
+        client_for(&main_ref.account, main_account, &lookup, src).map_err(config_error)?
     };
     let main_models = match &main_account.models {
         Some(list) => list.clone(),
@@ -442,7 +401,7 @@ pub async fn resolve_with(
         .ok_or_else(|| {
             config_error("no main model: set `[model] model` in the settings or pass `--model <account>/<model>`")
         })?;
-    let stored = Credentials::load(params.data_dir)?;
+    let stored = Sources::load(params.data_dir, params.session_id.as_deref())?;
     let (main_ref, main_client, main_models, main) =
         resolve_main_model(config, &stored, params.env, main_text, "model").await?;
 
@@ -488,7 +447,7 @@ pub async fn resolve_with(
 
 fn resolve_guardian(
     config: &Config,
-    stored: &Credentials,
+    stored: &Sources<'_>,
     env: EnvLookup<'_>,
     text: &str,
     main: (&ModelRef, &Client, &[String]),
@@ -508,7 +467,7 @@ fn resolve_guardian(
 /// account, and reuses the main client rather than building another.
 fn build_guardian(
     config: &Config,
-    stored: &Credentials,
+    stored: &Sources<'_>,
     env: EnvLookup<'_>,
     text: &str,
     main: Option<(&ModelRef, &[String])>,
@@ -558,8 +517,9 @@ fn account_has(
     model: &str,
     main: (&ModelRef, &[String]),
     env: EnvLookup<'_>,
-    stored: &Credentials,
+    stored: &Sources<'_>,
 ) -> bool {
+    let stored = &stored.stored;
     if needs_credential(account.kind)
         && !matches!(credential(name, account, env, stored), Credential::Found(_))
     {
@@ -576,7 +536,7 @@ fn account_has(
 fn available_validated(
     validated: &[ModelEntry],
     config: &Config,
-    stored: &Credentials,
+    stored: &Sources<'_>,
     env: EnvLookup<'_>,
     main: (&ModelRef, &[String]),
 ) -> Vec<ModelRef> {
@@ -599,7 +559,7 @@ fn available_validated(
 fn default_guardian(
     validated: &[ModelEntry],
     config: &Config,
-    stored: &Credentials,
+    stored: &Sources<'_>,
     env: EnvLookup<'_>,
     main: (&ModelRef, &Client, &[String]),
 ) -> Option<GuardianModel> {
@@ -621,22 +581,33 @@ pub struct Switcher {
     pub config: Config,
     pub data_dir: std::path::PathBuf,
     pub env: SharedEnv,
+    pub session_id: Option<String>,
 }
 
 pub type SharedEnv = std::sync::Arc<dyn Fn(&str) -> Option<std::ffi::OsString> + Send + Sync>;
 
 impl Switcher {
-    pub fn new(config: Config, data_dir: std::path::PathBuf, env: SharedEnv) -> Switcher {
+    pub fn new(
+        config: Config,
+        data_dir: std::path::PathBuf,
+        env: SharedEnv,
+        session_id: Option<String>,
+    ) -> Switcher {
         Switcher {
             config,
             data_dir,
             env,
+            session_id,
         }
+    }
+
+    fn sources(&self) -> Result<Sources<'_>, ConfigError> {
+        Sources::load(&self.data_dir, self.session_id.as_deref())
     }
 
     /// The main model `text` names, checked against what its account offers, and that listing.
     pub async fn main(&self, text: &str) -> Result<(ModelHandle, Vec<String>), ModelError> {
-        let stored = Credentials::load(&self.data_dir)?;
+        let stored = self.sources()?;
         let (_, _, listing, handle) =
             resolve_main_model(&self.config, &stored, &*self.env, text, "model").await?;
         Ok((handle, listing))
@@ -650,14 +621,14 @@ impl Switcher {
         text: &str,
         main: Option<(&ModelRef, &[String])>,
     ) -> Result<GuardianModel, ModelError> {
-        let stored = Credentials::load(&self.data_dir)?;
+        let stored = self.sources()?;
         build_guardian(&self.config, &stored, &*self.env, text, main, None)
     }
 
     /// The model `$guardian_default` stands for: the top-ranked validated guardian model an
     /// account offers, or `None` when none is available.
     pub fn guardian_default(&self, main: &ModelRef, main_models: &[String]) -> Option<ModelHandle> {
-        let stored = Credentials::load(&self.data_dir).ok()?;
+        let stored = self.sources().ok()?;
         available_validated(
             &validated_models(),
             &self.config,
@@ -684,7 +655,7 @@ impl Switcher {
     /// Guardian models to offer when the pinned one is unavailable: the validated list entries
     /// the accounts offer, then every model an account lists explicitly.
     pub fn candidates(&self, main: &ModelRef, main_models: &[String]) -> Vec<ModelRef> {
-        let Ok(stored) = Credentials::load(&self.data_dir) else {
+        let Ok(stored) = self.sources() else {
             return Vec::new();
         };
         let mut out = available_validated(
@@ -696,7 +667,7 @@ impl Switcher {
         );
         for (name, account) in &self.config.accounts {
             if !matches!(
-                credential(name, account, &*self.env, &stored),
+                credential(name, account, &*self.env, &stored.stored),
                 Credential::Found(_)
             ) && needs_credential(account.kind)
             {

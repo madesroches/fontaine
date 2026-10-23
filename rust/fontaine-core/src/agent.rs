@@ -118,6 +118,10 @@ pub fn build_guardian(
         confidence_threshold: config.guardian.confidence_threshold,
         cache: config.guardian.cache,
         profile,
+        priced: match model {
+            Some(GuardianModel::Ready(handle)) => handle.catalog_billed(),
+            _ => true,
+        },
     };
     match model {
         Some(GuardianModel::Ready(handle)) => Guardian::new(
@@ -334,6 +338,8 @@ fn agent_limits(config: &Config) -> Limits {
 
 impl AgentRuntime {
     pub fn new(setup: AgentSetup) -> Result<AgentRuntime, String> {
+        let approver = setup.approver.clone();
+        crate::providers::token_source::set_warn_sink(move |message| approver.warn(message));
         let scope = Arc::new(Scope::new(
             setup.roots[0].clone(),
             setup.roots[1..].iter().cloned(),

@@ -49,7 +49,7 @@ pub fn build_with_scanner(
     let main = MockCompletionModel::from_stream_turns(turns);
     let handle = ModelHandle::new(
         ModelRef::parse("test/mock").unwrap(),
-        AccountKind::OpenAiCompatible,
+        AccountKind::named("openai-compatible"),
         main.clone().into(),
     );
     let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();

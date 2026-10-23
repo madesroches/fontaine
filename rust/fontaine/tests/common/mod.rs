@@ -391,10 +391,15 @@ impl Endpoint {
     }
 
     pub async fn start_with(wire: Wire, turns: Vec<Turn>, usage: Usage) -> Endpoint {
+        Endpoint::start_under(wire, turns, usage, "").await
+    }
+
+    /// An endpoint whose route sits under `prefix`, as a gateway's does.
+    pub async fn start_under(wire: Wire, turns: Vec<Turn>, usage: Usage, prefix: &str) -> Endpoint {
         let server = MockServer::start().await;
         let route = match wire {
-            Wire::Chat => "/chat/completions",
-            Wire::Responses => "/responses",
+            Wire::Chat => format!("{prefix}/chat/completions"),
+            Wire::Responses => format!("{prefix}/responses"),
         };
         Mock::given(method("POST"))
             .and(path(route))
@@ -433,6 +438,18 @@ impl Endpoint {
 
     pub fn url(&self) -> String {
         self.server.uri()
+    }
+
+    /// The headers of the requests the model was sent, in order.
+    pub async fn request_headers(&self) -> Vec<wiremock::http::HeaderMap> {
+        self.server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|r| r.method.as_str() == "POST")
+            .map(|r| r.headers.clone())
+            .collect()
     }
 
     /// The JSON bodies of the requests the model was sent, in order.

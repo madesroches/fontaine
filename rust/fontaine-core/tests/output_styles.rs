@@ -47,6 +47,7 @@ async fn first_prompt(built: &common::runtime::Built) -> String {
             state: &built.runtime.state,
             prompt: "hello".to_string(),
             max_turns: 5,
+            priced: true,
         },
         &mut seen,
     )

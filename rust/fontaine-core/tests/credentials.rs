@@ -2,7 +2,14 @@ mod common;
 
 use common::{World, write};
 use fontaine_core::config::ConfigError;
-use fontaine_core::credentials::Credentials;
+use fontaine_core::credentials::{Credentials, StoredCredential};
+
+fn api_key(c: &Credentials, name: &str) -> Option<String> {
+    match c.account(name)? {
+        StoredCredential::ApiKey(key) => Some(key),
+        StoredCredential::OAuth(_) => None,
+    }
+}
 
 const FILE: &str = r#"
 [accounts.work]
@@ -20,8 +27,8 @@ fn account_and_telemetry_entries_round_trip() {
     let w = World::new();
     write(&w.data.join("credentials.toml"), FILE);
     let c = Credentials::load(&w.data).unwrap();
-    assert_eq!(c.account("work"), Some("sk-work"));
-    assert_eq!(c.account("local"), Some("sk-local"));
+    assert_eq!(api_key(&c, "work").as_deref(), Some("sk-work"));
+    assert_eq!(api_key(&c, "local").as_deref(), Some("sk-local"));
     assert_eq!(c.telemetry(), Some("ingest-key"));
 }
 
@@ -33,7 +40,7 @@ fn an_account_named_telemetry_does_not_shadow_the_telemetry_key() {
         "[accounts.telemetry]\napi_key = \"account-key\"\n\n[telemetry]\napi_key = \"ingest-key\"\n",
     );
     let c = Credentials::load(&w.data).unwrap();
-    assert_eq!(c.account("telemetry"), Some("account-key"));
+    assert_eq!(api_key(&c, "telemetry").as_deref(), Some("account-key"));
     assert_eq!(c.telemetry(), Some("ingest-key"));
 
     write(
@@ -126,7 +133,7 @@ mod writer {
         credentials::store(&w.data, Target::Account("work"), "sk-work\n").unwrap();
         credentials::store(&w.data, Target::Telemetry, "ingest-key").unwrap();
         let c = Credentials::load(&w.data).unwrap();
-        assert_eq!(c.account("work"), Some("sk-work"));
+        assert_eq!(api_key(&c, "work").as_deref(), Some("sk-work"));
         assert_eq!(c.telemetry(), Some("ingest-key"));
     }
 
@@ -159,14 +166,14 @@ mod writer {
         credentials::store(&w.data, Target::Account("home"), "k2").unwrap();
         credentials::store(&w.data, Target::Telemetry, "k3").unwrap();
         let c = Credentials::load(&w.data).unwrap();
-        assert_eq!(c.account("work"), Some("k1"));
-        assert_eq!(c.account("home"), Some("k2"));
+        assert_eq!(api_key(&c, "work").as_deref(), Some("k1"));
+        assert_eq!(api_key(&c, "home").as_deref(), Some("k2"));
         assert_eq!(c.telemetry(), Some("k3"));
 
         credentials::store(&w.data, Target::Account("work"), "k1-new").unwrap();
         let c = Credentials::load(&w.data).unwrap();
-        assert_eq!(c.account("work"), Some("k1-new"));
-        assert_eq!(c.account("home"), Some("k2"));
+        assert_eq!(api_key(&c, "work").as_deref(), Some("k1-new"));
+        assert_eq!(api_key(&c, "home").as_deref(), Some("k2"));
         assert_eq!(c.telemetry(), Some("k3"));
     }
 
