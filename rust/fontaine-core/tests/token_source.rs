@@ -139,3 +139,30 @@ async fn an_account_with_no_stored_sign_in_says_so() {
     let err = source.token().await.unwrap_err();
     assert!(err.to_string().contains("fontaine auth login go"), "{err}");
 }
+
+#[tokio::test]
+async fn a_transient_refresh_failure_serves_a_token_that_has_not_expired() {
+    let w = World::new();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/auth/device/token"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let source = source(&w, &server, tokens("at-1", "rt-1", now_unix() + 60));
+    assert_eq!(source.token().await.unwrap(), "at-1");
+
+    let expired = TokenSource::new(
+        &w.data,
+        "go",
+        tokens("at-1", "rt-1", now_unix().saturating_sub(10)),
+        Arc::new(AgainstServer(server.uri())),
+    );
+    credentials::store_oauth(
+        &w.data,
+        "go",
+        &tokens("at-1", "rt-1", now_unix().saturating_sub(10)),
+    )
+    .unwrap();
+    assert!(expired.token().await.is_err());
+}

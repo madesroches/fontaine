@@ -103,6 +103,7 @@ fn an_api_key_store_waits_for_the_lock_and_keeps_a_rotation_made_meanwhile() {
         credentials::store(&data, Target::Account("work"), "sk-work").unwrap();
     });
     std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!writer.is_finished(), "the store must wait for the lock");
     credentials::store_oauth_locked(&w.data, "go", &tokens("at-2", "rt-2"), &held).unwrap();
     drop(held);
     writer.join().unwrap();

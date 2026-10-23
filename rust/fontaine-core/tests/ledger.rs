@@ -123,7 +123,7 @@ async fn a_threshold_compaction_between_runs_leaves_the_context_compacted_and_sa
         vec![MockTurn::text("THRESHOLD-SUMMARY")],
     );
     let before = saved_texts(&session).len();
-    let usage = session.compact_if_needed(&dynamic, &DenyAll).await;
+    let usage = session.compact_if_needed(&dynamic, true, &DenyAll).await;
     assert!(usage.is_some());
     assert_eq!(mock.request_count(), 1);
     let after = saved_texts(&session);
@@ -141,7 +141,7 @@ async fn a_conversation_that_fits_is_not_compacted() {
     );
     assert!(
         session
-            .compact_if_needed(&dynamic, &DenyAll)
+            .compact_if_needed(&dynamic, true, &DenyAll)
             .await
             .is_none()
     );
@@ -157,7 +157,7 @@ async fn compaction_is_skipped_when_the_window_is_unknown() {
     let (mock, dynamic) = model(Some(spec), vec![MockTurn::text("unused")]);
     assert!(
         session
-            .compact_if_needed(&dynamic, &DenyAll)
+            .compact_if_needed(&dynamic, true, &DenyAll)
             .await
             .is_none()
     );
@@ -165,7 +165,7 @@ async fn compaction_is_skipped_when_the_window_is_unknown() {
     let (mock, dynamic) = model(None, vec![MockTurn::text("unused")]);
     assert!(
         session
-            .compact_if_needed(&dynamic, &DenyAll)
+            .compact_if_needed(&dynamic, true, &DenyAll)
             .await
             .is_none()
     );
@@ -178,7 +178,7 @@ async fn an_empty_summary_leaves_the_context_unchanged() {
     let (session, _) = session_with_history(&w, 8);
     let (mock, dynamic) = model(Some(small_window_spec(1_000)), vec![MockTurn::text("")]);
     let before = saved_texts(&session);
-    let usage = session.compact_if_needed(&dynamic, &DenyAll).await;
+    let usage = session.compact_if_needed(&dynamic, true, &DenyAll).await;
     assert_eq!(mock.request_count(), 1);
     assert!(usage.is_some(), "a call that answered is still paid for");
     assert_eq!(saved_texts(&session), before);
@@ -192,7 +192,7 @@ async fn a_failed_summarizer_call_leaves_the_context_unchanged_and_does_not_fail
     let before = saved_texts(&session);
     assert!(
         session
-            .compact_if_needed(&dynamic, &DenyAll)
+            .compact_if_needed(&dynamic, true, &DenyAll)
             .await
             .is_none()
     );

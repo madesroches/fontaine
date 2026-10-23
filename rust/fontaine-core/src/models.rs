@@ -207,6 +207,12 @@ fn credential(
             )),
         },
         None => match stored.account(name) {
+            // A sign-in left by a changed `kind` is no key for a provider that takes keys.
+            Some(StoredCredential::OAuth(_))
+                if account.kind.provider().credential() != CredentialPolicy::SignIn =>
+            {
+                Credential::NoSource
+            }
             Some(found) => Credential::Found(found),
             None => Credential::NoSource,
         },

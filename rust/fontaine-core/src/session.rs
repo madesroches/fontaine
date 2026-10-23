@@ -202,14 +202,29 @@ impl Session {
     }
 
     /// Compacts the conversation when it has outgrown the model's window. Nothing happens
-    /// when the model's window is not known.
+    /// when the model's window is not known. `priced` is `ModelHandle::catalog_billed`: the
+    /// summarizer call runs outside a turn, so it drops an unpriced model's cost and tells the
+    /// telemetry bridge itself.
     pub async fn compact_if_needed(
         &self,
         model: &DynModel<Completion>,
+        priced: bool,
         approver: &dyn Approver,
     ) -> Option<Usage> {
-        self.compact(model, CompactReason::Threshold, approver)
-            .await
+        let span = tracing::info_span!(
+            target: "fontaine::telemetry",
+            "fontaine.compaction",
+            model.priced = priced,
+        );
+        let mut usage = tracing::Instrument::instrument(
+            self.compact(model, CompactReason::Threshold, approver),
+            span,
+        )
+        .await?;
+        if !priced {
+            usage.cost = None;
+        }
+        Some(usage)
     }
 
     /// Summarizes the older part of the conversation with one call to `model` and saves the

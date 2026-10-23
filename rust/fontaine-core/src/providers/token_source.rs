@@ -46,7 +46,7 @@ enum TokenErrorKind {
     NoSignIn,
     Refresh(FlowError),
     Store(ConfigError),
-    Lock,
+    Lock(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl TokenError {
@@ -85,7 +85,7 @@ impl fmt::Display for TokenError {
                 f,
                 "could not update the stored sign-in for account `{account}`"
             ),
-            TokenErrorKind::Lock => write!(
+            TokenErrorKind::Lock(_) => write!(
                 f,
                 "could not lock the credentials file to refresh the sign-in for account `{account}`"
             ),
@@ -98,6 +98,7 @@ impl std::error::Error for TokenError {
         match &*self.kind {
             TokenErrorKind::Refresh(e) => Some(e),
             TokenErrorKind::Store(e) => Some(e),
+            TokenErrorKind::Lock(e) => Some(&**e),
             _ => None,
         }
     }
@@ -182,8 +183,8 @@ impl TokenSource {
         let data_dir = self.data_dir.clone();
         let lock = tokio::task::spawn_blocking(move || credentials::lock(&data_dir))
             .await
-            .map_err(|_| TokenError::new(&account, TokenErrorKind::Lock))?
-            .map_err(|_| TokenError::new(&account, TokenErrorKind::Lock))?;
+            .map_err(|e| TokenError::new(&account, TokenErrorKind::Lock(Box::new(e))))?
+            .map_err(|e| TokenError::new(&account, TokenErrorKind::Lock(Box::new(e))))?;
 
         // Another process may have rotated the pair since this one read it.
         let stored = Credentials::load(&self.data_dir)
@@ -202,6 +203,13 @@ impl TokenSource {
             Ok(tokens) => tokens,
             Err(RefreshError::SignedOut) => {
                 return Err(TokenError::new(&self.account, TokenErrorKind::SignedOut));
+            }
+            // A transient failure inside the refresh margin is not worth failing a request the
+            // still-valid token can serve.
+            Err(RefreshError::Failed(_)) if current.expires_at > now_unix() => {
+                let access = current.access.clone();
+                *self.cached.lock().expect("the token lock is not poisoned") = current;
+                return Ok(access);
             }
             Err(RefreshError::Failed(e)) => {
                 return Err(TokenError::new(&self.account, TokenErrorKind::Refresh(e)));

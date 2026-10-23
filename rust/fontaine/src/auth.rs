@@ -56,7 +56,7 @@ pub fn login(
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| ConfigError::usage(format!("cannot start the sign-in: {e}")))?;
+            .map_err(|e| LoginError::SignIn(SignInError(Box::new(e))))?;
         let summary = runtime
             .block_on(sign_in.sign_in(name, &config.accounts[name], data_dir))
             .map_err(LoginError::SignIn)?;
