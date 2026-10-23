@@ -30,7 +30,7 @@ fn case(id: &str, kind: &str, category: &str, extra: Value) -> Case {
 fn result(id: &str, actual: &str) -> CaseResult {
     CaseResult {
         id: id.into(),
-        kind: "guardian",
+        kind: "guardian".to_string(),
         category: String::new(),
         expected: String::new(),
         actual: actual.into(),

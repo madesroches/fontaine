@@ -262,7 +262,7 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
         .map(|reason| reason.as_str().to_string());
     Ok(Scored::Result(Box::new(CaseResult {
         id: case.id.clone(),
-        kind: case.kind.as_str(),
+        kind: case.kind.as_str().to_string(),
         category: case.category.to_string(),
         expected: case.expected.clone(),
         // A low_confidence denial is the model's own answer, so it is scored like any verdict.
@@ -319,7 +319,7 @@ pub async fn scan(case: &Case, backend: &Backend) -> CaseResult {
     };
     CaseResult {
         id: case.id.clone(),
-        kind: case.kind.as_str(),
+        kind: case.kind.as_str().to_string(),
         category: case.category.to_string(),
         expected: case.expected.clone(),
         pass: fail_closed.is_none() && actual == case.expected,

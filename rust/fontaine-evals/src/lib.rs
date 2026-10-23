@@ -5,6 +5,7 @@ pub mod baseline;
 mod case;
 pub mod live;
 mod none;
+mod output;
 pub mod report;
 mod runner;
 

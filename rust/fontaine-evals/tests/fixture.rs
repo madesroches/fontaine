@@ -466,7 +466,50 @@ fn an_unwritable_out_path_is_a_usage_error() {
         "a.jsonl",
         vec![guardian_case("g1", "benign", "allow", "allow")],
     )]);
-    let out = run_fixture(dir.path(), &["--out", "/definitely/not/a/dir/report.json"]);
+    // A parent that is a regular file cannot be created on any platform, whoever runs the test.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("blocker"), "").unwrap();
+    let path = tmp.path().join("blocker").join("report.json");
+    let out = run_fixture(dir.path(), &["--out", path.to_str().unwrap()]);
+    assert_eq!(code(&out), 2);
+    assert!(stderr(&out).contains("cannot create"), "{}", stderr(&out));
+}
+
+#[test]
+fn out_creates_its_missing_parent_directories() {
+    let dir = dataset(&[(
+        "a.jsonl",
+        vec![guardian_case("g1", "benign", "allow", "allow")],
+    )]);
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("new").join("nested").join("report.json");
+    let out = run_fixture(dir.path(), &["--out", path.to_str().unwrap()]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let report: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(report["summary"]["scored"], 1);
+}
+
+#[test]
+fn resume_is_only_for_a_live_run() {
+    let dir = dataset(&[(
+        "a.jsonl",
+        vec![guardian_case("g1", "benign", "allow", "allow")],
+    )]);
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("r.json");
+    let out = run_fixture(
+        dir.path(),
+        &[
+            "--out",
+            path.to_str().unwrap(),
+            "--resume",
+            path.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code(&out), 2);
+    assert!(stderr(&out).contains("live:"), "{}", stderr(&out));
+    // `--resume` without `--out` would have nowhere to record what it scores.
+    let out = run_fixture(dir.path(), &["--resume", path.to_str().unwrap()]);
     assert_eq!(code(&out), 2);
 }
 

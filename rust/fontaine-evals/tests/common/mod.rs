@@ -4,6 +4,7 @@
 //! the verdict whose key occurs in the user message, and keeps what it was sent.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use wiremock::matchers::any;
@@ -22,6 +23,9 @@ struct Script {
     /// The first rule whose text occurs in the user message wins.
     rules: Vec<(String, Value)>,
     default: Value,
+    /// A request whose user message holds this text is answered only after the test is over, so a
+    /// run can be caught partway.
+    stall: Option<String>,
     calls: AtomicUsize,
 }
 
@@ -46,7 +50,16 @@ impl Respond for Script {
             .iter()
             .find(|(needle, _)| text.contains(needle.as_str()))
             .map_or(&self.default, |(_, v)| v);
-        ResponseTemplate::new(200).set_body_json(json!({
+        let stalled = self
+            .stall
+            .as_ref()
+            .is_some_and(|needle| text.contains(needle.as_str()));
+        let template = if stalled {
+            ResponseTemplate::new(200).set_delay(Duration::from_secs(600))
+        } else {
+            ResponseTemplate::new(200)
+        };
+        template.set_body_json(json!({
             "id": "c1", "object": "chat.completion", "created": 1, "model": "m",
             "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
                 "role": "assistant", "content": null,
@@ -63,11 +76,20 @@ pub struct Endpoint {
 
 impl Endpoint {
     pub async fn start(rules: Vec<(&str, Value)>, default: Value) -> Endpoint {
+        Endpoint::start_stalling(rules, default, None).await
+    }
+
+    pub async fn start_stalling(
+        rules: Vec<(&str, Value)>,
+        default: Value,
+        stall: Option<&str>,
+    ) -> Endpoint {
         let server = MockServer::builder().start().await;
         Mock::given(any())
             .respond_with(Script {
                 rules: rules.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
                 default,
+                stall: stall.map(str::to_string),
                 calls: AtomicUsize::new(0),
             })
             .mount(&server)
