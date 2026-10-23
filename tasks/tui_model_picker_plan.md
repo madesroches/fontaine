@@ -8,8 +8,7 @@
 groups models under one heading per configured account, marks the current model, lists recently
 used models first, and filters as you type. Enter switches through the path `/model <ref>`
 already uses. `/guardian-model` with no argument opens the same overlay, limited to the guardian
-candidates. Claude Code's `/model` with no argument also opens an interactive picker. The
-grouping, the filter box and the Recent group come from opencode's model dialog.
+candidates.
 
 ## Current State
 
@@ -59,7 +58,7 @@ pub struct AccountListing {
 ```
 
 `Switcher::listings(&self, main: (&ModelRef, &[String])) -> Vec<AccountListing>` (async)
-visits every account in `config.accounts` order:
+visits every account, sorted by account name:
 
 - When the account has an explicit `models` list, use it with no call. This is the "models
   named in config" from the issue.
@@ -72,7 +71,7 @@ visits every account in `config.accounts` order:
   `pub async fn listings_within(main, timeout)` (documented "Tests only", like
   `with_request_timeout` in `providers/device_flow.rs`), which `listings` calls with
   `LISTING_TIMEOUT`. A timeout becomes
-  `Err("listing timed out after 10 s")`.
+  `Err("listing timed out after <timeout>")`, formatted from the `timeout` argument.
 
 A failed account keeps its entry, so its heading still shows. `Sources::load` failing makes
 every entry `Err` with that config error. The method never returns early on one account's
@@ -87,12 +86,13 @@ failure.
 - The main account's entry is always replaced from `models.main_listing`, which stays current
   after a switch.
 
-The guardian overlay needs no new core API. It groups `guardian_candidates()` by account, in
-config order.
+The guardian overlay needs no new core API. It groups `guardian_candidates()` by account, sorted
+by account name.
 
 ### TUI: the picker (`fontaine-tui/src/model_picker.rs`, new)
 
 ```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickerPurpose { Main, Guardian }
 
 pub struct ModelPicker {
@@ -100,7 +100,7 @@ pub struct ModelPicker {
     header: String,            // "model <ref> · guardian <label>", the old one-line output
     current: Option<ModelRef>, // marked wherever it appears
     recent: Vec<ModelRef>,
-    groups: Vec<Group>,        // config order
+    groups: Vec<Group>,        // sorted by account name
     query: String,
     selected: usize,           // index into the visible *model* rows
 }
@@ -151,7 +151,7 @@ capped at `RECENT_CAP = 5`.
 - `load(path) -> (RecentModels, Option<String>)`: a missing file is empty. An unreadable or
   unparseable file degrades to in-memory, and the error is shown once.
 - `record(purpose, &ModelRef) -> Option<String>`: moves the entry to the front and writes the
-  file. On a failed write the store stays in memory and the error is returned once.
+  file with `fontaine_core::owner_only::write_atomic`. On a failed write the store stays in memory and the error is returned once.
 
 Every successful switch records it: `/model <ref>`, `/guardian-model <ref>` and picks from the
 picker. The guardian list is recorded only when the guardian ends up ready, not when it is
@@ -180,13 +180,18 @@ value is `ModelRef::parse(&switched.reference)`, since `Switched.reference` is a
   `Action::PickModel(Guardian, r)` → `self.guardian_model(runtime, &r)`. Persistence, the
   guardian-follows-main rule and error reporting are therefore those of the argument form.
 - `view::overlay` gains `if let Some(p) = &app.models { return ("model", p.body(width),
-  p.footer()); }`, or `"guardian model"` for the guardian purpose.
+  p.footer()); }`, or `"guardian model"` for the guardian purpose. The branch sits where the
+  picker sits in `handle_key`'s precedence, so the overlay drawn is the one taking keys when a
+  background-agent approval or guardian-unavailable prompt arrives while the picker is open.
+  `handle_key` routes denied, unavailable, server, picker, agents, approval; `overlay()` today
+  draws agents and approval first, so reorder its branches to that same order (then search,
+  completion, menu). Update the precedence doc comment above `overlay()` (`view.rs:116-118`) to
+  list every overlay.
 
 ### Not in scope
 
 - Context window and price per model.
-- Paused (#115) and near-limit (#116) markers. Neither exists yet. The `Group` row shape leaves
-  room for a per-model suffix later.
+- Paused (#115) and near-limit (#116) markers. Neither exists yet.
 
 ## Implementation Steps
 
@@ -200,12 +205,10 @@ value is `ModelRef::parse(&switched.reference)`, since `Switched.reference` is a
    keys, windowed body and footer. Register it in `lib.rs` (`pub mod`).
 4. **Wiring.** Add `App.models`, `covered`, key routing and `Action::PickModel` in `app.rs`.
    Update every exhaustive `match` on `Action` in `lib.rs`. Add the `overlay` branch in
-   `view.rs`. Make the no-argument `Driver::model` and `Driver::guardian_model` open the
+   `view.rs` at the picker's key-precedence position, reordering the existing branches to match
+   and refreshing the doc comment. Make the no-argument `Driver::model` and `Driver::guardian_model` open the
    picker, and record recents after successful switches.
-5. **Docs.** Update `docs/tui.md` (command table rows 178–179, plus a short "Choosing a model"
-   subsection covering the keys, grouping, Recent, failed accounts and the 10 s listing
-   timeout), and `docs/configuration.md` (a `<data dir>/recent_models.json` row, owner-only, in
-   the data-directory file list). Add a master-plan `## Decisions` line (see Decisions).
+5. **Docs.** As in `## Documentation`, plus the master-plan `## Decisions` line (see Decisions).
 6. **Tests** (see Testing Strategy), then `cargo fmt --check`,
    `cargo clippy --all-targets -- -D warnings`, `cargo test`, and the Windows clippy check.
 
@@ -230,7 +233,8 @@ value is `ModelRef::parse(&switched.reference)`, since `Switched.reference` is a
   grouping. Fetching concurrently with a timeout, and caching the successes for the session,
   costs one wait on the first open.
 - **Fetching up front, or opening the overlay at once and filling it in.** Up front is simpler:
-  no async state in `App`, and no redraw-on-arrival plumbing. Opening at once only helps
+  no async state in `App`, and no redraw-on-arrival plumbing. The wait blocks input like
+  `/model <ref>` does and cannot be cancelled. Opening at once only helps
   setups with slow accounts. It can be added later behind the same `ModelPicker` API.
 - **A dedicated picker, or reusing `UnavailablePrompt`'s pick list.** That list has no grouping
   or filter, and it lives inside a fail-closed prompt with a grace period. The `/model` overlay
@@ -293,7 +297,7 @@ Integration (`fontaine-core/tests/models.rs`, wiremock):
   `main_listing` with no request.
 - Another OpenAI-compatible account is listed via `/models`.
 - A 500 response gives `Err` with the cause, and an account with no credential gives the
-  `client_for` reason. The order follows config.
+  `client_for` reason. The order is sorted by account name.
 - A delayed response beyond a shortened timeout gives the timeout reason. The test calls
   `Switcher::listings_within` with a short timeout on a real clock plus a wiremock
   `set_delay`, not paused time, so it does not wait 10 s.
