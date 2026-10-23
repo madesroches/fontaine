@@ -76,7 +76,8 @@ impl Loaded {
         let config_bytes = read("config.json")?;
         let config: Config = serde_json::from_slice(&config_bytes)
             .map_err(|e| format!("config.json is not a DeBERTa configuration: {e}"))?;
-        // The published PromptGuard 2 config has no label map; transformers defaults it the same way.
+        // The published PromptGuard 2 config has no label map; transformers defaults it the same
+        // way.
         let id2label = config.id2label.clone().unwrap_or_else(|| {
             HashMap::from([(0, "LABEL_0".to_string()), (1, "LABEL_1".to_string())])
         });

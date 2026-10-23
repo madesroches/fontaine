@@ -2,8 +2,8 @@
 
 //! PromptGuard 2 against the real weights. Skipped unless `FONTAINE_PG2_MODEL` names a directory
 //! holding `model.safetensors`, `tokenizer.json` and `config.json`; the weights are gated and
-//! never part of CI. Run it with `--release`: a debug build
-//! exceeds the load timeout.
+//! never part of CI. Run it with `--release`: a debug build exceeds the load
+//! timeout.
 
 use std::path::PathBuf;
 use std::time::Duration;

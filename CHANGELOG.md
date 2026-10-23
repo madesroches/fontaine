@@ -26,12 +26,13 @@ All notable changes are recorded here. The format follows
   - A scope stack of user settings, shared project settings, project-local settings
     (`.fontaine/settings.local.toml`, never committed) and `--settings`, with strict, scope-aware
     validation. An unknown key is a configuration error (exit code 2).
-  - Project scope can only tighten (deny and ask additions); loosening keys are user-scope only.
+  - Project scope can only tighten (deny and ask additions); loosening keys load only from the
+    user-trust scopes (the user file, project-local settings and `--settings`).
   - `FONTAINE_CONFIG_DIR` and `FONTAINE_DATA_DIR` override the directories, files that hold
     secrets are created owner-only, and workspace trust is recorded in `trust.toml`.
   - `[permissions] default_mode` is optional: the terminal UI starts in `auto` and a headless run
     in `manual`. `auto` is accepted from the user file, `--settings` and `--permission-mode`;
-    shared project settings cannot set it.
+    both project scopes (shared and project-local) accept only `manual` and `dontAsk`.
 - Tools
   - The built-in tools `read`, `ls`, `glob`, `grep`, `write`, `edit`, `shell` and `webfetch`. Every
     tool has a risk class and sits behind one gate, and each call emits a `fontaine.tool` span and
@@ -52,8 +53,9 @@ All notable changes are recorded here. The format follows
     protected paths, including Fontaine's own config and data directories. A file-tool call outside
     the workspace roots is denied with an `/add-dir` hint.
   - Allow, ask and deny rules that carry their source scope, session grants, and "always allow"
-    written to the user settings file. In `auto`, broad allow rules for interpreters, shells,
-    `sudo`/`doas` and argv launchers are suspended.
+    written to the user settings file. In `auto`, broad code-execution allow rules are suspended:
+    a bare `shell` or `agent`, interpreters, shells, package runners (`cargo run`, `npm run`,
+    `npx`, `make`), `sudo`/`doas` and argv launchers, and any wildcard that can reach them.
   - A shell pre-classifier on a real shell parser with a per-command flag allowlist and
     `[shell_preclassifier] allow_extra`; anything it cannot fully parse goes to the guardian.
   - An append-only audit log per session, `tool_decision` events, `fontaine.permission` spans, the
@@ -99,8 +101,9 @@ All notable changes are recorded here. The format follows
     `--include-partial-messages`, `--max-turns`, `--max-budget-usd`, `--json-schema`,
     `--system-prompt`, `--append-system-prompt`, `--model` and `--permission-mode`. The output is
     a versioned contract with a JSON Schema in `docs/schemas/headless-v1.schema.json`; exit codes
-    are 0, 1 and 2. `total_cost_usd` and `--max-budget-usd` include guardian, subagent and scanner
-    spend. Notices go to stderr.
+    are 0, 1 and 2. `total_cost_usd` and `--max-budget-usd` include guardian and subagent spend, and
+    `result.usage` breaks tokens and cost down into `main`, `guardian` and `subagents`. Notices go
+    to stderr.
 - Extensibility
   - Parallel subagents: the `agent` tool (blocking, or `background: true` with the report
     delivered as a notification) and `send_message`, agent types from `[agents.types]` and agent
@@ -126,6 +129,8 @@ All notable changes are recorded here. The format follows
   - `query_source` separates the guardian's, the scanner's and subagents' model calls;
     `tool_result` carries `scanner_verdict` and `scanner_latency_ms`; `fontaine.session.count`
     carries `start_type` and `headless`.
+  - `subagent` and `mcp_server_connection` events. MCP server and tool names read `third-party`
+    unless `log_tool_details = true`.
   - An optional owner-only debug file (`--debug-file`, `FONTAINE_LOG`).
 - Evals
   - A golden dataset and the `fontaine-evals` runner: `--guardian fixture` (offline),

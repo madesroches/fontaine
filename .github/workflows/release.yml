@@ -15,9 +15,9 @@
 
 # Hand-adapted from the generated file (`allow-dirty = ["ci"]` in rust/Cargo.toml): the Cargo
 # workspace lives in `rust/`, so every command runs there and the artifact paths that GitHub's
-# actions resolve from the repository root are prefixed with `rust/`. The `plan` and `host` jobs also copy the root `CHANGELOG.md` into
-# `rust/`, where dist looks for release notes, and `plan` fails a tag with no changelog
-# section.
+# actions resolve from the repository root are prefixed with `rust/`. The `plan` and `host` jobs
+# also copy the root `CHANGELOG.md` into `rust/`, where dist looks for release notes, and `plan`
+# fails a tag with no changelog section.
 name: Release
 permissions:
   "contents": "write"
