@@ -195,7 +195,7 @@ async fn a_failed_refresh_is_not_retried_until_the_backoff_has_passed() {
         held,
         Arc::new(CountingFailure(calls.clone())),
     );
-    source.set_retry_backoff_secs(1);
+    source.set_retry_backoff_secs(2);
     let seen = || calls.load(std::sync::atomic::Ordering::SeqCst);
 
     assert_eq!(source.token().await.unwrap(), "at-1");

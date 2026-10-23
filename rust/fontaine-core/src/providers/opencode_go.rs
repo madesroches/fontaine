@@ -312,7 +312,9 @@ async fn user_email(
         .map_err(|e| FlowError::Request(e.without_url()))?;
     let reply: UserReply = serde_json::from_slice(&bytes)
         .map_err(|_| FlowError::Invalid("the account lookup sent no JSON".to_string()))?;
-    Ok(reply.email)
+    Ok(reply
+        .email
+        .filter(|email| !email.chars().any(char::is_control)))
 }
 
 #[cfg(test)]
