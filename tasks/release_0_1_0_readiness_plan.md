@@ -207,18 +207,23 @@ The existing "add an entry under `## [Unreleased]`" bullet stays as it is.
   which this plan ticks with the commit date (2026-10-23), and "Cut the first cargo-dist release tag".
   Add a ticked line for "Release archives carry LICENSE/README/CHANGELOG; release notes from the
   changelog; missing-notes guard".
+- Tick the `FONTAINE_PG2_MODEL` inference test item (`tasks/fontaine_harness_plan.md:130`) with
+  2026-10-23, noting it passed with the loader fix, run with `--release`.
 - In the Backlog paragraph, drop "Open bugs: #78 … and #73 …".
 - Reword the sentence under "Release readiness" that says each item needs live provider keys, a live
   model or a maintainer decision, so none runs in CI, to start "Apart from the ticked repo-side
   items, each item needs …".
 - The master plan says the checklists are tracked in issue #80 and ticked in both places. The
-  maintainer mirrors the ticks there (Merge #75/#79, the bugs #78/#73, the CHANGELOG entry) and adds
+  maintainer mirrors the ticks there (Merge #75/#79, the bugs #78/#73, the CHANGELOG entry, the `FONTAINE_PG2_MODEL` inference test) and adds
   the archives/notes/guard line. The implementing agent does not edit the GitHub issue.
 
 ### PromptGuard 2 loader (`rust/fontaine-guardian/src/scanner/pg2.rs`)
 
 - When `config.json` has no `id2label`, default to `{0: LABEL_0, 1: LABEL_1}`, as transformers does.
-  `malicious_class` already falls back to the highest class for unnamed labels.
+  `malicious_class` already falls back to the highest class for unnamed labels. The
+  `.ok_or("config.json has no id2label")` in `open` goes away, and `malicious_class`'s error text
+  becomes "config.json has an empty id2label", since it can then only fire for a present-but-empty
+  `id2label`.
 - Load with `weights.pp("deberta")`. candle-transformers 0.11.0's
   `DebertaV2SeqClassificationModel::load` takes the backbone from the given builder and the
   pooler and classifier from `vb.root()`, which matches the standard
@@ -292,7 +297,10 @@ prose, so there is nothing for a unit test to call.
 - Offline regression test in `pg2.rs`, under the `pg2` feature: write a tiny safetensors file with
   the real naming layout (`deberta.`-prefixed backbone, root `pooler.dense` and `classifier`) and a
   `config.json` without `id2label` into a tempdir, and call `Loaded::open` (or `Pg2Scanner::load`)
-  on it. It pins the bug that the shipped loader could not load the real PromptGuard 2.
+  on it. `Loaded::open` also reads `tokenizer.json`, so the fixture writes one (save the WordLevel
+  tokenizer that `model_tests::tiny` builds with `Tokenizer::save`), reuses `SMALL_CONFIG` without its
+  `id2label` line, and produces the weights by building the model on a `candle_nn::VarMap` via
+  `VarBuilder::from_varmap(..).pp("deberta")` and calling `varmap.save(...)`. It pins the bug that the shipped loader could not load the real PromptGuard 2.
 - The real-weights test in `tests/pg2.rs` stays skipped without `FONTAINE_PG2_MODEL`; its doc comment
   says to run it with `--release`.
 
