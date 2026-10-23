@@ -13,6 +13,7 @@ use rig_core::providers::gemini::{Gemini, GeminiConfig};
 use rig_core::providers::ollama::{Ollama, OllamaConfig};
 use rig_core::providers::openai::wire::{Auth, Dialect};
 use rig_core::providers::openai::{OpenAI, OpenAIConfig};
+use rig_reqwest::ReqwestClient;
 
 use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup};
 use crate::credentials::Credentials;
@@ -161,6 +162,13 @@ pub struct ResolveParams<'a> {
     pub model_override: Option<&'a str>,
 }
 
+// rig's shared client keeps pooled connections whose driver task lives on
+// the runtime that first used it; a dedicated client per account cannot be
+// left holding a connection from a dropped runtime.
+fn own_http_client() -> ReqwestClient {
+    reqwest::Client::new().into()
+}
+
 #[derive(Clone)]
 enum Client {
     Anthropic(Anthropic),
@@ -179,21 +187,21 @@ impl Client {
                 if let Some(url) = base_url {
                     config = config.with_base_url(url);
                 }
-                Client::Anthropic(config.client())
+                Client::Anthropic(config.connect(own_http_client()))
             }
             AccountKind::OpenAi => {
                 let mut config = OpenAIConfig::new(credential.unwrap_or_default());
                 if let Some(url) = base_url {
                     config = config.with_base_url(url);
                 }
-                Client::OpenAi(config.client())
+                Client::OpenAi(config.connect(own_http_client()))
             }
             AccountKind::Gemini => {
                 let mut config = GeminiConfig::new(credential.unwrap_or_default());
                 if let Some(url) = base_url {
                     config = config.with_base_url(url);
                 }
-                Client::Gemini(config.client())
+                Client::Gemini(config.connect(own_http_client()))
             }
             AccountKind::Ollama => {
                 let mut config = OllamaConfig::new();
@@ -203,7 +211,7 @@ impl Client {
                 if let Some(key) = credential {
                     config = config.with_api_key(key);
                 }
-                Client::Ollama(config.client())
+                Client::Ollama(config.connect(own_http_client()))
             }
             AccountKind::OpenAiCompatible => {
                 let mut config = OpenAIConfig::with_key(&GATEWAY, credential.unwrap_or_default())
@@ -211,7 +219,7 @@ impl Client {
                 if let Some(url) = base_url {
                     config = config.with_base_url(url);
                 }
-                Client::OpenAiCompatible(config.client())
+                Client::OpenAiCompatible(config.connect(own_http_client()))
             }
         }
     }
@@ -302,6 +310,27 @@ fn client_for(
     Ok(Client::build(account.kind, account, key))
 }
 
+/// A transport error's own message rarely says why the request failed; the reason (refused,
+/// reset, timed out) is further down the source chain. rig's `ProviderError::source` drops the
+/// transport error, so the walk starts from it directly. Causes whose text is already shown are
+/// skipped, since wrappers often repeat their source's message.
+fn with_causes(error: &ProviderError) -> String {
+    let mut text = error.to_string();
+    let mut source = match error {
+        ProviderError::Http(transport) => std::error::Error::source(&**transport),
+        other => std::error::Error::source(other),
+    };
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        if !text.contains(&cause_text) {
+            text.push_str(": ");
+            text.push_str(&cause_text);
+        }
+        source = cause.source();
+    }
+    text
+}
+
 fn known_accounts(config: &Config) -> String {
     if config.accounts.is_empty() {
         return "no accounts are configured; add an [accounts.<name>] table".to_string();
@@ -374,8 +403,9 @@ async fn resolve_main_model<E: Fn(&str) -> Option<std::ffi::OsString> + ?Sized>(
         Some(list) => list.clone(),
         None => main_client.list().await.map_err(|e| {
             ModelError::Provider(format!(
-                "cannot list the models of account `{}`: {e}",
-                main_ref.account
+                "cannot list the models of account `{}`: {}",
+                main_ref.account,
+                with_causes(&e)
             ))
         })?,
     };

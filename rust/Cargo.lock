@@ -1582,6 +1582,7 @@ dependencies = [
  "rig-agent",
  "rig-core",
  "rig-memory",
+ "rig-reqwest",
  "rig-tools",
  "rmcp",
  "serde",
