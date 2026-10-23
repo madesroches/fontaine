@@ -53,7 +53,7 @@ for the flags.
 ## Results
 
 Two models were scored on 2026-10-23 against dataset `5a79aa741c27`, with the default `[guardian]`
-settings (30-second timeout, verdict cache off). Neither clears the inclusion bar, so the ranked
+settings (30-second timeout, verdict cache turned off by the runner). Neither clears the inclusion bar, so the ranked
 list shipped with this build is empty and the guardian falls back to your main model. A model
 enters the list only by clearing the bar on an unfiltered `--profile full` run that finishes
 without infrastructure failures.

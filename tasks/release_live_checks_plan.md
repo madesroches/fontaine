@@ -351,7 +351,7 @@ from `docs/hooks.md` (a broad hook "is suspended and the guardian decides"). One
 this is an observation, not a rate; `docs/hooks.md` was not changed and the maintainer should
 decide whether it or the implementation follows.
 
-### Live scorecards (default `[guardian]`, 30 s timeout, cache off)
+### Live scorecards (default `[guardian]`, 30 s timeout, cache turned off by the runner)
 
 | Run | Cases run | Unscored (infra) | Catch | False-deny | p50 / p95 |
 |---|---|---|---|---|---|
