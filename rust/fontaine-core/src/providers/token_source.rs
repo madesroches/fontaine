@@ -12,7 +12,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use futures::future::BoxFuture;
 
 use super::device_flow::{FlowError, RefreshError};
-use crate::config::ConfigError;
 use crate::credentials::{self, Credentials, OAuthTokens, StoredCredential};
 
 /// A token with less than this left is refreshed before use.
@@ -45,7 +44,6 @@ enum TokenErrorKind {
     SignedOut,
     NoSignIn,
     Refresh(FlowError),
-    Store(ConfigError),
     Lock(Box<dyn std::error::Error + Send + Sync>),
 }
 
@@ -81,10 +79,6 @@ impl fmt::Display for TokenError {
                 f,
                 "could not refresh the sign-in for account `{account}`; if it persists, run `fontaine auth login {account}`"
             ),
-            TokenErrorKind::Store(_) => write!(
-                f,
-                "could not update the stored sign-in for account `{account}`"
-            ),
             TokenErrorKind::Lock(_) => write!(
                 f,
                 "could not lock the credentials file to refresh the sign-in for account `{account}`"
@@ -97,7 +91,6 @@ impl std::error::Error for TokenError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &*self.kind {
             TokenErrorKind::Refresh(e) => Some(e),
-            TokenErrorKind::Store(e) => Some(e),
             TokenErrorKind::Lock(e) => Some(&**e),
             _ => None,
         }
@@ -111,6 +104,21 @@ pub struct TokenSource {
     cached: Mutex<OAuthTokens>,
     /// Single flight: callers that find the token stale queue here, and the first one refreshes.
     refreshing: tokio::sync::Mutex<()>,
+}
+
+type WarnSink = Arc<dyn Fn(&str) + Send + Sync>;
+
+fn warn_sink() -> &'static Mutex<Option<WarnSink>> {
+    static SINK: OnceLock<Mutex<Option<WarnSink>>> = OnceLock::new();
+    SINK.get_or_init(Default::default)
+}
+
+/// Where a failure to save a rotated sign-in is reported. Sources are shared process-wide and
+/// outlive any one session, so the sink is process-wide too and the latest session wins.
+pub fn set_warn_sink(sink: impl Fn(&str) + Send + Sync + 'static) {
+    *warn_sink()
+        .lock()
+        .expect("the warning sink lock is not poisoned") = Some(Arc::new(sink));
 }
 
 type Registry = Mutex<HashMap<(PathBuf, String), Arc<TokenSource>>>;
@@ -195,12 +203,21 @@ impl TokenSource {
             .map_err(|e| TokenError::new(&account, TokenErrorKind::Lock(Box::new(e))))?
             .map_err(|e| TokenError::new(&account, TokenErrorKind::Lock(Box::new(e))))?;
 
-        // Another process may have rotated the pair since this one read it.
-        let stored = Credentials::load(&self.data_dir)
-            .map_err(|e| TokenError::new(&self.account, TokenErrorKind::Store(e)))?;
-        let current = match stored.account(&self.account) {
-            Some(StoredCredential::OAuth(tokens)) => tokens,
-            _ => return Err(TokenError::new(&self.account, TokenErrorKind::NoSignIn)),
+        // Another process may have rotated the pair since this one read it, so the disk can be
+        // newer; but after a failed save it is older than the pair held in memory, whose refresh
+        // token is the only live one.
+        let held = self
+            .cached
+            .lock()
+            .expect("the token lock is not poisoned")
+            .clone();
+        let current = match Credentials::load(&self.data_dir) {
+            Ok(stored) => match stored.account(&self.account) {
+                Some(StoredCredential::OAuth(disk)) if disk.expires_at > held.expires_at => disk,
+                Some(StoredCredential::OAuth(_)) => held,
+                _ => return Err(TokenError::new(&self.account, TokenErrorKind::NoSignIn)),
+            },
+            Err(_) => held,
         };
         if current.expires_at > now_unix() + REFRESH_MARGIN_SECS {
             let access = current.access.clone();
@@ -231,11 +248,19 @@ impl TokenSource {
             credentials::store_oauth_locked(&self.data_dir, &self.account, &refreshed, &lock);
         *self.cached.lock().expect("the token lock is not poisoned") = refreshed;
         if let Err(e) = stored {
-            tracing::warn!(
-                account = %self.account,
-                error = %fontaine_tools::error_chain::chain(&e),
-                "could not save the refreshed sign-in; it is kept in memory for this session only"
+            let message = format!(
+                "could not save the refreshed sign-in for account `{}`; it is kept in memory for this session only: {}",
+                self.account,
+                fontaine_tools::error_chain::chain(&e)
             );
+            match warn_sink()
+                .lock()
+                .expect("the warning sink lock is not poisoned")
+                .clone()
+            {
+                Some(sink) => sink(&message),
+                None => tracing::warn!("{message}"),
+            }
         }
         Ok(access)
     }

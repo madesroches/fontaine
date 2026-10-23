@@ -87,6 +87,17 @@ pub trait SignIn: Send + Sync {
 #[derive(Debug)]
 pub struct SignInError(pub Box<dyn std::error::Error + Send + Sync>);
 
+impl SignInError {
+    /// The credentials-file error behind this failure, so a caller can treat a broken file as a
+    /// configuration problem.
+    pub fn into_config(self) -> Result<crate::config::ConfigError, SignInError> {
+        self.0
+            .downcast::<crate::config::ConfigError>()
+            .map(|e| *e)
+            .map_err(SignInError)
+    }
+}
+
 impl std::fmt::Display for SignInError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)

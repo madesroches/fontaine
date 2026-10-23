@@ -242,3 +242,44 @@ async fn a_rotated_pair_that_cannot_be_saved_is_still_served_and_kept() {
     assert_eq!(again.unwrap(), "at-new");
     assert_eq!(refresher.1.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+#[cfg(unix)]
+struct SeenRefreshTokens(std::path::PathBuf, std::sync::Mutex<Vec<String>>);
+
+#[cfg(unix)]
+impl Refresher for SeenRefreshTokens {
+    fn refresh<'a>(
+        &'a self,
+        current: &'a OAuthTokens,
+    ) -> BoxFuture<'a, Result<OAuthTokens, RefreshError>> {
+        use std::os::unix::fs::PermissionsExt;
+        Box::pin(async move {
+            let mut seen = self.1.lock().unwrap();
+            seen.push(current.refresh.clone());
+            let n = seen.len();
+            std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o555)).unwrap();
+            Ok(tokens(
+                &format!("at-{}", n + 1),
+                &format!("rt-{}", n + 1),
+                now_unix() + 60,
+            ))
+        })
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_next_refresh_after_a_failed_save_uses_the_rotated_token() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = World::new();
+    let held = tokens("at-1", "rt-1", now_unix() + 60);
+    credentials::store_oauth(&w.data, "go", &held).unwrap();
+    let refresher = Arc::new(SeenRefreshTokens(w.data.clone(), Default::default()));
+    let source = TokenSource::new(&w.data, "go", held, refresher.clone());
+
+    source.token().await.unwrap();
+    source.token().await.unwrap();
+    std::fs::set_permissions(&w.data, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(*refresher.1.lock().unwrap(), ["rt-1", "rt-2"]);
+}

@@ -59,7 +59,10 @@ pub fn login(
             .map_err(|e| LoginError::SignIn(SignInError(Box::new(e))))?;
         let summary = runtime
             .block_on(sign_in.sign_in(name, &config.accounts[name], data_dir))
-            .map_err(LoginError::SignIn)?;
+            .map_err(|e| match e.into_config() {
+                Ok(config) => LoginError::Config(config),
+                Err(e) => LoginError::SignIn(e),
+            })?;
         eprintln!("{summary}");
         return Ok(());
     }

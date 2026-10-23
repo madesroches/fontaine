@@ -263,7 +263,7 @@ pub async fn sign_in_at(
         .extra
         .insert("server".to_string(), console.to_string());
 
-    let email = match user_email(console, &tokens.access).await {
+    let email = match user_email(console, &tokens.access, request_timeout).await {
         Ok(email) => email,
         Err(e) => {
             eprintln!(
@@ -284,10 +284,17 @@ pub async fn sign_in_at(
     })
 }
 
-async fn user_email(console: &str, access: &str) -> Result<Option<String>, FlowError> {
+async fn user_email(
+    console: &str,
+    access: &str,
+    request_timeout: Option<Duration>,
+) -> Result<Option<String>, FlowError> {
     let http = reqwest_client().map_err(FlowError::Invalid)?;
-    let response = http
-        .get(format!("{console}/api/user"))
+    let mut request = http.get(format!("{console}/api/user"));
+    if let Some(timeout) = request_timeout {
+        request = request.timeout(timeout);
+    }
+    let response = request
         .bearer_auth(access)
         .header("user-agent", fontaine_tools::FONTAINE_USER_AGENT)
         .send()
