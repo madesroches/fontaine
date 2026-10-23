@@ -69,7 +69,7 @@ pub const COMMAND_VAR: &str = "FONTAINE_SH_COMMAND";
 
 /// What `sh -c` runs in place of the command. The variable is expanded before `eval` runs, so
 /// the command itself never sees it.
-pub const RUN_COMMAND_VAR: &str = "eval \"unset FONTAINE_SH_COMMAND\n$FONTAINE_SH_COMMAND\"";
+pub const RUN_COMMAND_SCRIPT: &str = "eval \"unset FONTAINE_SH_COMMAND\n$FONTAINE_SH_COMMAND\"";
 
 /// The `sh -c` script and the variable to set so `sh` runs `command` as written.
 pub struct ShCommand<'a> {
@@ -81,7 +81,7 @@ pub struct ShCommand<'a> {
 pub fn sh_command(command: &str, through_env: bool) -> ShCommand<'_>
 ```
 
-`RUN_COMMAND_VAR` contains no backslash, so the MSYS re-parse leaves it intact; only `"` and a
+`RUN_COMMAND_SCRIPT` contains no backslash, so the MSYS re-parse leaves it intact; only `"` and a
 newline need quoting, and both survive (reproduction table). The result was checked against plain
 `sh -c` for `exit 3`, `false`, `set -e`, a function's `return`, `$0`, stdin, and whether the
 variable is visible to the command or its children (it is not). Two things differ: a syntax error
@@ -125,7 +125,7 @@ text. `user_shell.rs` needs no change.
 
 ## Implementation Steps
 
-1. `rust/fontaine-tools/src/git_bash.rs`: add `COMMAND_VAR`, `RUN_COMMAND_VAR`, `ShCommand` and
+1. `rust/fontaine-tools/src/git_bash.rs`: add `COMMAND_VAR`, `RUN_COMMAND_SCRIPT`, `ShCommand` and
    `sh_command`, with unit tests for both branches. Update the module doc comment, which currently
    speaks only of discovery.
 2. `rust/fontaine-core/src/user_hooks.rs`: run the hook through `sh_command`.
@@ -193,9 +193,9 @@ the regression actually reproduces, because only a real MSYS `sh` started from a
 halves the backslashes.
 
 - **Unit (`git_bash.rs`)**: `sh_command(c, false)` gives `script == c` and no env.
-  `sh_command(c, true)` gives `RUN_COMMAND_VAR` and `(COMMAND_VAR, c)`. Also assert
-  `RUN_COMMAND_VAR` contains no `\`, since that is the property that makes it survive the re-parse.
-  Assert `RUN_COMMAND_VAR == format!("eval \"unset {COMMAND_VAR}\n${COMMAND_VAR}\"")` so the two
+  `sh_command(c, true)` gives `RUN_COMMAND_SCRIPT` and `(COMMAND_VAR, c)`. Also assert
+  `RUN_COMMAND_SCRIPT` contains no `\`, since that is the property that makes it survive the re-parse.
+  Assert `RUN_COMMAND_SCRIPT == format!("eval \"unset {COMMAND_VAR}\n${COMMAND_VAR}\"")` so the two
   constants cannot drift apart.
 - **Cross-platform `ShellTool` semantics** (in `fontaine-tools/tests/choke_point.rs`'s
   `#[cfg(unix)] mod unix`, around line 150, which drives `shell` via `env_with`/`registry`/`call`):
