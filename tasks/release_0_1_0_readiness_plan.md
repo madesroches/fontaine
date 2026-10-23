@@ -6,8 +6,10 @@
 
 Issue #80 tracks everything left before the first release. Most of its checklist needs live
 provider keys, a live model, a Hugging Face token or a maintainer decision: the label sign-off, the
-live scorecard, the `claude -p` baselines, the cassettes, the manual verification, the PromptGuard 2
-checks, the repository setting and the tag itself. Those stay human steps. This plan covers the
+live scorecard, the `claude -p` baselines, the cassettes, the manual verification, the repository
+setting and the tag itself. Those stay human steps, as do two of the PromptGuard 2 checks: the logit
+spike against the model card and a live `scanner = "pg2"` session. The `FONTAINE_PG2_MODEL`
+inference test was run against the real weights, which found item 7. This plan covers the
 repo-side work that can land now, so that once the human items are done, cutting `v0.1.0` takes
 only the tag:
 
@@ -20,6 +22,8 @@ only the tag:
 4. `CHANGELOG.md` holds a curated 0.1.0 entry in place of the per-phase development log.
 5. `CONTRIBUTING.md` gets the maintainer's release procedure.
 6. The master plan's `## Remaining work` is brought up to date: the merges and both bugs are done.
+7. The PromptGuard 2 loader opens the real `meta-llama/Llama-Prompt-Guard-2-86M` files. It could
+   not, and pg2 ships in the release binaries.
 
 ## Current State
 
@@ -62,6 +66,13 @@ only the tag:
   unticked, although #75 and #79 were merged on 2026-10-23. The Backlog paragraph still calls #78
   and #73 open bugs, although both were closed on 2026-10-23 (#84 fixed #73 and #89 fixed #78).
   The issue's "Bugs to fix before tagging" and "CHANGELOG.md entry" items have no matching lines.
+- **PromptGuard 2 loader.** `rust/fontaine-guardian/src/scanner/pg2.rs` `Loaded::open` fails on the
+  real `meta-llama/Llama-Prompt-Guard-2-86M` files in two ways. The real `config.json` has no
+  `id2label` key, and the loader errors with "config.json has no id2label". The checkpoint's tensors
+  are `deberta.`-prefixed, with `pooler.dense.*` and `classifier.*` at the root, but the loader
+  passes the unprefixed root, so loading fails with "tensor `embeddings.word_embeddings.weight` not
+  found". The offline unit test (`model_tests::tiny`) uses `VarBuilder::zeros`, which accepts any
+  tensor name, so neither was caught. Verified 2026-10-23.
 - **Scorecard publication.** `docs/evals.md` §Results already has the empty tables and the "No
   model has been scored" sentence that the live run replaces. This plan leaves them alone.
 - **Vulnerability reporting.** `SECURITY.md` points reporters at GitHub private vulnerability
@@ -135,6 +146,9 @@ the release date is only known when the maintainer tags. The areas are:
 - **Agent and models**: the agent loop over rig, `[accounts.<name>]` with `<account>/<model>`
   (Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible), `fontaine auth login`, sessions with
   `--continue` / `--resume` / `--fork-session`, and the system prompt with `FONTAINE.md`.
+- **Configuration**: the settings scope stack (user, project, project-local, `--settings`) and its
+  merge rules, project-local settings, project scope can only tighten, and an unknown key is a
+  config error (exit code 2).
 - **Tools**: the built-in tools, workspace roots and `--add-dir`, the risk class on every tool.
 - **Permissions**: the modes (`manual`, `acceptEdits`, `plan`, `dontAsk`, `auto`), the
   deterministic floor, rules, the shell pre-classifier, the audit log, workspace trust.
@@ -179,7 +193,7 @@ Add a `## Releasing` section for the maintainer:
 4. From `rust/`, check the notes with
    `cp ../CHANGELOG.md CHANGELOG.md && dist plan --tag vX.Y.Z --output-format=json | jq .announcement_changelog`
    (non-null), then remove the copy.
-5. Merge to `main`, then tag `vX.Y.Z` on that commit and push the tag. The release workflow builds
+5. Merge to `main`, then tag `vX.Y.Z` on the resulting merge commit on `main` and push the tag. The release workflow builds
    the archives and publishes the GitHub Release. Pushing the tag is always the maintainer's step.
 
 The existing "add an entry under `## [Unreleased]`" bullet stays as it is.
@@ -187,7 +201,8 @@ The existing "add an entry under `## [Unreleased]`" bullet stays as it is.
 ### Master plan bookkeeping (`tasks/fontaine_harness_plan.md`)
 
 - Tick the Merge item with the date 2026-10-23.
-- Add a ticked **Bugs** group: #78 and #73 fixed, 2026-10-23.
+- Add a ticked bold **Bugs to fix before tagging** group under `### Release readiness`, right before
+  **Repository and release**: #78 and #73 fixed, 2026-10-23.
 - Under **Repository and release**, split the last item into "`CHANGELOG.md` entry for 0.1.0",
   which this plan ticks with the commit date (2026-10-23), and "Cut the first cargo-dist release tag".
   Add a ticked line for "Release archives carry LICENSE/README/CHANGELOG; release notes from the
@@ -199,6 +214,20 @@ The existing "add an entry under `## [Unreleased]`" bullet stays as it is.
 - The master plan says the checklists are tracked in issue #80 and ticked in both places. The
   maintainer mirrors the ticks there (Merge #75/#79, the bugs #78/#73, the CHANGELOG entry) and adds
   the archives/notes/guard line. The implementing agent does not edit the GitHub issue.
+
+### PromptGuard 2 loader (`rust/fontaine-guardian/src/scanner/pg2.rs`)
+
+- When `config.json` has no `id2label`, default to `{0: LABEL_0, 1: LABEL_1}`, as transformers does.
+  `malicious_class` already falls back to the highest class for unnamed labels.
+- Load with `weights.pp("deberta")`. candle-transformers 0.11.0's
+  `DebertaV2SeqClassificationModel::load` takes the backbone from the given builder and the
+  pooler and classifier from `vb.root()`, which matches the standard
+  `DebertaV2ForSequenceClassification` layout.
+
+With both fixes, `FONTAINE_PG2_MODEL=<dir> cargo test --release -p fontaine-guardian --features pg2 --test pg2`
+passes 2/2 against the real PromptGuard 2 weights, and against
+`protectai/deberta-v3-base-prompt-injection-v2` (labels SAFE/INJECTION). A debug build exceeds the
+test's 300 s load timeout, so that test needs `--release`.
 
 ### Release design doc (`tasks/design/platforms.md` §Releases)
 
@@ -217,12 +246,17 @@ from the version's section. A tag without that section fails in the `plan` job.
 5. **Release procedure.** Add `## Releasing` to `CONTRIBUTING.md`.
 6. **Plan bookkeeping.** Leave issue #80's checkboxes to the maintainer. Update `tasks/fontaine_harness_plan.md` `## Remaining work` and
    `tasks/design/platforms.md` §Releases.
-7. **Docs.** README: one clause in the Install section saying the archive also holds the license,
+7. **PromptGuard 2 loader.** In `rust/fontaine-guardian/src/scanner/pg2.rs`, default `id2label` and
+   load from `weights.pp("deberta")`, and add the regression test. Note `--release` in the doc
+   comment of `rust/fontaine-guardian/tests/pg2.rs`.
+8. **Docs.** README: one clause in the Install section saying the archive also holds the license,
    readme and changelog. No `docs/` page describes the release archive contents, and none needs to.
 
 ## Files to Modify
 
 - `rust/fontaine/Cargo.toml`
+- `rust/fontaine-guardian/src/scanner/pg2.rs`
+- `rust/fontaine-guardian/tests/pg2.rs`
 - `.github/workflows/release.yml`
 - `.gitignore`
 - `CHANGELOG.md`
@@ -242,10 +276,6 @@ from the version's section. A tag without that section fails in the `plan` job.
 - **Curated 0.1.0 entry vs. keeping the per-phase log.** The section becomes the public release
   notes, and most of the log describes changes between unreleased builds. Git history keeps the
   detailed record.
-- **Not gating the release on a filled `guardian_models.toml` in the workflow.** An empty list is
-  a supported state: the guardian falls back to the main model, as `docs/guardian.md` says. The
-  kill-floor check is a maintainer judgment on the live run, not a file-emptiness test, so it
-  stays a checklist item.
 
 ## Documentation
 
@@ -256,8 +286,15 @@ from the version's section. A tag without that section fails in the `plan` job.
 
 ## Testing Strategy
 
-The changes are cargo-dist configuration, GitHub Actions steps and prose. No Rust code changes, so
-there is nothing for a unit test to call.
+Apart from the pg2 loader, the changes are cargo-dist configuration, GitHub Actions steps and
+prose, so there is nothing for a unit test to call.
+
+- Offline regression test in `pg2.rs`, under the `pg2` feature: write a tiny safetensors file with
+  the real naming layout (`deberta.`-prefixed backbone, root `pooler.dense` and `classifier`) and a
+  `config.json` without `id2label` into a tempdir, and call `Loaded::open` (or `Pg2Scanner::load`)
+  on it. It pins the bug that the shipped loader could not load the real PromptGuard 2.
+- The real-weights test in `tests/pg2.rs` stays skipped without `FONTAINE_PG2_MODEL`; its doc comment
+  says to run it with `--release`.
 
 - `rust/fontaine-core/tests/docs.rs` already checks that `CHANGELOG.md` exists with content
   (`the_required_pages_exist_with_content`), and its link and placeholder checks (`checked_files`)
@@ -287,6 +324,7 @@ same `dist plan` the workflow runs:
 
 ## Decisions
 
+- 2026-10-23: The pg2 loader fix lands on this branch: it was found by running #80's real-weights check, and it blocks the release (pg2 ships in the release binaries).
 - 2026-10-23: GitHub private vulnerability reporting is left for the maintainer to enable (a
   repository setting, outward-facing). It stays an open checklist item.
 - 2026-10-23: AFK: Issue #80's checkboxes are left for the maintainer to tick; editing the GitHub issue is outward-facing.
