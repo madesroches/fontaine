@@ -53,7 +53,7 @@ all tests pass:
 
 - Root directories are only `rust/`, `evals/`, `docs/`, `tasks/`, `research/` (plus `.github/`);
   root files are `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`,
-  `SECURITY.md`, `.gitignore`.
+  `SECURITY.md`, `.gitignore`, `.ignore`.
 - The Cargo workspace lives at `rust/Cargo.toml` (micromegas convention) and **every crate
   sits directly under `rust/`**: `fontaine` (bin), `fontaine-core`, `fontaine-tools`,
   `fontaine-guardian`, `fontaine-agents`, `fontaine-mcp`, `fontaine-tui`, `fontaine-evals`.
@@ -129,6 +129,8 @@ From `rust/`:
 
 ## Other
 
+- Search with `rg`, not `grep -r`: it skips gitignored paths and reads `.ignore` (which excludes
+  `target/`), so build output never pollutes results.
 - License is Apache-2.0. Rule prose adapted from Anthropic's published documentation gets an
   attribution note in `docs/guardian.md`; same for MIT-licensed LlamaFirewall prompts if
   mined. Watch the Llama 4 Community License gated-download caveat around PromptGuard 2

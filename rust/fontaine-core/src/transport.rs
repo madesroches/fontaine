@@ -119,22 +119,20 @@ fn named_body<U: Send + 'static>(response: Response<LazyBody<U>>) -> Response<La
 
 /// A client for one account. Per account rather than rig's process-wide one, so no pooled
 /// connection outlives the runtime that made it. Mirrors rig's default build, including its
-/// fallback to the bundled roots on a host with no system CA certificates.
+/// fallback to the bundled roots on a host with no system CA certificates
+/// ([`fontaine_tools::tls::build_client`]).
 pub fn caused_client() -> std::result::Result<CausedClient, String> {
     Ok(CausedClient::new(ReqwestClient::from(reqwest_client()?)))
 }
 
 /// The plain client behind [`caused_client`], for requests that do not go through rig.
 pub fn reqwest_client() -> std::result::Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .build()
-        .or_else(with_bundled_roots)
-        .map_err(|e| {
-            format!(
-                "could not build the HTTP client: {}",
-                chain(&e.without_url())
-            )
-        })
+    fontaine_tools::tls::build_client(reqwest::Client::builder).map_err(|e| {
+        format!(
+            "could not build the HTTP client: {}",
+            chain(&e.without_url())
+        )
+    })
 }
 
 /// How an access token is put on a request, replacing the placeholder key rig put there.
@@ -287,22 +285,6 @@ impl<C: HttpClientExt + Clone + 'static> HttpClientExt for Decorated<C> {
             inner.send_streaming::<Bytes>(req).await
         }
     }
-}
-
-fn with_bundled_roots(error: reqwest::Error) -> reqwest::Result<reqwest::Client> {
-    let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS
-        .iter()
-        .filter_map(|der| reqwest::Certificate::from_der(der).ok());
-    let Ok(client) = reqwest::Client::builder().tls_certs_only(roots).build() else {
-        return Err(error);
-    };
-    tracing::warn!(
-        "the system's CA certificates could not be loaded ({}), so the bundled Mozilla roots \
-         are trusted; install the system's CA certificates, or set SSL_CERT_FILE or \
-         SSL_CERT_DIR, to trust those instead",
-        chain(&error)
-    );
-    Ok(client)
 }
 
 #[cfg(test)]

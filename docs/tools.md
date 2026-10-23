@@ -120,6 +120,9 @@ are resolved.
 - It identifies itself with the User-Agent `fontaine/<version> (+https://github.com/madesroches/fontaine)`.
 - It asks for `text/markdown, text/html, */*`, so a site that can serve markdown sends it.
 - It has no `prompt` argument and does no summarizing.
+- It trusts the system CA store. When that cannot be loaded (a bare container with no
+  `ca-certificates`), it falls back to the bundled Mozilla roots and records that in the debug log
+  (`--debug-file`), not on screen. Set `SSL_CERT_FILE` or `SSL_CERT_DIR` to trust other roots.
 
 ## Permissions
 
