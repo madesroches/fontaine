@@ -115,8 +115,10 @@ pub fn remove(user_file: &Path, data_dir: &Path, name: &str) -> Result<(), Accou
   `Provider::validate`.
 - `add` writes `[accounts.<name>]` with `kind` and, when given, `base_url` to the **user** file via
   a new `user_config::add_account(path, name, &Account)` (format-preserving; refuses when the
-  table already exists in the file, never overwrites). It returns the `Account` so the caller can
-  install it live.
+  table already exists in the file, never overwrites). It first deletes any stored credential for
+  the new name (`credentials::remove`), so an orphaned entry (hand-deleted table, failed remove)
+  is never sent to the new account's endpoint. It returns the `Account` so the caller can install
+  it live.
 - `store_key` is `credentials::store(.., Target::Account(name), ..)`.
 - `sign_in` dispatches to `Provider::sign_in()`; the `SignIn` trait gains a `progress` parameter:
   `enum SignInStep { Code { verification_url: String, user_code: String }, Waiting, Warning(String) }`,
@@ -142,9 +144,10 @@ like `store_oauth`; reading the `[telemetry]` entry stays.
 New `AgentRuntime` methods, all driven by the dialog:
 
 - `account_added(&mut self, name, Account)`: inserts into `AgentRuntime.config.accounts` and the
-  `Switcher`'s `config.accounts`. `Setup` has no `config` field. The switcher is one
+  `Switcher`'s `config.accounts`. `Setup` has no `config` field. The switcher becomes one
   `Arc<RwLock<Switcher>>` shared by the runtime and `ChildContext` (which `model_for` resolves
-  through), like `main: Arc<RwLock<MainModel>>`, so added and removed accounts reach subagents.
+  through), like `main: Arc<RwLock<MainModel>>`, so added and removed accounts reach subagents
+  (step 4 makes the change).
 - `credentials_changed(&mut self, name) -> CredentialEffect`: called after a key is stored, a
   sign-in finishes, or a log-out.
   - Drops `name`'s cached entry from `self.listings`; `model_listings` additionally fetches any
@@ -194,7 +197,8 @@ on an `Optional` kind skips); `Waiting { url, code }` (device sign-in in progres
 
 `DialogKey`: `None`, `Close`, `Add(NewAccount)`, `StoreKey { account, key: Secret }`,
 `SignIn(String)`, `CancelSignIn`, `LogOut(String)`, `Remove(String)`, `PickModel(String)`.
-`Secret` is a newtype over `String` with a redacting `Debug` and no `Display`, so a key can
+`DialogKey`, `NewAccount` and `Secret` derive `Clone, PartialEq, Eq` (`Action` derives them and
+holds a `DialogKey`). `Secret` is a newtype over `String` with a hand-written redacting `Debug` and no `Display`, so a key can
 never be formatted into a log line; it is dropped as soon as `store_key` returns.
 
 Flow:
@@ -221,8 +225,12 @@ lines ("stored the key for `work`", "signed in to OpenCode Go as …").
 
 - In session (`fontaine-tui/src/lib.rs`): `Command::Login(String)` in `parse_command`
   (`/login [account]`) and a `builtin_menu` entry. `App` gains `providers: Option<ProviderDialog>`
-  and `Action::Providers(DialogKey)` for the requests. The idle loop executes them; the in-turn
-  loops never see one because slash commands run only when idle, but they stay exhaustive.
+  and `Action::Providers(DialogKey)` for the requests. `data_dir`, `user_config` and `env` are
+  private on `Setup`, so `drive` copies them into `Ui` before building the runtime and passes env
+  as `&*env` to `accounts::*`. The idle loop executes them. The dialog
+  can stay open when a background-agent notification starts a turn, so the in-turn loops (`turn`,
+  `shell`, `expand_serving`) store an incoming `Action::Providers` request in `pending_provider`,
+  following `pending_pick`; the idle loop runs it before the notification check.
   A sign-in runs as `tokio::select!` over the `accounts::sign_in` future, `self.input` (keys go
   to the dialog; Esc cancels by dropping the future) and `self.prompts`, following `Ui::shell`'s
   pattern. The progress callback sends each `SignInStep` into an unbounded channel whose receiver
@@ -256,7 +264,8 @@ lines ("stored the key for `work`", "signed in to OpenCode Go as …").
 
 ### CLI removal
 
-Delete `rust/fontaine/src/auth.rs`, `Command::Auth` / `AuthCommand` (`cli.rs`), its dispatch and
+Delete `rust/fontaine/src/auth.rs`, the `Command` enum (its only variant is `Auth`), the
+`Cli.command` field and `AuthCommand` (`cli.rs`), the `lib.rs:30` import, its dispatch and
 the `load_unresolved` branch in `lib.rs` (`config::load_unresolved` is then called only by `load`:
 make it private and drop its doc comment, `config.rs:1405-1406`), and the `rpassword` dependency. Every hint that names
 `fontaine auth login <account>` names `/login <account>` instead (for example "account `go` is
@@ -278,12 +287,16 @@ already does; no TUI command is added for it.
 3. **`accounts.rs`**: `NewAccount`, `SignInState`, `AccountRow`, `rows`, `check_name`, `build`,
    `add`, `store_key`, `sign_in`, `log_out`, `remove`, `AccountsError`; make `models::credential`
    and `Credential` `pub(crate)`.
-4. **Live effects** (`agent.rs`, `models.rs`): `install_main` split, `account_added`,
+4. **Live effects** (`agent.rs`, `child_runner.rs`, `models.rs`): `AgentSetup.switcher`,
+   `Setup.switcher` and `ChildContext.switcher` (plain `Option<Switcher>` today) become one shared
+   `Arc<RwLock<Switcher>>` wired in `AgentRuntime::new`; callers clone the switcher out of the read
+   guard before any await. `install_main` split, `account_added`,
    `credentials_changed`, `removable`, `account_removed`; `model_listings` fetches uncached
    accounts; `Switcher::listings`' `main` becomes `Option<(&ModelRef, &[String])>`.
 5. **Dialog widget** (`fontaine-tui/src/provider_dialog.rs`, `view.rs` overlay arm, `app.rs`
    `covered`/`handle_key`/paste routing, `Command::Login`, `builtin_menu`).
-6. **In-session host** (`fontaine-tui/src/lib.rs`): dispatch `Action::Providers` (call
+6. **In-session host** (`fontaine-tui/src/lib.rs`): `drive` copies `setup.data_dir`/`user_config`/`env` into `Ui`;
+   dispatch `Action::Providers` (`pending_provider` for requests arriving in a turn; call
    `AgentRuntime::removable` before `accounts::remove`), sign-in `select!` with the step
    channel, open the model picker on the new account (`open_model_picker` gains an optional
    account filter passed through `model_listings`/`Switcher::listings`' existing `only`; with a
@@ -357,6 +370,9 @@ already does; no TUI command is added for it.
   `opencode-go` sign-ins in CI: refresh tokens rotate, so a copied `credentials.toml` works on one
   machine at a time and the copy left behind stops working after the first refresh — use a
   key-based account for CI.
+- `docs/tui.md` (`:209-211`): successful model listings are no longer kept for the whole session
+  (a credential change drops that account's entry); update the sentence.
+- `docs/index.md` (`:27-29`): add `/login` to the TUI's command list.
 - `docs/headless.md`: drop the two `auth login` rows; say how a headless run gets credentials.
 - `docs/architecture.md`: drop `auth.rs` (`:30`), the "`auth login` writer" (`:31`) and the
   `fontaine auth login` line (`:58`); add `accounts`, `provider_dialog`, `setup`.
@@ -374,11 +390,14 @@ Unit tests (all reachable with constructed inputs):
 - `config::check_account` shared by loader and `accounts::build`: same errors both ways
   (`openai-compatible` without `base_url`, `wires` on a kind that refuses them).
 - `accounts::check_name`: empty, `/`, space, taken, valid. `accounts::build` URL validation.
+- `accounts::add` clears a pre-existing credentials entry under the new name.
 - `accounts::rows`: each `SignInState` (stored key, OAuth with email, env set, env unset, keyless
   ollama, `opencode-go` not signed in, a key left by a changed kind counts as not signed in).
 - `ProviderDialog`: every transition (add flow per kind, skip on optional, Esc at each screen,
   `/login <account>` entry, unknown account, confirm/decline log-out and remove, paste into the
   masked field); `body()` renders `•` and never the key text; `Secret`'s `Debug` redacts.
+- Host: an `Action::Providers` request arriving during a turn is held in `pending_provider` and
+  run when the loop returns to idle.
 - `App`: paste routed to the dialog; `covered()`; `parse_command("/login go")`; type and paste a key
   on the Key screen, press Enter: `App::input` is empty, no `Submit`/`Queue` action, the action is
   `Providers(StoreKey)`.
@@ -402,8 +421,8 @@ Terminal rendering and the pre-session screen need a real TTY; breakage is obvio
    with no settings → the setup dialog
    shows "no main model…"; add an `anthropic` account `work`, paste a key (shows `•`), pick a
    model → the session starts on it; `config.toml` holds `[accounts.work]` and `[model]`, no key.
-2. In that session `/login` → `work` shows "key stored"; `o` then confirm → "no key";
-   `/login work`, enter the key again → a turn succeeds without restarting.
+2. In that session `/login` → `work` shows "key stored"; `o` then confirm → "not signed in";
+   `/login work`, enter the key again → "key stored".
 3. Add an `opencode-go` account → URL and code shown inside the dialog, Esc cancels cleanly;
    repeat and approve → "signed in to OpenCode Go as …".
 
