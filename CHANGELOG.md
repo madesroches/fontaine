@@ -217,3 +217,6 @@ All notable changes are recorded here. The format follows
 - A host with no system CA bundle no longer stops startup: `webfetch` and the scanner-model
   download fall back to the bundled Mozilla roots, as the model transport does, and a client that
   still cannot be built reports its cause (#112).
+- The guardian and the `llm` scanner no longer fail closed on every call with a model that thinks
+  by default: on an `opencode-go` account their requests turn thinking off for Chat-wire models
+  and non-Claude Messages-wire models, which refuse a forced tool call while thinking (#144).

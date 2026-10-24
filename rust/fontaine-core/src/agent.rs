@@ -134,7 +134,8 @@ pub fn build_guardian(
             handle.completion.clone(),
             handle.reference.to_string(),
             settings,
-        ),
+        )
+        .with_additional_params(handle.thinking_off.clone()),
         Some(GuardianModel::Unavailable { reference, reason }) => {
             Guardian::unavailable(reference.to_string(), reason, settings)
         }

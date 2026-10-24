@@ -108,6 +108,9 @@ pub struct ModelHandle {
     pub reference: ModelRef,
     pub kind: AccountKind,
     pub completion: DynModel<Completion>,
+    /// Request parameters that turn the model's thinking off, for the calls that force a tool
+    /// call (the guardian and the scanner).
+    pub thinking_off: Option<serde_json::Value>,
 }
 
 impl ModelHandle {
@@ -116,6 +119,19 @@ impl ModelHandle {
             reference,
             kind,
             completion,
+            thinking_off: None,
+        }
+    }
+
+    /// A handle on `reference`, completing through `client`.
+    pub fn from_client(reference: ModelRef, kind: AccountKind, client: &dyn AccountClient) -> Self {
+        let completion = client.completion(&reference.model);
+        let thinking_off = client.thinking_off(&reference.model);
+        ModelHandle {
+            reference,
+            kind,
+            completion,
+            thinking_off,
         }
     }
 
@@ -378,11 +394,7 @@ async fn resolve_main_model<E: Fn(&str) -> Option<std::ffi::OsString> + ?Sized>(
     if !lists(main_account.kind, &main_models, &main_ref.model) {
         return Err(unknown_model(&main_ref, &main_models));
     }
-    let main = ModelHandle::new(
-        main_ref.clone(),
-        main_account.kind,
-        main_client.completion(&main_ref.model),
-    );
+    let main = ModelHandle::from_client(main_ref.clone(), main_account.kind, main_client.as_ref());
     Ok((main_ref, main_client, main_models, main))
 }
 
@@ -502,10 +514,11 @@ fn build_guardian(
         _ => client_for(&reference.account, account, env, stored),
     };
     Ok(match client {
-        Ok(client) => {
-            let completion = client.completion(&reference.model);
-            GuardianModel::Ready(ModelHandle::new(reference, account.kind, completion))
-        }
+        Ok(client) => GuardianModel::Ready(ModelHandle::from_client(
+            reference,
+            account.kind,
+            client.as_ref(),
+        )),
         Err(reason) => GuardianModel::Unavailable { reference, reason },
     })
 }

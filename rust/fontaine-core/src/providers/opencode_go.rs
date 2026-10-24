@@ -169,6 +169,19 @@ pub fn wire(model: &str, overrides: &BTreeMap<String, Wire>) -> Wire {
     }
 }
 
+/// The request parameter that turns thinking off on `wire`, where a forced tool call needs it.
+/// Claude ids on the Messages wire are left alone: Claude thinks only when asked, and the
+/// catalog models that reject a forced choice are unforced by rig, some of which refuse
+/// `disabled`.
+fn thinking_off(model: &str, wire: Wire) -> Option<serde_json::Value> {
+    let off = json!({"thinking": {"type": "disabled"}});
+    match wire {
+        Wire::Chat => Some(off),
+        Wire::Messages if !model.starts_with("claude-") => Some(off),
+        Wire::Messages | Wire::Responses | Wire::Gemini => None,
+    }
+}
+
 struct GoClient {
     chat: OpenAI,
     responses: OpenAI,
@@ -186,6 +199,10 @@ impl AccountClient for GoClient {
             Wire::Messages => self.messages.completion(model).erase(),
             Wire::Gemini => self.gemini.completion(model).erase(),
         }
+    }
+
+    fn thinking_off(&self, model: &str) -> Option<serde_json::Value> {
+        thinking_off(model, wire(model, &self.overrides))
     }
 
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>> {
@@ -355,6 +372,19 @@ mod tests {
         assert_eq!(route("gemini-4-argon-contributor"), Wire::Gemini);
         assert_eq!(route("kimi-k3"), Wire::Chat);
         assert_eq!(route("glm-5.3-flash"), Wire::Chat);
+    }
+
+    #[test]
+    fn thinking_off_follows_the_wire() {
+        let off = Some(json!({"thinking": {"type": "disabled"}}));
+        assert_eq!(thinking_off("deepseek-v4.1-flash", Wire::Chat), off);
+        assert_eq!(thinking_off("qwen3.7-plus", Wire::Messages), off);
+        assert_eq!(thinking_off("claude-haiku-5-5", Wire::Messages), None);
+        assert_eq!(thinking_off("gpt-5.6-luna", Wire::Responses), None);
+        assert_eq!(
+            thinking_off("gemini-4-argon-contributor", Wire::Gemini),
+            None
+        );
     }
 
     #[test]

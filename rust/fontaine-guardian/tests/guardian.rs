@@ -564,3 +564,27 @@ async fn the_guardian_reports_the_ids_its_requests_carry() {
     let unavailable = Guardian::unavailable("a/b", "no key", settings());
     assert_eq!(unavailable.wire_ids(), None);
 }
+
+#[tokio::test]
+async fn no_additional_params_leaves_the_request_body_unchanged() {
+    let endpoint = Endpoint::start(vec![Reply::Verdict(allow(0.95))]).await;
+    endpoint
+        .guardian(settings())
+        .adjudicate(&request("cargo test", false))
+        .await;
+    let sent = endpoint.requests().await.remove(0);
+    assert!(sent.get("thinking").is_none(), "{sent}");
+    assert_eq!(sent["tool_choice"], "required");
+}
+
+#[tokio::test]
+async fn additional_params_reach_the_body_beside_the_forced_tool_choice() {
+    let endpoint = Endpoint::start(vec![Reply::Verdict(allow(0.95))]).await;
+    let guardian = endpoint
+        .guardian(settings())
+        .with_additional_params(Some(serde_json::json!({"thinking": {"type": "disabled"}})));
+    guardian.adjudicate(&request("cargo test", false)).await;
+    let sent = endpoint.requests().await.remove(0);
+    assert_eq!(sent["thinking"]["type"], "disabled", "{sent}");
+    assert_eq!(sent["tool_choice"], "required");
+}

@@ -219,6 +219,12 @@ most 3 seconds. Entries are ranked by catch rate, then false-deny rate, then lat
 
 With no `[guardian] model`, the guardian is the highest-ranked validated model that one of your
 accounts offers. If none is, the main model judges and Fontaine tells you once at startup.
+The guardian's and the scanner's calls force a structured answer, which a model that thinks by
+default refuses. Fontaine turns thinking off for those calls on `opencode-go` Chat models and
+non-Claude Messages models. On an `openai-compatible` account, a model that thinks by default
+cannot be the guardian: every call is denied as `GuardianUnavailable`. Pick a model without
+default thinking.
+
 Changing the guardian is easy but never automatic:
 
 ```toml

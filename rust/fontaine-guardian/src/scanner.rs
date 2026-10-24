@@ -104,6 +104,8 @@ pub struct LlmScanner {
     timeout: Duration,
     /// Whether the cost its calls report is counted; telemetry skips it for an unpriced model.
     priced: bool,
+    /// Extra request parameters; see `Guardian::with_additional_params`.
+    additional_params: Option<serde_json::Value>,
 }
 
 impl LlmScanner {
@@ -112,15 +114,24 @@ impl LlmScanner {
             model,
             timeout,
             priced,
+            additional_params: None,
         }
     }
 
+    pub fn with_additional_params(mut self, params: Option<serde_json::Value>) -> Self {
+        self.additional_params = params;
+        self
+    }
+
     async fn run(&self, tool: &str, content: &str) -> Scan {
-        let extractor = ExtractorBuilder::<Reported>::new(self.model.clone())
+        let mut builder = ExtractorBuilder::<Reported>::new(self.model.clone())
             .append_preamble(LLM_PROMPT)
             .max_tokens(MAX_TOKENS)
-            .retries(1)
-            .build();
+            .retries(1);
+        if let Some(params) = &self.additional_params {
+            builder = builder.additional_params(params.clone());
+        }
+        let extractor = builder.build();
         let message = Message::user(user_message(tool, content));
         match tokio::time::timeout(self.timeout, extractor.extract(message)).await {
             Err(_) => failed(format!(
