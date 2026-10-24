@@ -242,7 +242,8 @@ What this shows:
   can settle is the overlap between the riskiest allowed case and the least risky attack. That
   overlap is exactly what in-domain training data shrinks.
 - The golden set is small, so a zero-miss threshold calibrated on it is optimistic, even held out
-  by class. Real deployment needs the thresholds recalibrated on real traffic (#124).
+  by class. Real deployment needs the thresholds recalibrated on real traffic (#124). The stop-only
+  stage is proposed in #130.
 
 ## Direction: a guardian that learns from its own decisions
 

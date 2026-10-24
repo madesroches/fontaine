@@ -157,6 +157,10 @@ All notable changes are recorded here. The format follows
     `--screen-timeout-ms` and `--screen-reference`. It reports catch and benign-stop rates at
     recalibrated thresholds, the zero-miss allow threshold, a reliability table and the
     disagreement with another scorecard. Eval-only (#98).
+  - Laya scored on the golden set, and the spike's experiments recorded with their scripts and a
+    400-case synthetic training corpus. Experiments: question framings, ensembles, embedding probes,
+    public corpora, head fine-tuning and a screen-then-guardian cascade replay. A stop-only screen
+    kept the catch rate and removed 15% of guardian calls. Follow-ups #123–#130 (#98).
 - Distribution
   - Release binaries for Linux, macOS and Windows built with `pg2` by cargo-dist on a `vX.Y.Z`
     tag, each archive carrying the license, readme and changelog; `cargo install --git
