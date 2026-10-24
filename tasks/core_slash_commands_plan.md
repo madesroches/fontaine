@@ -96,6 +96,13 @@ pub const BUILTINS: &[Builtin] = &[ /* one row per command, sorted by name */ ];
   drift. Aliases do not get their own menu rows. Unit tests check a hand-written list (`/quit` → `Exit`, `/tasks` → `Agents`, `/plan x` →
   `Plan("x")`, `/copy 2` → `Copy("2")`, `/mcp x` → `Mcp("x")`), that no name or alias is used twice, and that the menu
   has one row per entry.
+- A built-in wins over a skill of the same name or alias: `parse_command` checks `BUILTINS`
+  first, as it does today. `commands::skill_menu(skills)` takes `runtime.slash_skills()` and
+  returns the skill menu rows plus the names it left out because a built-in name or alias
+  matches. The left-out skills get no `/` menu row and no `/help` line; at startup one notice
+  names them (`skill /status is hidden by the built-in command of the same name`). The skill stays
+  loaded, so the model can still load it with the `skill` tool, and `/skills` marks it
+  `(hidden by /name)`.
 - `Command`, `parse_command`, `MenuEntry` and `builtin_menu` keep their public paths
   (`lib.rs:53` re-exports them), and `app.rs` re-exports them from `commands.rs`.
 
@@ -110,7 +117,8 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
 `lib.rs` handlers only gather the inputs from `AgentRuntime` and call them.
 
 - **`/help`**: the built-in commands from `BUILTINS` (`/name hint — description`, with aliases
-  shown as `/exit, /quit`), then the user-invocable skills (`runtime.slash_skills()`), then one
+  shown as `/exit, /quit`), then the user-invocable skills that `skill_menu` keeps (a skill a
+  built-in hides is not listed), then one
   line pointing at the keys (`shift+tab mode · ctrl+t agents · ctrl+r history · ! shell · @ file · esc interrupt`),
   in the same form as `/output-style`'s listing.
 - **`/status`**: Fontaine's version (`env!("CARGO_PKG_VERSION")`) and the session id; the primary
@@ -140,8 +148,8 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
   one core accessor, `AgentRuntime::project_executables(&self) -> bool`, the only change outside
   `fontaine-tui`. With no hooks it reads `no hooks configured`.
 - **`/skills`**: every loaded skill (`extensions().skills`) as `name — description [scope]` (skill `Scope` has no label, so the builder matches it),
-  marked `(model only)` when not user-invocable and `(you only)` when
-  `disable_model_invocation` is set. Claude Code's filter, token sort and visibility toggling
+  marked `(model only)` when not user-invocable, `(you only)` when
+  `disable_model_invocation` is set, and `(hidden by /name)` when a built-in takes its name. Claude Code's filter, token sort and visibility toggling
   are out of scope.
 - **`/plan [description]`**: sets the mode to `Plan` (`state.set_mode`, the call Shift+Tab
   makes) and adds the notice `plan mode on`. With a description, it then runs the description
@@ -154,9 +162,14 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
   Code's per-assistant-message count, so a turn of text, a tool call, then more text yields two
   replies and "the last reply" is the text after the final tool call; replies are not joined
   across tool calls. A reply still streaming is never reachable, since commands run between turns. A new
-  `Transcript::assistant_reply(n: usize) -> Option<&str>` finds the reply. The escape is written
-  through the seam that carries the clipboard text to the terminal writer. crossterm's
-  `CopyToClipboard` (the `osc52` feature) builds it, so no new crate is added. Success adds the notice
+  `Transcript::assistant_reply(n: usize) -> Option<&str>` finds the reply. The text goes to a
+  clipboard sink, a new `drive` parameter `clipboard: impl FnMut(&str) -> std::io::Result<()> +
+  'static`, kept on `Ui` as `clipboard: Box<dyn FnMut(&str) -> std::io::Result<()>>` so `Ui`
+  gains no second type parameter. The `/copy` arm calls it and gets the write's `Result` back in
+  the same call. `run()` passes a sink that writes the escape with
+  `execute!(std::io::stdout(), CopyToClipboard::to_clipboard_from(text))`, beside its other raw
+  escapes; the test harness passes one that records the text. crossterm's `CopyToClipboard` (the
+  `osc52` feature) builds the escape, so no new crate is added. Success adds the notice
   `copied reply N (<chars> characters) to the clipboard`, plus a remark that the terminal must
   support OSC 52. A missing reply, or an `N` that is not a positive integer, is an error notice. An `Err` from the
   clipboard write (crossterm's `CopyToClipboard` fails with `Unsupported` on a Windows console
@@ -168,7 +181,8 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
 ## Implementation Steps
 
 1. **Command table.** Create `rust/fontaine-tui/src/commands.rs` with `Builtin`, `BUILTINS`,
-   `Command` (moved from `app.rs`), `parse_command`, `MenuEntry` and `builtin_menu`. Re-export
+   `Command` (moved from `app.rs`), `parse_command`, `MenuEntry`, `builtin_menu` and
+   `skill_menu`. Re-export
    them from `app.rs` so the existing call sites and `lib.rs:53` keep compiling. Move the
    existing `parse_command` tests along with them, then add the table-consistency tests.
 2. **Report builders.** Create `rust/fontaine-tui/src/reports.rs` with pure functions `help`,
@@ -182,11 +196,16 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
    `runtime.config.mcp_servers` and `mcp_origins`).
 5. **Dispatch.** In `lib.rs` `submit`, add an arm for each new variant: gather the inputs, call
    the report builder, and add the notice. `/plan` sets the mode, then calls `converse` when
-   there is a description. `/copy` calls `Transcript::assistant_reply` and the OSC 52 writer.
+   there is a description. `/copy` calls `Transcript::assistant_reply` and `Ui::clipboard`. At
+   startup, replace the `slash_skills()` loop (`lib.rs:1408`) with `skill_menu`, and add its
+   shadowed-skill notice when the list is not empty.
 6. **Clipboard.** Add `crossterm = { version = "=0.29.0", features = ["osc52"] }` to the workspace
    dependencies in `rust/Cargo.toml`, exact-pinned like the other workspace dependencies, and add it to `fontaine-tui/Cargo.toml`.
-   Write the escape through the same writer `screen.rs` draws to. `base64` is already in the
-   tree; check that `cargo deny check` stays green.
+   Add the `clipboard` parameter to `drive` and the `Ui::clipboard` field; `run()` passes the
+   OSC 52 sink, the `lib.rs` unit-test `ui()` passes `Box::new(|_| Ok(()))`, and
+   `tests/common/mod.rs` passes a sink that pushes into an `Rc<RefCell<Vec<String>>>` read by a
+   new harness accessor `Ui::clipboard() -> Vec<String>`. `base64` is already in the tree; check
+   that `cargo deny check` stays green.
 7. **Docs.** Update the docs and `CHANGELOG.md` (see Documentation).
 8. **Master plan.** Add the Decisions lines below to `tasks/fontaine_harness_plan.md`
    `## Decisions`.
@@ -196,9 +215,10 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
 - `rust/fontaine-tui/src/commands.rs` (new)
 - `rust/fontaine-tui/src/reports.rs` (new)
 - `rust/fontaine-tui/src/app.rs`: `Command`/`parse_command`/`builtin_menu` move out; re-exports
-- `rust/fontaine-tui/src/lib.rs`: dispatch arms, `mcp_status`, `/plan`, `/copy`
+- `rust/fontaine-tui/src/lib.rs`: dispatch arms, `mcp_status`, `/plan`, `/copy`, the `drive`
+  clipboard parameter and `run()`'s OSC 52 sink, `skill_menu` at startup
 - `rust/fontaine-tui/src/transcript.rs`: `assistant_reply`
-- `rust/fontaine-tui/src/screen.rs`: OSC 52 write, if the writer lives there
+- `rust/fontaine-tui/tests/common/mod.rs`: the recording clipboard sink and `Ui::clipboard()`
 - `rust/fontaine-core/src/agent.rs`: `project_executables()`
 - `rust/Cargo.toml`, `rust/fontaine-tui/Cargo.toml`: crossterm with `osc52`
 - `rust/fontaine-tui/tests/tui.rs`, `rust/fontaine-tui/tests/extensions.rs`: integration tests
@@ -231,6 +251,15 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
 - 2026-10-24: `/denied` stays as the view of denied calls alongside the read-only `/permissions`.
   Reason: the master plan's 2026-10-22 line called it a stand-in "until issue #47"; `/permissions`
   shows rules, not denials.
+- 2026-10-24: AFK: `/copy` hands its text to a clipboard sink passed to `drive` (`run()` writes
+  the OSC 52 escape to stdout, the test harness records it), not to a `pending_clipboard` field
+  on `App` taken by the render closure. Reason: the sink returns the write's `Result` to the
+  `/copy` arm in the same call, so the error and success notices need no path back from render.
+- 2026-10-24: AFK: a built-in command wins over a skill of the same name or alias; the skill is
+  left out of the `/` menu and `/help`, named in a startup notice, and still loadable by the
+  model. Departs from Claude Code, where a local skill replaces a built-in (not its aliases).
+  Reason: a repository skill must not be able to take over `/plan` or `/permissions`, which the
+  human relies on to change or inspect what the agent may do.
 - 2026-10-24: `/skills` has no filter, sort or visibility toggling. Reason: a read-only listing
   covers discovery; the interactive dialog is not worth a second path.
 
@@ -246,7 +275,9 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
 - `docs/agents.md` (~line 130) and `docs/tui.md` (~line 305, `## The agents panel`): `/tasks`
   beside `/agents`.
 - `docs/mcp.md`: one line on `/mcp`. `docs/hooks.md`: one line on `/hooks`. `docs/extensions.md`
-  `## Skills`: one line on `/skills`.
+  `## Skills`: one line on `/skills`, and in `### Slash commands and arguments` one line that a
+  built-in command wins over a skill of the same name or alias: the skill gets no `/` menu entry,
+  startup names it, and the model can still load it.
 - `docs/index.md` (lines 27-29): add the new commands to the terminal UI command list.
 - `CHANGELOG.md`: an `### Added` entry under `[Unreleased]`, in the Terminal UI group, citing #47,
   added in the PR step.
@@ -258,6 +289,9 @@ Unit tests (`commands.rs`, `reports.rs`, `transcript.rs`):
   `Agents`, `/plan x` → `Plan("x")`, `/copy 2` → `Copy("2")`, `/mcp x` → `Mcp("x")`); no name or alias appears twice; `builtin_menu()` has one row per `BUILTINS` entry and
   none for aliases; an unknown name is still `Command::Other`; argument trimming is kept
   (existing tests move over).
+- `skill_menu`: skills named `status` (a built-in name) and `quit` (an alias) are left out of
+  the rows and returned as hidden, `/status` still parses to `Command::Status`, and a skill with
+  any other name keeps its row.
 - `/help`: it lists every built-in, then the skills, then the keys line; aliases are joined.
 - `/status`: an available guardian shows its label and profile; an unavailable one shows
   `unavailable (<reason>)`; extra roots are listed; `none` output style; the MCP count.
@@ -267,7 +301,7 @@ Unit tests (`commands.rs`, `reports.rs`, `transcript.rs`):
 - `/mcp`: one line for each of the four states; an empty list reads `no MCP servers configured`.
 - `/hooks`: grouping by event, `every call` for a missing matcher, the timeout, the untrusted
   project-hook marker, and the empty case.
-- `/skills`: the scope and the `(model only)` / `(you only)` markers.
+- `/skills`: the scope and the `(model only)` / `(you only)` / `(hidden by /name)` markers.
 - `assistant_reply`: `n = 1` is the latest reply; `n` past the end is `None`; empty assistant
   entries and non-assistant entries are skipped; a turn split by a tool call (text, tool call,
   text) yields two replies, the latest being the text after the tool call.
@@ -282,8 +316,8 @@ model):
 - `/permissions` with a user `deny` rule and a project `ask` rule shows both with their scopes.
 - `/mcp` after a declined project server shows it `left off`. This wiring through `start_mcp` is
   what a unit test of the builder cannot reach.
-- `/copy` after one reply: the text handed to the seam that carries the clipboard text to the
-  terminal writer equals the reply (the test backend stores cells, not bytes).
+- `/copy` after one reply: `ui.clipboard()` (the harness's recording sink) holds exactly the
+  reply (the test backend stores cells, not bytes).
 - `/help`: one assertion added to the existing skill test in `tests/extensions.rs` (~line 32) that
   the listing includes the user-invocable skill, exercising the `slash_skills` wiring.
 
