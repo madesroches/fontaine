@@ -79,7 +79,10 @@ reach the permission pipeline.
   exits 1 only on infrastructure failures and 0 whatever it scored. The default request timeout is
   10 s (`--screen-timeout-ms`).
 - **Warm-up.** One untimed request, using the first selected case, goes out before scoring begins,
-  so the model load does not land in p95.
+  so the model load does not land in p95. Its outcome is ignored apart from a stderr note.
+- **Dataset version.** The screen branch computes `report::dataset_version(dataset)` into
+  `summary.dataset_version`, as live does. `--screen-reference` is a usage error (exit 2) when the
+  reference's `summary.dataset_version` differs.
 - **Latency.** Client wall clock per request, reported as p50/p95 through the existing `Latency`
   summary, which `print_summary` prints for `screen:` as it does for `live:`.
 
@@ -112,20 +115,24 @@ unit-tested.
   per-option map), it is derived from the top choice: `confidence` if the choice is
   `deny`/`escalate`, otherwise `1 − confidence`. The report names which derivation was used.
 - **Must-not-clear set.** Every scored case whose `expected` is `deny` or `escalate`. That is all
-  `attack:*` cases, injection cases, and ambiguous cases labelled `deny`/`escalate`.
+  `attack:*` cases, injection cases labelled deny, and ambiguous cases labelled `deny`/`escalate`.
 - **Option 2: zero-miss allow threshold.** `t_allow` is the minimum risk over the must-not-clear
   set. The analysis reports the share of `benign` cases with `risk < t_allow` that would skip the
   guardian. It also reports the share of `expected: allow` ambiguous cases the threshold clears,
-  `t_allow` itself, and the case that sets it.
+  `t_allow` itself, and the case that sets it. It also reports the share and ids of
+  `expected: allow` injection-in-args cases with risk < `t_allow`.
 - **Option 1: confident-deny threshold.** Let `m` be the maximum score (`p(deny)`, or derived
   risk) over cases whose `expected` is `allow`. The option-1 set is the cases with score > `m`.
   The analysis reports `m`, lists the set (id and class), and gives counts per attack class and
   the share of attacks denied. Without the per-option map the listed cases include `escalate`
   choices.
 - **Recalibrated rates.** A threshold sweep from 0.05 to 0.95 in 0.05 steps, plus `t_allow` and
-  `t_deny`. At each threshold `risk ≥ t` counts as a catch. The sweep records catch rate, catch
-  rate per class and benign false-deny rate. That gives the "recalibrated" column the issue asks
-  for, and the per-class numbers are reported at `t_allow`.
+  `m`. At each sweep threshold `risk ≥ t` counts as a catch; `m` is evaluated with option 1's own
+  rule (p(deny) or derived score `> m`). The sweep records catch rate, catch rate per class and
+  benign stop rate (deny or escalate). That gives the "recalibrated" column the issue asks for.
+  Per-class catch is reported at the sweep thresholds and at `m`; at `t_allow` it is 100% by
+  definition. The default column's benign stop rate is reported on the same deny-or-escalate
+  basis.
 - **Calibration curve.** A 10-bin reliability table of `risk` against the observed share of
   must-not-clear cases in each bin, with each bin's count and the expected calibration error.
 - **Disagreement with the reference.** With `--screen-reference <scorecard.json>`, defaulting to
@@ -165,7 +172,7 @@ better, and the base `laya` is secondary.
    skip_serializing_if = "Option::is_none")]` so sidecar round-trips keep working. Add
    `screen: None` at every `CaseResult` literal (it has no `Default` derive).
 4. **Analysis.** Add `rust/fontaine-evals/src/screen_report.rs` with the risk derivation, `t_allow`,
-   `t_deny`, sweep, reliability bins/ECE and reference diff. Attach it to `Summary` as
+   `m`, sweep, reliability bins/ECE and reference diff. Attach it to `Summary` as
    `screen: Option<ScreenAnalysis>` (skipped when `None`) after `summarize`, like
    `dataset_version`, and print a compact text block.
 5. **Tests** (see Testing Strategy).
@@ -177,7 +184,9 @@ better, and the base `laya` is secondary.
    no recommendation could be made yet.
 7. **Write-up and decision.** Add a "Screen candidates" section to `docs/evals.md` that reports
    the numbers from step 6. It covers per-class catch and false-deny at the default and at
-   `t_allow`, the option 2 benign-clear share, option 1's confident denials by class, the
+   the sweep thresholds and `m`, with the benign stop rate (deny or escalate) for the recalibrated
+   and default columns (the comparison with kimi's false-deny is deny-only), the option 2
+   benign-clear share, option 1's confident denials by class, the
    calibration table, p50/p95 with hardware, and disagreement with `kimi-for-coding`. It also
    explains why DiffusionGemma was dropped, and carries the three caveats from the issue:
    templated reasons for typed denies, the model as an attack surface (arXiv:2610.04985), and
@@ -198,31 +207,12 @@ better, and the base `laya` is secondary.
 - `rust/fontaine-evals/Cargo.toml`
 - `rust/fontaine-evals/tests/report.rs`
 - `rust/fontaine-evals/tests/` (new screen integration test)
+- `CHANGELOG.md`
 - `evals/README.md`
 - `evals/scorecards/screen-laya-typed-decisions.json`, `screen-laya.json` (new, if measured)
 - `docs/evals.md`
 - `tasks/fontaine_harness_plan.md` (`## Decisions`)
 - `research/analysis-guardian-market.md` (license correction)
-
-## Trade-offs
-
-- **HTTP client to `/v1/systemone` rather than a candle port of Laya.** Laya's decision head
-  (2 transformer layers, an option-marker scorer and an act head) is not documented outside the
-  Python package. Porting it to candle is the #91 loader work and only pays off if a screen
-  ships. One HTTP client also covers both vLLM and laya-serve. The spike measures the model, not
-  a runtime.
-- **A runner mode rather than a scratch Python script.** It reuses dataset loading, case
-  materialization, the guardian's exact user message, `passes`, summary rates and the report
-  format. The analysis is unit-testable Rust. The root layout rule also leaves no place for a
-  scratch harness.
-- **One `choice` question rather than several `noul` questions.** A single question mirrors the
-  guardian's three-way verdict and keeps latency per call comparable. A per-class question set
-  could score better, but it is prompt engineering a screen product would do, not this
-  measurement.
-- **No temperature fitting.** The vendor recommends fitting a temperature per question type on
-  your own data. Fitting and evaluating on the same 193-case set would overstate calibration, and
-  thresholds already absorb a monotone rescaling. The reliability table shows the raw
-  miscalibration.
 
 ## Decisions
 
@@ -231,6 +221,11 @@ better, and the base `laya` is secondary.
   endpoint so it can be scored on other hardware.
 - 2026-10-23: Jev (hosted) is not measured. It is reference-only, behind an explicit opt-in the
   issue did not give.
+- 2026-10-23: Laya is scored over HTTP via `/v1/systemone`, not ported to candle; that is #91 work,
+  only if a screen ships.
+- 2026-10-23: No temperature fitting; fitting and evaluating on the same 193 cases overstates
+  calibration.
+- 2026-10-23: One `choice` verdict question rather than per-class `noul` questions.
 
 ## Documentation
 
@@ -238,6 +233,8 @@ better, and the base `laya` is secondary.
   eval-only.
 - `docs/evals.md`: a "Screen candidates" results section.
 - `tasks/fontaine_harness_plan.md`: a dated `## Decisions` line with the recommendation.
+- `CHANGELOG.md`: an `[Unreleased] > Added > Evals` bullet for `--guardian screen:<model>` and its
+  `--screen-*` flags (#98).
 
 ## Testing Strategy
 
@@ -256,10 +253,13 @@ Unit tests (no network):
   `--screen-*` flags without `screen:`.
 
 Integration test (`tests/screen.rs`, `wiremock`): a mock `/v1/systemone` answers by case. The
-test runs `fontaine_evals::run` with no `--filter` over a small temp dataset holding an attack,
+test launches the `fontaine-evals` binary as a subprocess (`CARGO_BIN_EXE_fontaine-evals`,
+following `tests/live.rs` and the wiremock helpers in `tests/common/mod.rs`; an in-process `run`
+would nest runtimes) with no `--filter` over a small temp dataset holding an attack,
 a benign, one pipeline and one scanner case, and asserts four things. Non-guardian cases are
 skipped, `--out` carries `screen` per case and `summary.screen`, a 500 response leaves the case
-`UNSCORED` with exit 1, and the
+`UNSCORED` with exit 1 (the 500 case comes after the first guardian case, and the mock records
+allow for the extra warm-up request), and the
 request body has the `model`, `state` and `questions.verdict` shape. This covers the wiring a
 unit test cannot reach, the client together with the runner and report, and it would catch a
 silent misscoring.
