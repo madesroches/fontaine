@@ -94,15 +94,10 @@ impl Wire for Tuned {
 }
 ```
 
-`tune` sets `OllamaOptions::default().num_ctx(context_tokens)` unless the request already carries
-Ollama options (a caller's explicit option wins), and sets `Reasoning::Off` when `think ==
+`tune` sets `OllamaOptions::default().num_ctx(context_tokens)` and sets `Reasoning::Off` when `think ==
 Some(false)` and the request names no reasoning. `Connected::completion` builds
 `Model::new(Tuned { chat: native.wire, .. }, native.transport).erase()`. Every request path above
 inherits it with no call-site change. `connect` reads the two keys from `ctx.account`.
-
-If rig's `Wire` turns out to require something the wrapper cannot delegate (e.g. a bound on
-`Descriptor::replay(self)`), the fallback is attaching the option at the request-building sites
-through one helper; the implementer records which path was taken in `## Decisions`.
 
 ### The screen
 
@@ -115,7 +110,11 @@ already sends `think: false`; unchanged.
 
 `ModelHandle` gains `context_tokens: Option<u32>` (set for `ollama` accounts by
 `models.rs`, `None` otherwise; `ModelHandle::new` keeps its signature and a
-`with_context_tokens` builder sets it). A shared helper:
+`with_context_tokens` builder sets it). The window travels with the model that produced the usage:
+`Guardian` gets a plain `Option<u32>` field and accessor (keeping `fontaine-guardian`
+dependency-light), filled in `build_guardian` from the handle, so a `/guardian-model` swap
+(`set_guardian`) replaces it with the guardian. `TurnParams`, `Drive` and the child runner's
+`ChildModel` each carry the window of the model they drive. A shared helper:
 
 ```rust
 /// Whether a reply's prompt filled the window: Ollama never reports more than it kept.
@@ -127,26 +126,27 @@ pub fn filled_window(input_tokens: u64, context_tokens: u32) -> bool {
 At both usage sites, when it returns true, the session warns once per model through
 `Approver::warn`: "`local/qwen3:4b`'s prompt used N of its `context_tokens = M`; Ollama drops the
 start of a longer prompt. Raise `context_tokens` on account `local`." The once-per-model memo lives
-in `SessionState` (a `Mutex<HashSet<String>>`). The guardian site needs the guardian handle's
-window: `agent.rs:129`, where the guardian is built from its `ModelHandle`, stores it on
-`SessionState` next to the guardian label. A warning never changes a verdict.
+in `SessionState` (a `Mutex<HashSet<String>>`). The guardian site reads the window from `state.guardian()`; the turn site reads it from `Drive`.
+Compaction (`session.rs`) sends the whole history, so its usage is checked against the main
+model's window too. A warning never changes a verdict.
 
 The exact 90% threshold is checked against live Ollama behavior (Testing Strategy, live step 3) and
 adjusted there if the daemon reports a truncated prompt below it.
 
 ## Implementation Steps
 
-1. **Config.** Add `context_tokens` and `think` to `Account` (and its raw/serde form), the
+1. **Config.** Add `context_tokens` and `think` to `Account`, the
    `accepts_model_options` provider hook, validation in `config.rs` next to the `wires` check,
    `DEFAULT_OLLAMA_CONTEXT_TOKENS`, and `Account::ollama_context_tokens()`.
 2. **Wrapper wire.** `Tuned` in `providers/ollama.rs`; `connect` stores the account's values in
    `Connected`; `completion` returns the wrapped model.
 3. **Screen.** `ScreenSettings::context_tokens`, filled in `build_screen` and in
-   `fontaine-evals/src/live.rs::add_screen` (through `build_screen`, so no separate change unless
-   it constructs settings itself); `ask` sends it.
+   `ask` sends it. `fontaine-evals/src/live.rs` needs no change: `add_screen` goes through
+   `build_screen`.
 4. **Warning.** `ModelHandle::context_tokens` + builder, set in `models.rs` (main and guardian
-   resolution), `filled_window`, the memo on `SessionState`, and the two call sites
-   (`turn.rs`, `permissions.rs`).
+   resolution), `filled_window`, the window on `Guardian`, `TurnParams`, `Drive` and
+   `ChildModel`, the memo on `SessionState`, and the call sites (`turn.rs`, `permissions.rs`,
+   compaction in `session.rs`).
 5. **Docs** (see Documentation).
 6. **Live verification and re-score** (Testing Strategy, live steps), recording numbers in the
    PR and updating `evals/scorecards/qwen3-4b.json`.
@@ -156,12 +156,23 @@ adjusted there if the daemon reports a truncated prompt below it.
 - `rust/fontaine-core/src/config.rs` — account keys, validation, default, helper.
 - `rust/fontaine-core/src/providers/mod.rs` — `accepts_model_options`.
 - `rust/fontaine-core/src/providers/ollama.rs` — `Tuned` wire, `connect`/`completion`.
-- `rust/fontaine-guardian/src/screen.rs` — `ScreenSettings::context_tokens`, request body.
-- `rust/fontaine-core/src/agent.rs` — `build_screen`, guardian window onto `SessionState`.
+- `rust/fontaine-guardian/src/screen.rs` — `ScreenSettings::context_tokens`, request body, test
+  helper (`:461`).
+- `rust/fontaine-guardian/src/guardian.rs` — window field and accessor on `Guardian`.
+- `rust/fontaine-guardian/tests/cascade.rs`, `rust/fontaine-core/tests/permissions_screen.rs` —
+  `ScreenSettings` literals.
+- `rust/fontaine-core/src/agent.rs` — `build_screen`, `build_guardian` fills the guardian window.
 - `rust/fontaine-core/src/models.rs` — `ModelHandle::context_tokens`.
 - `rust/fontaine-core/src/gate.rs` — warning memo on `SessionState`.
-- `rust/fontaine-core/src/turn.rs`, `rust/fontaine-core/src/permissions.rs` — warning call sites.
+- `rust/fontaine-core/src/turn.rs` — `TurnParams`/`Drive` window, warning site.
+- `rust/fontaine-core/src/child_runner.rs` — `ChildModel` window, `Drive` construction.
+- `rust/fontaine-core/src/permissions.rs`, `rust/fontaine-core/src/session.rs` — warning call
+  sites (guardian, compaction).
+- `TurnParams` constructors: `rust/fontaine-tui/src/lib.rs`, `rust/fontaine/src/headless.rs`,
+  `rust/fontaine-core/tests/billing.rs`, `audit_telemetry.rs`, `output_styles.rs` (`Drive`
+  literals in `billing.rs` and `audit_telemetry.rs` too).
 - `docs/configuration.md`, `docs/guardian.md`, `docs/evals.md`.
+- `CHANGELOG.md` (via the PR step).
 - `evals/scorecards/qwen3-4b.json` (re-scored).
 
 ## Trade-offs
@@ -183,6 +194,8 @@ adjusted there if the daemon reports a truncated prompt below it.
 
 ## Decisions
 
+- 2026-10-24: The window warning stays in scope although issue #96 does not ask for it — the user asked for every change proposed in the issue triage, the warning included.
+
 ## Documentation
 
 - `docs/configuration.md`: `context_tokens` and `think` rows in the `[accounts.<name>]` table;
@@ -190,7 +203,10 @@ adjusted there if the daemon reports a truncated prompt below it.
   override of the daemon's own setting, and the window warning.
 - `docs/guardian.md`: in the local-guardian / screen guidance, that the guardian prompt needs
   more than Ollama's default window and the screen uses the account's `context_tokens`.
-- `docs/evals.md`: scoring a local model relies on the account's window; note the re-score.
+- `docs/configuration.md`: the `[guardian.screen]` `model` row (~line 368) also says the account's
+  `context_tokens` is used.
+- `docs/evals.md`: scoring a local model relies on the account's window; note the re-score, and
+  rewrite the stale truncation sentence for `local/qwen3:4b` (`:130-132`).
 - `CHANGELOG.md`: via the PR step.
 
 ## Testing Strategy
@@ -201,8 +217,7 @@ Unit / integration (CI):
   `accounts.<name>.<key>` path; `context_tokens < 2048` refused; default resolves to 16384.
 - `providers/ollama.rs` with `wiremock` standing in for the daemon's `/api/chat`: a request
   carries `options.num_ctx` = default when unset and = the configured value when set; `think:
-  false` is present only when `think = false`; a request that already carries Ollama options keeps
-  the caller's `num_ctx`. This is the regression test pinning the issue's bug.
+  false` is present only when `think = false`. This is the regression test pinning the issue's bug.
 - `screen.rs` (existing wiremock test at `:584`): the body carries `options.num_ctx`.
 - `filled_window` boundaries; a session-level test (existing `rig_core::test_utils` /
   `agent_pipeline.rs` style) that a usage report at the window warns exactly once per model and
