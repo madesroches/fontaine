@@ -111,9 +111,8 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
 
 - **`/help`**: the built-in commands from `BUILTINS` (`/name hint — description`, with aliases
   shown as `/exit, /quit`), then the user-invocable skills (`runtime.slash_skills()`), then one
-  line pointing at the keys (`shift+tab mode · ctrl+t agents · ! shell · @ file · esc interrupt`).
-  Claude Code opens a help dialog; here it is a notice, in the same form as `/output-style`'s
-  listing.
+  line pointing at the keys (`shift+tab mode · ctrl+t agents · ctrl+r history · ! shell · @ file · esc interrupt`),
+  in the same form as `/output-style`'s listing.
 - **`/status`**: Fontaine's version (`env!("CARGO_PKG_VERSION")`) and the session id; the primary
   root and any added roots; the permission mode, named as the status bar names it
   (`statusbar::mode_label`); the main model (`runtime.models.main.reference`, `<account>/<model>`, the label the model
@@ -151,16 +150,20 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
   makes, which already reaches plan from any mode. The guardian and the deterministic floor apply
   exactly as they do after Shift+Tab.
 - **`/copy [N]`**: copies the Nth-latest assistant reply (default 1) to the system clipboard
-  with an OSC 52 escape. Replies are counted only over `Entry::Assistant` entries with non-empty
-  text; a reply still streaming is never reachable, since commands run between turns. A new
+  with an OSC 52 escape. Replies are counted per non-empty `Entry::Assistant` entry, like Claude
+  Code's per-assistant-message count, so a turn of text, a tool call, then more text yields two
+  replies and "the last reply" is the text after the final tool call; replies are not joined
+  across tool calls. A reply still streaming is never reachable, since commands run between turns. A new
   `Transcript::assistant_reply(n: usize) -> Option<&str>` finds the reply. The escape is written
   through the seam that carries the clipboard text to the terminal writer. crossterm's
   `CopyToClipboard` (the `osc52` feature) builds it, so no new crate is added. Success adds the notice
   `copied reply N (<chars> characters) to the clipboard`, plus a remark that the terminal must
-  support OSC 52. A missing reply, or an `N` that is not a positive integer, is an error notice.
+  support OSC 52. A missing reply, or an `N` that is not a positive integer, is an error notice. An `Err` from the
+  clipboard write (crossterm's `CopyToClipboard` fails with `Unsupported` on a Windows console
+  without VT) also becomes an error notice carrying the chain from
+  `fontaine_tools::error_chain::chain`; the success notice appears only on `Ok`.
   Claude Code's code-block picker and its `w` (write to a file) are out of scope.
-- **`/tasks`**: an alias of `/agents`. Claude Code's `/tasks` is the background-work view
-  Fontaine's `/agents` panel already is.
+- **`/tasks`**: an alias of `/agents`.
 
 ## Implementation Steps
 
@@ -198,7 +201,7 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
 - `rust/fontaine-tui/src/screen.rs`: OSC 52 write, if the writer lives there
 - `rust/fontaine-core/src/agent.rs`: `project_executables()`
 - `rust/Cargo.toml`, `rust/fontaine-tui/Cargo.toml`: crossterm with `osc52`
-- `rust/fontaine-tui/tests/tui.rs`: integration tests
+- `rust/fontaine-tui/tests/tui.rs`, `rust/fontaine-tui/tests/extensions.rs`: integration tests
 - `docs/tui.md`, `docs/permissions.md`, `docs/agents.md`, `docs/mcp.md`, `docs/hooks.md`, `docs/extensions.md`,
   `docs/index.md`
 - `CHANGELOG.md`
@@ -225,6 +228,9 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
   Anthropic; Fontaine has its GitHub issue tracker.
 - 2026-10-24: `/tasks` is an alias of `/agents`. Reason: the `/agents` panel is already the
   background-work view Claude Code's `/tasks` opens.
+- 2026-10-24: `/denied` stays as the view of denied calls alongside the read-only `/permissions`.
+  Reason: the master plan's 2026-10-22 line called it a stand-in "until issue #47"; `/permissions`
+  shows rules, not denials.
 - 2026-10-24: `/skills` has no filter, sort or visibility toggling. Reason: a read-only listing
   covers discovery; the interactive dialog is not worth a second path.
 
@@ -237,7 +243,8 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
   `set-clipboard on`).
 - `docs/permissions.md`: in `## Modes`, add "or `/plan`" beside Shift+Tab as a way to enter plan mode; add a line that `/permissions` shows the effective rules with their
   source, and the auto set-aside marker.
-- `docs/agents.md` (~line 130): `/tasks` beside `/agents`.
+- `docs/agents.md` (~line 130) and `docs/tui.md` (~line 305, `## The agents panel`): `/tasks`
+  beside `/agents`.
 - `docs/mcp.md`: one line on `/mcp`. `docs/hooks.md`: one line on `/hooks`. `docs/extensions.md`
   `## Skills`: one line on `/skills`.
 - `docs/index.md` (lines 27-29): add the new commands to the terminal UI command list.
@@ -262,10 +269,12 @@ Unit tests (`commands.rs`, `reports.rs`, `transcript.rs`):
   project-hook marker, and the empty case.
 - `/skills`: the scope and the `(model only)` / `(you only)` markers.
 - `assistant_reply`: `n = 1` is the latest reply; `n` past the end is `None`; empty assistant
-  entries and non-assistant entries are skipped.
+  entries and non-assistant entries are skipped; a turn split by a tool call (text, tool call,
+  text) yields two replies, the latest being the text after the tool call.
 - `/copy` argument parsing: empty is 1; `0`, `-1` and `x` are errors.
 
-Integration tests (`fontaine-tui/tests/tui.rs`, through `ui.send` with the deterministic test
+Integration tests (in the file that already covers each area: `tests/extensions.rs` for skills
+and the menu, `tests/tui.rs` otherwise; through `ui.send` with the deterministic test
 model):
 - `/plan` sets the mode, and the status bar shows `⏸ plan mode on`. `/plan do x` also sends `do x`
   to the model in plan mode, so a write the model then attempts is handled by plan mode's rules,
@@ -273,10 +282,10 @@ model):
 - `/permissions` with a user `deny` rule and a project `ask` rule shows both with their scopes.
 - `/mcp` after a declined project server shows it `left off`. This wiring through `start_mcp` is
   what a unit test of the builder cannot reach.
-- `/tasks` opens the agents panel.
 - `/copy` after one reply: the text handed to the seam that carries the clipboard text to the
   terminal writer equals the reply (the test backend stores cells, not bytes).
-- `/help` lists the built-ins plus a user-invocable skill, exercising the `slash_skills` wiring.
+- `/help`: one assertion added to the existing skill test in `tests/extensions.rs` (~line 32) that
+  the listing includes the user-invocable skill, exercising the `slash_skills` wiring.
 
 ## Manual Verification
 
