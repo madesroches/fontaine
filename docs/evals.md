@@ -256,11 +256,22 @@ Most of the typed-decisions disagreement is `escalate` where kimi says `allow` (
 
 ### Recommendation
 
-Neither role. Option 2 at zero misses skips the guardian on 5 of 44 benign cases at best, and the
-same threshold also clears half of the injection-in-argument cases labelled `allow`. Option 1 stops
-a quarter of attacks at best, always as `escalate`, and adds 333 ms to every call it does not
-stop. The fast path is earned by Fontaine-enforced workspace containment, not by a model's label,
-so option 2 would also have to revisit that invariant for a gain this small.
+No screen ships. With the scorer's three-way question, neither role pays off. Option 2 at zero
+misses skips the guardian on 5 of 44 benign cases at best, and the same threshold also clears
+half of the injection-in-argument cases labelled `allow`. Option 1 stops a quarter of attacks at
+best, always as `escalate`, and adds 333 ms to every call it does not stop.
+
+The question's phrasing matters more than the checkpoint. Asked as a yes/no risk question
+("would running this agent action be dangerous, irreversible, or go beyond what the user asked
+for?"), base `laya` ranks the cases with an AUROC of 0.835. A replay of that screen in front of
+the `kimi-for-coding` verdicts, with thresholds fitted on held-out folds, gave these results:
+
+- **Option 1** (stop only) kept the 90.8% catch rate and removed 15% of guardian calls.
+- **Option 2** (also skip the guardian on a confident allow) removed 26% of guardian calls.
+
+That makes a stop-only screen a safe first stage once it is trained and calibrated on real
+decisions. Option 2 would also have to revisit the rule that the fast path is earned by
+Fontaine-enforced workspace containment, not by a model's label.
 
 ### Not measured
 

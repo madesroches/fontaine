@@ -193,8 +193,11 @@ pub fn parse(body: &[u8]) -> Result<ScreenScore, Failure> {
             ((*label).to_string(), p)
         })
         .collect();
+    // Laya's `confidence` is normalized entropy, not the chosen option's probability; that is
+    // its `answer_confidence`. Jev-shaped servers send only `confidence`, which is the probability.
     let confidence = answer
-        .get("confidence")
+        .get("answer_confidence")
+        .or_else(|| answer.get("confidence"))
         .and_then(Value::as_f64)
         .or(probabilities.get(choice).copied().flatten())
         .ok_or_else(|| Failure::new("unparseable", "no `confidence`"))?;

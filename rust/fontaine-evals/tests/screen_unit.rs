@@ -214,6 +214,15 @@ fn a_laya_shaped_answer_has_the_chosen_confidence_only() {
 }
 
 #[test]
+fn a_laya_answer_takes_the_chosen_probability_not_the_entropy_confidence() {
+    let body = json!({"answers": {"verdict": {"type": "choice", "choice": "escalate",
+        "confidence": 0.04, "answer_confidence": 0.48}}});
+    let score = parse(body.to_string().as_bytes()).unwrap();
+    assert_eq!(score.confidence, 0.48);
+    assert_eq!(score.probabilities["escalate"], Some(0.48));
+}
+
+#[test]
 fn a_vllm_shaped_answer_carries_probabilities_and_usage() {
     let body = json!({
         "answers": {"verdict": {"choice": "allow", "confidence": 0.6,
