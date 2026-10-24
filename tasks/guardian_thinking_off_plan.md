@@ -68,13 +68,22 @@ ExtractorBuilder::additional_params(params)  ──► merged into every extract
   /// the guardian and the scanner force a tool call, which a thinking model refuses.
   fn thinking_off(&self, _model: &str) -> Option<serde_json::Value> { None }
   ```
-- `fontaine-core/src/providers/opencode_go.rs`: a free function `thinking_off(wire: Wire) -> Option<Value>`
-  maps each wire, and `GoClient::thinking_off` calls it on `wire(model, &self.overrides)`:
+- `fontaine-core/src/providers/opencode_go.rs`: a free function
+  `thinking_off(model: &str, wire: Wire) -> Option<Value>` maps each wire, and
+  `GoClient::thinking_off` calls it with `wire(model, &self.overrides)`:
   - `Chat` → `{"thinking": {"type": "disabled"}}`. This is the off switch of DeepSeek, GLM and
     kimi-k2.6; rig's own `deepseek`, `zai` and `moonshot` dialects send the same value (moonshot
     only for kimi-k2.6). kimi-k3 and other Kimi models cannot turn thinking off.
-  - `Messages` → `{"thinking": {"type": "disabled"}}`. This is the Anthropic schema's `disabled`
-    value.
+  - `Messages` → `{"thinking": {"type": "disabled"}}` (the Anthropic schema's `disabled` value)
+    for the non-Claude models Go serves there (Qwen, MiniMax), and `None` for a `claude-*` id.
+    Claude thinks only when asked, except the models rig's anthropic catalog marks
+    `rejects_forced_tool_choice` (e.g. `claude-opus-5-5`, `claude-fable-5-1`), for which rig-agent
+    already drops the forced choice (`rig-agent-0.45.0/src/agent/completion.rs:156`). Several of
+    those cannot disable thinking at all, or take another off value (`claude-sonnet-5-5`:
+    `between_tools`), so a hard-coded `disabled` would turn a working guardian into a 400.
+    `DynModel::spec()` cannot tell catalog models apart here: Go's Messages descriptor looks the
+    id up under the `opencode-go` vendor and finds nothing, while rig's forced-choice check looks
+    it up under `anthropic`. Claude requests therefore stay exactly as they are today.
   - `Responses`, `Gemini` → `None`. Both accept a forced tool call while reasoning, so their
     requests stay as they are.
 - `fontaine-core/src/models.rs`: `ModelHandle` gains `pub thinking_off: Option<serde_json::Value>`.
@@ -101,9 +110,9 @@ never see them.
 1. **Guardian crate**: add `additional_params` and `with_additional_params` to `Guardian` and
    `LlmScanner`, and apply them in each `ExtractorBuilder` chain.
 2. **Provider trait**: add `AccountClient::thinking_off` with its `None` default.
-3. **opencode-go**: add the free function `thinking_off(wire: Wire) -> Option<Value>` (the two
-   arms share one body value) and implement `GoClient::thinking_off` by calling it on
-   `wire(model, &self.overrides)`.
+3. **opencode-go**: add the free function `thinking_off(model: &str, wire: Wire) -> Option<Value>`
+   (the two arms share one body value; `claude-*` on `Messages` gets `None`) and implement
+   `GoClient::thinking_off` by calling it with `wire(model, &self.overrides)`.
 4. **Model handle**: add `ModelHandle::thinking_off` and `ModelHandle::from_client`. Switch
    `models.rs:381` and `models.rs:507` to it.
 5. **Wiring**: pass `handle.thinking_off` in `agent::build_guardian`,
@@ -138,9 +147,12 @@ never see them.
   change requests on wires that work today (OpenAI `reasoning.effort = none`, Gemini thinking
   budgets) and lower guardian quality there. The `Ignore` policy would also log a warning on every
   call. Explicit parameters touch only the wires that need them.
-- **Per wire, not per model.** Go routes models by wire, and a model that cannot turn thinking off
-  thinks by default, so it already fails with a forced tool call. Sending the off switch to it
-  cannot make it worse. A per-model table would need maintaining for every gateway model release.
+- **Per wire, not per model.** Go routes models by wire, and on the Chat wire a model that cannot
+  turn thinking off thinks by default, so it already fails with a forced tool call; sending the off
+  switch to it cannot make it worse. That does not hold for Claude on the Messages wire: rig
+  already unforces the catalog Claude models that reject a forced choice, and some of them reject
+  `disabled`, so Claude is left untouched by the same family prefix Go's own routing uses. A
+  per-model table would need maintaining for every gateway model release.
 - **Field on `ModelHandle` vs. a lookup at guardian-build time.** The guardian is built from a
   handle in several places (startup, `/guardian-model`, main-model fallback, `/model` switches).
   Carrying the value on the handle covers them all without threading the account client through.
@@ -156,7 +168,7 @@ never see them.
 
 - `docs/guardian.md`, "Choosing the guardian model": add a short paragraph. The guardian's and the
   scanner's calls force a structured answer, so Fontaine turns thinking off for them on
-  `opencode-go` Chat and Messages models. On an `openai-compatible` account, a model that thinks by
+  `opencode-go` Chat models and non-Claude Messages models. On an `openai-compatible` account, a model that thinks by
   default cannot be the guardian, and every call is denied as `GuardianUnavailable`; pick a model
   without default thinking.
 
@@ -180,15 +192,17 @@ All of these are wiremock tests. No live API is touched.
    and `w.load()` for the `Config`, build `scanner_stage::llm_backend` on the handle, and assert
    `Scan::Clean`.
 3. **Messages wire**: the test mounts its own `/anthropic/v1/messages` mock and captures the
-   guardian request body for `claude-haiku-5-5` (listed by `gateway()`, absent from rig's anthropic
-   catalog; rig drops the forced tool choice for catalog models with `rejects_forced_tool_choice`).
-   Assert that `tool_choice {"type":"any"}` appears together with `thinking.type == "disabled"`.
+   guardian request bodies. Add `qwen3.7-plus` and `claude-opus-5-5` to `gateway()`'s listing. For
+   `qwen3.7-plus`, assert that `tool_choice {"type":"any"}` appears together with
+   `thinking.type == "disabled"`. For `claude-opus-5-5` (in rig's anthropic catalog with
+   `rejects_forced_tool_choice`) and `claude-haiku-5-5` (not in the catalog), assert that the body
+   carries no `thinking` key, so Claude requests are unchanged from today.
 4. **Guardian crate tests** (`rust/fontaine-guardian/tests/guardian.rs` and
    `rust/fontaine-guardian/tests/scanner.rs`, using the `tests/common/mod.rs` `Endpoint` seam):
    with `None`, the request body is unchanged and has no extra keys. With
    `with_additional_params(Some(..))`, the params reach the body beside the forced tool choice.
 5. **Provider unit test** (`opencode_go.rs` tests module): the free function `thinking_off` per
-   wire. The override case is already covered by the existing `wire()` override test.
+   wire, including `None` for a `claude-*` id on `Messages`. The override case is already covered by the existing `wire()` override test.
 
 ## Manual Verification
 
@@ -205,3 +219,5 @@ All of these are wiremock tests. No live API is touched.
 None.
 
 ## Decisions
+
+- AFK: The opencode-go Messages arm sends `{"thinking":{"type":"disabled"}}` only for non-Claude ids and returns `None` for `claude-*`, leaving Claude guardian requests unchanged — rig already unforces the catalog Claude models that reject a forced choice, some of which refuse `disabled` (opus-5-5, fable-5-1) or need `between_tools` (sonnet-5-5), and `DynModel::spec()` cannot detect catalog membership on Go (it looks up the `opencode-go` vendor), so a prefix rule is the conservative fix that still covers the reported Chat-wire case.
