@@ -186,3 +186,4 @@ Per-key scope (the user file may set every key; a key a scope may not set is rej
 | `[hooks.*]` | after workspace trust; `allow` ignored | yes, after workspace trust | `--settings` |
 | `[mcp.servers.*]` | after workspace trust + per-server approval | yes, after workspace trust | `--settings` |
 | `[telemetry]` | `enabled = false` only | `enabled = false` only | `--settings` |
+| `[tui]` `theme`, `screen_reader` | no | no | `--settings` |

@@ -4,10 +4,11 @@
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 
 use crate::input::wrap;
+use crate::theme::Theme;
 
 /// Keys typed ahead must not answer a prompt that appears under them.
 pub(crate) const ANSWER_GRACE: Duration = Duration::from_millis(400);
@@ -47,11 +48,11 @@ impl ServerPrompt {
         }
     }
 
-    pub fn body(&self, width: usize) -> Vec<Line<'static>> {
+    pub fn body(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let mut out = vec![Line::styled(
             format!("Start the MCP server `{}`?", self.name),
-            bold.fg(Color::Yellow),
+            bold.fg(theme.heading),
         )];
         for piece in wrap(
             "This repository defines it. It runs as a program with your permissions, and its tools are always checked like any other tool that can do anything.",

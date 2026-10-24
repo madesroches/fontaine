@@ -179,6 +179,7 @@ fn the_required_pages_exist_with_content() {
         "docs/tools.md",
         "docs/permissions.md",
         "docs/tui.md",
+        "docs/terminal.md",
         "docs/mcp.md",
         "docs/agents.md",
         "docs/hooks.md",

@@ -102,6 +102,7 @@ The user file may set every key. For the other scopes:
 | `[[hooks.*]]` | yes, after workspace trust; `allow` ignored | yes, after workspace trust | yes |
 | `[mcp.servers.*]` | yes, after workspace trust and your approval of each server | yes, after workspace trust | yes |
 | `[telemetry]` | `enabled = false` only | `enabled = false` only | yes |
+| `[tui]` | no | no | yes |
 
 A project-local file that has not earned user trust is validated against the project column.
 
@@ -636,6 +637,22 @@ api_key_env = "MICROMEGAS_INGESTION_API_KEY"
 resource_attributes = { "team.id" = "platform" }
 ```
 
+### `[tui]`
+
+Terminal preferences. They are personal, so only your user file and `--settings` may set them; a
+project or project-local file that has a `[tui]` table is an error.
+
+| Key | Meaning | Default |
+|---|---|---|
+| `theme` | The colour theme: `dark-ansi`, `light-ansi`, `dark`, `light`, `dark-daltonized` or `light-daltonized`. `/theme` writes it. See [Terminal setup](terminal.md#colours). | `dark-ansi` |
+| `screen_reader` | Turns on screen-reader mode. `--ax-screen-reader` turns it on and `FONTAINE_AX_SCREEN_READER=0` keeps it off over this setting. See [Terminal setup](terminal.md#screen-reader-mode). | `false` |
+
+```toml
+[tui]
+theme = "dark"
+screen_reader = false
+```
+
 ## Workspace trust
 
 Some project files can name programs to run, such as hooks and MCP servers, and skills can carry
@@ -738,6 +755,8 @@ for any reason other than not existing, is a configuration error naming the path
 | `--in-container` | States that the process runs inside a container. With `[guardian] profile = "minimal"` it lets the minimal guardian load, after a runtime probe also finds a container; the flag alone is never enough. |
 | `--continue`, `--resume <id>`, `--fork-session` | Reopen the latest session of the launch directory, reopen one by id, or copy the one that would have been reopened under a new id. See [Headless runs](headless.md#continuing-a-session). |
 | `--allowed-tools <rule>`, `--disallowed-tools <rule>` | Adds an allow or deny rule for the session (CLI scope). Repeatable. |
+| `--ax-screen-reader` | Prints the interface as plain labelled lines for a screen reader instead of drawing it, and prints `[Screen Reader Mode: on via flag]` first. A headless run ignores it. |
+| `FONTAINE_AX_SCREEN_READER` | `1` turns screen-reader mode on and `0` keeps it off even when `[tui] screen_reader` is `true`; the flag still turns it on. Any other value is ignored with a warning. |
 | `FONTAINE_LOG` | An `EnvFilter` directive that replaces the default `debug` filter of the debug file. On its own it creates no file and prints nothing. |
 | `FONTAINE_CONFIG_DIR`, `FONTAINE_DATA_DIR` | Directory overrides, described above. |
 

@@ -586,10 +586,58 @@ impl TelemetrySection {
     }
 }
 
+/// A terminal colour theme, by name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemeName {
+    Dark,
+    Light,
+    DarkDaltonized,
+    LightDaltonized,
+    #[default]
+    DarkAnsi,
+    LightAnsi,
+}
+
+impl ThemeName {
+    pub const ALL: [ThemeName; 6] = [
+        ThemeName::DarkAnsi,
+        ThemeName::LightAnsi,
+        ThemeName::Dark,
+        ThemeName::Light,
+        ThemeName::DarkDaltonized,
+        ThemeName::LightDaltonized,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThemeName::Dark => "dark",
+            ThemeName::Light => "light",
+            ThemeName::DarkDaltonized => "dark-daltonized",
+            ThemeName::LightDaltonized => "light-daltonized",
+            ThemeName::DarkAnsi => "dark-ansi",
+            ThemeName::LightAnsi => "light-ansi",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<ThemeName> {
+        ThemeName::ALL.into_iter().find(|t| t.as_str() == name)
+    }
+}
+
+/// `[tui]`: terminal preferences.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TuiSection {
+    pub theme: Option<ThemeName>,
+    pub screen_reader: Option<bool>,
+}
+
 /// One settings file, exactly as written.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
+    pub tui: Option<TuiSection>,
     pub accounts: Option<BTreeMap<String, Account>>,
     pub model: Option<ModelSection>,
     pub guardian: Option<GuardianSection>,
@@ -672,6 +720,12 @@ fn check_scope(s: &Settings, column: Column) -> Result<(), ScopeFailure> {
         return fail(
             "accounts",
             "endpoint and credential configuration comes only from the user file or --settings",
+        );
+    }
+    if s.tui.is_some() {
+        return fail(
+            "tui",
+            "terminal preferences come only from the user file or --settings",
         );
     }
     if let Some(p) = &s.permissions
@@ -1130,6 +1184,13 @@ pub struct Context {
     pub autocompact_window: Option<u64>,
 }
 
+/// The merged `[tui]` section.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tui {
+    pub theme: ThemeName,
+    pub screen_reader: Option<bool>,
+}
+
 /// The merged, validated configuration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
@@ -1150,6 +1211,7 @@ pub struct Config {
     pub context: Context,
     pub shell_preclassifier_allow_extra: Vec<String>,
     pub telemetry: Telemetry,
+    pub tui: Tui,
 }
 
 impl Config {
@@ -1194,6 +1256,10 @@ impl Config {
             },
             context: Context::default(),
             shell_preclassifier_allow_extra: Vec::new(),
+            tui: Tui {
+                theme: ThemeName::default(),
+                screen_reader: None,
+            },
             telemetry: Telemetry {
                 enabled: false,
                 backend: TelemetryBackend::Micromegas,
@@ -1224,6 +1290,14 @@ impl Config {
                 .is_some()
             {
                 self.shadowed_accounts.insert(name.clone());
+            }
+        }
+        if let Some(tui) = &s.tui {
+            if let Some(v) = tui.theme {
+                self.tui.theme = v;
+            }
+            if let Some(v) = tui.screen_reader {
+                self.tui.screen_reader = Some(v);
             }
         }
         if let Some(model) = s.model.as_ref().and_then(|m| m.model.clone()) {

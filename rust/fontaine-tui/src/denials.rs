@@ -8,11 +8,12 @@ use fontaine_core::gate::DeniedCall;
 use fontaine_core::models::ModelRef;
 use fontaine_core::permissions::{GuardianUnavailable, UnavailableChoice};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use tokio::sync::oneshot;
 
 use crate::input::wrap;
+use crate::theme::Theme;
 
 /// Keys typed ahead during the turn must not answer a prompt that appears under them.
 const ANSWER_GRACE: Duration = Duration::from_millis(400);
@@ -73,7 +74,7 @@ impl DeniedList {
         DeniedKey::None
     }
 
-    pub fn body(&self, width: usize) -> Vec<Line<'static>> {
+    pub fn body(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let dim = Style::default().add_modifier(Modifier::DIM);
         if self.entries.is_empty() {
@@ -84,7 +85,7 @@ impl DeniedList {
         }
         let mut out = vec![Line::styled(
             "Calls the guardian denied",
-            bold.fg(Color::Yellow),
+            bold.fg(theme.heading),
         )];
         for (i, entry) in self.entries.iter().enumerate() {
             let marker = if i == self.selected { ">" } else { " " };
@@ -226,11 +227,11 @@ impl UnavailablePrompt {
         }
     }
 
-    pub fn body(&self, width: usize) -> Vec<Line<'static>> {
+    pub fn body(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let mut out = vec![Line::styled(
             format!("The guardian {} cannot be used", self.info.model),
-            bold.fg(Color::Red),
+            bold.fg(theme.error),
         )];
         for piece in wrap(&self.info.reason, width) {
             out.push(Line::raw(piece));
@@ -347,6 +348,10 @@ mod tests {
         assert_eq!(list.handle_key(key('r')), DeniedKey::None);
         assert_eq!(list.handle_key(key('q')), DeniedKey::Close);
         let empty = DeniedList::new(vec![]);
-        assert!(empty.body(40)[0].to_string().contains("nothing"));
+        assert!(
+            empty.body(40, &Theme::default())[0]
+                .to_string()
+                .contains("nothing")
+        );
     }
 }

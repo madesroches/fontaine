@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -53,7 +53,10 @@ pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
     };
     let overlay_rows = overlay_rows + queued_lines(app, inner_width).len();
     let input_rows = input_view(&app.input, inner_width).rows.len() + 2;
-    let live = app.transcript.live_lines(usize::from(width).max(1)).len();
+    let live = app
+        .transcript
+        .live_lines(usize::from(width).max(1), &app.theme)
+        .len();
     let total = live + overlay_rows + input_rows + 1;
     u16::try_from(total).unwrap_or(u16::MAX).min(max_height)
 }
@@ -66,6 +69,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         body,
         footer,
         approval: is_approval,
+        ..
     } = overlay(app, inner_width, area.height);
     let view = input_view(&app.input, inner_width);
     let input_height = view.rows.len() as u16 + 2;
@@ -132,13 +136,18 @@ fn body_rows(app: &App, width: usize, height: u16, footer_len: usize) -> usize {
 }
 
 /// What sits above the message box.
-struct Overlay {
-    title: &'static str,
-    body: Vec<Line<'static>>,
-    footer: Vec<Line<'static>>,
+pub(crate) struct Overlay {
+    pub title: &'static str,
+    pub body: Vec<Line<'static>>,
+    pub footer: Vec<Line<'static>>,
     /// The approval prompt is the overlay, so it needs the scrolling and cursor handling only it
     /// has.
-    approval: bool,
+    pub approval: bool,
+    /// Tells two overlays with the same title apart, for a renderer that announces when one
+    /// opens.
+    pub instance: Option<u64>,
+    /// The approval's deny-reason field while it is open: its prompt and the text typed.
+    pub field: Option<(&'static str, String)>,
 }
 
 impl Overlay {
@@ -148,6 +157,8 @@ impl Overlay {
             body,
             footer,
             approval: false,
+            instance: None,
+            field: None,
         }
     }
 }
@@ -156,15 +167,20 @@ impl Overlay {
 /// prompt, the MCP server prompt, the model picker, the provider dialog, the agents panel, the approval prompt, the
 /// history search or the file completion list, then the `/` menu, in that order of precedence,
 /// which is the order `App::handle_key` routes keys in.
-fn overlay(app: &App, width: usize, height: u16) -> Overlay {
+pub(crate) fn overlay(app: &App, width: usize, height: u16) -> Overlay {
+    let theme = &app.theme;
     if let Some(list) = &app.denied {
-        return Overlay::new("denied", list.body(width), list.footer());
+        return Overlay::new("denied", list.body(width, theme), list.footer());
     }
     if let Some(prompt) = &app.unavailable {
-        return Overlay::new("guardian unavailable", prompt.body(width), prompt.footer());
+        return Overlay::new(
+            "guardian unavailable",
+            prompt.body(width, theme),
+            prompt.footer(),
+        );
     }
     if let Some(prompt) = &app.server {
-        return Overlay::new("MCP server", prompt.body(width), prompt.footer());
+        return Overlay::new("MCP server", prompt.body(width, theme), prompt.footer());
     }
     if let Some(picker) = &app.models {
         let title = match picker.purpose() {
@@ -173,20 +189,26 @@ fn overlay(app: &App, width: usize, height: u16) -> Overlay {
         };
         let footer = picker.footer();
         let rows = body_rows(app, width, height, footer.len());
-        return Overlay::new(title, picker.body(width, rows), footer);
+        return Overlay::new(title, picker.body(width, rows, theme), footer);
     }
     if let Some(dialog) = &app.providers {
         let footer = dialog.footer();
         let rows = body_rows(app, width, height, footer.len());
-        return Overlay::new("providers", dialog.body(width, rows), footer);
+        return Overlay::new("providers", dialog.body(width, rows, theme), footer);
     }
     if let Some(panel) = &app.agents {
-        return Overlay::new("agents", panel.body(width), panel.footer());
+        return Overlay::new("agents", panel.body(width, theme), panel.footer());
     }
     if let Some(approval) = &app.approval {
         return Overlay {
             approval: true,
-            ..Overlay::new("approval", approval.body(width), approval.footer(width))
+            instance: Some(approval.id),
+            field: approval.field(),
+            ..Overlay::new(
+                "approval",
+                approval.body(width, theme),
+                approval.footer(width),
+            )
         };
     }
     if let Some(search) = &app.search {
@@ -291,7 +313,9 @@ pub(crate) fn draw_overlay(
 }
 
 fn draw_transcript(frame: &mut Frame, area: Rect, app: &App) {
-    let lines = app.transcript.live_lines(usize::from(area.width).max(1));
+    let lines = app
+        .transcript
+        .live_lines(usize::from(area.width).max(1), &app.theme);
     let start = lines.len().saturating_sub(usize::from(area.height));
     frame.render_widget(Paragraph::new(lines[start..].to_vec()), area);
 }
@@ -343,7 +367,7 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
     let (title, style) = if app.shell_mode() {
         (
             " shell · Enter runs · output goes to the agent with your next message ",
-            style.fg(Color::Magenta),
+            style.fg(app.theme.shell),
         )
     } else {
         (" message · Enter sends · Alt+Enter new line ", style)

@@ -153,7 +153,7 @@ impl<B: Backend + Anchor> Screen<B> {
         self.terminal.autoresize()?;
         let width = self.terminal.get_frame().area().width;
         let terminal_height = self.terminal.size()?.height;
-        let lines = app.transcript.commit(usize::from(width).max(1));
+        let lines = app.transcript.commit(usize::from(width).max(1), &app.theme);
         let content = view::height(app, width, terminal_height);
         let top = self.terminal.get_frame().area().y;
         let free = usize::from(terminal_height.saturating_sub(top)).saturating_sub(lines.len());

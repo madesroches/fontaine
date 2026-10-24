@@ -7,7 +7,7 @@ use std::path::Path;
 
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
 
-use crate::config::Account;
+use crate::config::{Account, ThemeName};
 use crate::permission_rules::parse_rule;
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -60,6 +60,11 @@ pub fn set_model(path: &Path, reference: &str) -> io::Result<()> {
 /// Sets `[guardian] model` in the settings file at `path` to `reference` (`<account>/<model>`).
 pub fn set_guardian_model(path: &Path, reference: &str) -> io::Result<()> {
     set_string(path, "guardian", "model", reference)
+}
+
+/// Sets `[tui] theme` in the settings file at `path`.
+pub fn set_theme(path: &Path, name: ThemeName) -> io::Result<()> {
+    set_string(path, "tui", "theme", name.as_str())
 }
 
 /// Sets `table.key` to a string, creating the file and the table as needed and touching nothing
@@ -223,6 +228,21 @@ mod tests {
         assert!(text.contains("deny = [\"shell(rm)\"]"));
         assert_eq!(text.matches("read(//tmp/x)").count(), 1);
         assert!(text.contains("allow = [\"read(//tmp/x)\"]"));
+    }
+
+    #[test]
+    fn set_theme_keeps_comments_and_other_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# mine\n[model]\nmodel = \"a/b\" # keep\n").unwrap();
+        set_theme(&path, ThemeName::LightDaltonized).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# mine\n[model]\nmodel = \"a/b\" # keep\n"));
+        assert!(text.contains("[tui]\ntheme = \"light-daltonized\""));
+        set_theme(&path, ThemeName::Dark).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("theme = \"dark\""));
+        assert!(!text.contains("light-daltonized"));
     }
 
     #[cfg(unix)]

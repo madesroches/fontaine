@@ -22,6 +22,7 @@ use crate::input::InputBuffer;
 use crate::model_picker::{ModelPicker, PickerKey, PickerPurpose};
 use crate::provider_dialog::{DialogKey, ProviderDialog};
 use crate::server_prompt::ServerPrompt;
+use crate::theme::Theme;
 use crate::transcript::Transcript;
 
 pub use crate::commands::Command;
@@ -117,6 +118,8 @@ pub struct App {
     /// The workspace files `@` completes, as paths under the roots.
     files: Arc<Vec<String>>,
     pub primary_root: PathBuf,
+    pub theme: Theme,
+    approvals_opened: u64,
 }
 
 fn is_cycle_key(key: &KeyEvent) -> bool {
@@ -151,6 +154,8 @@ impl App {
             dismissed: None,
             files: Arc::default(),
             primary_root: PathBuf::new(),
+            theme: Theme::default(),
+            approvals_opened: 0,
         }
     }
 
@@ -284,7 +289,9 @@ impl App {
 
     /// Shows the approval, or queues it behind the one the human is answering.
     pub fn begin_approval(&mut self, request: ApprovalRequest, reply: oneshot::Sender<Answer>) {
-        let approval = Approval::new(request, reply);
+        let mut approval = Approval::new(request, reply);
+        self.approvals_opened += 1;
+        approval.id = self.approvals_opened;
         if self.approval.is_none() {
             self.approval = Some(approval);
         } else {

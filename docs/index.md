@@ -27,8 +27,9 @@ describe what the current build does; each page covers one topic.
 - [The terminal UI](tui.md): keys, the status bar, approval prompts, the guardian's denials,
   `/denied`, `/login`, `/model`, `/guardian-model`, `/add-dir`, `/output-style`, `/help`,
   `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plan`, `/copy`, `/clear`, `/compact`,
-  `/context`, the agents panel
-  and the workspace trust prompt.
+  `/context`, `/theme`, the agents panel and the workspace trust prompt.
+- [Terminal setup](terminal.md): newline keys for each terminal, tmux, Option as Meta on macOS,
+  colour themes and `NO_COLOR`, and screen-reader mode.
 - [Headless runs](headless.md): `fontaine -p`, its flags, exit codes, and the versioned JSON output
   that CI and the eval runner consume.
 - [Telemetry](telemetry.md): enabling export, the micromegas and OTLP backends, what is exported,

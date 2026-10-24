@@ -7,7 +7,7 @@ use std::sync::Arc;
 use fontaine_core::config::{self, Config, LoadParams};
 use fontaine_core::dirs::Dirs;
 use fontaine_tui::Input;
-use fontaine_tui::setup::{SetupParams, drive};
+use fontaine_tui::setup::{SetupParams, drive, drive_linear};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -64,6 +64,7 @@ impl Scratch {
             model_override: None,
             session_id: "00000000-0000-4000-8000-000000000001".to_string(),
             user_file: self.user_file.clone(),
+            screen_reader: None,
         }
     }
 }
@@ -211,4 +212,92 @@ async fn a_pick_replaces_the_model_given_on_the_command_line() {
         .unwrap()
         .expect("the session starts");
     assert_eq!(models.main.reference.to_string(), "gw/gw-small");
+}
+
+/// A writer whose bytes can be read after the setup took it.
+#[derive(Clone, Default)]
+struct Bytes(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+
+impl std::io::Write for Bytes {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Bytes {
+    fn text(&self) -> String {
+        String::from_utf8(self.0.borrow().clone()).unwrap()
+    }
+}
+
+fn assert_plain(out: &str) {
+    assert!(
+        out.chars().all(|c| !('\u{2500}'..='\u{257f}').contains(&c)),
+        "box drawing in {out:?}"
+    );
+    assert!(
+        out.replace("\r\n", "").find('\n').is_none(),
+        "bare newline in {out:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_linear_setup_prints_the_banner_and_the_dialog_as_plain_lines() {
+    let s = Scratch::new("");
+    let out = Bytes::default();
+    let result = drive_linear(
+        s.params("no main model: set `[model] model`"),
+        out.clone(),
+        keys(&[key(KeyCode::Esc)]),
+    )
+    .await
+    .unwrap();
+    assert!(result.is_none());
+    let out = out.text();
+    for needle in [
+        "setup:\r\n",
+        "No model is ready yet\r\n",
+        "no main model: set `[model] model`\r\n",
+        "providers:\r\n",
+        "+ add account",
+    ] {
+        assert!(out.contains(needle), "{needle} missing from {out:?}");
+    }
+    assert_plain(&out);
+}
+
+#[tokio::test]
+async fn the_linear_setup_announces_a_listing_and_a_new_error() {
+    let server = gateway().await;
+    let s = Scratch::new(&format!(
+        "[accounts.gw]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\n\n[model]\nmodel = \"gw/gone\"\n",
+        server.uri()
+    ));
+    let mut script = vec![key(KeyCode::Enter)];
+    script.extend(text("k-gw"));
+    script.push(key(KeyCode::Enter));
+    script.push(key(KeyCode::Char(' ')));
+    script.push(key(KeyCode::Char('m')));
+    script.extend(text("large"));
+    script.push(key(KeyCode::Enter));
+    let out = Bytes::default();
+    let (models, _) = drive_linear(s.params("old error"), out.clone(), keys(&script))
+        .await
+        .unwrap()
+        .expect("the session starts");
+    assert_eq!(models.main.reference.to_string(), "gw/gw-large");
+    let out = out.text();
+    assert!(out.contains("listing the models of gw"), "{out:?}");
+    assert!(out.contains("model:\r\n"), "{out:?}");
+    assert!(out.contains("selected: "), "{out:?}");
+    // Logging in re-resolved the stale model, which failed with a different message.
+    assert_eq!(out.matches("old error").count(), 1, "{out:?}");
+    assert!(out.contains("gone"), "{out:?}");
+    assert_eq!(out.matches("No model is ready yet").count(), 1, "{out:?}");
+    assert_plain(&out);
 }

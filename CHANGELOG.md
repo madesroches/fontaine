@@ -155,6 +155,13 @@ All notable changes are recorded here. The format follows
     mode carry on, and `/context [all]` shows estimated token use by source. `[context]
     autocompact_window` sets how many tokens of messages trigger automatic compaction, in the
     terminal UI and headless runs (#11).
+  - Terminal polish (#50): six colour themes (`dark-ansi` by default, `light-ansi`, `dark`,
+    `light`, `dark-daltonized`, `light-daltonized`) chosen with `/theme` or `[tui] theme`; a
+    screen-reader mode (`--ax-screen-reader`, `FONTAINE_AX_SCREEN_READER`, `[tui] screen_reader`)
+    that prints labelled linear lines, announces dialogs, selections and mode changes, echoes what
+    you type and rings the bell when a reply ends or a prompt needs an answer; and
+    `docs/terminal.md` on newline keys, tmux, Option as Meta, `NO_COLOR` and OSC 52. There is no
+    `/terminal-setup` command.
   - `fontaine -p` with `--output-format text|json|stream-json`, `--input-format stream-json`,
     `--include-partial-messages`, `--max-turns`, `--max-budget-usd`, `--json-schema`,
     `--system-prompt`, `--append-system-prompt`, `--model` and `--permission-mode`. The output is
