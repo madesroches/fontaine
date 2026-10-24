@@ -366,8 +366,9 @@ pub fn latest_for_root(data_dir: &Path, root: &Path) -> Option<String> {
 }
 
 /// The default reserve and summary size leave no room on a small window: the threshold falls
-/// to zero and the summarizer is sent nothing. Below twice their sum they shrink to a quarter
-/// of the window each, so compaction starts at three quarters full and summarizes half.
+/// to zero and the summarizer is sent nothing. Below twice their sum each is capped at a quarter
+/// of the window, so compaction starts by three quarters full and the summarizer gets at
+/// least half.
 fn fitted_policy(policy: &CompactionPolicy, window: Option<u32>) -> CompactionPolicy {
     let mut fitted = policy.clone();
     let Some(window) = window else {
