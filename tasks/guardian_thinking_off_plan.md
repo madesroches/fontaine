@@ -68,8 +68,8 @@ ExtractorBuilder::additional_params(params)  ──► merged into every extract
   /// the guardian and the scanner force a tool call, which a thinking model refuses.
   fn thinking_off(&self, _model: &str) -> Option<serde_json::Value> { None }
   ```
-- `fontaine-core/src/providers/opencode_go.rs`: `GoClient::thinking_off` matches
-  `wire(model, &self.overrides)`:
+- `fontaine-core/src/providers/opencode_go.rs`: a free function `thinking_off(wire: Wire) -> Option<Value>`
+  maps each wire, and `GoClient::thinking_off` calls it on `wire(model, &self.overrides)`:
   - `Chat` → `{"thinking": {"type": "disabled"}}`. This is the off switch of DeepSeek, GLM and
     kimi-k2.6; rig's own `deepseek`, `zai` and `moonshot` dialects send the same value (moonshot
     only for kimi-k2.6). kimi-k3 and other Kimi models cannot turn thinking off.
@@ -101,8 +101,9 @@ never see them.
 1. **Guardian crate**: add `additional_params` and `with_additional_params` to `Guardian` and
    `LlmScanner`, and apply them in each `ExtractorBuilder` chain.
 2. **Provider trait**: add `AccountClient::thinking_off` with its `None` default.
-3. **opencode-go**: implement `GoClient::thinking_off` by wire. Give the body value one `const fn`
-   or `fn` so the two arms share it.
+3. **opencode-go**: add the free function `thinking_off(wire: Wire) -> Option<Value>` (the two
+   arms share one body value) and implement `GoClient::thinking_off` by calling it on
+   `wire(model, &self.overrides)`.
 4. **Model handle**: add `ModelHandle::thinking_off` and `ModelHandle::from_client`. Switch
    `models.rs:381` and `models.rs:507` to it.
 5. **Wiring**: pass `handle.thinking_off` in `agent::build_guardian`,
@@ -121,7 +122,7 @@ never see them.
 - `rust/fontaine-core/src/scanner_stage.rs`
 - `rust/fontaine-evals/src/live.rs`
 - `rust/fontaine-core/tests/opencode_go.rs`
-- guardian crate tests (the existing guardian/scanner test module or `fontaine-guardian/tests/`)
+- `rust/fontaine-guardian/tests/guardian.rs` and `rust/fontaine-guardian/tests/scanner.rs`
 - `docs/guardian.md`
 - `CHANGELOG.md` (`### Fixed` under `[Unreleased]` for #144, via the PR step)
 
@@ -133,8 +134,7 @@ never see them.
   a retried, unparseable answer, so it is still unusable, just slower. It would also change the
   forced call every working guardian runs today. Thinking off is the issue's preferred option, and
   it is faster and cheaper.
-- **Explicit `additional_params` vs. rig's portable `Reasoning::Off`.** The portable option is
-  refused by both gateway dialects on the Chat wire, which is the reported case. It would also
+- **Explicit `additional_params` vs. rig's portable `Reasoning::Off`.** It would also
   change requests on wires that work today (OpenAI `reasoning.effort = none`, Gemini thinking
   budgets) and lower guardian quality there. The `Ignore` policy would also log a warning on every
   call. Explicit parameters touch only the wires that need them.
@@ -174,17 +174,21 @@ All of these are wiremock tests. No live API is touched.
    `agent::build_guardian(Some(&GuardianModel::Ready(handle)), &config, profile)`, adjudicate,
    and assert an Allow with no `fail_closed`. Before the fix this test fails with
    `FailClosed::Error`, which is the bug.
-2. **Scanner, same wire**: build `scanner_stage::llm_backend` on the same handle against the same
-   stand-in (answering a `clean` verdict), and assert `Scan::Clean`.
-3. **Messages wire**: capture the guardian request body for a model the anthropic catalog does not
-   list (`minimax-m3` or `claude-haiku-5-5`, served by the existing `/anthropic/v1/messages`
-   stand-in; rig drops the forced tool choice for catalog models with `rejects_forced_tool_choice`).
+2. **Scanner, same wire** (separate test in the same file): the guardian and scanner schemas are
+   both `deny_unknown_fields` on the same `submit` tool, so one canned response cannot answer both.
+   Mount its own conditional chat mock answering a `clean` verdict, reuse `signed_in_world`/`resolve`
+   and `w.load()` for the `Config`, build `scanner_stage::llm_backend` on the handle, and assert
+   `Scan::Clean`.
+3. **Messages wire**: the test mounts its own `/anthropic/v1/messages` mock and captures the
+   guardian request body for `claude-haiku-5-5` (listed by `gateway()`, absent from rig's anthropic
+   catalog; rig drops the forced tool choice for catalog models with `rejects_forced_tool_choice`).
    Assert that `tool_choice {"type":"any"}` appears together with `thinking.type == "disabled"`.
-4. **Guardian crate unit tests**: with `with_additional_params(Some(..))`, the params reach the
-   request body beside the forced tool choice. With `None`, the body has no extra keys. Use a
-   wiremock OpenAI-dialect endpoint, as the crate's existing tests do.
-5. **Provider unit test** (`opencode_go.rs` tests module): `thinking_off` per wire, including a
-   `wires` override that moves a model from Chat to Responses (→ `None`).
+4. **Guardian crate tests** (`rust/fontaine-guardian/tests/guardian.rs` and
+   `rust/fontaine-guardian/tests/scanner.rs`, using the `tests/common/mod.rs` `Endpoint` seam):
+   with `None`, the request body is unchanged and has no extra keys. With
+   `with_additional_params(Some(..))`, the params reach the body beside the forced tool choice.
+5. **Provider unit test** (`opencode_go.rs` tests module): the free function `thinking_off` per
+   wire. The override case is already covered by the existing `wire()` override test.
 
 ## Manual Verification
 
