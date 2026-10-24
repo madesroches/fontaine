@@ -19,8 +19,9 @@ changing design.
 
 ## Critical Rules
 
-- **NEVER push without a direct, unambiguous instruction** — this includes `git push`,
-  `git push --force`, and creating PRs. Local commits are fine; publishing them is not.
+- **Pushing a work branch and opening a PR need no instruction** — this project is AI-first, and
+  the maintainer's review of the PR is the gate. Never push to `main`, never push tags, and never
+  `git push --force` without a direct, unambiguous instruction.
 - **NEVER commit directly to `main`** — always work on a branch.
 - **Commit messages**: never include AI-generated credits or co-author tags.
 - **Unless asked, don't amend commits.**
