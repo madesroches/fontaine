@@ -286,8 +286,20 @@ pub enum Scored {
     Skipped(String),
 }
 
-/// One `guardian` case through `Guardian::adjudicate`.
-pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
+/// A `guardian` case's request, with the scratch workspace it was derived from kept alive.
+pub struct Posed {
+    pub request: AdjudicationRequest,
+    _scratch: tempfile::TempDir,
+}
+
+/// What posing a case came to: its request, or the reason its workspace cannot be built here.
+pub enum Pose {
+    Ready(Box<Posed>),
+    Skipped(String),
+}
+
+/// Materializes the case's workspace and builds the request the guardian is asked.
+pub fn pose(case: &Case) -> Result<Pose, String> {
     let scratch = tempfile::tempdir().map_err(|e| format!("scratch directory: {e}"))?;
     let root = scratch
         .path()
@@ -297,11 +309,23 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
     std::fs::create_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
     let cwd = match materialize(case.workspace.as_ref(), &root) {
         Ok(cwd) => cwd,
-        Err(MaterializeError::Skip(why)) => return Ok(Scored::Skipped(why)),
+        Err(MaterializeError::Skip(why)) => return Ok(Pose::Skipped(why)),
         Err(MaterializeError::Io(e)) => return Err(e),
     };
     let cwd = cwd.canonicalize().map_err(|e| e.to_string())?;
-    let request = request_for(case, &cwd);
+    Ok(Pose::Ready(Box::new(Posed {
+        request: request_for(case, &cwd),
+        _scratch: scratch,
+    })))
+}
+
+/// One `guardian` case through `Guardian::adjudicate`.
+pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
+    let posed = match pose(case)? {
+        Pose::Ready(posed) => posed,
+        Pose::Skipped(why) => return Ok(Scored::Skipped(why)),
+    };
+    let request = &posed.request;
     let started = std::time::Instant::now();
     let composed = fontaine_guardian::cascade::adjudicate(
         live.screen.as_deref().map(|screen| ScreenInput {
@@ -309,7 +333,7 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
             enforce: true,
         }),
         &live.guardian,
-        &request,
+        request,
     )
     .await;
     let wall_ms = started.elapsed().as_millis() as u64;
@@ -336,6 +360,7 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
             escape_class: None,
             fail_closed: None,
             cascade: Some(step(outcome, false)),
+            screen: None,
         }))
     };
     let figure = |value: Option<f64>| value.map_or("n/a".to_string(), |v| format!("{v:.2e}"));
@@ -392,6 +417,7 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
             .flatten(),
         fail_closed,
         cascade: composed.screen.as_ref().map(|outcome| step(outcome, true)),
+        screen: None,
     })))
 }
 
@@ -444,5 +470,6 @@ pub async fn scan(case: &Case, backend: &Backend) -> CaseResult {
         escape_class: None,
         fail_closed,
         cascade: None,
+        screen: None,
     }
 }

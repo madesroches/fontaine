@@ -34,7 +34,7 @@ fontaine/
 | `fontaine-tui` | The terminal UI: transcript, input, approval prompts, the agents panel, the workspace trust prompt and the status bar, driven by the core turn runner. See [The terminal UI](tui.md). |
 | `fontaine-agents` | Subagent orchestration without the core: the live tree of agents (who runs, what each spent, the messages waiting), the permission-mode ladder, budgets, the agent-type registry, and the `agent` and `send_message` tools. It defines the `ChildRunner` and `RootLedger` interfaces, which `fontaine-core` implements, in the same way `fontaine-tools` defines the gate. See [Subagents](agents.md). |
 | `fontaine-mcp` | Starts MCP servers over stdio or streamable HTTP and registers their tools through a sink that wraps every tool in the gate, always as `arbitrary`. See [MCP servers](mcp.md). |
-| `fontaine-evals` | Loads and validates the golden dataset, scores canned verdicts, runs `pipeline` cases through the real permission pipeline, scores a live guardian model and writes the models that clear the inclusion bar, and captures and diffs Claude Code baselines. |
+| `fontaine-evals` | Loads and validates the golden dataset, scores canned verdicts, runs `pipeline` cases through the real permission pipeline, scores a live guardian model and writes the models that clear the inclusion bar, scores a typed-decision model with its eval-only `screen:` scorer, and captures and diffs Claude Code baselines. |
 
 ## Dependencies between crates
 

@@ -127,7 +127,7 @@ weights** (docs.typesafe.ai) — the fast/cheap option, not the air-gapped one.
   classification + routing over an editable policy tree — **93.72% safety accuracy @ 58 ms mean**,
   93.10% routing accuracy; in the Hermes harness its permission gate cut per-task review time
   **4.80s → 1.33s** vs an SFT-LLM judge.
-- **Open alternatives for the local story**: Laya (convaiinnovations/laya, ModernBert backbone, MIT)
+- **Open alternatives for the local story**: Laya (convaiinnovations/laya, ModernBert backbone, Apache-2.0 per the model card)
   and vLLM's DiffusionGemma decision-model support (Red Hat AI Safety benchmark, developers.redhat.com
   Oct 2, 2026 — benchmarked Jev vs Qwen3.6/Nemotron/Laya/DiffusionGemma).
 - **Caveats**: shipped vendor default thresholds over-escalate on real dev traffic (measured in the
