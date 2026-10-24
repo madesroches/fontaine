@@ -100,21 +100,22 @@ autocompact_window = 150000   # tokens; compaction runs once the conversation's 
 ### `/compact [focus]`
 
 - `Session::compact_if_needed` is generalized to `Session::compact_logged(model, priced, reason,
-  approver) -> Option<CompactOutcome>` (the span, the unpriced-cost drop), and `compact_if_needed`
+  approver) -> CompactResult` (the span, the unpriced-cost drop), and `compact_if_needed`
   becomes the `Threshold` call of it. The span gains a `compaction.reason` field
   (`threshold` / `asked`).
 - `compact` returns what it did instead of only the usage:
 
   ```rust
-  pub struct CompactOutcome {
-      pub usage: Option<Usage>,       // the summarizer call's, when it answered
-      pub before: u64,                // estimate_tokens of the conversation before
-      pub after: Option<u64>,         // after, when a summary was saved
+  pub enum CompactResult {
+      Skipped,                        // no window on a threshold call, under the threshold, nothing new to summarize
+      Failed { usage: Option<Usage> },// already warned through the Approver
+      Compacted { usage: Option<Usage>, before: u64, after: u64 }, // estimate_tokens before / after
   }
   ```
 
-  `None` stays "nothing was done" (no window for a threshold call, under the threshold, nothing
-  new to summarize). Existing callers take `.usage`.
+  A model with no `spec()` warns on an Asked call (`the model's catalog entry is unknown, so it
+  cannot be asked to summarize`) and returns `Failed`; a threshold call stays `Skipped`
+  silently. Existing callers take the variant's `usage` (headless totals included).
 - TUI: `Command::Compact(String)`; the arm runs `compact_logged` with
   `CompactReason::Asked { focus }` on the main model, while its own `tokio::select!` loop (turn()'s
   loop is tied to `run_turn`; this one is modeled on `shell()`, `lib.rs:752-823`, and
@@ -127,8 +128,8 @@ autocompact_window = 150000   # tokens; compaction runs once the conversation's 
   mid-way. A slash command typed meanwhile gets the existing refusal (`app.rs:665-668`). The usage goes to the `fontaine.compaction` span only, as the turn path's compaction
   does. Notices:
   - saved: `compacted the conversation: ~41.2k → ~6.3k tokens`
-  - nothing to summarize: `nothing to compact`
-  - a failure already warned through the `Approver`; no second notice.
+  - `Skipped`: `nothing to compact`
+  - `Failed`: already warned through the `Approver`; no second notice.
 - Esc interrupts it like a turn: the future is dropped, the saved conversation is untouched
   (`compact` saves only at its end), and any queued text is restored to the input box.
 
@@ -186,7 +187,7 @@ A read-only notice, built by a pure function from a core snapshot.
   ```
 
   Every count is the `HeuristicTokenCounter::default()` estimate rig-memory's threshold uses
-  (text counted as `count(&Message::user(text))`, tools with `count_tool`). The `messages` row and
+  (text counted as `count(&Message::system(text))`, tools with `count_tool`). The `messages` row and
   the trigger agree because both use `estimate_tokens` on the conversation and
   `Session::autocompact_at`; the trigger counts messages only, not the prompt or tools.
 - `build_agent` keeps what it assembled: new `prompt::layers(&PromptParts) -> PromptPieces`
@@ -201,8 +202,9 @@ A read-only notice, built by a pure function from a core snapshot.
   `window - reserve` and the configured window) from the same inputs as `over_threshold`; the
   report compares it with the `messages` row, and `reports::context` derives which limit
   applies (reserve or configured) by comparing `configured` and `reserve` with `autocompact_at`.
-- `AgentRuntime::context_usage(&self) -> ContextUsage` (async: it loads the conversation and the
-  tool definitions).
+- `AgentRuntime::context_usage(&self) -> Result<ContextUsage, ContextError>` (async: it loads the
+  conversation and the tool definitions, either of which can fail; `ContextError` is a plain
+  chain via `source()`, and the TUI renders it with `error_chain::chain` as an error notice).
 - TUI: `Command::Context(String)`; `reports::context(&ContextUsage, all: bool) -> String`. The argument is parsed in
   `commands.rs`/`lib.rs` like `/mcp` (`lib.rs:629-637`) and `/copy` (`commands.rs:205`,
   `reply_number`), so the builder never sees a bad one:
@@ -241,7 +243,8 @@ commands are terminal-UI only, as the other built-ins are.
 2. **Session trigger.** In `session.rs`, add `autocompact_window`, its setter,
    `over_threshold`, `autocompact_at`, the narrowed unknown-window return, `CompactOutcome`, and
    `compact_logged` (with the reason on the span). Update `compact_if_needed`'s callers
-   (`lib.rs:1349`, `headless.rs:610`) and the tests that call `compact` for `.usage`.
+   (`lib.rs:1349`, `headless.rs:610`) and the tests that read `.usage`/`.cost` from `compact` or
+   `compact_if_needed` (`tests/ledger.rs:126,146,163,179,187,200,214`).
 3. **Clear in the store.** `Session::clear` and `ClearError` in `session.rs`.
 4. **Ledger record.** `Record::ContextCleared` and the `LedgerView::apply` reset in
    `ledger.rs`.
@@ -269,7 +272,7 @@ commands are terminal-UI only, as the other built-ins are.
 - `rust/fontaine-tui/src/commands.rs`, `reports.rs`, `transcript.rs`, `lib.rs`
 - `rust/fontaine/src/headless.rs` (the `compact_if_needed` return type)
 - `rust/fontaine-core/tests/ledger.rs`, `rust/fontaine-core/tests/permissions_auto.rs`
-- `rust/fontaine-tui/tests/tui.rs`, `rust/fontaine/tests/headless_contract.rs`
+- `rust/fontaine-tui/tests/tui.rs`, `rust/fontaine-tui/tests/common/mod.rs`, `routed.rs`, `rust/fontaine/tests/headless_contract.rs`
 - `docs/tui.md`, `docs/configuration.md`, `docs/headless.md`, `docs/architecture.md`,
   `docs/telemetry.md`,
   `docs/guardian.md`, `docs/index.md`, `tasks/design/config.md`,
@@ -372,8 +375,10 @@ Integration tests (offline: the deterministic test model / wiremock already used
   record; `/context` after a reply shows the `messages` and `tools` rows; text typed while
   `/compact` runs is back in the input box afterwards and no steering message is delivered to the
   next turn (`World::routed` with a delayed route, `Route::delay`, `tests/common/routed.rs:54`,
-  as at `tests/tui.rs:1059`, matching the summarizer request; confirm the routed model has a
-  `spec()` with a window, since compact returns None without one, `session.rs:240`).
+  as at `tests/tui.rs:1059`, matching the summarizer request; the TUI test harness gains a
+  catalog-known model name, as the headless `Sandbox::priced`, and a non-stream JSON reply in
+  `Routed::respond`, as headless has, since the summarizer call is non-streaming and a model
+  without a `spec()` is not compacted).
 - Headless (`headless_contract.rs`): a `--settings` file with a small `autocompact_window`
   triggers the summarizer call before the turn on a conversation the reserve alone would not
   compact.
