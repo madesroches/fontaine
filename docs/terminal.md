@@ -163,8 +163,10 @@ What is printed:
 
 A dialog is printed in full when it opens and afterwards only the lines that changed: moving the
 selection prints the newly selected row as `selected: ...`, and scrolling a long list prints the
-row that came into view. While you type a reason for denying a call, each character you type is
-echoed as you type it and the prompt is not printed again.
+row that came into view. In the model picker each model row names its account (`beta/llama3`).
+While you type a reason for denying a call, a field of the provider dialog (including the
+startup setup dialog) or the model picker's filter, each character you type is echoed as you
+type it and the prompt is not printed again. An API key is echoed as `•` bullets.
 
 What you type is echoed after a `> ` prompt, one character at a time. Editing anywhere except the
 end of the line prints the whole input again on a fresh line. When output arrives while you are

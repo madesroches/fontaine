@@ -279,6 +279,19 @@ impl ModelPicker {
     /// `max_rows` bounds the rows under the header (headings included), so a short terminal
     /// still shows the header and the selection.
     pub fn body(&self, width: usize, max_rows: usize, theme: &Theme) -> Vec<Line<'static>> {
+        self.body_as(width, max_rows, theme, false)
+    }
+
+    /// `qualified` labels each model row with its full `account/model` reference: a linear
+    /// renderer has no group headings in view when a row is announced, and two accounts can
+    /// list the same model name.
+    pub fn body_as(
+        &self,
+        width: usize,
+        max_rows: usize,
+        theme: &Theme,
+        qualified: bool,
+    ) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let dim = Style::default().add_modifier(Modifier::DIM);
         let clip = |text: String| -> String { text.chars().take(width).collect() };
@@ -307,7 +320,11 @@ impl ModelPicker {
                     lines.push(Line::styled(clip(name.clone()), bold.fg(theme.heading)));
                 }
                 Row::Failed(reason) => lines.push(Line::styled(clip(format!("  {reason}")), dim)),
-                Row::Model { label, current, .. } => {
+                Row::Model {
+                    label,
+                    reference,
+                    current,
+                } => {
                     let chosen = seen == self.selected;
                     let mark = if *current { " (current)" } else { "" };
                     let style = if chosen {
@@ -317,7 +334,8 @@ impl ModelPicker {
                     } else {
                         Style::default()
                     };
-                    lines.push(Line::styled(clip(format!("  {label}{mark}")), style));
+                    let name = if qualified { reference } else { label };
+                    lines.push(Line::styled(clip(format!("  {name}{mark}")), style));
                     seen += 1;
                 }
             }
@@ -336,6 +354,12 @@ impl ModelPicker {
         }
         out.extend(lines.into_iter().skip(start).take(window));
         out
+    }
+
+    /// The filter as a prompt and what is typed, for a renderer that echoes typing instead of
+    /// redrawing the footer.
+    pub fn field(&self) -> (&'static str, String) {
+        ("filter: ", self.query.clone())
     }
 
     pub fn footer(&self) -> Vec<Line<'static>> {

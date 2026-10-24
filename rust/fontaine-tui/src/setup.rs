@@ -321,7 +321,10 @@ impl Setup {
             title,
             body,
             footer,
-            field: self.picker.is_none().then(|| self.dialog.field()).flatten(),
+            field: match &self.picker {
+                Some(picker) => Some(picker.field()),
+                None => self.dialog.field(),
+            },
         }
     }
 

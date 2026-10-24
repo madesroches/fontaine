@@ -44,7 +44,26 @@ pub(crate) fn flatten(line: &Line<'_>) -> String {
 }
 
 pub(crate) fn flatten_all(lines: &[Line<'_>]) -> Vec<String> {
-    lines.iter().map(flatten).collect()
+    lines
+        .iter()
+        .flat_map(|line| {
+            flatten(line)
+                .split('\n')
+                .map(terminal_text)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// One line made safe to write raw: of a line redrawn with `\r` (a progress meter) only the
+/// last drawing is kept, as a terminal would show it, and other control characters, which could
+/// move the cursor or ring the bell, are dropped.
+pub(crate) fn terminal_text(line: &str) -> String {
+    let line = line.trim_end_matches('\r');
+    let line = line.rsplit('\r').next().unwrap_or(line);
+    line.chars()
+        .filter(|c| !c.is_ascii_control() || *c == '\t')
+        .collect()
 }
 
 /// A line without its `selected: ` prefix, marker column or indentation, so a row that only
@@ -231,7 +250,7 @@ fn label(settled: &Settled<'_>, out: &mut Vec<String>) {
             command, output, ..
         } => {
             out.push(format!("shell: {command}"));
-            out.extend(output.trim_end().split('\n').map(str::to_string));
+            out.extend(output.trim_end().split('\n').map(terminal_text));
         }
     }
 }
@@ -271,7 +290,7 @@ impl<W: Write> Linear<W> {
             label(&settled, &mut lines);
         }
 
-        let overlay = view::overlay(app, WIDTH, u16::MAX);
+        let overlay = view::overlay(app, WIDTH, u16::MAX, true);
         if overlay.body.is_empty() {
             self.echo.close();
         } else {
@@ -356,6 +375,7 @@ impl<W: Write> Linear<W> {
 mod tests {
     use super::*;
     use crate::app::Input;
+    use crate::model_picker::{Group, ModelPicker, PickerPurpose};
     use fontaine_core::models::ModelRef;
     use fontaine_core::permissions::{ApprovalRequest, Offers};
     use fontaine_core::turn::SessionEvent;
@@ -440,6 +460,38 @@ mod tests {
     }
 
     // --- echo_diff ---
+
+    #[test]
+    fn terminal_text_keeps_the_last_redraw_and_drops_controls() {
+        assert_eq!(terminal_text("10%\r50%\r100%"), "100%");
+        assert_eq!(terminal_text("line\r"), "line");
+        assert_eq!(terminal_text("a\x07b\x1b[2Jc\td"), "ab[2Jc\td");
+        let lines = [Line::from(ratatui::text::Span::raw("first\nsecond"))];
+        assert_eq!(flatten_all(&lines), ["first", "second"]);
+    }
+
+    #[test]
+    fn moving_between_same_named_models_announces_the_account() {
+        let mut rig = Rig::new();
+        let group = |account: &str| {
+            Group::new(
+                account.into(),
+                fontaine_core::config::AccountKind::named("ollama"),
+                Ok(vec!["llama3".to_string()]),
+            )
+        };
+        rig.app.models = Some(ModelPicker::new(
+            PickerPurpose::Main,
+            "pick".into(),
+            None,
+            Vec::new(),
+            vec![group("alpha"), group("beta")],
+        ));
+        rig.render();
+        rig.key(KeyCode::Down);
+        let out = rig.render();
+        assert!(out.contains("selected: beta/llama3"), "{out:?}");
+    }
 
     #[test]
     fn echo_diff_writes_what_was_appended() {
@@ -561,7 +613,7 @@ mod tests {
             matches: vec!["a.rs".into(), "b.rs".into()],
             selected: 1,
         });
-        let overlay = view::overlay(&app, 80, 24);
+        let overlay = view::overlay(&app, 80, 24, true);
         assert_eq!(selected(&overlay.body), ["selected: b.rs"]);
     }
 

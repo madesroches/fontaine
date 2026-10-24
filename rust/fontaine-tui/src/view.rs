@@ -45,7 +45,7 @@ fn input_view(buffer: &InputBuffer, width: usize) -> InputView {
 /// The rows the live area needs for the next frame, at most `max_height`.
 pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
     let inner_width = usize::from(width.saturating_sub(2)).max(1);
-    let Overlay { body, footer, .. } = overlay(app, inner_width, max_height);
+    let Overlay { body, footer, .. } = overlay(app, inner_width, max_height, false);
     let overlay_rows = if body.is_empty() {
         0
     } else {
@@ -70,7 +70,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         footer,
         approval: is_approval,
         ..
-    } = overlay(app, inner_width, area.height);
+    } = overlay(app, inner_width, area.height, false);
     let view = input_view(&app.input, inner_width);
     let input_height = view.rows.len() as u16 + 2;
     let queued = queued_lines(app, inner_width);
@@ -167,7 +167,7 @@ impl Overlay {
 /// prompt, the MCP server prompt, the model picker, the provider dialog, the agents panel, the approval prompt, the
 /// history search or the file completion list, then the `/` menu, in that order of precedence,
 /// which is the order `App::handle_key` routes keys in.
-pub(crate) fn overlay(app: &App, width: usize, height: u16) -> Overlay {
+pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Overlay {
     let theme = &app.theme;
     if let Some(list) = &app.denied {
         return Overlay::new("denied", list.body(width, theme), list.footer());
@@ -192,7 +192,10 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16) -> Overlay {
         };
         let footer = picker.footer();
         let rows = body_rows(app, width, height, footer.len());
-        return Overlay::new(title, picker.body(width, rows, theme), footer);
+        return Overlay {
+            field: Some(picker.field()),
+            ..Overlay::new(title, picker.body_as(width, rows, theme, linear), footer)
+        };
     }
     if let Some(dialog) = &app.providers {
         let footer = dialog.footer();
