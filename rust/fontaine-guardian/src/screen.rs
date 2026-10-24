@@ -20,6 +20,9 @@ const TARGET: &str = "fontaine::telemetry";
 /// question.
 const MIN_LABEL_MASS: f64 = 0.5;
 const TOP_LOGPROBS: u32 = 20;
+/// Keeps the model resident between calls, so a quiet stretch does not bring the cold load back.
+const KEEP_ALIVE: &str = "30m";
+const WARM_UP_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The questions the screen can ask. The wording and the polarity are part of what a threshold
 /// was calibrated against, so they are fixed in code rather than free text in settings.
@@ -140,6 +143,41 @@ impl Screen {
         &self.settings
     }
 
+    /// Loads the model into the daemon. A cold load takes seconds, far past the per-call timeout,
+    /// so without this every early call cancels the load and the screen never answers.
+    pub async fn warm_up(&self) -> Result<(), String> {
+        let url = self
+            .settings
+            .endpoint
+            .join("api/chat")
+            .map_err(|e| format!("bad screen endpoint: {e}"))?;
+        let body =
+            json!({ "model": self.settings.model, "messages": [], "keep_alive": KEEP_ALIVE });
+        let response = tokio::time::timeout(
+            WARM_UP_TIMEOUT,
+            self.client
+                .post(url)
+                .header("content-type", "application/json")
+                .body(body.to_string())
+                .send(),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "the model did not load within {} s",
+                WARM_UP_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| format!("request failed: {}", chain(&e)))?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "the screen model answered HTTP {}",
+                response.status()
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn screen(&self, request: &AdjudicationRequest) -> ScreenOutcome {
         let span = tracing::info_span!(
             target: TARGET,
@@ -189,6 +227,7 @@ impl Screen {
                 { "role": "user", "content": screen_message(&shaped, question) },
             ],
             "stream": false,
+            "keep_alive": KEEP_ALIVE,
             "think": false,
             "logprobs": true,
             "top_logprobs": TOP_LOGPROBS,
@@ -444,6 +483,7 @@ mod tests {
         assert_eq!(sent["logprobs"], json!(true));
         assert_eq!(sent["top_logprobs"], json!(20));
         assert_eq!(sent["options"]["num_predict"], json!(1));
+        assert_eq!(sent["keep_alive"], json!(KEEP_ALIVE));
         assert_eq!(sent["messages"][0]["content"], json!(SYSTEM_PROMPT));
         let user = sent["messages"][1]["content"].as_str().unwrap();
         assert!(user.contains("<untrusted"));
@@ -453,6 +493,30 @@ mod tests {
         assert!(!user.contains("args_digest"));
         assert!(!user.contains("Adjudicate the tool call below"));
         assert!(!user.contains("Submit your verdict"));
+    }
+
+    #[tokio::test]
+    async fn warming_up_loads_the_model_and_keeps_it_resident() {
+        let server = serve(ResponseTemplate::new(200).set_body_json(json!({}))).await;
+        screen_for(&server, Question::EmployeeAllowed, Some(0.9))
+            .warm_up()
+            .await
+            .unwrap();
+        let received = server.received_requests().await.unwrap();
+        let sent: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(sent["messages"], json!([]));
+        assert_eq!(sent["keep_alive"], json!(KEEP_ALIVE));
+    }
+
+    #[tokio::test]
+    async fn a_failed_warm_up_is_an_error() {
+        let server = serve(ResponseTemplate::new(500)).await;
+        assert!(
+            screen_for(&server, Question::EmployeeAllowed, Some(0.9))
+                .warm_up()
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

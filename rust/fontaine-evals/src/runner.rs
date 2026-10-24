@@ -406,6 +406,13 @@ fn run_score(args: &RunArgs) -> u8 {
             Ok(rt) => rt,
             Err(code) => return code,
         };
+        // An unloaded screen answers no case, so a cascade scorecard without it measures nothing.
+        if let Some(screen) = &connected.screen
+            && let Err(e) = rt.block_on(screen.warm_up())
+        {
+            eprintln!("fontaine-evals: the screen model did not load: {e}");
+            return EXIT_FAIL;
+        }
         // Only once setup has succeeded: a sidecar left by a run that never started would block
         // the next one.
         let mut sidecar = None;

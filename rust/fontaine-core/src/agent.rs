@@ -423,7 +423,18 @@ impl AgentRuntime {
         }));
 
         match build_screen(&setup.config, setup.guardian_profile) {
-            Ok(stage) => state.set_screen(stage),
+            Ok(stage) => {
+                // Best-effort: a screen that never loads already reaches the user as an
+                // unavailable-screen warning on its first call.
+                if let (Some(stage), Ok(runtime)) = (&stage, tokio::runtime::Handle::try_current())
+                {
+                    let screen = stage.screen.clone();
+                    runtime.spawn(async move {
+                        let _ = screen.warm_up().await;
+                    });
+                }
+                state.set_screen(stage)
+            }
             Err(e) => setup
                 .approver
                 .warn(&format!("the guardian screen stage is off: {e}")),
