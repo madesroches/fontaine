@@ -19,6 +19,10 @@ impl Provider for OpenAiCompatible {
         "openai-compatible"
     }
 
+    fn base_url_policy(&self) -> super::BaseUrlPolicy {
+        super::BaseUrlPolicy::Required
+    }
+
     fn credential(&self) -> CredentialPolicy {
         CredentialPolicy::Optional
     }

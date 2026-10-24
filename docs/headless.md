@@ -42,8 +42,10 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `--append-system-prompt <text>` | Appends to the system prompt after every other layer. |
 | `--settings <file>` | A settings file layered over the others (CLI scope). |
 | `--debug-file <path>` | Writes diagnostics to a local, owner-only file. |
-| `fontaine auth login <account>` | Stores an account's credential. See [Credentials](configuration.md#credentials). |
-| `fontaine auth login --telemetry` | Stores the telemetry ingestion key. |
+
+A headless run takes its credentials from `api_key_env` or from a `credentials.toml` already in the
+data directory; it never prompts. Store them in the terminal UI with `/login`, or provision the
+file in CI. See [Credentials](configuration.md#credentials).
 
 The budget is checked between model calls. A call that pushes the spend over the cap stops the
 run before its tool calls execute; an answer that was already complete is kept. The spend includes

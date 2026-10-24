@@ -18,8 +18,8 @@ before anything runs:
 
 - the ingestion URL, `endpoint`; there is no default;
 - the ingestion key: the environment variable that `api_key_env` names, or, when `api_key_env` is
-  omitted, the key stored with `fontaine auth login --telemetry`. Keys are never written in
-  settings.
+  omitted, the `[telemetry]` entry of `credentials.toml` in the data directory, which you provision
+  yourself (there is no command that stores it). Keys are never written in settings.
 
 Only the user file and `--settings` can enable telemetry or change where it goes. A project file
 can set `enabled = false` and nothing else, so a repository cannot start exporting from your

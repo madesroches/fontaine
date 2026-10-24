@@ -412,6 +412,10 @@ impl Ui {
         }
     }
 
+    pub fn paste(&self, text: &str) {
+        let _ = self.keys.send(Input::Paste(text.to_string()));
+    }
+
     pub fn send(&self, line: &str) {
         self.type_text(line);
         self.press(KeyCode::Enter);

@@ -123,7 +123,7 @@ async fn a_dead_refresh_token_says_to_sign_in_again() {
     );
     let err = source.token().await.unwrap_err();
     assert!(err.to_string().contains("has ended"), "{err}");
-    assert!(err.to_string().contains("fontaine auth login go"), "{err}");
+    assert!(err.to_string().contains("/login go"), "{err}");
 }
 
 #[tokio::test]
@@ -137,7 +137,7 @@ async fn an_account_with_no_stored_sign_in_says_so() {
         Arc::new(AgainstServer(server.uri())),
     );
     let err = source.token().await.unwrap_err();
-    assert!(err.to_string().contains("fontaine auth login go"), "{err}");
+    assert!(err.to_string().contains("/login go"), "{err}");
 }
 
 #[tokio::test]

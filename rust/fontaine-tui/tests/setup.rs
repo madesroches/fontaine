@@ -1,0 +1,214 @@
+//! The pre-session setup screen: no main model resolves, so the provider dialog runs first and
+//! the session starts once a model does.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use fontaine_core::config::{self, Config, LoadParams};
+use fontaine_core::dirs::Dirs;
+use fontaine_tui::Input;
+use fontaine_tui::setup::{SetupParams, drive};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use serde_json::json;
+use tokio::sync::mpsc::unbounded_channel;
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+struct Scratch {
+    _tmp: tempfile::TempDir,
+    dirs: Dirs,
+    user_file: PathBuf,
+    root: PathBuf,
+}
+
+impl Scratch {
+    fn new(settings: &str) -> Scratch {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let dirs = Dirs {
+            config: root.join("config"),
+            data: root.join("data"),
+        };
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        std::fs::create_dir_all(&dirs.data).unwrap();
+        let user_file = dirs.config.join("config.toml");
+        std::fs::write(&user_file, settings).unwrap();
+        Scratch {
+            _tmp: tmp,
+            dirs,
+            user_file,
+            root,
+        }
+    }
+
+    fn config(&self) -> Config {
+        config::load(&LoadParams {
+            launch_dir: &self.root,
+            config_dir: &self.dirs.config,
+            data_dir: &self.dirs.data,
+            settings_file: None,
+            cli_rules: Default::default(),
+            env: &|_| None,
+        })
+        .unwrap()
+    }
+
+    fn params(&self, error: &str) -> SetupParams {
+        SetupParams {
+            config: self.config(),
+            dirs: self.dirs.clone(),
+            env: Arc::new(|_| None),
+            error: error.to_string(),
+            model_override: None,
+            session_id: "00000000-0000-4000-8000-000000000001".to_string(),
+            user_file: self.user_file.clone(),
+        }
+    }
+}
+
+fn keys(script: &[Input]) -> tokio::sync::mpsc::UnboundedReceiver<Input> {
+    let (tx, rx) = unbounded_channel();
+    for input in script {
+        tx.send(input.clone()).unwrap();
+    }
+    // The sender drops here: an exhausted script ends the setup like a closed terminal.
+    rx
+}
+
+fn key(code: KeyCode) -> Input {
+    Input::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+fn text(s: &str) -> Vec<Input> {
+    s.chars().map(|c| key(KeyCode::Char(c))).collect()
+}
+
+fn terminal() -> Terminal<TestBackend> {
+    Terminal::new(TestBackend::new(100, 30)).unwrap()
+}
+
+async fn gateway() -> MockServer {
+    let server = MockServer::start().await;
+    let data: Vec<_> = ["gw-large", "gw-small"]
+        .iter()
+        .map(|id| json!({"id": id, "object": "model", "created": 0, "owned_by": "x"}))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .and(header("authorization", "Bearer k-gw"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"object": "list", "data": data})),
+        )
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn leaving_the_setup_starts_nothing() {
+    let s = Scratch::new("");
+    let out = drive(
+        s.params("no main model"),
+        terminal(),
+        keys(&[key(KeyCode::Esc)]),
+    )
+    .await
+    .unwrap();
+    assert!(out.is_none());
+    let out = drive(s.params("no main model"), terminal(), keys(&[]))
+        .await
+        .unwrap();
+    assert!(out.is_none());
+}
+
+#[tokio::test]
+async fn a_new_user_adds_an_account_logs_in_picks_a_model_and_the_session_starts() {
+    let server = gateway().await;
+    let s = Scratch::new("");
+    let mut script = vec![key(KeyCode::Char('a'))];
+    script.extend((0..3).map(|_| key(KeyCode::Down)));
+    script.push(key(KeyCode::Enter));
+    script.extend(text("gw"));
+    script.push(key(KeyCode::Enter));
+    script.extend(text(&server.uri()));
+    script.push(key(KeyCode::Enter));
+    // The key arrives as a paste, which the masked field takes.
+    script.push(Input::Paste("k-gw".to_string()));
+    script.push(key(KeyCode::Enter));
+    script.extend(text("small"));
+    script.push(key(KeyCode::Enter));
+
+    let (models, config) = drive(
+        s.params("no main model: set `[model] model`"),
+        terminal(),
+        keys(&script),
+    )
+    .await
+    .unwrap()
+    .expect("the session starts");
+
+    assert_eq!(models.main.reference.to_string(), "gw/gw-small");
+    assert!(config.accounts.contains_key("gw"));
+    assert_eq!(config.model.as_deref(), Some("gw/gw-small"));
+    let settings = std::fs::read_to_string(&s.user_file).unwrap();
+    assert!(settings.contains("[accounts.gw]"), "{settings}");
+    assert!(settings.contains("model = \"gw/gw-small\""), "{settings}");
+    assert!(!settings.contains("k-gw"));
+    let stored = std::fs::read_to_string(s.dirs.data.join("credentials.toml")).unwrap();
+    assert!(stored.contains("k-gw"), "{stored}");
+}
+
+#[tokio::test]
+async fn an_existing_account_can_be_logged_in_and_its_model_picked() {
+    let server = gateway().await;
+    let s = Scratch::new(&format!(
+        "[accounts.gw]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\n\n[model]\nmodel = \"gw/gone\"\n",
+        server.uri()
+    ));
+    let mut script = vec![key(KeyCode::Enter)];
+    script.extend(text("k-gw"));
+    script.push(key(KeyCode::Enter));
+    // Any key dismisses the result; `m` then picks a model of the selected account.
+    script.push(key(KeyCode::Char(' ')));
+    script.push(key(KeyCode::Char('m')));
+    script.extend(text("large"));
+    script.push(key(KeyCode::Enter));
+    let (models, _) = drive(
+        s.params("account `gw` does not offer model `gone`"),
+        terminal(),
+        keys(&script),
+    )
+    .await
+    .unwrap()
+    .expect("the session starts");
+    // Logging in is not choosing: the stale model fails again until one is picked.
+    assert_eq!(models.main.reference.to_string(), "gw/gw-large");
+    let settings = std::fs::read_to_string(&s.user_file).unwrap();
+    assert!(settings.contains("model = \"gw/gw-large\""), "{settings}");
+}
+
+#[tokio::test]
+async fn a_pick_replaces_the_model_given_on_the_command_line() {
+    let server = gateway().await;
+    let s = Scratch::new(&format!(
+        "[accounts.gw]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\n",
+        server.uri()
+    ));
+    std::fs::write(
+        s.dirs.data.join("credentials.toml"),
+        "[accounts.gw]\napi_key = \"k-gw\"\n",
+    )
+    .unwrap();
+    let mut script = vec![key(KeyCode::Char('m'))];
+    script.extend(text("small"));
+    script.push(key(KeyCode::Enter));
+    let mut params = s.params("account `gw` does not offer model `nope`");
+    params.model_override = Some("gw/nope".to_string());
+    let (models, _) = drive(params, terminal(), keys(&script))
+        .await
+        .unwrap()
+        .expect("the session starts");
+    assert_eq!(models.main.reference.to_string(), "gw/gw-small");
+}

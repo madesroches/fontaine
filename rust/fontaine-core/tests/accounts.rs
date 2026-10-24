@@ -235,7 +235,7 @@ async fn a_main_account_that_needs_a_key_and_has_none_is_a_config_error() {
     );
     let err = resolve(&w, &env_of(&[]), None).await.unwrap_err();
     assert_eq!(err.exit_code(), 2);
-    assert!(message(&err).contains("fontaine auth login work"), "{err}");
+    assert!(message(&err).contains("/login work"), "{err}");
 
     // A named variable that is unset or empty is just as missing.
     w.user_file(

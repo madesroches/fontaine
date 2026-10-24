@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
+use clap::{Parser, ValueEnum};
 use fontaine_core::config::PermissionMode;
 
 #[derive(Parser, Debug)]
@@ -104,31 +104,6 @@ pub struct Cli {
     /// The task for a headless run
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
-
-    #[command(subcommand)]
-    pub command: Option<Command>,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum Command {
-    /// Manage stored credentials
-    Auth {
-        #[command(subcommand)]
-        command: AuthCommand,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum AuthCommand {
-    /// Store an account's API key, or the telemetry ingestion key, in the credentials file
-    #[command(group(ArgGroup::new("target").required(true).args(["account", "telemetry"])))]
-    Login {
-        /// The account, which must exist in the loaded configuration
-        account: Option<String>,
-        /// Store the telemetry ingestion key instead
-        #[arg(long)]
-        telemetry: bool,
-    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

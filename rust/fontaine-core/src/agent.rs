@@ -30,15 +30,19 @@ use rig_core::tool::ToolOutput;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use crate::accounts::AccountsError;
 use crate::adjudication::project_instructions;
 use crate::child_runner::{
     ChildContext, CoreChildRunner, LedgerWindow, MainModel, NotificationStage,
 };
+use crate::config::Account;
 use crate::config::{AgentMode, Config, McpServer, PermissionMode};
 use crate::extensions::Extensions;
 use crate::gate::{AutoContext, ScreenStage, SessionState, StateParams, no_guardian};
 use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
-use crate::models::{AccountListing, GuardianChoice, GuardianModel, ModelRef, Models, Switcher};
+use crate::models::{
+    AccountListing, GuardianChoice, GuardianModel, ModelRef, Models, SharedSwitcher, Switcher,
+};
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
 use crate::scanner_stage::{Backend, ScannerStage, ScannerStart, llm_backend};
@@ -219,6 +223,18 @@ pub struct Switched {
     pub persist_error: Option<String>,
 }
 
+/// What a credential change did to the live session.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CredentialEffect {
+    /// The main model was on the account and was rebuilt on its current credential.
+    pub main_rebuilt: bool,
+    /// The main model is on the account but could not be rebuilt; it keeps the client it was
+    /// built with.
+    pub main_error: Option<String>,
+    /// The guardian is on the account: whether it can be asked now.
+    pub guardian_ready: Option<bool>,
+}
+
 pub struct AgentRuntime {
     pub agent: Agent,
     pub state: Arc<SessionState>,
@@ -267,7 +283,7 @@ pub(crate) struct Setup {
     append_system_prompt: Option<String>,
     json_schema: Option<Schema>,
     user_config: Option<PathBuf>,
-    switcher: Option<Switcher>,
+    switcher: Option<SharedSwitcher>,
     project_executables: bool,
     confirm_project_servers: bool,
     env: EnvLookup,
@@ -502,7 +518,9 @@ impl AgentRuntime {
             append_system_prompt: setup.append_system_prompt,
             json_schema: setup.json_schema,
             user_config: setup.user_config,
-            switcher: setup.switcher,
+            switcher: setup
+                .switcher
+                .map(|switcher| Arc::new(RwLock::new(switcher))),
             project_executables: setup.project_executables,
             confirm_project_servers: setup.confirm_project_servers,
             env: setup.env,
@@ -916,10 +934,12 @@ impl AgentRuntime {
         }
     }
 
-    fn switcher(&self) -> Result<&Switcher, String> {
+    /// A copy of the shared switcher, so no lock is held across an await.
+    fn switcher(&self) -> Result<Switcher, String> {
         self.setup
             .switcher
             .as_ref()
+            .map(|switcher| switcher.read().unwrap_or_else(|e| e.into_inner()).clone())
             .ok_or_else(|| "models cannot be switched in this session".to_string())
     }
 
@@ -945,9 +965,21 @@ impl AgentRuntime {
     /// choice as `[model] model`. The guardian follows only when it is on the main-model
     /// fallback; a pinned or validated guardian stays where it is.
     pub async fn switch_main_model(&mut self, text: &str) -> Result<Switched, String> {
+        let guardian_followed = self.install_main(text).await?;
+        let reference = self.models.main.reference.to_string();
+        let persist_error = self.persist(|path| user_config::set_model(path, &reference));
+        Ok(Switched {
+            reference,
+            guardian_followed,
+            persist_error,
+        })
+    }
+
+    /// Resolves `text`, rebuilds the agent on it and makes it the model of the session and its
+    /// subagents, without saving anything. Returns whether the guardian followed.
+    async fn install_main(&mut self, text: &str) -> Result<bool, String> {
         let (handle, listing) = self
             .switcher()?
-            .clone()
             .main(text)
             .await
             .map_err(|e| e.to_string())?;
@@ -971,32 +1003,41 @@ impl AgentRuntime {
             self.install_guardian(&model);
             self.models.guardian = Some(model);
         }
-        let reference = self.models.main.reference.to_string();
-        let persist_error = self.persist(|path| user_config::set_model(path, &reference));
-        Ok(Switched {
-            reference,
-            guardian_followed,
-            persist_error,
-        })
+        Ok(guardian_followed)
     }
 
     /// The models of every configured account, for the `/model` picker. The first call fetches
-    /// them; later calls fetch only the accounts that failed before, so a credential added
-    /// mid-session shows up while cached successes make no request. The main account's entry
-    /// always follows the current listing.
-    pub async fn model_listings(&mut self) -> Result<&[AccountListing], String> {
-        let switcher = self.switcher()?.clone();
-        let failed: Vec<String> = self
-            .listings
-            .iter()
-            .filter(|l| l.models.is_err())
-            .map(|l| l.account.clone())
-            .collect();
-        let only = (!self.listings.is_empty()).then_some(failed.as_slice());
+    /// them; later calls fetch only the accounts that failed before or were not listed yet, so
+    /// a credential or account added mid-session shows up while cached successes make no
+    /// request. The main account's entry always follows the current listing. With `account`,
+    /// that account is fetched whether cached or not and only its listing is returned.
+    pub async fn model_listings(
+        &mut self,
+        account: Option<&str>,
+    ) -> Result<Vec<AccountListing>, String> {
+        let switcher = self.switcher()?;
+        let wanted: Option<Vec<String>> = match account {
+            Some(name) => Some(vec![name.to_string()]),
+            None if self.listings.is_empty() => None,
+            None => Some(
+                switcher
+                    .config
+                    .accounts
+                    .keys()
+                    .filter(|name| {
+                        self.listings
+                            .iter()
+                            .find(|l| l.account == **name)
+                            .is_none_or(|l| l.models.is_err())
+                    })
+                    .cloned()
+                    .collect(),
+            ),
+        };
         let fetched = switcher
             .listings(
-                (&self.models.main.reference, &self.models.main_listing),
-                only,
+                Some((&self.models.main.reference, &self.models.main_listing)),
+                wanted.as_deref(),
             )
             .await;
         for listing in fetched {
@@ -1014,7 +1055,93 @@ impl AgentRuntime {
         if let Some(slot) = self.listings.iter_mut().find(|l| l.account == *main) {
             slot.models = Ok(self.models.main_listing.clone());
         }
-        Ok(&self.listings)
+        Ok(match account {
+            Some(name) => self
+                .listings
+                .iter()
+                .filter(|l| l.account == name)
+                .cloned()
+                .collect(),
+            None => self.listings.clone(),
+        })
+    }
+
+    /// Installs an account the provider dialog added, in the session's configuration and in the
+    /// switcher the subagents share. It is listed by the next [`AgentRuntime::model_listings`].
+    pub fn account_added(&mut self, name: &str, account: Account) {
+        self.config
+            .accounts
+            .insert(name.to_string(), account.clone());
+        if let Some(switcher) = &self.setup.switcher {
+            switcher
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .config
+                .accounts
+                .insert(name.to_string(), account);
+        }
+    }
+
+    /// Forgets an account the provider dialog removed.
+    pub fn account_removed(&mut self, name: &str) {
+        self.config.accounts.remove(name);
+        if let Some(switcher) = &self.setup.switcher {
+            switcher
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .config
+                .accounts
+                .remove(name);
+        }
+        self.listings.retain(|l| l.account != name);
+    }
+
+    /// Whether the account may be removed: not while the live main model, the live guardian or
+    /// the screen stage uses it.
+    pub fn removable(&self, name: &str) -> Result<(), AccountsError> {
+        let on = |reference: &str| ModelRef::parse(reference).is_some_and(|r| r.account == name);
+        if self.models.main.reference.account == name {
+            return Err(AccountsError::InUse {
+                by: "the main model",
+            });
+        }
+        if on(self.state.guardian().label()) {
+            return Err(AccountsError::InUse { by: "the guardian" });
+        }
+        if self
+            .config
+            .guardian
+            .screen
+            .as_ref()
+            .is_some_and(|screen| on(&screen.model))
+        {
+            return Err(AccountsError::InUse {
+                by: "the guardian's screen stage",
+            });
+        }
+        Ok(())
+    }
+
+    /// Brings the session in line with a credential stored, replaced or removed for `name`: its
+    /// cached listing is dropped, the main model is rebuilt when it is on the account, and the
+    /// guardian is tried again when it is. A missing or invalid credential leaves the guardian
+    /// unavailable, which fails closed. Nothing is saved to the settings.
+    pub async fn credentials_changed(&mut self, name: &str) -> CredentialEffect {
+        self.listings.retain(|l| l.account != name);
+        let mut effect = CredentialEffect::default();
+        if self.models.main.reference.account == name {
+            let reference = self.models.main.reference.to_string();
+            match self.install_main(&reference).await {
+                Ok(_) => effect.main_rebuilt = true,
+                Err(e) => effect.main_error = Some(e),
+            }
+        }
+        let guardian_on_account = ModelRef::parse(self.state.guardian().label())
+            .is_some_and(|reference| reference.account == name);
+        if guardian_on_account {
+            effect.guardian_ready = Some(self.retry_guardian().unwrap_or(false));
+        }
+        effect
     }
 
     /// `/guardian-model`: pins the guardian to `text` for the live session and saves it as

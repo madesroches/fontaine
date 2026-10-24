@@ -194,7 +194,7 @@ pub struct ResolveParams<'a> {
 }
 
 /// Where an account's credential comes from, and what it resolved to.
-enum Credential {
+pub(crate) enum Credential {
     Found(StoredCredential),
     /// Nothing is configured to supply one.
     NoSource,
@@ -202,7 +202,7 @@ enum Credential {
     Unresolved(String),
 }
 
-fn credential(
+pub(crate) fn credential(
     name: &str,
     account: &Account,
     env: EnvLookup<'_>,
@@ -240,7 +240,7 @@ fn needs_credential(kind: AccountKind) -> bool {
 }
 
 fn missing_credential_hint(name: &str) -> String {
-    format!("set `api_key_env` in [accounts.{name}] or run `fontaine auth login {name}`")
+    format!("set `api_key_env` in [accounts.{name}] or run `/login {name}` in `fontaine`")
 }
 
 /// A client for `name`, or the reason none can be built: the credential is missing or a
@@ -264,7 +264,7 @@ fn client_for(
             }
             CredentialPolicy::SignIn => {
                 return Err(format!(
-                    "account `{name}` is not signed in; run `fontaine auth login {name}`"
+                    "account `{name}` is not signed in; run `/login {name}` in `fontaine`"
                 ));
             }
         },
@@ -604,6 +604,10 @@ pub struct Switcher {
     pub session_id: Option<String>,
 }
 
+/// The switcher a session and its subagents share, so an account added or removed mid-session
+/// reaches both.
+pub type SharedSwitcher = Arc<std::sync::RwLock<Switcher>>;
+
 pub type SharedEnv = std::sync::Arc<dyn Fn(&str) -> Option<std::ffi::OsString> + Send + Sync>;
 
 impl Switcher {
@@ -673,11 +677,12 @@ impl Switcher {
     }
 
     /// The models of every account, or only of those named in `only`, sorted by account name.
-    /// An explicit `models` list and the main account's already-fetched `main` listing cost no
-    /// call; the others are listed concurrently. A failure keeps the account's entry.
+    /// An explicit `models` list and the main account's already-fetched `main` listing (none
+    /// before a session has a main model) cost no call; the others are listed concurrently. A
+    /// failure keeps the account's entry.
     pub async fn listings(
         &self,
-        main: (&ModelRef, &[String]),
+        main: Option<(&ModelRef, &[String])>,
         only: Option<&[String]>,
     ) -> Vec<AccountListing> {
         self.listings_within(main, only, LISTING_TIMEOUT).await
@@ -686,7 +691,7 @@ impl Switcher {
     /// Tests only: [`Switcher::listings`] with its own per-account timeout.
     pub async fn listings_within(
         &self,
-        main: (&ModelRef, &[String]),
+        main: Option<(&ModelRef, &[String])>,
         only: Option<&[String]>,
         timeout: std::time::Duration,
     ) -> Vec<AccountListing> {
@@ -712,7 +717,7 @@ impl Switcher {
         futures::future::join_all(wanted.map(|(name, account)| async move {
             let models = if let Some(list) = &account.models {
                 Ok(list.clone())
-            } else if *name == main.0.account {
+            } else if let Some(main) = main.filter(|main| *name == main.0.account) {
                 Ok(main.1.to_vec())
             } else {
                 match client_for(name, account, &*self.env, stored) {

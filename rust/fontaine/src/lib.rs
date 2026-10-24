@@ -1,4 +1,3 @@
-mod auth;
 pub mod cli;
 pub mod headless;
 pub mod telemetry;
@@ -27,7 +26,7 @@ use std::io::IsTerminal;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use cli::{AuthCommand, Cli, Command, InputFormat, OutputFormat};
+use cli::{Cli, InputFormat, OutputFormat};
 use telemetry::{DebugSink, InstallParams};
 
 pub type EnvFn = Box<dyn Fn(&str) -> Option<OsString>>;
@@ -86,11 +85,7 @@ fn load_config(
             },
             env: &*host.env,
         };
-        let config = if matches!(cli.command, Some(Command::Auth { .. })) {
-            config::load_unresolved(&params)?
-        } else {
-            config::load(&params)?
-        };
+        let config = config::load(&params)?;
         let stack: Vec<String> = config.scopes.iter().map(ToString::to_string).collect();
         tracing::debug!(scope_stack = ?stack, workspace = %config.workspace.display(), "config loaded");
         Ok::<_, ConfigError>((config, dirs))
@@ -174,20 +169,6 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
             return ExitCode::from(e.exit_code());
         }
     };
-
-    if let Some(Command::Auth {
-        command: AuthCommand::Login { account, telemetry },
-    }) = &cli.command
-    {
-        return match auth::login(account.as_deref(), *telemetry, &config, &dirs.data) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(auth::LoginError::Config(e)) => usage(e),
-            Err(auth::LoginError::SignIn(e)) => {
-                eprintln!("fontaine: {}", fontaine_tools::error_chain::chain(&e));
-                ExitCode::from(1)
-            }
-        };
-    }
 
     let mode = session_mode(&cli, &config);
     if !cli.print && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
@@ -512,6 +493,19 @@ async fn start_scanner(launch: &Launch<'_>, prep: &SessionPrep, models: &Models)
     .await
 }
 
+/// The environment as the session started, for resolving models again later.
+fn shared_env(host: &Host) -> fontaine_core::agent::EnvLookup {
+    let env: std::collections::HashMap<String, OsString> = (host.env_names)()
+        .into_iter()
+        .filter_map(|name| {
+            let name = name.into_string().ok()?;
+            let value = (host.env)(&name)?;
+            Some((name, value))
+        })
+        .collect();
+    Arc::new(move |name: &str| env.get(name).cloned())
+}
+
 fn agent_setup(
     launch: &Launch<'_>,
     prep: SessionPrep,
@@ -533,17 +527,7 @@ fn agent_setup(
     );
     let mut notices = models.notices.clone();
     notices.extend(resolved.notice);
-    // The environment as the session started, for resolving models again later.
-    let env: std::collections::HashMap<String, OsString> = (host.env_names)()
-        .into_iter()
-        .filter_map(|name| {
-            let name = name.into_string().ok()?;
-            let value = (host.env)(&name)?;
-            Some((name, value))
-        })
-        .collect();
-    let lookup: fontaine_core::agent::EnvLookup =
-        Arc::new(move |name: &str| env.get(name).cloned());
+    let lookup = shared_env(host);
     let switcher = Switcher::new(
         config.clone(),
         dirs.data.clone(),
@@ -632,6 +616,14 @@ async fn run_headless(
     headless::run(options, runtime, &dirs.data).await
 }
 
+/// Whether adding an account, signing in or picking a model could fix the failure.
+fn setup_can_help(error: &models::ModelError) -> bool {
+    matches!(
+        error,
+        models::ModelError::Provider(_) | models::ModelError::Config(ConfigError::Model { .. })
+    )
+}
+
 async fn run_interactive(
     cli: &Cli,
     prep: SessionPrep,
@@ -639,10 +631,49 @@ async fn run_interactive(
     dirs: &Dirs,
     host: &Host,
 ) -> u8 {
-    let models = match resolve_models(cli, config, dirs, host, &prep.session.id).await {
-        Ok(models) => models,
-        Err(code) => return code,
+    let resolved = models::resolve(&ResolveParams {
+        config,
+        data_dir: &dirs.data,
+        env: &*host.env,
+        model_override: cli.model.as_deref(),
+        session_id: Some(prep.session.id.clone()),
+    })
+    .await;
+    // The setup screen may add accounts, so the session starts from the configuration it returns.
+    let (models, added) = match resolved {
+        Ok(models) => (models, None),
+        Err(error) if setup_can_help(&error) => {
+            let params = fontaine_tui::setup::SetupParams {
+                config: config.clone(),
+                dirs: dirs.clone(),
+                env: shared_env(host),
+                error: error.to_string(),
+                model_override: cli.model.clone(),
+                session_id: prep.session.id.clone(),
+                user_file: dirs.config.join(config::USER_FILE),
+            };
+            match fontaine_tui::setup::run(params).await {
+                Ok(Some((models, config))) => (models, Some(config)),
+                Ok(None) => {
+                    eprintln!("fontaine: {error}");
+                    return error.exit_code();
+                }
+                Err(e) => {
+                    eprintln!(
+                        "fontaine: cannot show the setup screen: {}",
+                        fontaine_tools::error_chain::chain(&e)
+                    );
+                    eprintln!("fontaine: {error}");
+                    return error.exit_code();
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("fontaine: {error}");
+            return error.exit_code();
+        }
     };
+    let config = added.as_ref().unwrap_or(config);
     let launch = Launch {
         cli,
         config,

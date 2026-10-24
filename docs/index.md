@@ -25,8 +25,8 @@ describe what the current build does; each page covers one topic.
 - [Skills, agent files and output styles](extensions.md): the extension files, their
   frontmatter, slash commands and porting from `.claude/`.
 - [The terminal UI](tui.md): keys, the status bar, approval prompts, the guardian's denials,
-  `/denied`, `/model`, `/guardian-model`, `/add-dir`, `/output-style`, the agents panel and the
-  workspace trust prompt.
+  `/denied`, `/login`, `/model`, `/guardian-model`, `/add-dir`, `/output-style`, the agents panel
+  and the workspace trust prompt.
 - [Headless runs](headless.md): `fontaine -p`, its flags, exit codes, and the versioned JSON output
   that CI and the eval runner consume.
 - [Telemetry](telemetry.md): enabling export, the micromegas and OTLP backends, what is exported,

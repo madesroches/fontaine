@@ -21,6 +21,10 @@ impl Provider for Gemini {
         CredentialPolicy::Required
     }
 
+    fn default_endpoint(&self) -> Option<&'static str> {
+        Some("https://generativelanguage.googleapis.com")
+    }
+
     fn connect(&self, ctx: ConnectContext<'_>) -> Result<Arc<dyn AccountClient>, String> {
         let mut config = GeminiConfig::new(ctx.api_key().unwrap_or_default());
         if let Some(url) = ctx.base_url() {

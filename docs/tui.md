@@ -176,6 +176,7 @@ conversation. The session starts in the mode your settings give, with no grants 
 | `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Until then a file-tool call outside the roots is denied with a hint naming this command. Only between turns. |
 | `/denied` | Lists the calls the guardian denied this session, with their rule label and explanation. Up and Down select; `r` approves the selected call once, as if you had approved it at a prompt, and tells the agent on its next turn that it may retry exactly that call. The retry runs without asking the guardian, never enters the verdict cache and does not count toward the denial limits. The deterministic floor still runs first, so an `ask` rule or a critical path still prompts. Esc closes the list. |
 | `/model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model). With one, switches the live session to that model, rebuilds the agent on it with the conversation kept, and saves it as `[model] model` in your user settings file. The guardian moves with it only when it is on the main-model fallback (no `[guardian] model` and no validated model available); a pinned or validated guardian stays. |
+| `/login [<account>]` | Opens the [provider dialog](#managing-providers) to add an account, log in, log out or remove one. With an account name it opens straight on that account's log-in: a hidden key prompt, or the device sign-in for `opencode-go`. Only between turns. |
 | `/guardian-model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model) limited to the models the guardian could be. With one, pins the guardian to that model for the live session and saves it as `[guardian] model`. A model whose account has no credential becomes an unavailable guardian, which the next adjudication reports. |
 | `/agents` | Opens the [agents panel](#the-agents-panel). |
 | `/output-style [<name>\|none]` | Without an argument, lists the [output styles](extensions.md#output-styles). With one, switches to it for the next turn; `none` removes it. |
@@ -206,14 +207,90 @@ overlay without switching.
 An account lists its models from its `models` setting when it has one, and from the provider
 otherwise. The first time the overlay opens in a session it asks the accounts that have to be
 asked, all at once and for at most 10 seconds each, and says `listing models…` while it waits.
-Successful listings are kept for the session; an account that failed is asked again the next time
-the overlay opens, so a credential added in the meantime shows up. An account that cannot be listed
+Successful listings are kept for the session, until a credential change for that account drops its
+entry; an account that failed, or was added since, is asked again the next time the overlay opens,
+so a credential added in the meantime shows up. An account that cannot be listed
 keeps its heading and shows why (`could not list: ...`), for example a missing credential, a
 provider error or the timeout.
 
 `/guardian-model` with no argument opens the same overlay with only the models the guardian could
 use: the benchmark-validated models your accounts offer and every model an account lists in its
 `models` setting. A pick pins the guardian and saves it as `[guardian] model`.
+
+## Managing providers
+
+`/login` opens the provider dialog above the message box. It lists every configured account with
+its kind, its endpoint (the account's `base_url`, else the kind's own endpoint) and what it
+authenticates with:
+
+```
+ providers ─────────────────────────────────────────────────────────────
+  go          opencode-go        https://opencode.ai/inference/go   signed in (me@example.com)
+ > local      ollama             http://localhost:11434             no key needed
+  work        anthropic          https://api.anthropic.com          key stored
+  + add account
+ ───────────────────────────────────────────────────────────────────────
+  Enter log in · m pick model · o log out · d remove · a add · Esc close
+```
+
+The state column is `key stored`, `key from $VAR` or `$VAR is not set` for an account with
+`api_key_env`, `signed in (<email>)`, `not signed in` for an account that needs a key or sign-in
+and has none, and `no key needed` for an `ollama` or `openai-compatible` account without one. It
+is what resolving the account would do, so a key left behind by a changed `kind` counts as not
+signed in.
+
+| Key | Action |
+|---|---|
+| Up, Down | Select an account, or the add row. |
+| Enter | Log in to the selected account. On the add row, add an account. |
+| `a` | Add an account. |
+| `m` | Pick a model of the selected account, in the [model picker](#choosing-a-model). |
+| `o` | Log out, after a confirmation. |
+| `d` | Remove the account, after a confirmation. |
+| Esc | Close the dialog. |
+
+**Adding an account** asks for the kind, a name and, for `openai-compatible` (required), `ollama`
+and `opencode-go` (optional), a base URL. A name is letters, digits, `-` and `_`, so it can always
+be typed as `/login <name>` or in `<account>/<model>`. The account is written to the
+`[accounts.<name>]` table of your user settings file; the rest of the file keeps its comments and
+layout. Any credential already stored under that name is deleted first, so a leftover is never
+sent to the new account's endpoint. The dialog then goes straight to the account's log-in; for a
+keyless kind, Enter skips it. When the log-in is done the dialog closes and the model picker opens
+on the new account's models. `/login` never switches the model by itself: you choose one, or press
+Esc to keep the current model.
+
+**Logging in** to a key-based account opens a key prompt. What you type or paste is drawn as `•`
+and goes straight to `credentials.toml`; it never enters the message box, the history, the
+transcript, the ledger or the logs, and only a summary line (`stored the key for work`) is shown.
+If the account sets `api_key_env`, the prompt says the stored key is ignored while the variable is
+set. Logging in to an `opencode-go` account starts the device sign-in inside the dialog: it shows
+the verification URL and the code, waits for you to approve it in a browser, and stores the token
+pair. Esc cancels the wait.
+
+A new credential takes effect in the running session. If the main model is on the account it is
+rebuilt on the new credential, an unavailable guardian on the account is tried again, and the
+account's cached model listing is dropped. The summary line says which of these happened.
+
+**Logging out** removes the stored credential from this machine; nothing is revoked at the
+provider. A main model that is already running on the account keeps the key it was built with until
+you switch models or restart (an `opencode-go` account stops working at its next token refresh),
+and the summary line says so. A guardian on the account becomes unavailable, so the calls that need
+it are denied until it has a credential again.
+
+**Removing** deletes the account's table from your user settings file and its stored credential. It
+is refused while the live main model, the live guardian or the `[guardian.screen]` model uses the
+account, and for an account defined in a settings file other than your user file.
+
+### When no model is ready at startup
+
+If the terminal UI cannot resolve its main model at startup (no `[model] model` and no `--model`,
+an unknown account, a missing credential or a provider that refuses the model listing), it shows
+the same dialog before the session starts, with the reason above it, instead of exiting. Add an
+account, log in and pick a model: the model is resolved again after every account added, log-in
+and pick, and the session starts as soon as one works. A picked model is saved as `[model] model`
+and replaces `--model` for that start. Esc leaves the screen and exits with the original error and
+exit code. A credentials file that cannot be parsed still exits at once, and headless runs never
+show the dialog.
 
 ## MCP server approvals
 

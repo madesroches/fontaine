@@ -19,6 +19,7 @@ use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt
 use crate::history::History;
 use crate::input::InputBuffer;
 use crate::model_picker::{ModelPicker, PickerKey, PickerPurpose};
+use crate::provider_dialog::{DialogKey, ProviderDialog};
 use crate::server_prompt::ServerPrompt;
 use crate::transcript::Transcript;
 
@@ -51,6 +52,8 @@ pub enum Action {
     PickModel(PickerPurpose, String),
     /// The human asked to stop a subagent.
     KillAgent(String),
+    /// The provider dialog asks for something done.
+    Providers(DialogKey),
     /// The human answered the question about starting a repository's MCP server.
     Server(bool),
 }
@@ -64,6 +67,8 @@ pub enum Command {
     OutputStyle(String),
     Model(String),
     GuardianModel(String),
+    /// `/login [account]`.
+    Login(String),
     /// A name no built-in command has; it may be a skill.
     Other {
         name: String,
@@ -84,6 +89,7 @@ pub fn parse_command(text: &str) -> Option<Command> {
         "output-style" => Command::OutputStyle(argument.trim().to_string()),
         "model" => Command::Model(argument.trim().to_string()),
         "guardian-model" => Command::GuardianModel(argument.trim().to_string()),
+        "login" => Command::Login(argument.trim().to_string()),
         _ => Command::Other {
             name: name.to_string(),
             argument: argument.trim().to_string(),
@@ -115,6 +121,11 @@ pub fn builtin_menu() -> Vec<MenuEntry> {
             "guardian-model",
             Some("[account/model]"),
             "choose the guardian model",
+        ),
+        entry(
+            "login",
+            Some("[account]"),
+            "manage providers, add accounts and sign in",
         ),
         entry("model", Some("[account/model]"), "choose the model"),
         entry(
@@ -156,6 +167,8 @@ pub struct App {
     pub server: Option<ServerPrompt>,
     /// The `/model` or `/guardian-model` picker while it is open.
     pub models: Option<ModelPicker>,
+    /// The `/login` dialog while it is open.
+    pub providers: Option<ProviderDialog>,
     /// The commands and user-invocable skills the `/` menu lists.
     pub menu: Vec<MenuEntry>,
     /// Subagents running right now, for the status bar.
@@ -199,6 +212,7 @@ impl App {
             agents: None,
             server: None,
             models: None,
+            providers: None,
             menu: builtin_menu(),
             running_agents: 0,
             denied: None,
@@ -422,7 +436,10 @@ impl App {
         match input {
             Input::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
             Input::Paste(text) => {
-                if !self.covered() {
+                // A pasted key lands in the dialog's masked field, never in the message box.
+                if let Some(dialog) = &mut self.providers {
+                    dialog.handle_paste(&text);
+                } else if !self.covered() {
                     if let Some(search) = &mut self.search {
                         search.query.push_str(&text.replace(['\r', '\n'], " "));
                         self.search_step(false);
@@ -445,6 +462,7 @@ impl App {
             || self.unavailable.is_some()
             || self.server.is_some()
             || self.models.is_some()
+            || self.providers.is_some()
             || self.agents.is_some()
     }
 
@@ -504,6 +522,21 @@ impl App {
                     self.models = None;
                     Action::PickModel(purpose, reference)
                 }
+            };
+        }
+        if let Some(dialog) = &mut self.providers {
+            return match dialog.handle_key(key) {
+                DialogKey::None => Action::None,
+                DialogKey::Close => {
+                    self.providers = None;
+                    Action::None
+                }
+                // The model picker takes the screen the dialog had.
+                request @ DialogKey::PickModel(_) => {
+                    self.providers = None;
+                    Action::Providers(request)
+                }
+                request => Action::Providers(request),
             };
         }
         // The panel can be open over a pending approval, and takes the keys while it is.
@@ -753,6 +786,62 @@ mod tests {
             parse_command("/guardian-model a/b"),
             Some(Command::GuardianModel("a/b".into()))
         );
+        assert_eq!(
+            parse_command("/login go"),
+            Some(Command::Login("go".into()))
+        );
+        assert_eq!(parse_command("/login"), Some(Command::Login(String::new())));
+    }
+
+    fn dialog_on_key_screen() -> ProviderDialog {
+        use fontaine_core::accounts::{AccountRow, SignInState};
+        let rows = vec![AccountRow {
+            name: "work".into(),
+            kind: fontaine_core::config::AccountKind::named("anthropic"),
+            endpoint: "default".into(),
+            state: SignInState::NotSignedIn,
+        }];
+        ProviderDialog::new(rows, Some("work")).0
+    }
+
+    #[test]
+    fn the_provider_dialog_takes_the_keyboard_and_pastes() {
+        let mut app = app();
+        app.providers = Some(dialog_on_key_screen());
+        assert!(app.covered());
+        type_text(&mut app, "sk-");
+        app.handle_input(Input::Paste("abc\n".into()));
+        assert!(app.input.is_empty());
+        assert!(app.history.is_empty());
+        let action = press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            action,
+            Action::Providers(DialogKey::StoreKey {
+                account: "work".into(),
+                key: crate::provider_dialog::Secret::new("sk-abc"),
+            })
+        );
+        assert!(app.input.is_empty());
+        assert!(app.transcript.entries.is_empty());
+    }
+
+    #[test]
+    fn the_dialog_closes_on_escape_and_hands_over_to_the_picker() {
+        let mut app = app();
+        let (dialog, _) = ProviderDialog::new(Vec::new(), None);
+        app.providers = Some(dialog);
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+        assert!(app.providers.is_none());
+        assert!(!app.covered());
+
+        let mut app = self::app();
+        app.providers = Some(dialog_on_key_screen());
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(
+            press(&mut app, KeyCode::Char('m')),
+            Action::Providers(DialogKey::PickModel("work".into()))
+        );
+        assert!(app.providers.is_none());
     }
 
     #[test]

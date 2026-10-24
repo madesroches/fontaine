@@ -42,7 +42,6 @@ opentelemetry-otlp = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 rig-agent.workspace = true
 rig-core.workspace = true
-rpassword.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

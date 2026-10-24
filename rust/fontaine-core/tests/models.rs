@@ -577,7 +577,9 @@ async fn listings_use_config_and_the_main_listing_without_a_request_and_list_the
     ));
     let switcher = listing_switcher(&w, &[]);
     let main = ModelRef::parse("main/m1").unwrap();
-    let listings = switcher.listings((&main, &["m1".to_string()]), None).await;
+    let listings = switcher
+        .listings(Some((&main, &["m1".to_string()])), None)
+        .await;
     let names: Vec<&str> = listings.iter().map(|l| l.account.as_str()).collect();
     assert_eq!(names, ["fixed", "live", "main"]);
     assert_eq!(listings[0].models, Ok(vec!["one".into(), "two".into()]));
@@ -586,7 +588,10 @@ async fn listings_use_config_and_the_main_listing_without_a_request_and_list_the
 
     // `only` narrows the accounts visited.
     let only = switcher
-        .listings((&main, &["m1".to_string()]), Some(&["fixed".to_string()]))
+        .listings(
+            Some((&main, &["m1".to_string()])),
+            Some(&["fixed".to_string()]),
+        )
         .await;
     assert_eq!(only.len(), 1);
 }
@@ -606,7 +611,9 @@ async fn a_failing_account_keeps_its_entry_with_the_reason() {
     ));
     let switcher = listing_switcher(&w, &[]);
     let main = ModelRef::parse("main/m1").unwrap();
-    let listings = switcher.listings((&main, &["m1".to_string()]), None).await;
+    let listings = switcher
+        .listings(Some((&main, &["m1".to_string()])), None)
+        .await;
     let names: Vec<&str> = listings.iter().map(|l| l.account.as_str()).collect();
     assert_eq!(names, ["broken", "main", "nokey"]);
     let broken = listings[0].models.as_ref().unwrap_err();
@@ -635,7 +642,7 @@ async fn a_slow_account_times_out_without_stopping_the_others() {
     let main = ModelRef::parse("main/m1").unwrap();
     let timeout = std::time::Duration::from_millis(200);
     let listings = switcher
-        .listings_within((&main, &["m1".to_string()]), None, timeout)
+        .listings_within(Some((&main, &["m1".to_string()])), None, timeout)
         .await;
     assert_eq!(
         listings[1].models,
