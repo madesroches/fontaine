@@ -159,8 +159,10 @@ All notable changes are recorded here. The format follows
     disagreement with another scorecard. Eval-only (#98).
   - Laya scored on the golden set, and the spike's experiments recorded with their scripts and a
     400-case synthetic training corpus. Experiments: question framings, ensembles, embedding probes,
-    public corpora, head fine-tuning and a screen-then-guardian cascade replay. A stop-only screen
-    kept the catch rate and removed 15% of guardian calls. Follow-ups #123–#130 (#98).
+    public corpora, head fine-tuning, question framings that ask whether the action fits the task,
+    small chat models read through logprobs, and a held-out screen-then-guardian cascade. With
+    `qwen3-4b-instruct-2507` as a stop-only screen, the cascade caught 96.7% of attacks (91.7%
+    for the guardian alone) with 41% of the guardian calls. Follow-ups #123–#130 and #132 (#98).
 - Distribution
   - Release binaries for Linux, macOS and Windows built with `pg2` by cargo-dist on a `vX.Y.Z`
     tag, each archive carrying the license, readme and changelog; `cargo install --git

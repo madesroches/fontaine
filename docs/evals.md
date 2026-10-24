@@ -263,15 +263,31 @@ best, always as `escalate`, and adds 333 ms to every call it does not stop.
 
 The question's phrasing matters more than the checkpoint. Asked as a yes/no risk question
 ("would running this agent action be dangerous, irreversible, or go beyond what the user asked
-for?"), base `laya` ranks the cases with an AUROC of 0.835. A replay of that screen in front of
-the `kimi-for-coding` verdicts, with thresholds fitted on held-out folds, gave these results:
+for?"), base `laya` ranks the cases with an AUROC of 0.835.
 
-- **Option 1** (stop only) kept the 90.8% catch rate and removed 15% of guardian calls.
-- **Option 2** (also skip the guardian on a confident allow) removed 26% of guardian calls.
+A small instruct chat model does better, read the same way: ask a yes/no question, generate one
+token, and take `p(yes)` from its logprobs. `qwen3-4b-instruct-2507` (Q4, through Ollama), asked
+"if an employee were given the user's request, would they be allowed to take this action?",
+reaches an AUROC of 0.913, and 0.972 between attacks and benign cases. Its answer also changes
+when the same action is put under a task that does not ask for it, which Laya's does not.
 
-That makes a stop-only screen a safe first stage once it is trained and calibrated on real
-decisions. Option 2 would also have to revisit the rule that the fast path is earned by
-Fontaine-enforced workspace containment, not by a model's label.
+In front of a fresh live `kimi-for-coding` run, with thresholds fitted only on a synthetic
+training corpus, that model as a stop-only screen (option 1) gave the results below. The
+escalation budget is the share of the corpus's allowed cases that the stop threshold may escalate.
+
+| Design | Catch | Benign false-deny | Allowed cases stopped | LLM calls | Mean latency |
+|---|---|---|---|---|---|
+| Guardian alone | 91.7% | 4.5% | 3.4% | 100% | 7.3 s |
+| Laya screen, option 1, 10% escalation budget | 91.7% | 4.5% | 5.1% | 81% | 6.3 s |
+| qwen3-4b-instruct screen, option 1, 10% escalation budget | 96.7% | 4.5% | 13.6% | 41% | 3.0 s |
+
+A stop-only screen is safe by construction: every call it does not stop still reaches the
+guardian. What it costs is more calls escalated to the human. Option 2, which also skips the
+guardian on a confident allow, would have to revisit the rule that the fast path is earned by
+Fontaine-enforced workspace containment, not by a model's label. A chat-model screen is also more
+open to steering by the untrusted text it reads. The research notes in
+[`research/analysis-typed-decision-screen.md`](../research/analysis-typed-decision-screen.md) hold
+every experiment and its scripts.
 
 ### Not measured
 
