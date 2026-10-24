@@ -17,9 +17,9 @@ Measured in experiment 10 of `research/analysis-typed-decision-screen.md` (#131,
 `scripts/allow_path.py`; both files are on the research PR #131 branch `typed_decision_screen_spike`,
 not this one), held out with synthetic thresholds:
 
-| | Golden should-allow calls skipped | Must-not-clear allowed (clean) | Steered cases through (9 texts × 134) | Allowed-call mean latency |
+| | Golden should-allow calls skipped | Must-not-clear allowed (clean) | Steered cases through (9 texts × 134) | Allowed-call mean latency (expected-allow cases allowed) |
 |---|---|---|---|---|
-| Guardian alone | - | - | - | 5.2 s (expected-allow cases the guardian allowed) |
+| Guardian alone | - | - | - | 5.2 s |
 | Allow path at its zero-miss threshold (1.56e-6), veto 0.001 | 13 of 59 | 0 | 0 | 4.2 s |
 
 With the shipped prompt and no detector, one steering sentence in the arguments moved 93 of 134
@@ -185,7 +185,7 @@ crate, so a harness that embeds the guardian gets the composition too:
 
 ```rust
 /// The screen as a stage of the guardian. `enforce = false` is shadow mode: it scores, never decides.
-pub struct ScreenStage<'a> { pub screen: &'a Screen, pub enforce: bool }
+pub struct ScreenInput<'a> { pub screen: &'a Screen, pub enforce: bool }
 
 pub enum Decided {
     /// The screen stage stopped the call (escalate); the LLM stage was dropped.
@@ -198,7 +198,7 @@ pub enum Decided {
 
 pub struct Composed { pub screen: Option<ScreenOutcome>, pub decided: Decided }
 
-pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, request: &AdjudicationRequest) -> Composed
+pub async fn adjudicate(screen: Option<ScreenInput<'_>>, guardian: &Guardian, request: &AdjudicationRequest) -> Composed
 ```
 
 - **No screen:** `adjudicate` is exactly `guardian.adjudicate(request)`.
@@ -263,8 +263,8 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
 - `runner::Cascade` changes:
   - `stop_threshold` becomes `Option<f64>`;
   - add `allow_threshold: Option<f64>` and `steering_veto: Option<f64>`;
-  - replace `mean_latency_ms` with `allowed_latency_ms: { p50, mean }`, over scored guardian cases
-    whose cascade answer is `allow`;
+  - replace `mean_latency_ms` with `allowed_latency_ms: { p50, mean }`, over scored cases with
+    `expected = allow` whose cascade answer is `allow` (the same set as the guardian-alone baseline);
   - add `should_allow_stopped`, the count of `expected = allow` cases whose cascade answer is not
     `allow`;
   - add `screen_allowed`, the count of cases the screen allowed, and
@@ -363,6 +363,8 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
   and the master plan records it as a deviation from "the fast path is earned by containment".
 - 2026-10-24 (user): the screen's guardian-in-hand rule — the screen decides only while the
   guardian is still pending; any guardian verdict already in hand goes through `settle`.
+- AFK: `allowed_latency_ms` is measured over `expected = allow` cases the cascade allowed, the same set as the 5.2 s guardian-alone baseline, so the acceptance check compares like with like.
+- AFK: the cascade's screen input type is `ScreenInput`, not `ScreenStage`, to avoid colliding with `fontaine_core::gate::ScreenStage`, which stays unchanged.
 
 ## Documentation
 
@@ -476,7 +478,8 @@ they are not CI checks.
      cases, and `allowed_latency_ms.mean` below the guardian-alone baseline. The baseline is the
      committed `evals/scorecards/kimi-for-coding.json` (non-screen runs report only `latency_ms`
      p50/p95), with the mean computed by hand over the same set: expected-allow cases the guardian
-     allowed (the 5.2 s figure; `docs/evals.md` quotes 6.7 s over all allowed answers).
+     allowed (the 5.2 s figure, matching `allowed_latency_ms`; `docs/evals.md` quotes 6.7 s over all
+     allowed answers, a different set).
    - Expected: screen-unavailable outcomes stay about zero at the default `timeout_ms` with the
      allow path on.
 2. Refresh the `docs/evals.md` cascade table from that scorecard.
