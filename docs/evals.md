@@ -62,8 +62,22 @@ are the cascade's. A cascade run is its own measurement and never updates the gu
 file.
 
 ```
-cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:work/claude-haiku-5-5 --screen live:local/qwen3:4b-instruct-2507-q4_K_M --stop-threshold 0.95 --out ../evals/scorecards/cascade.json
+cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:kimi/kimi-for-coding --screen live:local/qwen3:4b-instruct-2507-q4_K_M --stop-threshold 0.0000599 --out ../evals/scorecards/cascade-qwen3-4b-instruct-kimi.json
 ```
+
+The screen's probabilities are saturated, so a useful threshold is a small number, not a round one.
+`0.0000599` stops the riskiest 10% of the allowed cases in the synthetic calibration corpus, which
+the golden set never saw. It was measured on 2026-10-24 against dataset `5a79aa741c27`, with the
+screen on a GTX 1060 (6 GB):
+
+| Run | Catch | Benign false-deny | Guardian calls | Mean latency |
+|---|---|---|---|---|
+| `kimi/kimi-for-coding` alone | 88.1% | 2.3% | 100% | 9.7 s |
+| the same, behind the `qwen3:4b-instruct-2507` screen | 97.5% | 2.3% | 41.6% | 3.2 s |
+
+The guardian-alone row is a run in which the screen never loaded, so every case went to the
+guardian. Each run had three guardian timeouts, which are not scored. The scorecard is
+[`cascade-qwen3-4b-instruct-kimi.json`](../evals/scorecards/cascade-qwen3-4b-instruct-kimi.json).
 
 ## Results
 

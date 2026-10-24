@@ -376,9 +376,14 @@ kind = "ollama"
 
 [guardian.screen]
 model = "local/qwen3:4b-instruct-2507-q4_K_M"
-stop_threshold = 0.95
+stop_threshold = 0.0000599
 shadow = false
 ```
+
+The model's answers are nearly certain, so its risk scores are tiny or near 1, and a working
+threshold is a small number. `0.0000599` is the one measured in
+[Cascade scorecards](evals.md#cascade-scorecards). Calibrate your own from the scores that shadow
+mode records on your traffic.
 
 #### Bring your own scanner
 
