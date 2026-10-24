@@ -163,7 +163,8 @@ better, and the base `laya` is secondary.
    `--screen-url`, `--screen-timeout-ms` and `--screen-reference` flags, all `Option`s with the
    defaults applied in code, so that giving any of them without `screen:` is a detectable usage
    error. Reject `--profile minimal` with `screen:`. Skip non-guardian cases with a reason, never
-   touch the models file, and update the unsupported-mode message. The screen branch sets
+   touch the models file, and update the unsupported-mode message and the `--guardian` doc comment on `RunArgs` to list
+   `screen:<model>`. The screen branch sets
    `selected` to the scored guardian cases, like the live and none branches, because the rates zip
    `selected` with the results. Extend the exit condition so a `screen:` run exits 1 only on
    `infrastructure_failures`, not on `failed > 0`. `print_summary` prints latency for `screen:` as
@@ -195,7 +196,8 @@ better, and the base `laya` is secondary.
    Laya license (MIT → Apache-2.0) in `research/analysis-guardian-market.md`.
 8. **Docs for the mode.** Document `--guardian screen:<model>` and its flags in
    `evals/README.md` (flag table, a short "Screen mode" subsection, exit codes) and state that
-   it is eval-only.
+   it is eval-only. Add a few words to the `fontaine-evals` row of `docs/architecture.md` naming
+   the eval-only `screen:` scorer.
 
 ## Files to Modify
 
@@ -211,6 +213,7 @@ better, and the base `laya` is secondary.
 - `evals/README.md`
 - `evals/scorecards/screen-laya-typed-decisions.json`, `screen-laya.json` (new, if measured)
 - `docs/evals.md`
+- `docs/architecture.md`
 - `tasks/fontaine_harness_plan.md` (`## Decisions`)
 - `research/analysis-guardian-market.md` (license correction)
 
@@ -232,6 +235,7 @@ better, and the base `laya` is secondary.
 - `evals/README.md`: the `screen:` mode, its flags, what it scores and skips, and that it is
   eval-only.
 - `docs/evals.md`: a "Screen candidates" results section.
+- `docs/architecture.md`: the `fontaine-evals` row names the eval-only `screen:` scorer.
 - `tasks/fontaine_harness_plan.md`: a dated `## Decisions` line with the recommendation.
 - `CHANGELOG.md`: an `[Unreleased] > Added > Evals` bullet for `--guardian screen:<model>` and its
   `--screen-*` flags (#98).
@@ -240,10 +244,10 @@ better, and the base `laya` is secondary.
 
 Unit tests (no network):
 - `screen_report`: risk derivation with and without the per-option map. `t_allow` equals the
-  minimum must-not-clear risk, and the benign share counts only cases strictly below it. the
+  minimum must-not-clear risk, and the benign share counts only cases strictly below it. The
   option-1 set excludes every `expected: allow` case (score > `m`, ties excluded) and `m` is the
-  maximum over `expected: allow` cases. A sweep at threshold 0
-  catches everything. Reliability bins put a risk of 1.0 in the last bin and compute ECE for a
+  maximum over `expected: allow` cases. The per-threshold catch function at t = 0
+  counts every case as caught. Reliability bins put a risk of 1.0 in the last bin and compute ECE for a
   hand-built set. The reference diff counts matched, unmatched and `fail_closed` references and
   builds the confusion table. With empty inputs every metric is `None`, with no panic or NaN.
 - `screen` response parsing: a laya-shaped answer (choice and confidence only), a vLLM-shaped
