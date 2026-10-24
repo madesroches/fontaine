@@ -29,7 +29,10 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::app::Input;
 use crate::model_picker::{Group, ModelPicker, PickerKey, PickerPurpose};
-use crate::provider_dialog::{DialogKey, Outcome, ProviderDialog, Secret};
+use crate::provider_dialog::{
+    DialogKey, Outcome, ProviderDialog, Secret, log_out_summary, sign_in_failure,
+    stored_key_summary,
+};
 use crate::view::draw_overlay;
 
 /// A terminal backend whose errors can become `io::Error`s.
@@ -329,11 +332,8 @@ impl Setup {
                 DialogKey::LogOut(account) => match accounts::log_out(&self.dirs.data, &account) {
                     Ok(removed) => {
                         self.refresh_rows();
-                        self.dialog.finish(Outcome::Done(if removed {
-                            format!("logged out of `{account}`")
-                        } else {
-                            format!("`{account}` had no stored credential")
-                        }))
+                        self.dialog
+                            .finish(Outcome::Done(log_out_summary(&account, removed)))
                     }
                     Err(e) => self.dialog.finish(Outcome::Failed(chain(&e))),
                 },
@@ -376,17 +376,12 @@ impl Setup {
         if let Err(e) = stored {
             return Ok(After::Ask(self.dialog.finish(Outcome::Failed(chain(&e)))));
         }
-        let mut summary = format!("stored the key for `{account}`");
-        if let Some(var) = self
+        let api_key_env = self
             .config
             .accounts
             .get(account)
-            .and_then(|a| a.api_key_env.as_deref())
-        {
-            summary.push_str(&format!(
-                "; warning: it sets api_key_env = \"{var}\", so the stored key is ignored while the variable is set"
-            ));
-        }
+            .and_then(|a| a.api_key_env.as_deref());
+        let summary = stored_key_summary(account, "", api_key_env);
         self.logged_in(io, account, summary).await
     }
 
@@ -452,14 +447,13 @@ impl Setup {
         }
         match result {
             Some(Ok(summary)) => self.logged_in(io, name, summary).await,
-            Some(Err(e)) => {
-                let text = match e.into_config() {
-                    Ok(config) => chain(&config),
-                    Err(e) => chain(&e),
-                };
-                Ok(After::Ask(self.dialog.finish(Outcome::Failed(text))))
+            Some(Err(e)) => Ok(After::Ask(
+                self.dialog.finish(Outcome::Failed(sign_in_failure(e))),
+            )),
+            None => {
+                self.dialog.cancel_sign_in();
+                Ok(After::Ask(DialogKey::None))
             }
-            None => Ok(After::Ask(DialogKey::None)),
         }
     }
 

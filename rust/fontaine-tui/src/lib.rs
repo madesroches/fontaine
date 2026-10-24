@@ -56,7 +56,10 @@ pub use denials::UnavailableAnswer;
 use agents_panel::{AgentsPanel, Detail, PanelRow};
 use denials::{DeniedList, UnavailablePrompt};
 use model_picker::{Group, ModelPicker, PickerPurpose};
-use provider_dialog::{DialogKey, Outcome, ProviderDialog, Secret};
+use provider_dialog::{
+    DialogKey, Outcome, ProviderDialog, Secret, log_out_summary, sign_in_failure,
+    stored_key_summary,
+};
 use recent::RecentModels;
 use screen::{Anchored, Screen};
 use server_prompt::ServerPrompt;
@@ -128,6 +131,21 @@ enum EndOfTurn {
     /// The turn did not complete: give them back so nothing the human typed is sent unseen.
     RestoreToInput(String),
     Nothing,
+}
+
+/// Queues a dialog request for the idle loop. A cancel takes the sign-in it cancels out of the
+/// queue, so a sign-in the human already backed out of never starts.
+fn queue_provider_request(queue: &mut VecDeque<DialogKey>, request: DialogKey) {
+    if request == DialogKey::CancelSignIn {
+        if let Some(at) = queue
+            .iter()
+            .rposition(|r| matches!(r, DialogKey::SignIn(_)))
+        {
+            queue.remove(at);
+        }
+        return;
+    }
+    queue.push_back(request);
 }
 
 fn end_of_turn(end: &TurnEnd, retracted: Vec<String>) -> EndOfTurn {
@@ -497,7 +515,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::PickModel(purpose, reference) => {
                             self.pending_pick = Some((purpose, reference));
                         }
-                        Action::Providers(request) => self.pending_provider.push_back(request),
+                        Action::Providers(request) => self.queue_provider(request),
                         Action::RetryDenied(_)
                         | Action::Server(_)
                         | Action::None
@@ -630,9 +648,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             Action::PickModel(purpose, reference) => {
                                 self.pending_pick = Some((purpose, reference));
                             }
-                            Action::Providers(request) => {
-                                self.pending_provider.push_back(request);
-                            }
+                            Action::Providers(request) => self.queue_provider(request),
                             Action::Server(_)
                             | Action::None
                             | Action::Submit(_)
@@ -762,6 +778,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
+    fn queue_provider(&mut self, request: DialogKey) {
+        queue_provider_request(&mut self.pending_provider, request);
+    }
+
     /// Gives the dialog a result; what it asks for next comes back.
     fn tell_dialog(&mut self, outcome: Outcome) -> DialogKey {
         self.app
@@ -861,18 +881,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if let Err(e) = stored {
             return self.failed(&e);
         }
-        let mut summary = format!("stored the key for `{account}`");
-        summary.push_str(&self.credential_effects(runtime, account).await);
-        if let Some(var) = runtime
+        let effects = self.credential_effects(runtime, account).await;
+        let api_key_env = runtime
             .config
             .accounts
             .get(account)
-            .and_then(|a| a.api_key_env.as_deref())
-        {
-            summary.push_str(&format!(
-                "; warning: it sets api_key_env = \"{var}\", so the stored key is ignored while the variable is set"
-            ));
-        }
+            .and_then(|a| a.api_key_env.as_deref());
+        let summary = stored_key_summary(account, &effects, api_key_env);
         self.finish_login(runtime, account, summary)
     }
 
@@ -911,9 +926,23 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     input = self.input.recv() => match input {
                         None => break None,
                         Some(input) => match self.app.handle_input(input) {
-                            Action::Providers(DialogKey::CancelSignIn) | Action::Quit => break None,
+                            Action::Providers(DialogKey::CancelSignIn)
+                            | Action::Interrupt
+                            | Action::Quit => break None,
                             Action::CycleMode => self.cycle_mode(runtime),
-                            _ => {}
+                            Action::RetryDenied(index) => self.retry_denied(runtime, index),
+                            Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
+                            Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                            Action::PickModel(purpose, reference) => {
+                                self.pending_pick = Some((purpose, reference));
+                            }
+                            Action::Providers(request) => self.queue_provider(request),
+                            Action::Server(_)
+                            | Action::None
+                            | Action::Submit(_)
+                            | Action::Queue(_)
+                            | Action::EditQueued
+                            | Action::Shell(_) => {}
                         },
                     },
                     Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
@@ -929,11 +958,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 summary.push_str(&self.credential_effects(runtime, name).await);
                 self.finish_login(runtime, name, summary)
             }
-            Some(Err(e)) => match e.into_config() {
-                Ok(config) => self.failed(&config),
-                Err(e) => self.failed(&e),
-            },
+            Some(Err(e)) => self.tell_dialog(Outcome::Failed(sign_in_failure(e))),
             None => {
+                if let Some(dialog) = self.app.providers.as_mut() {
+                    dialog.cancel_sign_in();
+                }
                 self.app.transcript.notice("sign-in cancelled");
                 DialogKey::None
             }
@@ -952,11 +981,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Ok(removed) => removed,
             Err(e) => return self.failed(&e),
         };
-        let mut summary = if removed {
-            format!("logged out of `{account}`")
-        } else {
-            format!("`{account}` had no stored credential")
-        };
+        let mut summary = log_out_summary(account, removed);
         summary.push_str(&self.credential_effects(runtime, account).await);
         self.app.transcript.notice(summary.clone());
         self.refresh_rows(runtime);
@@ -1232,7 +1257,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::PickModel(purpose, reference) => {
                             self.pending_pick = Some((purpose, reference));
                         }
-                        Action::Providers(request) => self.pending_provider.push_back(request),
+                        Action::Providers(request) => self.queue_provider(request),
                         Action::Queue(text) => {
                             self.remember(&text);
                             runtime.steering.queue(text);
@@ -1496,6 +1521,17 @@ pub async fn run(setup: AgentSetup, launch_dir: PathBuf) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_cancel_removes_the_queued_sign_in_it_cancels() {
+        let mut queue = VecDeque::new();
+        queue_provider_request(&mut queue, DialogKey::LogOut("a".into()));
+        queue_provider_request(&mut queue, DialogKey::SignIn("b".into()));
+        queue_provider_request(&mut queue, DialogKey::CancelSignIn);
+        assert_eq!(queue, VecDeque::from([DialogKey::LogOut("a".into())]));
+        queue_provider_request(&mut queue, DialogKey::CancelSignIn);
+        assert_eq!(queue.len(), 1);
+    }
+
     use super::*;
     use fontaine_core::config::PermissionMode;
     use fontaine_core::permissions::Offers;

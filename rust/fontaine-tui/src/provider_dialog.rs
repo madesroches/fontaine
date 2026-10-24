@@ -7,7 +7,8 @@ use fontaine_core::accounts::{
     self, AccountRow, BaseUrlPolicy, NewAccount, SignInState, SignInStep,
 };
 use fontaine_core::config::AccountKind;
-use fontaine_core::providers::CredentialPolicy;
+use fontaine_core::providers::{self as accounts_providers, CredentialPolicy};
+use fontaine_tools::error_chain::chain;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
@@ -125,6 +126,35 @@ pub struct ProviderDialog {
     adding: Option<String>,
     /// A line on the list, such as an unknown account name or a cancelled sign-in.
     notice: Option<String>,
+    /// A request is out and the host has not answered: further keys must not queue it again.
+    busy: bool,
+}
+
+/// The summary of a stored key; `effects` is what the host appends about the live session.
+pub fn stored_key_summary(account: &str, effects: &str, api_key_env: Option<&str>) -> String {
+    let mut summary = format!("stored the key for `{account}`{effects}");
+    if let Some(var) = api_key_env {
+        summary.push_str(&format!(
+            "; warning: it sets api_key_env = \"{var}\", so the stored key is ignored while the variable is set"
+        ));
+    }
+    summary
+}
+
+pub fn log_out_summary(account: &str, removed: bool) -> String {
+    if removed {
+        format!("logged out of `{account}`")
+    } else {
+        format!("`{account}` had no stored credential")
+    }
+}
+
+/// The text a failed sign-in shows; a broken credentials file reads as the configuration problem.
+pub fn sign_in_failure(error: accounts_providers::SignInError) -> String {
+    match error.into_config() {
+        Ok(config) => chain(&config),
+        Err(e) => chain(&e),
+    }
 }
 
 fn is_text(key: &KeyEvent) -> Option<char> {
@@ -160,6 +190,7 @@ impl ProviderDialog {
             screen: Screen::List,
             adding: None,
             notice: None,
+            busy: false,
         };
         let key = match target.filter(|name| !name.is_empty()) {
             None => DialogKey::None,
@@ -226,9 +257,30 @@ impl ProviderDialog {
             .is_some_and(|r| r.kind.provider().credential() == CredentialPolicy::Optional)
     }
 
+    /// Drops a sign-in that was cancelled from outside the dialog (Ctrl-C), back to the list.
+    pub fn cancel_sign_in(&mut self) {
+        if matches!(self.screen, Screen::Waiting { .. }) {
+            self.back_to_list();
+            self.notice = Some("sign-in cancelled".to_string());
+        }
+    }
+
+    /// Emits a request the host answers through `finish`; keys are ignored until it does.
+    fn request(&mut self, key: DialogKey) -> DialogKey {
+        self.busy = true;
+        key
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogKey {
         if key.kind == KeyEventKind::Release {
             return DialogKey::None;
+        }
+        if self.busy {
+            return if key.code == KeyCode::Esc {
+                DialogKey::Close
+            } else {
+                DialogKey::None
+            };
         }
         match &self.screen {
             Screen::List => self.list_key(key),
@@ -238,8 +290,7 @@ impl ProviderDialog {
             Screen::Key { .. } => self.secret_key(key),
             Screen::Waiting { .. } => {
                 if key.code == KeyCode::Esc {
-                    self.back_to_list();
-                    self.notice = Some("sign-in cancelled".to_string());
+                    self.cancel_sign_in();
                     return DialogKey::CancelSignIn;
                 }
                 DialogKey::None
@@ -340,11 +391,11 @@ impl ProviderDialog {
                     return DialogKey::None;
                 }
                 if kind.provider().base_url_policy() == BaseUrlPolicy::Fixed {
-                    return DialogKey::Add(NewAccount {
+                    return self.request(DialogKey::Add(NewAccount {
                         name,
                         kind,
                         base_url: None,
-                    });
+                    }));
                 }
                 self.screen = Screen::BaseUrl {
                     kind,
@@ -389,17 +440,19 @@ impl ProviderDialog {
                         *error = Some("a base URL is required for this kind".to_string());
                         return DialogKey::None;
                     }
-                    return DialogKey::Add(NewAccount {
+                    let new = NewAccount {
                         name: name.clone(),
                         kind: *kind,
                         base_url: None,
-                    });
+                    };
+                    return self.request(DialogKey::Add(new));
                 }
-                return DialogKey::Add(NewAccount {
+                let new = NewAccount {
                     name: name.clone(),
                     kind: *kind,
                     base_url: Some(url.to_string()),
-                });
+                };
+                return self.request(DialogKey::Add(new));
             }
             _ => {
                 if let Some(c) = is_text(&key) {
@@ -442,14 +495,14 @@ impl ProviderDialog {
                     }
                     // Skipping the key of a keyless kind goes on as a finished log-in.
                     let adding = self.adding.take().is_some_and(|name| name == account);
+                    self.back_to_list();
                     if adding {
                         return DialogKey::PickModel(account);
                     }
-                    self.back_to_list();
                     return DialogKey::None;
                 }
                 let key = Secret::new(std::mem::take(input));
-                return DialogKey::StoreKey { account, key };
+                return self.request(DialogKey::StoreKey { account, key });
             }
             _ => {
                 if let Some(c) = is_text(&key) {
@@ -469,10 +522,10 @@ impl ProviderDialog {
         match key.code {
             KeyCode::Char('y') => {
                 // The result decides what is shown; until then the question stays.
-                match what {
+                self.request(match what {
                     Confirm::LogOut => DialogKey::LogOut(account),
                     Confirm::Remove => DialogKey::Remove(account),
-                }
+                })
             }
             KeyCode::Char('n') | KeyCode::Esc => {
                 self.back_to_list();
@@ -485,6 +538,9 @@ impl ProviderDialog {
     /// A paste goes into the text field the dialog has open and nowhere else. Line breaks are
     /// dropped, and a key is trimmed.
     pub fn handle_paste(&mut self, text: &str) {
+        if self.busy {
+            return;
+        }
         let single: String = text.replace(['\r', '\n'], "");
         match &mut self.screen {
             Screen::Key { input, error, .. } => {
@@ -502,6 +558,9 @@ impl ProviderDialog {
     /// Takes in what the host did. A finished log-in in the add flow, or a new account that
     /// needs a log-in, comes back as the next request.
     pub fn finish(&mut self, outcome: Outcome) -> DialogKey {
+        if !matches!(outcome, Outcome::Rows(_) | Outcome::Step(_)) {
+            self.busy = false;
+        }
         match outcome {
             Outcome::Rows(rows) => {
                 self.rows = rows;
@@ -531,6 +590,8 @@ impl ProviderDialog {
             }
             Outcome::LoggedIn { account, summary } => {
                 if self.adding.take().is_some_and(|name| name == account) {
+                    self.back_to_list();
+                    self.notice = Some(summary);
                     return DialogKey::PickModel(account);
                 }
                 self.screen = Screen::Message {
@@ -927,6 +988,8 @@ mod tests {
         press(&mut d, KeyCode::Enter);
         type_text(&mut d, "k");
         press(&mut d, KeyCode::Enter);
+        assert_eq!(press(&mut d, KeyCode::Enter), DialogKey::None);
+        d.finish(Outcome::Failed("nope".into()));
         assert_eq!(press(&mut d, KeyCode::Enter), DialogKey::None);
         assert!(text(&d).contains("a key is required"));
     }
