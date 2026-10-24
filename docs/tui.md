@@ -195,8 +195,10 @@ Typing `/` lists the built-in commands and your user-invocable skills with their
 narrowing as you type; a skill marked `user-invocable: false` does not appear.
 
 `/copy` writes the reply with an OSC 52 escape, so it needs a terminal that supports OSC 52
-clipboard access (inside tmux, `set -g set-clipboard on`). A terminal that ignores the escape
-leaves the clipboard unchanged without reporting an error.
+clipboard access. Inside tmux it first loads the reply with `tmux load-buffer -w -`, which tmux
+forwards to the outer terminal under its default `set-clipboard external`; if that fails the
+reply still lands in a tmux buffer. A terminal that ignores the escape leaves the clipboard
+unchanged without reporting an error.
 
 ## Choosing a model
 

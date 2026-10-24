@@ -5,6 +5,7 @@
 pub mod agents_panel;
 pub mod app;
 pub mod approval;
+pub mod clipboard;
 pub mod commands;
 pub mod complete;
 pub mod denials;
@@ -1659,12 +1660,7 @@ pub async fn run(setup: AgentSetup, launch_dir: PathBuf) -> Result<(), String> {
                 on_error.store(true, Ordering::Relaxed);
             }
         },
-        |text| {
-            ratatui::crossterm::execute!(
-                std::io::stdout(),
-                ratatui::crossterm::clipboard::CopyToClipboard::to_clipboard_from(text)
-            )
-        },
+        clipboard::copy,
     )
     .await;
     stop.store(true, Ordering::Relaxed);

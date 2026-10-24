@@ -320,7 +320,7 @@ scorecard run (see `## Remaining work`).
 ## Decisions
 
 - 2026-10-24: `/help`, `/status`, `/permissions`, `/mcp`, `/hooks` and `/skills` are read-only transcript notices instead of Claude Code's interactive dialogs, because it is one testable path, rule editing stays in config files (2026-10-21), and the text stays in scrollback (#47).
-- 2026-10-24: `/copy` uses OSC 52 only, with no code-block picker and no `w`-to-file, because it adds no dependency and works over SSH, where `arboard` needs X11/Wayland; the success notice says some terminals ignore OSC 52. The text goes to a clipboard sink passed to `drive`, so the write's `Result` reaches the command in the same call (#47).
+- 2026-10-24: `/copy` uses OSC 52, preceded inside tmux by `tmux load-buffer -w -` (falling back to `tmux load-buffer -`) as Claude Code does, with no code-block picker and no `w`-to-file, because it adds no dependency and works over SSH, where `arboard` needs X11/Wayland; tmux's default `set-clipboard external` drops an application's OSC 52, and the success notice says some terminals ignore it. The text goes to a clipboard sink passed to `drive`, so the write's `Result` reaches the command in the same call (#47).
 - 2026-10-24: `/diff` is not implemented, because it would spawn `git`, which runs repo-controlled config (`diff.external`, textconv drivers); a `gix` diff is a feature of its own, and `!git diff` covers it as the human's own action (#47).
 - 2026-10-24: `/mcp` takes no `reconnect`/`enable`/`disable` arguments until #35.
 - 2026-10-24: `/release-notes` is not implemented, because it would compile `CHANGELOG.md` into the binary or need network access, with little value before the first release (#47).
