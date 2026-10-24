@@ -37,13 +37,13 @@ Fontaine adds the same three things to its ratatui terminal UI:
 
   Emphasis that is not colour (`DIM`, `BOLD`, `REVERSED` for the selected row) is used
   throughout. Every overlay with a selection marks it with `REVERSED`, except the `@` list, which
-  uses a `> ` prefix plus `BOLD` (`view.rs:213`).
+  uses a `> ` prefix plus `BOLD` (`view.rs:216`).
 - **Rendering.** `lib.rs::drive` (`lib.rs:1487`) runs the session loop with a
   `render: FnMut(&mut App)` callback.
   - `lib.rs::run` (`lib.rs:1612`) enables raw mode and bracketed paste, then builds a
     `screen::Screen`, an inline viewport. `Screen::render` commits settled transcript lines into
     scrollback and redraws the live area through `view::draw`.
-  - `view::overlay(app, width, height)` (`view.rs:157`) is the single place that decides which
+  - `view::overlay(app, width, height)` (`view.rs:159`) is the single place that decides which
     dialog sits above the input and yields `Overlay { title, body, footer }` as styled `Line`s.
   - `Transcript::commit(width)` (`transcript.rs:241`) advances a commit cursor over settled
     entries and streams a reply row by row.
@@ -55,12 +55,12 @@ Fontaine adds the same three things to its ratatui terminal UI:
   - `fontaine-core/src/config.rs::Settings` (`config.rs:586`) is `deny_unknown_fields`, with
     per-column scope checks in `check_scope` (`config.rs:636`). `accounts` is the precedent for
     a section that is user/CLI-only.
-  - `user_config::set_string` (`user_config.rs:68`) writes one key with `toml_edit`, keeping
+  - `user_config::set_string` (`user_config.rs:67`) writes one key with `toml_edit`, keeping
     comments. `set_model` and `set_guardian_model` wrap it.
 - **CLI.** `fontaine/src/cli.rs` (clap derive). The bin calls `trust_prompt::ask` at
   `fontaine/src/lib.rs:181`, `setup::run` at `:655` and `fontaine_tui::run` at `:685`.
 - **Slash commands.** `commands.rs::BUILTINS` is one table that the parser and the `/` menu both
-  read. `/output-style` (`lib.rs:487`) is the precedent for "no argument lists, an argument
+  read. `/output-style` (handler `fn output_style`, `lib.rs:669`; the dispatch arm is `lib.rs:487`) is the precedent for "no argument lists, an argument
   switches".
 - **Keys.** Alt+Enter, Shift+Enter (when the terminal reports it), Ctrl+J, or a trailing `\`
   insert a newline (`app.rs:540-590,633`). Fontaine does not enable the kitty keyboard protocol.
@@ -93,6 +93,7 @@ pub struct TuiSection {
     pub screen_reader: Option<bool>,
 }
 
+#[derive(Clone, Debug, PartialEq)]   // as Config's other fields (config.rs:1112)
 pub struct Tui { pub theme: ThemeName, pub screen_reader: Option<bool> }   // in Config
 ```
 
@@ -157,9 +158,12 @@ impl Theme { pub fn preset(name: ThemeName) -> Theme; }
 - **`/theme [<name>]`.** This is `Command::Theme(String)` in `BUILTINS` (hint `[<name>]`,
   description "choose the colour theme").
   - With no argument, a notice lists the six names, marks the current one `(current)` and names
-    the file the choice is saved to.
+    the file the choice is saved to. With no user settings file (`Ui.user_config` is `None`), it
+    says the choice is not saved.
   - With a name, it sets `app.theme`, saves `[tui] theme` through `user_config::set_theme`, and
-    confirms. A save failure is reported, and the theme still applies for the session.
+    confirms. A save failure is reported, and the theme still applies for the session. With no
+    user settings file it applies the theme and reports "for this session only: …", as
+    `/model` does (`AgentRuntime::persist`, `Ui::finish_switch`).
   - An unknown name is an error notice that lists the valid names.
 
 ### 3. Screen-reader mode (fontaine-tui `linear.rs`, `accessibility.rs`)
@@ -174,7 +178,10 @@ impl Theme { pub fn preset(name: ThemeName) -> Theme; }
 
 The bin resolves it once, after config load and before the trust prompt. When the mode is on it
 prints `[Screen Reader Mode: on via flag|env|settings]` as plain text before any raw mode, then
-passes the `Option<Source>` to `trust_prompt::ask`, `setup::run` and `fontaine_tui::run`. Headless
+passes the `Option<Source>` to `trust_prompt::ask`, `setup::run` (a new `screen_reader` field on
+`SetupParams`) and `fontaine_tui::run`. The env value is read with
+`(host.env)("FONTAINE_AX_SCREEN_READER")`; an invalid value warns with the existing
+`eprintln!("fontaine: warning: …")` form, only in interactive runs. Headless
 `-p` ignores the mode.
 
 **The linear renderer.** `Linear<W: Write>` implements the render callback `drive` already takes,
@@ -194,11 +201,14 @@ unchanged, and the cursor stays visible. Each `render(&mut App)` builds its outp
      |---|---|
      | User | `you:` |
      | Assistant | `assistant:` (on the first piece only) |
-     | Tool done, pending or interrupted | `tool: <tool> <summary> — done` / `— interrupted` |
+     | Tool done or interrupted | `tool: <tool> <summary> — done` / `— interrupted` |
      | Tool failed or denied | `tool error: <tool> <summary> — failed: …` / `— denied: …` |
      | Error | `error:` |
      | Notice | `notice:` |
      | Shell | `shell: <command>`, followed by its output lines |
+
+     A pending call holds back the commit, so `Permission Required:` is heard before the
+     `tool:` line.
 
 2. **Overlay.** `view::Overlay` and `view::overlay` become `pub(crate)`. It is called with width
    1000 and height `u16::MAX`, so nothing is clipped, and every `Line` is flattened to text: span
@@ -210,9 +220,11 @@ unchanged, and the cursor stays visible. Each `render(&mut App)` builds its outp
    - **Opened** (the title differs, or nothing was printed before): print a header, then every
      body and footer line. The header is `Permission Required:` for the approval overlay and
      `<title>:` for the others.
-   - **Same title:** print only lines that are new or changed. A line whose only change is that
-     it lost its `selected:` marker is not printed, so moving the selection announces the newly
-     selected row.
+   - **Same title:** print only lines that are new or changed. A line is new or changed when its
+     text, after the `selected:` normalisation, is not in the set of lines of the last printed
+     snapshot; position does not count. A line whose only change is that it lost its `selected:`
+     marker is not printed, so moving the selection announces the newly selected row, and a
+     scroll step of a windowed list prints only the row that came in.
    - **Closed:** print nothing.
 3. **Mode change.** When `app.mode` differs from the last render, print `[manual mode on]`,
    `[accept edits on]`, `[plan mode on]`, `[auto mode on]` or `[dontAsk mode on]`. The first
@@ -234,20 +246,23 @@ writes the output and re-echoes `> <input>`. When the session is idle and nothin
 shows a bare `> ` prompt after output. The screen reader's cursor therefore always ends on the
 input line.
 
-**What is dropped.** The status bar is not drawn (`/status` reports the same facts), and resize
-events are ignored. Cursor movement inside the input is not announced. `docs/terminal.md` lists
-both as known limitations.
+**What is dropped.** The status bar is not drawn. `/status` reports the mode and model but not the status bar's
+working indicator or agent count, and the queued-messages lines (`view.rs:104-120`) are not
+announced. Resize events are ignored, and cursor movement inside the input is not announced.
+`docs/terminal.md` lists all of these as known limitations.
 
 **Startup screens in linear mode.** Both run with raw mode on and no `ratatui::try_init`; the
 linear `setup::run` enables raw mode and restores it itself.
 
 - **Trust prompt.** `trust_prompt::ask` prints `workspace trust:` followed by the prompt's
-  flattened `lines()`, then keeps reading keys through the same `handle_key` (grace period
-  included). Selection changes are announced the same way as overlays.
+  flattened `lines()`, then keeps reading keys through `handle_key_at(key, clock())` (grace period
+  included). `ask` calls `enable_raw_mode()` and restores it with `disable_raw_mode()` on every
+  exit path, panic hook included, as `setup::run` does (`setup.rs:87-93`). Selection changes are announced the same way as overlays.
 - **Setup dialog.** Its view moves into `Setup::view() -> (banner, title, body, footer)`. The
-  graphical path still draws it through `draw_overlay`. The linear path prints the banner once
-  and the dialog through the same overlay snapshot printer, via `setup::drive_linear(params,
-  writer, input)`. Setup's `Io` and `redraw`, which hold a `Terminal<B>` today, are generalised
+  graphical path still draws it through `draw_overlay`. The linear path, `setup::drive_linear(params,
+  writer, input)`, prints the dialog through the overlay snapshot printer. The banner lines
+  (built from `self.error` and `self.status`, which change inside the loop) go through an
+  `OverlayEcho` too, under the fixed title "setup", so changed lines print. Setup's `Io` and `redraw`, which hold a `Terminal<B>` today, are generalised
   over the renderer (terminal draw or `OverlayEcho` print), so there is one setup event loop.
 
 To share code, the snapshot printer is `linear::OverlayEcho { last: Option<(String, Vec<String>)> }`
@@ -268,28 +283,32 @@ dialog all use it.
   works.
 - **Colours.** Themes, `/theme`, `NO_COLOR` (colour is dropped, and emphasis may be dropped with it), and the fact that scrollback keeps old colours.
 - **Screen-reader mode.** How to turn it on, the labels, the bell, menus, and the known
-  limitations.
+  limitations (no working indicator, agent count or queued-messages lines; no resize handling; no
+  cursor-movement announcements).
 
 ## Implementation Steps
 
 1. **Config (fontaine-core).** In `config.rs`, add `ThemeName`, `TuiSection`, `Tui`,
    `Settings.tui`, `Config.tui` (defaults: `DarkAnsi`, `None`), the merge, and the `check_scope`
    rejection for the project and project-local columns. In `user_config.rs`, add `set_theme`.
-   Unit tests: parse, scope rejection in both project columns, CLI-over-user merge, unknown
-   theme name rejected by serde, and `set_theme` keeping comments.
+   Unit tests: parse, CLI-over-user merge, unknown
+   theme name rejected by serde, and `set_theme` keeping comments. Add the `[tui]` cases to the
+   table-driven scope tests `NO_FOR_PROJECT` and `NO_FOR_LOCAL` (`fontaine-core/tests/config.rs:543`,
+   `:607`) and to the CLI-accepts test (`:784`).
 2. **Theme (fontaine-tui).** Add `theme.rs` with `Theme` and `preset`, and replace every
    `Color::*` call site listed in Current State with a token. Thread `&Theme` through
    `Transcript::{commit,live_lines,lines}`, `view`, `statusbar` and the overlays that colour
-   anything. Add `App.theme`, set from config in `drive`. Give `trust_prompt::ask` a theme
+   anything; `Screen::render` (`screen.rs:156` calls `transcript.commit(width)`) passes `&app.theme`. Add `App.theme`, set from config in `drive`. Give `trust_prompt::ask` a theme
    and update the bin's call (`fontaine/src/lib.rs:181`) to pass `Theme::preset(config.tui.theme)`;
    setup reads `params.config.tui.theme`. Unit tests: every preset is distinct; daltonized
    success and error differ in hue family (success has b > r, error has r > b); `dark-ansi`
    equals today's colours (assert span fg on `Transcript::lines(width, theme)` for a done and a
    failed tool line).
-3. **`/theme`.** Add a `commands.rs` entry and a `Ui::theme` handler in `lib.rs`, writing
+3. **`/theme`.** Add a `commands.rs` entry (the `theme` entry goes after `status` in `BUILTINS`, which must stay sorted) and a `Ui::theme` handler in `lib.rs`, writing
    through `user_config::set_theme`. Unit/integration tests (`tests/tui.rs` through `drive`):
    the list marks the current theme; switching updates `app.theme` and writes `[tui] theme`;
-   an unknown name is an error and changes nothing. The tests use a temp user config file.
+   an unknown name is an error and changes nothing; with `user_config: None` the theme applies and
+   the notice says "for this session only". The tests use a temp user config file.
 4. **Commit refactor.** Add `Transcript::commit_entries(cut)` (the streaming cut rule: width rows or last `\n`); rebuild `commit(width, theme)` on it.
    The existing transcript tests must stay green unchanged, apart from the theme argument.
 5. **Linear renderer.** Add `accessibility.rs` (`Source`, `resolve`) and `linear.rs`
@@ -300,7 +319,8 @@ dialog all use it.
      invalid env value.
    - `echo_diff`: append, append with newline, trailing backspace, mid-edit, recall, clear.
    - `OverlayEcho`: open, a selection move announcing only the new row, a changed body line,
-     reopening after a close.
+     reopening after a close, and a scroll step of a windowed list printing only the row that
+     came in plus the newly selected row.
    - `flatten`: a pure-function test, including selection detection for each overlay with a
      selection (the `@` list's `> ` row too).
    - The labeller: each `Entry` kind; a streaming reply committed per `\n`, labelled once.
@@ -320,11 +340,13 @@ dialog all use it.
    the lines and answers on `y` after the grace period, through a key-source seam
    (`ask_with(keys, writer, clock, …)`, using the injectable clock of `handle_key_at`, so the
    test does not sleep); `setup::drive_linear` on the existing setup test fixtures
-   prints the banner and the dialog without box characters.
-7. **CLI wiring (fontaine bin).** Add `--ax-screen-reader` to `cli.rs`. In `lib.rs`, resolve the
-   mode with `env("FONTAINE_AX_SCREEN_READER")` and `config.tui.screen_reader`, print the
+   prints the banner and the dialog without box characters; a failed retry prints the new error,
+   and a listing prints the "listing the models of …" line.
+7. **CLI wiring (fontaine bin).** Add `--ax-screen-reader` to `cli.rs`. In `lib.rs`, `run_interactive` (`fontaine/src/lib.rs:627`) gains a
+   `screen_reader: Option<Source>` parameter; resolve the
+   mode with `(host.env)("FONTAINE_AX_SCREEN_READER")` and `config.tui.screen_reader`, print the
    confirmation line and any env warning, and pass the mode to the trust prompt,
-   setup and `run`. A test in the bin's CLI tests: `-p` with `--ax-screen-reader` is accepted
+   setup and `run`. A test in `rust/fontaine/tests/exit_code.rs`: `-p` with `--ax-screen-reader` is accepted
    and its output has no confirmation line.
 8. **Docs.** Add `docs/terminal.md`. Update `docs/tui.md` (the `/theme` command row, a pointer
    to terminal.md from the newline key row, a link from the intro, and a link from the
@@ -344,7 +366,7 @@ dialog all use it.
 - `rust/fontaine-tui/src/theme.rs` (new), `linear.rs` (new), `accessibility.rs` (new), `lib.rs`
 - `rust/fontaine-tui/src/transcript.rs`, `view.rs`, `statusbar.rs`, `app.rs`, `commands.rs`
 - `rust/fontaine-tui/src/approval.rs`, `server_prompt.rs`, `setup.rs`, `trust_prompt.rs`,
-  `agents_panel.rs`, `denials.rs`, `model_picker.rs`, `provider_dialog.rs`
+  `agents_panel.rs`, `denials.rs`, `model_picker.rs`, `provider_dialog.rs`, `screen.rs`
 - `rust/fontaine-tui/tests/tui.rs`, `tests/setup.rs`
 - `rust/fontaine/src/cli.rs`, `rust/fontaine/src/lib.rs`
 - `docs/terminal.md` (new), `docs/tui.md`, `docs/configuration.md`, `docs/index.md`
@@ -364,38 +386,6 @@ dialog all use it.
 - **Theme tokens are colours, not whole styles.** Call sites keep their own `BOLD`/`DIM`, so
   themes cannot accidentally drop emphasis. A theme cannot restyle emphasis either; custom themes
   would add that.
-
-## Decisions`, each tagged `(#50)`.
-
-## Files to Modify
-
-- `rust/fontaine-core/src/config.rs`, `rust/fontaine-core/src/user_config.rs`
-- `rust/fontaine-tui/src/theme.rs` (new), `linear.rs` (new), `accessibility.rs` (new), `lib.rs`
-- `rust/fontaine-tui/src/transcript.rs`, `view.rs`, `statusbar.rs`, `app.rs`, `commands.rs`
-- `rust/fontaine-tui/src/approval.rs`, `server_prompt.rs`, `setup.rs`, `trust_prompt.rs`,
-  `agents_panel.rs`, `denials.rs`, `model_picker.rs`, `provider_dialog.rs`
-- `rust/fontaine-tui/tests/tui.rs`, `tests/setup.rs`
-- `rust/fontaine/src/cli.rs`, `rust/fontaine/src/lib.rs`
-- `docs/terminal.md` (new), `docs/tui.md`, `docs/configuration.md`, `docs/index.md`
-- `tasks/fontaine_harness_plan.md` (`## Decisions`), `tasks/design/config.md`,
-  `tasks/design/documentation.md`, `research/research-claude-code-parity.md`
-
-## Trade-offs
-
-- **The linear renderer reuses `view::overlay`, not a hand-written plain view per dialog.**
-  Twelve overlays already produce their content as `Line`s, and flattening them keeps a single
-  source for each dialog's text, so a new dialog works in screen-reader mode without extra code.
-  The cost is that selection is detected from the `REVERSED` modifier. That detection lives in
-  one function with a test per overlay type.
-- **Partial-match echo, not a full line editor.** `echo_diff` covers typing and backspacing at
-  the end, which is what Claude Code optimises. Anything else reprints the input on a fresh line,
-  which is correct, if noisier, without tracking a cursor.
-- **Theme tokens are colours, not whole styles.** Call sites keep their own `BOLD`/`DIM`, so
-  themes cannot accidentally drop emphasis. A theme cannot restyle emphasis either; custom themes
-  would add that.
-- **Docs, not `/terminal-setup`.** Writing other programs' config files (VS Code `keybindings.json`,
-  Zed's `keymap.json`, Apple Terminal plists) from inside an agent harness is a write outside the
-  workspace with no undo, and the issue asks for documented setup.
 
 ## Decisions
 
