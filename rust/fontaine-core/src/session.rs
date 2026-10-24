@@ -142,9 +142,9 @@ pub enum ClearError {
 impl fmt::Display for ClearError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ClearError::SubagentsRunning => {
-                f.write_str("subagents are still running; /clear waits until they finish")
-            }
+            ClearError::SubagentsRunning => f.write_str(
+                "subagents are still running; /clear is refused until they finish or are killed",
+            ),
             ClearError::Store { action, .. } => {
                 write!(f, "the conversation could not be {action}")
             }

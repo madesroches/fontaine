@@ -227,8 +227,9 @@ skill index, the tool definitions (MCP tools apart), the messages and what is fr
 with the point where compaction runs on its own. `/context all` also lists each instruction file
 and tool, largest first. The numbers are estimates from a character-based counter, not the
 provider's tokenizer, and they count the same way the compaction trigger does. When the model is
-not in the catalog or its window is not known there is no `free` row and no automatic compaction
-unless `autocompact_window` is set; when the total is over the window it says so.
+not in the catalog there is no `free` row and it never compacts automatically; a catalogued model
+whose window is not known has no `free` row either and compacts automatically only when
+`autocompact_window` is set. When the total is over the window it says so.
 
 ## Choosing a model
 

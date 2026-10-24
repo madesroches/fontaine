@@ -129,6 +129,17 @@ enum TurnEnd {
     InputClosed,
 }
 
+/// The keys `serve_while` acts on beyond the ones every wait serves.
+#[derive(Clone, Copy)]
+enum Serve {
+    /// Prompts and mode keys only: a skill expansion.
+    Prompts,
+    /// Also retrying a denied call: a `!` command, where typed text has no turn to go to.
+    Retry,
+    /// Also queueing typed text as steering, which the caller hands back to the input.
+    Queueing,
+}
+
 /// What becomes of messages typed during a turn that the agent never received.
 #[derive(Debug, PartialEq, Eq)]
 enum EndOfTurn {
@@ -554,6 +565,47 @@ impl<R: FnMut(&mut App)> Ui<R> {
         Continue(())
     }
 
+    /// Drives `fut` to completion while serving keys and prompts. `serve` says which of the
+    /// retry and queueing keys the caller handles. `Err` is the user leaving or interrupting;
+    /// the caller cleans up.
+    async fn serve_while<F: std::future::Future + Unpin>(
+        &mut self,
+        runtime: &AgentRuntime,
+        fut: &mut F,
+        serve: Serve,
+    ) -> Result<F::Output, TurnEnd> {
+        let retry = !matches!(serve, Serve::Prompts);
+        let queueing = matches!(serve, Serve::Queueing);
+        loop {
+            self.draw(runtime);
+            tokio::select! {
+                biased;
+                result = &mut *fut => return Ok(result),
+                input = self.input.recv() => match input {
+                    None => return Err(TurnEnd::InputClosed),
+                    Some(input) => match self.app.handle_input(input) {
+                        Action::Interrupt | Action::Quit => return Err(TurnEnd::Interrupted),
+                        Action::CycleMode => self.cycle_mode(runtime),
+                        Action::RetryDenied(index) if retry => self.retry_denied(runtime, index),
+                        Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
+                        Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                        Action::PickModel(purpose, reference) => {
+                            self.pending_pick = Some((purpose, reference));
+                        }
+                        Action::Providers(request) => self.queue_provider(request),
+                        Action::Queue(text) if queueing => {
+                            self.remember(&text);
+                            runtime.steering.queue(text);
+                        }
+                        Action::EditQueued if queueing => self.edit_queued(runtime),
+                        _ => {}
+                    },
+                },
+                Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
+            }
+        }
+    }
+
     /// Expands a skill while still serving prompts and keys: its `!` commands can need a
     /// human answer, and nothing else would be listening for it. `Err` is the user leaving or
     /// interrupting.
@@ -564,33 +616,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
         argument: &str,
     ) -> Result<Result<String, String>, TurnEnd> {
         let mut expansion = Box::pin(runtime.expand_skill(name, argument));
-        let end = loop {
-            self.draw(runtime);
-            tokio::select! {
-                biased;
-                result = &mut expansion => return Ok(result),
-                input = self.input.recv() => match input {
-                    None => break TurnEnd::InputClosed,
-                    Some(input) => match self.app.handle_input(input) {
-                        Action::Interrupt | Action::Quit => break TurnEnd::Interrupted,
-                        Action::CycleMode => self.cycle_mode(runtime),
-                        Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
-                        Action::KillAgent(id) => self.kill_agent(runtime, &id),
-                        Action::PickModel(purpose, reference) => {
-                            self.pending_pick = Some((purpose, reference));
-                        }
-                        Action::Providers(request) => self.queue_provider(request),
-                        Action::RetryDenied(_)
-                        | Action::Server(_)
-                        | Action::None
-                        | Action::Submit(_)
-                        | Action::Queue(_)
-                        | Action::EditQueued
-                        | Action::Shell(_) => {}
-                    },
-                },
-                Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
-            }
+        let end = match self
+            .serve_while(runtime, &mut expansion, Serve::Prompts)
+            .await
+        {
+            Ok(result) => return Ok(result),
+            Err(end) => end,
         };
         drop(expansion);
         self.app.deny_pending();
@@ -729,38 +760,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 CompactReason::Asked { focus },
                 runtime.approver(),
             ));
-            loop {
-                self.draw(runtime);
-                tokio::select! {
-                    biased;
-                    result = &mut run => break Some(result),
-                    input = self.input.recv() => match input {
-                        None => {
-                            closed = true;
-                            break None;
-                        }
-                        Some(input) => match self.app.handle_input(input) {
-                            Action::Interrupt | Action::Quit => break None,
-                            Action::CycleMode => self.cycle_mode(runtime),
-                            Action::RetryDenied(index) => self.retry_denied(runtime, index),
-                            Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
-                            Action::KillAgent(id) => self.kill_agent(runtime, &id),
-                            Action::PickModel(purpose, reference) => {
-                                self.pending_pick = Some((purpose, reference));
-                            }
-                            Action::Providers(request) => self.queue_provider(request),
-                            Action::Queue(text) => {
-                                self.remember(&text);
-                                runtime.steering.queue(text);
-                            }
-                            Action::EditQueued => self.edit_queued(runtime),
-                            Action::Server(_)
-                            | Action::None
-                            | Action::Submit(_)
-                            | Action::Shell(_) => {}
-                        },
-                    },
-                    Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
+            match self.serve_while(runtime, &mut run, Serve::Queueing).await {
+                Ok(result) => Some(result),
+                Err(end) => {
+                    closed = matches!(end, TurnEnd::InputClosed);
+                    None
                 }
             }
         };
@@ -882,35 +886,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let mut closed = false;
         let result = {
             let mut run = Box::pin(runtime.run_user_shell(&command));
-            loop {
-                self.draw(runtime);
-                tokio::select! {
-                    biased;
-                    result = &mut run => break Some(result),
-                    input = self.input.recv() => match input {
-                        None => {
-                            closed = true;
-                            break None;
-                        }
-                        Some(input) => match self.app.handle_input(input) {
-                            Action::Interrupt | Action::Quit => break None,
-                            Action::CycleMode => self.cycle_mode(runtime),
-                            Action::RetryDenied(index) => self.retry_denied(runtime, index),
-                            Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
-                            Action::KillAgent(id) => self.kill_agent(runtime, &id),
-                            Action::PickModel(purpose, reference) => {
-                                self.pending_pick = Some((purpose, reference));
-                            }
-                            Action::Providers(request) => self.queue_provider(request),
-                            Action::Server(_)
-                            | Action::None
-                            | Action::Submit(_)
-                            | Action::Queue(_)
-                            | Action::EditQueued
-                            | Action::Shell(_) => {}
-                        },
-                    },
-                    Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
+            match self.serve_while(runtime, &mut run, Serve::Retry).await {
+                Ok(result) => Some(result),
+                Err(end) => {
+                    closed = matches!(end, TurnEnd::InputClosed);
+                    None
                 }
             }
         };
