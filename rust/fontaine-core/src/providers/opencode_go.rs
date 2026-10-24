@@ -174,11 +174,10 @@ pub fn wire(model: &str, overrides: &BTreeMap<String, Wire>) -> Wire {
 /// catalog models that reject a forced choice are unforced by rig, some of which refuse
 /// `disabled`.
 fn thinking_off(model: &str, wire: Wire) -> Option<serde_json::Value> {
+    let off = json!({"thinking": {"type": "disabled"}});
     match wire {
-        Wire::Chat => Some(json!({"thinking": {"type": "disabled"}})),
-        Wire::Messages if !model.starts_with("claude-") => {
-            Some(json!({"thinking": {"type": "disabled"}}))
-        }
+        Wire::Chat => Some(off),
+        Wire::Messages if !model.starts_with("claude-") => Some(off),
         Wire::Messages | Wire::Responses | Wire::Gemini => None,
     }
 }
