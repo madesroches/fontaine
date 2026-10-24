@@ -120,6 +120,7 @@ pub struct App {
     pub primary_root: PathBuf,
     pub theme: Theme,
     approvals_opened: u64,
+    servers_opened: u64,
 }
 
 fn is_cycle_key(key: &KeyEvent) -> bool {
@@ -156,6 +157,7 @@ impl App {
             primary_root: PathBuf::new(),
             theme: Theme::default(),
             approvals_opened: 0,
+            servers_opened: 0,
         }
     }
 
@@ -322,7 +324,9 @@ impl App {
             .collect()
     }
 
-    pub fn begin_server(&mut self, prompt: ServerPrompt) {
+    pub fn begin_server(&mut self, mut prompt: ServerPrompt) {
+        self.servers_opened += 1;
+        prompt.id = self.servers_opened;
         self.server = Some(prompt);
     }
 

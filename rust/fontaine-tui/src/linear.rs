@@ -840,6 +840,25 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_server_prompts_each_announce_and_ring() {
+        let mut rig = Rig::new();
+        rig.app.running = true;
+        rig.render();
+        for name in ["github", "linear"] {
+            rig.app
+                .begin_server(crate::server_prompt::ServerPrompt::new(
+                    name.into(),
+                    "d".into(),
+                ));
+            let out = rig.render();
+            assert!(
+                out.contains('\x07') && out.contains("MCP server:"),
+                "{out:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_queued_approval_replacing_an_answered_one_opens_again() {
         let mut rig = Rig::new();
         rig.app.running = true;

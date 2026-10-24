@@ -180,7 +180,10 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16) -> Overlay {
         );
     }
     if let Some(prompt) = &app.server {
-        return Overlay::new("MCP server", prompt.body(width, theme), prompt.footer());
+        return Overlay {
+            instance: Some(prompt.id),
+            ..Overlay::new("MCP server", prompt.body(width, theme), prompt.footer())
+        };
     }
     if let Some(picker) = &app.models {
         let title = match picker.purpose() {

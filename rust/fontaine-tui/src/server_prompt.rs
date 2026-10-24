@@ -17,6 +17,8 @@ pub struct ServerPrompt {
     pub name: String,
     /// The command line or URL the repository gave it.
     pub description: String,
+    /// Set by the app; tells two consecutive prompts apart.
+    pub(crate) id: u64,
     opened: Instant,
 }
 
@@ -25,6 +27,7 @@ impl ServerPrompt {
         ServerPrompt {
             name,
             description,
+            id: 0,
             opened: Instant::now(),
         }
     }
