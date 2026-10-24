@@ -140,7 +140,11 @@ stage, a small local model that answers cheap yes/no questions about each call, 
 described above. The screen reads the probability of each answer from the first token's logprobs
 and turns it into a risk between 0 and 1. It is configured in
 [`[guardian.screen]`](configuration.md#guardianscreen) and needs an Ollama model, because Ollama's
-native chat endpoint is the one that returns logprobs.
+native chat endpoint is the one that returns logprobs. The screen requests the account's
+[`context_tokens`](configuration.md#accountsname) window, as every call to an `ollama` account does.
+A screen and a guardian on the same Ollama model avoid reloading it only when they request the
+same window, which they do on one account or on accounts with equal `context_tokens`. A screen
+prompt longer than the window makes the screen unavailable, and the guardian decides.
 
 The screen sits after everything deterministic and runs only where the guardian would run. It
 and the guardian start together, so a call the screen does not settle costs the slower of the two
@@ -241,7 +245,10 @@ model = "work/claude-haiku-5-5"
   and the `init` event and stderr say so.
 - For endpoints with no catalog match (a custom `openai-compatible` endpoint, Ollama, an
   `opencode-go` account), only a model set explicitly in `guardian.model` is used. A small local
-  model can be both the agent and the guardian; judge it by its own scorecard run.
+  model can be both the agent and the guardian; judge it by its own scorecard run. The guardian
+  prompt is longer than Ollama's default 4096-token window, so an `ollama` account requests
+  `context_tokens` (16384 by default) and the daemon refuses a prompt that still does not fit; the
+  guardian then denies the call.
 
 ## The minimal profile
 

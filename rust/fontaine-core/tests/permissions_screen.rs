@@ -72,6 +72,7 @@ fn stage_with(server: &MockServer, shadow: bool, allow: Option<AllowSettings>) -
             ScreenSettings {
                 endpoint: url::Url::parse(&server.uri()).unwrap(),
                 model: "qwen3:4b".into(),
+                context_tokens: 16384,
                 question: Question::EmployeeAllowed,
                 t_stop: Some(0.9),
                 timeout: Duration::from_secs(2),

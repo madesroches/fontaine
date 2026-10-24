@@ -54,6 +54,9 @@ base_url = "http://localhost:11434"
 model = "local/qwen3:4b"
 ```
 
+Fontaine asks Ollama for a 16384-token context window on every call; the
+[`context_tokens`](docs/configuration.md#accountsname) key changes it.
+
 Then run a task from `rust/`:
 
 ```

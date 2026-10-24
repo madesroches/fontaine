@@ -248,18 +248,14 @@ impl Session {
                 return None;
             }
         };
+        let policy = fitted_policy(&self.policy, spec.context_window);
         if reason == CompactReason::Threshold
-            && !self
-                .policy
-                .over_threshold(estimate_tokens(conversation.messages()), spec)
+            && !policy.over_threshold(estimate_tokens(conversation.messages()), spec)
         {
             return None;
         }
         let state = summary_state(&conversation);
-        let plan = match self
-            .policy
-            .plan_summary(&conversation, &state, &reason, spec)
-        {
+        let plan = match policy.plan_summary(&conversation, &state, &reason, spec) {
             Ok(Some(plan)) => plan,
             Ok(None) => return None,
             Err(e) => {
@@ -367,4 +363,53 @@ pub fn latest_for_root(data_dir: &Path, root: &Path) -> Option<String> {
         }
     }
     best.map(|(_, id)| id)
+}
+
+/// The default reserve and summary size leave no room on a small window: the threshold falls
+/// to zero and the summarizer is sent nothing. Below twice their sum each is capped at a quarter
+/// of the window, so compaction starts by three quarters full and the summarizer gets at
+/// least half.
+fn fitted_policy(policy: &CompactionPolicy, window: Option<u32>) -> CompactionPolicy {
+    let mut fitted = policy.clone();
+    let Some(window) = window else {
+        return fitted;
+    };
+    let limits = &mut fitted.summarizer.limits;
+    if u64::from(window) < 2 * (limits.reserve + limits.summary_tokens) {
+        limits.reserve = limits.reserve.min(u64::from(window / 4));
+        limits.summary_tokens = limits.summary_tokens.min(u64::from(window / 4));
+    }
+    fitted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rig_core::catalog::{Catalog, ModelSpec};
+
+    fn spec(window: u32) -> ModelSpec {
+        let resolved = Catalog::builtin()
+            .resolve("openai/gpt-4o-mini")
+            .expect("gpt-4o is in the catalog");
+        let mut spec: ModelSpec = (*resolved.spec).clone();
+        spec.context_window = Some(window);
+        spec
+    }
+
+    #[test]
+    fn default_window_compacts_only_a_long_conversation_with_a_budget() {
+        let policy = fitted_policy(&CompactionPolicy::default(), Some(16_384));
+        let spec = spec(16_384);
+        assert!(!policy.over_threshold(1_000, &spec));
+        assert!(policy.over_threshold(13_000, &spec));
+        let limits = &policy.summarizer.limits;
+        assert!(16_384 - limits.reserve - limits.summary_tokens > 0);
+    }
+
+    #[test]
+    fn large_window_keeps_default_limits() {
+        let policy = CompactionPolicy::default();
+        assert_eq!(fitted_policy(&policy, Some(200_000)), policy);
+        assert_eq!(fitted_policy(&policy, None), policy);
+    }
 }

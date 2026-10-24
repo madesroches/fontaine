@@ -28,6 +28,11 @@ All notable changes are recorded here. The format follows
     relative verification URL the Console sends against the Console, rather than refusing it (#118).
   - A model request that cannot connect names its transport cause (connection refused, reset,
     TLS, DNS, timeout) without the request URL (#88).
+  - Ollama accounts load models at a configured context window (`context_tokens`, default 16384,
+    sent as `num_ctx` by the agent, the guardian and the screen) instead of the daemon's 4096
+    default, and send `truncate: false`, so an over-long prompt is an error (a fail-closed Deny for
+    the guardian) rather than silently cut. `think = false` turns thinking off. Compaction fits
+    its limits to small windows (#96).
 - Configuration
   - A scope stack of user settings, shared project settings, project-local settings
     (`.fontaine/settings.local.toml`, never committed) and `--settings`, with strict, scope-aware

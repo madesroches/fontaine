@@ -79,6 +79,11 @@ pub trait Provider: Send + Sync + 'static {
         false
     }
 
+    /// Whether the account may set `context_tokens` and `think`.
+    fn accepts_model_options(&self) -> bool {
+        false
+    }
+
     /// Whether a listed id satisfies a requested model.
     fn lists(&self, available: &[String], model: &str) -> bool {
         available.iter().any(|id| id == model)

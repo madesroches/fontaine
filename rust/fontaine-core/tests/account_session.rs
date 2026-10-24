@@ -196,6 +196,8 @@ fn late_account() -> Account {
         base_url: Some("http://127.0.0.1:9".to_string()),
         models: Some(vec!["z1".to_string()]),
         wires: None,
+        context_tokens: None,
+        think: None,
     }
 }
 

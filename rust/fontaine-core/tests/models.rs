@@ -162,6 +162,81 @@ async fn ollama_uses_the_native_chat_route_without_a_key() {
     );
 }
 
+/// One `/api/chat` call against an Ollama account whose settings are `account_extra`, returning
+/// the body the daemon received and the handle.
+async fn ollama_request(model: &str, account_extra: &str) -> (serde_json::Value, ModelHandle) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": model, "created_at": "2026-01-01T00:00:00Z",
+            "message": {"role": "assistant", "content": "hi"},
+            "done": true, "done_reason": "stop",
+        })))
+        .mount(&server)
+        .await;
+    let w = World::new();
+    w.user_file(&format!(
+        "[accounts.local]\nkind = \"ollama\"\nbase_url = \"{}\"\nmodels = [\"{model}\"]\n{account_extra}\n[model]\nmodel = \"local/{model}\"\n",
+        server.uri()
+    ));
+    let handle = resolve_main(&w, &env_of(&[])).await;
+    say_hi(&handle).await;
+    let requests = server.received_requests().await.unwrap();
+    let chat = requests
+        .iter()
+        .find(|r| r.url.path() == "/api/chat")
+        .unwrap();
+    (serde_json::from_slice(&chat.body).unwrap(), handle)
+}
+
+#[tokio::test]
+async fn ollama_requests_carry_the_default_window_and_refuse_truncation() {
+    let (body, _) = ollama_request("qwen3:4b", "").await;
+    assert_eq!(body["options"]["num_ctx"], json!(16384));
+    assert_eq!(body["truncate"], json!(false));
+    assert!(
+        body.get("think").is_none(),
+        "unset leaves the model's default: {body}"
+    );
+}
+
+#[tokio::test]
+async fn ollama_requests_carry_the_configured_window() {
+    let (body, _) = ollama_request("qwen3:4b", "context_tokens = 32768\n").await;
+    assert_eq!(body["options"]["num_ctx"], json!(32768));
+    assert_eq!(body["truncate"], json!(false));
+}
+
+#[tokio::test]
+async fn ollama_think_false_turns_reasoning_off() {
+    let (body, _) = ollama_request("qwen3:4b", "think = false\n").await;
+    assert_eq!(body["think"], json!(false));
+    let (body, _) = ollama_request("qwen3:4b", "think = true\n").await;
+    assert!(body.get("think").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn a_catalog_listed_ollama_model_reports_the_configured_window() {
+    let (_, handle) = ollama_request("gpt-oss:20b", "context_tokens = 8192\n").await;
+    let spec = handle
+        .completion
+        .spec()
+        .expect("rig's catalog lists gpt-oss:20b");
+    assert_eq!(spec.context_window, Some(8192));
+    let (_, handle) = ollama_request("gpt-oss:20b", "").await;
+    assert_eq!(
+        handle.completion.spec().unwrap().context_window,
+        Some(16384)
+    );
+}
+
+#[tokio::test]
+async fn an_unlisted_ollama_model_has_no_spec() {
+    let (_, handle) = ollama_request("my-finetune:1b", "").await;
+    assert!(handle.completion.spec().is_none());
+}
+
 #[tokio::test]
 async fn openai_compatible_uses_chat_completions_and_is_unpriced() {
     let server = MockServer::start().await;

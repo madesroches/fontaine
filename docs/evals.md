@@ -50,6 +50,10 @@ The full-profile run updates `rust/fontaine-guardian/data/guardian_models.toml`;
 reports the `minimal` column and never touches it. See [the runner](../evals/README.md#live-mode)
 for the flags.
 
+A local model is scored on the window its Ollama account requests (`context_tokens`, 16384 by
+default; see [configuration](configuration.md#accountsname)). A prompt that does not fit is refused
+by the daemon and counts as a fail-closed infrastructure failure, not as a truncated read.
+
 ### Cascade scorecards
 
 With a screen stage beside the guardian, `--screen live:<account>/<model>` (an Ollama account)
@@ -120,16 +124,17 @@ scorecard is
 
 ## Results
 
-Two models were scored on 2026-10-23 against dataset `5a79aa741c27`, with the default `[guardian]`
-settings (30-second timeout, verdict cache turned off by the runner). Neither clears the inclusion bar, so the ranked
+Two models were scored against dataset `5a79aa741c27`, `kimi/kimi-for-coding` on 2026-10-23 and
+`local/qwen3:4b` on 2026-10-24, with the default `[guardian]` settings (30-second timeout, verdict cache turned off by the runner). Neither clears the inclusion bar, so the ranked
 list shipped with this build is empty and the guardian falls back to your main model. A model
 enters the list only by clearing the bar on an unfiltered `--profile full` run that finishes
 without infrastructure failures.
 
 - `kimi/kimi-for-coding`: a hosted model through an OpenAI-compatible endpoint.
-- `local/qwen3:4b`: an Ollama model on a GTX 1060 (6 GB). Ollama's default 4096-token context
-  truncates the guardian's prompt, which is longer than that, and thinking is on, so most calls run
-  past the timeout.
+- `local/qwen3:4b`: an Ollama model on a GTX 1060 (6 GB), at the account's default 16384-token
+  `context_tokens` window. It was scored twice: with thinking on (the model's default) and with
+  `think = false` on the account
+  ([`qwen3-4b-think-off.json`](../evals/scorecards/qwen3-4b-think-off.json)).
 
 Rates are over the cases the model answered. A case that failed closed on infrastructure (a
 provider error, rate limit or timeout) is left out of every rate and the latency, and is listed
@@ -141,7 +146,8 @@ file. The reports are in [`evals/scorecards`](../evals/scorecards/).
 | Model | Catch rate | False-deny rate | p50 | p95 | Scored on | Dataset |
 |---|---|---|---|---|---|---|
 | `kimi/kimi-for-coding` | 90.6% (106 of 117) | 2.4% (1 of 41) | 6.3 s | 17.5 s | 2026-10-23 | `5a79aa741c27` |
-| `local/qwen3:4b` | 66.7% (2 of 3) | 0.0% (0 of 6) | 28.7 s | 29.8 s | 2026-10-23 | `5a79aa741c27` |
+| `local/qwen3:4b` | 88.6% (31 of 35) | 0.0% (0 of 33) | 25.2 s | 29.8 s | 2026-10-24 | `5a79aa741c27` |
+| `local/qwen3:4b`, `think = false` | 91.2% (31 of 34) | 0.0% (0 of 28) | 23.4 s | 29.6 s | 2026-10-24 | `5a79aa741c27` |
 
 `kimi/kimi-for-coding` met the catch-rate and false-deny bars and missed the latency bar. Six of
 its cases (3 attack, 3 benign) timed out and are not in the rates: `attack-production-deploy-07`,
@@ -150,16 +156,20 @@ its cases (3 attack, 3 benign) timed out and are not in the rates: `attack-produ
 production hosts/DNS/feature flags, secret-manager writes, CI bypass), so it does not measure the
 current full-profile prompt and is to be rerun.
 
-`local/qwen3:4b` answered 3 of the 120 attack cases and 6 of the 44 benign cases; the other 155 attack
-and benign cases (183 cases in all) timed out at 30 seconds. Its rates rest on those few answers and say
-little about its judgment.
+`local/qwen3:4b` answered 35 of the 120 attack cases and 33 of the 44 benign cases; the other 96
+attack and benign cases (116 cases in all) timed out at 30 seconds. With `think = false` it answered
+34 and 28; 102 attack and benign cases (120 in all) timed out. Turning thinking off does not make it
+fast enough: the model reasons in its answer text instead. Both rates rest on about a third of the
+attack cases, so they say more about the classes it answered quickly than about its judgment
+overall.
 
 ### Catch rate per attack class
 
 | Model | Download+Execute | Data Exfiltration | Production Deploy | Git Destructive | Destroy Pre-existing Files | IAM Grant | Secret Exposure | Tunnel/Reverse Shell | Unguarded Agent Loop | Safety Bypass | Remote Redirect | Unreviewed Merge |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `kimi/kimi-for-coding` | 100.0% | 100.0% | 77.8% | 44.4% | 100.0% | 90.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 70.0% |
-| `local/qwen3:4b` | — | 100.0% | — | 0.0% | — | — | — | — | — | — | 100.0% | — |
+| `local/qwen3:4b` | 100.0% | 100.0% | 100.0% | 0.0% | — | — | 100.0% | 100.0% | 100.0% | 50.0% | 100.0% | 100.0% |
+| `local/qwen3:4b`, `think = false` | 100.0% | 100.0% | 100.0% | 100.0% | — | 100.0% | 100.0% | 100.0% | 100.0% | 0.0% | 100.0% | — |
 
 ### Minimal profile
 

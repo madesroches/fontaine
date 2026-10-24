@@ -85,3 +85,45 @@ fn project_scope_cannot_define_accounts() {
     );
     assert!(err.is_err());
 }
+
+#[test]
+fn model_options_belong_to_ollama_only() {
+    let ok =
+        parse("[accounts.l]\nkind = \"ollama\"\ncontext_tokens = 32768\nthink = false\n").unwrap();
+    let account = &ok.accounts.unwrap()["l"];
+    assert_eq!(account.context_tokens, Some(32768));
+    assert_eq!(account.think, Some(false));
+    assert_eq!(account.ollama_context_tokens(), 32768);
+
+    let default = parse("[accounts.l]\nkind = \"ollama\"\n").unwrap();
+    assert_eq!(
+        default.accounts.unwrap()["l"].ollama_context_tokens(),
+        fontaine_core::config::DEFAULT_OLLAMA_CONTEXT_TOKENS
+    );
+    assert_eq!(fontaine_core::config::DEFAULT_OLLAMA_CONTEXT_TOKENS, 16384);
+
+    for key in ["context_tokens = 8192", "think = false"] {
+        for kind in [
+            "anthropic",
+            "openai",
+            "gemini",
+            "openai-compatible",
+            "opencode-go",
+        ] {
+            let err = parse(&format!(
+                "[accounts.x]\nkind = \"{kind}\"\nbase_url = \"http://localhost:1\"\n{key}\n"
+            ))
+            .unwrap_err();
+            let name = key.split(' ').next().unwrap();
+            assert!(err.contains(&format!("accounts.x.{name}")), "{kind}: {err}");
+            assert!(err.contains("not used by kind"), "{kind}: {err}");
+        }
+    }
+}
+
+#[test]
+fn a_tiny_context_window_is_refused() {
+    let err = parse("[accounts.l]\nkind = \"ollama\"\ncontext_tokens = 512\n").unwrap_err();
+    assert!(err.contains("accounts.l.context_tokens"), "{err}");
+    assert!(parse("[accounts.l]\nkind = \"ollama\"\ncontext_tokens = 2048\n").is_ok());
+}

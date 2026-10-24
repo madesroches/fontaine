@@ -68,6 +68,7 @@ fn screen_at(server: &MockServer) -> Screen {
         ScreenSettings {
             endpoint: Url::parse(&server.uri()).unwrap(),
             model: "tiny".into(),
+            context_tokens: 16384,
             question: Question::EmployeeAllowed,
             t_stop: Some(0.9),
             timeout: Duration::from_secs(5),
