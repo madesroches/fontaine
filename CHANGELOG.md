@@ -44,11 +44,26 @@ All notable changes are recorded here. The format follows
     yes/no question per call in `auto` and `plan` mode and reads `p(yes)` from its first-token
     logprobs. A call it confidently judges outside the user's request is escalated with
     `tier = screen`; every other call, including one the screen could not judge, goes to the
-    guardian as before. The screen never allows. `stop_threshold` has no default, and `shadow = true`
+    guardian as before. (Superseded by the allow path below: the screen can now allow, but only
+    when `allow_threshold` is set.) `stop_threshold` has no default, and `shadow = true`
     (the default) scores and records every call without changing a decision. The audit record,
     the `fontaine.guardian.screen` span and the `fontaine.screen.count` metric carry the result.
   - `fontaine-evals --screen live:<account>/<model> --stop-threshold <risk>` scores the cascade
     (catch, guardian calls, latency, benign cases escalated) from one run.
+- Screen allow path (#135)
+  - The screen can now allow a call without the guardian, superseding "the screen never allows".
+    It is off unless `[guardian.screen] allow_threshold` is set (user file only), and only when a
+    steering-hardened permission read is below that threshold and a steering detector is below
+    `steering_veto` (default `0.001`). The audit record, the headless `gate_decision` event and the
+    `fontaine.guardian.screen` span gain `allow_risk` and `steering`; an allow is `tier = screen`,
+    `decision = allow`, and `fontaine.screen.count` gains an `allow` outcome. Shadow mode logs the
+    allow scores to calibrate against.
+  - The screen and the guardian now start together (`fontaine_guardian::cascade`), so a call the
+    screen does not settle pays no extra latency. A settled call drops the guardian request: its
+    tokens are not counted in usage. A guardian verdict already in hand always wins.
+  - `fontaine-evals --allow-threshold <risk> [--steering-veto <p>]` scores the allow path. The
+    cascade summary replaces `mean_latency_ms` with `allowed_latency_ms` and adds
+    `should_allow_stopped`, `screen_allowed` and `must_not_clear_screen_allowed`.
 - Tools
   - The built-in tools `read`, `ls`, `glob`, `grep`, `write`, `edit`, `shell` and `webfetch`. Every
     tool has a risk class and sits behind one gate, and each call emits a `fontaine.tool` span and

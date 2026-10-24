@@ -10,7 +10,9 @@ use fontaine_agents::mode::ModeSetting;
 use fontaine_agents::registry::{AgentType, AgentTypes, ModelSpec, TypeOrigin};
 use fontaine_agents::spawn::{AgentTool, SendMessageTool};
 use fontaine_agents::tree::{AgentTree, Limits};
-use fontaine_guardian::{Guardian, Profile, Screen, ScreenSettings, Settings as GuardianSettings};
+use fontaine_guardian::{
+    AllowSettings, Guardian, Profile, Screen, ScreenSettings, Settings as GuardianSettings,
+};
 use fontaine_mcp::{Connected, ServerSpec, Transport, connect as connect_server};
 use fontaine_tools::builtins::Seen;
 use fontaine_tools::gate::{AgentId, CallView, ROOT_AGENT};
@@ -175,6 +177,10 @@ pub fn build_screen(config: &Config, profile: Profile) -> Result<Option<ScreenSt
         t_stop: screen.stop_threshold,
         timeout: std::time::Duration::from_millis(screen.timeout_ms),
         profile,
+        allow: (screen.allow_threshold.is_some() || screen.shadow).then_some(AllowSettings {
+            t_allow: screen.allow_threshold,
+            steering_veto: screen.steering_veto,
+        }),
     };
     Ok(Some(ScreenStage {
         screen: Arc::new(Screen::new(crate::transport::reqwest_client()?, settings)),

@@ -1074,6 +1074,10 @@ fn screen_values_are_validated() {
     for bad in [
         "stop_threshold = 0.0",
         "stop_threshold = 1.5",
+        "allow_threshold = 0.0",
+        "allow_threshold = 1.0",
+        "steering_veto = 0.0",
+        "steering_veto = 1.5",
         "timeout_ms = 0",
         "question = \"anything_goes\"",
         "model = \"no-slash\"",
@@ -1085,6 +1089,74 @@ fn screen_values_are_validated() {
         );
     }
     user_ok("[guardian.screen]\nmodel = \"local/m\"\nstop_threshold = 1.0\n");
+    user_ok(
+        "[guardian.screen]\nmodel = \"local/m\"\nallow_threshold = 0.00000156\nsteering_veto = 1.0\n",
+    );
+}
+
+#[test]
+fn an_allow_only_stage_loads_with_the_default_veto() {
+    let w =
+        screen_world("model = \"local/qwen3:4b\"\nshadow = false\nallow_threshold = 0.00000156\n");
+    let screen = w.load().unwrap().guardian.screen.unwrap();
+    assert_eq!(screen.stop_threshold, None);
+    assert_eq!(screen.allow_threshold, Some(0.00000156));
+    assert_eq!(screen.steering_veto, 0.001);
+    assert!(!screen.shadow);
+}
+
+#[test]
+fn a_shadow_stage_has_no_allow_threshold_until_one_is_set() {
+    let w = screen_world("model = \"local/qwen3:4b\"\n");
+    let screen = w.load().unwrap().guardian.screen.unwrap();
+    assert_eq!(screen.allow_threshold, None);
+    assert_eq!(screen.steering_veto, 0.001);
+}
+
+#[test]
+fn a_stage_that_decides_needs_a_stop_or_an_allow_threshold() {
+    let w = screen_world("model = \"local/qwen3:4b\"\nshadow = false\nsteering_veto = 0.01\n");
+    let err = w.load().unwrap_err();
+    assert_eq!(err.exit_code(), 2);
+    assert!(
+        err.to_string().contains("stop_threshold") && err.to_string().contains("allow_threshold"),
+        "{err}"
+    );
+}
+
+#[test]
+fn only_user_scope_may_set_the_allow_keys() {
+    for text in [
+        "[guardian.screen]\nallow_threshold = 0.1\n",
+        "[guardian.screen]\nsteering_veto = 0.5\n",
+    ] {
+        for column in [Column::Project, Column::ProjectLocal, Column::Cli] {
+            let err = parse_settings(text, Path::new("p.toml"), column).unwrap_err();
+            assert!(matches!(err, ConfigError::Scope { .. }), "{text}: {err:?}");
+        }
+    }
+}
+
+#[test]
+fn shadow_stages_build_allow_settings() {
+    let w = screen_world("model = \"local/qwen3:4b\"\n");
+    let config = w.load().unwrap();
+    let stage = fontaine_core::agent::build_screen(&config, fontaine_guardian::Profile::Full)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stage.screen.settings().allow,
+        Some(fontaine_guardian::AllowSettings {
+            t_allow: None,
+            steering_veto: 0.001
+        })
+    );
+    let w = screen_world("model = \"local/qwen3:4b\"\nshadow = false\nstop_threshold = 0.9\n");
+    let config = w.load().unwrap();
+    let stage = fontaine_core::agent::build_screen(&config, fontaine_guardian::Profile::Full)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stage.screen.settings().allow, None);
 }
 
 #[test]

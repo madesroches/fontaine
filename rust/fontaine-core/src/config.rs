@@ -347,6 +347,8 @@ pub struct GuardianScreenSection {
     pub model: Option<String>,
     pub question: Option<fontaine_guardian::Question>,
     pub stop_threshold: Option<f64>,
+    pub allow_threshold: Option<f64>,
+    pub steering_veto: Option<f64>,
     pub timeout_ms: Option<u64>,
     pub shadow: Option<bool>,
 }
@@ -357,6 +359,8 @@ impl GuardianScreenSection {
         self.model.is_some()
             || self.question.is_some()
             || self.stop_threshold.is_some()
+            || self.allow_threshold.is_some()
+            || self.steering_veto.is_some()
             || self.timeout_ms.is_some()
             || self.shadow == Some(false)
     }
@@ -765,6 +769,22 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
                     "must be greater than 0 and at most 1",
                 );
             }
+            if let Some(t) = screen.allow_threshold
+                && !(t > 0.0 && t < 1.0)
+            {
+                return bad(
+                    "guardian.screen.allow_threshold",
+                    "must be greater than 0 and less than 1",
+                );
+            }
+            if let Some(v) = screen.steering_veto
+                && !(v > 0.0 && v <= 1.0)
+            {
+                return bad(
+                    "guardian.screen.steering_veto",
+                    "must be greater than 0 and at most 1",
+                );
+            }
             if screen.timeout_ms == Some(0) {
                 return bad("guardian.screen.timeout_ms", "must be greater than zero");
             }
@@ -931,6 +951,9 @@ pub struct GuardianScreen {
     pub question: fontaine_guardian::Question,
     /// Absent only in shadow mode, where the raw score is all that is recorded.
     pub stop_threshold: Option<f64>,
+    /// Unset: the screen never allows a call. In shadow mode the allow scores are still logged.
+    pub allow_threshold: Option<f64>,
+    pub steering_veto: f64,
     pub timeout_ms: u64,
     pub shadow: bool,
 }
@@ -1165,6 +1188,8 @@ impl Config {
                         model: String::new(),
                         question: fontaine_guardian::Question::default(),
                         stop_threshold: None,
+                        allow_threshold: None,
+                        steering_veto: fontaine_guardian::DEFAULT_STEERING_VETO,
                         timeout_ms: DEFAULT_SCREEN_TIMEOUT_MS,
                         shadow: true,
                     });
@@ -1176,6 +1201,12 @@ impl Config {
                     }
                     if let Some(v) = screen.stop_threshold {
                         merged.stop_threshold = Some(v);
+                    }
+                    if let Some(v) = screen.allow_threshold {
+                        merged.allow_threshold = Some(v);
+                    }
+                    if let Some(v) = screen.steering_veto {
+                        merged.steering_veto = v;
                     }
                     if let Some(v) = screen.timeout_ms {
                         merged.timeout_ms = v;
@@ -1570,10 +1601,10 @@ fn check_screen(config: &mut Config, user_path: &Path) -> Result<(), ConfigError
     if forced {
         screen.shadow = true;
     }
-    if !screen.shadow && screen.stop_threshold.is_none() {
+    if !screen.shadow && screen.stop_threshold.is_none() && screen.allow_threshold.is_none() {
         return bad(
             "guardian.screen.stop_threshold",
-            "there is no default; set it to stop calls, or keep `shadow = true` to log scores first",
+            "there is no default; set `stop_threshold` and/or `allow_threshold`, or keep `shadow = true` to log scores first",
         );
     }
     Ok(())

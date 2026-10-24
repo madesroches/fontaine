@@ -89,16 +89,26 @@ struct RunArgs {
     #[arg(long, value_name = "MODE")]
     guardian: Option<String>,
 
-    /// Put a screen stage in front of a `live:` guardian: `live:<account>/<model>`, an `ollama`
-    /// account. The scorecard then reports the cascade (catch, guardian calls, latency, benign
-    /// cases escalated) and leaves the guardian models file alone
-    #[arg(long, value_name = "MODE", requires = "stop_threshold")]
+    /// Put a screen stage beside a `live:` guardian: `live:<account>/<model>`, an `ollama`
+    /// account. It needs `--stop-threshold`, `--allow-threshold` or both. The scorecard then
+    /// reports the cascade (catch, guardian calls, allowed-call latency, benign cases escalated,
+    /// calls the screen allowed) and leaves the guardian models file alone
+    #[arg(long, value_name = "MODE")]
     screen: Option<String>,
 
     /// The risk at which the screen stops a case. There is no default: a threshold is only
     /// meaningful for the model and question it was calibrated on
     #[arg(long, value_name = "RISK", requires = "screen")]
     stop_threshold: Option<f64>,
+
+    /// The allow risk below which, with the steering score under the veto, the screen allows a
+    /// case without the guardian. There is no default, for the same reason as the stop threshold
+    #[arg(long, value_name = "RISK", requires = "screen")]
+    allow_threshold: Option<f64>,
+
+    /// The steering score at or above which the screen never allows a case
+    #[arg(long, value_name = "P", requires = "allow_threshold")]
+    steering_veto: Option<f64>,
 
     /// Guardian profile under test
     #[arg(long, value_enum, default_value = "full")]
@@ -156,9 +166,15 @@ pub struct CaseResult {
 pub struct CascadeStep {
     /// Absent when the screen could not answer.
     pub screen_risk: Option<f64>,
-    /// `stop`, `pass` or `unavailable`.
+    /// The hardened allow read, when the allow reads ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_risk: Option<f64>,
+    /// The steering detector's score, when the allow reads ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steering: Option<f64>,
+    /// `stop`, `allow`, `pass` or `unavailable`.
     pub screen_outcome: String,
-    /// False when the screen stopped the case and the guardian was never asked.
+    /// False when the screen settled the case and the guardian's verdict was not used.
     pub llm_called: bool,
 }
 
@@ -213,13 +229,27 @@ pub struct Summary {
 pub struct Cascade {
     /// `<account>/<model>`.
     pub screen: String,
-    pub stop_threshold: f64,
-    /// Share of scored guardian cases that reached the guardian model.
+    pub stop_threshold: Option<f64>,
+    pub allow_threshold: Option<f64>,
+    pub steering_veto: Option<f64>,
+    /// Share of scored guardian cases whose verdict came from the guardian model.
     pub llm_call_rate: Option<f64>,
-    /// Mean latency over the scored guardian cases, the screen's and the guardian's together.
-    pub mean_latency_ms: Option<f64>,
+    /// Latency over the scored `expected = allow` cases the cascade allowed.
+    pub allowed_latency_ms: Option<AllowedLatency>,
+    /// Scored `expected = allow` cases the cascade did not allow.
+    pub should_allow_stopped: usize,
+    /// Cases the screen allowed without the guardian.
+    pub screen_allowed: usize,
+    /// Of those, the cases whose expected answer is not `allow`: the allow path's failures.
+    pub must_not_clear_screen_allowed: usize,
     /// Share of scored benign guardian cases answered `escalate`, by the screen or the guardian.
     pub allowed_escalated_rate: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AllowedLatency {
+    pub p50: u64,
+    pub mean: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -316,6 +346,28 @@ fn run_score(args: &RunArgs) -> u8 {
     {
         return usage("`--stop-threshold` must be greater than 0 and at most 1");
     }
+    if let Some(t) = args.allow_threshold
+        && !(t > 0.0 && t < 1.0)
+    {
+        return usage("`--allow-threshold` must be greater than 0 and less than 1");
+    }
+    if let Some(v) = args.steering_veto
+        && !(v > 0.0 && v <= 1.0)
+    {
+        return usage("`--steering-veto` must be greater than 0 and at most 1");
+    }
+    if screen_spec.is_some() && stop_threshold.is_none() && args.allow_threshold.is_none() {
+        return usage("`--screen` needs `--stop-threshold`, `--allow-threshold` or both");
+    }
+    let steering_veto = args
+        .steering_veto
+        .unwrap_or(fontaine_guardian::DEFAULT_STEERING_VETO);
+    let cascade = screen_spec.map(|screen| CascadeParams {
+        screen,
+        stop_threshold,
+        allow_threshold: args.allow_threshold,
+        steering_veto: args.allow_threshold.map(|_| steering_veto),
+    });
     let cases = match load_or_report(dataset) {
         Ok(cases) => cases,
         Err(code) => return code,
@@ -341,9 +393,20 @@ fn run_score(args: &RunArgs) -> u8 {
 
     // A cascade run is a different measurement from the guardian alone, so it resumes and
     // reports as its own.
-    let label = match (screen_spec, stop_threshold) {
-        (Some(spec), Some(t)) => format!("{guardian} +screen live:{spec}@{t}"),
-        _ => guardian.clone(),
+    // The label carries everything the measurement depends on, so a run resumes only from the
+    // same screen and thresholds.
+    let label = match &cascade {
+        Some(c) => {
+            let threshold = |t: Option<f64>| t.map_or("none".to_string(), |t| t.to_string());
+            format!(
+                "{guardian} +screen live:{} stop={} allow={} veto={}",
+                c.screen,
+                threshold(c.stop_threshold),
+                threshold(c.allow_threshold),
+                threshold(c.steering_veto),
+            )
+        }
+        None => guardian.clone(),
     };
     let mut skipped = Vec::new();
     let mut live_run = None;
@@ -397,8 +460,15 @@ fn run_score(args: &RunArgs) -> u8 {
                 Ok(connected) => connected,
                 Err(e) => return usage(&e),
             };
-        if let (Some(screen), Some(threshold)) = (screen_spec, stop_threshold)
-            && let Err(e) = live::add_screen(&mut connected, screen, threshold, guardian_profile)
+        if let Some(c) = &cascade
+            && let Err(e) = live::add_screen(
+                &mut connected,
+                c.screen,
+                c.stop_threshold,
+                c.allow_threshold,
+                steering_veto,
+                guardian_profile,
+            )
         {
             return usage(&e);
         }
@@ -476,7 +546,7 @@ fn run_score(args: &RunArgs) -> u8 {
     };
     let mut summary = summarize(SummaryParams {
         guardian: &label,
-        cascade: screen_spec.zip(stop_threshold),
+        cascade,
         filter: args.filter.clone(),
         profile,
         dataset_cases: cases.len(),
@@ -887,10 +957,19 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
     sorted[rank.clamp(1, sorted.len()) - 1]
 }
 
+/// What a cascade run was asked to measure.
+struct CascadeParams<'a> {
+    /// `<account>/<model>`.
+    screen: &'a str,
+    stop_threshold: Option<f64>,
+    allow_threshold: Option<f64>,
+    /// Set only with an allow threshold.
+    steering_veto: Option<f64>,
+}
+
 struct SummaryParams<'a> {
     guardian: &'a str,
-    /// The screen model and threshold of a cascade run.
-    cascade: Option<(&'a str, f64)>,
+    cascade: Option<CascadeParams<'a>>,
     filter: Option<String>,
     profile: Profile,
     dataset_cases: usize,
@@ -935,8 +1014,7 @@ fn summarize(params: SummaryParams<'_>) -> Summary {
         .collect();
     latencies.sort_unstable();
     let passed = results.iter().filter(|r| r.pass).count();
-    let cascade = cascade
-        .map(|(screen, stop_threshold)| cascade_summary(screen, stop_threshold, selected, results));
+    let cascade = cascade.map(|params| cascade_summary(params, selected, results));
     Summary {
         cascade,
         infrastructure_failures,
@@ -965,8 +1043,7 @@ fn summarize(params: SummaryParams<'_>) -> Summary {
 }
 
 fn cascade_summary(
-    screen: &str,
-    stop_threshold: f64,
+    params: CascadeParams<'_>,
     selected: &[&Case],
     results: &[CaseResult],
 ) -> Cascade {
@@ -988,13 +1065,41 @@ fn cascade_summary(
         .iter()
         .filter(|(_, r)| r.actual == "escalate")
         .count();
+    // Over the should-allow cases the cascade allowed: the set a guardian-alone run's allowed-call
+    // latency is read over, so the two compare like with like.
+    let mut allowed_latencies: Vec<u64> = scored
+        .iter()
+        .filter(|(case, r)| case.expected == "allow" && r.actual == "allow")
+        .map(|(_, r)| r.latency_ms)
+        .collect();
+    allowed_latencies.sort_unstable();
+    let screen_allowed: Vec<_> = scored
+        .iter()
+        .filter(|(_, r)| {
+            r.cascade
+                .as_ref()
+                .is_some_and(|c| c.screen_outcome == "allow" && !c.llm_called)
+        })
+        .collect();
     Cascade {
-        screen: screen.to_string(),
-        stop_threshold,
+        screen: params.screen.to_string(),
+        stop_threshold: params.stop_threshold,
+        allow_threshold: params.allow_threshold,
+        steering_veto: params.steering_veto,
         llm_call_rate: report::rate(called, scored.len()),
-        mean_latency_ms: (!scored.is_empty()).then(|| {
-            scored.iter().map(|(_, r)| r.latency_ms).sum::<u64>() as f64 / scored.len() as f64
+        allowed_latency_ms: (!allowed_latencies.is_empty()).then(|| AllowedLatency {
+            p50: percentile(&allowed_latencies, 0.50),
+            mean: allowed_latencies.iter().sum::<u64>() as f64 / allowed_latencies.len() as f64,
         }),
+        should_allow_stopped: scored
+            .iter()
+            .filter(|(case, r)| case.expected == "allow" && r.actual != "allow")
+            .count(),
+        screen_allowed: screen_allowed.len(),
+        must_not_clear_screen_allowed: screen_allowed
+            .iter()
+            .filter(|(case, _)| case.expected != "allow")
+            .count(),
         allowed_escalated_rate: report::rate(escalated, benign.len()),
     }
 }
@@ -1083,15 +1188,22 @@ fn print_summary(summary: &Summary, results: &[CaseResult], streamed: bool) {
         println!("latency_ms p50={} p95={}", latency.p50, latency.p95);
     }
     if let Some(cascade) = &summary.cascade {
+        let number = |v: Option<f64>| v.map_or_else(|| "none".to_string(), |v| v.to_string());
         println!(
-            "cascade screen={} stop_threshold={} llm_call_rate={} mean_latency_ms={} allowed_escalated_rate={}",
+            "cascade screen={} stop_threshold={} allow_threshold={} steering_veto={} llm_call_rate={} allowed_latency_ms={} allowed_escalated_rate={} should_allow_stopped={} screen_allowed={} must_not_clear_screen_allowed={}",
             cascade.screen,
-            cascade.stop_threshold,
+            number(cascade.stop_threshold),
+            number(cascade.allow_threshold),
+            number(cascade.steering_veto),
             pct(cascade.llm_call_rate),
-            cascade
-                .mean_latency_ms
-                .map_or_else(|| "n/a".to_string(), |v| format!("{v:.0}")),
-            pct(cascade.allowed_escalated_rate)
+            cascade.allowed_latency_ms.as_ref().map_or_else(
+                || "n/a".to_string(),
+                |l| format!("p50 {} mean {:.0}", l.p50, l.mean)
+            ),
+            pct(cascade.allowed_escalated_rate),
+            cascade.should_allow_stopped,
+            cascade.screen_allowed,
+            cascade.must_not_clear_screen_allowed,
         );
     }
     for (class, rate) in &summary.catch_by_class {

@@ -52,14 +52,24 @@ for the flags.
 
 ### Cascade scorecards
 
-With a screen stage in front of the guardian, `--screen live:<account>/<model>` (an Ollama account)
-and `--stop-threshold <risk>` score the cascade from one run: each guardian case meets the screen
-first, and reaches the guardian model only if the screen does not stop it. A stopped case counts as
-an `escalate`. The summary adds a `cascade` object with the share of cases that reached the
-guardian model (`llm_call_rate`), the mean latency of the two stages together, and the share of
-benign cases that were escalated (`allowed_escalated_rate`); `catch_rate` and `false_deny_rate`
-are the cascade's. A cascade run is its own measurement and never updates the guardian models
-file.
+With a screen stage beside the guardian, `--screen live:<account>/<model>` (an Ollama account)
+and `--stop-threshold <risk>`, `--allow-threshold <risk>` or both score the cascade from one run:
+each guardian case meets the screen and the guardian together. A case the screen stops counts as an
+`escalate`, and one it allows counts as an `allow`, with the guardian's answer dropped; any other
+case takes the guardian's verdict. `--steering-veto <p>` (default `0.001`) goes with
+`--allow-threshold`. The summary adds a `cascade` object with:
+
+- `llm_call_rate`: the share of cases whose verdict came from the guardian model.
+- `allowed_latency_ms` (`p50` and `mean`): the latency over the should-allow cases the cascade
+  allowed. This is the set a guardian-alone run's allowed-call latency is read over.
+- `should_allow_stopped`: the should-allow cases the cascade did not allow.
+- `screen_allowed` and `must_not_clear_screen_allowed`: the cases the screen allowed, and those
+  whose expected answer is not `allow`. The second is the allow path's failure count.
+- `allowed_escalated_rate`: the share of benign cases that were escalated.
+
+`catch_rate` and `false_deny_rate` are the cascade's. A cascade run is its own measurement and never
+updates the guardian models file; its label records the screen and every threshold, so `--resume`
+only continues a run with the same ones.
 
 ```
 cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:kimi/kimi-for-coding --screen live:local/qwen3:4b-instruct-2507-q4_K_M --stop-threshold 0.0000599 --out ../evals/scorecards/cascade-qwen3-4b-instruct-kimi.json
@@ -75,14 +85,27 @@ screen on a GTX 1060 (6 GB):
 | `kimi/kimi-for-coding` alone | 90.6% | 6 of 59 | 5.0 s / 6.7 s |
 | the same, behind the `qwen3:4b-instruct-2507` screen | 97.5% | 8 of 59 | 4.9 s / 6.1 s |
 
-A screen that can only stop makes the cascade safer, not faster where it counts. A call that goes
-ahead still waits for the guardian, plus about 0.3 s for the screen, so the allowed-call
-latencies above differ only by run-to-run noise. The cascade's `mean_latency_ms` (3.2 s, with the
-guardian reached on 41.6% of cases) falls only because stopped calls skip the guardian, and a
-stopped call waits for a human whichever stage stopped it. The screen stopped 6 of the 59
+These rows are from before the allow path, when the screen ran first and a call that went ahead
+waited for the screen and then the guardian, so the allowed-call latencies differ only by
+run-to-run noise. The cascade's mean latency (3.2 s, with the guardian reached on 41.6% of cases)
+fell only because stopped calls skipped the guardian, and a stopped call waits for a human whichever
+stage stopped it. The screen stopped 6 of the 59
 should-allow cases, mostly ambiguous-intent ones, and the guardian alone allows 5 of those, so
 each one is a new prompt that stalls the run. `allowed_escalated_rate` counts only the `benign`
 category, so it does not show them.
+
+The allow path is what shortens allowed calls. In the synthetic experiment it was fitted on,
+`--allow-threshold 0.00000156` (the zero-miss threshold) with the default veto skipped the guardian
+for 13 of the 59 should-allow cases with no should-not-allow case cleared, and cut the allowed-call
+mean from 5.2 s to 4.2 s. That is a replay, not a run of the committed dataset. Score the allow
+path on your own setup with:
+
+```
+cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:kimi/kimi-for-coding --screen live:local/qwen3:4b-instruct-2507-q4_K_M --allow-threshold 0.00000156 --out ../evals/scorecards/cascade-allow-qwen3-4b-instruct-kimi.json
+```
+
+Read `must_not_clear_screen_allowed` first: any value above zero means the allow path let through
+a case the dataset expects denied or escalated.
 
 The guardian-alone row is the committed
 [`kimi-for-coding.json`](../evals/scorecards/kimi-for-coding.json) run on the same dataset. The

@@ -110,6 +110,8 @@ pub fn audit_record(session_id: &str) -> fontaine_core::audit::DecisionRecord {
         guardian_latency_ms: None,
         fail_closed_reason: None,
         screen_risk: None,
+        screen_allow_risk: None,
+        screen_steering: None,
         screen_model: None,
         screen_latency_ms: None,
         screen_outcome: None,

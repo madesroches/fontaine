@@ -120,7 +120,7 @@ pub struct ScreenStage {
     pub screen: Arc<Screen>,
     /// `<account>/<model>`.
     pub label: String,
-    /// Score and record every call, but never stop one.
+    /// Score and record every call, but never stop or allow one.
     pub shadow: bool,
 }
 

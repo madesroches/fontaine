@@ -300,3 +300,105 @@ pub fn fake_guardian_turns(verdicts: Vec<Value>, settings: Settings) -> Fake {
     ));
     Fake { mock, guardian }
 }
+
+/// A guardian whose model answers after `delay`, with the same verdict every time. `asked`
+/// counts requests received; `completed` counts answers the client was still waiting for when
+/// they were sent, so a dropped adjudication leaves it at zero.
+pub struct Delayed {
+    pub guardian: Arc<Guardian>,
+    pub asked: Arc<AtomicUsize>,
+    pub completed: Arc<AtomicUsize>,
+}
+
+pub async fn delayed_guardian(verdict: Value, delay: std::time::Duration) -> Delayed {
+    use rig_core::providers::openai::OpenAIConfig;
+    use rig_core::providers::openai::wire::{Auth, Dialect};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let asked = Arc::new(AtomicUsize::new(0));
+    let completed = Arc::new(AtomicUsize::new(0));
+    let body = serde_json::json!({
+        "id": "chatcmpl-delayed",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "delayed",
+        "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{"id": "call_1", "type": "function",
+                "function": {"name": "submit", "arguments": verdict.to_string()}}],
+        }}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+    })
+    .to_string();
+    let (asked_by, completed_by) = (asked.clone(), completed.clone());
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let (asked, completed, body) = (asked_by.clone(), completed_by.clone(), body.clone());
+            tokio::spawn(async move {
+                let mut buffer = vec![0u8; 65536];
+                let mut seen = 0;
+                loop {
+                    let n = stream.read(&mut buffer[seen..]).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    seen += n;
+                    let head = String::from_utf8_lossy(&buffer[..seen]).to_string();
+                    if let Some(end) = head.find("\r\n\r\n") {
+                        let length = head
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                            })
+                            .unwrap_or(0);
+                        if seen >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                asked.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(delay).await;
+                // A client that gave up closed its end while the answer was pending.
+                let mut probe = [0u8; 1];
+                let waiting = tokio::time::timeout(
+                    std::time::Duration::from_millis(20),
+                    stream.read(&mut probe),
+                )
+                .await
+                .is_err();
+                if !waiting {
+                    return;
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                if stream.write_all(response.as_bytes()).await.is_ok() {
+                    completed.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+        }
+    });
+    let client = OpenAIConfig::with_key(&Dialect::gateway("openai-compatible", "", ""), "key")
+        .with_auth(Auth::OptionalBearer)
+        .with_base_url(&url)
+        .client();
+    let guardian = Arc::new(Guardian::new(
+        client.completion("delayed").erase(),
+        "test/delayed",
+        Settings::default(),
+    ));
+    Delayed {
+        guardian,
+        asked,
+        completed,
+    }
+}

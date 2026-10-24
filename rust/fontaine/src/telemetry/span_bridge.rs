@@ -710,6 +710,34 @@ mod tests {
     }
 
     #[test]
+    fn a_screen_allow_is_counted_from_the_decision_event() {
+        let (recorder, _capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                target: TARGET,
+                tier = "screen",
+                decision = "allow",
+                screen.outcome = "allow",
+                screen.risk = 0.99,
+                screen.allow_risk = 0.000001,
+                screen.steering = 0.0001,
+                "tool_decision"
+            );
+        });
+        let metrics = recorder.0.lock().unwrap();
+        let counted: Vec<_> = metrics
+            .iter()
+            .filter(|(n, _, _)| n == "fontaine.screen.count")
+            .collect();
+        assert_eq!(counted.len(), 1);
+        assert!(
+            counted[0]
+                .2
+                .contains(&("outcome".to_string(), "allow".to_string()))
+        );
+    }
+
+    #[test]
     fn guardian_latency_and_fail_closed_reasons_come_from_the_decision_event() {
         let (recorder, _capture, subscriber) = harness();
         tracing::subscriber::with_default(subscriber, || {

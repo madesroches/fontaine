@@ -26,6 +26,9 @@ struct Script {
     /// A request whose user message holds this text is answered only after the test is over, so a
     /// run can be caught partway.
     stall: Option<String>,
+    /// Every other answer comes after this long, so a caller with something faster to wait for
+    /// can be told apart from one that waited.
+    delay: Duration,
     calls: AtomicUsize,
 }
 
@@ -57,7 +60,7 @@ impl Respond for Script {
         let template = if stalled {
             ResponseTemplate::new(200).set_delay(Duration::from_secs(600))
         } else {
-            ResponseTemplate::new(200)
+            ResponseTemplate::new(200).set_delay(self.delay)
         };
         template.set_body_json(json!({
             "id": "c1", "object": "chat.completion", "created": 1, "model": "m",
@@ -84,12 +87,31 @@ impl Endpoint {
         default: Value,
         stall: Option<&str>,
     ) -> Endpoint {
+        Endpoint::start_with(rules, default, stall, Duration::ZERO).await
+    }
+
+    /// Answers every request after `delay`.
+    pub async fn start_delayed(
+        rules: Vec<(&str, Value)>,
+        default: Value,
+        delay: Duration,
+    ) -> Endpoint {
+        Endpoint::start_with(rules, default, None, delay).await
+    }
+
+    async fn start_with(
+        rules: Vec<(&str, Value)>,
+        default: Value,
+        stall: Option<&str>,
+        delay: Duration,
+    ) -> Endpoint {
         let server = MockServer::builder().start().await;
         Mock::given(any())
             .respond_with(Script {
                 rules: rules.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
                 default,
                 stall: stall.map(str::to_string),
+                delay,
                 calls: AtomicUsize::new(0),
             })
             .mount(&server)

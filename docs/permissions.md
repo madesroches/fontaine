@@ -79,8 +79,9 @@ The `tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`,
 whether the verdict came from the cache, how long the guardian took, and, when it failed closed,
 the reason (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`). With a
 [screen stage](guardian.md#the-screen-stage) configured, the record also carries `screen_risk`,
-`screen_model`, `screen_latency_ms` and `screen_outcome`, and a call the screen stopped has
-`tier = screen`.
+`screen_allow_risk`, `screen_steering`, `screen_model`, `screen_latency_ms` and `screen_outcome`,
+and a call the screen stopped or, with an `allow_threshold`, allowed has `tier = screen`
+(`decision = prompt` or `deny` for a stop, `allow` for an allow).
 
 ## Your own shell commands
 

@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fontaine_guardian::{Adjudication, Decision as GuardianDecision, FailClosed, ScreenOutcome};
+use fontaine_guardian::cascade::{Decided, ScreenInput};
+use fontaine_guardian::{
+    Adjudication, Decision as GuardianDecision, FailClosed, ScreenOutcome, ScreenScores,
+};
 use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
 use fontaine_tools::preclassify::{Environment, Preclassifier, analyze};
 use fontaine_tools::risk::RiskClass;
@@ -22,7 +25,7 @@ use crate::audit::{Decision, DecisionRecord, args_digest, now_rfc3339};
 use crate::config::PermissionMode;
 use crate::destructive::touched_paths;
 use crate::floor::{self, CriticalEnv};
-use crate::gate::{DeniedCall, RetrySource, SessionState, permission_mode};
+use crate::gate::{DeniedCall, RetrySource, ScreenStage, SessionState, permission_mode};
 use crate::ledger::Record;
 use crate::permission_rules::{
     CallContext, Posture, RuleSource, SourcedRule, is_broad_code_execution, matches, parse_rule,
@@ -280,12 +283,13 @@ struct CallCtx<'a> {
 struct Screened {
     outcome: ScreenOutcome,
     model: String,
-    shadow: bool,
 }
 
 impl Screened {
     fn annotate(&self, record: &mut DecisionRecord) {
         record.screen_risk = self.outcome.risk();
+        record.screen_allow_risk = self.outcome.allow_risk();
+        record.screen_steering = self.outcome.steering();
         record.screen_model = Some(self.model.clone());
         record.screen_latency_ms = Some(self.outcome.latency_ms());
         record.screen_outcome = Some(self.outcome.as_str().to_string());
@@ -789,6 +793,8 @@ impl PermissionPipeline {
             guardian_latency_ms: None,
             fail_closed_reason: None,
             screen_risk: None,
+            screen_allow_risk: None,
+            screen_steering: None,
             screen_model: None,
             screen_latency_ms: None,
             screen_outcome: None,
@@ -1063,14 +1069,29 @@ impl PermissionPipeline {
             hook.guardian_context.clone(),
             call.annotations,
         );
-        let screened = self.run_screen(&request).await;
-        if let Some(note) = &screened
-            && let ScreenOutcome::Stop { risk, .. } = note.outcome
-            && !note.shadow
-        {
-            return self.screen_stop(cx, note, risk).await;
-        }
-        let mut adjudication = self.state.guardian().adjudicate(&request).await;
+        let stage = self.state.screen();
+        let guardian = self.state.guardian();
+        let composed = fontaine_guardian::cascade::adjudicate(
+            stage.as_ref().map(|stage| ScreenInput {
+                screen: &stage.screen,
+                enforce: !stage.shadow,
+            }),
+            &guardian,
+            &request,
+        )
+        .await;
+        let screened = self.note_screen(stage, composed.screen);
+        let mut adjudication = match composed.decided {
+            Decided::ScreenStop(scores) => {
+                let screened = screened.expect("a screen stop comes from a screen");
+                return self.screen_stop(cx, &screened, scores.risk).await;
+            }
+            Decided::ScreenAllow(scores) => {
+                let screened = screened.expect("a screen allow comes from a screen");
+                return self.screen_allow(cx, &screened, scores);
+            }
+            Decided::Guardian(adjudication) => *adjudication,
+        };
         if adjudication.fail_closed == Some(FailClosed::Unavailable) && !self.headless {
             let info = GuardianUnavailable {
                 model: adjudication.model.clone(),
@@ -1109,14 +1130,14 @@ impl PermissionPipeline {
         self.settle(cx, adjudication, screened.as_ref()).await
     }
 
-    /// Asks the screen about a call the guardian is about to judge. `None` when no screen is
-    /// configured. A screen that cannot answer is reported once and the guardian decides.
-    async fn run_screen(
+    /// What the screen made of a call, for the audit record. A screen that cannot answer is
+    /// reported once and the guardian decides.
+    fn note_screen(
         &self,
-        request: &fontaine_guardian::AdjudicationRequest,
+        stage: Option<ScreenStage>,
+        outcome: Option<ScreenOutcome>,
     ) -> Option<Screened> {
-        let stage = self.state.screen()?;
-        let outcome = stage.screen.screen(request).await;
+        let (stage, outcome) = stage.zip(outcome)?;
         if let ScreenOutcome::Unavailable { reason, .. } = &outcome
             && self.state.first_screen_warning()
         {
@@ -1128,8 +1149,37 @@ impl PermissionPipeline {
         Some(Screened {
             outcome,
             model: stage.label,
-            shadow: stage.shadow,
         })
+    }
+
+    /// The screen judged the call clearly within the user's request and free of steering. The
+    /// guardian was dropped, so its breaker and cache are untouched.
+    fn screen_allow(
+        &self,
+        cx: &CallCtx<'_>,
+        screened: &Screened,
+        scores: ScreenScores,
+    ) -> GateDecision {
+        let figure = |value: Option<f64>| value.map_or("n/a".to_string(), |v| format!("{v:.2e}"));
+        let explanation = format!(
+            "a local screen judged this call clearly within the user's request (allow risk {}, steering {})",
+            figure(scores.allow_risk),
+            figure(scores.steering)
+        );
+        Self::note(Tier::Screen, Decision::Allow);
+        let mut record = self.record(
+            cx,
+            Tier::Screen,
+            Decision::Allow,
+            Some("screen".to_string()),
+            Some(explanation),
+        );
+        screened.annotate(&mut record);
+        self.emit(record);
+        self.state.append(self.action(cx, Tier::Screen));
+        GateDecision::Allow {
+            args: cx.args.clone(),
+        }
     }
 
     /// The screen judged the call outside the user's request. It escalates exactly as a guardian
@@ -1462,6 +1512,8 @@ pub(crate) fn record_decision(state: &SessionState, record: &DecisionRecord) {
         fail_closed_reason = record.fail_closed_reason.as_deref(),
         screen.outcome = record.screen_outcome.as_deref(),
         screen.risk = record.screen_risk,
+        screen.allow_risk = record.screen_allow_risk,
+        screen.steering = record.screen_steering,
         screen.model = record.screen_model.as_deref(),
         screen.latency_ms = record.screen_latency_ms,
         "tool_decision"

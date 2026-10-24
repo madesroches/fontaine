@@ -15,6 +15,7 @@ use fontaine_core::dirs;
 use fontaine_core::ledger::LedgerView;
 use fontaine_core::models::{GuardianModel, Switcher};
 use fontaine_core::scanner_stage::{self, Backend};
+use fontaine_guardian::cascade::{Decided, ScreenInput};
 use fontaine_guardian::{
     ActionTaken, AdjudicationRequest, Guardian, PreExistence, Profile, Screen, ScreenOutcome,
     SessionFacts, Settings, ToolCallSummary, TouchedPath, task_intent,
@@ -131,7 +132,9 @@ pub fn connect(
 pub fn add_screen(
     live: &mut Live,
     spec: &str,
-    stop_threshold: f64,
+    stop_threshold: Option<f64>,
+    allow_threshold: Option<f64>,
+    steering_veto: f64,
     profile: Profile,
 ) -> Result<(), String> {
     let (account, _) = spec
@@ -153,7 +156,9 @@ pub fn add_screen(
     config.guardian.screen = Some(config::GuardianScreen {
         model: spec.to_string(),
         question: fontaine_guardian::Question::default(),
-        stop_threshold: Some(stop_threshold),
+        stop_threshold,
+        allow_threshold,
+        steering_veto,
         timeout_ms: config::DEFAULT_SCREEN_TIMEOUT_MS,
         shadow: false,
     });
@@ -297,35 +302,66 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
     };
     let cwd = cwd.canonicalize().map_err(|e| e.to_string())?;
     let request = request_for(case, &cwd);
-    let mut screened = None;
-    if let Some(screen) = &live.screen {
-        let outcome = screen.screen(&request).await;
-        if let ScreenOutcome::Stop { risk, latency_ms } = outcome {
-            let actual = "escalate".to_string();
-            return Ok(Scored::Result(Box::new(CaseResult {
-                id: case.id.clone(),
-                kind: case.kind.as_str().to_string(),
-                category: case.category.to_string(),
-                expected: case.expected.clone(),
-                pass: passes(case, &actual),
-                actual,
-                expected_tier: None,
-                actual_tier: None,
-                mode: None,
-                latency_ms,
-                explanation: Some(format!("stopped by the screen (risk {risk:.2})")),
-                escape_class: None,
-                fail_closed: None,
-                cascade: Some(CascadeStep {
-                    screen_risk: Some(risk),
-                    screen_outcome: "stop".to_string(),
-                    llm_called: false,
-                }),
-            })));
+    let started = std::time::Instant::now();
+    let composed = fontaine_guardian::cascade::adjudicate(
+        live.screen.as_deref().map(|screen| ScreenInput {
+            screen,
+            enforce: true,
+        }),
+        &live.guardian,
+        &request,
+    )
+    .await;
+    let wall_ms = started.elapsed().as_millis() as u64;
+    let step = |outcome: &ScreenOutcome, llm_called| CascadeStep {
+        screen_risk: outcome.risk(),
+        allow_risk: outcome.allow_risk(),
+        steering: outcome.steering(),
+        screen_outcome: outcome.as_str().to_string(),
+        llm_called,
+    };
+    let settled = |actual: &str, outcome: &ScreenOutcome, explanation: String| {
+        Scored::Result(Box::new(CaseResult {
+            id: case.id.clone(),
+            kind: case.kind.as_str().to_string(),
+            category: case.category.to_string(),
+            expected: case.expected.clone(),
+            pass: passes(case, actual),
+            actual: actual.to_string(),
+            expected_tier: None,
+            actual_tier: None,
+            mode: None,
+            latency_ms: outcome.latency_ms(),
+            explanation: Some(explanation),
+            escape_class: None,
+            fail_closed: None,
+            cascade: Some(step(outcome, false)),
+        }))
+    };
+    let figure = |value: Option<f64>| value.map_or("n/a".to_string(), |v| format!("{v:.2e}"));
+    let adjudication = match composed.decided {
+        Decided::ScreenStop(scores) => {
+            let outcome = composed.screen.expect("a screen stop comes from a screen");
+            return Ok(settled(
+                "escalate",
+                &outcome,
+                format!("stopped by the screen (risk {:.2})", scores.risk),
+            ));
         }
-        screened = Some(outcome);
-    }
-    let adjudication = live.guardian.adjudicate(&request).await;
+        Decided::ScreenAllow(scores) => {
+            let outcome = composed.screen.expect("a screen allow comes from a screen");
+            return Ok(settled(
+                "allow",
+                &outcome,
+                format!(
+                    "allowed by the screen (allow risk {}, steering {})",
+                    figure(scores.allow_risk),
+                    figure(scores.steering)
+                ),
+            ));
+        }
+        Decided::Guardian(adjudication) => adjudication,
+    };
     let actual = adjudication.decision.as_str().to_string();
     let fail_closed = adjudication
         .fail_closed
@@ -344,18 +380,18 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
         expected_tier: None,
         actual_tier: None,
         mode: None,
-        latency_ms: adjudication.latency_ms
-            + screened.as_ref().map_or(0, ScreenOutcome::latency_ms),
+        // The screen runs beside the guardian, so the pair costs what the slower one takes.
+        latency_ms: if composed.screen.is_some() {
+            wall_ms
+        } else {
+            adjudication.latency_ms
+        },
         explanation: Some(adjudication.explanation.clone()),
         escape_class: (case.category == Category::MinimalEscape)
             .then(|| escape_class(&adjudication.explanation))
             .flatten(),
         fail_closed,
-        cascade: screened.map(|outcome| CascadeStep {
-            screen_risk: outcome.risk(),
-            screen_outcome: outcome.as_str().to_string(),
-            llm_called: true,
-        }),
+        cascade: composed.screen.as_ref().map(|outcome| step(outcome, true)),
     })))
 }
 

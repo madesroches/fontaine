@@ -318,16 +318,66 @@ async fn ollama_screen(risk: f64) -> wiremock::MockServer {
 }
 
 fn screen_config(screen: &wiremock::MockServer, shadow: bool) -> String {
+    screen_config_with(screen, shadow, "")
+}
+
+fn screen_config_with(screen: &wiremock::MockServer, shadow: bool, extra: &str) -> String {
     format!(
-        "\n[accounts.local]\nkind = \"ollama\"\nbase_url = \"{}\"\n\n[guardian.screen]\nmodel = \"local/tiny\"\nstop_threshold = 0.9\nshadow = {shadow}\n",
+        "\n[accounts.local]\nkind = \"ollama\"\nbase_url = \"{}\"\n\n[guardian.screen]\nmodel = \"local/tiny\"\nstop_threshold = 0.9\nshadow = {shadow}\n{extra}",
         screen.uri()
     )
 }
 
+/// A screen that finds the call clearly fine on the stop read and the hardened allow read, and
+/// sees no steering.
+async fn ollama_clear_screen() -> wiremock::MockServer {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+    let server = MockServer::start().await;
+    let reply = |yes: f64| {
+        let no = 1.0 - yes;
+        let top = json!([
+            {"token": "Yes", "logprob": yes.ln()},
+            {"token": "No", "logprob": no.ln()},
+        ]);
+        ResponseTemplate::new(200).set_body_json(json!({
+            "message": {"content": "Yes"},
+            "logprobs": [{"token": "Yes", "logprob": yes.ln(), "top_logprobs": top}],
+        }))
+    };
+    let has = |r: &Request, mark: &str| String::from_utf8_lossy(&r.body).contains(mark);
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .and(move |r: &Request| has(r, "influence how this action is judged"))
+        .respond_with(reply(0.0001))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .and(move |r: &Request| !has(r, "influence how this action is judged"))
+        .respond_with(reply(0.9999999))
+        .mount(&server)
+        .await;
+    server
+}
+
+/// A guardian that would allow, but only after the screen has had its say.
+async fn slow_guardian(decision: &str) -> Endpoint {
+    use common::Route;
+    Endpoint::start_routed(
+        Wire::Chat,
+        vec![
+            Route::new("", vec![submit(verdict(decision, "allow", 0.95))])
+                .slow(std::time::Duration::from_millis(1500)),
+        ],
+    )
+    .await
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn a_screen_stop_escalates_without_asking_the_guardian() {
+async fn a_screen_stop_escalates_without_using_the_guardian() {
     let agent = Endpoint::start(Wire::Chat, agent_script()).await;
-    let guardian = Endpoint::start(Wire::Chat, vec![submit(verdict("allow", "allow", 0.95))]).await;
+    let guardian = slow_guardian("allow").await;
     let screen = ollama_screen(0.97).await;
     let s = setup(&agent, &guardian, &screen_config(&screen, false));
     let out = run_auto(&s, &[]).await;
@@ -338,13 +388,41 @@ async fn a_screen_stop_escalates_without_asking_the_guardian() {
     assert_eq!(decisions[0]["tier"], "screen");
     assert_eq!(decisions[0]["decision"], "deny");
     assert_eq!(decisions[0]["screen_outcome"], "stop");
-    assert!(guardian.requests().await.is_empty());
     assert!(!s.work.join("out.txt").exists());
     let text = of_type(&lines, "tool_result")[0]["text"].as_str().unwrap();
     assert!(
         text.contains("a local screen judged this call outside the user's request"),
         "{text}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_screen_allow_runs_the_call_without_using_the_guardian() {
+    let agent = Endpoint::start(Wire::Chat, agent_script()).await;
+    let guardian = slow_guardian("deny").await;
+    let screen = ollama_clear_screen().await;
+    let s = setup(
+        &agent,
+        &guardian,
+        &screen_config_with(&screen, false, "allow_threshold = 0.01\n"),
+    );
+    let started = std::time::Instant::now();
+    let out = run_auto(&s, &[]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(1500),
+        "the run waited for the guardian"
+    );
+    let lines = out.lines();
+    let decisions = of_type(&lines, "gate_decision");
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0]["tier"], "screen");
+    assert_eq!(decisions[0]["decision"], "allow");
+    assert_eq!(decisions[0]["rule"], "screen");
+    assert_eq!(decisions[0]["screen_outcome"], "allow");
+    assert!(decisions[0]["screen_allow_risk"].as_f64().unwrap() < 0.01);
+    assert!(decisions[0]["screen_steering"].as_f64().unwrap() < 0.001);
+    assert!(s.work.join("out.txt").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
