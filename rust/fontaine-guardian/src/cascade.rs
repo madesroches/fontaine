@@ -27,6 +27,10 @@ pub struct Composed {
     /// What the screen made of the call; `None` when there is no screen stage.
     pub screen: Option<ScreenOutcome>,
     pub decided: Decided,
+    /// An estimate of the input tokens of the guardian request that was dropped unanswered,
+    /// whose request has usually been sent and billed by then. Set only when a screen stage
+    /// settled the call while a guardian with a model was still pending.
+    pub dropped_input_tokens: Option<u64>,
 }
 
 pub async fn adjudicate(
@@ -38,6 +42,7 @@ pub async fn adjudicate(
         return Composed {
             screen: None,
             decided: Decided::Guardian(Box::new(guardian.adjudicate(request).await)),
+            dropped_input_tokens: None,
         };
     };
     let guardian_call = guardian.adjudicate(request);
@@ -54,6 +59,7 @@ pub async fn adjudicate(
             Composed {
                 screen: Some(outcome),
                 decided: Decided::Guardian(Box::new(adjudication)),
+                dropped_input_tokens: None,
             }
         }
         outcome = &mut screening => {
@@ -66,14 +72,21 @@ pub async fn adjudicate(
                 }
                 _ => None,
             };
-            let decided = match decided {
+            match decided {
                 // Dropping the LLM stage's future cancels its request.
-                Some(decided) => decided,
-                None => Decided::Guardian(Box::new(guardian_call.await)),
-            };
-            Composed {
-                screen: Some(outcome),
-                decided,
+                Some(decided) => Composed {
+                    screen: Some(outcome),
+                    decided,
+                    dropped_input_tokens: guardian
+                        .unavailable_reason()
+                        .is_none()
+                        .then(|| guardian.dropped_estimate(request)),
+                },
+                None => Composed {
+                    screen: Some(outcome),
+                    decided: Decided::Guardian(Box::new(guardian_call.await)),
+                    dropped_input_tokens: None,
+                },
             }
         }
     }

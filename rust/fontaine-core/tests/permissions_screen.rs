@@ -170,6 +170,10 @@ async fn a_stop_escalates_to_the_human_and_never_uses_the_guardian() {
     assert_eq!(record.screen_model.as_deref(), Some("local/qwen3:4b"));
     assert!((record.screen_risk.unwrap() - 0.97).abs() < 1e-9);
     assert!(record.screen_latency_ms.is_some());
+    assert!(record.guardian_dropped_input_tokens.is_some_and(|n| n > 0));
+    assert!(record.guardian_dropped_provider.is_some());
+    assert!(record.guardian_dropped_model.is_some());
+    assert_eq!(record.guardian_dropped_priced, Some(true));
     assert!(!rig.state.auto_paused());
 }
 
@@ -297,6 +301,7 @@ async fn shadow_mode_records_the_score_and_never_changes_the_decision() {
     );
     assert_eq!(record.screen_outcome.as_deref(), Some("stop"));
     assert!((record.screen_risk.unwrap() - 0.99).abs() < 1e-9);
+    assert_eq!(record.guardian_dropped_input_tokens, None);
 }
 
 #[tokio::test]
@@ -350,6 +355,7 @@ async fn a_screen_allow_runs_the_call_without_the_guardians_verdict() {
     assert!(record.screen_allow_risk.unwrap() < 0.01);
     assert!(record.screen_steering.unwrap() < 0.001);
     assert_eq!(record.guardian_verdict, None);
+    assert!(record.guardian_dropped_input_tokens.is_some_and(|n| n > 0));
     assert!(
         record
             .explanation

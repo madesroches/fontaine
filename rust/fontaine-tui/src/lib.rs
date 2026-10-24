@@ -916,6 +916,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     runtime.approver(),
                 )
                 .await;
+            let ids = runtime.models.main.wire_ids();
+            let (model, provider) = (ids.model, ids.provider);
             run_turn(
                 TurnParams {
                     agent: &runtime.agent,
@@ -923,6 +925,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     prompt,
                     max_turns: DEFAULT_MAX_TURNS,
                     priced: runtime.models.main.catalog_billed(),
+                    model,
+                    provider,
                 },
                 &mut on_event,
             )

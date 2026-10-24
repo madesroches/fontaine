@@ -24,12 +24,19 @@ Code's `--debug-file` analog), and (b) when `[telemetry] enabled`, one export ba
   live in the span's extensions; `on_close` → `dispatch::on_end_async_named_scope_tagged(…)`
   carrying the span's recorded fields as properties. One `SpanLocation` per `tracing` callsite is
   leaked once and cached (bounded by the callsite count). Async span events ride micromegas thread
-  streams, which exist only while CPU tracing is enabled: until micromegas grows a builder knob, the bin
-  sets `MICROMEGAS_ENABLE_CPU_TRACING=true` in its own environment before building the guard (while
-  still single-threaded; child environments scrub it), the tokio runtime is built with
+  streams, which exist only while CPU tracing is enabled: the sink builder switches it on
+  (`with_cpu_tracing_enabled(true)`; the bin no longer touches its environment), the tokio runtime is built with
   `TracingRuntimeExt::with_tracing_callbacks()`, which gives every worker a thread stream and unregisters it as the worker stops; the bridge never creates a stream itself (micromegas keeps a raw pointer to each one, so a thread that exited without unregistering would leave it dangling). The same layer derives the metrics (`imetric!`/`fmetric!`) on close.
-  Once micromegas captures `tracing` spans with parentage upstream, the bridge shrinks to the stock
-  layer plus Fontaine's metric derivation.
+  The stock `TracingCaptureLayer` can capture spans too (`capture_spans`), and the stock layer runs with
+  it off. It exports every recorded field verbatim, with no hook to drop, redact, truncate or rewrite one,
+  and its span location carries the callsite's absolute file path; the bridge exists to keep both
+  out of the export. A parity test pins that the two build the same tree. The bridge's span half is deleted
+  when upstream has a field hook and a switch that leaves `file` / `line` out of the location
+  (madesroches/micromegas#1725). Then `MicromegasExport::span_begin` / `span_end` and the location cache go,
+  `capture_spans` becomes `t.traces`, and the capture layer's filter widens to `is_exported_span ||
+  is_exported_event`. Field collection stays in the bridge for metric derivation on both backends. The swap
+  also fixes orphaned parents: on a thread with no stream the bridge allocates an id whose begin event is
+  dropped, where upstream re-parents to the nearest captured ancestor.
 - `otlp` (fallback; any OTel collector, including micromegas's `/ingestion/otlp`): OTLP/HTTP
   protobuf via `opentelemetry-otlp` (no gRPC); spans via `tracing-opentelemetry`, events via
   `opentelemetry-appender-tracing`, metrics from the same `SpanBridge` metric derivation through an
@@ -52,12 +59,27 @@ them via `record_content_telemetry`.
   main/guardian/subagent/scanner), `fontaine.cost.usage` (USD; absent when rig has no price),
   `fontaine.tool_decision.count` (`tier`, `decision`), `fontaine.guardian.latency` (ms),
   `fontaine.guardian.fail_closed.count` (`reason`). No `prompt.id`/`tool_use_id` on metrics.
-- Events: `api_request`/`api_error` (model, tokens, cost, duration, query_source),
+- Events: `api_request` (model, tokens, cost, duration, query_source), `api_error` (`model`, `provider`,
+  `query_source`, `agent.id`, `error_class` = rig's `ErrorKind::code()`, `status_code` when the failure
+  carries one; never the message, which can echo the request, and no attempt count: rig's retries are not
+  visible here; emitted from the turn loop, where the typed error is, not from the completion span, which
+  closes the same way on error and on a cancelled call),
   `user_prompt` (length only), `tool_result` (tool_name, risk_class, success, duration, sizes,
   tool_source builtin/mcp), `tool_decision` (CC attributes + `tier` = the `permissions.md` §Core data flow tier enum, `permission_mode`, `headless`, `guardian.{model,profile,verdict,
   confidence,cache_hit,latency_ms}`, `fail_closed_reason` = error | timeout | unparseable |
   low_confidence | unavailable, with the audit label: provider error, stream drop or connection reset → `error` / `GuardianUnavailable`; missing credential or unavailable pinned guardian → `unavailable` / `GuardianUnavailable`; timeout → `timeout` / `Timeout`; unparseable → `unparseable` / `Unparseable`; low confidence → `low_confidence` / `LowConfidence`), `permission_mode_changed`, `mcp_server_connection`, `subagent`
-  (spawn | complete | killed | budget_exhausted), `internal_error` (class only).
+  (spawn | complete | killed | budget_exhausted), `internal_error` (`class` = `audit_write` | `ledger_write`, on every failed write; never the io error).
+- **Dropped guardian spend.** When an enforcing screen settles a call, the guardian request racing it is
+  dropped; it has usually been sent and billed, but its span closes without usage. The cascade estimates
+  its input as a quarter of the rendered prompt's bytes (`Guardian::dropped_estimate`); the audit record
+  carries it with the guardian's own provider, model id and `priced`, `tool_decision` projects it as
+  `guardian.dropped_*`, and the bridge adds `fontaine.token.usage` / `fontaine.cost.usage` with
+  `query_source = guardian` and `estimated = true`. `/cost` and budgets do not count it.
+- **Analytics.** `analytics/notebooks/fontaine-overview.json` is a micromegas notebook (loaded with
+  `micromegas-screens`) over the base `log_entries` and `measures` views. Event cells work on both
+  backends; metric cells are native-only (OTLP histograms are dropped, OTLP sums are cumulative); it has no
+  span cells because the span tables differ (`async_events` vs `otel_spans`). `docs/telemetry.md` holds the
+  retention recipe and how to load it.
 - Standard attributes: `session.id`, `agent.id`/`agent.type`, `app.version`; events add
   `prompt.id` and `event.sequence`.
 

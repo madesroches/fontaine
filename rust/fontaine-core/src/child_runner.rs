@@ -9,6 +9,7 @@ use fontaine_agents::registry::{AgentType, ModelSpec, entry_has_specifier};
 use fontaine_agents::root_ledger::{AgentEvent, RootLedger};
 use fontaine_agents::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, SpawnRequest};
 use fontaine_agents::tree::AgentTree;
+use fontaine_guardian::WireIds;
 use fontaine_tools::gate::CallView;
 use fontaine_tools::result_pipeline::{ResultStage, ToolOutcome, append_note};
 use futures::future::BoxFuture;
@@ -263,6 +264,10 @@ impl ChildRunner for CoreChildRunner {
                 ));
             }
             let priced = model.catalog_billed();
+            let WireIds {
+                provider,
+                model: model_id,
+            } = model.wire_ids();
             let state = context.state.clone();
             let tools = fork_tools(&context.tool_server, &request.tools);
             let agent = AgentBuilder::new(model.completion.clone())
@@ -300,7 +305,19 @@ impl ChildRunner for CoreChildRunner {
             let task_state = state.clone();
             tokio::spawn(
                 async move {
-                    let report = run_child(&task_state, &agent, &id, prompt, priced, kill_rx).await;
+                    let report = run_child(
+                        &task_state,
+                        &agent,
+                        &id,
+                        prompt,
+                        ChildModel {
+                            priced,
+                            model: model_id,
+                            provider,
+                        },
+                        kill_rx,
+                    )
+                    .await;
                     *status.lock().unwrap_or_else(|e| e.into_inner()) = report.status;
                     report_tx.send_replace(Some(report));
                 }
@@ -311,13 +328,20 @@ impl ChildRunner for CoreChildRunner {
     }
 }
 
+/// What a child's model call reports to usage and error telemetry.
+struct ChildModel {
+    priced: bool,
+    model: String,
+    provider: String,
+}
+
 /// Runs one child to its end: an answer, a spent budget, a kill or a failure.
 async fn run_child(
     state: &Arc<SessionState>,
     agent: &Agent,
     id: &str,
     prompt: String,
-    priced: bool,
+    model: ChildModel,
     mut kill: watch::Receiver<bool>,
 ) -> ChildReport {
     let tree = state.agents().clone();
@@ -367,7 +391,9 @@ async fn run_child(
             agent_id: id,
             prompt,
             max_turns: DEFAULT_MAX_TURNS,
-            priced,
+            priced: model.priced,
+            model: model.model,
+            provider: model.provider,
             span: tracing::Span::current(),
         },
         None,

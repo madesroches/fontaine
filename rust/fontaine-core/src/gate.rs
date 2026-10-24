@@ -221,6 +221,14 @@ impl Sink {
             Sink::Ledger => "the session ledger",
         }
     }
+
+    /// The `internal_error` class. The io error is not exported: it can contain a path.
+    fn class(self) -> &'static str {
+        match self {
+            Sink::Audit => "audit_write",
+            Sink::Ledger => "ledger_write",
+        }
+    }
 }
 
 pub struct SessionState {
@@ -637,6 +645,11 @@ impl SessionState {
     /// not warn on every decision.
     pub fn sink_failed(&self, sink: Sink, error: &std::io::Error) {
         tracing::warn!(error = %error, "{} could not be written", sink.what());
+        tracing::info!(
+            target: "fontaine::telemetry",
+            class = sink.class(),
+            "internal_error"
+        );
         if !self.sink_warned[sink as usize].swap(true, Ordering::Relaxed) {
             self.approver
                 .warn(&format!("{} could not be written: {error}", sink.what()));

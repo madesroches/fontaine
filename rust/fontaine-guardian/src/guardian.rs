@@ -15,7 +15,7 @@ use tracing::Instrument;
 
 use crate::cache::{CacheKey, VerdictCache, digest};
 use crate::profile::Profile;
-use crate::prompt_builder::render;
+use crate::prompt_builder::{Rendered, render};
 use crate::request::AdjudicationRequest;
 use crate::verdict::{AuditLabel, Decision, FailClosed, Verdict};
 
@@ -24,6 +24,13 @@ const TARGET: &str = "fontaine::telemetry";
 /// Retries after a malformed answer or a provider error, per adjudication.
 pub const EXTRACTOR_RETRIES: usize = 2;
 const MAX_TOKENS: u64 = 1_024;
+
+/// The provider name and model id a model's requests carry on the wire.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WireIds {
+    pub provider: String,
+    pub model: String,
+}
 
 /// How a guardian behaves; the model is separate because it may be missing.
 #[derive(Clone, Copy, Debug)]
@@ -140,6 +147,32 @@ impl Guardian {
         }
     }
 
+    /// The provider name and model id the guardian's own requests carry, as the completion spans
+    /// record them. `None` without a model.
+    pub fn wire_ids(&self) -> Option<WireIds> {
+        match &self.backend {
+            Backend::Ready(model) => Some(WireIds {
+                provider: model.name().to_string(),
+                model: model.id().unwrap_or("unknown").to_string(),
+            }),
+            Backend::Unavailable(_) => None,
+        }
+    }
+
+    /// A rough count of the input tokens of the request an abandoned adjudication has usually
+    /// already sent: four bytes to a token over the rendered prompt.
+    pub fn dropped_estimate(&self, request: &AdjudicationRequest) -> u64 {
+        let (_, rendered) = self.prompt(request);
+        (rendered.system.len() + rendered.user.len()).div_ceil(4) as u64
+    }
+
+    fn prompt(&self, request: &AdjudicationRequest) -> (AdjudicationRequest, Rendered) {
+        let profile = self.settings.profile;
+        let shaped = profile.shape(request);
+        let rendered = render(profile, &shaped);
+        (shaped, rendered)
+    }
+
     pub async fn adjudicate(&self, request: &AdjudicationRequest) -> Adjudication {
         let span = tracing::info_span!(
             target: TARGET,
@@ -177,8 +210,7 @@ impl Guardian {
         };
 
         let profile = self.settings.profile;
-        let shaped = profile.shape(request);
-        let rendered = render(profile, &shaped);
+        let (shaped, rendered) = self.prompt(request);
         let key = CacheKey {
             tool: shaped.tool_call.tool.clone(),
             args_digest: shaped.tool_call.args_digest.clone(),

@@ -3,11 +3,15 @@
 
 mod common;
 
+use common::World;
 use common::pipeline::{Options, Rig};
+use common::runtime::build;
 use fontaine_core::audit::DecisionRecord;
 use fontaine_core::config::PermissionMode::{self, AcceptEdits, DontAsk, Manual, Plan};
 use fontaine_core::permissions::Answer;
-use rig_core::test_utils::TraceCapture;
+use fontaine_core::turn::{Drive, Flow, TurnOutcome, TurnParams, drive, run_turn};
+use rig_core::ProviderResponseError;
+use rig_core::test_utils::{MockError, MockStreamEvent, TraceCapture, mock_final};
 use serde_json::{Value, json};
 
 const MODES: [PermissionMode; 4] = [Manual, AcceptEdits, Plan, DontAsk];
@@ -256,4 +260,152 @@ async fn each_fail_closed_reason_is_counted_once_under_its_name_with_its_audit_l
         serde_json::to_string(&events.iter().map(|e| &e.fields).collect::<Vec<_>>()).unwrap();
     assert!(rendered.contains("guardian.model"));
     assert!(!rendered.contains("Denied by guardian") && !rendered.contains("GuardianUnavailable"));
+}
+
+fn failing_turn(status: u16) -> Vec<Vec<MockStreamEvent>> {
+    let status = http::StatusCode::from_u16(status).unwrap();
+    vec![vec![MockStreamEvent::Error(MockError::ProviderResponse(
+        ProviderResponseError::new(status, "CANARY-BODY echoed the request"),
+    ))]]
+}
+
+fn api_errors(capture: &TraceCapture) -> Vec<rig_core::test_utils::CapturedEvent> {
+    capture
+        .events()
+        .into_iter()
+        .filter(|e| e.message() == "api_error")
+        .collect()
+}
+
+#[tokio::test]
+async fn a_failed_main_model_call_emits_an_api_error_without_the_message() {
+    let capture = TraceCapture::default();
+    let _guard = tracing::subscriber::set_default(capture.subscriber());
+    let w = World::new();
+    let built = build(&w, Manual, failing_turn(429), true);
+    let outcome = run_turn(
+        TurnParams {
+            agent: &built.runtime.agent,
+            state: &built.runtime.state,
+            prompt: "hi".to_string(),
+            max_turns: 3,
+            priced: true,
+            model: "scripted".to_string(),
+            provider: "mock".to_string(),
+        },
+        &mut |_| Flow::Continue,
+    )
+    .await;
+    assert!(matches!(outcome, TurnOutcome::Failed(_)), "{outcome:?}");
+    let events = api_errors(&capture);
+    assert_eq!(events.len(), 1, "{events:?}");
+    let event = &events[0];
+    assert_eq!(event.target, "fontaine::telemetry");
+    assert_eq!(event.fields["error_class"], "provider_response");
+    assert_eq!(event.fields["status_code"], 429);
+    assert_eq!(event.fields["query_source"], "main");
+    assert_eq!(event.fields["model"], "scripted");
+    assert_eq!(event.fields["provider"], "mock");
+    assert!(
+        !format!("{:?}", event.fields).contains("CANARY"),
+        "{:?}",
+        event.fields
+    );
+}
+
+#[tokio::test]
+async fn a_failed_subagent_call_reports_the_subagent_as_its_source() {
+    let capture = TraceCapture::default();
+    let _guard = tracing::subscriber::set_default(capture.subscriber());
+    let w = World::new();
+    let built = build(&w, Manual, failing_turn(500), true);
+    let outcome = drive(
+        Drive {
+            agent: &built.runtime.agent,
+            state: &built.runtime.state,
+            agent_id: "child-1",
+            prompt: "hi".to_string(),
+            max_turns: 3,
+            priced: true,
+            model: "scripted".to_string(),
+            provider: "mock".to_string(),
+            span: tracing::Span::none(),
+        },
+        None,
+        &mut |_| Flow::Continue,
+    )
+    .await;
+    assert!(matches!(outcome, TurnOutcome::Failed(_)), "{outcome:?}");
+    let events = api_errors(&capture);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].fields["query_source"], "subagent");
+    assert_eq!(events[0].fields["agent.id"], "child-1");
+    assert_eq!(events[0].fields["status_code"], 500);
+}
+
+#[tokio::test]
+async fn reaching_the_turn_limit_is_not_an_api_error() {
+    let capture = TraceCapture::default();
+    let _guard = tracing::subscriber::set_default(capture.subscriber());
+    let w = World::new();
+    let call = vec![
+        MockStreamEvent::ToolCall {
+            id: "t1".to_string(),
+            name: "read".to_string(),
+            arguments: json!({"path": "a.txt"}),
+            call_id: None,
+        },
+        MockStreamEvent::FinalResponse(mock_final(rig_core::completion::Usage::new())),
+    ];
+    std::fs::write(w.work.join("a.txt"), "a").unwrap();
+    let built = build(&w, Manual, vec![call], true);
+    let outcome = run_turn(
+        TurnParams {
+            agent: &built.runtime.agent,
+            state: &built.runtime.state,
+            prompt: "hi".to_string(),
+            max_turns: 1,
+            priced: true,
+            model: "scripted".to_string(),
+            provider: "mock".to_string(),
+        },
+        &mut |_| Flow::Continue,
+    )
+    .await;
+    assert!(matches!(outcome, TurnOutcome::MaxTurns(_)), "{outcome:?}");
+    assert!(api_errors(&capture).is_empty());
+}
+
+#[tokio::test]
+async fn every_sink_failure_emits_an_internal_error_without_the_error_text() {
+    use fontaine_core::gate::Sink;
+    let capture = TraceCapture::default();
+    let _guard = tracing::subscriber::set_default(capture.subscriber());
+    let rig = Rig::new(Manual);
+    let error = std::io::Error::other("CANARY-PATH /home/x/audit.jsonl");
+    rig.state.sink_failed(Sink::Audit, &error);
+    rig.state.sink_failed(Sink::Audit, &error);
+    rig.state.sink_failed(Sink::Ledger, &error);
+    let events: Vec<_> = capture
+        .events()
+        .into_iter()
+        .filter(|e| e.message() == "internal_error")
+        .collect();
+    let classes: Vec<_> = events.iter().map(|e| e.fields["class"].clone()).collect();
+    assert_eq!(
+        classes,
+        [
+            json!("audit_write"),
+            json!("audit_write"),
+            json!("ledger_write")
+        ]
+    );
+    for event in &events {
+        assert_eq!(event.target, "fontaine::telemetry");
+        assert!(
+            !format!("{:?}", event.fields).contains("CANARY"),
+            "{:?}",
+            event.fields
+        );
+    }
 }

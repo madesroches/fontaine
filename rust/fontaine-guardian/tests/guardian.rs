@@ -5,7 +5,7 @@ use std::time::Duration;
 use common::{Endpoint, Reply, allow, deny, guardian_at, request, settings, verdict};
 use fontaine_guardian::{
     AuditLabel, Decision, FailClosed, Guardian, PreExistence, Profile, RuleLabel, Settings,
-    TouchedPath,
+    TouchedPath, WireIds,
 };
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -536,4 +536,31 @@ async fn credential_shaped_input_never_reaches_the_endpoint() {
     guardian.adjudicate(&call).await;
     let text = endpoint.requests().await[0].to_string();
     assert!(!text.contains(secret), "{text}");
+}
+
+#[tokio::test]
+async fn the_dropped_estimate_is_a_quarter_of_the_rendered_prompt() {
+    for profile in [Profile::Full, Profile::Minimal] {
+        let endpoint = Endpoint::start(vec![Reply::Verdict(allow(0.95))]).await;
+        let guardian = endpoint.guardian(Settings {
+            profile,
+            ..settings()
+        });
+        let request = request("cargo test", false);
+        let rendered = fontaine_guardian::prompt_builder::render(profile, &profile.shape(&request));
+        assert_eq!(
+            guardian.dropped_estimate(&request),
+            (rendered.system.len() + rendered.user.len()).div_ceil(4) as u64
+        );
+        assert_eq!(endpoint.calls().await, 0, "an estimate sends nothing");
+    }
+}
+
+#[tokio::test]
+async fn the_guardian_reports_the_ids_its_requests_carry() {
+    let endpoint = Endpoint::start(vec![Reply::Verdict(allow(0.95))]).await;
+    let WireIds { provider, model } = endpoint.guardian(settings()).wire_ids().unwrap();
+    assert!(!provider.is_empty() && !model.is_empty());
+    let unavailable = Guardian::unavailable("a/b", "no key", settings());
+    assert_eq!(unavailable.wire_ids(), None);
 }

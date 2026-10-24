@@ -40,3 +40,5 @@ allow-wildcard-paths = true
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Goes away once micromegas 0.33 is on crates.io and Cargo.toml pins it exactly.
+allow-git = ["https://github.com/madesroches/micromegas"]

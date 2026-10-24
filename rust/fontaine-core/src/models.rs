@@ -13,6 +13,7 @@ use rig_core::operation::Completion;
 use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup};
 use crate::credentials::{Credentials, StoredCredential};
 use crate::providers::{AccountClient, Billing, ConnectContext, CredentialPolicy};
+use fontaine_guardian::WireIds;
 use fontaine_guardian::models::{ModelEntry, ModelsFile};
 
 type Client = Arc<dyn AccountClient>;
@@ -115,6 +116,14 @@ impl ModelHandle {
             reference,
             kind,
             completion,
+        }
+    }
+
+    /// The wire's model id and provider name, as `api_request` records them.
+    pub fn wire_ids(&self) -> WireIds {
+        WireIds {
+            provider: self.completion.name().to_string(),
+            model: self.completion.id().unwrap_or("unknown").to_string(),
         }
     }
 
