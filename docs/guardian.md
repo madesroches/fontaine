@@ -143,7 +143,8 @@ and turns it into a risk between 0 and 1. It is configured in
 native chat endpoint is the one that returns logprobs.
 
 The screen sits after everything deterministic and runs only where the guardian would run. It
-and the guardian start together, so a call the screen does not settle pays no extra latency. The
+and the guardian start together, so a call the screen does not settle costs the slower of the two
+(the screen is bounded by `timeout_ms`), in practice the guardian's. The
 screen can settle a call in two ways, and only while the guardian is still pending:
 
 - **A call it stops** is escalated to you, as a guardian escalation is, with the reason "a local

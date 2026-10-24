@@ -59,7 +59,8 @@ All notable changes are recorded here. The format follows
     `decision = allow`, and `fontaine.screen.count` gains an `allow` outcome. Shadow mode logs the
     allow scores to calibrate against.
   - The screen and the guardian now start together (`fontaine_guardian::cascade`), so a call the
-    screen does not settle pays no extra latency. A settled call drops the guardian request: its
+    screen does not settle costs the slower of the two (the screen is bounded by `timeout_ms`), in
+    practice the guardian's. A settled call drops the guardian request: its
     tokens are not counted in usage. A guardian verdict already in hand always wins.
   - `fontaine-evals --allow-threshold <risk> [--steering-veto <p>]` scores the allow path. The
     cascade summary replaces `mean_latency_ms` with `allowed_latency_ms` and adds
