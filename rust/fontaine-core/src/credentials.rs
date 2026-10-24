@@ -154,13 +154,6 @@ fn parse(text: &str, path: PathBuf) -> Result<File, ConfigError> {
     })
 }
 
-/// Which credential a stored secret belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Target<'a> {
-    Account(&'a str),
-    Telemetry,
-}
-
 /// Holds the exclusive lock on `<data_dir>/credentials.lock` until dropped. Every writer of
 /// `credentials.toml` takes it, so a rotated refresh token is never overwritten by a stale
 /// read-modify-write.
@@ -185,10 +178,10 @@ pub fn lock(data_dir: &Path) -> Result<Lock, ConfigError> {
     Ok(Lock(file))
 }
 
-/// Stores `secret` for `target`, keeping every other entry. Read-modify-write through the
-/// owner-only writer. A trailing newline is trimmed; an empty secret is a usage error and an
-/// unparseable existing file is a config error, neither touching the file.
-pub fn store(data_dir: &Path, target: Target<'_>, secret: &str) -> Result<(), ConfigError> {
+/// Stores `secret` as the API key of account `name`, keeping every other entry. Read-modify-write
+/// through the owner-only writer. A trailing newline is trimmed; an empty secret is a usage error
+/// and an unparseable existing file is a config error, neither touching the file.
+pub fn store(data_dir: &Path, name: &str, secret: &str) -> Result<(), ConfigError> {
     let secret = secret.trim_end_matches(['\n', '\r']);
     if secret.is_empty() {
         return Err(ConfigError::usage(
@@ -200,7 +193,7 @@ pub fn store(data_dir: &Path, target: Target<'_>, secret: &str) -> Result<(), Co
         oauth: None,
     };
     let _lock = lock(data_dir)?;
-    write_entry(data_dir, target, entry)
+    write_entry(data_dir, name, entry)
 }
 
 /// Stores a sign-in's tokens for `name`, replacing whatever the account had.
@@ -220,16 +213,12 @@ pub fn store_oauth_locked(
         api_key: None,
         oauth: Some(tokens.into()),
     };
-    write_entry(data_dir, Target::Account(name), entry)
+    write_entry(data_dir, name, entry)
 }
 
-fn write_entry(data_dir: &Path, target: Target<'_>, entry: Entry) -> Result<(), ConfigError> {
+fn write_entry(data_dir: &Path, name: &str, entry: Entry) -> Result<(), ConfigError> {
     let path = credentials_path(data_dir);
     let read_err = |source| ConfigError::Read {
-        path: path.clone(),
-        source,
-    };
-    let write_err = |source| ConfigError::Write {
         path: path.clone(),
         source,
     };
@@ -238,18 +227,38 @@ fn write_entry(data_dir: &Path, target: Target<'_>, entry: Entry) -> Result<(), 
         Err(e) if e.kind() == io::ErrorKind::NotFound => File::default(),
         Err(e) => return Err(read_err(e)),
     };
-    match target {
-        Target::Account(name) => {
-            file.accounts.insert(name.to_string(), entry);
-        }
-        Target::Telemetry => file.telemetry = Some(entry),
-    }
-    let text = toml::to_string(&file).map_err(|e| ConfigError::Parse {
-        path: path.clone(),
+    file.accounts.insert(name.to_string(), entry);
+    write_file(data_dir, &path, &file)
+}
+
+fn write_file(data_dir: &Path, path: &Path, file: &File) -> Result<(), ConfigError> {
+    let write_err = |source| ConfigError::Write {
+        path: path.to_path_buf(),
+        source,
+    };
+    let text = toml::to_string(file).map_err(|e| ConfigError::Parse {
+        path: path.to_path_buf(),
         message: e.to_string(),
     })?;
     std::fs::create_dir_all(data_dir).map_err(write_err)?;
-    crate::owner_only::write_atomic(&path, text.as_bytes()).map_err(write_err)
+    crate::owner_only::write_atomic(path, text.as_bytes()).map_err(write_err)
+}
+
+/// Removes account `name`'s entry and keeps every other one. `false` when nothing was stored.
+/// An unparseable existing file is a config error and is left untouched.
+pub fn remove(data_dir: &Path, name: &str) -> Result<bool, ConfigError> {
+    let _lock = lock(data_dir)?;
+    let path = credentials_path(data_dir);
+    let mut file = match std::fs::read_to_string(&path) {
+        Ok(text) => parse(&text, path.clone())?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => return Err(ConfigError::Read { path, source }),
+    };
+    if file.accounts.remove(name).is_none() {
+        return Ok(false);
+    }
+    write_file(data_dir, &path, &file)?;
+    Ok(true)
 }
 
 /// Schema check for `credentials.toml` text, used by the docs check.

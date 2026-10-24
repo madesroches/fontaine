@@ -153,15 +153,15 @@ unpriced, so `--max-budget-usd` does not apply to them.
 1. If the account sets `api_key_env`, the key is that environment variable. An unset or empty
    variable is a configuration error (exit code 2) when the main model uses the account, for any
    kind; the stored credential is not consulted as a fallback.
-2. Otherwise the key is the account's entry in `credentials.toml`, written by
-   `fontaine auth login <account>`.
+2. Otherwise the key is the account's entry in `credentials.toml`, written by `/login` in the
+   terminal UI.
 3. With neither, an `ollama` or `openai-compatible` account sends no `Authorization` header. An
    `anthropic`, `openai` or `gemini` account with no key is a configuration error (exit code 2)
    when the main model uses it.
 
 An `opencode-go` account has no key. Its credential is the sign-in that
-`fontaine auth login <account>` stores, and an account that has not signed in is a configuration
-error (exit code 2) that names that command.
+`/login <account>` stores, and an account that has not signed in is a configuration error (exit
+code 2) that names that command.
 
 The guardian is different: a missing or invalid credential on the account of `[guardian] model`
 never stops startup. The guardian is then unavailable, and every decision that needs it fails
@@ -200,7 +200,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 model = "work/claude-sonnet-5"
 ```
 
-A second Anthropic account with its own key, stored with `fontaine auth login personal`:
+A second Anthropic account with its own key, stored with `/login personal`:
 
 ```toml
 [accounts.work]
@@ -306,8 +306,8 @@ OpenCode Go, one subscription serving about thirty models on four wire formats:
 kind = "opencode-go"
 ```
 
-Sign in once with `fontaine auth login go`, which prints a URL and a code to approve in a browser,
-then pick a model with `--model go/kimi-k3`. Each request goes to the wire its model is served on,
+Sign in once with `/login go`, which shows a URL and a code to approve in a browser, then pick a
+model with `--model go/kimi-k3`. Each request goes to the wire its model is served on,
 chosen from a built-in table by model id: `gpt-`, `grok-` and `muse-spark-` models use the Responses
 API, `claude-`, `qwen` and `minimax-m3` use the Messages API, `gemini-` models use `generateContent`
 and everything else uses Chat Completions. Every request carries a `fontaine/<version>`
@@ -665,20 +665,27 @@ email = "me@example.com"
 api_key = "ingestion-key"
 ```
 
-`fontaine auth login <account>` stores an account's key and `fontaine auth login --telemetry`
-stores the telemetry ingestion key. The secret is read from a hidden prompt, or from stdin when
-stdin is not a terminal (`printf %s "$KEY" | fontaine auth login work`). The account must exist in
-the loaded configuration; an empty secret is a usage error. The file is written through the
-owner-only writer and every other entry in it is kept. A file that cannot be parsed is never
-overwritten.
+`/login` in the terminal UI is the way to store a credential interactively; see
+[Managing providers](tui.md#managing-providers). For a key-based account it reads the key into a
+hidden field and writes it here, and for an `opencode-go` account it runs a device sign-in: it
+shows a verification URL and a code, waits while you approve it in a browser, and stores the token
+pair as an `oauth` entry. The account can also be added in the dialog, which writes its
+`[accounts.<name>]` table to your user settings file in place, keeping the file's comments and
+layout. The credentials file is written through the owner-only writer and every other entry in it
+is kept. A file that cannot be parsed is never overwritten. Logging out and removing an account
+delete its entry.
 
-On an `opencode-go` account, `fontaine auth login <account>` starts a device sign-in instead of
-asking for a key: it prints a verification URL and a code, waits while you approve it in a browser,
-and stores the token pair as an `oauth` entry. It reads nothing from stdin, so it also works from a
-non-terminal. Fontaine refreshes the access token as it expires and writes the rotated pair back;
-writers of the file take a lock beside it (`credentials.lock`), so concurrent sessions and logins
-do not overwrite each other's rotation. A sign-in that has ended is reported with the login command
-to run again. A failed sign-in exits with code 1.
+Fontaine refreshes the access token as it expires and writes the rotated pair back; writers of the
+file take a lock beside it (`credentials.lock`), so concurrent sessions and logins do not overwrite
+each other's rotation. A sign-in that has ended is reported with the `/login` command to run
+again.
+
+There is no command-line way to store a credential. Automation sets `api_key_env` on the account
+and exports the variable, or ships a `credentials.toml` in the data directory (the schema above,
+owner-only). The telemetry ingestion key is the `[telemetry]` entry of that file, or the variable
+`[telemetry] api_key_env` names. An `opencode-go` sign-in is a poor fit for CI: refresh tokens
+rotate, so a copied `credentials.toml` works on one machine at a time and the copy left behind
+stops working after the first refresh. Use a key-based account there.
 
 A missing file or entry means no credential. A file that cannot be parsed, or that cannot be read
 for any reason other than not existing, is a configuration error naming the path.
@@ -694,7 +701,6 @@ for any reason other than not existing, is a configuration error naming the path
 | `--in-container` | States that the process runs inside a container. With `[guardian] profile = "minimal"` it lets the minimal guardian load, after a runtime probe also finds a container; the flag alone is never enough. |
 | `--continue`, `--resume <id>`, `--fork-session` | Reopen the latest session of the launch directory, reopen one by id, or copy the one that would have been reopened under a new id. See [Headless runs](headless.md#continuing-a-session). |
 | `--allowed-tools <rule>`, `--disallowed-tools <rule>` | Adds an allow or deny rule for the session (CLI scope). Repeatable. |
-| `fontaine auth login` | Stores a credential or, for an `opencode-go` account, signs in; see [Credentials](#credentials). |
 | `FONTAINE_LOG` | An `EnvFilter` directive that replaces the default `debug` filter of the debug file. On its own it creates no file and prints nothing. |
 | `FONTAINE_CONFIG_DIR`, `FONTAINE_DATA_DIR` | Directory overrides, described above. |
 

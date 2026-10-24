@@ -27,8 +27,17 @@ pub enum CredentialPolicy {
     Required,
     /// A keyless endpoint is normal; a key is sent when present.
     Optional,
-    /// The credential comes from `fontaine auth login`'s interactive sign-in.
+    /// The credential comes from the kind's interactive sign-in (`/login`).
     SignIn,
+}
+
+/// Whether the provider dialog asks for a `base_url` when it adds an account of the kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BaseUrlPolicy {
+    Required,
+    Optional,
+    /// The kind has one endpoint; the dialog does not ask.
+    Fixed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +64,16 @@ pub trait Provider: Send + Sync + 'static {
         Ok(())
     }
 
+    /// Where the kind's requests go when the account sets no `base_url`; `None` when the kind
+    /// has no endpoint of its own.
+    fn default_endpoint(&self) -> Option<&'static str> {
+        None
+    }
+
+    fn base_url_policy(&self) -> BaseUrlPolicy {
+        BaseUrlPolicy::Fixed
+    }
+
     /// Whether the account may set `wires`.
     fn accepts_wires(&self) -> bool {
         false
@@ -67,19 +86,38 @@ pub trait Provider: Send + Sync + 'static {
 
     fn connect(&self, ctx: ConnectContext<'_>) -> Result<Arc<dyn AccountClient>, String>;
 
-    /// The sign-in `fontaine auth login` runs instead of prompting for a key.
+    /// The sign-in `/login` runs instead of prompting for a key.
     fn sign_in(&self) -> Option<&dyn SignIn> {
         None
     }
 }
 
+/// What a sign-in tells its host while it runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignInStep {
+    /// The user has to open `verification_url` and confirm `user_code`.
+    Code {
+        verification_url: String,
+        user_code: String,
+    },
+    /// The code is shown; the sign-in is polling for the approval.
+    Waiting,
+    /// Something went wrong that did not stop the sign-in.
+    Warning(String),
+}
+
+/// Where a sign-in reports its steps.
+pub type SignInProgress<'a> = &'a (dyn Fn(SignInStep) + Send + Sync);
+
 pub trait SignIn: Send + Sync {
-    /// Runs the interactive sign-in, printing progress to stderr; returns the summary line.
+    /// Runs the interactive sign-in, reporting through `progress` and never printing; returns
+    /// the summary line.
     fn sign_in<'a>(
         &'a self,
         account_name: &'a str,
         account: &'a Account,
         data_dir: &'a Path,
+        progress: SignInProgress<'a>,
     ) -> BoxFuture<'a, Result<String, SignInError>>;
 }
 

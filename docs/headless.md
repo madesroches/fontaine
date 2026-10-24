@@ -15,8 +15,7 @@ echo "summarize the build" | fontaine -p
 
 `-p` / `--print` is a flag and the prompt is a positional argument, as in Claude Code. Without a
 prompt argument the prompt is read from stdin; if stdin is a terminal the run fails at once with a usage error (exit 2). With one, text piped on stdin is appended
-after the prompt on a new line, as in Claude Code; empty piped input leaves the prompt unchanged. If a pipe sends no data within 3 seconds, a warning goes to stderr and the run proceeds with the prompt argument alone; redirect `< /dev/null` to skip the wait. A prompt that is also a subcommand name, such as
-`auth`, is taken as the subcommand; write `fontaine -p -- auth` to pass it as the prompt.
+after the prompt on a new line, as in Claude Code; empty piped input leaves the prompt unchanged. If a pipe sends no data within 3 seconds, a warning goes to stderr and the run proceeds with the prompt argument alone; redirect `< /dev/null` to skip the wait.
 
 | Invocation | Meaning |
 |---|---|
@@ -42,8 +41,10 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `--append-system-prompt <text>` | Appends to the system prompt after every other layer. |
 | `--settings <file>` | A settings file layered over the others (CLI scope). |
 | `--debug-file <path>` | Writes diagnostics to a local, owner-only file. |
-| `fontaine auth login <account>` | Stores an account's credential. See [Credentials](configuration.md#credentials). |
-| `fontaine auth login --telemetry` | Stores the telemetry ingestion key. |
+
+A headless run takes its credentials from `api_key_env` or from a `credentials.toml` already in the
+data directory; it never prompts. Store them in the terminal UI with `/login`, or provision the
+file in CI. See [Credentials](configuration.md#credentials).
 
 The budget is checked between model calls. A call that pushes the spend over the cap stops the
 run before its tool calls execute; an answer that was already complete is kept. The spend includes

@@ -7,7 +7,9 @@ use std::sync::Arc;
 use fontaine_core::agent::{AgentRuntime, AgentSetup, SessionOrigin};
 use fontaine_core::config::{AccountKind, PermissionMode};
 use fontaine_core::extensions::{self, LoadParams};
-use fontaine_core::models::{GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models};
+use fontaine_core::models::{
+    GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models, Switcher,
+};
 use fontaine_core::permissions::DenyAll;
 use fontaine_core::session::Session;
 use rig_core::test_utils::{MockCompletionModel, MockStreamEvent};
@@ -45,13 +47,43 @@ pub fn build_with_scanner(
     project_executables: bool,
     scanner: fontaine_core::scanner_stage::ScannerStart,
 ) -> Built {
-    let config = world.load().unwrap();
     let main = MockCompletionModel::from_stream_turns(turns);
     let handle = ModelHandle::new(
         ModelRef::parse("test/mock").unwrap(),
         AccountKind::named("openai-compatible"),
         main.clone().into(),
     );
+    let models = Models {
+        main: handle.clone(),
+        main_listing: Vec::new(),
+        guardian: Some(GuardianModel::Ready(handle)),
+        guardian_choice: GuardianChoice::MainFallback,
+        notices: Vec::new(),
+    };
+    let runtime = build_with_models(
+        world,
+        mode,
+        models,
+        None,
+        project_executables,
+        scanner,
+        None,
+    );
+    Built { runtime, main }
+}
+
+/// A runtime in `world` over resolved models, with a switcher to resolve more of them and the
+/// user settings file `/model` and the provider dialog write to.
+pub fn build_with_models(
+    world: &World,
+    mode: PermissionMode,
+    models: Models,
+    switcher: Option<Switcher>,
+    project_executables: bool,
+    scanner: fontaine_core::scanner_stage::ScannerStart,
+    user_config: Option<std::path::PathBuf>,
+) -> AgentRuntime {
+    let config = world.load().unwrap();
     let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
     let loaded = extensions::load(&LoadParams {
         config_dir: &world.config,
@@ -64,13 +96,7 @@ pub fn build_with_scanner(
         config,
         config_dir: world.config.clone(),
         data_dir: world.data.clone(),
-        models: Models {
-            main: handle.clone(),
-            main_listing: Vec::new(),
-            guardian: Some(GuardianModel::Ready(handle)),
-            guardian_choice: GuardianChoice::MainFallback,
-            notices: Vec::new(),
-        },
+        models,
         session: Session::create(&world.data, &session_id()).unwrap(),
         roots: vec![world.work.clone()],
         mode,
@@ -82,19 +108,16 @@ pub fn build_with_scanner(
         headless: true,
         approver: Arc::new(DenyAll),
         home: None,
-        user_config: None,
+        user_config,
         guardian_profile: fontaine_guardian::Profile::Full,
         notices: Vec::new(),
         scanner,
-        switcher: None,
+        switcher,
         extensions: loaded,
         project_executables,
         confirm_project_servers: false,
         origin: SessionOrigin::Fresh,
         env,
     };
-    Built {
-        runtime: AgentRuntime::new(setup).unwrap(),
-        main,
-    }
+    AgentRuntime::new(setup).unwrap()
 }

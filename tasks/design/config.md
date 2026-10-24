@@ -45,7 +45,7 @@ This block is schema-valid but not load-valid before Phase 4 (`default_mode = "a
 [accounts.work]                   # named accounts (opencode-style); several of one kind allowed
 kind = "anthropic"                # "anthropic" | "openai" | "gemini" | "openai-compatible" | "ollama"
 api_key_env = "ANTHROPIC_API_KEY_WORK"   # credential source: env var NAME, or omit to use the
-                                  #   stored-credentials file written by `fontaine auth login <name>`
+                                  #   stored-credentials file written by `/login` (or provisioned by hand)
                                   #   (`<data dir>/credentials.toml`, owner-only). Raw keys are never accepted inline.
 # base_url = ""                   # optional; required for openai-compatible (OpenRouter/LM Studio/vLLM/LiteLLM)
 # models = ["claude-sonnet-4-6"]  # optional explicit list; unset ⇒ discovered from the provider
@@ -131,7 +131,7 @@ backend = "micromegas"             # "micromegas" (native sink, span trees) | "o
                                    #   micromegas over OTLP: …/ingestion/otlp)
 # api_key_env = "MICROMEGAS_INGESTION_API_KEY" # ingestion key: env var NAME holding the bearer token,
                                    #   or omit to use the stored-credentials entry written by
-                                   #   `fontaine auth login --telemetry`; never inline; a named
+                                   #   a hand-provisioned `[telemetry]` entry in credentials.toml; never inline; a named
                                    #   env var that is unset or empty counts as missing
 traces = true                      # export spans (both backends export trees)
 log_user_prompts = false           # content opt-ins, all default false

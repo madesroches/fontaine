@@ -119,6 +119,18 @@ fn queued_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
+/// Rows a dialog body may use so its header and the selection stay inside what `draw` allows.
+fn body_rows(app: &App, width: usize, height: u16, footer_len: usize) -> usize {
+    let reserved = input_view(&app.input, width).rows.len()
+        + 2
+        + queued_lines(app, width).len()
+        + 1
+        + 2
+        + footer_len
+        + 1;
+    usize::from(height).saturating_sub(reserved).max(1)
+}
+
 /// What sits above the message box.
 struct Overlay {
     title: &'static str,
@@ -141,7 +153,7 @@ impl Overlay {
 }
 
 /// What sits above the message box, if anything: the denied list, the unavailable-guardian
-/// prompt, the MCP server prompt, the model picker, the agents panel, the approval prompt, the
+/// prompt, the MCP server prompt, the model picker, the provider dialog, the agents panel, the approval prompt, the
 /// history search or the file completion list, then the `/` menu, in that order of precedence,
 /// which is the order `App::handle_key` routes keys in.
 fn overlay(app: &App, width: usize, height: u16) -> Overlay {
@@ -160,16 +172,13 @@ fn overlay(app: &App, width: usize, height: u16) -> Overlay {
             PickerPurpose::Guardian => "guardian model",
         };
         let footer = picker.footer();
-        // Rows the picker may use so its header and the selection stay inside what `draw` allows.
-        let reserved = input_view(&app.input, width).rows.len()
-            + 2
-            + queued_lines(app, width).len()
-            + 1
-            + 2
-            + footer.len()
-            + 1;
-        let rows = usize::from(height).saturating_sub(reserved).max(1);
+        let rows = body_rows(app, width, height, footer.len());
         return Overlay::new(title, picker.body(width, rows), footer);
+    }
+    if let Some(dialog) = &app.providers {
+        let footer = dialog.footer();
+        let rows = body_rows(app, width, height, footer.len());
+        return Overlay::new("providers", dialog.body(width, rows), footer);
     }
     if let Some(panel) = &app.agents {
         return Overlay::new("agents", panel.body(width), panel.footer());
@@ -260,7 +269,7 @@ fn menu_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn draw_overlay(
+pub(crate) fn draw_overlay(
     frame: &mut Frame,
     area: Rect,
     title: &str,

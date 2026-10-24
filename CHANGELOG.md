@@ -12,7 +12,7 @@ All notable changes are recorded here. The format follows
   - The agent loop runs over rig. Models come from `[accounts.<name>]` entries mapped to provider
     clients (Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible endpoints) and are named
     `<account>/<model>`, with model discovery. Credentials come from an environment variable or
-    the stored-credentials file, and `fontaine auth login [--telemetry]` stores them.
+    the stored-credentials file, which the terminal UI's `/login` writes.
   - Sessions live in a per-session directory under the data directory, with the conversation
     persisted by rig's memory store, between-runs compaction by a summarizing call and an
     append-only ledger. `--session-id`, `--continue`, `--resume <id>` and `--fork-session` select
@@ -21,7 +21,7 @@ All notable changes are recorded here. The format follows
     and the workspace roots, layered with `FONTAINE.md` from the user config directory and the
     primary root.
   - An `opencode-go` account kind reaches the OpenCode Go subscription's models over their four
-    wire formats with one sign-in (`fontaine auth login <account>`, the opencode CLI's device
+    wire formats with one sign-in (`/login <account>`, the opencode CLI's device
     flow). Access tokens refresh silently, requests carry a `fontaine/<version>` User-Agent and
     the session id, and the models are unpriced. Account kinds now sit behind a provider
     registry, so a new kind is one module and one registry line (#93). The sign-in resolves the
@@ -134,6 +134,11 @@ All notable changes are recorded here. The format follows
     the agent's next tool result (#46).
   - `/model` and `/guardian-model` without an argument open a picker: models grouped under their
     account, recently used ones first, a fuzzy filter, and the current model marked (#117).
+  - `/login` opens a provider dialog that lists the accounts with their kind, endpoint and sign-in
+    state, adds an account to the user settings file, signs in (device sign-in or a masked key
+    prompt), signs out and removes accounts; the change takes effect in the running session. When
+    the interactive UI cannot resolve its main model at startup, the same dialog opens before the
+    session instead of exiting. `fontaine auth login` is removed (#140).
   - `fontaine -p` with `--output-format text|json|stream-json`, `--input-format stream-json`,
     `--include-partial-messages`, `--max-turns`, `--max-budget-usd`, `--json-schema`,
     `--system-prompt`, `--append-system-prompt`, `--model` and `--permission-mode`. The output is

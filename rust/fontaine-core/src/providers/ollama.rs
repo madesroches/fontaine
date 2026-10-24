@@ -17,6 +17,10 @@ impl Provider for Ollama {
         "ollama"
     }
 
+    fn base_url_policy(&self) -> super::BaseUrlPolicy {
+        super::BaseUrlPolicy::Optional
+    }
+
     fn credential(&self) -> CredentialPolicy {
         CredentialPolicy::Optional
     }
@@ -26,6 +30,10 @@ impl Provider for Ollama {
         available
             .iter()
             .any(|id| id == model || id.strip_suffix(":latest") == Some(model))
+    }
+
+    fn default_endpoint(&self) -> Option<&'static str> {
+        Some("http://localhost:11434")
     }
 
     fn connect(&self, ctx: ConnectContext<'_>) -> Result<Arc<dyn AccountClient>, String> {

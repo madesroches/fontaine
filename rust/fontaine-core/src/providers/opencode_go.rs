@@ -28,6 +28,7 @@ use super::device_flow::{
 use super::token_source::{Refresher, TokenSource};
 use super::{
     AccountClient, Billing, ConnectContext, CredentialPolicy, Provider, SignIn, SignInError,
+    SignInProgress, SignInStep,
 };
 use crate::config::{Account, Wire};
 use crate::credentials::{self, OAuthTokens, StoredCredential};
@@ -53,6 +54,10 @@ impl Provider for OpencodeGo {
         "opencode-go"
     }
 
+    fn base_url_policy(&self) -> super::BaseUrlPolicy {
+        super::BaseUrlPolicy::Optional
+    }
+
     fn credential(&self) -> CredentialPolicy {
         CredentialPolicy::SignIn
     }
@@ -65,11 +70,15 @@ impl Provider for OpencodeGo {
         if account.api_key_env.is_some() {
             return Err((
                 "api_key_env",
-                "`opencode-go` accounts sign in with `fontaine auth login <account>`; `api_key_env` is not used"
+                "`opencode-go` accounts sign in with `/login <account>`; `api_key_env` is not used"
                     .to_string(),
             ));
         }
         Ok(())
+    }
+
+    fn default_endpoint(&self) -> Option<&'static str> {
+        Some(DEFAULT_BASE_URL)
     }
 
     fn accepts_wires(&self) -> bool {
@@ -79,7 +88,7 @@ impl Provider for OpencodeGo {
     fn connect(&self, ctx: ConnectContext<'_>) -> Result<Arc<dyn AccountClient>, String> {
         let Some(StoredCredential::OAuth(tokens)) = ctx.credential.clone() else {
             return Err(format!(
-                "account `{0}` is not signed in; run `fontaine auth login {0}`",
+                "account `{0}` is not signed in; run `/login {0}` in `fontaine`",
                 ctx.account_name
             ));
         };
@@ -229,8 +238,16 @@ impl SignIn for OpencodeGo {
         account_name: &'a str,
         _account: &'a Account,
         data_dir: &'a Path,
+        progress: SignInProgress<'a>,
     ) -> BoxFuture<'a, Result<String, SignInError>> {
-        sign_in_at(CONSOLE_URL, account_name, data_dir, Some(REQUEST_TIMEOUT)).boxed()
+        sign_in_at(
+            CONSOLE_URL,
+            account_name,
+            data_dir,
+            Some(REQUEST_TIMEOUT),
+            progress,
+        )
+        .boxed()
     }
 }
 
@@ -246,6 +263,7 @@ pub async fn sign_in_at(
     account_name: &str,
     data_dir: &Path,
     request_timeout: Option<Duration>,
+    progress: SignInProgress<'_>,
 ) -> Result<String, SignInError> {
     let failed = |e: FlowError| SignInError(Box::new(e));
     let console = console.trim_end_matches('/');
@@ -253,11 +271,11 @@ pub async fn sign_in_at(
         .map_err(|e| failed(FlowError::Invalid(e)))?
         .with_request_timeout(request_timeout);
     let code = flow.start().await.map_err(failed)?;
-    eprintln!(
-        "Open {} and confirm the code {}",
-        code.verification_url, code.user_code
-    );
-    eprintln!("Waiting for approval...");
+    progress(SignInStep::Code {
+        verification_url: code.verification_url.clone(),
+        user_code: code.user_code.clone(),
+    });
+    progress(SignInStep::Waiting);
     let mut tokens = flow.poll(&code).await.map_err(failed)?;
     tokens
         .extra
@@ -266,10 +284,10 @@ pub async fn sign_in_at(
     let email = match user_email(console, &tokens.access, request_timeout).await {
         Ok(email) => email,
         Err(e) => {
-            eprintln!(
-                "fontaine: warning: could not read the account's email: {}",
+            progress(SignInStep::Warning(format!(
+                "could not read the account's email: {}",
                 fontaine_tools::error_chain::chain(&e)
-            );
+            )));
             None
         }
     };

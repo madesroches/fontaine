@@ -9,6 +9,7 @@ use common::World;
 use fontaine_core::config::AccountKind;
 use fontaine_core::credentials::{self, Credentials, OAuthTokens, StoredCredential};
 use fontaine_core::models::{self, ModelHandle, ResolveParams};
+use fontaine_core::providers::SignInStep;
 use fontaine_core::providers::opencode_go::sign_in_at;
 use fontaine_core::providers::token_source::now_unix;
 use rig_core::completion::CompletionRequest;
@@ -254,7 +255,7 @@ async fn an_account_that_never_signed_in_says_how_to() {
     ));
     let err = resolve(&w, "kimi-k3").await.unwrap_err();
     assert_eq!(err.exit_code(), 2);
-    assert!(err.to_string().contains("fontaine auth login go"), "{err}");
+    assert!(err.to_string().contains("/login go"), "{err}");
 }
 
 #[tokio::test]
@@ -316,10 +317,20 @@ async fn sign_in_stores_the_tokens_and_names_the_account() {
         .await;
 
     let w = World::new();
-    let summary = sign_in_at(&console.uri(), "go", &w.data, None)
+    let steps = std::sync::Mutex::new(Vec::new());
+    let progress = |step: SignInStep| steps.lock().unwrap().push(step);
+    let summary = sign_in_at(&console.uri(), "go", &w.data, None, &progress)
         .await
         .unwrap();
     assert_eq!(summary, "signed in to OpenCode Go as me@example.com");
+    let code = SignInStep::Code {
+        verification_url: format!(
+            "{}/console/device?user_code=ABCD-1234&client_id=opencode-cli",
+            console.uri()
+        ),
+        user_code: "ABCD-1234".to_string(),
+    };
+    assert_eq!(*steps.lock().unwrap(), [code, SignInStep::Waiting]);
 
     let Some(StoredCredential::OAuth(tokens)) = Credentials::load(&w.data).unwrap().account("go")
     else {
@@ -357,7 +368,7 @@ async fn a_refused_sign_in_stores_nothing() {
         .mount(&console)
         .await;
     let w = World::new();
-    let err = sign_in_at(&console.uri(), "go", &w.data, None)
+    let err = sign_in_at(&console.uri(), "go", &w.data, None, &|_| {})
         .await
         .unwrap_err();
     assert!(err.to_string().contains("access_denied"), "{err}");

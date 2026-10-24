@@ -22,7 +22,7 @@ use tracing::Instrument;
 use crate::agent::CurrentCall;
 use crate::gate::{ChildRestrictions, SessionState, spend_of};
 use crate::ledger::Record;
-use crate::models::{ModelHandle, Switcher};
+use crate::models::{ModelHandle, SharedSwitcher};
 use crate::permission_rules::parse_rule;
 use crate::permissions::Approver;
 use crate::turn::{DEFAULT_MAX_TURNS, Drive, Flow, SessionEvent, TurnOutcome, drive};
@@ -108,7 +108,7 @@ pub struct ChildContext {
     pub state: Arc<SessionState>,
     pub tool_server: ToolServerHandle,
     pub main: Arc<RwLock<MainModel>>,
-    pub switcher: Option<Switcher>,
+    pub switcher: Option<SharedSwitcher>,
     pub preamble: Preamble,
     pub approver: Arc<dyn Approver>,
     pub record_content: bool,
@@ -165,15 +165,18 @@ fn restrictions(agent_type: &AgentType) -> ChildRestrictions {
 impl ChildContext {
     async fn model_for(&self, spec: &ModelSpec) -> Result<ModelHandle, String> {
         let main = self.main.read().unwrap_or_else(|e| e.into_inner()).clone();
+        // Cloned out of the lock: resolving a model awaits.
+        let switcher = self
+            .switcher
+            .as_ref()
+            .map(|s| s.read().unwrap_or_else(|e| e.into_inner()).clone());
         match spec {
             ModelSpec::Main => Ok(main.handle),
-            ModelSpec::GuardianDefault => Ok(self
-                .switcher
-                .as_ref()
+            ModelSpec::GuardianDefault => Ok(switcher
                 .and_then(|s| s.guardian_default(&main.handle.reference, &main.listing))
                 .unwrap_or(main.handle)),
             ModelSpec::Model(text) => {
-                let Some(switcher) = &self.switcher else {
+                let Some(switcher) = switcher else {
                     return Err("models cannot be resolved in this session".to_string());
                 };
                 switcher

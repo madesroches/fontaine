@@ -37,7 +37,7 @@ fn opencode_go_refuses_api_key_env_and_points_at_the_sign_in() {
     let err =
         parse("[accounts.go]\nkind = \"opencode-go\"\napi_key_env = \"GO_KEY\"\n").unwrap_err();
     assert!(err.contains("accounts.go.api_key_env"), "{err}");
-    assert!(err.contains("fontaine auth login"), "{err}");
+    assert!(err.contains("/login"), "{err}");
 }
 
 #[test]

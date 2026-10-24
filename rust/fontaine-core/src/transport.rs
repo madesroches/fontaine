@@ -654,10 +654,7 @@ mod decoration_tests {
             panic!("expected a failure");
         };
         assert!(matches!(error, Error::Instance(_)));
-        assert!(
-            error.to_string().contains("fontaine auth login go"),
-            "{error}"
-        );
+        assert!(error.to_string().contains("/login go"), "{error}");
         assert!(
             seen.lock().unwrap().is_empty(),
             "nothing is sent without a token"

@@ -715,25 +715,33 @@ fn model_ref_ok(value: &str) -> bool {
         .is_some_and(|(account, model)| !account.is_empty() && !model.is_empty())
 }
 
+/// The shape rules for one account, shared by the settings loader and the provider dialog. The
+/// error is the key under `accounts.` that is wrong, with what is wrong with it.
+pub(crate) fn check_account(name: &str, account: &Account) -> Result<(), (String, String)> {
+    if name.is_empty() || name.contains('/') {
+        return Err((
+            format!("accounts.{name}"),
+            "account names are non-empty and contain no `/`".to_string(),
+        ));
+    }
+    let provider = account.kind.provider();
+    if account.wires.is_some() && !provider.accepts_wires() {
+        return Err((
+            format!("accounts.{name}.wires"),
+            format!("not used by kind = \"{}\"", provider.name()),
+        ));
+    }
+    provider
+        .validate(account)
+        .map_err(|(key, message)| (format!("accounts.{name}.{key}"), message))
+}
+
 fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
     let bad = |key: &str, msg: &str| Err(ConfigError::invalid(path, key, msg));
 
     for (name, account) in s.accounts.iter().flatten() {
-        if name.is_empty() || name.contains('/') {
-            return bad(
-                &format!("accounts.{name}"),
-                "account names are non-empty and contain no `/`",
-            );
-        }
-        let provider = account.kind.provider();
-        if account.wires.is_some() && !provider.accepts_wires() {
-            return bad(
-                &format!("accounts.{name}.wires"),
-                &format!("not used by kind = \"{}\"", provider.name()),
-            );
-        }
-        if let Err((key, message)) = provider.validate(account) {
-            return bad(&format!("accounts.{name}.{key}"), &message);
+        if let Err((key, message)) = check_account(name, account) {
+            return bad(&key, &message);
         }
     }
     if let Some(model) = s.model.as_ref().and_then(|m| m.model.as_deref())
@@ -1068,6 +1076,8 @@ pub struct Config {
     pub workspace: PathBuf,
     pub scopes: Vec<ScopeEntry>,
     pub accounts: BTreeMap<String, Account>,
+    /// Accounts defined by more than one scope, where the higher scope's definition won.
+    pub shadowed_accounts: std::collections::BTreeSet<String>,
     pub model: Option<String>,
     pub guardian: Guardian,
     pub permissions: Permissions,
@@ -1087,6 +1097,7 @@ impl Config {
             workspace,
             scopes: Vec::new(),
             accounts: BTreeMap::new(),
+            shadowed_accounts: Default::default(),
             model: None,
             guardian: Guardian {
                 model: None,
@@ -1145,7 +1156,13 @@ impl Config {
             user_trust: column != Column::Project,
         };
         for (name, account) in s.accounts.iter().flatten() {
-            self.accounts.insert(name.clone(), account.clone());
+            if self
+                .accounts
+                .insert(name.clone(), account.clone())
+                .is_some()
+            {
+                self.shadowed_accounts.insert(name.clone());
+            }
         }
         if let Some(model) = s.model.as_ref().and_then(|m| m.model.clone()) {
             self.model = Some(model);
@@ -1397,14 +1414,6 @@ struct Layer {
 }
 
 pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
-    let config = load_unresolved(params)?;
-    resolve_telemetry(&config.telemetry, params)?;
-    Ok(config)
-}
-
-/// Every check `load` makes except the telemetry ingestion key, which `auth login --telemetry`
-/// must be able to supply.
-pub fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
     let workspace =
         std::fs::canonicalize(params.launch_dir).map_err(|source| ConfigError::Read {
             path: params.launch_dir.to_path_buf(),
@@ -1531,6 +1540,7 @@ pub fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
 
     check_scanner(&config.guardian, &user_path)?;
     check_screen(&mut config, &user_path)?;
+    resolve_telemetry(&config.telemetry, params)?;
     Ok(config)
 }
 

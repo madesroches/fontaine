@@ -68,15 +68,15 @@ impl fmt::Display for TokenError {
         match &*self.kind {
             TokenErrorKind::SignedOut => write!(
                 f,
-                "the sign-in for account `{account}` has ended; run `fontaine auth login {account}`"
+                "the sign-in for account `{account}` has ended; run `/login {account}` in `fontaine`"
             ),
             TokenErrorKind::NoSignIn => write!(
                 f,
-                "account `{account}` is not signed in; run `fontaine auth login {account}`"
+                "account `{account}` is not signed in; run `/login {account}` in `fontaine`"
             ),
             TokenErrorKind::Refresh(_) => write!(
                 f,
-                "could not refresh the sign-in for account `{account}`; if it persists, run `fontaine auth login {account}`"
+                "could not refresh the sign-in for account `{account}`; if it persists, run `/login {account}` in `fontaine`"
             ),
             TokenErrorKind::Lock(_) => write!(
                 f,

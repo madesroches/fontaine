@@ -242,15 +242,11 @@ async fn a_prompt_with_stream_json_input_is_a_usage_error() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn auth_is_a_subcommand_never_a_prompt() {
+async fn auth_login_is_gone_and_never_reads_a_prompt() {
     let s = Sandbox::new();
     let out = s.run(&["auth", "login"]).await;
     assert_eq!(out.code, Some(2));
-    assert!(
-        out.stderr.contains("account") || out.stderr.contains("telemetry"),
-        "{}",
-        out.stderr
-    );
+    assert!(out.stderr.contains("login"), "{}", out.stderr);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -267,58 +263,6 @@ async fn the_responses_wire_works_for_the_priced_openai_kind() {
     let out = s.headless(&["hi"]).await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     assert_eq!(out.stdout, "from responses\n");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn auth_login_stores_a_secret_read_from_stdin() {
-    let s = Sandbox::new();
-    s.user_config("[accounts.work]\nkind = \"anthropic\"\n");
-    let out = s
-        .run_with_stdin(&["auth", "login", "work"], "sk-from-stdin\n")
-        .await;
-    assert_eq!(out.code, Some(0), "{}", out.stderr);
-    assert!(!out.stdout.contains("sk-from-stdin") && !out.stderr.contains("sk-from-stdin"));
-    let stored = std::fs::read_to_string(s.data.join("credentials.toml")).unwrap();
-    assert!(stored.contains("[accounts.work]") && stored.contains("sk-from-stdin"));
-
-    let out = s
-        .run_with_stdin(&["auth", "login", "--telemetry"], "ingest\n")
-        .await;
-    assert_eq!(out.code, Some(0), "{}", out.stderr);
-    let stored = std::fs::read_to_string(s.data.join("credentials.toml")).unwrap();
-    assert!(stored.contains("[accounts.work]") && stored.contains("[telemetry]"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn auth_login_works_with_telemetry_enabled_but_keyless() {
-    let s = Sandbox::new();
-    s.user_config(
-        "[accounts.work]\nkind = \"anthropic\"\n\n[telemetry]\nenabled = true\nendpoint = \"http://127.0.0.1:1\"\n",
-    );
-    let out = s.run(&["-p", "hi"]).await;
-    assert_eq!(out.code, Some(2), "{}", out.stderr);
-
-    let out = s
-        .run_with_stdin(&["auth", "login", "--telemetry"], "ingest\n")
-        .await;
-    assert_eq!(out.code, Some(0), "{}", out.stderr);
-    let out = s
-        .run_with_stdin(&["auth", "login", "work"], "sk-work\n")
-        .await;
-    assert_eq!(out.code, Some(0), "{}", out.stderr);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn auth_login_rejects_an_unknown_account_and_an_empty_secret() {
-    let s = Sandbox::new();
-    s.user_config("[accounts.work]\nkind = \"anthropic\"\n");
-    let out = s.run_with_stdin(&["auth", "login", "nobody"], "k\n").await;
-    assert_eq!(out.code, Some(2));
-    assert!(out.stderr.contains("nobody"), "{}", out.stderr);
-
-    let out = s.run_with_stdin(&["auth", "login", "work"], "\n").await;
-    assert_eq!(out.code, Some(2));
-    assert!(!s.data.join("credentials.toml").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]

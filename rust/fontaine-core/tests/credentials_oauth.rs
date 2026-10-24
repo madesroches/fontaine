@@ -2,7 +2,7 @@ mod common;
 
 use common::{World, write};
 use fontaine_core::credentials::{
-    self, Credentials, OAuthTokens, StoredCredential, Target, validate_credentials_toml,
+    self, Credentials, OAuthTokens, StoredCredential, validate_credentials_toml,
 };
 
 const GO_FILE: &str = r#"
@@ -101,7 +101,7 @@ fn an_api_key_store_waits_for_the_lock_and_keeps_a_rotation_made_meanwhile() {
     let held = credentials::lock(&w.data).unwrap();
     let data = w.data.clone();
     let writer = std::thread::spawn(move || {
-        credentials::store(&data, Target::Account("work"), "sk-work").unwrap();
+        credentials::store(&data, "work", "sk-work").unwrap();
     });
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert!(!writer.is_finished(), "the store must wait for the lock");
