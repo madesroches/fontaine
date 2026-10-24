@@ -14,6 +14,7 @@ use tokio::sync::oneshot;
 
 use crate::agents_panel::{AgentsPanel, PanelKey};
 use crate::approval::Approval;
+use crate::commands::{MenuEntry, builtin_menu, parse_command};
 use crate::complete::{self, Mention};
 use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt};
 use crate::history::History;
@@ -22,6 +23,8 @@ use crate::model_picker::{ModelPicker, PickerKey, PickerPurpose};
 use crate::provider_dialog::{DialogKey, ProviderDialog};
 use crate::server_prompt::ServerPrompt;
 use crate::transcript::Transcript;
+
+pub use crate::commands::Command;
 
 /// One thing the terminal told us.
 #[derive(Clone, Debug)]
@@ -56,84 +59,6 @@ pub enum Action {
     Providers(DialogKey),
     /// The human answered the question about starting a repository's MCP server.
     Server(bool),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Command {
-    Exit,
-    AddDir(String),
-    Denied,
-    Agents,
-    OutputStyle(String),
-    Model(String),
-    GuardianModel(String),
-    /// `/login [account]`.
-    Login(String),
-    /// A name no built-in command has; it may be a skill.
-    Other {
-        name: String,
-        argument: String,
-    },
-}
-
-/// Reads a slash command from a submitted message; `None` when it is an ordinary message.
-pub fn parse_command(text: &str) -> Option<Command> {
-    let text = text.trim();
-    let rest = text.strip_prefix('/')?;
-    let (name, argument) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-    Some(match name {
-        "exit" | "quit" => Command::Exit,
-        "add-dir" => Command::AddDir(argument.trim().to_string()),
-        "denied" => Command::Denied,
-        "agents" => Command::Agents,
-        "output-style" => Command::OutputStyle(argument.trim().to_string()),
-        "model" => Command::Model(argument.trim().to_string()),
-        "guardian-model" => Command::GuardianModel(argument.trim().to_string()),
-        "login" => Command::Login(argument.trim().to_string()),
-        _ => Command::Other {
-            name: name.to_string(),
-            argument: argument.trim().to_string(),
-        },
-    })
-}
-
-/// One line of the `/` menu.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MenuEntry {
-    pub name: String,
-    pub hint: Option<String>,
-    pub description: String,
-}
-
-/// The built-in commands, as the `/` menu lists them.
-pub fn builtin_menu() -> Vec<MenuEntry> {
-    let entry = |name: &str, hint: Option<&str>, description: &str| MenuEntry {
-        name: name.to_string(),
-        hint: hint.map(str::to_string),
-        description: description.to_string(),
-    };
-    vec![
-        entry("add-dir", Some("<path>"), "add a workspace root"),
-        entry("agents", None, "the background agents panel"),
-        entry("denied", None, "calls the guardian denied"),
-        entry("exit", None, "leave Fontaine"),
-        entry(
-            "guardian-model",
-            Some("[account/model]"),
-            "choose the guardian model",
-        ),
-        entry(
-            "login",
-            Some("[account]"),
-            "manage providers, add accounts and sign in",
-        ),
-        entry("model", Some("[account/model]"), "choose the model"),
-        entry(
-            "output-style",
-            Some("[name|none]"),
-            "show or change the output style",
-        ),
-    ]
 }
 
 /// Ctrl-R: the query typed so far and the history entry it found.
@@ -761,43 +686,6 @@ mod tests {
 
     fn app() -> App {
         App::new(PermissionMode::Manual, "m".into())
-    }
-
-    #[test]
-    fn commands_parse() {
-        assert_eq!(parse_command("hello"), None);
-        assert_eq!(parse_command("/exit"), Some(Command::Exit));
-        assert_eq!(
-            parse_command("/add-dir  /tmp/x "),
-            Some(Command::AddDir("/tmp/x".into()))
-        );
-        assert_eq!(
-            parse_command("/nope  with args "),
-            Some(Command::Other {
-                name: "nope".into(),
-                argument: "with args".into()
-            })
-        );
-        assert_eq!(parse_command("/agents"), Some(Command::Agents));
-        assert_eq!(
-            parse_command("/output-style terse"),
-            Some(Command::OutputStyle("terse".into()))
-        );
-        assert_eq!(parse_command("/denied"), Some(Command::Denied));
-        assert_eq!(
-            parse_command("/model  work/claude-sonnet-4-6 "),
-            Some(Command::Model("work/claude-sonnet-4-6".into()))
-        );
-        assert_eq!(parse_command("/model"), Some(Command::Model(String::new())));
-        assert_eq!(
-            parse_command("/guardian-model a/b"),
-            Some(Command::GuardianModel("a/b".into()))
-        );
-        assert_eq!(
-            parse_command("/login go"),
-            Some(Command::Login("go".into()))
-        );
-        assert_eq!(parse_command("/login"), Some(Command::Login(String::new())));
     }
 
     fn dialog_on_key_screen() -> ProviderDialog {

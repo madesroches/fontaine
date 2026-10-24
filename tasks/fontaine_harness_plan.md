@@ -319,6 +319,18 @@ scorecard run (see `## Remaining work`).
 
 ## Decisions
 
+- 2026-10-24: `/help`, `/status`, `/permissions`, `/mcp`, `/hooks` and `/skills` are read-only transcript notices instead of Claude Code's interactive dialogs, because it is one testable path, rule editing stays in config files (2026-10-21), and the text stays in scrollback (#47).
+- 2026-10-24: `/copy` uses OSC 52, preceded inside tmux by `tmux load-buffer -w -` (falling back to `tmux load-buffer -`) as Claude Code does, with no code-block picker and no `w`-to-file, because it adds no dependency and works over SSH, where `arboard` needs X11/Wayland; tmux's default `set-clipboard external` drops an application's OSC 52. The text goes to a clipboard sink passed to `drive`, so the write's `Result` reaches the command in the same call (#47).
+- 2026-10-24: `/diff` is not implemented, because it would spawn `git`, which runs repo-controlled config (`diff.external`, textconv drivers); a `gix` diff is a feature of its own, and `!git diff` covers it as the human's own action (#47).
+- 2026-10-24: `/mcp` takes no `reconnect`/`enable`/`disable` arguments until #35.
+- 2026-10-24: `/release-notes` is not implemented, because it would compile `CHANGELOG.md` into the binary or need network access, with little value before the first release (#47).
+- 2026-10-24: `/logout` is not implemented, because the `/login` dialog already logs out (#47).
+- 2026-10-24: `/ide` is not implemented, because IDE integration is backlog issue #59 (ACP).
+- 2026-10-24: `/bug` and `/feedback` are not implemented, because Claude Code sends reports to Anthropic and Fontaine has its GitHub issue tracker (#47).
+- 2026-10-24: `/tasks` is an alias of `/agents`, because the agents panel is already the background-work view Claude Code's `/tasks` opens (#47).
+- 2026-10-24: `/denied` stays as the view of denied calls alongside the read-only `/permissions`; the 2026-10-22 line called it a stand-in "until issue #47", but `/permissions` shows rules, not denials.
+- 2026-10-24: A built-in command wins over a skill of the same name or alias; the skill is left out of the `/` menu and `/help`, named in a startup notice, and still loadable by the model. Departs from Claude Code, where a local skill replaces a built-in (not its aliases), because a repository skill must not take over `/plan` or `/permissions`, which the human relies on to change or inspect what the agent may do (#47).
+- 2026-10-24: `/skills` has no filter, sort or visibility toggling, because a read-only listing covers discovery and the interactive dialog is not worth a second path (#47).
 - 2026-10-24: `api_error` exports `error_class` and `status_code` instead of Claude Code's `error` message and `attempt`, because provider messages can echo the request and rig's retries are not visible at this layer (#139).
 - 2026-10-24: `fontaine.token.usage` / `fontaine.cost.usage` gain an `estimated` attribute, a Fontaine extension, to separate the dropped-guardian-spend estimate from real usage (#139).
 - 2026-10-24: No custom stream tags for opt-in content; tags are hard-coded upstream, and opt-in content already lives on `cpu`, which the retention recipe expires first.

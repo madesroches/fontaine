@@ -213,6 +213,19 @@ impl Transcript {
         }
     }
 
+    /// The `n`th latest non-empty assistant entry (1 is the latest). A reply split by a tool
+    /// call is two entries, so each counts on its own.
+    pub fn assistant_reply(&self, n: usize) -> Option<&str> {
+        self.entries
+            .iter()
+            .rev()
+            .filter_map(|entry| match entry {
+                Entry::Assistant { text, .. } if !text.trim().is_empty() => Some(text.as_str()),
+                _ => None,
+            })
+            .nth(n.checked_sub(1)?)
+    }
+
     #[cfg(test)]
     pub fn lines(&self, width: usize) -> Vec<Line<'static>> {
         let mut out = Vec::new();
@@ -411,6 +424,32 @@ mod tests {
 
     fn delta(t: &mut Transcript, s: &str) {
         t.on_event(SessionEvent::AssistantDelta(s.into()));
+    }
+
+    #[test]
+    fn assistant_reply_counts_from_the_latest() {
+        let mut t = Transcript::default();
+        t.user("q".into());
+        t.on_event(SessionEvent::Assistant("first".into()));
+        t.user("q2".into());
+        t.on_event(SessionEvent::Assistant("  ".into()));
+        t.notice("note");
+        t.on_event(SessionEvent::Assistant("second".into()));
+        assert_eq!(t.assistant_reply(1), Some("second"));
+        assert_eq!(t.assistant_reply(2), Some("first"));
+        assert_eq!(t.assistant_reply(3), None);
+        assert_eq!(t.assistant_reply(0), None);
+    }
+
+    #[test]
+    fn a_tool_call_splits_a_turn_into_two_replies() {
+        let mut t = Transcript::default();
+        delta(&mut t, "before");
+        call(&mut t, "c1", "shell");
+        result(&mut t, "c1", "shell");
+        delta(&mut t, "after");
+        assert_eq!(t.assistant_reply(1), Some("after"));
+        assert_eq!(t.assistant_reply(2), Some("before"));
     }
 
     fn call(t: &mut Transcript, id: &str, tool: &str) {

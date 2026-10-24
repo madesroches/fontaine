@@ -5,6 +5,8 @@
 pub mod agents_panel;
 pub mod app;
 pub mod approval;
+pub mod clipboard;
+pub mod commands;
 pub mod complete;
 pub mod denials;
 pub mod history;
@@ -12,6 +14,7 @@ pub mod input;
 pub mod model_picker;
 pub mod provider_dialog;
 pub mod recent;
+pub mod reports;
 pub mod screen;
 pub mod server_prompt;
 pub mod setup;
@@ -50,7 +53,8 @@ use ratatui::crossterm::terminal::{
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 
-pub use app::{Action, App, Command, Input, MenuEntry, builtin_menu, parse_command};
+pub use app::{Action, App, Input};
+pub use commands::{Command, MenuEntry, builtin_menu, parse_command};
 pub use denials::UnavailableAnswer;
 
 use agents_panel::{AgentsPanel, Detail, PanelRow};
@@ -61,6 +65,7 @@ use provider_dialog::{
     stored_key_summary,
 };
 use recent::RecentModels;
+use reports::McpState;
 use screen::{Anchored, Screen};
 use server_prompt::ServerPrompt;
 
@@ -160,6 +165,8 @@ fn end_of_turn(end: &TurnEnd, retracted: Vec<String>) -> EndOfTurn {
     }
 }
 
+type ClipboardSink = Box<dyn FnMut(&str) -> std::io::Result<()>>;
+
 struct Ui<R> {
     app: App,
     input: UnboundedReceiver<Input>,
@@ -174,6 +181,10 @@ struct Ui<R> {
     data_dir: PathBuf,
     user_config: Option<PathBuf>,
     env: EnvLookup,
+    /// What starting each MCP server came to, for `/mcp`.
+    mcp_status: Vec<(String, McpState)>,
+    /// Where `/copy` sends text; the write's result comes back to the command.
+    clipboard: ClipboardSink,
 }
 
 impl<R: FnMut(&mut App)> Ui<R> {
@@ -372,6 +383,18 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// after the human approves each. Returns false when the input closed meanwhile.
     async fn start_mcp(&mut self, runtime: &mut AgentRuntime) -> bool {
         let mut approved = Vec::new();
+        if !runtime.project_executables() {
+            for name in runtime.config.mcp_servers.keys() {
+                let project = runtime
+                    .config
+                    .mcp_origins
+                    .get(name)
+                    .is_some_and(|origin| origin.is_project());
+                if project {
+                    self.mcp_status.push((name.clone(), McpState::NotTrusted));
+                }
+            }
+        }
         for plan in runtime.mcp_plan().into_iter().filter(|p| p.needs_approval) {
             self.app.begin_server(ServerPrompt::new(
                 plan.name.clone(),
@@ -398,6 +421,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
                 approved.push(plan.name.clone());
             } else {
+                self.mcp_status.push((plan.name.clone(), McpState::LeftOff));
                 self.app
                     .transcript
                     .notice(format!("MCP server `{}` was left off", plan.name));
@@ -413,11 +437,18 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
         for outcome in runtime.connect_mcp(&approved).await {
             match outcome.error {
-                None => self
-                    .app
-                    .transcript
-                    .notice(format!("MCP server `{}` is connected", outcome.server)),
-                Some(e) => self.app.transcript.error(e),
+                None => {
+                    self.mcp_status
+                        .push((outcome.server.clone(), McpState::Connected));
+                    self.app
+                        .transcript
+                        .notice(format!("MCP server `{}` is connected", outcome.server));
+                }
+                Some(e) => {
+                    self.mcp_status
+                        .push((outcome.server, McpState::Failed(e.clone())));
+                    self.app.transcript.error(e);
+                }
             }
         }
         true
@@ -457,6 +488,35 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(Command::Model(reference)) => self.model(runtime, &reference).await,
             Some(Command::GuardianModel(reference)) => self.guardian_model(runtime, &reference),
             Some(Command::Login(account)) => self.login(runtime, &account).await,
+            Some(Command::Help) => {
+                let (skills, _) = commands::skill_menu(runtime.slash_skills());
+                self.app.transcript.notice(reports::help(&skills));
+            }
+            Some(Command::Status) => self.status(runtime),
+            Some(Command::Permissions) => self.permissions(runtime),
+            Some(Command::Mcp(argument)) => self.mcp(&argument),
+            Some(Command::Hooks) => {
+                let hooks = &runtime.config.hooks;
+                self.app.transcript.notice(reports::hooks(
+                    &hooks.pre_tool_use,
+                    &hooks.post_tool_use,
+                    &hooks.permission_denied,
+                    runtime.project_executables(),
+                ));
+            }
+            Some(Command::Skills) => {
+                self.app
+                    .transcript
+                    .notice(reports::skills(&runtime.extensions().skills));
+            }
+            Some(Command::Plan(description)) => {
+                runtime.state.set_mode(PermissionMode::Plan);
+                self.app.transcript.notice("plan mode on");
+                if !description.is_empty() {
+                    return self.converse(runtime, description, None).await;
+                }
+            }
+            Some(Command::Copy(argument)) => self.copy(&argument),
             Some(Command::Other { name, argument }) => {
                 let known = runtime
                     .slash_skills()
@@ -532,6 +592,77 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.deny_pending();
         self.drain_prompts();
         Err(end)
+    }
+
+    fn status(&mut self, runtime: &AgentRuntime) {
+        let guardian = runtime.state.guardian();
+        let mcp_connected = self
+            .mcp_status
+            .iter()
+            .filter(|(_, state)| *state == McpState::Connected)
+            .count();
+        let text = reports::status(&reports::StatusInfo {
+            version: env!("CARGO_PKG_VERSION"),
+            session_id: &runtime.session.id,
+            roots: &runtime.roots,
+            mode: runtime.state.mode(),
+            model: &runtime.models.main.reference.to_string(),
+            guardian_label: guardian.label(),
+            guardian_unavailable: guardian.unavailable_reason(),
+            guardian_profile: runtime.guardian_profile.as_str(),
+            output_style: runtime.output_style(),
+            mcp_connected,
+            mcp_configured: runtime.config.mcp_servers.len(),
+        });
+        self.app.transcript.notice(text);
+    }
+
+    fn permissions(&mut self, runtime: &AgentRuntime) {
+        let text = reports::permissions(
+            runtime.state.mode(),
+            &runtime.state.rules(),
+            &runtime.state.suspended_allow_rules(),
+            &runtime.roots,
+            self.user_config.as_deref(),
+        );
+        self.app.transcript.notice(text);
+    }
+
+    fn mcp(&mut self, argument: &str) {
+        if !argument.is_empty() {
+            self.app.transcript.error(format!(
+                "/mcp takes no arguments (`{argument}`): it only lists the servers; reconnecting, enabling and disabling are not supported yet"
+            ));
+            return;
+        }
+        self.app.transcript.notice(reports::mcp(&self.mcp_status));
+    }
+
+    /// `/copy`: puts the `n`th latest assistant reply on the clipboard.
+    fn copy(&mut self, argument: &str) {
+        let n = match commands::reply_number(argument) {
+            Ok(n) => n,
+            Err(e) => {
+                self.app.transcript.error(e);
+                return;
+            }
+        };
+        let Some(reply) = self.app.transcript.assistant_reply(n).map(str::to_string) else {
+            self.app
+                .transcript
+                .error(format!("there is no assistant reply number {n} to copy"));
+            return;
+        };
+        match (self.clipboard)(&reply) {
+            Ok(()) => self.app.transcript.notice(format!(
+                "copied reply {n} ({} characters) to the clipboard",
+                reply.chars().count()
+            )),
+            Err(e) => self.app.transcript.error(format!(
+                "could not copy to the clipboard: {}",
+                fontaine_tools::error_chain::chain(&e)
+            )),
+        }
     }
 
     /// `/output-style`: shows the styles, or switches to one for the next turn.
@@ -1358,6 +1489,7 @@ pub async fn drive(
     launch_dir: PathBuf,
     input: UnboundedReceiver<Input>,
     render: impl FnMut(&mut App),
+    clipboard: impl FnMut(&str) -> std::io::Result<()> + 'static,
 ) -> Result<(), String> {
     let (tx, prompts) = unbounded_channel();
     setup.approver = Arc::new(ChannelApprover { tx });
@@ -1385,6 +1517,8 @@ pub async fn drive(
         data_dir,
         user_config,
         env,
+        mcp_status: Vec::new(),
+        clipboard: Box::new(clipboard),
     };
     ui.app.history = history;
     ui.app.primary_root = primary_root;
@@ -1405,12 +1539,12 @@ pub async fn drive(
             mode = mode.as_str()
         ));
     }
-    for (name, hint, description) in runtime.slash_skills() {
-        ui.app.menu.push(MenuEntry {
-            name,
-            hint,
-            description,
-        });
+    let (skill_rows, hidden_skills) = commands::skill_menu(runtime.slash_skills());
+    ui.app.menu.extend(skill_rows);
+    for name in hidden_skills {
+        ui.app.transcript.notice(format!(
+            "skill /{name} is hidden by the built-in command of the same name"
+        ));
     }
     ui.app.menu.sort_by(|a, b| a.name.cmp(&b.name));
     if mode == PermissionMode::Auto {
@@ -1506,22 +1640,28 @@ pub async fn run(setup: AgentSetup, launch_dir: PathBuf) -> Result<(), String> {
     // A failed write means stdout is gone: ending the reader closes the input and the session
     // ends the way it does when the terminal closes.
     let on_error = stop.clone();
-    let result = drive(setup, launch_dir, rx, move |app| {
-        let rendered = match screen.lock() {
-            Ok(mut screen) => {
-                // A rebuild clears rows before redrawing them; one frame hides that.
-                let mut out = std::io::stdout();
-                let _ = ratatui::crossterm::execute!(out, BeginSynchronizedUpdate);
-                let ok = screen.render(app).is_ok();
-                let _ = ratatui::crossterm::execute!(out, EndSynchronizedUpdate);
-                ok
+    let result = drive(
+        setup,
+        launch_dir,
+        rx,
+        move |app| {
+            let rendered = match screen.lock() {
+                Ok(mut screen) => {
+                    // A rebuild clears rows before redrawing them; one frame hides that.
+                    let mut out = std::io::stdout();
+                    let _ = ratatui::crossterm::execute!(out, BeginSynchronizedUpdate);
+                    let ok = screen.render(app).is_ok();
+                    let _ = ratatui::crossterm::execute!(out, EndSynchronizedUpdate);
+                    ok
+                }
+                Err(_) => false,
+            };
+            if !rendered {
+                on_error.store(true, Ordering::Relaxed);
             }
-            Err(_) => false,
-        };
-        if !rendered {
-            on_error.store(true, Ordering::Relaxed);
-        }
-    })
+        },
+        clipboard::copy,
+    )
     .await;
     stop.store(true, Ordering::Relaxed);
     let _ = reader.await;
@@ -1558,6 +1698,8 @@ mod tests {
             data_dir: PathBuf::new(),
             user_config: None,
             env: Arc::new(|_| None),
+            mcp_status: Vec::new(),
+            clipboard: Box::new(|_| Ok(())),
         }
     }
 

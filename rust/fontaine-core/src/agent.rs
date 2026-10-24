@@ -776,6 +776,11 @@ impl AgentRuntime {
         ))
     }
 
+    /// Whether the workspace was trusted, so project hooks and MCP servers loaded.
+    pub fn project_executables(&self) -> bool {
+        self.setup.project_executables
+    }
+
     /// The MCP servers this session would start, and which of them need the user's say-so.
     pub fn mcp_plan(&self) -> Vec<McpServerPlan> {
         let root = &self.roots[0];

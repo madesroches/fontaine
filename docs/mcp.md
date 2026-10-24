@@ -5,6 +5,9 @@ server runs as a child process (stdio) or is reached over streamable HTTP, and e
 becomes a tool the model can call. MCP tools go through the same permission pipeline as every other
 tool; nothing a server says about itself changes how they are judged.
 
+In the terminal UI, `/mcp` lists the servers and whether each is connected, failed, left off or not
+loaded.
+
 ## Declaring servers
 
 Servers are declared under `[mcp.servers.<name>]`. Set exactly one of `command` (stdio) or `url`

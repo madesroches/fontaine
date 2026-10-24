@@ -167,3 +167,40 @@ async fn a_skill_command_that_needs_approval_prompts_and_answering_completes_the
         w.requests()[0]
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn help_and_skills_list_the_loaded_skills() {
+    let w = world();
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/help");
+        ui.wait_for("/review [pr-number] — Review a pull request")
+            .await;
+        // The model-only skill is not a command, but /skills still shows it.
+        assert!(!ui.screen().contains("/internal"), "{}", ui.screen());
+        ui.send("/skills");
+        ui.wait_for("internal — Only the model uses this [user] (model only)")
+            .await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_builtin_wins_over_a_skill_of_the_same_name() {
+    let w = World::new(vec![]).with_user_file(
+        "skills/status/SKILL.md",
+        "---\ndescription: Shadowed\n---\nbody\n",
+    );
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.wait_for("skill /status is hidden by the built-in command of the same name")
+            .await;
+        ui.send("/status");
+        ui.wait_for("MCP servers: 0 of 0 connected").await;
+        ui.send("/skills");
+        ui.wait_for("status — Shadowed [user] (hidden by /status)")
+            .await;
+    })
+    .await;
+    assert!(w.requests().is_empty());
+}
