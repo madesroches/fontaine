@@ -1660,9 +1660,9 @@ pub async fn run(setup: AgentSetup, launch_dir: PathBuf) -> Result<(), String> {
             }
         },
         |text| {
-            crossterm::execute!(
+            ratatui::crossterm::execute!(
                 std::io::stdout(),
-                crossterm::clipboard::CopyToClipboard::to_clipboard_from(text)
+                ratatui::crossterm::clipboard::CopyToClipboard::to_clipboard_from(text)
             )
         },
     )

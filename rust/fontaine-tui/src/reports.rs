@@ -184,9 +184,9 @@ pub fn hooks(
 ) -> String {
     let mut sections = Vec::new();
     for (event, hooks) in [
-        ("PreToolUse", pre_tool_use),
-        ("PostToolUse", post_tool_use),
-        ("PermissionDenied", permission_denied),
+        ("pre_tool_use", pre_tool_use),
+        ("post_tool_use", post_tool_use),
+        ("permission_denied", permission_denied),
     ] {
         if hooks.is_empty() {
             continue;
@@ -233,7 +233,7 @@ pub fn skills(skills: &[Skill]) -> String {
             if skill.disable_model_invocation {
                 line.push_str(" (you only)");
             }
-            if is_builtin(&skill.name) {
+            if skill.user_invocable && is_builtin(&skill.name) {
                 let _ = write!(line, " (hidden by /{})", skill.name);
             }
             line
@@ -429,7 +429,7 @@ mod tests {
         let text = hooks(&pre, &[], &denied, true);
         assert_eq!(
             text,
-            "PreToolUse:\n  shell(git push) → check.sh [user] timeout 5s\n  every call → log.sh [project]\nPermissionDenied:\n  every call → notify.sh [user]"
+            "pre_tool_use:\n  shell(git push) → check.sh [user] timeout 5s\n  every call → log.sh [project]\npermission_denied:\n  every call → notify.sh [user]"
         );
         let untrusted = hooks(&pre, &[], &[], false);
         assert!(
