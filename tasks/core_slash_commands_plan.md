@@ -30,8 +30,8 @@ documented in `docs/tui.md`.
   `runtime.roots`, the mode is `runtime.state.mode()`, and the guardian is
   `runtime.state.guardian()` (with `label()` and `unavailable_reason()`), plus
   `runtime.guardian_profile` and `runtime.output_style()`. The effective rules are
-  `runtime.state.rules()` (`gate.rs:615`: the configured allow rules followed by the grants made
-  during the session; each a `SourcedRule`, and `SourcedRule::label()` gives `shell(rm) [user]`;
+  `runtime.state.rules()` (`gate.rs:615`, a `Rules { deny, ask, allow }` whose `allow` also holds the session's grants;
+  each a `SourcedRule`, and `SourcedRule::label()` gives `shell(rm) [user]`;
   `runtime.config.permissions` is only the startup snapshot), the broad allow rules auto mode sets
   aside are `runtime.state.suspended_allow_rules()` (a set of `label()` strings), and the hooks are `runtime.config.hooks` (with
   `Hook::origin`). The skills are `runtime.extensions().skills` (name, description, scope,
@@ -69,7 +69,7 @@ documented in `docs/tui.md`.
 | `/loop`, `/goal` | #16, #17 |
 
 Also left out: `/diff`, `/release-notes`, `/ide`, `/bug`/`/feedback`, and `/logout` (`/login`'s
-dialog already logs out). See Trade-offs.
+dialog already logs out). See Decisions.
 
 ## Design
 
@@ -94,12 +94,12 @@ pub const BUILTINS: &[Builtin] = &[ /* one row per command, sorted by name */ ];
   no argument ignore it, as they do today (`/denied foo` runs `/denied`).
 - `builtin_menu()` maps `BUILTINS` to `MenuEntry` rows, so the menu and the parser can no longer
   drift. Aliases do not get their own menu rows. Unit tests check a hand-written list (`/quit` → `Exit`, `/tasks` → `Agents`, `/plan x` →
-  `Plan("x")`, `/copy 2` → `Copy("2")`), that no name or alias is used twice, and that the menu
+  `Plan("x")`, `/copy 2` → `Copy("2")`, `/mcp x` → `Mcp("x")`), that no name or alias is used twice, and that the menu
   has one row per entry.
 - `Command`, `parse_command`, `MenuEntry` and `builtin_menu` keep their public paths
   (`lib.rs:53` re-exports them), and `app.rs` re-exports them from `commands.rs`.
 
-New `Command` variants: `Help`, `Status`, `Permissions`, `Mcp`, `Hooks`, `Skills`,
+New `Command` variants: `Help`, `Status`, `Permissions`, `Mcp(String)`, `Hooks`, `Skills`,
 `Plan(String)`, and `Copy(String)`. `tasks` is an alias row on `Agents`.
 
 ### What each command does
@@ -128,12 +128,13 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
   (`Ui.user_config: Option<PathBuf>`; the line is omitted when it is `None`), and a pointer:
   `/denied lists what the guardian denied this session`.
 - **`/mcp`**: one line per server in `mcp_plan()`, plus project servers left out because the
-  workspace is not trusted, with its state: `connected`, `failed: <error>`, `left off` (the human
+  workspace is not trusted, with its state: `connected`, `failed` plus the outcome's error text (which
+  already names the server, so the name is not repeated),  `left off` (the human
   declined it), or `not loaded (workspace not trusted)`. To know the state, `start_mcp` stops
   dropping outcomes: it records them in a `Ui` field `mcp_status: Vec<(String, McpState)>`,
   filled from the approval answers and from `connect_mcp`'s `McpOutcome`s. The command is
   read-only. Claude Code's `reconnect`/`enable`/`disable` arguments are left to #35 (MCP
-  robustness: reconnect), and `/mcp` with an argument answers with an error naming that limit.
+  robustness: reconnect), and `/mcp` with a non-empty argument answers with an error naming that limit.
 - **`/hooks`**: the hooks by event (`PreToolUse`, `PostToolUse`, `PermissionDenied`), each as
   `matcher (or "every call") → command [scope]`, the scope being `origin.slot.label()`, with `timeout Ns` when one is set. Project hooks
   are marked `not loaded (workspace not trusted)` when `project_executables` is false. This needs
@@ -180,10 +181,9 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
    the report builder, and add the notice. `/plan` sets the mode, then calls `converse` when
    there is a description. `/copy` calls `Transcript::assistant_reply` and the OSC 52 writer.
 6. **Clipboard.** Add `crossterm = { version = "=0.29.0", features = ["osc52"] }` to the workspace
-   dependencies in `rust/Cargo.toml`, pinned to the version ratatui already uses so the tree
-   keeps one crossterm, and add it to `fontaine-tui/Cargo.toml`. Write the escape through the
-   same writer `screen.rs` draws to. Check that `cargo deny check` stays green, since the
-   feature pulls in `base64`.
+   dependencies in `rust/Cargo.toml`, exact-pinned like the other workspace dependencies, and add it to `fontaine-tui/Cargo.toml`.
+   Write the escape through the same writer `screen.rs` draws to. `base64` is already in the
+   tree; check that `cargo deny check` stays green.
 7. **Docs.** Update the docs and `CHANGELOG.md` (see Documentation).
 8. **Master plan.** Add the Decisions lines below to `tasks/fontaine_harness_plan.md`
    `## Decisions`.
@@ -199,31 +199,34 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
 - `rust/fontaine-core/src/agent.rs`: `project_executables()`
 - `rust/Cargo.toml`, `rust/fontaine-tui/Cargo.toml`: crossterm with `osc52`
 - `rust/fontaine-tui/tests/tui.rs`: integration tests
-- `docs/tui.md`, `docs/permissions.md`, `docs/mcp.md`, `docs/hooks.md`, `docs/extensions.md`,
+- `docs/tui.md`, `docs/permissions.md`, `docs/agents.md`, `docs/mcp.md`, `docs/hooks.md`, `docs/extensions.md`,
   `docs/index.md`
 - `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md`: Decisions
-
-## Trade-offs
-
-- **`/release-notes` left out.** It would compile `CHANGELOG.md` into the binary, or need
-  network access. That has little value before the first release, and it is cheap to add later.
 
 ## Decisions
 
 - 2026-10-24: `/help`, `/status`, `/permissions`, `/mcp`, `/hooks` and `/skills` are read-only
   transcript notices instead of Claude Code's interactive dialogs. Reason: one testable path, and
   rule editing stays in config files (2026-10-21 decision), and the text stays in
-  scrollback. This goes to the master plan.
+  scrollback.
 - 2026-10-24: `/copy` uses OSC 52 only, with no code-block picker and no `w`-to-file. Reason: no
   new dependency, and it works over SSH, where `arboard` needs X11/Wayland and fails; some
-  terminals ignore OSC 52, which the success notice says. This goes to the master plan.
+  terminals ignore OSC 52, which the success notice says.
 - 2026-10-24: `/diff` is not implemented. Reason: it would spawn `git`, which runs
   repo-controlled config (`diff.external`, textconv drivers); a `gix` diff is a feature of its own;
-  `!git diff` covers it as the human's own action. This goes to the
-  master plan.
-- 2026-10-24: `/mcp` takes no `reconnect`/`enable`/`disable` arguments until #35. This goes to
-  the master plan.
+  `!git diff` covers it as the human's own action.
+- 2026-10-24: `/mcp` takes no `reconnect`/`enable`/`disable` arguments until #35.
+- 2026-10-24: `/release-notes` is not implemented. Reason: it would compile `CHANGELOG.md` into the
+  binary or need network access, with little value before the first release.
+- 2026-10-24: `/logout` is not implemented. Reason: the `/login` dialog already logs out.
+- 2026-10-24: `/ide` is not implemented. Reason: IDE integration is backlog issue #59 (ACP).
+- 2026-10-24: `/bug` and `/feedback` are not implemented. Reason: Claude Code sends reports to
+  Anthropic; Fontaine has its GitHub issue tracker.
+- 2026-10-24: `/tasks` is an alias of `/agents`. Reason: the `/agents` panel is already the
+  background-work view Claude Code's `/tasks` opens.
+- 2026-10-24: `/skills` has no filter, sort or visibility toggling. Reason: a read-only listing
+  covers discovery; the interactive dialog is not worth a second path.
 
 ## Documentation
 
@@ -232,8 +235,9 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
   `/tasks` beside `/agents`. The table is not sorted today; re-sort it the way the menu is. Under the table, add a
   sentence that `/copy` needs a terminal with OSC 52 clipboard support (with tmux,
   `set-clipboard on`).
-- `docs/permissions.md`: add a line that `/permissions` shows the effective rules with their
+- `docs/permissions.md`: in `## Modes`, add "or `/plan`" beside Shift+Tab as a way to enter plan mode; add a line that `/permissions` shows the effective rules with their
   source, and the auto set-aside marker.
+- `docs/agents.md` (~line 130): `/tasks` beside `/agents`.
 - `docs/mcp.md`: one line on `/mcp`. `docs/hooks.md`: one line on `/hooks`. `docs/extensions.md`
   `## Skills`: one line on `/skills`.
 - `docs/index.md` (lines 27-29): add the new commands to the terminal UI command list.
@@ -244,7 +248,7 @@ tested without a runtime. These functions go in a new `rust/fontaine-tui/src/rep
 
 Unit tests (`commands.rs`, `reports.rs`, `transcript.rs`):
 - The table: a hand-written list parses to the expected variants (`/quit` → `Exit`, `/tasks` →
-  `Agents`, `/plan x` → `Plan("x")`, `/copy 2` → `Copy("2")`); no name or alias appears twice; `builtin_menu()` has one row per `BUILTINS` entry and
+  `Agents`, `/plan x` → `Plan("x")`, `/copy 2` → `Copy("2")`, `/mcp x` → `Mcp("x")`); no name or alias appears twice; `builtin_menu()` has one row per `BUILTINS` entry and
   none for aliases; an unknown name is still `Command::Other`; argument trimming is kept
   (existing tests move over).
 - `/help`: it lists every built-in, then the skills, then the keys line; aliases are joined.
@@ -260,7 +264,6 @@ Unit tests (`commands.rs`, `reports.rs`, `transcript.rs`):
 - `assistant_reply`: `n = 1` is the latest reply; `n` past the end is `None`; empty assistant
   entries and non-assistant entries are skipped.
 - `/copy` argument parsing: empty is 1; `0`, `-1` and `x` are errors.
-- The OSC 52 formatter: the escape equals `\x1b]52;c;<base64>\x07`.
 
 Integration tests (`fontaine-tui/tests/tui.rs`, through `ui.send` with the deterministic test
 model):
