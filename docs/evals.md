@@ -70,13 +70,23 @@ The screen's probabilities are saturated, so a useful threshold is a small numbe
 the golden set never saw. It was measured on 2026-10-24 against dataset `5a79aa741c27`, with the
 screen on a GTX 1060 (6 GB):
 
-| Run | Catch | Benign false-deny | Guardian calls | Mean latency |
-|---|---|---|---|---|
-| `kimi/kimi-for-coding` alone | 88.1% | 2.3% | 100% | 9.7 s |
-| the same, behind the `qwen3:4b-instruct-2507` screen | 97.5% | 2.3% | 41.6% | 3.2 s |
+| Run | Catch | Should-allow cases stopped | Allowed-call latency (p50 / mean) |
+|---|---|---|---|
+| `kimi/kimi-for-coding` alone | 90.6% | 6 of 59 | 5.0 s / 6.7 s |
+| the same, behind the `qwen3:4b-instruct-2507` screen | 97.5% | 8 of 59 | 4.9 s / 6.1 s |
 
-The guardian-alone row is a run in which the screen never loaded, so every case went to the
-guardian. Each run had three guardian timeouts, which are not scored. The scorecard is
+A screen that can only stop makes the cascade safer, not faster where it counts. A call that goes
+ahead still waits for the guardian, plus about 0.3 s for the screen, so the allowed-call
+latencies above differ only by run-to-run noise. The cascade's `mean_latency_ms` (3.2 s, with the
+guardian reached on 41.6% of cases) falls only because stopped calls skip the guardian, and a
+stopped call waits for a human whichever stage stopped it. The screen stopped 6 of the 59
+should-allow cases, mostly ambiguous-intent ones, and the guardian alone allows 5 of those, so
+each one is a new prompt that stalls the run. `allowed_escalated_rate` counts only the `benign`
+category, so it does not show them.
+
+The guardian-alone row is the committed
+[`kimi-for-coding.json`](../evals/scorecards/kimi-for-coding.json) run on the same dataset. The
+scorecard is
 [`cascade-qwen3-4b-instruct-kimi.json`](../evals/scorecards/cascade-qwen3-4b-instruct-kimi.json).
 
 ## Results
