@@ -62,7 +62,15 @@ pub(crate) fn terminal_text(line: &str) -> String {
     let line = line.trim_end_matches('\r');
     let line = line.rsplit('\r').next().unwrap_or(line);
     line.chars()
-        .filter(|c| !c.is_ascii_control() || *c == '\t')
+        .filter(|c| !c.is_control() || *c == '\t')
+        .collect()
+}
+
+/// Typed, pasted or recalled text as it is echoed: control characters other than newline and
+/// tab would otherwise reach the terminal as escape sequences.
+pub(crate) fn echo_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
         .collect()
 }
 
@@ -170,6 +178,7 @@ pub(crate) fn is_field_line(line: &str, bare_prefix: &str) -> bool {
 }
 
 pub(crate) fn echo_diff_after(prompt: &str, old: &str, new: &str) -> String {
+    let (old, new) = (&echo_text(old), &echo_text(new));
     if old == new {
         return String::new();
     }
@@ -179,7 +188,8 @@ pub(crate) fn echo_diff_after(prompt: &str, old: &str, new: &str) -> String {
     if let Some(removed) = old.strip_prefix(new)
         && !removed.contains('\n')
     {
-        return "\x08 \x08".repeat(removed.chars().count());
+        // One backspace per display column: wide characters occupy two, combining marks none.
+        return "\x08 \x08".repeat(ratatui::text::Span::raw(removed).width());
     }
     format!("\r\n{prompt}{}", crlf(new))
 }
@@ -287,7 +297,14 @@ impl<W: Write> Linear<W> {
         let mut bell = false;
 
         for settled in app.transcript.commit_entries(Cut::Lines) {
-            label(&settled, &mut lines);
+            let mut labelled = Vec::new();
+            label(&settled, &mut labelled);
+            // Not `terminal_text`: its redraw handling would drop the label before a `\r`.
+            lines.extend(labelled.iter().map(|line| {
+                line.chars()
+                    .filter(|c| !c.is_control() || *c == '\t')
+                    .collect::<String>()
+            }));
         }
 
         let overlay = view::overlay(app, WIDTH, u16::MAX, true);
@@ -322,6 +339,7 @@ impl<W: Write> Linear<W> {
             Some((prefix, typed)) => (*prefix, typed.clone()),
             None => (PROMPT, app.input.text()),
         };
+        let text = echo_text(&text);
         let on_field = overlay.field.is_some();
         let switched = on_field != self.on_field;
         self.on_field = on_field;
@@ -745,6 +763,41 @@ mod tests {
         rig.render();
         rig.app.transcript.notice("heads up");
         assert_eq!(rig.render(), "\r\x1b[2Knotice: heads up\r\n> ");
+    }
+
+    #[test]
+    fn control_sequences_in_transcript_text_never_reach_the_terminal() {
+        let mut rig = Rig::new();
+        rig.render();
+        let evil = "x\x1b]52;c;AAAA\x07y\rz";
+        let t = &mut rig.app.transcript;
+        t.on_event(SessionEvent::Assistant(evil.into()));
+        t.notice(evil);
+        t.on_event(SessionEvent::ToolCall {
+            id: "a".into(),
+            tool: "shell".into(),
+            args: serde_json::json!({ "command": evil }),
+        });
+        t.error(evil);
+        let out = rig.render();
+        // The renderer's own prompt erase legitimately starts with ESC, so look for the payload.
+        assert!(
+            !out.contains("\x1b]52;") && !out.contains('\x07'),
+            "{out:?}"
+        );
+        assert!(out.contains("assistant: x]52;c;AAAAyz"), "{out:?}");
+    }
+
+    #[test]
+    fn echoed_input_drops_control_characters() {
+        assert_eq!(echo_diff("", "a\x1b[2Jb\x07"), "a[2Jb");
+        assert_eq!(echo_diff("a\x1bb", "a"), "\x08 \x08");
+    }
+
+    #[test]
+    fn echo_diff_erases_one_backspace_per_display_column() {
+        assert_eq!(echo_diff("a\u{4e2d}", "a"), "\x08 \x08".repeat(2));
+        assert_eq!(echo_diff("ae\u{301}", "a"), "\x08 \x08");
     }
 
     #[test]

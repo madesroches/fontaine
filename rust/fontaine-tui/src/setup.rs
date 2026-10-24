@@ -128,6 +128,7 @@ impl<W: io::Write> Surface for Printed<W> {
             }
             (Some((prefix, text)), None) => {
                 out.push_str(prefix);
+                let text = crate::linear::echo_text(&text);
                 out.push_str(&crlf(&text));
                 self.echoed = Some(text);
             }
