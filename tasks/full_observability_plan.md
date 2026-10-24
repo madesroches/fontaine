@@ -82,6 +82,8 @@ notebook under a new root `analytics/` folder.
   events in `log_entries`, with fields as `properties`, read with `property_get`. Metrics land in
   `measures`, and spans in `async_events` / `process_spans(…, 'async')`. Through `/ingestion/otlp`,
   logs and metrics land in the same `log_entries` and `measures`, but spans land in `otel_spans`.
+  OTLP Histogram points are dropped (so `fontaine.guardian.latency` never reaches `measures`), and
+  Fontaine's OTLP meter exports cumulative sums, so OTLP `measures` rows are running totals.
   Notebooks are JSON screens that `micromegas-screens apply` loads ("screens as code"). View sets
   are `CREATE MATERIALIZED VIEW` DDL, which only an admin can apply.
 
@@ -228,9 +230,12 @@ All on target `fontaine::telemetry`, content-free.
   (it prompts unless `--auto-approve`).
 - No materialized view set. Applying one needs a micromegas admin, and these queries run over the
   base views at notebook scale (see Decisions). A view set can follow if real volumes need one.
-- OTLP: the same notebook works through `/ingestion/otlp`, because logs and metrics land in
-  `log_entries` / `measures`. The docs say spans land in `otel_spans` instead of `async_events`,
-  that the notebook has no span cells for that reason, and that `msg` is bare on OTLP. Event
+- OTLP: the notebook's event cells (`log_entries`) work through `/ingestion/otlp`; its metric
+  cells (`measures`) are native-only. micromegas drops OTLP Histogram points, so the guardian
+  latency cell is empty, and the OTLP meter's cumulative temporality makes `SUM(value)` over
+  running totals disagree with native. The exporter is not changed here. The docs say so, that
+  spans land in `otel_spans` instead of `async_events`, that the notebook has no span cells for
+  that reason, and that `msg` is bare on OTLP. Event
   attributes arrive as `properties` and the tracing target arrives as `target` on both backends:
   `opentelemetry-appender-tracing` sets the log record target to the tracing target, which
   `opentelemetry-proto` carries as the scope name, which micromegas maps to `target`.
@@ -258,7 +263,9 @@ All on target `fontaine::telemetry`, content-free.
 7. **Analytics.** Create `analytics/notebooks/fontaine-overview.json`. Update the `AGENTS.md`
    root-directory list and the master plan's workspace layout.
 8. **Upstream issue.** File the `TracingCaptureLayer` field-hook and location-switch issue on
-   `madesroches/micromegas`, and record its number in Decisions and the PR body.
+   `madesroches/micromegas`, and record its number in Decisions and the PR body. File a
+   `release-blocker` Fontaine issue for the switch to an exact crates.io `=0.33.x` pin (and
+   removing `allow-git`), and link it from the PR body.
 9. **Docs and design.** See `## Documentation`. Add the Decisions lines to the master plan.
 
 ## Files to Modify
@@ -305,6 +312,10 @@ Step 9 copies these lines into the master plan's Decisions.
   and location switch issue (number recorded in Step 8).
 - 2026-10-24: micromegas is on a git pin with `allow-git` in `deny.toml` until 0.33 is on
   crates.io; the git pin is never shipped in a release.
+- 2026-10-24 AFK: The `api_error` test scripts a streamed `MockStreamEvent::Error(MockError::ProviderResponse(…))` through `tests/common/runtime.rs` `build`, not `MockTurn::provider_response_error`, because `drive()` always streams and the mock's streaming mode only pops stream turns.
+- 2026-10-24 AFK: The notebook's metric cells are documented as native-only instead of changing the OTLP exporter, because micromegas drops OTLP histograms and Fontaine's OTLP sums are cumulative; the event cells work on both backends, which meets the issue's "or the docs should say where they don't".
+- 2026-10-24 AFK: The dropped-spend fields keep the existing `guardian_*` / `guardian.*` convention: `DecisionRecord` `guardian_dropped_{input_tokens,provider,model,priced}`, projected onto `tool_decision` as `guardian.dropped_{input_tokens,provider,model,priced}`, the names span_bridge and the docs use.
+- 2026-10-24 AFK: This PR ships on the micromegas git pin (`rev 7a08f6541`, `allow-git`); switching to an exact crates.io `=0.33.x` pin and removing `allow-git` is required before the next Fontaine release, tracked by a `release-blocker` GitHub issue filed during implementation and linked from the PR body.
 
 ## Documentation
 
@@ -317,7 +328,8 @@ Step 9 copies these lines into the master plan's Decisions.
   - Metrics: the `estimated` attribute.
   - New sections: "Retention" and "Analytics" (how to load the notebook: `micromegas-screens init
     <server-url>` once from `analytics/notebooks` inside the git repo, then `micromegas-screens
-    apply`, and where the OTLP path differs).
+    apply`, and where the OTLP path differs: metric cells are native-only, since OTLP histograms
+    are dropped and OTLP sums are cumulative).
   - The `tool_use_id` join recipe goes in the existing "Telemetry and the audit log" section.
 - `docs/permissions.md` (~lines 70-84): the audit record field list gains the
   `guardian_dropped_*` fields and their `tool_decision` projection.
@@ -340,9 +352,12 @@ Unit and integration tests, no live services:
   `cascade::adjudicate` with a scripted
   screen that stops or allows, and a guardian model that never answers, sets
   `dropped_input_tokens`. With the guardian answering first, or a shadow screen, it stays `None`.
-- `turn.rs` / `fontaine-core` test with `rig_core::test_utils` (`MockTurn::provider_response_error(
-  status, …)`): one `api_request`-free `api_error` event with the expected `error_class`,
-  `status_code`, `query_source` and model, and no message text. `MaxTurns` emits none. A subagent failure reports `query_source = subagent`.
+- `fontaine-core` test (`tests/audit_telemetry.rs`, under `TraceCapture`): `drive()` always
+  streams, so the failure is a scripted stream turn
+  `MockStreamEvent::Error(MockError::ProviderResponse(ProviderResponseError::new(status, body)))`
+  through `tests/common/runtime.rs` `build(…, Vec<Vec<MockStreamEvent>>)`, not a unary `MockTurn`.
+  It arrives as `PromptError::Report`. Assert one `api_request`-free `api_error` event with the
+  expected `error_class`, `status_code`, `query_source` and model, and no message text. `MaxTurns` emits none. A subagent failure reports `query_source = subagent`.
 - `gate.rs` test: call `state.sink_failed(Sink::Audit, ..)` twice under `TraceCapture` and assert
   two `internal_error { class = audit_write }` events with no error text, as
   `tests/permissions_auto.rs:821-840` does.
@@ -368,11 +383,10 @@ Each step needs a running micromegas deployment, which unit tests cannot reach:
    `analytics/notebooks`, then open the notebook. Expected: every
    cell runs without a SQL error and shows the run from step 1.
 3. Repeat step 1 with `backend = "otlp"` and `endpoint = …/ingestion/otlp`. Expected: the
-   two backends agree on event names (`split_part(msg, ' ', 1)`) and values. Record any
-   difference in the docs.
+   notebook's event cells agree with native on event names (`split_part(msg, ' ', 1)`) and values;
+   metric cells are not compared (documented as native-only). Record any other difference in the
+   docs.
 
 ## Open Questions
 
-- When does micromegas 0.33 ship to crates.io? The issue leaves it to the maintainer whether the
-  switch back to an exact `=0.33.x` pin happens before this merges or before the next Fontaine
-  release. This PR ships on the git pin with `allow-git` in place.
+None.
