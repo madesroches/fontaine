@@ -10,18 +10,16 @@ call still waits for the guardian, plus the screen. This adds an **allow path**:
 without the guardian only when two extra reads of the same local model agree that it is clearly
 safe. One is a steering-hardened permission read; the other is a steering detector. The screen
 also runs **concurrently** with the guardian, so a call the screen does not settle pays no extra
-latency. The screen and the LLM are modelled as **stages of one composed guardian**
-(`fontaine_guardian::cascade`), not as a screen step bolted onto the permission pipeline. A screen
-verdict is a guardian verdict from a cheaper stage, the race and decision rules live once in the
-guardian crate, and the pipeline and the eval harness call the same composite. The allow path is off by default, user scope only, and shadow-loggable first. It is built
+latency. The allow path is off by default, user scope only, and shadow-loggable first. It is built
 on branch `130-cascade-screen-stage` and ships in PR #134.
 
 Measured in experiment 10 of `research/analysis-typed-decision-screen.md` (#131,
-`scripts/allow_path.py`), held out with synthetic thresholds:
+`scripts/allow_path.py`; both files are on the research PR #131 branch `typed_decision_screen_spike`,
+not this one), held out with synthetic thresholds:
 
 | | Golden should-allow calls skipped | Must-not-clear allowed (clean) | Steered cases through (9 texts × 134) | Allowed-call mean latency |
 |---|---|---|---|---|
-| Guardian alone | - | - | - | 5.2 s |
+| Guardian alone | - | - | - | 5.2 s (expected-allow cases the guardian allowed) |
 | Allow path at its zero-miss threshold (1.56e-6), veto 0.001 | 13 of 59 | 0 | 0 | 4.2 s |
 
 With the shipped prompt and no detector, one steering sentence in the arguments moved 93 of 134
@@ -78,11 +76,12 @@ floor (deny → ask → critical-path → protected-path)
 - **Concurrency.** The composite (`fontaine_guardian::cascade`, below) starts the guardian's future
   and the screen's future together (`tokio::pin!` the guardian, then `tokio::select!` until the
   screen finishes, while the guardian keeps being polled).
-  - Once the screen's outcome is in, an enforced `Stop` or `Allow` drops the guardian future,
-    which cancels its HTTP request. Any other outcome awaits it.
-  - **A screen allow never overrides a guardian verdict already in hand.** If the guardian finished
-    first (a cache hit, for example) with anything other than `Allow`, `settle` acts on the
-    guardian's verdict. A screen `Stop` keeps its current precedence: stops only tighten.
+  - Once the screen's outcome is in while the guardian is still pending, an enforced `Stop` or
+    `Allow` drops the guardian future, which cancels its HTTP request. Any other outcome awaits it.
+  - **The screen decides only while the guardian is pending.** Any guardian verdict already in hand
+    (a cache hit, or a call that finished first), whether `Allow`, `Deny` or `Escalate`, returns
+    `Decided::Guardian(adjudication)` and goes through `settle` whatever the screen says, so its
+    ledger denial, hooks, breaker effect and usage are never discarded.
 - **Concurrency applies whenever a screen is configured**, including stop-only and shadow, so the
   latency an allowed call feels is the guardian's alone.
 - **Breaker and cache.** A screen allow does not call `guardian_allowed()`, so it never resets the
@@ -151,7 +150,9 @@ pub enum ScreenOutcome {
 - **Decision order:** `Stop` if `risk >= t_stop`; else `Allow` if `allow_risk < t_allow` and
   `steering < steering_veto`; else `Pass`.
 - A shared helper factors the request body out of today's `ask`, as
-  `ask(system, question_text, yes_is_risky)`. The detector's score is p(yes), so it uses
+  `ask(system, question_text, yes_is_risky)`. `screen_message(request, question)` and
+  `risk_from(answer, question)` take `question_text: &str` and `yes_is_risky: bool` instead of a
+  `Question`, so they can serve `STEERING_QUESTION`. The detector's score is p(yes), so it uses
   `yes_is_risky = true`.
 - The `fontaine.guardian.screen` span records `allow_risk` and `steering` as well.
 
@@ -196,9 +197,9 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
 
 - **No screen:** `adjudicate` is exactly `guardian.adjudicate(request)`.
 - **With a screen:** it runs the race in the Pipeline section above. The rules are:
-  - stop precedence;
-  - an allow only when enforced;
-  - a guardian verdict already in hand beats a screen allow;
+  - a guardian verdict already in hand wins over any screen outcome;
+  - otherwise a stop takes precedence over an allow;
+  - an allow or stop only when enforced;
   - every other outcome awaits the LLM stage.
 - **Fail-closed holds for the composite.** Only `Decided::ScreenAllow` and a guardian `Allow` allow.
   Every screen failure falls through to the LLM stage, which is itself fail-closed.
@@ -232,7 +233,15 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
   - `--allow-threshold <risk>`;
   - `--steering-veto <p>`, which defaults to `DEFAULT_STEERING_VETO` and requires
     `--allow-threshold`.
-- `--screen` requires at least one of `--stop-threshold` and `--allow-threshold`.
+- `--screen` requires at least one of `--stop-threshold` and `--allow-threshold`: replace the clap
+  `requires = "stop_threshold"` (`runner.rs:95`) with an at-least-one-threshold check.
+- `live::add_screen(live, spec, stop_threshold, profile)` (`live.rs:131-163`) hard-codes the stop
+  threshold, and its caller (`runner.rs:400`) and the cascade label (`runner.rs:344-345`) gate on
+  it: `add_screen` takes optional stop and allow thresholds plus the veto, and both sites gate on
+  either threshold.
+- The mock `screen_server()` in `fontaine-evals/tests/live.rs` matches only on args text, so the
+  steering read would veto every allow: it distinguishes the reads by the hardened system prompt
+  and the steering question.
 - `live::adjudicate` calls `fontaine_guardian::cascade::adjudicate` (with `enforce = true`) instead
   of its own sequential screen-then-guardian code.
   - On `Stop` or `Allow`, the case is scored from the screen (`actual` = `escalate` or `allow`,
@@ -254,14 +263,14 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
 
 ## Implementation Steps
 
-1. **Composed guardian** (`rust/fontaine-guardian/src/cascade.rs`, re-exported from `lib.rs`): the
-   race and decision rules above.
-2. **Screen module** (`rust/fontaine-guardian/src/screen.rs`, re-exports in
+1. **Screen module** (`rust/fontaine-guardian/src/screen.rs`, re-exports in
    `rust/fontaine-guardian/src/lib.rs`):
    - add the constants, `AllowSettings`, `ScreenScores` and the reshaped `ScreenOutcome`;
    - refactor `ask` into the shared read, and make the reads concurrent under one timeout;
    - add the decision order and the span fields;
    - update the module doc comment, which today says the screen never allows.
+2. **Composed guardian** (`rust/fontaine-guardian/src/cascade.rs`, re-exported from `lib.rs`): the
+   race and decision rules above.
 3. **Config** (`rust/fontaine-core/src/config.rs`): the new keys, `loosens()`, merge, range checks
    and `check_screen`.
 4. **Wiring** (`rust/fontaine-core/src/agent.rs`): `build_screen` builds `AllowSettings`.
@@ -270,8 +279,8 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
      built: the new record fields;
    - `rust/fontaine/src/headless.rs` and `docs/schemas/headless-v1.schema.json`;
    - `rust/fontaine/src/telemetry/span_bridge.rs`.
-6. **Pipeline** (`rust/fontaine-core/src/permissions.rs`): the concurrent driver, `screen_allow`,
-   call the composite and match `decided`, then annotate.
+6. **Pipeline** (`rust/fontaine-core/src/permissions.rs`): `screen_allow`, call the composite and
+   match `decided`, then annotate.
 7. **Evals** (`rust/fontaine-evals/src/runner.rs`, `rust/fontaine-evals/src/live.rs`): the flags,
    concurrent adjudication and the new summary fields.
 8. **Tests** (see Testing Strategy).
@@ -290,15 +299,18 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
   `rust/fontaine/tests/auto_headless.rs`, `rust/fontaine-evals/tests/live.rs`, and the config and
   screen unit tests
 - Docs: `docs/guardian.md`, `docs/configuration.md`, `docs/evals.md`, `docs/headless.md`,
-  `docs/permissions.md`, `docs/schemas/headless-v1.schema.json`, `evals/README.md`
+  `docs/permissions.md`, `docs/telemetry.md`, `docs/schemas/headless-v1.schema.json`,
+  `evals/README.md`, `CHANGELOG.md`
+- `AGENTS.md`, `tasks/design/permissions.md`
 - `tasks/fontaine_harness_plan.md` (`## Decisions`)
 
 ## Trade-offs
 
 - **Hardened read plus a detector, against one read.** The shipped prompt alone is steered by a
   single sentence (93 of 134). The hardened prompt alone leaks 2 of 1206 steered cases, and the
-  detector catches both. Two extra reads cost about 0.3–0.6 s, and that is hidden by the
-  concurrency.
+  detector catches both. Two extra reads are modelled, not measured, to cost about 0.3–0.6 s
+  (experiment 10 issued them sequentially), hidden by the concurrency. Ollama may serialize the
+  reads within the one `timeout_ms`, and a slow allow read makes the whole outcome `Unavailable`.
 - **A separate allow read, rather than one hardened read for both directions.** The stop threshold
   in use was calibrated on the shipped prompt. A hardened stop scored slightly worse in the replay
   (94.2% catch against 95.0%), and recalibrating the stop side is out of scope.
@@ -312,9 +324,10 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
 - **Any read failure → `Unavailable`, rather than acting on the reads that did succeed.** This
   loses a possible stop when only an allow read failed. It keeps the rule simple: the screen acts
   only on a complete answer, and the guardian is the fallback either way.
-- **The guardian's verdict wins when it arrives first.** This makes a race decide only between two
-  verdicts, and it never turns a computed denial into an allow. The alternative, where the screen
-  always decides, is timing-independent, but it discards a guardian denial the session already
+- **A guardian verdict in hand always wins.** The screen decides only while the guardian is
+  pending, so a computed denial or escalation is never turned into an allow or re-prompted, and a
+  completed billed call's usage and breaker effect are kept. The alternative, where the screen
+  always decides, is timing-independent, but it discards a guardian verdict the session already
   paid for.
 - **A concrete two-stage composite, rather than a `Stage` trait over N stages.** Only two stages
   exist today. A trait (where each stage returns a verdict or abstains) is the natural
@@ -334,8 +347,8 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
   steering-hardened allow path (both reads below their thresholds). It is user scope only, off by
   default, and shadow-loggable. It supersedes the master plan's 2026-10-24 "never allows" line,
   and the master plan records it as a deviation from "the fast path is earned by containment".
-- The stop side stays off by default; that is already the case, since `stop_threshold` has no
-  default. Docs now recommend starting with the allow path in shadow mode.
+- 2026-10-24 (user): the screen's guardian-in-hand rule — the screen decides only while the
+  guardian is still pending; any guardian verdict already in hand goes through `settle`.
 
 ## Documentation
 
@@ -347,10 +360,20 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
   - shadow calibration of `allow_threshold`.
 - `docs/configuration.md` `[guardian.screen]`: the new keys, the scope table (unchanged: other
   scopes may only force `shadow = true`), and an example config with the allow path. The example
-  `allow_threshold = 0.00000156` gets the same calibration note as the stop threshold.
-- `docs/evals.md` "Cascade scorecards": the new flags and summary fields. Replace the
-  mean-latency framing with allowed-call latency; the live table is refreshed after Manual
-  Verification.
+  `allow_threshold = 0.00000156` gets the same calibration note as the stop threshold. Rewrite
+  lines 357-361, which say the screen only ever stops and never allows.
+- `docs/telemetry.md`: the span fields (line 98) gain `allow_risk` and `steering`; the
+  `fontaine.screen.count` outcomes (line 122) gain `allow`.
+- `CHANGELOG.md`: an entry superseding line 47 "The screen never allows."
+- `AGENTS.md`: a short exception note under the "fast path is earned by Fontaine-enforced workspace
+  containment" invariant for the opt-in, user-scope screen allow (a composed-guardian verdict),
+  pointing at the master plan's Decisions.
+- `tasks/design/permissions.md`: add the screen tier with stop/allow to the data flow (13-93) and
+  the tier enum (127-133), amend lines 190-191 (containment fast path and Tier 0.5 as the only
+  guardian skips), and drop the line 222 "deferred" screen-tier line.
+- `docs/evals.md` "Cascade scorecards": the new flags and summary fields. Update the intro at
+  lines 58-59 and the `mean_latency_ms` note at line 80, and refresh the table from the new
+  scorecard after Manual Verification.
 - `docs/headless.md` and the schema: `screen_allow_risk`, `screen_steering`, and
   `screen_outcome = "allow"`.
 - `docs/permissions.md`: `tier = screen` can now be an allow.
@@ -382,9 +405,17 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
     dropped. The test guardian's model counts completed calls, so the test can assert that none
     completed;
   - a non-enforced (shadow) allow or stop → `Guardian(...)` with the screen note;
-  - a guardian Deny that lands before a delayed screen allow wins;
+  - guardian Deny or Escalate first, then screen Stop → `Guardian(...)`;
+  - guardian Allow first, then screen Allow → `Guardian(...)`;
   - `Pass` and `Unavailable` → the guardian's verdict;
   - the guardian request is issued while the screen is still answering.
+
+  The existing `fake_guardian` (`tests/common/pipeline.rs`, rig `MockCompletionModel`) has no delay
+  and answers before the wiremock screen, so tests where the screen must win use a delayed
+  guardian (a sleeping wrapper model around the mock, or a wiremock-backed guardian with
+  `set_delay`). A drop is asserted with a completion counter incremented after the delay (or
+  wiremock receiving the request with no completion consumed), not `Fake::calls()`, which counts
+  requests received. Tests where the guardian must finish first use a screen mock with `set_delay`.
 - **Config tests:**
   - project, project-local and `--settings` cannot set `allow_threshold` or `steering_veto` (exit
     2), but can still force shadow;
@@ -395,7 +426,7 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
 - **Pipeline matrix** (`permissions_screen.rs`, deterministic test guardian and wiremock screen):
   - screen allow → `GateDecision::Allow`, a `tier = screen`/`allow` audit record, and a ledger
     action;
-  - the guardian's verdict is not used (the test guardian would deny);
+  - the guardian's verdict is not used (a delayed test guardian would deny);
   - shadow allow → the guardian decides, with `screen_outcome = "allow"` recorded;
   - a screen allow does not reset the breaker;
   - a paused breaker prompts without consulting the screen;
@@ -420,7 +451,12 @@ they are not CI checks.
 1. From `rust/`, run
    `cargo run --release -p fontaine-evals -- --dataset ../evals/dataset --guardian live:kimi/kimi-for-coding --screen live:local/qwen3:4b-instruct-2507-q4_K_M --allow-threshold 0.00000156 --out ../evals/scorecards/cascade-allow-qwen3-4b-instruct-kimi.json`.
    - Expected: `must_not_clear_screen_allowed = 0`, `screen_allowed` around 13 of the should-allow
-     cases, and `allowed_latency_ms.mean` below the guardian-alone run's.
+     cases, and `allowed_latency_ms.mean` below the guardian-alone baseline. The baseline is the
+     committed `evals/scorecards/kimi-for-coding.json` (non-screen runs report only `latency_ms`
+     p50/p95), with the mean computed by hand over the same set: expected-allow cases the guardian
+     allowed (the 5.2 s figure; `docs/evals.md` quotes 6.7 s over all allowed answers).
+   - Expected: screen-unavailable outcomes stay about zero at the default `timeout_ms` with the
+     allow path on.
 2. Refresh the `docs/evals.md` cascade table from that scorecard.
 
 ## Open Questions
