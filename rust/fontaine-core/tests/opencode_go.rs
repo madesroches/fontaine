@@ -6,12 +6,18 @@ mod common;
 use std::ffi::OsString;
 
 use common::World;
+use fontaine_core::agent::build_guardian;
 use fontaine_core::config::AccountKind;
 use fontaine_core::credentials::{self, Credentials, OAuthTokens, StoredCredential};
-use fontaine_core::models::{self, ModelHandle, ResolveParams};
+use fontaine_core::models::{self, GuardianModel, ModelHandle, ResolveParams};
 use fontaine_core::providers::SignInStep;
 use fontaine_core::providers::opencode_go::sign_in_at;
 use fontaine_core::providers::token_source::now_unix;
+use fontaine_core::scanner_stage::{Backend, llm_backend};
+use fontaine_guardian::{
+    AdjudicationRequest, Decision, EnvironmentConfig, Profile, RuleConfig, Scan, SessionFacts,
+    ToolCallSummary,
+};
 use rig_core::completion::CompletionRequest;
 use serde_json::json;
 use wiremock::matchers::{method, path};
@@ -73,6 +79,9 @@ async fn gateway() -> MockServer {
         "gpt-5.6-luna",
         "claude-haiku-5-5",
         "gemini-4-argon-contributor",
+        "deepseek-v4.1-flash",
+        "qwen3.7-plus",
+        "claude-opus-5-5",
     ]
     .iter()
     .map(|id| json!({"id": id, "object": "model", "created": 1, "owned_by": "go"}))
@@ -388,4 +397,134 @@ async fn a_stored_api_key_is_not_a_sign_in() {
         panic!("a key is no sign-in");
     };
     assert!(err.to_string().contains("not signed in"), "{err}");
+}
+
+fn guardian_request() -> AdjudicationRequest {
+    AdjudicationRequest {
+        task_intent: "Run the tests".into(),
+        recent_user_messages: vec!["Run the tests".into()],
+        project_instructions: None,
+        environment: EnvironmentConfig::expand(&[]),
+        rules: RuleConfig::expand(&[], &[], &[]),
+        tool_call: ToolCallSummary {
+            tool: "shell".into(),
+            args_digest: "digest".into(),
+            args: json!({"command": "cargo test"}),
+            destructive: false,
+            annotations: None,
+        },
+        session_facts: SessionFacts::default(),
+        hook_context: vec![],
+        prior_denials: vec![],
+    }
+}
+
+fn allow_verdict() -> serde_json::Value {
+    json!({"decision": "allow", "rule": "allow", "explanation": "ordinary", "confidence": 0.95})
+}
+
+/// The upstream's refusal of a forced tool call while thinking, unless the request turned
+/// thinking off; otherwise a `submit` call carrying `arguments`.
+fn thinking_gate(arguments: serde_json::Value) -> impl Fn(&wiremock::Request) -> ResponseTemplate {
+    move |request| {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        if body["thinking"]["type"] != "disabled" {
+            return ResponseTemplate::new(400).set_body_json(json!({
+                "error": {"message": "Thinking mode does not support this tool_choice",
+                          "type": "invalid_request_error"},
+            }));
+        }
+        ResponseTemplate::new(200).set_body_json(json!({
+            "id": "c1", "object": "chat.completion", "created": 1, "model": "deepseek-v4.1-flash",
+            "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": null,
+                "tool_calls": [{"id": "call_1", "type": "function",
+                                "function": {"name": "submit",
+                                             "arguments": arguments.to_string()}}],
+            }}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+        }))
+    }
+}
+
+#[tokio::test]
+async fn a_thinking_chat_model_can_be_the_guardian() {
+    let server = gateway().await;
+    Mock::given(method("POST"))
+        .and(path("/openai/v1/chat/completions"))
+        .respond_with(thinking_gate(allow_verdict()))
+        .mount(&server)
+        .await;
+    let w = signed_in_world(&server);
+    let handle = resolve(&w, "deepseek-v4.1-flash").await.unwrap();
+    let config = w.load().unwrap();
+    let guardian = build_guardian(Some(&GuardianModel::Ready(handle)), &config, Profile::Full);
+    let result = guardian.adjudicate(&guardian_request()).await;
+    assert_eq!(result.fail_closed, None, "{}", result.explanation);
+    assert_eq!(result.decision, Decision::Allow);
+}
+
+#[tokio::test]
+async fn a_thinking_chat_model_can_be_the_scanner() {
+    let server = gateway().await;
+    Mock::given(method("POST"))
+        .and(path("/openai/v1/chat/completions"))
+        .respond_with(thinking_gate(
+            json!({"verdict": "clean", "reason": "ordinary"}),
+        ))
+        .mount(&server)
+        .await;
+    let w = signed_in_world(&server);
+    let handle = resolve(&w, "deepseek-v4.1-flash").await.unwrap();
+    let Backend::Ready(scanner) = llm_backend(
+        Some(&GuardianModel::Ready(handle)),
+        std::time::Duration::from_secs(5),
+    ) else {
+        panic!("the scanner backend is ready");
+    };
+    assert_eq!(scanner.scan("shell", "build ok").await, Scan::Clean);
+}
+
+async fn messages_guardian_body(model: &str) -> serde_json::Value {
+    let server = gateway().await;
+    Mock::given(method("POST"))
+        .and(path("/anthropic/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_1", "type": "message", "role": "assistant", "model": model,
+            // rig unforces the output tool for a model that rejects a forced choice, and asks
+            // for the JSON as text instead.
+            "content": if model == "claude-opus-5-5" {
+                json!([{"type": "text", "text": allow_verdict().to_string()}])
+            } else {
+                json!([{"type": "tool_use", "id": "tu_1", "name": "submit",
+                        "input": allow_verdict()}])
+            },
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 3, "output_tokens": 4},
+        })))
+        .mount(&server)
+        .await;
+    let w = signed_in_world(&server);
+    let handle = resolve(&w, model).await.unwrap();
+    let config = w.load().unwrap();
+    let guardian = build_guardian(Some(&GuardianModel::Ready(handle)), &config, Profile::Full);
+    let result = guardian.adjudicate(&guardian_request()).await;
+    assert_eq!(result.fail_closed, None, "{}", result.explanation);
+    let request = only_request(&server, "/anthropic/v1/messages").await;
+    serde_json::from_slice(&request.body).unwrap()
+}
+
+#[tokio::test]
+async fn a_non_claude_messages_model_forces_the_call_with_thinking_disabled() {
+    let body = messages_guardian_body("qwen3.7-plus").await;
+    assert_eq!(body["tool_choice"]["type"], "any", "{body}");
+    assert_eq!(body["thinking"]["type"], "disabled", "{body}");
+}
+
+#[tokio::test]
+async fn claude_guardian_requests_carry_no_thinking_parameter() {
+    for model in ["claude-opus-5-5", "claude-haiku-5-5"] {
+        let body = messages_guardian_body(model).await;
+        assert!(body.get("thinking").is_none(), "{model}: {body}");
+    }
 }

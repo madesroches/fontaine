@@ -100,6 +100,9 @@ pub struct Guardian {
     label: String,
     settings: Settings,
     cache: Mutex<VerdictCache>,
+    /// Extra request parameters, e.g. the one that turns thinking off for a model that refuses a
+    /// forced tool call while thinking.
+    additional_params: Option<serde_json::Value>,
 }
 
 impl Guardian {
@@ -109,6 +112,7 @@ impl Guardian {
             label: label.into(),
             settings,
             cache: Mutex::default(),
+            additional_params: None,
         }
     }
 
@@ -124,7 +128,13 @@ impl Guardian {
             label: label.into(),
             settings,
             cache: Mutex::default(),
+            additional_params: None,
         }
+    }
+
+    pub fn with_additional_params(mut self, params: Option<serde_json::Value>) -> Self {
+        self.additional_params = params;
+        self
     }
 
     pub fn label(&self) -> &str {
@@ -236,12 +246,15 @@ impl Guardian {
 
         let spent = Arc::new(Mutex::new(Usage::default()));
         let tally = || *spent.lock().unwrap_or_else(|e| e.into_inner());
-        let extractor = ExtractorBuilder::<Verdict>::new(model.as_ref().clone())
+        let mut builder = ExtractorBuilder::<Verdict>::new(model.as_ref().clone())
             .add_hook(UsageTally(spent.clone()))
             .append_preamble(&rendered.system)
             .max_tokens(MAX_TOKENS)
-            .retries(EXTRACTOR_RETRIES)
-            .build();
+            .retries(EXTRACTOR_RETRIES);
+        if let Some(params) = &self.additional_params {
+            builder = builder.additional_params(params.clone());
+        }
+        let extractor = builder.build();
         let extraction = tokio::time::timeout(
             self.settings.timeout,
             extractor.extract(Message::user(rendered.user)),

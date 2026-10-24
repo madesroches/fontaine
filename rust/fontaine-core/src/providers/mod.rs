@@ -150,6 +150,11 @@ impl std::error::Error for SignInError {
 
 pub trait AccountClient: Send + Sync {
     fn completion(&self, model: &str) -> DynModel<Completion>;
+    /// What the request body must carry to turn `model`'s thinking off, where its wire needs it:
+    /// the guardian and the scanner force a tool call, which a thinking model refuses.
+    fn thinking_off(&self, _model: &str) -> Option<serde_json::Value> {
+        None
+    }
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>>;
 }
 

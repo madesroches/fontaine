@@ -53,11 +53,10 @@ impl ScannerStage {
 /// The `llm` scanner on the guardian's current model.
 pub fn llm_backend(guardian: Option<&GuardianModel>, timeout: Duration) -> Backend {
     match guardian {
-        Some(GuardianModel::Ready(handle)) => Backend::Ready(Arc::new(LlmScanner::new(
-            handle.completion.clone(),
-            timeout,
-            handle.catalog_billed(),
-        ))),
+        Some(GuardianModel::Ready(handle)) => Backend::Ready(Arc::new(
+            LlmScanner::new(handle.completion.clone(), timeout, handle.catalog_billed())
+                .with_additional_params(handle.thinking_off.clone()),
+        )),
         Some(GuardianModel::Unavailable { reference, reason }) => Backend::Unavailable(format!(
             "the scanner model {reference} is unavailable: {reason}"
         )),

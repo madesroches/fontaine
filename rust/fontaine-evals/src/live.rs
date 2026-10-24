@@ -114,7 +114,10 @@ pub fn connect(
         snapshot.insert(config.guardian.scanner_hf_token_env.clone(), value);
     }
     Ok(Live {
-        guardian: Arc::new(Guardian::new(handle.completion, spec, settings)),
+        guardian: Arc::new(
+            Guardian::new(handle.completion, spec, settings)
+                .with_additional_params(handle.thinking_off),
+        ),
         screen: None,
         data_dir: dirs.data.clone(),
         scanner_model: guardian_model,

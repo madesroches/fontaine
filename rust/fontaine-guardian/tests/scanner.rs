@@ -229,3 +229,22 @@ mod command {
         assert_eq!(std::fs::read_to_string(&seen).unwrap(), "absent");
     }
 }
+
+#[tokio::test]
+async fn additional_params_reach_the_scanner_body_only_when_set() {
+    let endpoint = Endpoint::start(vec![Reply::Verdict(answer("clean", "fine"))]).await;
+    llm(&endpoint, Duration::from_secs(5))
+        .scan("shell", "build ok")
+        .await;
+    let plain = endpoint.requests().await.remove(0);
+    assert!(plain.get("thinking").is_none(), "{plain}");
+
+    let endpoint = Endpoint::start(vec![Reply::Verdict(answer("clean", "fine"))]).await;
+    llm(&endpoint, Duration::from_secs(5))
+        .with_additional_params(Some(json!({"thinking": {"type": "disabled"}})))
+        .scan("shell", "build ok")
+        .await;
+    let sent = endpoint.requests().await.remove(0);
+    assert_eq!(sent["thinking"]["type"], "disabled", "{sent}");
+    assert_eq!(sent["tool_choice"], "required");
+}
