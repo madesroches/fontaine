@@ -79,11 +79,17 @@ floor (deny → ask → critical-path → protected-path)
   - Once the screen's outcome is in while the guardian is still pending, an enforced `Stop` or
     `Allow` drops the guardian future, which cancels its HTTP request. Any other outcome awaits it.
   - **The screen decides only while the guardian is pending.** Any guardian verdict already in hand
-    (a cache hit, or a call that finished first), whether `Allow`, `Deny` or `Escalate`, returns
-    `Decided::Guardian(adjudication)` and goes through `settle` whatever the screen says, so its
-    ledger denial, hooks, breaker effect and usage are never discarded.
-- **Concurrency applies whenever a screen is configured**, including stop-only and shadow, so the
-  latency an allowed call feels is the guardian's alone.
+    (a cache hit, `Backend::Unavailable`, or a call that finished first), whether `Allow`, `Deny` or
+    `Escalate`, returns `Decided::Guardian(adjudication)` and goes through `settle` whatever the
+    screen says, so its ledger denial, hooks, breaker effect and usage are never discarded.
+  - The race is a `tokio::select!` with `biased;` and the guardian branch first, so a guardian
+    that is ready on the same poll as the screen wins the tie.
+  - A guardian that finishes first still awaits the screen (bounded by the screen's own timeout),
+    so the screen annotation (`screen_outcome`, scores) is kept; its verdict then goes through
+    `settle`.
+- **Concurrency applies whenever a screen is configured**, including stop-only and shadow. The
+  latency an allowed call feels is the maximum of the guardian's and the screen's, in practice the
+  guardian's.
 - **Breaker and cache.** A screen allow does not call `guardian_allowed()`, so it never resets the
   denial breaker; this mirrors the hook-retry grant. A dropped guardian call writes nothing to the
   verdict cache, and its usage is not recorded (see Trade-offs).
@@ -183,9 +189,9 @@ pub struct ScreenStage<'a> { pub screen: &'a Screen, pub enforce: bool }
 
 pub enum Decided {
     /// The screen stage stopped the call (escalate); the LLM stage was dropped.
-    ScreenStop,
+    ScreenStop(ScreenScores),
     /// The screen stage allowed the call; the LLM stage was dropped.
-    ScreenAllow,
+    ScreenAllow(ScreenScores),
     /// The LLM stage decided, with or without a screen note.
     Guardian(Adjudication),
 }
@@ -198,7 +204,6 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
 - **No screen:** `adjudicate` is exactly `guardian.adjudicate(request)`.
 - **With a screen:** it runs the race in the Pipeline section above. The rules are:
   - a guardian verdict already in hand wins over any screen outcome;
-  - otherwise a stop takes precedence over an allow;
   - an allow or stop only when enforced;
   - every other outcome awaits the LLM stage.
 - **Fail-closed holds for the composite.** Only `Decided::ScreenAllow` and a guardian `Allow` allow.
@@ -209,8 +214,8 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
 
 - `guardian_branch` calls `fontaine_guardian::cascade::adjudicate` with the session's screen stage
   (`enforce = !shadow`) and matches `decided`:
-  - `ScreenStop` → `screen_stop` (unchanged);
-  - `ScreenAllow` → the new `screen_allow`;
+  - `ScreenStop(scores)` → `screen_stop` (unchanged);
+  - `ScreenAllow(scores)` → the new `screen_allow`;
   - `Guardian(adjudication)` → today's guardian-unavailable retry flow and `settle`.
 - `run_screen` shrinks to the first-warning logic for an unavailable screen, which now runs on the
   returned `screen` outcome.
@@ -223,7 +228,9 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
 - `Screened::annotate` also sets `screen_allow_risk` and `screen_steering`. These are new
   `Option<f64>` fields on `DecisionRecord` (`audit.rs`), on the headless `gate_decision` event
   (`fontaine/src/headless.rs`, `docs/schemas/headless-v1.schema.json`), and in the telemetry span
-  bridge. The metric `fontaine.screen.count{outcome}` gains `allow`. A shadow-mode would-allow is
+  `tool_decision` tracing event (`permissions.rs`, where the per-decision `screen.*` fields are
+  emitted). The metric `fontaine.screen.count{outcome}` gains `allow`; the span bridge
+  (`span_bridge.rs`) only passes `screen.outcome` through. A shadow-mode would-allow is
   recorded as `screen_outcome = "allow"` on the guardian's record, exactly as a shadow stop is
   recorded today.
 
@@ -239,6 +246,11 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
   threshold, and its caller (`runner.rs:400`) and the cascade label (`runner.rs:344-345`) gate on
   it: `add_screen` takes optional stop and allow thresholds plus the veto, and both sites gate on
   either threshold.
+- The run label (`runner.rs:343-346`, stored in `Header.guardian` at `:362`) must carry the screen
+  spec, the stop threshold (or none), the allow threshold (or none) and the steering veto whenever
+  `--screen` is set. `output::resume` compares only dataset version, guardian label, profile and
+  filter (`output.rs:151-209`), and an allow-only run falls to the `_ => guardian` arm today, so it
+  would otherwise resume from a guardian-alone sidecar.
 - The mock `screen_server()` in `fontaine-evals/tests/live.rs` matches only on args text, so the
   steering read would veto every allow: it distinguishes the reads by the hardened system prompt
   and the steering question.
@@ -278,7 +290,9 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
    - `rust/fontaine-core/src/audit.rs` and `rust/fontaine-core/src/user_shell.rs`, where records are
      built: the new record fields;
    - `rust/fontaine/src/headless.rs` and `docs/schemas/headless-v1.schema.json`;
-   - `rust/fontaine/src/telemetry/span_bridge.rs`.
+   - the `tool_decision` event in `rust/fontaine-core/src/permissions.rs`;
+   - `rust/fontaine/src/telemetry/span_bridge.rs`, only for a test that an `allow` outcome reaches
+     the metric.
 6. **Pipeline** (`rust/fontaine-core/src/permissions.rs`): `screen_allow`, call the composite and
    match `decided`, then annotate.
 7. **Evals** (`rust/fontaine-evals/src/runner.rs`, `rust/fontaine-evals/src/live.rs`): the flags,
@@ -435,6 +449,14 @@ pub async fn adjudicate(screen: Option<ScreenStage<'_>>, guardian: &Guardian, re
   - a screen-unavailable outcome → the guardian decides.
 
   Concurrency and permission bugs are silent, so they get automated tests, not manual checks.
+- **Existing stop tests break under concurrency** (an instant guardian is asked and the tests
+  assert it never is): `fontaine-core/tests/permissions_screen.rs` (around lines 80, 108, 120, 156,
+  247; update its module doc, lines 1-2, which says the screen never allows),
+  `fontaine/tests/auto_headless.rs` `a_screen_stop_escalates_without_asking_the_guardian`, and
+  `fontaine-evals/tests/live.rs` `a_cascade_run_reports_the_screen_stage_and_leaves_the_models_file_alone`.
+  Switch them to a delayed guardian and assert no completion was consumed. Reuse the existing delay
+  helpers: `Route::slow` / `Endpoint::start_routed` (`fontaine/tests/common/mod.rs`) and
+  `set_delay` / `start_stalling` (`fontaine-evals/tests/common/mod.rs`).
 - **Headless** (`auto_headless.rs`): a `fontaine -p` run where the screen allows. The event carries
   the new fields and the tool runs.
 - **Evals** (`fontaine-evals/tests/live.rs`):
