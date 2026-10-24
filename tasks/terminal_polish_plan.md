@@ -109,22 +109,22 @@ pub struct Tui { pub theme: ThemeName, pub screen_reader: Option<bool> }   // in
 ```rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Theme {
-    pub user: Style,        // your `>` messages
-    pub success: Style,     // tool done
-    pub error: Style,       // failed/denied tool, error entries, guardian-unavailable heading
-    pub warning: Style,     // provider-dialog warnings
-    pub heading: Style,     // dialog headings (approval, trust, server, setup, agents, denied, picker groups)
-    pub mode_manual: Style, // manual, dontAsk
-    pub mode_accept: Style, // accept edits
-    pub mode_plan: Style,
-    pub mode_auto: Style,
-    pub shell: Style,       // `!` input border
+    pub user: Color,        // your `>` messages
+    pub success: Color,     // tool done
+    pub error: Color,       // failed/denied tool, error entries, guardian-unavailable heading
+    pub warning: Color,     // provider-dialog warnings
+    pub heading: Color,     // dialog headings (approval, trust, server, setup, agents, denied, picker groups)
+    pub mode_manual: Color, // manual, dontAsk
+    pub mode_accept: Color, // accept edits
+    pub mode_plan: Color,
+    pub mode_auto: Color,
+    pub shell: Color,       // `!` input border
 }
 impl Theme { pub fn preset(name: ThemeName) -> Theme; }
 ```
 
-- **What a token holds.** Tokens hold colour only. Call sites keep adding `BOLD`/`DIM`, as they
-  do today; `heading` is bold yellow today, so call sites write `theme.heading.add_modifier(BOLD)`.
+- **What a token holds.** Tokens are `ratatui::style::Color` values. Call sites keep adding `BOLD`/`DIM`, as they
+  do today; `heading` is bold yellow today, so call sites write `bold.fg(theme.heading)`, where `bold` is `Style::new().add_modifier(BOLD)`.
   Selection stays `REVERSED` and is not a token.
 - **Presets.**
 
@@ -240,6 +240,10 @@ unchanged, and the cursor stays visible. Each `render(&mut App)` builds its outp
    - For any other change (a mid-line edit, history recall, a deleted newline, clear after
      submit) it starts a fresh line: `\r\n> ` followed by the whole input.
 
+**Line endings.** Raw mode clears `OPOST`, so a bare `\n` does not return to column 0.
+`Linear` and `OverlayEcho` write every line ending as `\r\n`, including the trust prompt and
+setup output.
+
 **Interleaving.** When steps 1–4 produce output and the echoed input is non-empty, the renderer
 first moves off the echo line with `\r\n`. Then it
 writes the output and re-echoes `> <input>`. When the session is idle and nothing is typed, it
@@ -326,14 +330,14 @@ dialog all use it.
    - The labeller: each `Entry` kind; a streaming reply committed per `\n`, labelled once.
    - Interleaving: output while text is typed moves to a new line and re-echoes the input.
    - Mode announcement, once per change.
-   - Bell on turn end and on approval open, not on other overlays.
+   - Bell on turn end and when the approval, MCP server or guardian-unavailable overlay opens; not on other overlays.
    - `TerminalGuard`'s screen becomes optional and is cleared only on the Screen path; a failed
      Linear write sets `on_error` like a failed `screen.render`.
    - Integration in `tests/tui.rs`: a `World` mock-model turn (`tests/common/mod.rs:336-373`)
      that calls a tool needing approval, through a new `World::run` variant that takes the
      renderer and shares an `Rc<RefCell<Vec<u8>>>` buffer with a `Linear` writer. Assert the bytes contain `you:`,
-     `Permission Required:`, the `selected:` row, `tool: … — done`, `assistant:`, a BEL, and no
-     box-drawing characters (U+2500–U+257F).
+     `Permission Required:`, the `selected:` row, `tool: … — done`, `assistant:`, a BEL, no
+     box-drawing characters (U+2500–U+257F), and no bare `\n` (every `\n` is preceded by `\r`).
 6. **Startup screens.** Linear `trust_prompt::ask` and `setup::drive_linear` built on
    `OverlayEcho`, with `Setup::view()` extracted and setup's `Io`/`redraw` generalised over the
    renderer. Tests: the trust prompt in linear mode prints
@@ -342,11 +346,12 @@ dialog all use it.
    test does not sleep); `setup::drive_linear` on the existing setup test fixtures
    prints the banner and the dialog without box characters; a failed retry prints the new error,
    and a listing prints the "listing the models of …" line.
-7. **CLI wiring (fontaine bin).** Add `--ax-screen-reader` to `cli.rs`. In `lib.rs`, `run_interactive` (`fontaine/src/lib.rs:627`) gains a
-   `screen_reader: Option<Source>` parameter; resolve the
-   mode with `(host.env)("FONTAINE_AX_SCREEN_READER")` and `config.tui.screen_reader`, print the
-   confirmation line and any env warning, and pass the mode to the trust prompt,
-   setup and `run`. A test in `rust/fontaine/tests/exit_code.rs`: `-p` with `--ax-screen-reader` is accepted
+7. **CLI wiring (fontaine bin).** Add `--ax-screen-reader` to `cli.rs`. In `lib.rs`, resolve the mode in `run` after `load_config` (~:165) and before the trust
+   check (~:180), with `(host.env)("FONTAINE_AX_SCREEN_READER")` and `config.tui.screen_reader`;
+   print the confirmation line and any env warning there. Pass the `Option<Source>` to
+   `trust_prompt::ask` and to `run_interactive` (`fontaine/src/lib.rs:627`, which gains a
+   `screen_reader: Option<Source>` parameter), which forwards it to setup
+   (`SetupParams.screen_reader`) and `fontaine_tui::run`. A test in `rust/fontaine/tests/exit_code.rs`: `-p` with `--ax-screen-reader` is accepted
    and its output has no confirmation line.
 8. **Docs.** Add `docs/terminal.md`. Update `docs/tui.md` (the `/theme` command row, a pointer
    to terminal.md from the newline key row, a link from the intro, and a link from the
@@ -355,7 +360,11 @@ dialog all use it.
    `--ax-screen-reader` and `FONTAINE_AX_SCREEN_READER`), and `docs/index.md` (a terminal page
    entry and `/theme` in the TUI line). Update `tasks/design/config.md`
    (copy the scope-table row), `tasks/design/documentation.md` (the docs page list) and
-   `research/research-claude-code-parity.md` (the feature row, ~line 384). Copy this plan's
+   `research/research-claude-code-parity.md` (the feature row, ~line 384). Add a `(#50)` entry
+   under `[Unreleased]` / `### Added` in `CHANGELOG.md`. Add `docs/terminal.md` to the
+   required-pages list in `rust/fontaine-core/tests/docs.rs`
+   (`the_required_pages_exist_with_content`, ~:169-194); any `[tui]` TOML example in the page
+   must be a valid user-file snippet, since the docs tests validate TOML examples. Copy this plan's
    Decisions entries (default theme, no custom themes/auto, `/theme` list-and-switch, `[tui]`
    scope, screen-reader menus, `assistant:`/`notice:` labels, mode announcements, no
    `/terminal-setup`) into the master plan's `## Decisions`, each tagged `(#50)`.
@@ -370,6 +379,7 @@ dialog all use it.
 - `rust/fontaine-tui/tests/tui.rs`, `tests/setup.rs`
 - `rust/fontaine/src/cli.rs`, `rust/fontaine/src/lib.rs`
 - `docs/terminal.md` (new), `docs/tui.md`, `docs/configuration.md`, `docs/index.md`
+- `CHANGELOG.md`, `rust/fontaine-core/tests/docs.rs`
 - `tasks/fontaine_harness_plan.md` (`## Decisions`), `tasks/design/config.md`,
   `tasks/design/documentation.md`, `research/research-claude-code-parity.md`
 
@@ -383,9 +393,6 @@ dialog all use it.
 - **Partial-match echo, not a full line editor.** `echo_diff` covers typing and backspacing at
   the end, which is what Claude Code optimises. Anything else reprints the input on a fresh line,
   which is correct, if noisier, without tracking a cursor.
-- **Theme tokens are colours, not whole styles.** Call sites keep their own `BOLD`/`DIM`, so
-  themes cannot accidentally drop emphasis. A theme cannot restyle emphasis either; custom themes
-  would add that.
 
 ## Decisions
 
