@@ -139,6 +139,12 @@ All notable changes are recorded here. The format follows
     prompt), signs out and removes accounts; the change takes effect in the running session. When
     the interactive UI cannot resolve its main model at startup, the same dialog opens before the
     session instead of exiting. `fontaine auth login` is removed (#140).
+  - More of Claude Code's built-in commands, under the same names: `/help`, `/status`,
+    `/permissions` (the effective rules with their source), `/mcp`, `/hooks` and `/skills` print
+    read-only reports; `/plan [description]` switches to plan mode and optionally starts the task;
+    `/copy [n]` copies a reply to the clipboard over OSC 52; `/tasks` opens the agents panel. One
+    command table drives both parsing and the `/` menu, and a built-in hides a skill of the same
+    name, with a startup notice (#47).
   - `fontaine -p` with `--output-format text|json|stream-json`, `--input-format stream-json`,
     `--include-partial-messages`, `--max-turns`, `--max-budget-usd`, `--json-schema`,
     `--system-prompt`, `--append-system-prompt`, `--model` and `--permission-mode`. The output is
