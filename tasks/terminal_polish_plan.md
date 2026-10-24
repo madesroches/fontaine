@@ -208,7 +208,8 @@ unchanged, and the cursor stays visible. Each `render(&mut App)` builds its outp
      | Shell | `shell: <command>`, followed by its output lines |
 
      A pending call holds back the commit, so `Permission Required:` is heard before the
-     `tool:` line.
+     `tool:` line. A running tool is therefore not announced until it ends (a known
+     limitation).
 
 2. **Overlay.** `view::Overlay` and `view::overlay` become `pub(crate)`. It is called with width
    1000 and height `u16::MAX`, so nothing is clipped, and every `Line` is flattened to text: span
@@ -216,15 +217,28 @@ unchanged, and the cursor stays visible. Each `render(&mut App)` builds its outp
    show a 14-row window that follows the selection, and `OverlayEcho`'s changed-line printing
    announces rows as they scroll in. A line with a `REVERSED` span, or the `@` list's `> ` row,
    becomes `selected: <text>`; `flatten` strips the leading `> ` marker when it adds `selected:`. The overlay is compared with the snapshot
-   printed last:
-   - **Opened** (the title differs, or nothing was printed before): print a header, then every
-     body and footer line. The header is `Permission Required:` for the approval overlay and
-     `<title>:` for the others.
-   - **Same title:** print only lines that are new or changed. A line is new or changed when its
-     text, after the `selected:` normalisation, is not in the set of lines of the last printed
-     snapshot; position does not count. A line whose only change is that it lost its `selected:`
-     marker is not printed, so moving the selection announces the newly selected row, and a
-     scroll step of a windowed list prints only the row that came in.
+   printed last. The snapshot is keyed on the title plus an instance id: `Overlay` gains
+   `instance: Option<u64>`, set for the approval overlay from a new `Approval.id`, which `App`
+   assigns from a counter when it builds each `Approval`. A queued approval that replaces the one
+   just answered therefore counts as opened, even when its call is identical.
+   - **Opened** (the title or instance differs, or nothing was printed before): print a header,
+     then every body and footer line. The header is `Permission Required:` for the approval
+     overlay and `<title>:` for the others.
+   - **Same title and instance:** print only lines that are new or changed. Both sides are
+     compared in a normalised form: the `selected: ` prefix and then the leading marker column
+     (`> ` or two spaces) and any leading whitespace are stripped. A line is new or changed when
+     its normalised text is not in the set of normalised lines of the last printed snapshot;
+     position does not count. A row that only gained or lost the selection is therefore unchanged
+     unless it is now selected: the newly selected row prints as `selected: <text>`, the row it
+     left does not, and a scroll step of a windowed list prints only the row that came in. The
+     approval's proposed-rule hint line changes text with the selection, so it prints on a move;
+     it says what the selected lasting answer would add.
+   - **Approval reason field.** While the approval's deny-reason field is open, its footer line
+     (`FEEDBACK_PREFIX` plus the text) is excluded from the overlay diff, and `Overlay` exposes
+     the field as `field: Option<(&'static str, String)>` (prefix, text). The line prints once,
+     as new, when the field opens; after that the echo target is the field instead of the
+     message input, so typing goes through `echo_diff` and the re-echo after output is
+     `<prefix><text>`.
    - **Closed:** print nothing.
 3. **Mode change.** When `app.mode` differs from the last render, print `[manual mode on]`,
    `[accept edits on]`, `[plan mode on]`, `[auto mode on]` or `[dontAsk mode on]`. The first
@@ -252,7 +266,8 @@ input line.
 
 **What is dropped.** The status bar is not drawn. `/status` reports the mode and model but not the status bar's
 working indicator or agent count, and the queued-messages lines (`view.rs:104-120`) are not
-announced. Resize events are ignored, and cursor movement inside the input is not announced.
+announced: a message submitted mid-turn is queued silently and is heard as `you:` when it is
+sent. A running tool is not announced until it ends. Resize events are ignored, and cursor movement inside the input is not announced.
 `docs/terminal.md` lists all of these as known limitations.
 
 **Startup screens in linear mode.** Both run with raw mode on and no `ratatui::try_init`; the
@@ -287,8 +302,8 @@ dialog all use it.
   works.
 - **Colours.** Themes, `/theme`, `NO_COLOR` (colour is dropped, and emphasis may be dropped with it), and the fact that scrollback keeps old colours.
 - **Screen-reader mode.** How to turn it on, the labels, the bell, menus, and the known
-  limitations (no working indicator, agent count or queued-messages lines; no resize handling; no
-  cursor-movement announcements).
+  limitations (no working indicator, agent count or queued-messages lines; a running tool is not
+  announced until it ends; no resize handling; no cursor-movement announcements).
 
 ## Implementation Steps
 
@@ -317,20 +332,26 @@ dialog all use it.
    The existing transcript tests must stay green unchanged, apart from the theme argument.
 5. **Linear renderer.** Add `accessibility.rs` (`Source`, `resolve`) and `linear.rs`
    (`Linear<W>`, `OverlayEcho`, `echo_diff`, `flatten(&Line) -> String`, transcript labeller).
-   Make `view::Overlay` and `view::overlay` `pub(crate)`. `run(setup, launch_dir, screen_reader: Option<Source>)`
+   Make `view::Overlay` and `view::overlay` `pub(crate)`, and add `Overlay.instance` and
+   `Overlay.field`, with `Approval.id` assigned from an `App` counter. `run(setup, launch_dir, screen_reader: Option<Source>)`
    picks the renderer. Unit tests:
    - `resolve`: every precedence combination, including `env=0` over `setting=true`, and an
      invalid env value.
    - `echo_diff`: append, append with newline, trailing backspace, mid-edit, recall, clear.
-   - `OverlayEcho`: open, a selection move announcing only the new row, a changed body line,
-     reopening after a close, and a scroll step of a windowed list printing only the row that
-     came in plus the newly selected row.
+   - `OverlayEcho`: open, a selection move announcing only the new row (and, on the approval
+     overlay with a proposed rule, the changed hint line) with real marker-column rows
+     (`"> [y] allow"` / `"  [y] allow"`), a changed body line, reopening after a close, a second
+     approval with the same title and identical text replacing the first (header and bell
+     again), the deny-reason field echoing per keystroke through `echo_diff` without reprinting
+     the footer, and a scroll step of a windowed list printing only the row that came in plus the
+     newly selected row.
    - `flatten`: a pure-function test, including selection detection for each overlay with a
      selection (the `@` list's `> ` row too).
    - The labeller: each `Entry` kind; a streaming reply committed per `\n`, labelled once.
    - Interleaving: output while text is typed moves to a new line and re-echoes the input.
    - Mode announcement, once per change.
-   - Bell on turn end and when the approval, MCP server or guardian-unavailable overlay opens; not on other overlays.
+   - Bell on turn end and when the approval, MCP server or guardian-unavailable overlay opens
+     (including a queued approval replacing an answered one); not on other overlays.
    - `TerminalGuard`'s screen becomes optional and is cleared only on the Screen path; a failed
      Linear write sets `on_error` like a failed `screen.render`.
    - Integration in `tests/tui.rs`: a `World` mock-model turn (`tests/common/mod.rs:336-373`)
@@ -420,6 +441,11 @@ dialog all use it.
   protocol. Terminal setup is documented in `docs/terminal.md`, as the issue specifies, because
   writing other programs' config files is an unrecoverable write outside the workspace, and the
   keyboard protocol changes how several key chords are reported.
+- 2026-10-24: AFK: A running tool is not announced until it ends; this is listed as a known limitation instead of adding a `— running` line. Reason: the commit-at-first-unsettled rule stays as is, and the absent bell already says the turn is still going.
+- 2026-10-24: AFK: Messages queued mid-turn are not announced (no `queued:` line); this stays a documented limitation. Reason: the message is heard as `you:` when it is sent, so nothing is lost, and the renderer stays smaller.
+- 2026-10-24: AFK: The overlay snapshot is keyed on title plus an approval instance id (`Approval.id`), so a queued approval replacing an answered one gets `Permission Required:` and the bell. Reason: otherwise an identical follow-up approval prints nothing and the user cannot tell an answer is awaited.
+- 2026-10-24: AFK: The deny-reason field is echoed through `echo_diff` and its footer line is excluded from the overlay diff. Reason: reprinting the whole footer per keystroke makes typing a reason unusable with a screen reader.
+- 2026-10-24: AFK: The overlay diff normalises both sides by stripping `selected: `, the marker column and leading whitespace, and the approval's proposed-rule hint line is allowed to print on a selection move. Reason: rows carry a `> `/two-space marker column, so the unnormalised rule reprints the old row; the hint says what the selected lasting answer adds.
 
 ## Manual Verification
 
