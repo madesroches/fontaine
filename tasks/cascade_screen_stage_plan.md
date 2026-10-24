@@ -161,9 +161,10 @@ shadow = true          # default: score and log, never stop
 - **Live** (manual, `evals/`): a cascade scorecard with qwen3-4b-instruct on the golden set,
   compared against the spike's numbers.
 
-## Open Questions
+## Decisions
 
-- Whether `escalate` from the screen should carry the guardian's denial-retry affordance
-  (`/denied`), or a "send to the guardian instead" choice in the TUI prompt.
-- Whether to ship a starter threshold from the synthetic corpus for shadow-mode reports only, so
-  a fresh install's shadow log is readable before calibration.
+- AFK: a screen `escalate` uses the existing escalate prompt and audit flow unchanged, with no
+  new TUI affordance. The prompt's reason names the screen, and the user's answer is recorded
+  as today.
+- AFK: no starter threshold ships. Shadow mode logs raw risk scores, and the user sets
+  `stop_threshold` after calibrating.
