@@ -10,7 +10,7 @@ guardian's rendered default rules alone are about 4,000 tokens, and Ollama silen
 over-long prompt from the front, so a local guardian judges calls without most of its rules — and
 a local main model loses its system prompt the same way. This plan makes every request to an
 `ollama` account carry `options.num_ctx` (a new account key, `context_tokens`, default 16384),
-makes the screen stage send the same value so the two never force a model reload, adds an
+makes the screen stage send the same value so a screen and guardian on the same account never force a model reload, adds an
 optional per-account `think` switch, warns when a reply shows the prompt reached the window, and
 re-scores the local models.
 
@@ -33,9 +33,9 @@ re-scores the local models.
   fields, and rig's HTTP transport serves any `W: Wire<Payload = Encoded, Frame = WireFrame>`
   (`rig-core/src/driver/http_transport.rs:17`). A wrapper wire around `ollama::Chat` is therefore
   possible without touching rig.
-- The screen stage builds its own `/api/chat` body (`fontaine-guardian/src/screen.rs:333-346`)
+- The screen stage builds its own `/api/chat` body (`fontaine-guardian/src/screen.rs:334-346`)
   with `think: false` and `options: { num_predict: 1, temperature: 0 }` — no `num_ctx`.
-  `build_screen` (`fontaine-core/src/agent.rs:155`) reads only the account's `base_url`. Ollama
+  `build_screen` (`fontaine-core/src/agent.rs:156`) reads only the account's `base_url`. Ollama
   reloads a model whenever a request's `num_ctx` differs from the loaded one, so a screen and a
   guardian on the same model with different values would reload it on every call.
 - `config::Account` (`fontaine-core/src/config.rs:312`) has `kind`, `api_key_env`, `base_url`,
@@ -45,7 +45,10 @@ re-scores the local models.
   (`fontaine-core/src/turn.rs:236`, `MultiTurnStreamItem::CompletionCall`) and the guardian's
   adjudication (`fontaine-core/src/permissions.rs:1159`, `add_guardian_usage`). Ollama reports
   `prompt_eval_count` as `usage.input_tokens` (`rig-core/src/providers/ollama/streaming.rs:149`).
-- `ModelHandle` (`fontaine-core/src/models.rs:106`) carries `reference`, `kind`, `completion`.
+- `ModelHandle` (`fontaine-core/src/models.rs:106`) carries `reference`, `kind`, `completion`; `models.rs` builds the
+  handle and `agent::build_guardian` (`agent.rs:113`) turns it into the `Guardian`. The eval runner
+  skips `build_guardian` and calls `Guardian::new(handle.completion, spec, settings)` directly
+  (`fontaine-evals/src/live.rs:117`).
 
 ## Design
 
@@ -63,8 +66,8 @@ pub struct Account {
 
 - `context_tokens`: unset means `DEFAULT_OLLAMA_CONTEXT_TOKENS = 16384`. It is always sent; there
   is no "leave it to the daemon" value, because the daemon's default is exactly the bug.
-  Validation: refused (`not used by kind = "…"`) on any other kind; must be ≥ 2048 (smaller
-  cannot hold the guardian prompt, so it is a mistake, not a choice).
+  Validation: refused (`not used by kind = "…"`) on any other kind; must be ≥ 2048 (a floor
+  against typos and nonsense values, not a size that fits the guardian prompt).
 - `think`: unset sends nothing (the model's default). `false` sets `Reasoning::Off` on the
   request; `true` sets nothing beyond the default either — it is only meaningful as `false`, but
   accepting `true` keeps the key a plain boolean. Refused on other kinds.
@@ -94,7 +97,9 @@ impl Wire for Tuned {
 }
 ```
 
-`tune` sets `OllamaOptions::default().num_ctx(context_tokens)` and sets `Reasoning::Off` when `think ==
+`tune` sets `num_ctx` by overlaying `OllamaOptions::default().num_ctx(context_tokens)` onto any existing
+Ollama options entry (`ProviderOptions::overlay`, `provider_options.rs:326`) so no other field is
+dropped, and sets `Reasoning::Off` when `think ==
 Some(false)` and the request names no reasoning. `Connected::completion` builds
 `Model::new(Tuned { chat: native.wire, .. }, native.transport).erase()`. Every request path above
 inherits it with no call-site change. `connect` reads the two keys from `ctx.account`.
@@ -104,7 +109,8 @@ inherits it with no call-site change. `connect` reads the two keys from `ctx.acc
 `ScreenSettings` gains `context_tokens: u32`; `build_screen` fills it from the screen account
 (`context_tokens` or the default — one shared `Account::ollama_context_tokens()` helper so both
 paths resolve the same number), and `Screen::ask` adds `"num_ctx"` to its `options`. The screen
-already sends `think: false`; unchanged.
+already sends `think: false`; unchanged. A screen and a guardian share a loaded model
+only when they use the same account or accounts with equal `context_tokens`.
 
 ### Window warning
 
@@ -127,8 +133,7 @@ At both usage sites, when it returns true, the session warns once per model thro
 `Approver::warn`: "`local/qwen3:4b`'s prompt used N of its `context_tokens = M`; Ollama drops the
 start of a longer prompt. Raise `context_tokens` on account `local`." The once-per-model memo lives
 in `SessionState` (a `Mutex<HashSet<String>>`). The guardian site reads the window from `state.guardian()`; the turn site reads it from `Drive`.
-Compaction (`session.rs`) sends the whole history, so its usage is checked against the main
-model's window too. A warning never changes a verdict.
+A warning never changes a verdict.
 
 The exact 90% threshold is checked against live Ollama behavior (Testing Strategy, live step 3) and
 adjusted there if the daemon reports a truncated prompt below it.
@@ -141,12 +146,12 @@ adjusted there if the daemon reports a truncated prompt below it.
 2. **Wrapper wire.** `Tuned` in `providers/ollama.rs`; `connect` stores the account's values in
    `Connected`; `completion` returns the wrapped model.
 3. **Screen.** `ScreenSettings::context_tokens`, filled in `build_screen` and in
-   `ask` sends it. `fontaine-evals/src/live.rs` needs no change: `add_screen` goes through
+   `ask` sends it. For the screen, `fontaine-evals/src/live.rs` needs no change: `add_screen` goes through
    `build_screen`.
 4. **Warning.** `ModelHandle::context_tokens` + builder, set in `models.rs` (main and guardian
    resolution), `filled_window`, the window on `Guardian`, `TurnParams`, `Drive` and
-   `ChildModel`, the memo on `SessionState`, and the call sites (`turn.rs`, `permissions.rs`,
-   compaction in `session.rs`).
+   `ChildModel`, the memo on `SessionState`, and the call sites (`turn.rs`, `permissions.rs`).
+   Set the guardian window from the handle in `fontaine-evals/src/live.rs:117` too.
 5. **Docs** (see Documentation).
 6. **Live verification and re-score** (Testing Strategy, live steps), recording numbers in the
    PR and updating `evals/scorecards/qwen3-4b.json`.
@@ -163,15 +168,16 @@ adjusted there if the daemon reports a truncated prompt below it.
   `ScreenSettings` literals.
 - `rust/fontaine-core/src/agent.rs` — `build_screen`, `build_guardian` fills the guardian window.
 - `rust/fontaine-core/src/models.rs` — `ModelHandle::context_tokens`.
+- `rust/fontaine-core/tests/models.rs` — `num_ctx` / `think` regression assertions.
 - `rust/fontaine-core/src/gate.rs` — warning memo on `SessionState`.
 - `rust/fontaine-core/src/turn.rs` — `TurnParams`/`Drive` window, warning site.
 - `rust/fontaine-core/src/child_runner.rs` — `ChildModel` window, `Drive` construction.
-- `rust/fontaine-core/src/permissions.rs`, `rust/fontaine-core/src/session.rs` — warning call
-  sites (guardian, compaction).
+- `rust/fontaine-core/src/permissions.rs` — warning call site (guardian).
+- `rust/fontaine-evals/src/live.rs` — guardian window set from the handle (`:117`).
 - `TurnParams` constructors: `rust/fontaine-tui/src/lib.rs`, `rust/fontaine/src/headless.rs`,
   `rust/fontaine-core/tests/billing.rs`, `audit_telemetry.rs`, `output_styles.rs` (`Drive`
   literals in `billing.rs` and `audit_telemetry.rs` too).
-- `docs/configuration.md`, `docs/guardian.md`, `docs/evals.md`.
+- `docs/configuration.md`, `docs/guardian.md`, `docs/evals.md`, `README.md`.
 - `CHANGELOG.md` (via the PR step).
 - `evals/scorecards/qwen3-4b.json` (re-scored).
 
@@ -202,9 +208,12 @@ adjusted there if the daemon reports a truncated prompt below it.
   the Ollama example gains `context_tokens`; a short paragraph on the GPU-memory trade-off, the
   override of the daemon's own setting, and the window warning.
 - `docs/guardian.md`: in the local-guardian / screen guidance, that the guardian prompt needs
-  more than Ollama's default window and the screen uses the account's `context_tokens`.
+  more than Ollama's default window and the screen uses the account's `context_tokens`; a screen
+  and guardian avoid reloads only on the same account or equal `context_tokens`.
 - `docs/configuration.md`: the `[guardian.screen]` `model` row (~line 368) also says the account's
-  `context_tokens` is used.
+  `context_tokens` is used, and that equal values are needed to avoid reloads.
+- `README.md`: the "Quickstart: a local agent with Ollama" example (`:43-55`) mentions
+  `context_tokens` and links to the configuration row.
 - `docs/evals.md`: scoring a local model relies on the account's window; note the re-score, and
   rewrite the stale truncation sentence for `local/qwen3:4b` (`:130-132`).
 - `CHANGELOG.md`: via the PR step.
@@ -215,7 +224,8 @@ Unit / integration (CI):
 
 - `config.rs`: `context_tokens`/`think` accepted on `ollama`, refused on another kind with the
   `accounts.<name>.<key>` path; `context_tokens < 2048` refused; default resolves to 16384.
-- `providers/ollama.rs` with `wiremock` standing in for the daemon's `/api/chat`: a request
+- `rust/fontaine-core/tests/models.rs`, next to `ollama_uses_the_native_chat_route_without_a_key`
+  (`:137`, which already mocks `/api/chat` and reads `server.received_requests()`): a request
   carries `options.num_ctx` = default when unset and = the configured value when set; `think:
   false` is present only when `think = false`. This is the regression test pinning the issue's bug.
 - `screen.rs` (existing wiremock test at `:584`): the body carries `options.num_ctx`.
