@@ -146,7 +146,7 @@ pub(crate) struct Overlay {
     /// Tells two overlays with the same title apart, for a renderer that announces when one
     /// opens.
     pub instance: Option<u64>,
-    /// The approval's deny-reason field while it is open: its prompt and the text typed.
+    /// A text field while it is open (the approval's deny reason, a provider dialog input): its prompt and the text typed.
     pub field: Option<(&'static str, String)>,
 }
 
@@ -194,7 +194,10 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16) -> Overlay {
     if let Some(dialog) = &app.providers {
         let footer = dialog.footer();
         let rows = body_rows(app, width, height, footer.len());
-        return Overlay::new("providers", dialog.body(width, rows, theme), footer);
+        return Overlay {
+            field: dialog.field(),
+            ..Overlay::new("providers", dialog.body(width, rows, theme), footer)
+        };
     }
     if let Some(panel) = &app.agents {
         return Overlay::new("agents", panel.body(width, theme), panel.footer());

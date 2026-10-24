@@ -29,7 +29,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::accessibility::Source;
 use crate::app::Input;
-use crate::linear::{OverlayEcho, flatten_all};
+use crate::linear::{OverlayEcho, crlf, echo_diff_after, flatten_all, is_field_line};
 use crate::model_picker::{Group, ModelPicker, PickerKey, PickerPurpose};
 use crate::provider_dialog::{
     DialogKey, Outcome, ProviderDialog, Secret, log_out_summary, sign_in_failure,
@@ -86,6 +86,8 @@ struct Printed<W: io::Write> {
     out: W,
     banner: OverlayEcho,
     dialog: OverlayEcho,
+    /// The text shown after the field's prompt, when a field prompt is the open line.
+    echoed: Option<String>,
 }
 
 impl<W: io::Write> Surface for Printed<W> {
@@ -98,14 +100,41 @@ impl<W: io::Write> Surface for Printed<W> {
             .lines;
         let mut body = view.body;
         body.extend(view.footer);
-        lines.extend(
-            self.dialog
-                .update(view.title, None, flatten_all(&body))
-                .lines,
-        );
-        for line in lines {
-            write!(self.out, "{line}\r\n")?;
+        let mut shown = flatten_all(&body);
+        if let Some((prefix, _)) = &view.field {
+            shown.retain(|line| !is_field_line(line, prefix.trim_end()));
         }
+        lines.extend(self.dialog.update(view.title, None, shown).lines);
+
+        let mut out = String::new();
+        if !lines.is_empty()
+            && let Some(echoed) = self.echoed.take()
+        {
+            // A bare prompt is overwritten; typed text is left and the output starts below.
+            out.push_str(if echoed.is_empty() {
+                "\r\x1b[2K"
+            } else {
+                "\r\n"
+            });
+        }
+        for line in lines {
+            out.push_str(&line);
+            out.push_str("\r\n");
+        }
+        match (view.field, self.echoed.take()) {
+            (Some((prefix, text)), Some(old)) => {
+                out.push_str(&echo_diff_after(prefix, &old, &text));
+                self.echoed = Some(text);
+            }
+            (Some((prefix, text)), None) => {
+                out.push_str(prefix);
+                out.push_str(&crlf(&text));
+                self.echoed = Some(text);
+            }
+            (None, Some(_)) => out.push_str("\r\n"),
+            (None, None) => {}
+        }
+        self.out.write_all(out.as_bytes())?;
         self.out.flush()
     }
 }
@@ -121,6 +150,8 @@ struct View {
     title: &'static str,
     body: Vec<Line<'static>>,
     footer: Vec<Line<'static>>,
+    /// The text field the dialog has open: its prompt and what is typed.
+    field: Option<(&'static str, String)>,
 }
 
 struct Setup {
@@ -198,6 +229,7 @@ pub async fn drive_linear<W: io::Write>(
         out,
         banner: OverlayEcho::default(),
         dialog: OverlayEcho::default(),
+        echoed: None,
     };
     run_setup(params, surface, input).await
 }
@@ -289,6 +321,7 @@ impl Setup {
             title,
             body,
             footer,
+            field: self.picker.is_none().then(|| self.dialog.field()).flatten(),
         }
     }
 

@@ -831,6 +831,17 @@ impl ProviderDialog {
         out
     }
 
+    /// The text field the dialog has open, as a prompt and what is typed (a key stays masked),
+    /// for a renderer that echoes typing instead of redrawing the dialog.
+    pub fn field(&self) -> Option<(&'static str, String)> {
+        match &self.screen {
+            Screen::Name { input, .. } => Some(("name: ", input.clone())),
+            Screen::BaseUrl { input, .. } => Some(("base URL: ", input.clone())),
+            Screen::Key { input, .. } => Some(("API key: ", "•".repeat(input.chars().count()))),
+            _ => None,
+        }
+    }
+
     pub fn footer(&self) -> Vec<Line<'static>> {
         let dim = Style::default().add_modifier(Modifier::DIM);
         let text = match &self.screen {

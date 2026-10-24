@@ -145,7 +145,12 @@ pub(crate) fn echo_diff(old: &str, new: &str) -> String {
     echo_diff_after(PROMPT, old, new)
 }
 
-fn echo_diff_after(prompt: &str, old: &str, new: &str) -> String {
+/// A line that only shows the open text field: the dialogs draw it inline, ending in a cursor.
+pub(crate) fn is_field_line(line: &str, bare_prefix: &str) -> bool {
+    line.starts_with(bare_prefix) || line.ends_with('▏')
+}
+
+pub(crate) fn echo_diff_after(prompt: &str, old: &str, new: &str) -> String {
     if old == new {
         return String::new();
     }
@@ -160,7 +165,7 @@ fn echo_diff_after(prompt: &str, old: &str, new: &str) -> String {
     format!("\r\n{prompt}{}", crlf(new))
 }
 
-fn crlf(text: &str) -> String {
+pub(crate) fn crlf(text: &str) -> String {
     text.replace('\n', "\r\n")
 }
 
@@ -273,13 +278,10 @@ impl<W: Write> Linear<W> {
             let mut shown = flatten_all(&overlay.body);
             shown.extend(flatten_all(&overlay.footer));
             if let Some((prefix, _)) = &overlay.field {
-                // What is typed there is echoed as it is typed, not reprinted with the footer.
+                // What is typed is echoed as it is typed, so the lines that show it (the
+                // reason's footer, a dialog input with its cursor glyph) are not printed.
                 let bare = prefix.trim_end();
-                for line in &mut shown {
-                    if line.starts_with(bare) {
-                        *line = bare.to_string();
-                    }
-                }
+                shown.retain(|line| !is_field_line(line, bare));
             }
             let echoed = self.echo.update(overlay.title, overlay.instance, shown);
             bell |= echoed.opened && NEEDS_ANSWER.contains(&overlay.title);
@@ -865,17 +867,49 @@ mod tests {
         rig.app.begin_approval(request("ls"), tx);
         rig.render();
         // Answer keys wait out a grace period after the prompt opens.
-        std::thread::sleep(std::time::Duration::from_millis(450));
         rig.key(KeyCode::Down);
-        rig.key(KeyCode::Enter);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        rig.app
+            .approval
+            .as_mut()
+            .expect("the approval is open")
+            .handle_key_at(
+                enter,
+                std::time::Instant::now() + std::time::Duration::from_millis(400),
+            );
         rig.key(KeyCode::Char('x'));
         rig.key(KeyCode::Backspace);
         let out = rig.render();
-        assert!(out.contains("Reason (optional"), "{out:?}");
+        assert_eq!(out.matches("Reason (optional").count(), 1, "{out:?}");
         assert!(out.ends_with(crate::approval::FEEDBACK_PREFIX), "{out:?}");
         rig.key(KeyCode::Char('o'));
         rig.key(KeyCode::Char('k'));
         assert_eq!(rig.render(), "ok");
+        rig.key(KeyCode::Backspace);
+        assert_eq!(rig.render(), "\x08 \x08");
+    }
+
+    #[test]
+    fn typing_in_a_provider_field_echoes_only_the_new_characters() {
+        use fontaine_core::accounts::{AccountRow, SignInState};
+        let rows = vec![AccountRow {
+            name: "work".into(),
+            kind: fontaine_core::config::AccountKind::named("anthropic"),
+            endpoint: "default".into(),
+            state: SignInState::NotSignedIn,
+        }];
+        let mut rig = Rig::new();
+        rig.app.providers = Some(crate::provider_dialog::ProviderDialog::new(rows, Some("work")).0);
+        let opened = rig.render();
+        assert!(opened.contains("API key for `work`"), "{opened:?}");
+        assert!(
+            !opened.contains('▏') && opened.ends_with("API key: "),
+            "{opened:?}"
+        );
+        rig.key(KeyCode::Char('a'));
+        assert_eq!(rig.render(), "•");
+        rig.type_text("bc");
+        assert_eq!(rig.render(), "••");
         rig.key(KeyCode::Backspace);
         assert_eq!(rig.render(), "\x08 \x08");
     }

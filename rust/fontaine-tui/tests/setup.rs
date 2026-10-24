@@ -301,3 +301,37 @@ async fn the_linear_setup_announces_a_listing_and_a_new_error() {
     assert_eq!(out.matches("No model is ready yet").count(), 1, "{out:?}");
     assert_plain(&out);
 }
+
+#[tokio::test]
+async fn typing_in_a_linear_setup_field_echoes_only_the_new_characters() {
+    let s = Scratch::new("");
+    let out = Bytes::default();
+    let mut script = vec![key(KeyCode::Char('a')), key(KeyCode::Enter)];
+    script.extend(text("work"));
+    drive_linear(s.params("no main model"), out.clone(), keys(&script))
+        .await
+        .unwrap();
+    let out = out.text();
+    assert!(!out.contains('▏'), "{out:?}");
+    assert_eq!(out.matches("name: ").count(), 1, "{out:?}");
+    assert!(out.ends_with("name: work"), "{out:?}");
+    assert_plain(&out);
+}
+
+#[tokio::test]
+async fn typing_a_key_in_the_linear_setup_echoes_bullets_only() {
+    let s = Scratch::new(
+        "[accounts.gw]\nkind = \"openai-compatible\"\nbase_url = \"http://localhost:1\"\n",
+    );
+    let out = Bytes::default();
+    let mut script = vec![key(KeyCode::Enter)];
+    script.extend(text("k-gw"));
+    drive_linear(s.params("no main model"), out.clone(), keys(&script))
+        .await
+        .unwrap();
+    let out = out.text();
+    assert!(!out.contains('▏') && !out.contains("k-gw"), "{out:?}");
+    // The footer changes once typing starts, which reprints the prompt once; no key reprints it.
+    assert_eq!(out.matches('•').count(), 4, "{out:?}");
+    assert!(out.ends_with("API key: ••••"), "{out:?}");
+}
