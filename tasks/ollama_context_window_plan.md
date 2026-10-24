@@ -212,14 +212,14 @@ call `cascade::adjudicate` directly (`live.rs:330`) and never warn.
   override of the daemon's own setting, and the window warning; the `[guardian.screen]` `model`
   row (~line 368) also says the account's `context_tokens` is used, and that equal values are
   needed to avoid reloads.
-- `docs/guardian.md`: in the local-guardian / screen guidance, that the guardian prompt needs
+- `docs/guardian.md`: in "## The screen stage" (~:136-210) and the local-model bullet of "## Choosing the guardian model" (~:236-238), that the guardian prompt needs
   more than Ollama's default window and the screen uses the account's `context_tokens`; a screen
   and guardian avoid reloads only on the same account or equal `context_tokens`.
 - `README.md`: the "Quickstart: a local agent with Ollama" example (`:43-55`) mentions
   `context_tokens` and links to the configuration row.
 - `docs/evals.md`: scoring a local model relies on the account's window; note the re-score, and
   rewrite the stale truncation sentence for `local/qwen3:4b` (`:130-132`), and update the Results
-  intro (`:122-126`), the score rows (`:144`, `:162`) and the prose at `:153` from the re-scored numbers.
+  intro (`:123-127`), the score rows (`:144`, `:162`) and the prose at `:153` from the re-scored numbers.
 - `CHANGELOG.md`: via the PR step.
 
 ## Testing Strategy
@@ -244,7 +244,7 @@ behavior.
 1. `ollama ps` during `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian
    live:local/qwen3:4b` shows `CONTEXT 16384` (and the configured value after setting
    `context_tokens`).
-2. With a cascade (`--screen live:local/qwen3:4b-instruct-2507-q4_K_M --stop-threshold <t>`, guardian on the same
+2. With a cascade (`cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:local/qwen3:4b --screen live:local/qwen3:4b-instruct-2507-q4_K_M --stop-threshold <t>`, guardian on the same
    daemon) and with screen and guardian on the *same* model: no reload between calls (`ollama ps`
    UNTIL/load stays stable; per-call latency has no reload spikes).
 3. Truncation: send a prompt longer than a small `context_tokens` (e.g. 2048) and record the
