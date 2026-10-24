@@ -113,6 +113,11 @@ subagent_cost_budget_usd = 2.0    # per-subagent spend cap; inactive (one-time n
   explore = { model = "$guardian_default", tools = ["ls", "read", "glob", "grep"] }
   worker  = { model = "$main", tools = ["ls", "read", "glob", "grep", "edit", "write", "shell"] }
 
+[context]
+autocompact_window = 150000       # tokens; unset = the model's window minus the summarizer's reserve. Compaction runs once the
+                                  #   conversation's messages pass the lower of the two. Positive integer, else load error (exit 2).
+                                  #   Not from shared project scope; a catalog-listed model with no known window compacts only when set
+
 [shell_preclassifier]
 allow_extra = []                  # user extensions to the curated read-only command set — one
                                   #   mode-agnostic list, applying in every mode (the pre-classifier
@@ -176,6 +181,7 @@ Per-key scope (the user file may set every key; a key a scope may not set is rej
 | `[auto_mode]` `soft_deny`, `hard_deny` | add only | add only | add only |
 | `[agents]` `max_parallel`, budgets; `[agents.types]` | no | yes | `--settings` |
 | agent files `agents/*.md` | narrowing only (see above) | — | — |
+| `[context]` `autocompact_window` | no | yes | `--settings` |
 | `[shell_preclassifier]` `allow_extra` | no | yes | `--settings` |
 | `[hooks.*]` | after workspace trust; `allow` ignored | yes, after workspace trust | `--settings` |
 | `[mcp.servers.*]` | after workspace trust + per-server approval | yes, after workspace trust | `--settings` |

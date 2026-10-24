@@ -1172,3 +1172,180 @@ async fn status_and_help_report_without_a_turn() {
     .await;
     assert!(w.requests().is_empty());
 }
+
+async fn bodies(server: &wiremock::MockServer) -> Vec<String> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .collect()
+}
+
+/// Three exchanges, enough for a compaction to have something older than the newest reply.
+async fn three_exchanges(ui: &Ui) {
+    for (i, word) in ["one", "two", "three"].iter().enumerate() {
+        ui.send(&format!("ctx-marker {word}"));
+        ui.wait_for(&format!("reply {}", i + 1)).await;
+        idle(ui).await;
+    }
+}
+
+fn context_route() -> Route {
+    Route::new(
+        "ctx-marker",
+        vec![
+            Turn::text("reply 1"),
+            Turn::text("reply 2"),
+            Turn::text("reply 3"),
+            // The summary carries the marker so the next request finds its route.
+            Turn::text("ctx-marker THE-SUMMARY"),
+            Turn::text("reply 5"),
+            Turn::text("reply 6"),
+        ],
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compact_clear_and_context_work_on_the_conversation() {
+    let server = start(vec![context_route()]).await;
+    let w = World::routed_known(&server.uri(), "");
+    w.run(|ui| async move {
+        idle(&ui).await;
+        three_exchanges(&ui).await;
+
+        ui.send("/context");
+        ui.wait_for("messages").await;
+        let screen = ui.screen();
+        assert!(
+            screen.contains("tools") && screen.contains("auto-compacts when messages pass"),
+            "{screen}"
+        );
+
+        ui.send("/compact focus on the parser");
+        ui.wait_for("compacted the conversation: ~").await;
+        idle(&ui).await;
+
+        ui.send("/clear");
+        ui.wait_for("cleared the conversation").await;
+        ui.send("ctx-marker after the clear");
+        ui.wait_for("reply 5").await;
+        idle(&ui).await;
+    })
+    .await;
+    let sent = bodies(&server).await;
+    let summarizer = sent
+        .iter()
+        .find(|b| b.contains("Additional focus: focus on the parser"))
+        .expect("the summarizer was asked with the focus");
+    assert!(summarizer.contains("ctx-marker one"));
+    let last = sent.last().unwrap();
+    assert!(last.contains("after the clear"), "{last}");
+    for old in ["ctx-marker one", "ctx-marker two", "reply 1", "THE-SUMMARY"] {
+        assert!(!last.contains(old), "`{old}` survived the clear: {last}");
+    }
+    assert!(w.ledger_text().contains("context_cleared"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn text_typed_while_compacting_comes_back_to_the_input() {
+    let mut route = context_route();
+    route = route.delay(3, 1500);
+    let server = start(vec![route]).await;
+    let w = World::routed_known(&server.uri(), "");
+    w.run(|ui| async move {
+        idle(&ui).await;
+        three_exchanges(&ui).await;
+        ui.send("/compact");
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        ui.send("typed while compacting");
+        ui.wait_for("compacted the conversation: ~").await;
+        idle(&ui).await;
+        let live = ui.live();
+        assert!(live.contains("typed while compacting"), "{live}");
+    })
+    .await;
+    // It never reached the model or the ledger as a steering message.
+    assert!(
+        !bodies(&server)
+            .await
+            .iter()
+            .any(|b| b.contains("typed while compacting"))
+    );
+    assert!(!w.ledger_text().contains("typed while compacting"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn esc_interrupts_a_compaction_and_leaves_the_conversation() {
+    let route = context_route().delay(3, 3000);
+    let server = start(vec![route]).await;
+    let w = World::routed_known(&server.uri(), "");
+    w.run(|ui| async move {
+        idle(&ui).await;
+        three_exchanges(&ui).await;
+        ui.send("/compact");
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        ui.press(KeyCode::Esc);
+        ui.wait_for("interrupted").await;
+        idle(&ui).await;
+        assert!(!ui.screen().contains("compacted the conversation"));
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clear_is_refused_while_a_subagent_runs_and_works_after() {
+    let server = start(vec![
+        Route::new(
+            "root task",
+            vec![
+                Turn::tool(
+                    "c1",
+                    "agent",
+                    json!({"agent_type": "worker", "prompt": "child-A: finish", "background": true}),
+                ),
+                Turn::text("launched"),
+                Turn::text("noted the report"),
+            ],
+        ),
+        Route::new("child-A", vec![Turn::text("child done")]).delay(0, 2500),
+    ])
+    .await;
+    let w = World::routed_known(&server.uri(), "\n[permissions]\nallow = [\"agent\"]\n");
+    let wr = &w;
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("root task");
+        ui.wait_for("launched").await;
+        idle(&ui).await;
+        ui.send("/clear");
+        ui.wait_for(
+            "subagents are still running or have reports to deliver; /clear is refused until they finish or are killed",
+        )
+        .await;
+        assert!(!wr.ledger_text().contains("context_cleared"));
+        assert!(ui.screen().contains("launched"), "{}", ui.screen());
+        ui.wait_for("noted the report").await;
+        idle(&ui).await;
+        ui.send("/clear");
+        ui.wait_for("cleared the conversation").await;
+    })
+    .await;
+    assert!(w.ledger_text().contains("context_cleared"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clear_with_a_name_and_context_with_a_bad_argument_are_errors() {
+    let w = World::new(vec![]);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/clear my old work");
+        ui.wait_for("needs /resume, which is not available yet")
+            .await;
+        ui.send("/context bogus");
+        ui.wait_for("/context takes no argument or `all`").await;
+    })
+    .await;
+    assert!(!w.ledger_text().contains("context_cleared"));
+}

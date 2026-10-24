@@ -175,6 +175,9 @@ conversation. The session starts in the mode your settings give, with no grants 
 |---|---|
 | `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Until then a file-tool call outside the roots is denied with a hint naming this command. Only between turns. |
 | `/agents`, `/tasks` | Opens the [agents panel](#the-agents-panel). |
+| `/clear`, `/reset`, `/new` | Starts over with an empty context. See [Context](#context). It takes no name for the old conversation; that needs `/resume`, which is not available yet. |
+| `/compact [<focus>]` | Summarizes the conversation so far to free context; the optional focus tells the summary what to keep above all. See [Context](#context). |
+| `/context [all]` | Shows what fills the context window. See [Context](#context). |
 | `/copy [<n>]` | Copies the latest assistant reply, or the `n`th latest, to the system clipboard. A reply is the text between tool calls, so a turn that calls a tool and then answers has two; `/copy` takes the last one. It is an error when there is no such reply. |
 | `/denied` | Lists the calls the guardian denied this session, with their rule label and explanation. Up and Down select; `r` approves the selected call once, as if you had approved it at a prompt, and tells the agent on its next turn that it may retry exactly that call. The retry runs without asking the guardian, never enters the verdict cache and does not count toward the denial limits. The deterministic floor still runs first, so an `ask` rule or a critical path still prompts. Esc closes the list. |
 | `/exit`, `/quit` | Leave. |
@@ -199,6 +202,34 @@ clipboard access. Inside tmux it first loads the reply with `tmux load-buffer -w
 forwards to the outer terminal under its default `set-clipboard external`; if that fails the
 reply still lands in a tmux buffer. A terminal that ignores the escape leaves the clipboard
 unchanged without reporting an error.
+
+## Context
+
+`/clear` empties the model's context. The session carries on: the same id, ledger, audit log,
+grants and permission mode. The transcript is emptied (what was already written stays in your
+terminal's scrollback), and so is the guardian's view of what you have asked, which starts again
+from the next message you send; the files, actions and denials it knows about are kept. The old
+conversation cannot be resumed: `--resume` reopens the empty one. `/clear` is refused while a
+subagent is running or its report is waiting to be delivered, since the subagent's calls are judged against what you asked; wait for it
+or kill it from the [agents panel](#the-agents-panel).
+
+`/compact [<focus>]` asks the main model to summarize the conversation, keeping only the newest
+reply as it is, and replaces the older part with the summary. It shows
+`compacted the conversation: ~41.2k → ~6.3k tokens`, or `nothing to compact` when there is nothing
+older to summarize. Esc interrupts it and leaves the conversation as it was. Messages you type
+meanwhile are put back in the input box when it ends instead of being sent. The model must be one
+the catalog lists. Compaction also runs on its own before a turn once the conversation outgrows
+the model's window less a reserve, or earlier if you set
+[`[context] autocompact_window`](configuration.md#context).
+
+`/context` shows what the next request would carry: the system prompt, instruction files, the
+skill index, the tool definitions (MCP tools apart), the messages and what is free of the window,
+with the point where compaction runs on its own. `/context all` also lists each instruction file
+and tool, largest first. The numbers are estimates from a character-based counter, not the
+provider's tokenizer, and they count the same way the compaction trigger does. When the model is
+not in the catalog there is no `free` row and it never compacts automatically; a catalogued model
+whose window is not known has no `free` row either and compacts automatically only when
+`autocompact_window` is set. When the total is over the window it says so.
 
 ## Choosing a model
 

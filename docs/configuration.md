@@ -96,6 +96,7 @@ The user file may set every key. For the other scopes:
 | `[auto_mode] environment`, `allow` | no | yes | yes |
 | `[auto_mode] soft_deny`, `hard_deny` | add only | add only | add only |
 | `[agents]` keys and `[agents.types]` | no | yes | yes |
+| `[context] autocompact_window` | no | yes | yes |
 | `[shell_preclassifier] allow_extra` | no | yes | yes |
 | Agent files `agents/*.md` | narrowing only | n/a | n/a |
 | `[[hooks.*]]` | yes, after workspace trust; `allow` ignored | yes, after workspace trust | yes |
@@ -574,6 +575,26 @@ max_parallel = 4
 model = "$guardian_default"
 tools = ["ls", "read", "glob", "grep"]
 mode = "inherit"
+```
+
+### `[context]`
+
+| Key | Meaning | Default |
+|---|---|---|
+| `autocompact_window` | A token count. Before a turn, the conversation is summarized once its messages pass it. The model's own limit still applies, so the effective trigger is the lower of this and the model's window less a 16,384-token reserve. At least 1. | unset |
+
+Unset, compaction runs when the model's window less the reserve is passed, and only for a model
+whose window the catalog knows. Set, it also runs for a catalog-listed model whose window is not
+known. A model the catalog does not list (a gateway or local alias) is never compacted
+automatically, with or without the setting; `/compact` cannot summarize with it either. A small
+value also shrinks what a compaction keeps: the newest messages it leaves as they are and the
+summary it asks for are each capped at a quarter of the value, so the conversation ends under it.
+It applies to [headless runs](headless.md) too. See [Context](tui.md#context) for `/compact` and
+`/context`.
+
+```toml
+[context]
+autocompact_window = 150000
 ```
 
 ### `[shell_preclassifier]`

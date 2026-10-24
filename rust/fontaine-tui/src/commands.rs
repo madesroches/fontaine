@@ -7,6 +7,12 @@ pub enum Command {
     AddDir(String),
     Denied,
     Agents,
+    /// `/clear` (`/reset`, `/new`); a name for the old conversation is refused.
+    Clear(String),
+    /// `/compact [focus]`.
+    Compact(String),
+    /// `/context [all]`.
+    Context(String),
     OutputStyle(String),
     Model(String),
     GuardianModel(String),
@@ -60,6 +66,27 @@ pub const BUILTINS: &[Builtin] = &[
         hint: None,
         description: "the background agents panel",
         command: |_| Command::Agents,
+    },
+    Builtin {
+        name: "clear",
+        aliases: &["reset", "new"],
+        hint: None,
+        description: "start over with an empty context",
+        command: Command::Clear,
+    },
+    Builtin {
+        name: "compact",
+        aliases: &[],
+        hint: Some("[focus]"),
+        description: "summarize the conversation to free context",
+        command: Command::Compact,
+    },
+    Builtin {
+        name: "context",
+        aliases: &[],
+        hint: Some("[all]"),
+        description: "show what fills the context window",
+        command: Command::Context,
     },
     Builtin {
         name: "copy",
@@ -214,6 +241,17 @@ pub fn reply_number(argument: &str) -> Result<usize, String> {
     }
 }
 
+/// Whether `/context` is asked for the per-item breakdown.
+pub fn context_all(argument: &str) -> Result<bool, String> {
+    match argument {
+        "" => Ok(false),
+        "all" => Ok(true),
+        _ => Err(format!(
+            "/context takes no argument or `all`, not `{argument}`"
+        )),
+    }
+}
+
 /// The menu rows for user-invocable skills (name, hint, description), and the names of those
 /// left out because a built-in command answers to them.
 pub fn skill_menu(skills: Vec<(String, Option<String>, String)>) -> (Vec<MenuEntry>, Vec<String>) {
@@ -288,6 +326,36 @@ mod tests {
         );
         assert_eq!(parse_command("/plan"), Some(Command::Plan(String::new())));
         assert_eq!(parse_command("/copy 2"), Some(Command::Copy("2".into())));
+        for name in ["clear", "reset", "new"] {
+            assert_eq!(
+                parse_command(&format!("/{name}")),
+                Some(Command::Clear(String::new()))
+            );
+        }
+        assert_eq!(
+            parse_command("/clear old work"),
+            Some(Command::Clear("old work".into()))
+        );
+        assert_eq!(
+            parse_command("/compact keep the API notes"),
+            Some(Command::Compact("keep the API notes".into()))
+        );
+        assert_eq!(
+            parse_command("/compact"),
+            Some(Command::Compact(String::new()))
+        );
+        assert_eq!(
+            parse_command("/context all"),
+            Some(Command::Context("all".into()))
+        );
+    }
+
+    #[test]
+    fn context_takes_nothing_or_all() {
+        assert_eq!(context_all(""), Ok(false));
+        assert_eq!(context_all("all"), Ok(true));
+        let err = context_all("bogus").unwrap_err();
+        assert!(err.contains("all") && err.contains("bogus"), "{err}");
     }
 
     #[test]

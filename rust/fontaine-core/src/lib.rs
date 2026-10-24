@@ -6,6 +6,7 @@ pub mod child_runner;
 pub mod code_execution;
 pub mod config;
 pub mod containment;
+pub mod context;
 pub mod credentials;
 pub mod destructive;
 pub mod dirs;

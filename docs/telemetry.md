@@ -102,8 +102,9 @@ the `fail_closed_reason` when it failed closed; the guardian's own model call si
 A subagent adds a `fontaine.subagent` span (`agent.id`, `agent.type`, `model.priced`) under the span of the `agent`
 call that started it, and its own interactions, model calls and tool calls nest below it. A user
 hook adds a `fontaine.hook` span (`hook_event`, `success`) under the span of the call it ran for,
-and a call to an MCP tool a `fontaine.mcp.call` span (`mcp.server`, `mcp.tool`). A threshold
-compaction adds a `fontaine.compaction` span around the summarizer call, and each scan by the
+and a call to an MCP tool a `fontaine.mcp.call` span (`mcp.server`, `mcp.tool`). A
+compaction, automatic or asked for with `/compact`, adds a `fontaine.compaction` span
+(`compaction.reason`: `threshold` or `asked`) around the summarizer call, and each scan by the
 `llm` tool-result scanner a `fontaine.scanner` span (`scanner`) around the scanner's model call.
 Those two also carry `model.priced`. `model.priced` says whether the model it bills by is priced;
 the cost of a model call is dropped under the nearest ancestor span that records

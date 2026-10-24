@@ -150,6 +150,11 @@ All notable changes are recorded here. The format follows
     `/copy [n]` copies a reply to the clipboard over OSC 52; `/tasks` opens the agents panel. One
     command table drives both parsing and the `/` menu, and a built-in hides a skill of the same
     name, with a startup notice (#47).
+  - Context commands: `/compact [focus]` summarizes the conversation on request, `/clear`
+    (`/reset`, `/new`) empties the model's context while the session, its permissions and its
+    mode carry on, and `/context [all]` shows estimated token use by source. `[context]
+    autocompact_window` sets how many tokens of messages trigger automatic compaction, in the
+    terminal UI and headless runs (#11).
   - `fontaine -p` with `--output-format text|json|stream-json`, `--input-format stream-json`,
     `--include-partial-messages`, `--max-turns`, `--max-budget-usd`, `--json-schema`,
     `--system-prompt`, `--append-system-prompt`, `--model` and `--permission-mode`. The output is

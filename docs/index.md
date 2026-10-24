@@ -26,7 +26,8 @@ describe what the current build does; each page covers one topic.
   frontmatter, slash commands and porting from `.claude/`.
 - [The terminal UI](tui.md): keys, the status bar, approval prompts, the guardian's denials,
   `/denied`, `/login`, `/model`, `/guardian-model`, `/add-dir`, `/output-style`, `/help`,
-  `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plan`, `/copy`, the agents panel
+  `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plan`, `/copy`, `/clear`, `/compact`,
+  `/context`, the agents panel
   and the workspace trust prompt.
 - [Headless runs](headless.md): `fontaine -p`, its flags, exit codes, and the versioned JSON output
   that CI and the eval runner consume.

@@ -102,6 +102,9 @@ pub enum Record {
         command: String,
         exit_code: Option<i32>,
     },
+    /// The human emptied the model's context with `/clear`. The guardian's view of what the
+    /// human asked starts again here.
+    ContextCleared {},
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +205,7 @@ impl LedgerView {
                 self.index_truncated = *truncated;
             }
             Record::UserMessage { text } => self.user_messages.push(text.clone()),
+            Record::ContextCleared {} => self.user_messages.clear(),
             Record::Action {
                 tool,
                 agent,
@@ -532,5 +536,57 @@ mod tests {
             }
         );
         assert!(ledger.view().user_messages.is_empty());
+    }
+
+    #[test]
+    fn a_clear_restarts_the_human_messages_but_keeps_the_workspace_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        ledger
+            .append(Record::FileIndex {
+                paths: vec!["/w/old.txt".into()],
+                truncated: false,
+            })
+            .unwrap();
+        ledger
+            .append(Record::UserMessage {
+                text: "before".into(),
+            })
+            .unwrap();
+        ledger
+            .append(Record::Action {
+                tool: "write".into(),
+                agent: "main".into(),
+                paths: vec!["/w/new.txt".into()],
+                created: vec!["/w/new.txt".into()],
+                summary: "s".into(),
+            })
+            .unwrap();
+        ledger
+            .append(Record::Denial {
+                tool: "shell".into(),
+                agent: "main".into(),
+                reason: "r".into(),
+                rule: None,
+                summary: String::new(),
+            })
+            .unwrap();
+        ledger.append(Record::ContextCleared {}).unwrap();
+        ledger
+            .append(Record::UserMessage {
+                text: "after".into(),
+            })
+            .unwrap();
+        let check = |ledger: &Ledger| {
+            let view = ledger.view();
+            assert_eq!(view.user_messages, ["after"]);
+            assert_eq!(view.actions.len(), 1);
+            assert_eq!(view.denials.len(), 1);
+            assert_eq!(view.existence("/w/old.txt"), Existence::PreExisting);
+            assert_eq!(view.existence("/w/new.txt"), Existence::CreatedThisSession);
+        };
+        check(&ledger);
+        drop(ledger);
+        check(&Ledger::open(dir.path()).unwrap());
     }
 }
