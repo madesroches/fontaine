@@ -36,7 +36,7 @@ unchanged.
 - rig's portable `GenerationOptions::reasoning(Reasoning::Off)` is mapped per dialect, but both of
   fontaine's gateway dialects (`opencode-go` and `openai-compatible`, built with
   `Dialect::gateway`) fall to `refuse_all` on the Chat wire
-  (`rig-core-0.45.0/src/providers/openai/options.rs:521`). So the portable option cannot reach the
+  (`rig-core-0.45.0/src/providers/openai/options.rs:522-526`). So the portable option cannot reach the
   reported case.
 - The Ollama-native screen already sends `"think": false` itself (`screen.rs:342`). It does not
   use the extractor and is not affected.
@@ -54,6 +54,7 @@ providers::AccountClient::thinking_off(model) -> Option<Value>   (per kind / per
 models.rs: ModelHandle { completion, thinking_off, .. }           (set where the handle is built)
         │
 agent::build_guardian ──► Guardian::new(..).with_additional_params(handle.thinking_off)
+fontaine-evals live.rs ──► Guardian::new(..).with_additional_params(handle.thinking_off)
 scanner_stage::llm_backend ──► LlmScanner::new(..).with_additional_params(handle.thinking_off)
         │
 ExtractorBuilder::additional_params(params)  ──► merged into every extraction attempt's body
@@ -69,16 +70,16 @@ ExtractorBuilder::additional_params(params)  ──► merged into every extract
   ```
 - `fontaine-core/src/providers/opencode_go.rs`: `GoClient::thinking_off` matches
   `wire(model, &self.overrides)`:
-  - `Chat` → `{"thinking": {"type": "disabled"}}`. This is the off switch of the families Go serves
-    on Chat: DeepSeek, Kimi and GLM. rig's own `deepseek`, `moonshot` and `zai` dialects send the
-    same value.
-  - `Messages` → `{"thinking": {"type": "disabled"}}`. This is the Anthropic schema, and the value
-    rig's Anthropic and MiniMax-M3 mappings send.
+  - `Chat` → `{"thinking": {"type": "disabled"}}`. This is the off switch of DeepSeek, GLM and
+    kimi-k2.6; rig's own `deepseek`, `zai` and `moonshot` dialects send the same value (moonshot
+    only for kimi-k2.6). kimi-k3 and other Kimi models cannot turn thinking off.
+  - `Messages` → `{"thinking": {"type": "disabled"}}`. This is the Anthropic schema's `disabled`
+    value.
   - `Responses`, `Gemini` → `None`. Both accept a forced tool call while reasoning, so their
     requests stay as they are.
 - `fontaine-core/src/models.rs`: `ModelHandle` gains `pub thinking_off: Option<serde_json::Value>`.
   `ModelHandle::new` keeps its three-argument signature and sets `thinking_off: None`, so test call
-  sites do not change. A new constructor `ModelHandle::from_client(reference, kind, &Client)` sets
+  sites do not change. A new constructor `ModelHandle::from_client(reference, kind, &dyn AccountClient)` sets
   both `completion` and `thinking_off` from the client. The two client-built sites (`models.rs:381`,
   `models.rs:507`) use it. Because the field lives on the handle, the main-model fallback and every
   later switch carry it through `clone()`.
@@ -88,17 +89,12 @@ ExtractorBuilder::additional_params(params)  ──► merged into every extract
   is set, it is passed to `ExtractorBuilder::additional_params`. With `None`, nothing changes.
 - `fontaine-guardian/src/scanner.rs`: `LlmScanner` gains the same field and builder, applied the
   same way.
-- `fontaine-core/src/agent.rs` (`build_guardian`) and `fontaine-core/src/scanner_stage.rs`
-  (`llm_backend`) chain `.with_additional_params(handle.thinking_off.clone())`.
+- `fontaine-core/src/agent.rs` (`build_guardian`), `fontaine-core/src/scanner_stage.rs`
+  (`llm_backend`) and `fontaine-evals/src/live.rs:117` (the live eval guardian, whose handle comes
+  from `switcher.guardian(..)`) chain `.with_additional_params(handle.thinking_off.clone())`.
 
 The parameters affect only the guardian's and the scanner's requests. The main agent's requests
 never see them.
-
-### Fail-closed is unchanged
-
-Nothing in the outcome mapping (`guardian.rs:250-289`, `scanner.rs:125-135`) changes. If a wire
-still refuses the request (for example, a model that cannot turn thinking off), the 400 is still
-`FailClosed::Error` → Deny, and `Scan::Failed` for the scanner.
 
 ## Implementation Steps
 
@@ -109,8 +105,8 @@ still refuses the request (for example, a model that cannot turn thinking off), 
    or `fn` so the two arms share it.
 4. **Model handle**: add `ModelHandle::thinking_off` and `ModelHandle::from_client`. Switch
    `models.rs:381` and `models.rs:507` to it.
-5. **Wiring**: pass `handle.thinking_off` in `agent::build_guardian` and
-   `scanner_stage::llm_backend`.
+5. **Wiring**: pass `handle.thinking_off` in `agent::build_guardian`,
+   `scanner_stage::llm_backend` and `fontaine-evals/src/live.rs`.
 6. **Tests**: see Testing Strategy.
 7. **Docs**: update `docs/guardian.md` (see Documentation).
 
@@ -123,9 +119,11 @@ still refuses the request (for example, a model that cannot turn thinking off), 
 - `rust/fontaine-core/src/models.rs`
 - `rust/fontaine-core/src/agent.rs`
 - `rust/fontaine-core/src/scanner_stage.rs`
+- `rust/fontaine-evals/src/live.rs`
 - `rust/fontaine-core/tests/opencode_go.rs`
 - guardian crate tests (the existing guardian/scanner test module or `fontaine-guardian/tests/`)
 - `docs/guardian.md`
+- `CHANGELOG.md` (`### Fixed` under `[Unreleased]` for #144, via the PR step)
 
 ## Trade-offs
 
@@ -170,35 +168,36 @@ All of these are wiremock tests. No live API is touched.
    stand-in's `/openai/v1/chat/completions` mimics the upstream. It answers the issue's 400 body
    (`"Thinking mode does not support this tool_choice"`) unless the request carries
    `thinking.type == "disabled"`, and otherwise answers a `submit` tool call with an Allow verdict.
-   Resolve `go/deepseek-v4.1-flash`, build the guardian with `agent::build_guardian`, adjudicate,
+   Add `deepseek-v4.1-flash` to the stand-in's listing in `gateway()` (lines 69-76, which today
+   lists only kimi-k3, gpt-5.6-luna, claude-haiku-5-5 and gemini-4-argon-contributor). Resolve
+   `go/deepseek-v4.1-flash`, build the guardian with
+   `agent::build_guardian(Some(&GuardianModel::Ready(handle)), &config, profile)`, adjudicate,
    and assert an Allow with no `fail_closed`. Before the fix this test fails with
    `FailClosed::Error`, which is the bug.
 2. **Scanner, same wire**: build `scanner_stage::llm_backend` on the same handle against the same
    stand-in (answering a `clean` verdict), and assert `Scan::Clean`.
-3. **The issue's invariant across wires**: for one Chat model, one Messages model, one Responses
-   model and one Gemini model, capture the guardian request body. Assert that a forced tool choice
-   (`"required"` on OpenAI wires, `{"type": "any"}` on Messages) appears only together with
-   `thinking.type == "disabled"` on the wires that take it. Assert that Responses and Gemini bodies
-   carry no `thinking` key, which pins their requests as unchanged.
-4. **Fail-closed unchanged**: a gateway that answers the 400 even with thinking off still yields
-   `Decision::Deny` with `FailClosed::Error` (guardian) and `Scan::Failed` (scanner).
-5. **Guardian crate unit tests**: with `with_additional_params(Some(..))`, the params reach the
+3. **Messages wire**: capture the guardian request body for a model the anthropic catalog does not
+   list (`minimax-m3` or `claude-haiku-5-5`, served by the existing `/anthropic/v1/messages`
+   stand-in; rig drops the forced tool choice for catalog models with `rejects_forced_tool_choice`).
+   Assert that `tool_choice {"type":"any"}` appears together with `thinking.type == "disabled"`.
+4. **Guardian crate unit tests**: with `with_additional_params(Some(..))`, the params reach the
    request body beside the forced tool choice. With `None`, the body has no extra keys. Use a
    wiremock OpenAI-dialect endpoint, as the crate's existing tests do.
-6. **Provider unit test** (`opencode_go.rs` tests module): `thinking_off` per wire, including a
+5. **Provider unit test** (`opencode_go.rs` tests module): `thinking_off` per wire, including a
    `wires` override that moves a model from Chat to Responses (→ `None`).
 
 ## Manual Verification
 
 1. With an `opencode-go` account signed in, set `[guardian] model = "<account>/deepseek-v4.1-flash"`
-   and run `cargo run -p fontaine -- -p "run ls"` from `rust/`. Expected: the `ls` call is
-   adjudicated and not denied as `GuardianUnavailable`. This is not automated because it checks the
+   and run `cargo run -p fontaine -- -p "run ls ../" --permission-mode auto` from `rust/`
+   (headless starts in `manual`, and a workspace-contained `ls` takes the read-only fast path; an
+   out-of-scope read goes to the guardian, per `docs/permissions.md`). Expected: the stream/audit
+   shows a guardian verdict for the call, not `GuardianUnavailable`. This is not automated because it checks the
    live gateway forwarding `thinking` to the upstream model. That is a real dependency's behavior,
    and a stand-in cannot reproduce it.
 
 ## Open Questions
 
-- None that block implementation. Whether the Go gateway forwards `thinking` to every Chat-wire
-  upstream is settled only by the manual check above.
+None.
 
 ## Decisions
