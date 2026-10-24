@@ -71,7 +71,7 @@ From code.claude.com/docs (`/en/commands`, `/en/model-config`):
 
 ```toml
 [context]
-autocompact_window = 150000   # tokens; compaction runs once a turn would send more
+autocompact_window = 150000   # tokens; compaction runs once the conversation's messages exceed it
 ```
 
 - New `ContextSection { autocompact_window: Option<u64> }` in `Settings` (`deny_unknown_fields`),
@@ -86,6 +86,10 @@ autocompact_window = 150000   # tokens; compaction runs once a turn would send m
   `policy.over_threshold(tokens, spec) || autocompact_window.is_some_and(|w| tokens > w)`. So the
   effective trigger is the lower of the window minus rig's reserve and the configured window,
   which is Claude Code's "capped at the model's context window".
+- `set_autocompact_window` also sets `policy.keep_recent = policy.keep_recent.min(w / 4)` (the
+  `window / 4` rule rig-memory applies to a known window). Without it a window below
+  `keep_recent` (20k) never compacts (`cut_at` keeps that many tokens), and one just above it
+  stays over the window after each compaction, so the summarizer would run every turn.
 - The `Threshold` early return on an unknown model window is narrowed: with
   `autocompact_window` set, threshold compaction runs even when the catalog does not know the
   window (Claude Code's gateway case: "set the window … so sessions compact at that boundary").
@@ -111,33 +115,37 @@ autocompact_window = 150000   # tokens; compaction runs once a turn would send m
   new to summarize). Existing callers take `.usage`.
 - TUI: `Command::Compact(String)`; the arm runs `compact_logged` with
   `CompactReason::Asked { focus }` on the main model, while the turn loop keeps serving keys and
-  draws a `compacting…` status (the same `running` flag a turn sets, so Enter queues text). The
-  usage is added to the session totals the way a turn's is. Notices:
+  draws a `compacting…` status (the same `running` flag a turn sets, so Enter queues text). Text
+  submitted meanwhile comes back as `Action::Queue`; the `/compact` loop queues it to
+  `runtime.steering` as the turn loop does, and when the compaction future ends or is interrupted
+  calls `runtime.steering.retract()` and `self.app.restore_to_input(&messages.join("\n\n"))`, as
+  `edit_queued` does, so the text is back in the input box and never reaches the next turn
+  mid-way. The usage goes to the `fontaine.compaction` span only, as the turn path's compaction
+  does. Notices:
   - saved: `compacted the conversation: ~41.2k → ~6.3k tokens`
   - nothing to summarize: `nothing to compact`
   - a failure already warned through the `Approver`; no second notice.
 - Esc interrupts it like a turn: the future is dropped, the saved conversation is untouched
-  (`compact` saves only at its end).
+  (`compact` saves only at its end), and any queued text is restored to the input box.
 
 ### `/clear`
 
 `/clear` empties the model's context in the **same session**: same id, same ledger, audit log,
 grants and mode. (Claude Code starts a new session id; see Decisions.)
 
-- `Session::clear(&self) -> Result<(), ClearError>`: loads the `main` log, removes every
+- `async fn Session::clear(&self) -> Result<(), ClearError>`: loads the `main` log, removes every
   aside (`Conversation::remove_aside` over `asides()`, which takes the `rig.compaction` records
-  with them), calls `set_entries(Vec::new(), Author::plugin("clear"))`, and saves. Both are
+  with them), calls `set_entries(Vec::new(), Author::plugin("clear"))`, and saves (`load_async` / `save_async`, like `compact`). Both are
   logged changes, so the file still holds the old conversation; only the live view is empty.
   Removing the compaction asides matters: `summary_state` builds the next summary on the newest
   `Compacted` record, so leaving them would carry the cleared conversation's summary into the
-  next compaction. If the conversation is halted (`halted()`), `resume()` is called so the empty
-  conversation is usable. `ClearError` is a plain chain (`source()`), not a dispatch enum.
+  next compaction. `ClearError` is a plain chain (`source()`), not a dispatch enum.
 - Ledger: new `Record::ContextCleared {}`. `LedgerView::apply` clears `user_messages` on it, so
   the guardian's `task_intent` and `recent_user_messages` start again from what the human asks
   after the clear — the same view a new Claude Code session gives its classifier. Actions,
   denials, the file index and created-file facts are kept: they describe the workspace, not the
   conversation.
-- `AgentRuntime::clear_conversation(&self) -> Result<(), ClearError>` runs `Session::clear`, then
+- `async fn AgentRuntime::clear_conversation(&self) -> Result<(), ClearError>` runs `Session::clear`, then
   appends the record. The record is appended only after the clear succeeded, so the ledger never
   claims a clear that did not happen.
 - TUI: `Command::Clear(String)` with aliases `reset` and `new`. A non-empty argument is an error
@@ -173,14 +181,17 @@ A read-only notice, built by a pure function from a core snapshot.
   ```
 
   Every count is the `HeuristicTokenCounter::default()` estimate rig-memory's threshold uses
-  (text counted as `count(&Message::user(text))`, tools with `count_tool`), so `/context` and the
-  compaction trigger agree.
+  (text counted as `count(&Message::user(text))`, tools with `count_tool`). The `messages` row and
+  the trigger agree because both use `estimate_tokens` on the conversation and
+  `Session::autocompact_at`; the trigger counts messages only, not the prompt or tools.
 - `build_agent` keeps what it assembled: the `Parts` → `PromptParts` texts are stored on
   `AgentRuntime` as `prompt_pieces: PromptPieces` (owned strings for each layer), refreshed by
-  `rebuild`. `prompt::assemble` takes the same parts, so the pieces are exactly what is sent.
+  `rebuild`. Each layer string is stored exactly as `prompt::assemble` joins it (the filled base
+  with `{{workspace_roots}}` substituted, or the replacement; the framed instruction and
+  output-style layers), so `/add-dir`'s rebuild updates the counts.
 - `Session::autocompact_at(spec) -> Option<u64>` gives the effective trigger (the min of
-  `window - reserve` and the configured window) from the same inputs as `over_threshold`, so the
-  report cannot drift from the trigger.
+  `window - reserve` and the configured window) from the same inputs as `over_threshold`; the
+  report compares it with the `messages` row.
 - `AgentRuntime::context_usage(&self) -> ContextUsage` (async: it loads the conversation and the
   tool definitions).
 - TUI: `Command::Context(String)`; `reports::context(&ContextUsage, all: bool)`:
@@ -194,15 +205,17 @@ A read-only notice, built by a pure function from a core snapshot.
     MCP tools       2.9k  (9)
     messages       35.7k
     free          151.4k
-  auto-compacts at ~183.6k (window minus a 16.4k reserve)
+  auto-compacts when messages pass ~183.6k (window minus a 16.4k reserve)
   ```
 
   - With `all`, each instruction file, tool and MCP tool gets its own indented line under its
     row, largest first. Any other argument is an error notice naming `all`.
   - Unknown window: the first line reads `~48.6k tokens, estimated (window unknown)`, no `free`
     row, and the last line `no automatic compaction: the model's window is unknown` unless
-    `autocompact_window` is set (`auto-compacts at ~150.0k ([context] autocompact_window)`).
-  - Over the window: a last line `over the window by ~12.0k tokens: /compact or /clear frees space`.
+    `autocompact_window` is set (`auto-compacts when messages pass ~150.0k ([context] autocompact_window)`).
+  - Over the window (the total, prompt and tools included, against the window, which is what the
+    provider rejects): a last line `over the window by ~12.0k tokens: /compact or /clear frees
+    space`.
   - `output style` appears only when one is set.
 
 ### Headless
@@ -214,8 +227,6 @@ commands are terminal-UI only, as the other built-ins are.
 
 1. **Config.** Add `ContextSection` / `Context` and the `context` field in
    `rust/fontaine-core/src/config.rs`: parse, the `0` check, the project-scope rejection, merge.
-   Update `docs/schemas` if the settings JSON schema lists sections (check how `[agents]` is
-   represented there).
 2. **Session trigger.** In `session.rs`, add `autocompact_window`, its setter,
    `over_threshold`, `autocompact_at`, the narrowed unknown-window return, `CompactOutcome`, and
    `compact_logged` (with the reason on the span). Update `compact_if_needed`'s callers
@@ -245,32 +256,24 @@ commands are terminal-UI only, as the other built-ins are.
 - `rust/fontaine-core/tests/ledger.rs`, `rust/fontaine-core/tests/permissions_auto.rs`
 - `rust/fontaine-tui/tests/tui.rs`, `rust/fontaine/tests/headless_contract.rs`
 - `docs/tui.md`, `docs/configuration.md`, `docs/headless.md`, `docs/architecture.md`,
-  `docs/guardian.md`, `docs/index.md`, `tasks/design/config.md`
+  `docs/guardian.md`, `docs/index.md`, `tasks/design/config.md`,
+  `tasks/design/sessions.md`
 - `CHANGELOG.md` (PR step), `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Trade-offs
 
-- **`/clear` in place vs. a new session id.** A new id means a new ledger, audit log and
-  `SessionState` mid-run (the state holds the ledger and session id as plain fields shared with
-  the gate, the agent tree and the child runner), and the old conversation would be reachable
-  only through `/resume`, which does not exist yet (#10). Clearing in place keeps the
-  old messages in the log file, resets what the guardian treats as the human's intent, and
-  touches two stores. Chosen: in place.
 - **Remove compaction asides vs. a new conversation log name.** A new log name per clear would
   need the current name stored for resume and passed to every agent rebuild. Removing the asides
   is two calls on the loaded conversation. Chosen: remove the asides.
-- **Token window vs. the issue's `autocompact_pct`.** Claude Code moved to a token window and
-  the docs no longer describe a percentage; a token count also states the gateway case directly.
-  Chosen: `autocompact_window`.
-- **`/context` as text vs. a colored grid.** The other reports are read-only transcript notices
-  (core slash-commands decision); the grid adds nothing a table of numbers does not say.
 
 ## Decisions
 
 - 2026-10-24: AFK: `/clear` clears the conversation in the current session (same id, ledger,
   audit log, grants and mode) instead of starting a new session as Claude Code does. Reason:
-  `/resume` (#10) is not there to reach an old session, and swapping the ledger under a live
-  `SessionState` is a rework of its own; the log file keeps the old messages.
+  `SessionState` holds the ledger and session id as plain fields shared with the gate, the agent
+  tree and the child runner, so a new session mid-run is a rework of its own. Accepted: the
+  pre-clear conversation cannot be resumed (`--resume` reopens the empty conversation; the log
+  file keeps the old messages only as logged changes).
 - 2026-10-24: AFK: after `/clear`, the guardian's view of the human's messages restarts at the
   `ContextCleared` ledger record; workspace facts (actions, denials, file index, created files)
   are kept. Reason: matches what a new Claude Code session's classifier sees, without dropping
@@ -294,8 +297,8 @@ commands are terminal-UI only, as the other built-ins are.
 
 - `docs/tui.md` `## Commands`: rows for `/clear` (`/reset`, `/new`), `/compact [<focus>]`,
   `/context [all]`, in sorted order; a short `## Context` section: what each does, that counts are
-  estimates, that `/clear` keeps the session, its permissions and mode, and that Esc interrupts
-  `/compact`.
+  estimates, that `/clear` keeps the session, its permissions and mode and the pre-clear conversation cannot
+  be resumed (`--resume` reopens the empty conversation), and that Esc interrupts `/compact`.
 - `docs/configuration.md`: a `### [context]` section for `autocompact_window` (default unset,
   meaning the window minus rig's reserve; capped by it; applies when the window is unknown), and a
   row in the scope table (project: no; project-local: yes; CLI: yes).
@@ -305,6 +308,9 @@ commands are terminal-UI only, as the other built-ins are.
 - `docs/guardian.md`: the human's messages the guardian sees start after the last `/clear`.
 - `docs/index.md`: the new commands in the terminal UI command list.
 - `tasks/design/config.md`: the `[context]` sample block and the scope-table row.
+- `tasks/design/sessions.md` (line 14): every agent's request takes `task_intent` and
+  `recent_user_messages` from the root's human messages "since the last `ContextCleared` record";
+  `/clear` is listed among the ledger records.
 - `CHANGELOG.md`: `### Added` under `[Unreleased]`, Terminal UI group, citing #11 (PR step).
 
 ## Testing Strategy
@@ -333,14 +339,17 @@ Integration tests (offline: the deterministic test model / wiremock already used
   of the cleared conversation — this is the silent leak the aside removal prevents. The log file
   still contains the old messages.
 - Threshold with a configured window: a conversation under `window - reserve` but over
-  `autocompact_window` compacts; a model with no catalog window compacts when the value is set
+  `autocompact_window` compacts; a small window (e.g. 8k) compacts and leaves the conversation
+  below it; a model with no catalog window compacts when the value is set
   and is left alone when it is not.
 - Guardian request after `/clear` (`tests/permissions_auto.rs`): a human message before the
   clear is absent from `recent_user_messages` and `task_intent`, one after it is present.
 - TUI (`tests/tui.rs`): `/compact focus on the parser` sends a summarizer request containing
   `Additional focus: focus on the parser` and shows the `compacted` notice; `/clear` then a
   message sends a request with no earlier user or assistant message and the ledger holds the
-  record; `/context` after a reply shows the `messages` and `tools` rows.
+  record; `/context` after a reply shows the `messages` and `tools` rows; text typed while
+  `/compact` runs is back in the input box afterwards and no steering message is delivered to the
+  next turn.
 - Headless (`headless_contract.rs`): a `--settings` file with a small `autocompact_window`
   triggers the summarizer call before the turn on a conversation the reserve alone would not
   compact.
