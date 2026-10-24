@@ -19,6 +19,7 @@ use fontaine_core::models::{
 };
 use fontaine_core::permissions::DenyAll;
 use fontaine_core::session::Session;
+use fontaine_tui::linear::Linear;
 use fontaine_tui::screen::Screen;
 use fontaine_tui::{Input, drive};
 use ratatui::backend::TestBackend;
@@ -72,6 +73,8 @@ pub struct World {
     pub confirm_servers: bool,
     /// The main model is resolved from the settings, against this routed endpoint.
     routed: bool,
+    /// The session has no user settings file to save choices to.
+    pub without_user_config: bool,
     /// How many times the interface has been driven.
     runs: Cell<usize>,
 }
@@ -124,6 +127,7 @@ impl World {
             project_executables: true,
             confirm_servers: true,
             routed: false,
+            without_user_config: false,
             runs: Cell::new(0),
         };
         world.mock = MockCompletionModel::from_stream_turns(turns(&world));
@@ -339,7 +343,7 @@ impl World {
             headless: false,
             approver: Arc::new(DenyAll),
             home: Some(self.home.clone()),
-            user_config: Some(self.user_config.clone()),
+            user_config: (!self.without_user_config).then(|| self.user_config.clone()),
             guardian_profile: fontaine_guardian::Profile::Full,
             notices: Vec::new(),
             scanner: Default::default(),
@@ -395,6 +399,41 @@ impl World {
         result.unwrap();
     }
 
+    /// Like [`World::run`], with the linear screen-reader renderer writing to `bytes`. The
+    /// script's `screen()` is everything written so far.
+    pub async fn run_linear<F, Fut>(&self, bytes: Rc<RefCell<Vec<u8>>>, script: F)
+    where
+        F: FnOnce(Ui) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        self.runs.set(self.runs.get() + 1);
+        let (keys, rx) = unbounded_channel();
+        let screen = Rc::new(RefCell::new(String::new()));
+        let mut linear = Linear::new(SharedWriter(bytes.clone()));
+        let shown = screen.clone();
+        let render = move |app: &mut fontaine_tui::App| {
+            linear.render(app).unwrap();
+            *shown.borrow_mut() = String::from_utf8_lossy(&bytes.borrow()).into_owned();
+        };
+        let ui = Ui {
+            keys,
+            screen,
+            live: Rc::default(),
+            copied: Rc::default(),
+        };
+        let (result, ()) = tokio::join!(
+            drive(
+                self.setup(),
+                self.work.clone(),
+                rx,
+                render,
+                |_: &str| Ok(())
+            ),
+            script(ui)
+        );
+        result.unwrap();
+    }
+
     /// What the scripted guardian was asked, one entry per request.
     pub fn guardian_requests(&self) -> Vec<String> {
         self.guardian.as_ref().map_or_else(Vec::new, |mock| {
@@ -411,6 +450,20 @@ impl World {
             .iter()
             .map(|r: &CompletionRequest| format!("{r:?}"))
             .collect()
+    }
+}
+
+/// A writer whose bytes the test can read while the interface owns it.
+pub struct SharedWriter(pub Rc<RefCell<Vec<u8>>>);
+
+impl std::io::Write for SharedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 

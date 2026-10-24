@@ -3,11 +3,12 @@
 
 use fontaine_core::audit::Decision;
 use fontaine_core::turn::SessionEvent;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::input::wrap;
+use crate::theme::Theme;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolStatus {
@@ -235,45 +236,68 @@ impl Transcript {
     }
 
     #[cfg(test)]
-    pub fn lines(&self, width: usize) -> Vec<Line<'static>> {
+    pub fn lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let mut out = Vec::new();
         for entry in &self.entries {
-            entry_lines(entry, width, 0, &mut out);
+            entry_lines(entry, width, 0, theme, &mut out);
         }
         out
     }
 
-    /// The lines that have settled since the last call, for the terminal's scrollback. A
-    /// streaming reply is committed a row at a time, keeping its last row live, and nothing
-    /// behind an unsettled entry is committed before it.
-    pub fn commit(&mut self, width: usize) -> Vec<Line<'static>> {
-        let mut out = Vec::new();
+    /// Advances the commit cursor over what has settled and returns it. A streaming reply is
+    /// cut by `cut`, keeping its tail back, and nothing behind an unsettled entry is committed
+    /// before it. Every renderer settles through here.
+    pub(crate) fn commit_entries(&mut self, cut: Cut) -> Vec<Settled<'_>> {
+        let mut found = Vec::new();
         while let Some(entry) = self.entries.get(self.committed) {
             if let Entry::Assistant {
                 text,
                 streaming: true,
             } = entry
             {
-                let mut rows = assistant_rows(text, self.committed_chars, width);
-                rows.pop();
-                if let Some((_, end)) = rows.last() {
-                    self.committed_chars = *end;
+                let end = cut.end(text, self.committed_chars);
+                if end > self.committed_chars {
+                    found.push((self.committed, self.committed_chars, Some(end)));
+                    self.committed_chars = end;
                 }
-                out.extend(rows.into_iter().map(|(line, _)| line));
                 break;
             }
             if !is_settled(entry) {
                 break;
             }
-            entry_lines(entry, width, self.committed_chars, &mut out);
+            found.push((self.committed, self.committed_chars, None));
             self.committed += 1;
             self.committed_chars = 0;
+        }
+        found
+            .into_iter()
+            .map(|(i, skip, end)| Settled {
+                entry: &self.entries[i],
+                skip,
+                end,
+            })
+            .collect()
+    }
+
+    /// The lines that have settled since the last call, for the terminal's scrollback. A
+    /// streaming reply is committed a row at a time, keeping its last row live.
+    pub fn commit(&mut self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        let mut out = Vec::new();
+        for settled in self.commit_entries(Cut::Rows(width)) {
+            match (settled.entry, settled.end) {
+                (Entry::Assistant { text, .. }, Some(_)) => {
+                    let mut rows = assistant_rows(text, settled.skip, width);
+                    rows.pop();
+                    out.extend(rows.into_iter().map(|(line, _)| line));
+                }
+                (entry, _) => entry_lines(entry, width, settled.skip, theme, &mut out),
+            }
         }
         out
     }
 
     /// What is not in scrollback yet.
-    pub fn live_lines(&self, width: usize) -> Vec<Line<'static>> {
+    pub fn live_lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let mut out = Vec::new();
         for (i, entry) in self.entries.iter().enumerate().skip(self.committed) {
             let skip = if i == self.committed {
@@ -281,10 +305,49 @@ impl Transcript {
             } else {
                 0
             };
-            entry_lines(entry, width, skip, &mut out);
+            entry_lines(entry, width, skip, theme, &mut out);
         }
         out
     }
+}
+
+/// Where a streaming reply is cut when it is committed.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Cut {
+    /// Whole wrapped rows at this width, keeping the last row live.
+    Rows(usize),
+    /// Whole lines, up to the last `\n`; the terminal does the wrapping.
+    Lines,
+}
+
+impl Cut {
+    /// The char offset in `text` that a commit starting at `from` runs to.
+    fn end(self, text: &str, from: usize) -> usize {
+        match self {
+            Cut::Rows(width) => {
+                let mut rows = assistant_rows(text, from, width);
+                rows.pop();
+                rows.last().map_or(from, |(_, end)| *end)
+            }
+            Cut::Lines => text
+                .chars()
+                .skip(from)
+                .enumerate()
+                .filter(|(_, c)| *c == '\n')
+                .last()
+                .map_or(from, |(i, _)| from + i + 1),
+        }
+    }
+}
+
+/// A piece of the transcript that has settled.
+pub(crate) struct Settled<'a> {
+    pub entry: &'a Entry,
+    /// Chars of the entry's text written before this piece.
+    pub skip: usize,
+    /// For a piece of a streaming reply, the char offset it runs to; `None` is the rest of the
+    /// entry.
+    pub end: Option<usize>,
 }
 
 fn is_settled(entry: &Entry) -> bool {
@@ -351,13 +414,17 @@ fn assistant_rows(text: &str, from: usize, width: usize) -> Vec<(Line<'static>, 
 }
 
 /// `skip` is the chars of an assistant reply already written to scrollback.
-fn entry_lines(entry: &Entry, width: usize, skip: usize, out: &mut Vec<Line<'static>>) {
+fn entry_lines(
+    entry: &Entry,
+    width: usize,
+    skip: usize,
+    theme: &Theme,
+    out: &mut Vec<Line<'static>>,
+) {
     let dim = Style::default().add_modifier(Modifier::DIM);
     match entry {
         Entry::User(text) => {
-            let bold = Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD);
+            let bold = Style::default().fg(theme.user).add_modifier(Modifier::BOLD);
             prefixed(text, width, "> ", bold, out);
             out.push(Line::default());
         }
@@ -373,15 +440,15 @@ fn entry_lines(entry: &Entry, width: usize, skip: usize, out: &mut Vec<Line<'sta
         } => {
             let (mark, style, detail) = match status {
                 ToolStatus::Pending => ("…", dim, String::new()),
-                ToolStatus::Done => ("✓", Style::default().fg(Color::Green), String::new()),
+                ToolStatus::Done => ("✓", Style::default().fg(theme.success), String::new()),
                 ToolStatus::Failed(why) => (
                     "✗",
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(theme.error),
                     format!(" failed: {why}"),
                 ),
                 ToolStatus::Denied(why) => (
                     "✗",
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(theme.error),
                     format!(" denied: {why}"),
                 ),
                 ToolStatus::Interrupted => ("−", dim, " interrupted".to_string()),
@@ -404,7 +471,7 @@ fn entry_lines(entry: &Entry, width: usize, skip: usize, out: &mut Vec<Line<'sta
             ]));
         }
         Entry::Notice(text) => prefixed(text, width, "· ", dim, out),
-        Entry::Error(text) => prefixed(text, width, "! ", Style::default().fg(Color::Red), out),
+        Entry::Error(text) => prefixed(text, width, "! ", Style::default().fg(theme.error), out),
         Entry::Shell {
             command, output, ..
         } => {
@@ -422,6 +489,10 @@ fn entry_lines(entry: &Entry, width: usize, skip: usize, out: &mut Vec<Line<'sta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn theme() -> Theme {
+        Theme::default()
+    }
 
     fn text(lines: &[Line<'static>]) -> Vec<String> {
         lines
@@ -484,9 +555,9 @@ mod tests {
         t.notice("heads up");
         delta(&mut t, "second");
         t.interrupt_pending();
-        let out = text(&t.commit(40));
+        let out = text(&t.commit(40, &theme()));
         assert_eq!(out, vec!["first", "· heads up", "second"]);
-        assert!(t.live_lines(40).is_empty());
+        assert!(t.live_lines(40, &theme()).is_empty());
     }
 
     /// Feeds `full` in chunks of `chunk` chars, committing after every chunk.
@@ -495,20 +566,20 @@ mod tests {
         t.user("q".into());
         let chars: Vec<char> = full.chars().collect();
         let mut out = Vec::new();
-        out.extend(text(&t.commit(width)));
+        out.extend(text(&t.commit(width, &theme())));
         for piece in chars.chunks(chunk) {
             delta(&mut t, &piece.iter().collect::<String>());
-            out.extend(text(&t.commit(width)));
+            out.extend(text(&t.commit(width, &theme())));
         }
         t.on_event(SessionEvent::Assistant(full.into()));
-        out.extend(text(&t.commit(width)));
-        assert!(t.live_lines(width).is_empty());
+        out.extend(text(&t.commit(width, &theme())));
+        assert!(t.live_lines(width, &theme()).is_empty());
         let mut whole = Transcript::default();
         whole.user("q".into());
         whole.on_event(SessionEvent::Assistant(full.into()));
         assert_eq!(
             out,
-            text(&whole.lines(width)),
+            text(&whole.lines(width, &theme())),
             "chunk {chunk} width {width}"
         );
         out
@@ -542,10 +613,10 @@ mod tests {
         let chars: Vec<char> = full.chars().collect();
         for (i, piece) in chars.chunks(4).enumerate() {
             delta(&mut t, &piece.iter().collect::<String>());
-            out.extend(text(&t.commit(widths[i % widths.len()])));
+            out.extend(text(&t.commit(widths[i % widths.len()], &theme())));
         }
         t.on_event(SessionEvent::Assistant(full.into()));
-        out.extend(text(&t.commit(6)));
+        out.extend(text(&t.commit(6, &theme())));
         assert_eq!(out.concat(), full.replace('\n', ""));
     }
 
@@ -553,8 +624,11 @@ mod tests {
     fn a_shell_entry_shows_the_command_and_its_output() {
         let mut t = Transcript::default();
         t.shell("echo hi".into(), "hi\n[exit 0]".into(), Some(0));
-        assert_eq!(text(&t.commit(40)), vec!["! echo hi", "hi", "[exit 0]", ""]);
-        assert!(t.live_lines(40).is_empty());
+        assert_eq!(
+            text(&t.commit(40, &theme())),
+            vec!["! echo hi", "hi", "[exit 0]", ""]
+        );
+        assert!(t.live_lines(40, &theme()).is_empty());
     }
 
     #[test]
@@ -563,25 +637,28 @@ mod tests {
         t.user("go".into());
         call(&mut t, "a", "shell");
         t.notice("after");
-        assert_eq!(text(&t.commit(40)), vec!["> go", ""]);
-        assert_eq!(t.live_lines(40).len(), 2);
+        assert_eq!(text(&t.commit(40, &theme())), vec!["> go", ""]);
+        assert_eq!(t.live_lines(40, &theme()).len(), 2);
         result(&mut t, "a", "shell");
-        assert_eq!(text(&t.commit(40)), vec!["• shell a ✓", "· after"]);
-        assert!(t.live_lines(40).is_empty());
+        assert_eq!(
+            text(&t.commit(40, &theme())),
+            vec!["• shell a ✓", "· after"]
+        );
+        assert!(t.live_lines(40, &theme()).is_empty());
     }
 
     #[test]
     fn live_lines_hold_the_partial_row_only() {
         let mut t = Transcript::default();
         delta(&mut t, "abcdef");
-        assert!(t.commit(4).len() == 1);
-        assert_eq!(text(&t.live_lines(4)), vec!["ef"]);
+        assert!(t.commit(4, &theme()).len() == 1);
+        assert_eq!(text(&t.live_lines(4, &theme())), vec!["ef"]);
         delta(&mut t, "gh");
-        assert!(t.commit(4).is_empty());
-        assert_eq!(text(&t.live_lines(4)), vec!["efgh"]);
+        assert!(t.commit(4, &theme()).is_empty());
+        assert_eq!(text(&t.live_lines(4, &theme())), vec!["efgh"]);
         delta(&mut t, "i");
-        assert_eq!(text(&t.commit(4)), vec!["efgh"]);
-        assert_eq!(text(&t.live_lines(4)), vec!["i"]);
+        assert_eq!(text(&t.commit(4, &theme())), vec!["efgh"]);
+        assert_eq!(text(&t.live_lines(4, &theme())), vec!["i"]);
     }
 
     #[test]
@@ -589,7 +666,7 @@ mod tests {
         let mut t = Transcript::default();
         call(&mut t, "a", "shell");
         result(&mut t, "a", "shell");
-        assert_eq!(t.commit(40).len(), 1);
+        assert_eq!(t.commit(40, &theme()).len(), 1);
         call(&mut t, "b", "shell");
         t.guardian_denied("a", "shell", "r", "why");
         result(&mut t, "a", "shell");
@@ -614,7 +691,7 @@ mod tests {
         let mut t = Transcript::default();
         t.user("q".into());
         t.on_event(SessionEvent::Assistant("old".into()));
-        assert!(!t.commit(80).is_empty());
+        assert!(!t.commit(80, &Theme::default()).is_empty());
         t.clear();
         assert!(t.entries.is_empty());
         assert_eq!(t.assistant_reply(1), None);
@@ -622,8 +699,64 @@ mod tests {
         t.on_event(SessionEvent::Assistant("fresh".into()));
         assert_eq!(t.assistant_reply(1), Some("fresh"));
         assert!(
-            !t.commit(80).is_empty(),
+            !t.commit(80, &Theme::default()).is_empty(),
             "committing restarts with the new conversation"
         );
+    }
+
+    fn span_fg(line: &Line<'static>, containing: &str) -> Option<ratatui::style::Color> {
+        line.spans
+            .iter()
+            .find(|s| s.content.contains(containing))
+            .and_then(|s| s.style.fg)
+    }
+
+    #[test]
+    fn the_default_theme_colours_tools_and_errors_as_the_interface_always_has() {
+        use ratatui::style::Color;
+        let mut t = Transcript::default();
+        t.user("q".into());
+        call(&mut t, "a", "shell");
+        result(&mut t, "a", "shell");
+        call(&mut t, "b", "shell");
+        t.on_event(SessionEvent::ToolResult {
+            id: "b".into(),
+            tool: "shell".into(),
+            success: false,
+            text: "boom".into(),
+        });
+        t.error("bad");
+        let lines = t.lines(40, &Theme::default());
+        assert_eq!(span_fg(&lines[0], "> "), Some(Color::Cyan));
+        assert_eq!(span_fg(&lines[2], "✓"), Some(Color::Green));
+        assert_eq!(span_fg(&lines[3], "✗"), Some(Color::Red));
+        assert_eq!(span_fg(&lines[4], "!"), Some(Color::Red));
+    }
+
+    #[test]
+    fn another_theme_changes_the_colours() {
+        use fontaine_core::config::ThemeName;
+        let mut t = Transcript::default();
+        call(&mut t, "a", "shell");
+        result(&mut t, "a", "shell");
+        let theme = Theme::preset(ThemeName::LightDaltonized);
+        let lines = t.lines(40, &theme);
+        assert_eq!(span_fg(&lines[0], "✓"), Some(theme.success));
+    }
+
+    #[test]
+    fn a_streaming_reply_settles_by_line_when_cut_at_newlines() {
+        let mut t = Transcript::default();
+        delta(&mut t, "one\ntw");
+        let first = t.commit_entries(Cut::Lines);
+        assert_eq!(first.len(), 1);
+        assert_eq!((first[0].skip, first[0].end), (0, Some(4)));
+        assert!(t.commit_entries(Cut::Lines).is_empty());
+        delta(&mut t, "o\n");
+        let second = t.commit_entries(Cut::Lines);
+        assert_eq!((second[0].skip, second[0].end), (4, Some(8)));
+        t.on_event(SessionEvent::Assistant("one\ntwo\n".into()));
+        let rest = t.commit_entries(Cut::Lines);
+        assert_eq!((rest[0].skip, rest[0].end), (8, None));
     }
 }

@@ -197,3 +197,17 @@ fn help_and_version_exit_zero() {
         assert!(!out.stdout.is_empty());
     }
 }
+
+#[test]
+fn print_accepts_the_screen_reader_flag_and_prints_no_confirmation() {
+    let s = Sandbox::new();
+    let out = s.run(&["-p", "--ax-screen-reader", "hello"]);
+    // The run gets past argument parsing to the missing model, as without the flag.
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("no main model"), "{}", stderr(&out));
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("Screen Reader Mode"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}

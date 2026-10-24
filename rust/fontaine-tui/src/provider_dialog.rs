@@ -10,8 +10,10 @@ use fontaine_core::config::AccountKind;
 use fontaine_core::providers::{self as accounts_providers, CredentialPolicy};
 use fontaine_tools::error_chain::chain;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
+
+use crate::theme::Theme;
 
 /// A secret typed or pasted into the dialog. It has no `Display` and its `Debug` is redacted, so
 /// it cannot be formatted into a log line or a transcript by accident.
@@ -625,13 +627,13 @@ impl ProviderDialog {
     }
 
     /// The rows under the title, at most `max_rows` of them.
-    pub fn body(&self, width: usize, max_rows: usize) -> Vec<Line<'static>> {
+    pub fn body(&self, width: usize, max_rows: usize, theme: &Theme) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let dim = Style::default().add_modifier(Modifier::DIM);
-        let warn = Style::default().fg(Color::Yellow);
+        let warn = Style::default().fg(theme.warning);
         let line = |text: String| Line::raw(clip(&text, width));
         match &self.screen {
-            Screen::List => self.list_body(width, max_rows),
+            Screen::List => self.list_body(width, max_rows, theme),
             Screen::Kind { selected } => {
                 let mut out = vec![Line::styled("kind of account", bold)];
                 for (i, kind) in accounts::kinds().into_iter().enumerate() {
@@ -760,9 +762,9 @@ impl ProviderDialog {
         }
     }
 
-    fn list_body(&self, width: usize, max_rows: usize) -> Vec<Line<'static>> {
+    fn list_body(&self, width: usize, max_rows: usize, theme: &Theme) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
-        let warn = Style::default().fg(Color::Yellow);
+        let warn = Style::default().fg(theme.warning);
         let name_w = self
             .rows
             .iter()
@@ -827,6 +829,17 @@ impl ProviderDialog {
         };
         out.extend(lines.into_iter().skip(start).take(room));
         out
+    }
+
+    /// The text field the dialog has open, as a prompt and what is typed (a key stays masked),
+    /// for a renderer that echoes typing instead of redrawing the dialog.
+    pub fn field(&self) -> Option<(&'static str, String)> {
+        match &self.screen {
+            Screen::Name { input, .. } => Some(("name: ", input.clone())),
+            Screen::BaseUrl { input, .. } => Some(("base URL: ", input.clone())),
+            Screen::Key { input, .. } => Some(("API key: ", "•".repeat(input.chars().count()))),
+            _ => None,
+        }
     }
 
     pub fn footer(&self) -> Vec<Line<'static>> {
@@ -906,7 +919,7 @@ mod tests {
     }
 
     fn text(d: &ProviderDialog) -> String {
-        d.body(100, 20)
+        d.body(100, 20, &Theme::default())
             .iter()
             .map(|l| {
                 l.spans
@@ -1326,7 +1339,7 @@ mod tests {
             press(&mut d, KeyCode::Down);
         }
         let shown: Vec<String> = d
-            .body(100, 6)
+            .body(100, 6, &Theme::default())
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();

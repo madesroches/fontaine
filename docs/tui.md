@@ -4,7 +4,8 @@
 output it exits with code 2 and points at `fontaine -p`. Configuration, accounts and permission
 rules work as in headless runs; the mode is the one from `[permissions] default_mode` or
 `--permission-mode`. With neither set, the terminal UI starts in `auto`, the mode where the
-[guardian](guardian.md) judges each call that nothing pre-approved.
+[guardian](guardian.md) judges each call that nothing pre-approved. Newline keys, tmux and macOS
+settings, colour themes and screen-reader mode are on [Terminal setup](terminal.md).
 
 The UI draws inline, not on the alternate screen, but it takes the whole terminal when it starts:
 the shell's earlier output scrolls into the terminal's history. The transcript reads top-down, with
@@ -51,7 +52,7 @@ The bar shows the permission mode, the model, how many subagents are running, an
 
 | Key | Action |
 |---|---|
-| Enter | Submit. Alt+Enter, Shift+Enter or Ctrl+J insert a newline; a trailing `\` before Enter also continues the line. While a turn runs, a message is queued (see [Messages during a turn](#messages-during-a-turn)). With a `@` list open, Enter completes instead. |
+| Enter | Submit. Alt+Enter, Shift+Enter or Ctrl+J insert a newline; a trailing `\` before Enter also continues the line. Which of these your terminal sends, and how to bind Shift+Enter, is in [Terminal setup](terminal.md#new-lines-in-the-message-box). While a turn runs, a message is queued (see [Messages during a turn](#messages-during-a-turn)). With a `@` list open, Enter completes instead. |
 | Up, Down | On the first or last line of the input, recall older or newer submitted inputs; elsewhere they move the cursor. With messages queued, Up takes them back into the input. |
 | Ctrl-R | Search the prompt history; see [History](#history). |
 | Tab | Completes the `@` file under the cursor when a list is open. |
@@ -192,6 +193,7 @@ conversation. The session starts in the mode your settings give, with no grants 
 | `/plan [<description>]` | Switches to plan mode, as Shift+Tab does. With a description it also sends it as your next message, so `/plan fix the auth bug` plans the fix. |
 | `/skills` | Lists every loaded [skill](extensions.md#skills) with its scope, marking those only the model can use, those only you can run, and those a built-in command hides. |
 | `/status` | Shows the version, the session id, the workspace roots, the permission mode, the main model, the guardian (or why it is unavailable) with its profile, the output style, and how many MCP servers are connected. |
+| `/theme [<name>]` | Without an argument, lists the colour themes, marks the current one and names the file the choice is saved to. With a name, switches to that theme at once and saves it as `[tui] theme` in your user settings file. An unknown name is an error that lists the themes. See [Terminal setup](terminal.md#colours). |
 | `/<skill> [arguments]` | Runs a [skill](extensions.md#slash-commands-and-arguments). |
 
 Typing `/` lists the built-in commands and your user-invocable skills with their argument hints,
@@ -199,9 +201,9 @@ narrowing as you type; a skill marked `user-invocable: false` does not appear.
 
 `/copy` writes the reply with an OSC 52 escape, so it needs a terminal that supports OSC 52
 clipboard access. Inside tmux it first loads the reply with `tmux load-buffer -w -`, which tmux
-forwards to the outer terminal under its default `set-clipboard external`; if that fails the
-reply still lands in a tmux buffer. A terminal that ignores the escape leaves the clipboard
-unchanged without reporting an error.
+forwards to the outer terminal under its default `set-clipboard external` (see
+[tmux](terminal.md#tmux)); if that fails the reply still lands in a tmux buffer. A terminal that
+ignores the escape leaves the clipboard unchanged without reporting an error.
 
 ## Context
 

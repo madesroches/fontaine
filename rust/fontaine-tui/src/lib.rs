@@ -2,6 +2,7 @@
 //! loop with the terminal swapped for an input channel and a render callback, which is how the
 //! tests exercise it.
 
+pub mod accessibility;
 pub mod agents_panel;
 pub mod app;
 pub mod approval;
@@ -11,6 +12,7 @@ pub mod complete;
 pub mod denials;
 pub mod history;
 pub mod input;
+pub mod linear;
 pub mod model_picker;
 pub mod provider_dialog;
 pub mod recent;
@@ -19,6 +21,7 @@ pub mod screen;
 pub mod server_prompt;
 pub mod setup;
 pub mod statusbar;
+pub mod theme;
 pub mod transcript;
 pub mod trust_prompt;
 pub mod view;
@@ -33,7 +36,7 @@ use std::time::{Duration, Instant};
 use fontaine_core::accounts::{self, AccountsError, NewAccount};
 use fontaine_core::agent::{AgentRuntime, AgentSetup, EnvLookup};
 use fontaine_core::audit::Decision;
-use fontaine_core::config::PermissionMode;
+use fontaine_core::config::{PermissionMode, ThemeName};
 use fontaine_core::ledger::Record;
 use fontaine_core::permissions::{
     Answer, ApprovalRequest, Approver, GuardianUnavailable, UnavailableChoice,
@@ -43,6 +46,7 @@ use fontaine_core::tier::Tier;
 use fontaine_core::turn::{
     DEFAULT_MAX_TURNS, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
 };
+use fontaine_core::user_config;
 use fontaine_tools::gate::ROOT_AGENT;
 use futures::future::BoxFuture;
 use ratatui::backend::CrosstermBackend;
@@ -69,6 +73,7 @@ use recent::RecentModels;
 use reports::McpState;
 use screen::{Anchored, Screen};
 use server_prompt::ServerPrompt;
+use theme::Theme;
 
 /// What the permission pipeline sends to the interface.
 enum Prompt {
@@ -505,6 +510,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.app.transcript.notice(reports::help(&skills));
             }
             Some(Command::Status) => self.status(runtime),
+            Some(Command::Theme(name)) => self.theme(&name),
             Some(Command::Permissions) => self.permissions(runtime),
             Some(Command::Mcp(argument)) => self.mcp(&argument),
             Some(Command::Hooks) => {
@@ -789,6 +795,54 @@ impl<R: FnMut(&mut App)> Ui<R> {
             None => self.app.transcript.notice("interrupted"),
         }
         if closed { Break(()) } else { Continue(()) }
+    }
+
+    /// `/theme`: lists the themes, or switches to one and saves the choice.
+    fn theme(&mut self, name: &str) {
+        let current = ThemeName::ALL
+            .into_iter()
+            .find(|t| Theme::preset(*t) == self.app.theme);
+        if name.is_empty() {
+            let names: Vec<String> = ThemeName::ALL
+                .iter()
+                .map(|t| {
+                    if Some(*t) == current {
+                        format!("{} (current)", t.as_str())
+                    } else {
+                        t.as_str().to_string()
+                    }
+                })
+                .collect();
+            let saved = match &self.user_config {
+                Some(path) => format!("saved to {}", path.display()),
+                None => "not saved: there is no user settings file".to_string(),
+            };
+            self.app.transcript.notice(format!(
+                "themes: {} · /theme <name> switches; the choice is {saved}",
+                names.join(", ")
+            ));
+            return;
+        }
+        let Some(chosen) = ThemeName::parse(name) else {
+            let valid: Vec<&str> = ThemeName::ALL.iter().map(|t| t.as_str()).collect();
+            self.app.transcript.error(format!(
+                "unknown theme `{name}`; the themes are {}",
+                valid.join(", ")
+            ));
+            return;
+        };
+        self.app.theme = Theme::preset(chosen);
+        let persist_error = match &self.user_config {
+            Some(path) => user_config::set_theme(path, chosen).err().map(|e| {
+                format!(
+                    "could not save it to {}: {}",
+                    path.display(),
+                    fontaine_tools::error_chain::chain(&e)
+                )
+            }),
+            None => Some("there is no user settings file to save it to".to_string()),
+        };
+        self.finish_switch(format!("theme is now {}", chosen.as_str()), persist_error);
     }
 
     /// `/output-style`: shows the styles, or switches to one for the next turn.
@@ -1608,6 +1662,7 @@ pub async fn drive(
     let env = setup.env.clone();
     let mut runtime = AgentRuntime::new(setup)?;
     runtime.record_session_start().await;
+    let theme = Theme::preset(runtime.config.tui.theme);
     let mut ui = Ui {
         app: App::new(mode, model),
         input,
@@ -1622,6 +1677,7 @@ pub async fn drive(
         mcp_status: Vec::new(),
         clipboard: Box::new(clipboard),
     };
+    ui.app.theme = theme;
     ui.app.history = history;
     ui.app.primary_root = primary_root;
     for error in [history_error, recent_error].into_iter().flatten() {
@@ -1673,19 +1729,30 @@ pub(crate) fn restore_terminal() {
     let _ = disable_raw_mode();
 }
 
-/// Puts the terminal back however the interface exits, panics included.
+/// Puts the terminal back however the interface exits, panics included. Only the graphical
+/// renderer has a live area to clear; the linear one leaves the cursor on a fresh line.
 struct TerminalGuard {
-    screen: Arc<Mutex<LiveScreen>>,
+    screen: Option<Arc<Mutex<LiveScreen>>>,
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         // After a panic the hook has already restored the terminal and printed its message in
         // the live area, which clearing would erase.
-        if !std::thread::panicking()
-            && let Ok(mut screen) = self.screen.lock()
-        {
-            let _ = screen.clear_live();
+        if !std::thread::panicking() {
+            match &self.screen {
+                Some(screen) => {
+                    if let Ok(mut screen) = screen.lock() {
+                        let _ = screen.clear_live();
+                    }
+                }
+                None => {
+                    use std::io::Write;
+                    let mut out = std::io::stdout();
+                    let _ = out.write_all(b"\r\n");
+                    let _ = out.flush();
+                }
+            }
         }
         restore_terminal();
     }
@@ -1711,7 +1778,13 @@ pub(crate) fn read_terminal(tx: &UnboundedSender<Input>, stop: &AtomicBool) {
     }
 }
 
-pub async fn run(setup: AgentSetup, launch_dir: PathBuf) -> Result<(), String> {
+/// Takes over the terminal and runs the session. With `screen_reader` the interface is the
+/// linear one instead of the live area.
+pub async fn run(
+    setup: AgentSetup,
+    launch_dir: PathBuf,
+    screen_reader: Option<accessibility::Source>,
+) -> Result<(), String> {
     enable_raw_mode().map_err(|e| format!("could not start the terminal UI: {e}"))?;
     let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
     let previous_hook = std::panic::take_hook();
@@ -1719,14 +1792,18 @@ pub async fn run(setup: AgentSetup, launch_dir: PathBuf) -> Result<(), String> {
         restore_terminal();
         previous_hook(info);
     }));
-    let screen = match Screen::new(
-        Anchored::new(CrosstermBackend::new(std::io::stdout())),
-        || Anchored::new(CrosstermBackend::new(std::io::stdout())),
-    ) {
-        Ok(screen) => Arc::new(Mutex::new(screen)),
-        Err(e) => {
-            restore_terminal();
-            return Err(format!("could not start the terminal UI: {e}"));
+    let screen = if screen_reader.is_some() {
+        None
+    } else {
+        match Screen::new(
+            Anchored::new(CrosstermBackend::new(std::io::stdout())),
+            || Anchored::new(CrosstermBackend::new(std::io::stdout())),
+        ) {
+            Ok(screen) => Some(Arc::new(Mutex::new(screen))),
+            Err(e) => {
+                restore_terminal();
+                return Err(format!("could not start the terminal UI: {e}"));
+            }
         }
     };
     let _guard = TerminalGuard {
@@ -1742,21 +1819,25 @@ pub async fn run(setup: AgentSetup, launch_dir: PathBuf) -> Result<(), String> {
     // A failed write means stdout is gone: ending the reader closes the input and the session
     // ends the way it does when the terminal closes.
     let on_error = stop.clone();
+    let mut linear = linear::Linear::new(std::io::stdout());
     let result = drive(
         setup,
         launch_dir,
         rx,
         move |app| {
-            let rendered = match screen.lock() {
-                Ok(mut screen) => {
-                    // A rebuild clears rows before redrawing them; one frame hides that.
-                    let mut out = std::io::stdout();
-                    let _ = ratatui::crossterm::execute!(out, BeginSynchronizedUpdate);
-                    let ok = screen.render(app).is_ok();
-                    let _ = ratatui::crossterm::execute!(out, EndSynchronizedUpdate);
-                    ok
-                }
-                Err(_) => false,
+            let rendered = match &screen {
+                Some(screen) => match screen.lock() {
+                    Ok(mut screen) => {
+                        // A rebuild clears rows before redrawing them; one frame hides that.
+                        let mut out = std::io::stdout();
+                        let _ = ratatui::crossterm::execute!(out, BeginSynchronizedUpdate);
+                        let ok = screen.render(app).is_ok();
+                        let _ = ratatui::crossterm::execute!(out, EndSynchronizedUpdate);
+                        ok
+                    }
+                    Err(_) => false,
+                },
+                None => linear.render(app).is_ok(),
             };
             if !rendered {
                 on_error.store(true, Ordering::Relaxed);

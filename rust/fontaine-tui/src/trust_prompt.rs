@@ -1,18 +1,21 @@
 //! The workspace trust prompt, shown before anything the repository defines may run. Trusting
 //! is written to the trust store by the caller; declining holds for this session only.
 
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
+use crate::accessibility::Source;
+use crate::linear::{OverlayEcho, flatten_all};
 use crate::server_prompt::ANSWER_GRACE;
+use crate::theme::Theme;
 
 /// What the workspace holds that would run, for the prompt to name.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -38,15 +41,17 @@ pub struct TrustPrompt {
     summary: Summary,
     selected: Choice,
     opened: Instant,
+    theme: Theme,
 }
 
 impl TrustPrompt {
-    pub fn new(root: &Path, summary: &Summary) -> TrustPrompt {
+    pub fn new(root: &Path, summary: &Summary, theme: Theme) -> TrustPrompt {
         TrustPrompt {
             root: root.to_path_buf(),
             summary: summary.clone(),
             selected: Choice::DontTrust,
             opened: Instant::now(),
+            theme,
         }
     }
 
@@ -96,13 +101,13 @@ impl TrustPrompt {
         }
     }
 
-    fn lines(&self) -> Vec<Line<'static>> {
+    pub(crate) fn lines(&self) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let dim = Style::default().add_modifier(Modifier::DIM);
         let mut out = vec![
             Line::styled(
                 "Do you trust the files in this folder?",
-                bold.fg(Color::Yellow),
+                bold.fg(self.theme.heading),
             ),
             Line::raw(self.root.display().to_string()),
             Line::raw(""),
@@ -176,11 +181,20 @@ impl TrustPrompt {
     }
 }
 
-/// Shows the prompt on the real terminal and waits for the answer.
-pub fn ask(root: &Path, summary: &Summary) -> io::Result<Choice> {
+/// Shows the prompt on the real terminal and waits for the answer. With `screen_reader` it is
+/// printed as lines instead of drawn.
+pub fn ask(
+    root: &Path,
+    summary: &Summary,
+    theme: Theme,
+    screen_reader: Option<Source>,
+) -> io::Result<Choice> {
+    let mut prompt = TrustPrompt::new(root, summary, theme);
+    if screen_reader.is_some() {
+        return ask_linear(&mut prompt);
+    }
     let mut terminal = ratatui::try_init()?;
     let result = (|| {
-        let mut prompt = TrustPrompt::new(root, summary);
         loop {
             terminal.draw(|frame| prompt.draw(frame))?;
             if !event::poll(Duration::from_millis(200))? {
@@ -195,6 +209,50 @@ pub fn ask(root: &Path, summary: &Summary) -> io::Result<Choice> {
     })();
     ratatui::restore();
     result
+}
+
+fn ask_linear(prompt: &mut TrustPrompt) -> io::Result<Choice> {
+    ratatui::crossterm::terminal::enable_raw_mode()?;
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = ratatui::crossterm::terminal::disable_raw_mode();
+        previous_hook(info);
+    }));
+    let result = ask_with(prompt, &mut io::stdout(), next_key, Instant::now);
+    let _ = ratatui::crossterm::terminal::disable_raw_mode();
+    result
+}
+
+/// Blocks until the terminal reports a key.
+fn next_key() -> io::Result<KeyEvent> {
+    loop {
+        if event::poll(Duration::from_millis(200))?
+            && let Event::Key(key) = event::read()?
+        {
+            return Ok(key);
+        }
+    }
+}
+
+/// The prompt as plain lines on `out`, announcing again whatever changes as keys arrive, until
+/// a key answers. `keys` and `clock` are what the terminal and the time are in a real run.
+fn ask_with(
+    prompt: &mut TrustPrompt,
+    out: &mut impl Write,
+    mut keys: impl FnMut() -> io::Result<KeyEvent>,
+    clock: impl Fn() -> Instant,
+) -> io::Result<Choice> {
+    let mut echo = OverlayEcho::default();
+    loop {
+        let shown = echo.update("workspace trust", None, flatten_all(&prompt.lines()));
+        for line in shown.lines {
+            write!(out, "{line}\r\n")?;
+        }
+        out.flush()?;
+        if let Some(choice) = prompt.handle_key_at(keys()?, clock()) {
+            return Ok(choice);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -218,7 +276,7 @@ mod tests {
 
     #[test]
     fn typed_ahead_keys_do_not_answer() {
-        let mut prompt = TrustPrompt::new(Path::new("/work/repo"), &summary());
+        let mut prompt = TrustPrompt::new(Path::new("/work/repo"), &summary(), Theme::default());
         let opened = prompt.opened;
         let y = key(KeyCode::Char('y'));
         assert_eq!(prompt.handle_key_at(y, opened), None);
@@ -232,7 +290,7 @@ mod tests {
 
     #[test]
     fn nothing_is_trusted_until_the_human_says_so() {
-        let mut prompt = TrustPrompt::new(Path::new("/work/repo"), &summary());
+        let mut prompt = TrustPrompt::new(Path::new("/work/repo"), &summary(), Theme::default());
         prompt.opened -= ANSWER_GRACE;
         assert_eq!(prompt.selected(), Choice::DontTrust);
         assert_eq!(
@@ -254,7 +312,7 @@ mod tests {
 
     #[test]
     fn the_prompt_names_what_would_run() {
-        let prompt = TrustPrompt::new(Path::new("/work/repo"), &summary());
+        let prompt = TrustPrompt::new(Path::new("/work/repo"), &summary(), Theme::default());
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal.draw(|f| prompt.draw(f)).unwrap();
         let screen: String = terminal
@@ -273,5 +331,49 @@ mod tests {
         ] {
             assert!(screen.contains(needle), "{needle} missing from\n{screen}");
         }
+    }
+
+    #[test]
+    fn the_linear_prompt_prints_its_lines_and_answers_once_the_grace_period_is_over() {
+        let mut prompt = TrustPrompt::new(Path::new("/work/repo"), &summary(), Theme::default());
+        let opened = prompt.opened;
+        let mut script = vec![
+            key(KeyCode::Char('y')),
+            key(KeyCode::Down),
+            key(KeyCode::Char('y')),
+        ]
+        .into_iter();
+        let ticks = std::cell::Cell::new(0);
+        let clock = || {
+            ticks.set(ticks.get() + 1);
+            // The first key arrives inside the grace period, the rest after it.
+            if ticks.get() == 1 {
+                opened
+            } else {
+                opened + ANSWER_GRACE
+            }
+        };
+        let mut out = Vec::new();
+        let choice = ask_with(
+            &mut prompt,
+            &mut out,
+            || script.next().ok_or_else(|| io::Error::other("out of keys")),
+            clock,
+        )
+        .unwrap();
+        assert_eq!(choice, Choice::Trust);
+        let out = String::from_utf8(out).unwrap();
+        for needle in [
+            "workspace trust:\r\n",
+            "Do you trust the files in this folder?\r\n",
+            "hooks: 2",
+            "selected: [n] do not trust it (asked again next time)\r\n",
+            "selected: [y] trust this folder\r\n",
+        ] {
+            assert!(out.contains(needle), "{needle} missing from {out:?}");
+        }
+        assert_eq!(out.matches("workspace trust:").count(), 1, "{out:?}");
+        assert!(out.chars().all(|c| !('\u{2500}'..='\u{257f}').contains(&c)));
+        assert!(out.replace("\r\n", "").find('\n').is_none());
     }
 }

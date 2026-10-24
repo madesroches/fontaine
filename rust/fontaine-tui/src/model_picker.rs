@@ -4,8 +4,10 @@
 use fontaine_core::config::AccountKind;
 use fontaine_core::models::{AccountListing, ModelRef};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
+
+use crate::theme::Theme;
 
 /// The most rows (headings included) the body shows at once.
 const MAX_ROWS: usize = 14;
@@ -276,7 +278,20 @@ impl ModelPicker {
 
     /// `max_rows` bounds the rows under the header (headings included), so a short terminal
     /// still shows the header and the selection.
-    pub fn body(&self, width: usize, max_rows: usize) -> Vec<Line<'static>> {
+    pub fn body(&self, width: usize, max_rows: usize, theme: &Theme) -> Vec<Line<'static>> {
+        self.body_as(width, max_rows, theme, false)
+    }
+
+    /// `qualified` labels each model row with its full `account/model` reference: a linear
+    /// renderer has no group headings in view when a row is announced, and two accounts can
+    /// list the same model name.
+    pub fn body_as(
+        &self,
+        width: usize,
+        max_rows: usize,
+        theme: &Theme,
+        qualified: bool,
+    ) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let dim = Style::default().add_modifier(Modifier::DIM);
         let clip = |text: String| -> String { text.chars().take(width).collect() };
@@ -302,10 +317,14 @@ impl ModelPicker {
             match row {
                 Row::Heading(name) => {
                     heading = Some(i);
-                    lines.push(Line::styled(clip(name.clone()), bold.fg(Color::Yellow)));
+                    lines.push(Line::styled(clip(name.clone()), bold.fg(theme.heading)));
                 }
                 Row::Failed(reason) => lines.push(Line::styled(clip(format!("  {reason}")), dim)),
-                Row::Model { label, current, .. } => {
+                Row::Model {
+                    label,
+                    reference,
+                    current,
+                } => {
                     let chosen = seen == self.selected;
                     let mark = if *current { " (current)" } else { "" };
                     let style = if chosen {
@@ -315,7 +334,8 @@ impl ModelPicker {
                     } else {
                         Style::default()
                     };
-                    lines.push(Line::styled(clip(format!("  {label}{mark}")), style));
+                    let name = if qualified { reference } else { label };
+                    lines.push(Line::styled(clip(format!("  {name}{mark}")), style));
                     seen += 1;
                 }
             }
@@ -334,6 +354,12 @@ impl ModelPicker {
         }
         out.extend(lines.into_iter().skip(start).take(window));
         out
+    }
+
+    /// The filter as a prompt and what is typed, for a renderer that echoes typing instead of
+    /// redrawing the footer.
+    pub fn field(&self) -> (&'static str, String) {
+        ("filter: ", self.query.clone())
     }
 
     pub fn footer(&self) -> Vec<Line<'static>> {
@@ -395,7 +421,7 @@ mod tests {
 
     fn text(picker: &ModelPicker) -> Vec<String> {
         picker
-            .body(80, MAX_ROWS)
+            .body(80, MAX_ROWS, &Theme::default())
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
@@ -623,7 +649,7 @@ mod tests {
         let models: Vec<String> = (0..60).map(|i| format!("m{i:02}")).collect();
         let group = Group::new("big".into(), kind("openai-compatible"), Ok(models));
         let mut p = picker(&[], vec![group]);
-        let rows = p.body(80, MAX_ROWS);
+        let rows = p.body(80, MAX_ROWS, &Theme::default());
         assert_eq!(rows.len(), 1 + MAX_ROWS);
         assert_eq!(text(&p)[1], "big");
         for _ in 0..40 {
@@ -660,7 +686,7 @@ mod tests {
             p.handle_key(key(KeyCode::Down));
         }
         let rows: Vec<String> = p
-            .body(80, 3)
+            .body(80, 3, &Theme::default())
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();

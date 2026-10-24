@@ -4,11 +4,12 @@
 use fontaine_core::config::PermissionMode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::App;
+use crate::theme::Theme;
 
 pub fn mode_label(mode: PermissionMode) -> &'static str {
     match mode {
@@ -36,12 +37,12 @@ pub fn next_mode(mode: PermissionMode) -> PermissionMode {
     }
 }
 
-fn mode_style(mode: PermissionMode) -> Style {
+fn mode_style(mode: PermissionMode, theme: &Theme) -> Style {
     let color = match mode {
-        PermissionMode::Manual | PermissionMode::DontAsk => Color::Gray,
-        PermissionMode::AcceptEdits => Color::Green,
-        PermissionMode::Plan => Color::Cyan,
-        PermissionMode::Auto => Color::Yellow,
+        PermissionMode::Manual | PermissionMode::DontAsk => theme.mode_manual,
+        PermissionMode::AcceptEdits => theme.mode_accept,
+        PermissionMode::Plan => theme.mode_plan,
+        PermissionMode::Auto => theme.mode_auto,
     };
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
@@ -59,7 +60,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         n => format!(" · {n} agents running"),
     };
     let line = Line::from(vec![
-        Span::styled(format!(" {} ", mode_label(app.mode)), mode_style(app.mode)),
+        Span::styled(
+            format!(" {} ", mode_label(app.mode)),
+            mode_style(app.mode, &app.theme),
+        ),
         Span::styled(format!("· {}{agents} · {hint}", app.model), dim),
     ]);
     frame.render_widget(Paragraph::new(line), area);

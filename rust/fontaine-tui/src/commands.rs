@@ -20,6 +20,8 @@ pub enum Command {
     Login(String),
     Help,
     Status,
+    /// `/theme [name]`.
+    Theme(String),
     Permissions,
     /// `/mcp [argument]`; only the empty form does anything.
     Mcp(String),
@@ -186,6 +188,13 @@ pub const BUILTINS: &[Builtin] = &[
         description: "version, session, model, mode and guardian",
         command: |_| Command::Status,
     },
+    Builtin {
+        name: "theme",
+        aliases: &[],
+        hint: Some("[<name>]"),
+        description: "choose the colour theme",
+        command: Command::Theme,
+    },
 ];
 
 /// Whether a built-in command answers to `name`.
@@ -326,6 +335,11 @@ mod tests {
         );
         assert_eq!(parse_command("/plan"), Some(Command::Plan(String::new())));
         assert_eq!(parse_command("/copy 2"), Some(Command::Copy("2".into())));
+        assert_eq!(parse_command("/theme"), Some(Command::Theme(String::new())));
+        assert_eq!(
+            parse_command("/theme  dark-ansi "),
+            Some(Command::Theme("dark-ansi".into()))
+        );
         for name in ["clear", "reset", "new"] {
             assert_eq!(
                 parse_command(&format!("/{name}")),

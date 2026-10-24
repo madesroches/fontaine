@@ -38,6 +38,8 @@ delivered (or extended) by the docs step of the phase named with it — see the 
   LlamaFirewall prompts if mined) (Phase 4; scanning in Phase 6).
 - `docs/tui.md`: keybinds, slash commands, approval + denial UX, background-agents panel
   (Phases 3–5).
+- `docs/terminal.md`: newline keys per terminal, tmux `extended-keys`, Option as Meta, themes and
+  `NO_COLOR`, OSC 52, and screen-reader mode with its known limitations (#50).
 - `docs/evals.md`: the published guardian scorecard — per model, per profile (Phase 4).
 - `docs/mcp.md`: MCP server config + trust model (Phase 5).
 - `docs/agents.md`: parallel subagents, budgets, mode inheritance, agent files and project-agent
