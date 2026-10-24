@@ -315,7 +315,7 @@ Step 9 copies these lines into the master plan's Decisions.
 - 2026-10-24 AFK: The `api_error` test scripts a streamed `MockStreamEvent::Error(MockError::ProviderResponse(…))` through `tests/common/runtime.rs` `build`, not `MockTurn::provider_response_error`, because `drive()` always streams and the mock's streaming mode only pops stream turns.
 - 2026-10-24 AFK: The notebook's metric cells are documented as native-only instead of changing the OTLP exporter, because micromegas drops OTLP histograms and Fontaine's OTLP sums are cumulative; the event cells work on both backends, which meets the issue's "or the docs should say where they don't".
 - 2026-10-24 AFK: The dropped-spend fields keep the existing `guardian_*` / `guardian.*` convention: `DecisionRecord` `guardian_dropped_{input_tokens,provider,model,priced}`, projected onto `tool_decision` as `guardian.dropped_{input_tokens,provider,model,priced}`, the names span_bridge and the docs use.
-- 2026-10-24 AFK: This PR ships on the micromegas git pin (`rev 7a08f6541`, `allow-git`); switching to an exact crates.io `=0.33.x` pin and removing `allow-git` is required before the next Fontaine release, tracked by a `release-blocker` GitHub issue filed during implementation and linked from the PR body.
+- 2026-10-24 AFK: This PR ships on the micromegas git pin (`rev 7a08f6541`, `allow-git`); switching to an exact crates.io `=0.33.x` pin and removing `allow-git` is required before the next Fontaine release, tracked by the `release-blocker` GitHub issue #141, linked from the PR body.
 
 ## Documentation
 

@@ -263,6 +263,7 @@ impl ChildRunner for CoreChildRunner {
                 ));
             }
             let priced = model.catalog_billed();
+            let (model_id, provider) = model.wire_ids();
             let state = context.state.clone();
             let tools = fork_tools(&context.tool_server, &request.tools);
             let agent = AgentBuilder::new(model.completion.clone())
@@ -300,7 +301,19 @@ impl ChildRunner for CoreChildRunner {
             let task_state = state.clone();
             tokio::spawn(
                 async move {
-                    let report = run_child(&task_state, &agent, &id, prompt, priced, kill_rx).await;
+                    let report = run_child(
+                        &task_state,
+                        &agent,
+                        &id,
+                        prompt,
+                        ChildModel {
+                            priced,
+                            model: model_id,
+                            provider,
+                        },
+                        kill_rx,
+                    )
+                    .await;
                     *status.lock().unwrap_or_else(|e| e.into_inner()) = report.status;
                     report_tx.send_replace(Some(report));
                 }
@@ -311,13 +324,20 @@ impl ChildRunner for CoreChildRunner {
     }
 }
 
+/// What a child's model call reports to usage and error telemetry.
+struct ChildModel {
+    priced: bool,
+    model: String,
+    provider: String,
+}
+
 /// Runs one child to its end: an answer, a spent budget, a kill or a failure.
 async fn run_child(
     state: &Arc<SessionState>,
     agent: &Agent,
     id: &str,
     prompt: String,
-    priced: bool,
+    model: ChildModel,
     mut kill: watch::Receiver<bool>,
 ) -> ChildReport {
     let tree = state.agents().clone();
@@ -367,7 +387,9 @@ async fn run_child(
             agent_id: id,
             prompt,
             max_turns: DEFAULT_MAX_TURNS,
-            priced,
+            priced: model.priced,
+            model: model.model,
+            provider: model.provider,
             span: tracing::Span::current(),
         },
         None,

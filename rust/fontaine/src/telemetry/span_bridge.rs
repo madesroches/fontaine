@@ -254,6 +254,47 @@ impl<E: Export> SpanBridge<E> {
     }
 }
 
+impl<E: Export> SpanBridge<E> {
+    /// What a screen that settled the call cost by cutting the guardian short: an estimate
+    /// from the prompt's size, marked apart from the usage the provider reported.
+    fn dropped_guardian_spend(&self, fields: &[(String, String)]) {
+        let Some(tokens) = count(fields, "guardian.dropped_input_tokens") else {
+            return;
+        };
+        let model = lookup(fields, "guardian.dropped_model").unwrap_or("unknown");
+        let attrs = || {
+            vec![
+                ("model", model.to_string()),
+                ("query_source", "guardian".to_string()),
+                ("estimated", "true".to_string()),
+            ]
+        };
+        let mut token_attrs = attrs();
+        token_attrs.insert(0, ("type", "input".to_string()));
+        self.export.metric(Metric {
+            name: "fontaine.token.usage",
+            unit: "{token}",
+            value: MetricValue::Int(tokens),
+            attrs: token_attrs,
+        });
+        if lookup(fields, "guardian.dropped_priced") == Some("true")
+            && let Some(provider) = lookup(fields, "guardian.dropped_provider")
+            && let Some(cost) = cost_usd(
+                provider,
+                model,
+                &Usage::new().input_tokens(tokens).output_tokens(0u64),
+            )
+        {
+            self.export.metric(Metric {
+                name: "fontaine.cost.usage",
+                unit: "USD",
+                value: MetricValue::Float(cost),
+                attrs: attrs(),
+            });
+        }
+    }
+}
+
 /// The catalog price of `usage` for `provider`'s `model`, or `None` when rig has no price.
 pub fn cost_usd(provider: &str, model: &str, usage: &Usage) -> Option<f64> {
     let resolved = Catalog::builtin()
@@ -300,6 +341,7 @@ where
                 attrs: vec![("outcome", outcome.to_string())],
             });
         }
+        self.dropped_guardian_spend(&fields);
         if let Some(reason) = lookup(&fields, "fail_closed_reason") {
             self.export.metric(Metric {
                 name: "fontaine.guardian.fail_closed.count",
@@ -680,6 +722,68 @@ mod tests {
             .map(|e| e.fields["query_source"].clone())
             .collect();
         assert_eq!(sources, ["scanner"]);
+    }
+
+    fn dropped_decision(priced: bool) {
+        tracing::info!(
+            target: TARGET,
+            tier = "screen",
+            decision = "allow",
+            guardian.dropped_input_tokens = 2000u64,
+            guardian.dropped_provider = "openai",
+            guardian.dropped_model = "gpt-4o-mini",
+            guardian.dropped_priced = priced,
+            "tool_decision"
+        );
+    }
+
+    fn has(attrs: &[(String, String)], key: &str, value: &str) -> bool {
+        attrs.contains(&(key.to_string(), value.to_string()))
+    }
+
+    #[test]
+    fn a_dropped_guardian_request_yields_estimated_token_and_cost_metrics() {
+        let (recorder, _capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || dropped_decision(true));
+        let metrics = recorder.0.lock().unwrap();
+        let tokens = metric(&metrics, "fontaine.token.usage", Some("input")).unwrap();
+        assert_eq!(tokens.1, 2000.0);
+        assert!(has(&tokens.2, "model", "gpt-4o-mini"));
+        assert!(has(&tokens.2, "query_source", "guardian"));
+        assert!(has(&tokens.2, "estimated", "true"));
+        let cost = metric(&metrics, "fontaine.cost.usage", None).unwrap();
+        assert!((cost.1 - 0.0003).abs() < 1e-9, "{}", cost.1);
+        assert!(has(&cost.2, "model", "gpt-4o-mini"));
+        assert!(has(&cost.2, "query_source", "guardian"));
+        assert!(has(&cost.2, "estimated", "true"));
+    }
+
+    #[test]
+    fn an_unpriced_dropped_request_yields_no_cost_and_a_plain_decision_yields_nothing() {
+        let (recorder, _capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            dropped_decision(false);
+            tracing::info!(target: TARGET, tier = "guardian", decision = "allow", "tool_decision");
+        });
+        let metrics = recorder.0.lock().unwrap();
+        assert_eq!(
+            metrics
+                .iter()
+                .filter(|(n, _, _)| n == "fontaine.token.usage")
+                .count(),
+            1
+        );
+        assert!(metric(&metrics, "fontaine.cost.usage", None).is_none());
+    }
+
+    #[test]
+    fn real_usage_carries_no_estimated_attribute() {
+        let (recorder, _capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || completion("openai", "gpt-4o-mini"));
+        let metrics = recorder.0.lock().unwrap();
+        for (name, _, attrs) in metrics.iter() {
+            assert!(!attrs.iter().any(|(k, _)| k == "estimated"), "{name}");
+        }
     }
 
     #[test]

@@ -96,6 +96,7 @@ async fn without_a_screen_it_is_the_guardians_adjudication() {
     let guardian = endpoint.guardian(settings());
     let composed = adjudicate(None, &guardian, &request("ls", false)).await;
     assert!(composed.screen.is_none());
+    assert_eq!(composed.dropped_input_tokens, None);
     let Decided::Guardian(adjudication) = composed.decided else {
         panic!("the guardian decides");
     };
@@ -123,6 +124,11 @@ async fn an_enforced_stop_drops_the_guardian() {
     );
     assert!(matches!(composed.decided, Decided::ScreenStop(_)));
     assert!(matches!(composed.screen, Some(ScreenOutcome::Stop { .. })));
+    assert_eq!(
+        composed.dropped_input_tokens,
+        Some(guardian.dropped_estimate(&request("ls", false)))
+    );
+    assert!(composed.dropped_input_tokens.is_some_and(|n| n > 0));
     // The guardian was already asked, while the screen was answering.
     assert_eq!(endpoint.calls().await, 1);
 }
@@ -147,6 +153,7 @@ async fn an_enforced_allow_drops_the_guardian() {
         "the guardian was awaited"
     );
     assert!(matches!(composed.decided, Decided::ScreenAllow(_)));
+    assert!(composed.dropped_input_tokens.is_some_and(|n| n > 0));
     assert_eq!(endpoint.calls().await, 1);
 }
 
@@ -170,6 +177,7 @@ async fn a_shadow_allow_or_stop_leaves_the_call_to_the_guardian() {
             panic!("the guardian decides in shadow mode");
         };
         assert_eq!(adjudication.decision, Decision::Deny);
+        assert_eq!(composed.dropped_input_tokens, None);
         assert!(matches!(
             composed.screen,
             Some(ScreenOutcome::Allow { .. } | ScreenOutcome::Stop { .. })
@@ -207,6 +215,7 @@ async fn a_guardian_verdict_in_hand_wins_over_a_later_screen_outcome() {
             panic!("a verdict in hand goes through settle");
         };
         assert_eq!(adjudication.decision, expected);
+        assert_eq!(composed.dropped_input_tokens, None);
         // The screen's annotation is kept.
         assert!(composed.screen.is_some_and(|s| s.risk().is_some()));
     }

@@ -1,0 +1,162 @@
+{
+  "name": "fontaine-overview",
+  "screen_type": "notebook",
+  "config": {
+    "timeRangeFrom": "now-7d",
+    "timeRangeTo": "now",
+    "cells": [
+      {
+        "name": "overview",
+        "type": "markdown",
+        "layout": {
+          "height": 120
+        },
+        "content": "# Fontaine overview\n\nEvent cells read `log_entries` and work on both backends. Metric cells read `measures` and are native-only: micromegas drops OTLP histograms, so the guardian latency cell is empty over OTLP, and OTLP sums are cumulative, so `SUM(value)` over them disagrees with native. Cost and token cells exclude the estimated guardian spend, which has its own cell."
+      },
+      {
+        "name": "cost_header",
+        "type": "markdown",
+        "layout": {
+          "height": 80
+        },
+        "content": "## Cost and tokens"
+      },
+      {
+        "name": "cost_by_session_model",
+        "type": "table",
+        "layout": {
+          "height": 240
+        },
+        "sql": "SELECT process_id,\n       property_get(properties, 'model') AS model,\n       property_get(properties, 'query_source') AS query_source,\n       SUM(value) AS usd\nFROM measures\nWHERE name = 'fontaine.cost.usage' AND property_get(properties, 'estimated') IS NULL\nGROUP BY process_id, property_get(properties, 'model'), property_get(properties, 'query_source')\nORDER BY usd DESC"
+      },
+      {
+        "name": "tokens_by_session_model",
+        "type": "table",
+        "layout": {
+          "height": 240
+        },
+        "sql": "SELECT process_id,\n       property_get(properties, 'model') AS model,\n       property_get(properties, 'query_source') AS query_source,\n       property_get(properties, 'type') AS type,\n       SUM(value) AS tokens\nFROM measures\nWHERE name = 'fontaine.token.usage' AND property_get(properties, 'estimated') IS NULL\nGROUP BY process_id, property_get(properties, 'model'), property_get(properties, 'query_source'), property_get(properties, 'type')\nORDER BY tokens DESC"
+      },
+      {
+        "name": "estimated_guardian_spend",
+        "type": "table",
+        "layout": {
+          "height": 240
+        },
+        "sql": "SELECT process_id,\n       property_get(properties, 'model') AS model,\n       name,\n       SUM(value) AS estimated\nFROM measures\nWHERE name IN ('fontaine.cost.usage', 'fontaine.token.usage') AND property_get(properties, 'estimated') = 'true'\nGROUP BY process_id, property_get(properties, 'model'), name\nORDER BY estimated DESC"
+      },
+      {
+        "name": "api_requests",
+        "type": "table",
+        "layout": {
+          "height": 240
+        },
+        "sql": "SELECT property_get(properties, 'model') AS model,\n       property_get(properties, 'query_source') AS query_source,\n       COUNT(*) AS requests,\n       SUM(CAST(property_get(properties, 'input_tokens') AS DOUBLE)) AS input_tokens,\n       SUM(CAST(property_get(properties, 'output_tokens') AS DOUBLE)) AS output_tokens,\n       SUM(CAST(property_get(properties, 'cost_usd') AS DOUBLE)) AS usd\nFROM log_entries\nWHERE target = 'fontaine::telemetry' AND split_part(msg, ' ', 1) = 'api_request'\nGROUP BY property_get(properties, 'model'), property_get(properties, 'query_source')\nORDER BY requests DESC"
+      },
+      {
+        "name": "guardian_header",
+        "type": "markdown",
+        "layout": {
+          "height": 80
+        },
+        "content": "## Guardian"
+      },
+      {
+        "name": "guardian_latency",
+        "type": "table",
+        "layout": {
+          "height": 240
+        },
+        "sql": "SELECT property_get(properties, 'model') AS model,\n       COUNT(*) AS calls,\n       approx_percentile_cont(value, 0.5) AS p50_ms,\n       approx_percentile_cont(value, 0.95) AS p95_ms\nFROM measures\nWHERE name = 'fontaine.guardian.latency'\nGROUP BY property_get(properties, 'model')\nORDER BY calls DESC"
+      },
+      {
+        "name": "fail_closed_by_reason",
+        "type": "table",
+        "layout": {
+          "height": 240
+        },
+        "sql": "SELECT property_get(properties, 'fail_closed_reason') AS reason, COUNT(*) AS denials\nFROM log_entries\nWHERE target = 'fontaine::telemetry' AND split_part(msg, ' ', 1) = 'tool_decision' AND property_get(properties, 'fail_closed_reason') IS NOT NULL\nGROUP BY property_get(properties, 'fail_closed_reason')\nORDER BY denials DESC"
+      },
+      {
+        "name": "decisions_header",
+        "type": "markdown",
+        "layout": {
+          "height": 80
+        },
+        "content": "## Decisions and the screen"
+      },
+      {
+        "name": "decision_mix",
+        "type": "table",
+        "layout": {
+          "height": 240
+        },
+        "sql": "SELECT property_get(properties, 'tier') AS tier,\n       property_get(properties, 'decision') AS decision,\n       SUM(value) AS decisions\nFROM measures\nWHERE name = 'fontaine.tool_decision.count'\nGROUP BY property_get(properties, 'tier'), property_get(properties, 'decision')\nORDER BY decisions DESC"
+      },
+      {
+        "name": "screen_outcomes",
+        "type": "table",
+        "layout": {
+          "height": 240
+        },
+        "sql": "SELECT property_get(properties, 'outcome') AS outcome, SUM(value) AS calls\nFROM measures\nWHERE name = 'fontaine.screen.count'\nGROUP BY property_get(properties, 'outcome')\nORDER BY calls DESC"
+      },
+      {
+        "name": "screen_risk_distribution",
+        "type": "table",
+        "layout": {
+          "height": 240
+        },
+        "sql": "SELECT floor(CAST(property_get(properties, 'screen.risk') AS DOUBLE) * 10) / 10 AS risk_from,\n       COUNT(*) AS decisions\nFROM log_entries\nWHERE target = 'fontaine::telemetry' AND split_part(msg, ' ', 1) = 'tool_decision' AND property_get(properties, 'screen.risk') IS NOT NULL\nGROUP BY floor(CAST(property_get(properties, 'screen.risk') AS DOUBLE) * 10) / 10\nORDER BY risk_from"
+      },
+      {
+        "name": "tools_header",
+        "type": "markdown",
+        "layout": {
+          "height": 80
+        },
+        "content": "## Tools and subagents"
+      },
+      {
+        "name": "tool_results",
+        "type": "table",
+        "layout": {
+          "height": 240
+        },
+        "sql": "SELECT property_get(properties, 'tool_name') AS tool_name,\n       COUNT(*) AS calls,\n       AVG(CASE WHEN property_get(properties, 'success') = 'true' THEN 1.0 ELSE 0.0 END) AS success_rate,\n       approx_percentile_cont(CAST(property_get(properties, 'duration_ms') AS DOUBLE), 0.5) AS p50_ms,\n       approx_percentile_cont(CAST(property_get(properties, 'duration_ms') AS DOUBLE), 0.95) AS p95_ms\nFROM log_entries\nWHERE target = 'fontaine::telemetry' AND split_part(msg, ' ', 1) = 'tool_result'\nGROUP BY property_get(properties, 'tool_name')\nORDER BY calls DESC"
+      },
+      {
+        "name": "subagent_lifecycle",
+        "type": "table",
+        "layout": {
+          "height": 240
+        },
+        "sql": "SELECT property_get(properties, 'event') AS event, COUNT(*) AS events\nFROM log_entries\nWHERE target = 'fontaine::telemetry' AND split_part(msg, ' ', 1) = 'subagent'\nGROUP BY property_get(properties, 'event')\nORDER BY events DESC"
+      },
+      {
+        "name": "errors_header",
+        "type": "markdown",
+        "layout": {
+          "height": 80
+        },
+        "content": "## Errors"
+      },
+      {
+        "name": "api_errors",
+        "type": "table",
+        "layout": {
+          "height": 240
+        },
+        "sql": "SELECT property_get(properties, 'error_class') AS class,\n       property_get(properties, 'status_code') AS status_code,\n       property_get(properties, 'query_source') AS query_source,\n       COUNT(*) AS errors\nFROM log_entries\nWHERE target = 'fontaine::telemetry' AND split_part(msg, ' ', 1) = 'api_error'\nGROUP BY property_get(properties, 'error_class'), property_get(properties, 'status_code'), property_get(properties, 'query_source')\nORDER BY errors DESC"
+      },
+      {
+        "name": "internal_errors",
+        "type": "table",
+        "layout": {
+          "height": 240
+        },
+        "sql": "SELECT property_get(properties, 'class') AS class, COUNT(*) AS errors\nFROM log_entries\nWHERE target = 'fontaine::telemetry' AND split_part(msg, ' ', 1) = 'internal_error'\nGROUP BY property_get(properties, 'class')\nORDER BY errors DESC"
+      }
+    ]
+  }
+}

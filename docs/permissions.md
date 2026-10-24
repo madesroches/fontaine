@@ -81,7 +81,12 @@ the reason (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`
 [screen stage](guardian.md#the-screen-stage) configured, the record also carries `screen_risk`,
 `screen_allow_risk`, `screen_steering`, `screen_model`, `screen_latency_ms` and `screen_outcome`,
 and a call the screen stopped or, with an `allow_threshold`, allowed has `tier = screen`
-(`decision = prompt` or `deny` for a stop, `allow` for an allow).
+(`decision = prompt` or `deny` for a stop, `allow` for an allow). When an enforcing screen settles
+a call while the guardian request that raced it is still pending, the record also carries
+`guardian_dropped_input_tokens`, an estimate of that request's input, with
+`guardian_dropped_provider`, `guardian_dropped_model` and `guardian_dropped_priced`. They are
+projected onto `tool_decision` as `guardian.dropped_input_tokens`, `guardian.dropped_provider`,
+`guardian.dropped_model` and `guardian.dropped_priced`; see [Telemetry](telemetry.md#metrics).
 
 ## Your own shell commands
 

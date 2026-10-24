@@ -338,8 +338,8 @@ async fn the_shipped_binary_authenticates_and_posts_to_the_ingestion_endpoint() 
     let paths: Vec<&str> = requests.iter().map(|r| r.url.path()).collect();
     assert!(paths.contains(&"/ingestion/insert_process"), "{paths:?}");
     assert!(paths.contains(&"/ingestion/insert_block"), "{paths:?}");
-    // The span events ride a per-thread `cpu` stream, which exists only because the run turned
-    // CPU tracing on before it started any thread.
+    // The span events ride a per-thread `cpu` stream, which exists only because the sink builder
+    // turned CPU tracing on; nothing sets the environment variable here.
     let streams: Vec<&wiremock::Request> = requests
         .iter()
         .filter(|r| r.url.path() == "/ingestion/insert_stream")
@@ -431,4 +431,77 @@ fn exported_span_locations_carry_no_file_path() {
         }
     }
     assert!(checked > 0);
+}
+
+/// `(name, parent name, depth)` of every span, sorted so the comparison ignores event order.
+fn tree(blocks: &[Arc<ThreadBlock>]) -> Vec<(String, String, u32)> {
+    let seen = spans(blocks);
+    let mut out: Vec<_> = seen
+        .values()
+        .map(|s| {
+            let (parent, depth) = s.begin.expect("every span has a begin");
+            let parent_name = seen.get(&parent).map_or("", |p| p.name.as_str());
+            (s.name.clone(), parent_name.to_string(), depth)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// The Fontaine span shapes, plus a `rig` span whose direct parent is not allowlisted. Parents
+/// are the entered spans: an explicit parent that is itself disabled would make a root.
+fn span_program() {
+    let session = info_span!(target: TARGET, "fontaine.session").entered();
+    let interaction = info_span!(target: TARGET, "fontaine.interaction").entered();
+    drop(info_span!(target: "rig::completions", "chat"));
+    let tool = info_span!(target: TARGET, "fontaine.tool").entered();
+    let permission = info_span!(target: TARGET, "fontaine.permission").entered();
+    let guardian = info_span!(target: TARGET, "fontaine.guardian").entered();
+    let chat = info_span!(target: "rig::completions", "chat").entered();
+    let hyper = info_span!(target: "hyper::client", "connect").entered();
+    drop(info_span!(target: "rig::agent_chat", "invoke_agent"));
+    drop(hyper);
+    drop(chat);
+    drop(guardian);
+    drop(permission);
+    drop(tool);
+    drop(interaction);
+    drop(session);
+}
+
+fn tree_through(
+    layer: fontaine::telemetry::BoxLayer<tracing_subscriber::Registry>,
+) -> Vec<(String, String, u32)> {
+    let guard = init_in_memory_tracing();
+    let dispatch = Dispatch::new(tracing_subscriber::registry().with(layer));
+    with_stream(|| tracing::dispatcher::with_default(&dispatch, span_program));
+    let blocks = guard.sink.state.lock().unwrap().thread_blocks.clone();
+    tree(&blocks)
+}
+
+#[test]
+fn the_upstream_span_capture_builds_the_same_tree_as_the_bridge() {
+    let _serial = serial();
+    let telemetry = default_telemetry();
+    let bridge = tree_through(fontaine::telemetry::filtered(
+        SpanBridge::new(
+            MicromegasExport::new(true),
+            ContentPolicy::from_config(&telemetry),
+        ),
+        is_exported_span,
+    ));
+    let upstream = tree_through(fontaine::telemetry::filtered(
+        micromegas_telemetry_sink::tracing_interop::TracingCaptureLayer {
+            max_level: micromegas_tracing::levels::LevelFilter::Info,
+            capture_spans: true,
+        },
+        is_exported_span,
+    ));
+    assert!(
+        bridge
+            .iter()
+            .any(|(name, parent, depth)| name == "invoke_agent" && parent == "chat" && *depth == 6),
+        "a rig span under a non-allowlisted span lands under its nearest exported ancestor: {bridge:#?}"
+    );
+    assert_eq!(bridge, upstream);
 }

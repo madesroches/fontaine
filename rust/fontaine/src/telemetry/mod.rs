@@ -179,7 +179,6 @@ where
     match t.backend {
         #[cfg(feature = "telemetry-micromegas")]
         TelemetryBackend::Micromegas => {
-            micromegas::enable_cpu_tracing();
             let guard = micromegas::build_guard(micromegas::Settings {
                 endpoint,
                 api_key,

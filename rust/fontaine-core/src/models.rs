@@ -118,6 +118,14 @@ impl ModelHandle {
         }
     }
 
+    /// The wire's model id and provider name, as `api_request` records them.
+    pub fn wire_ids(&self) -> (String, String) {
+        (
+            self.completion.id().unwrap_or("unknown").to_string(),
+            self.completion.name().to_string(),
+        )
+    }
+
     /// Whether the cost a call reports is counted. An unpriced kind is billed outside per-token
     /// prices, so whatever cost reaches us for it is dropped.
     pub fn catalog_billed(&self) -> bool {

@@ -48,6 +48,8 @@ async fn first_prompt(built: &common::runtime::Built) -> String {
             prompt: "hello".to_string(),
             max_turns: 5,
             priced: true,
+            model: "scripted".to_string(),
+            provider: "mock".to_string(),
         },
         &mut seen,
     )

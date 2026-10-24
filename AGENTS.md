@@ -54,7 +54,7 @@ all tests pass:
 
 ## Project layout
 
-- Root directories are only `rust/`, `evals/`, `docs/`, `tasks/`, `research/` (plus `.github/`);
+- Root directories are only `rust/`, `evals/`, `analytics/`, `docs/`, `tasks/`, `research/` (plus `.github/`);
   root files are `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`,
   `SECURITY.md`, `.gitignore`, `.ignore`.
 - The Cargo workspace lives at `rust/Cargo.toml` (micromegas convention) and **every crate

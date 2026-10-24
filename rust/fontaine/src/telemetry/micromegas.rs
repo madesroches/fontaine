@@ -1,7 +1,8 @@
-//! The micromegas backend. micromegas does not capture `tracing` spans, so the span bridge
-//! turns each allowlisted span into async span events (span id, parent span id, depth) that the
-//! analytics side reassembles into a tree; `tracing` events reach it through the stock capture
-//! layer.
+//! The micromegas backend. The stock capture layer's span capture is off: it exports every field
+//! verbatim and the absolute source path of each callsite, so the span bridge turns each
+//! allowlisted span into async span events (span id, parent span id, depth) that the analytics
+//! side reassembles into a tree. `tracing` events reach it through the stock capture layer. Async
+//! span events ride per-thread streams, which the sink builder's CPU-tracing switch creates.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -18,21 +19,10 @@ use tracing::callsite::Identifier;
 
 use super::span_bridge::{Export, Metric, MetricValue, SpanEnd};
 
-/// Async span events ride per-thread streams, which exist only while CPU tracing is on, and
-/// micromegas reads that switch from the environment alone.
-pub const CPU_TRACING_VAR: &str = "MICROMEGAS_ENABLE_CPU_TRACING";
-
 pub struct Settings {
     pub endpoint: String,
     pub api_key: String,
     pub resource_attributes: Vec<(String, String)>,
-}
-
-/// Turns on the per-thread streams. Must run before any thread exists.
-pub fn enable_cpu_tracing() {
-    // SAFETY: called from `run` on the only thread, before the runtime or any exporter thread
-    // is started.
-    unsafe { std::env::set_var(CPU_TRACING_VAR, "true") };
 }
 
 /// The sink guard: no local sink, no global `tracing` capture (the capture layer is composed
@@ -44,6 +34,7 @@ pub fn build_guard(settings: Settings) -> Result<TelemetryGuard, String> {
         .with_local_sink_enabled(false)
         .with_install_tracing_capture(false)
         .with_system_metrics_enabled(false)
+        .with_cpu_tracing_enabled(true)
         .with_default_system_properties_enabled(false)
         .with_telemetry_sink_url(settings.endpoint)
         .with_request_decorator(Box::new(move || Arc::new(ApiKeyRequestDecorator::new(key))));
@@ -56,6 +47,7 @@ pub fn build_guard(settings: Settings) -> Result<TelemetryGuard, String> {
 pub fn capture_layer() -> micromegas_telemetry_sink::tracing_interop::TracingCaptureLayer {
     micromegas_telemetry_sink::tracing_interop::TracingCaptureLayer {
         max_level: LevelFilter::Info,
+        capture_spans: false,
     }
 }
 

@@ -444,6 +444,7 @@ async fn run_one(
         }
         Flow::Continue
     };
+    let (model, provider) = runtime.models.main.wire_ids();
     let turn = run_turn(
         TurnParams {
             agent: &runtime.agent,
@@ -451,6 +452,8 @@ async fn run_one(
             prompt: text,
             max_turns: options.max_turns.unwrap_or(DEFAULT_MAX_TURNS),
             priced: runtime.models.main.catalog_billed(),
+            model,
+            provider,
         },
         &mut on_event,
     )

@@ -67,6 +67,9 @@ pub struct TurnParams<'a> {
     pub max_turns: usize,
     /// Whether the cost the model's calls report is counted; see `ModelHandle::catalog_billed`.
     pub priced: bool,
+    /// The model's id and provider, for the `api_error` event.
+    pub model: String,
+    pub provider: String,
 }
 
 fn tool_text(content: &[ToolResultContent]) -> String {
@@ -105,6 +108,8 @@ pub async fn run_turn(
             prompt: params.prompt,
             max_turns: params.max_turns,
             priced: params.priced,
+            model: params.model,
+            provider: params.provider,
             span: interaction,
         },
         Some(&mut feed),
@@ -132,8 +137,22 @@ pub struct Drive<'a> {
     /// Whether the cost the model's calls report is counted. An unpriced model's is dropped
     /// here, where usage enters, because rig attaches it inside the wire.
     pub priced: bool,
+    /// The model's id and provider, for the `api_error` event.
+    pub model: String,
+    pub provider: String,
     /// The run adopts this span as its own agent span.
     pub span: tracing::Span,
+}
+
+/// The stable class of a failed model request. Other failures (the turn limit, a cancel, the
+/// memory store, an unknown tool) are not failed API requests. The message is not exported: a
+/// provider's can echo the request.
+fn error_class(error: &PromptError) -> Option<&'static str> {
+    match error {
+        PromptError::Provider(e) => Some(e.kind().code()),
+        PromptError::Report(report) => Some(report.kind.code()),
+        _ => None,
+    }
 }
 
 async fn next_decision(feed: &mut Option<&mut DecisionFeed>) -> Option<DecisionRecord> {
@@ -264,6 +283,19 @@ pub async fn drive(
     if stopped && failure.is_none() {
         TurnOutcome::Stopped
     } else if let Some(e) = failure {
+        if let Some(class) = error_class(&e) {
+            let status = e.provider_response_status().map(|s| u64::from(s.as_u16()));
+            tracing::info!(
+                target: "fontaine::telemetry",
+                model = params.model.as_str(),
+                provider = params.provider.as_str(),
+                query_source = if params.agent_id == ROOT_AGENT { "main" } else { "subagent" },
+                agent.id = params.agent_id,
+                error_class = class,
+                status_code = status,
+                "api_error"
+            );
+        }
         match e {
             e @ PromptError::MaxTurns { .. } => TurnOutcome::MaxTurns(e.to_string()),
             other => TurnOutcome::Failed(other.to_string()),

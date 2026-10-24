@@ -283,6 +283,15 @@ struct CallCtx<'a> {
 struct Screened {
     outcome: ScreenOutcome,
     model: String,
+    dropped: Option<Dropped>,
+}
+
+/// The guardian request a settling screen cut short.
+struct Dropped {
+    input_tokens: u64,
+    provider: String,
+    model: String,
+    priced: bool,
 }
 
 impl Screened {
@@ -293,6 +302,12 @@ impl Screened {
         record.screen_model = Some(self.model.clone());
         record.screen_latency_ms = Some(self.outcome.latency_ms());
         record.screen_outcome = Some(self.outcome.as_str().to_string());
+        if let Some(dropped) = &self.dropped {
+            record.guardian_dropped_input_tokens = Some(dropped.input_tokens);
+            record.guardian_dropped_provider = Some(dropped.provider.clone());
+            record.guardian_dropped_model = Some(dropped.model.clone());
+            record.guardian_dropped_priced = Some(dropped.priced);
+        }
     }
 }
 
@@ -798,6 +813,10 @@ impl PermissionPipeline {
             screen_model: None,
             screen_latency_ms: None,
             screen_outcome: None,
+            guardian_dropped_input_tokens: None,
+            guardian_dropped_provider: None,
+            guardian_dropped_model: None,
+            guardian_dropped_priced: None,
             permission_mode: cx.mode.as_str().to_string(),
             headless: self.headless,
             explanation,
@@ -1080,7 +1099,18 @@ impl PermissionPipeline {
             &request,
         )
         .await;
-        let screened = self.note_screen(stage, composed.screen);
+        let mut screened = self.note_screen(stage, composed.screen);
+        if let Some(screened) = &mut screened
+            && let Some(input_tokens) = composed.dropped_input_tokens
+            && let Some((provider, model)) = guardian.wire_ids()
+        {
+            screened.dropped = Some(Dropped {
+                input_tokens,
+                provider,
+                model,
+                priced: guardian.settings().priced,
+            });
+        }
         let mut adjudication = match composed.decided {
             Decided::ScreenStop(scores) => {
                 let screened = screened.expect("a screen stop comes from a screen");
@@ -1149,6 +1179,7 @@ impl PermissionPipeline {
         Some(Screened {
             outcome,
             model: stage.label,
+            dropped: None,
         })
     }
 
@@ -1516,6 +1547,10 @@ pub(crate) fn record_decision(state: &SessionState, record: &DecisionRecord) {
         screen.steering = record.screen_steering,
         screen.model = record.screen_model.as_deref(),
         screen.latency_ms = record.screen_latency_ms,
+        guardian.dropped_input_tokens = record.guardian_dropped_input_tokens,
+        guardian.dropped_provider = record.guardian_dropped_provider.as_deref(),
+        guardian.dropped_model = record.guardian_dropped_model.as_deref(),
+        guardian.dropped_priced = record.guardian_dropped_priced,
         "tool_decision"
     );
 }

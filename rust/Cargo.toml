@@ -48,9 +48,10 @@ rig-rmcp = "=0.45.0"
 webpki-root-certs = "=1.0.10"
 rmcp = { version = "=3.6.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 rig-cassette = { version = "=0.45.0", features = ["http", "agent"] }
-micromegas-tracing = "=0.32.0"
-micromegas-telemetry-sink = "=0.32.0"
-micromegas-transit = "=0.32.0"
+# Git pin until micromegas 0.33 is on crates.io; see deny.toml.
+micromegas-tracing = { git = "https://github.com/madesroches/micromegas", rev = "7a08f654105003a2a2c654d26a0843e9b3465054" }
+micromegas-telemetry-sink = { git = "https://github.com/madesroches/micromegas", rev = "7a08f654105003a2a2c654d26a0843e9b3465054" }
+micromegas-transit = { git = "https://github.com/madesroches/micromegas", rev = "7a08f654105003a2a2c654d26a0843e9b3465054" }
 opentelemetry = "=0.33.1"
 opentelemetry_sdk = "=0.33.1"
 opentelemetry-otlp = { version = "=0.33.1", default-features = false, features = [

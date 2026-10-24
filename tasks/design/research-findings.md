@@ -191,17 +191,18 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   per-provider smoke tests and the fail-closed 500 test (see `testing.md` Testing Strategy).
 - **Observability:**
   - `tracing =0.1.44` / `tracing-subscriber =0.3.23` (env-filter, fmt).
-  - micromegas backend: `micromegas-tracing =0.32.0` (`tokio` feature, for
-    `TracingRuntimeExt`) + `micromegas-telemetry-sink =0.32.0`; move the pins to the micromegas
-    release that ships the upstream items below as each lands.
+  - micromegas backend: `micromegas-tracing` (`tokio` feature, for
+    `TracingRuntimeExt`) + `micromegas-telemetry-sink`, on a git revision (see the caveats) until an
+    exact crates.io `=0.33.x` pin replaces it.
   - OTLP backend: `opentelemetry =0.33.1`, `opentelemetry_sdk =0.33.1`,
     `opentelemetry-otlp =0.33.1` (`default-features = false`, `http-proto`, `reqwest-blocking-client`;
     shares rig's reqwest 0.13), `tracing-opentelemetry =0.34.0` and
     `opentelemetry-appender-tracing =0.33.1`.
   - Both backends are compiled in by default, behind the bin crate's features
     `telemetry-micromegas` and `telemetry-otlp`; pinned exactly, like rig, because they are pre-1.0.
-  - Caveats: the micromegas sink brings a second reqwest (0.12);
-    its async span events need CPU tracing enabled, settable only through
-    `MICROMEGAS_ENABLE_CPU_TRACING`. Upstream micromegas work (same author) removes each: `tracing`
-    span capture with parentage in `TracingCaptureLayer`, a builder knob for span/thread streams,
-    reqwest 0.13.
+  - Caveats: the pins are a git revision of micromegas `main` (`7a08f6541`, 0.33.0, unreleased)
+    until 0.33 is on crates.io (the `release-blocker` issue #141). That revision has the builder knob
+    for span/thread streams (`with_cpu_tracing_enabled`, which replaced the
+    `MICROMEGAS_ENABLE_CPU_TRACING` environment variable), reqwest 0.13 and `tracing` span capture
+    with parentage in `TracingCaptureLayer`. The bridge's span half stays until that capture has a
+    field hook and a location switch (madesroches/micromegas#1725).

@@ -99,6 +99,19 @@ pub struct DecisionRecord {
     /// screen would have done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_outcome: Option<String>,
+    /// An estimate of the input tokens of the guardian request a screen that settled the call
+    /// cut short; the request had usually been sent and billed already.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian_dropped_input_tokens: Option<u64>,
+    /// The provider name of the model that estimate was spent on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian_dropped_provider: Option<String>,
+    /// The model id of the model that estimate was spent on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian_dropped_model: Option<String>,
+    /// Whether that model's cost is counted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian_dropped_priced: Option<bool>,
     pub permission_mode: String,
     pub headless: bool,
     /// What the model was told for a denial.
