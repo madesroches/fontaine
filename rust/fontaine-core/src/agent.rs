@@ -1099,6 +1099,7 @@ impl AgentRuntime {
     /// Whether the account may be removed: not while the live main model, the live guardian or
     /// the screen stage uses it.
     pub fn removable(&self, name: &str) -> Result<(), AccountsError> {
+        crate::accounts::check_defined_only_in_user_file(&self.config, name)?;
         let on = |reference: &str| ModelRef::parse(reference).is_some_and(|r| r.account == name);
         if self.models.main.reference.account == name {
             return Err(AccountsError::InUse {

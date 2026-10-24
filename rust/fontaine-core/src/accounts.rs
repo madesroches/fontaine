@@ -277,6 +277,15 @@ pub fn log_out(data_dir: &Path, name: &str) -> Result<bool, ConfigError> {
     credentials::remove(data_dir, name)
 }
 
+/// Refuses a removal of an account another scope, such as a `--settings` overlay, also defines:
+/// that definition would outlive the removal and win again on the next start.
+pub fn check_defined_only_in_user_file(config: &Config, name: &str) -> Result<(), AccountsError> {
+    if config.shadowed_accounts.contains(name) {
+        return Err(AccountsError::NotInUserFile);
+    }
+    Ok(())
+}
+
 /// Deletes `[accounts.<name>]` from the user settings file and then the account's stored
 /// credential, so no orphaned secret is left. It has no view of the live session: a host that
 /// has one refuses a removal of an account in use before calling this. A model setting in the

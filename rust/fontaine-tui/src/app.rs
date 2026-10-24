@@ -437,7 +437,14 @@ impl App {
             Input::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
             Input::Paste(text) => {
                 // A pasted key lands in the dialog's masked field, never in the message box.
-                if let Some(dialog) = &mut self.providers {
+                // Overlays that take keys before the dialog also own the paste.
+                let above_dialog = self.approval.is_some()
+                    || self.denied.is_some()
+                    || self.unavailable.is_some()
+                    || self.server.is_some()
+                    || self.models.is_some();
+                if above_dialog {
+                } else if let Some(dialog) = &mut self.providers {
                     dialog.handle_paste(&text);
                 } else if !self.covered() {
                     if let Some(search) = &mut self.search {

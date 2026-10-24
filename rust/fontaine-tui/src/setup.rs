@@ -338,7 +338,11 @@ impl Setup {
                     Err(e) => self.dialog.finish(Outcome::Failed(chain(&e))),
                 },
                 DialogKey::Remove(account) => {
-                    match accounts::remove(&self.user_file, &self.dirs.data, &account) {
+                    let removal = accounts::check_defined_only_in_user_file(&self.config, &account)
+                        .and_then(|()| {
+                            accounts::remove(&self.user_file, &self.dirs.data, &account)
+                        });
+                    match removal {
                         Ok(()) => {
                             self.config.accounts.remove(&account);
                             self.refresh_rows();

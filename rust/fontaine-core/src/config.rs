@@ -1076,6 +1076,8 @@ pub struct Config {
     pub workspace: PathBuf,
     pub scopes: Vec<ScopeEntry>,
     pub accounts: BTreeMap<String, Account>,
+    /// Accounts defined by more than one scope, where the higher scope's definition won.
+    pub shadowed_accounts: std::collections::BTreeSet<String>,
     pub model: Option<String>,
     pub guardian: Guardian,
     pub permissions: Permissions,
@@ -1095,6 +1097,7 @@ impl Config {
             workspace,
             scopes: Vec::new(),
             accounts: BTreeMap::new(),
+            shadowed_accounts: Default::default(),
             model: None,
             guardian: Guardian {
                 model: None,
@@ -1153,7 +1156,13 @@ impl Config {
             user_trust: column != Column::Project,
         };
         for (name, account) in s.accounts.iter().flatten() {
-            self.accounts.insert(name.clone(), account.clone());
+            if self
+                .accounts
+                .insert(name.clone(), account.clone())
+                .is_some()
+            {
+                self.shadowed_accounts.insert(name.clone());
+            }
         }
         if let Some(model) = s.model.as_ref().and_then(|m| m.model.clone()) {
             self.model = Some(model);
@@ -1405,12 +1414,6 @@ struct Layer {
 }
 
 pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
-    let config = load_unresolved(params)?;
-    resolve_telemetry(&config.telemetry, params)?;
-    Ok(config)
-}
-
-fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
     let workspace =
         std::fs::canonicalize(params.launch_dir).map_err(|source| ConfigError::Read {
             path: params.launch_dir.to_path_buf(),
@@ -1537,6 +1540,7 @@ fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
 
     check_scanner(&config.guardian, &user_path)?;
     check_screen(&mut config, &user_path)?;
+    resolve_telemetry(&config.telemetry, params)?;
     Ok(config)
 }
 

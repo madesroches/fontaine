@@ -306,7 +306,8 @@ OpenCode Go, one subscription serving about thirty models on four wire formats:
 kind = "opencode-go"
 ```
 
-Sign in once with `/login go`, which shows a URL and a code to approve in a browser, then pick a model with `--model go/kimi-k3`. Each request goes to the wire its model is served on,
+Sign in once with `/login go`, which shows a URL and a code to approve in a browser, then pick a
+model with `--model go/kimi-k3`. Each request goes to the wire its model is served on,
 chosen from a built-in table by model id: `gpt-`, `grok-` and `muse-spark-` models use the Responses
 API, `claude-`, `qwen` and `minimax-m3` use the Messages API, `gemini-` models use `generateContent`
 and everything else uses Chat Completions. Every request carries a `fontaine/<version>`
