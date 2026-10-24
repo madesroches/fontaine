@@ -25,6 +25,13 @@ const TARGET: &str = "fontaine::telemetry";
 pub const EXTRACTOR_RETRIES: usize = 2;
 const MAX_TOKENS: u64 = 1_024;
 
+/// The provider name and model id a model's requests carry on the wire.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WireIds {
+    pub provider: String,
+    pub model: String,
+}
+
 /// How a guardian behaves; the model is separate because it may be missing.
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
@@ -142,12 +149,12 @@ impl Guardian {
 
     /// The provider name and model id the guardian's own requests carry, as the completion spans
     /// record them. `None` without a model.
-    pub fn wire_ids(&self) -> Option<(String, String)> {
+    pub fn wire_ids(&self) -> Option<WireIds> {
         match &self.backend {
-            Backend::Ready(model) => Some((
-                model.name().to_string(),
-                model.id().unwrap_or("unknown").to_string(),
-            )),
+            Backend::Ready(model) => Some(WireIds {
+                provider: model.name().to_string(),
+                model: model.id().unwrap_or("unknown").to_string(),
+            }),
             Backend::Unavailable(_) => None,
         }
     }

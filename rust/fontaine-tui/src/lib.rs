@@ -916,7 +916,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     runtime.approver(),
                 )
                 .await;
-            let (model, provider) = runtime.models.main.wire_ids();
+            let ids = runtime.models.main.wire_ids();
+            let (model, provider) = (ids.model, ids.provider);
             run_turn(
                 TurnParams {
                     agent: &runtime.agent,

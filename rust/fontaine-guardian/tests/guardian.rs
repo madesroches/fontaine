@@ -5,7 +5,7 @@ use std::time::Duration;
 use common::{Endpoint, Reply, allow, deny, guardian_at, request, settings, verdict};
 use fontaine_guardian::{
     AuditLabel, Decision, FailClosed, Guardian, PreExistence, Profile, RuleLabel, Settings,
-    TouchedPath,
+    TouchedPath, WireIds,
 };
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -559,7 +559,7 @@ async fn the_dropped_estimate_is_a_quarter_of_the_rendered_prompt() {
 #[tokio::test]
 async fn the_guardian_reports_the_ids_its_requests_carry() {
     let endpoint = Endpoint::start(vec![Reply::Verdict(allow(0.95))]).await;
-    let (provider, model) = endpoint.guardian(settings()).wire_ids().unwrap();
+    let WireIds { provider, model } = endpoint.guardian(settings()).wire_ids().unwrap();
     assert!(!provider.is_empty() && !model.is_empty());
     let unavailable = Guardian::unavailable("a/b", "no key", settings());
     assert_eq!(unavailable.wire_ids(), None);

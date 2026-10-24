@@ -9,6 +9,7 @@ use fontaine_agents::registry::{AgentType, ModelSpec, entry_has_specifier};
 use fontaine_agents::root_ledger::{AgentEvent, RootLedger};
 use fontaine_agents::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, SpawnRequest};
 use fontaine_agents::tree::AgentTree;
+use fontaine_guardian::WireIds;
 use fontaine_tools::gate::CallView;
 use fontaine_tools::result_pipeline::{ResultStage, ToolOutcome, append_note};
 use futures::future::BoxFuture;
@@ -263,7 +264,10 @@ impl ChildRunner for CoreChildRunner {
                 ));
             }
             let priced = model.catalog_billed();
-            let (model_id, provider) = model.wire_ids();
+            let WireIds {
+                provider,
+                model: model_id,
+            } = model.wire_ids();
             let state = context.state.clone();
             let tools = fork_tools(&context.tool_server, &request.tools);
             let agent = AgentBuilder::new(model.completion.clone())

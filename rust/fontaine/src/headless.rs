@@ -444,7 +444,8 @@ async fn run_one(
         }
         Flow::Continue
     };
-    let (model, provider) = runtime.models.main.wire_ids();
+    let ids = runtime.models.main.wire_ids();
+    let (model, provider) = (ids.model, ids.provider);
     let turn = run_turn(
         TurnParams {
             agent: &runtime.agent,

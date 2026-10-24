@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use fontaine_guardian::cascade::{Decided, ScreenInput};
 use fontaine_guardian::{
-    Adjudication, Decision as GuardianDecision, FailClosed, ScreenOutcome, ScreenScores,
+    Adjudication, Decision as GuardianDecision, FailClosed, ScreenOutcome, ScreenScores, WireIds,
 };
 use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
 use fontaine_tools::preclassify::{Environment, Preclassifier, analyze};
@@ -1102,7 +1102,7 @@ impl PermissionPipeline {
         let mut screened = self.note_screen(stage, composed.screen);
         if let Some(screened) = &mut screened
             && let Some(input_tokens) = composed.dropped_input_tokens
-            && let Some((provider, model)) = guardian.wire_ids()
+            && let Some(WireIds { provider, model }) = guardian.wire_ids()
         {
             screened.dropped = Some(Dropped {
                 input_tokens,

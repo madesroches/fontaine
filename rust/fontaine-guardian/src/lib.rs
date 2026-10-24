@@ -19,7 +19,7 @@ mod verdict;
 pub use breaker::{CONSECUTIVE_LIMIT, LoopBreaker, TOTAL_LIMIT};
 pub use cache::TTL as CACHE_TTL;
 pub use cascade::{Composed, Decided, ScreenInput};
-pub use guardian::{Adjudication, EXTRACTOR_RETRIES, Guardian, Settings};
+pub use guardian::{Adjudication, EXTRACTOR_RETRIES, Guardian, Settings, WireIds};
 pub use profile::{FULL_PROMPT, MINIMAL_PROMPT, Profile};
 pub use request::{
     ACTIONS_TAKEN, ActionTaken, AdjudicationRequest, DenialRecord, PreExistence,
