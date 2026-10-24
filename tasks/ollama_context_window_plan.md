@@ -210,6 +210,7 @@ short one, and the refusal is exact where the warning would guess.
 - AFK: 2026-10-24: Item A (90% `filled_window` threshold never fires) — declined as obsolete: the warning and its threshold are removed in favor of `truncate: false`.
 - AFK: 2026-10-24: Item B (guardian usage summed across extractor retries) — declined as obsolete: no warning reads guardian usage any more; `UsageTally` stays as it is for billing.
 - AFK: 2026-10-24: Item C (compaction ignores `context_tokens`) — the Ollama wire binds rig's catalog entry with `context_window = context_tokens` when the catalog lists the model, so threshold compaction fires at the loaded window rather than hard-erroring under `truncate: false`; unlisted models stay unbound (no threshold compaction, as today), because a bare `ModelSpec::new` would also override tools and image facts.
+- 2026-10-24: Shrink the compaction reserve and summary size to a quarter of the window each (below twice their default sum) instead of skipping threshold compaction — the defaults (16k + 12k) put the threshold at zero and gave the summarizer an empty budget on the 16384 default, so a 16k session would summarize nothing and drop history; scaled, it compacts at three quarters full with a positive budget.
 
 ## Documentation
 

@@ -262,7 +262,8 @@ window costs GPU memory, since the KV cache grows linearly with it, and can push
 CPU on a small card. A prompt longer than the window is refused, not truncated: Fontaine asks the
 daemon not to cut it, so the guardian denies the call with the daemon's message ("exceeds the
 available context size ... try increasing it") and the main agent shows that error. Raise
-`context_tokens` to fit the prompt. For a model in rig's catalog, compaction uses this window; a
+`context_tokens` to fit the prompt. For a model in rig's catalog, compaction uses this window, starting
+when the conversation fills three quarters of a window under about 57k tokens; a
 model the catalog does not list never compacts by threshold, so a long session ends with that
 error at the window.
 
