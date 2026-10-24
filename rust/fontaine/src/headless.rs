@@ -605,16 +605,16 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
         let mut outcome = if over_cap(&totals) {
             budget_stop()
         } else {
-            if let Some(usage) = runtime
+            let compaction = runtime
                 .session
                 .compact_if_needed(
                     &runtime.models.main.completion,
                     runtime.models.main.catalog_billed(),
                     runtime.approver(),
                 )
-                .await
-            {
-                totals.add(&usage);
+                .await;
+            if let Some(usage) = compaction.usage() {
+                totals.add(usage);
             }
             if over_cap(&totals) {
                 budget_stop()

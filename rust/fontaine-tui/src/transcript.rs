@@ -70,6 +70,14 @@ impl Transcript {
         self.entries.push(Entry::User(text));
     }
 
+    /// Empties the transcript after `/clear`. What was already written stays in the terminal's
+    /// scrollback.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.committed = 0;
+        self.committed_chars = 0;
+    }
+
     pub fn notice(&mut self, text: impl Into<String>) {
         self.finish_streaming();
         self.entries.push(Entry::Notice(text.into()));
@@ -599,5 +607,23 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn clearing_empties_the_transcript_and_restarts_the_reply_count() {
+        let mut t = Transcript::default();
+        t.user("q".into());
+        t.on_event(SessionEvent::Assistant("old".into()));
+        assert!(!t.commit(80).is_empty());
+        t.clear();
+        assert!(t.entries.is_empty());
+        assert_eq!(t.assistant_reply(1), None);
+        t.user("q2".into());
+        t.on_event(SessionEvent::Assistant("fresh".into()));
+        assert_eq!(t.assistant_reply(1), Some("fresh"));
+        assert!(
+            !t.commit(80).is_empty(),
+            "committing restarts with the new conversation"
+        );
     }
 }

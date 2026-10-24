@@ -11,7 +11,7 @@ roots, trust state, and the git remotes (read with `gix` from the repo config wi
 respects `.gitignore` and is capped at 50,000 paths — overflow is recorded as truncated; paths
 the index does not hold are reported to the guardian as `unindexed`). The guardian's
 `AdjudicationRequest` is built only from the ledger — never from a compaction summary or other
-model-written text. In a subagent tree there is one intent source, the root session's ledger: every agent's request takes `task_intent` and `recent_user_messages` from the root's human messages; spawn prompts and `send_message` bodies are untrusted-delimited context only. Resume restores both stores but starts in the user's resolved default mode and
+model-written text. In a subagent tree there is one intent source, the root session's ledger: every agent's request takes `task_intent` and `recent_user_messages` from the root's human messages since the last `ContextCleared` record (written by `/clear`, which empties the model context in the same session and refuses to run while a subagent does; the ledger keeps every other fact); spawn prompts and `send_message` bodies are untrusted-delimited context only. Resume restores both stores but starts in the user's resolved default mode and
 drops session-scope grants; fork (`--fork-session`) copies both stores under a new session id, also
 without session grants; a rewind of the conversation (rig-memory `as_of`) truncates the context and
 appends to the ledger — denial and approval history is never removed. Both stores persist as JSONL

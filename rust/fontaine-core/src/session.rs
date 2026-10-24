@@ -7,11 +7,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rig_core::DynModel;
+use rig_core::catalog::ModelSpec;
 use rig_core::completion::Usage;
+use rig_core::conversation::Author;
 use rig_core::operation::Completion;
+pub use rig_memory::CompactReason;
 use rig_memory::{
-    CompactReason, CompactionPolicy, DirStore, Summarizer, apply_summary, estimate_tokens,
-    load_async, save_async, summary_state,
+    CompactionPolicy, DirStore, Summarizer, apply_summary, estimate_tokens, load_async, save_async,
+    summary_state,
 };
 
 use crate::audit::AuditLog;
@@ -86,6 +89,78 @@ impl SessionError {
     }
 }
 
+/// What a compaction did.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CompactResult {
+    /// Nothing was asked of the model: no window on a threshold call, under the threshold, or
+    /// nothing new to summarize.
+    Skipped,
+    /// The conversation is as it was. The cause was already warned through the `Approver`.
+    Failed { usage: Option<Usage> },
+    /// The summary is saved. `before` and `after` are `estimate_tokens` of the conversation.
+    Compacted {
+        usage: Option<Usage>,
+        before: u64,
+        after: u64,
+    },
+}
+
+impl CompactResult {
+    /// The summarizer call's usage, when it answered.
+    pub fn usage(&self) -> Option<&Usage> {
+        match self {
+            CompactResult::Skipped => None,
+            CompactResult::Failed { usage } | CompactResult::Compacted { usage, .. } => {
+                usage.as_ref()
+            }
+        }
+    }
+
+    fn without_cost(mut self) -> Self {
+        if let CompactResult::Failed { usage: Some(usage) }
+        | CompactResult::Compacted {
+            usage: Some(usage), ..
+        } = &mut self
+        {
+            usage.cost = None;
+        }
+        self
+    }
+}
+
+/// The conversation could not be emptied.
+#[derive(Debug)]
+pub enum ClearError {
+    /// A subagent is running, so nothing was changed.
+    SubagentsRunning,
+    Store {
+        action: &'static str,
+        source: rig_memory::SessionError,
+    },
+}
+
+impl fmt::Display for ClearError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ClearError::SubagentsRunning => {
+                f.write_str("subagents are still running; /clear waits until they finish")
+            }
+            ClearError::Store { action, .. } => {
+                write!(f, "the conversation could not be {action}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ClearError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ClearError::SubagentsRunning => None,
+            ClearError::Store { source, .. } => Some(source),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Session {
     pub id: String,
@@ -94,6 +169,7 @@ pub struct Session {
     pub audit: Arc<AuditLog>,
     store: DirStore,
     policy: CompactionPolicy,
+    autocompact_window: Option<u64>,
 }
 
 impl Session {
@@ -129,6 +205,7 @@ impl Session {
             audit: Arc::new(audit),
             store,
             policy: CompactionPolicy::default(),
+            autocompact_window: None,
         })
     }
 
@@ -161,6 +238,7 @@ impl Session {
             audit: Arc::new(audit),
             store,
             policy: CompactionPolicy::default(),
+            autocompact_window: None,
         })
     }
 
@@ -201,73 +279,142 @@ impl Session {
         self.store.clone()
     }
 
+    /// Compacts the conversation once it passes `window` tokens, when that is sooner than the
+    /// model's window less the summarizer's reserve. The kept tail and the summary are capped
+    /// at a quarter of it, so a compaction leaves the conversation under it.
+    pub fn set_autocompact_window(&mut self, window: Option<u64>) {
+        self.autocompact_window = window;
+        let mut policy = CompactionPolicy::default();
+        if let Some(window) = window {
+            let quarter = window / 4;
+            policy.keep_recent = policy
+                .keep_recent
+                .min(usize::try_from(quarter).unwrap_or(usize::MAX));
+            let limits = &mut policy.summarizer.limits;
+            limits.summary_tokens = limits.summary_tokens.min(quarter.max(1));
+        }
+        self.policy = policy;
+    }
+
+    /// Whether a conversation of `tokens` has outgrown the model's window or the configured one.
+    pub fn over_threshold(&self, tokens: u64, spec: &ModelSpec) -> bool {
+        fitted_policy(&self.policy, spec.context_window).over_threshold(tokens, spec)
+            || self.autocompact_window.is_some_and(|w| tokens > w)
+    }
+
+    /// The conversation size above which a threshold compaction runs, `None` when it never
+    /// does: the model is not in the catalog, or neither its window nor a setting gives a limit.
+    pub fn autocompact_at(&self, spec: Option<&ModelSpec>) -> Option<u64> {
+        let spec = spec?;
+        let reserve = self.reserve(Some(spec));
+        let reserved = spec
+            .context_window
+            .map(|window| u64::from(window).saturating_sub(reserve));
+        match (reserved, self.autocompact_window) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// The summarizer's reserve: the part of the model's window a threshold compaction keeps free,
+    /// smaller for a small window.
+    pub fn reserve(&self, spec: Option<&ModelSpec>) -> u64 {
+        let window = spec.and_then(|spec| spec.context_window);
+        fitted_policy(&self.policy, window).summarizer.limits.reserve
+    }
+
     /// Compacts the conversation when it has outgrown the model's window. Nothing happens
-    /// when the model's window is not known. `priced` is `ModelHandle::catalog_billed`: the
-    /// summarizer call runs outside a turn, so it drops an unpriced model's cost and tells the
-    /// telemetry bridge itself.
+    /// when the model's window is not known and no window is configured. `priced` is
+    /// `ModelHandle::catalog_billed`: the summarizer call runs outside a turn, so it drops an
+    /// unpriced model's cost and tells the telemetry bridge itself.
     pub async fn compact_if_needed(
         &self,
         model: &DynModel<Completion>,
         priced: bool,
         approver: &dyn Approver,
-    ) -> Option<Usage> {
+    ) -> CompactResult {
+        self.compact_logged(model, priced, CompactReason::Threshold, approver)
+            .await
+    }
+
+    /// [`compact`](Self::compact) inside a `fontaine.compaction` span.
+    pub async fn compact_logged(
+        &self,
+        model: &DynModel<Completion>,
+        priced: bool,
+        reason: CompactReason,
+        approver: &dyn Approver,
+    ) -> CompactResult {
+        let why = match reason {
+            CompactReason::Asked { .. } => "asked",
+            CompactReason::Threshold => "threshold",
+            CompactReason::Overflow => "overflow",
+        };
         let span = tracing::info_span!(
             target: "fontaine::telemetry",
             "fontaine.compaction",
             model.priced = priced,
+            compaction.reason = why,
         );
-        let mut usage = tracing::Instrument::instrument(
-            self.compact(model, CompactReason::Threshold, approver),
-            span,
-        )
-        .await?;
-        if !priced {
-            usage.cost = None;
+        let result =
+            tracing::Instrument::instrument(self.compact(model, reason, approver), span).await;
+        if priced {
+            result
+        } else {
+            result.without_cost()
         }
-        Some(usage)
     }
 
     /// Summarizes the older part of the conversation with one call to `model` and saves the
     /// result. A compaction that cannot finish leaves the saved conversation as it was, warns,
-    /// and never fails the run. The returned usage is the summarizer call's, when it answered.
+    /// and never fails the run.
     pub async fn compact(
         &self,
         model: &DynModel<Completion>,
         reason: CompactReason,
         approver: &dyn Approver,
-    ) -> Option<Usage> {
+    ) -> CompactResult {
         let warn = |message: &str| warn(approver, message);
-        let spec = model.spec()?;
-        if reason == CompactReason::Threshold && spec.context_window.is_none() {
-            return None;
+        let failed = |usage| CompactResult::Failed { usage };
+        let Some(spec) = model.spec() else {
+            if matches!(reason, CompactReason::Asked { .. }) {
+                warn("the model's catalog entry is unknown, so it cannot be asked to summarize");
+                return failed(None);
+            }
+            return CompactResult::Skipped;
+        };
+        if reason == CompactReason::Threshold
+            && spec.context_window.is_none()
+            && self.autocompact_window.is_none()
+        {
+            return CompactResult::Skipped;
         }
         let mut conversation = match load_async(&self.store, CONVERSATION_LOG).await {
             Ok(conversation) => conversation,
             Err(e) => {
                 warn(&format!("the conversation could not be read: {e}"));
-                return None;
+                return failed(None);
             }
         };
         let policy = fitted_policy(&self.policy, spec.context_window);
-        if reason == CompactReason::Threshold
-            && !policy.over_threshold(estimate_tokens(conversation.messages()), spec)
-        {
-            return None;
+        let before = estimate_tokens(conversation.messages());
+        if reason == CompactReason::Threshold && !self.over_threshold(before, spec) {
+            return CompactResult::Skipped;
         }
         let state = summary_state(&conversation);
         let plan = match policy.plan_summary(&conversation, &state, &reason, spec) {
             Ok(Some(plan)) => plan,
-            Ok(None) => return None,
+            Ok(None) => return CompactResult::Skipped,
             Err(e) => {
                 warn(&format!("the model cannot be asked to summarize: {e}"));
-                return None;
+                return failed(None);
             }
         };
         let response = match model.call(plan.request.clone()).await {
             Ok(response) => response,
             Err(e) => {
                 warn(&format!("the summarizing call failed: {e}"));
-                return None;
+                return failed(None);
             }
         };
         let usage = response.usage;
@@ -276,19 +423,43 @@ impl Session {
             Ok(text) => text,
             Err(e) => {
                 warn(&format!("the summary cannot be used: {e}"));
-                return Some(usage);
+                return failed(Some(usage));
             }
         };
         if apply_summary(&mut conversation, plan.keep_from, &state).is_none() {
             warn("the summary could not be applied");
-            return Some(usage);
+            return failed(Some(usage));
         }
+        let after = estimate_tokens(conversation.messages());
         if let Err(e) = save_async(&self.store, CONVERSATION_LOG, &mut conversation).await {
             warn(&format!(
                 "the compacted conversation could not be saved: {e}"
             ));
+            return failed(Some(usage));
         }
-        Some(usage)
+        CompactResult::Compacted {
+            usage: Some(usage),
+            before,
+            after,
+        }
+    }
+
+    /// Empties the model's context. The log keeps the old messages as logged changes; only the
+    /// live conversation is empty. The compaction asides go too, or the next summary would be
+    /// built on the cleared conversation's.
+    pub async fn clear(&self) -> Result<(), ClearError> {
+        let fail = |action| move |source| ClearError::Store { action, source };
+        let mut conversation = load_async(&self.store, CONVERSATION_LOG)
+            .await
+            .map_err(fail("read"))?;
+        let asides: Vec<_> = conversation.asides().map(|(id, _)| id).collect();
+        for id in asides {
+            conversation.remove_aside(id);
+        }
+        conversation.set_entries(Vec::new(), Author::plugin("clear"));
+        save_async(&self.store, CONVERSATION_LOG, &mut conversation)
+            .await
+            .map_err(fail("saved"))
     }
 }
 

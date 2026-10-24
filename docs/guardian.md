@@ -50,6 +50,9 @@ The request is built from the ledger and the call itself:
 | `hook_context` | Notes from `pre_tool_use` hooks, in an untrusted block. |
 | `prior_denials` | Reason-coded denials earlier in the session, for loop detection. |
 
+The `task_intent` and `recent_user_messages` messages start after your last `/clear`: what you
+asked before it is not shown to the guardian, while the session facts are kept.
+
 Only messages you typed count as user intent. A message you queue while the agent works counts from
 the moment the agent receives it, with its next tool result, not from when you typed it: until then
 the model has not read it, and a call judged earlier must not rest on words the model never saw.

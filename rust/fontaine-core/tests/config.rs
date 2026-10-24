@@ -579,6 +579,7 @@ const NO_FOR_PROJECT: &[(&str, &str)] = &[
     ("agents max_parallel", "[agents]\nmax_parallel = 2\n"),
     ("agents budgets", "[agents]\nsubagent_token_budget = 10\n"),
     ("agents.types", "[agents.types.t]\ntools = [\"read\"]\n"),
+    ("context", "[context]\nautocompact_window = 150000\n"),
     (
         "shell_preclassifier",
         "[shell_preclassifier]\nallow_extra = [\"tree\"]\n",
@@ -1194,4 +1195,54 @@ fn a_project_file_alone_cannot_create_a_screen() {
     let w = World::new();
     w.project_file("[guardian.screen]\nshadow = true\n");
     assert!(w.load().unwrap().guardian.screen.is_none());
+}
+
+#[test]
+fn the_autocompact_window_is_read_and_a_higher_scope_wins() {
+    let w = World::new();
+    assert_eq!(w.load().unwrap().context.autocompact_window, None);
+    w.user_file("[context]\nautocompact_window = 150000\n");
+    assert_eq!(w.load().unwrap().context.autocompact_window, Some(150_000));
+    w.trusted_repo();
+    w.local_file("[context]\nautocompact_window = 90000\n");
+    assert_eq!(w.load().unwrap().context.autocompact_window, Some(90_000));
+    let cli = w.cli_file("[context]\nautocompact_window = 8000\n");
+    assert_eq!(
+        w.load_with_settings(&cli)
+            .unwrap()
+            .context
+            .autocompact_window,
+        Some(8_000)
+    );
+}
+
+#[test]
+fn the_autocompact_window_must_be_positive_and_the_section_is_closed() {
+    let err = parse_settings(
+        "[context]\nautocompact_window = 0\n",
+        Path::new("u.toml"),
+        Column::User,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("context.autocompact_window"),
+        "{err}"
+    );
+    let err = parse_settings(
+        "[context]\nautocompact_pct = 80\n",
+        Path::new("u.toml"),
+        Column::User,
+    );
+    assert!(err.is_err());
+}
+
+#[test]
+fn the_autocompact_window_is_refused_from_shared_project_scope_only() {
+    let w = World::new();
+    w.project_file("[context]\nautocompact_window = 150000\n");
+    let err = w.load().unwrap_err();
+    assert!(err.to_string().contains("context"), "{err}");
+    let ok = "[context]\nautocompact_window = 150000\n";
+    parse_settings(ok, Path::new("p.toml"), Column::ProjectLocal).unwrap();
+    user_ok(ok);
 }

@@ -25,8 +25,10 @@ use fontaine_tools::skill::SkillTool;
 use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext};
 use rig_agent::prelude::*;
 use rig_agent::tool::server::{ToolServer, ToolServerHandle};
+use rig_core::completion::ToolDefinition;
 use rig_core::schemars::Schema;
 use rig_core::tool::ToolOutput;
+use rig_memory::{estimate_tokens, load_async};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -36,6 +38,7 @@ use crate::child_runner::{
     ChildContext, CoreChildRunner, LedgerWindow, MainModel, NotificationStage,
 };
 use crate::config::{Account, AgentMode, Config, McpServer, PermissionMode};
+use crate::context::{self, ContextError, ContextUsage};
 use crate::extensions::Extensions;
 use crate::gate::{AutoContext, ScreenStage, SessionState, StateParams, no_guardian};
 use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
@@ -45,7 +48,7 @@ use crate::models::{
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
 use crate::scanner_stage::{Backend, ScannerStage, ScannerStart, llm_backend};
-use crate::session::{CONVERSATION_LOG, Session};
+use crate::session::{CONVERSATION_LOG, ClearError, Session};
 use crate::skills::{self, SkillRuntime};
 use crate::steering::{Steering, SteeringHook};
 use crate::tools::{self, ExtensionTools, RegistryParams};
@@ -241,6 +244,7 @@ pub struct CredentialEffect {
 
 pub struct AgentRuntime {
     pub agent: Agent,
+    prompt_pieces: prompt::PromptPieces,
     pub state: Arc<SessionState>,
     pub session: Session,
     pub models: Models,
@@ -402,7 +406,10 @@ fn agent_limits(config: &Config) -> Limits {
 }
 
 impl AgentRuntime {
-    pub fn new(setup: AgentSetup) -> Result<AgentRuntime, String> {
+    pub fn new(mut setup: AgentSetup) -> Result<AgentRuntime, String> {
+        setup
+            .session
+            .set_autocompact_window(setup.config.context.autocompact_window);
         let approver = setup.approver.clone();
         crate::providers::token_source::set_warn_sink(move |message| approver.warn(message));
         let scope = Arc::new(Scope::new(
@@ -575,7 +582,7 @@ impl AgentRuntime {
         }
         let seen = Seen::default();
         let steering = Steering::default();
-        let agent = build_agent(&Parts {
+        let (agent, prompt_pieces) = build_agent(&Parts {
             setup: &setup_rest,
             roots: &setup.roots,
             pipeline: &pipeline,
@@ -594,6 +601,7 @@ impl AgentRuntime {
         })?;
         Ok(AgentRuntime {
             agent,
+            prompt_pieces,
             state,
             session: setup.session,
             models: setup.models,
@@ -627,7 +635,7 @@ impl AgentRuntime {
     /// Rebuilds the registry and the agent for the current scope. The conversation lives in the
     /// session store, so a new agent continues it.
     fn rebuild(&mut self) -> Result<(), String> {
-        let agent = build_agent(&Parts {
+        let (agent, prompt_pieces) = build_agent(&Parts {
             setup: &self.setup,
             roots: &self.roots,
             pipeline: &self.pipeline,
@@ -645,6 +653,7 @@ impl AgentRuntime {
             steering: &self.steering,
         })?;
         self.agent = agent;
+        self.prompt_pieces = prompt_pieces;
         Ok(())
     }
 
@@ -1276,6 +1285,53 @@ impl AgentRuntime {
     pub fn append(&self, record: Record) {
         self.state.append(record);
     }
+
+    /// `/clear`: empties the model's context in this session. Refused while a subagent runs,
+    /// because its guardian requests read the human messages the clear drops.
+    pub async fn clear_conversation(&self) -> Result<(), ClearError> {
+        if self.state.agents().any_running() {
+            return Err(ClearError::SubagentsRunning);
+        }
+        self.session.clear().await?;
+        self.state.append(Record::ContextCleared {});
+        Ok(())
+    }
+
+    /// `/context`: what fills the window now, estimated.
+    pub async fn context_usage(&self) -> Result<ContextUsage, ContextError> {
+        let conversation = load_async(&self.session.store(), CONVERSATION_LOG)
+            .await
+            .map_err(ContextError::Conversation)?;
+        let defs = self
+            .tool_server
+            .tool_defs(None)
+            .await
+            .map_err(|e| ContextError::Tools(Box::new(e)))?;
+        let defs: Vec<ToolDefinition> = defs.iter().map(|def| (**def).clone()).collect();
+        let (tools, mcp_tools) = context::tool_tokens(&defs);
+        let pieces = &self.prompt_pieces;
+        let spec = self.models.main.completion.spec();
+        let count = |text: &Option<String>| text.as_deref().map_or(0, context::text_tokens);
+        Ok(ContextUsage {
+            model: self.models.main.reference.to_string(),
+            window: spec.and_then(|spec| spec.context_window),
+            autocompact_at: self.session.autocompact_at(spec),
+            configured: self.config.context.autocompact_window,
+            reserve: self.session.reserve(spec),
+            listed: spec.is_some(),
+            system_prompt: context::text_tokens(&pieces.base) + count(&pieces.append),
+            output_style: count(&pieces.output_style),
+            instructions: pieces
+                .instructions
+                .iter()
+                .map(|(path, text)| (path.clone(), context::text_tokens(text)))
+                .collect(),
+            skills: count(&pieces.skills),
+            tools,
+            mcp_tools,
+            messages: estimate_tokens(conversation.messages()),
+        })
+    }
 }
 
 struct Parts<'a> {
@@ -1297,10 +1353,10 @@ struct Parts<'a> {
 }
 
 /// The agent, with its wrapped tools registered in the session's tool server.
-fn build_agent(p: &Parts<'_>) -> Result<Agent, String> {
+fn build_agent(p: &Parts<'_>) -> Result<(Agent, prompt::PromptPieces), String> {
     let instructions = prompt::load_instructions(&p.setup.config_dir, &p.roots[0]);
     let skill_index = skills::index(p.skills.extensions());
-    let preamble = prompt::assemble(&PromptParts {
+    let pieces = prompt::layers(&PromptParts {
         roots: p.roots,
         system_prompt: p.setup.system_prompt.as_deref(),
         instructions: &instructions,
@@ -1311,6 +1367,7 @@ fn build_agent(p: &Parts<'_>) -> Result<Agent, String> {
             .map(|(name, text)| (name.as_str(), text.as_str())),
         append: p.setup.append_system_prompt.as_deref(),
     });
+    let preamble = pieces.join();
     let ledger_window: Arc<dyn fontaine_agents::root_ledger::RootLedger> =
         Arc::new(LedgerWindow(p.state.clone()));
     let registered = tools::registry(RegistryParams {
@@ -1362,5 +1419,5 @@ fn build_agent(p: &Parts<'_>) -> Result<Agent, String> {
     if let Some(schema) = &p.setup.json_schema {
         builder = builder.output_schema_raw(schema.clone());
     }
-    Ok(builder.build())
+    Ok((builder.build(), pieces))
 }

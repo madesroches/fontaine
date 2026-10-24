@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use fontaine_core::config::{Hook, PermissionMode};
+use fontaine_core::context::ContextUsage;
 use fontaine_core::extensions::{Scope, Skill};
 use fontaine_core::gate::Rules;
 use fontaine_core::permission_rules::SourcedRule;
@@ -242,6 +243,135 @@ pub fn skills(skills: &[Skill]) -> String {
         .join("\n")
 }
 
+/// A token count as the reports show it: `842`, `35.7k`.
+pub fn tokens(n: u64) -> String {
+    if n < 1000 {
+        n.to_string()
+    } else {
+        format!("{:.1}k", n as f64 / 1000.0)
+    }
+}
+
+fn window_label(window: u32) -> String {
+    if window >= 1000 && window.is_multiple_of(1000) {
+        format!("{}k", window / 1000)
+    } else {
+        tokens(u64::from(window))
+    }
+}
+
+/// One row of the `/context` report, with the items an `all` report lists under it.
+struct Row<'a> {
+    label: &'static str,
+    tokens: u64,
+    count: Option<usize>,
+    items: &'a [(String, u64)],
+}
+
+/// `/context`: what fills the window, estimated. With `all`, each instruction file and tool
+/// gets a line of its own under its row.
+pub fn context(usage: &ContextUsage, all: bool) -> String {
+    let total = usage.total();
+    let mut out = match usage.window {
+        Some(window) => format!(
+            "context ~{} of {} tokens ({}%), estimated",
+            tokens(total),
+            window_label(window),
+            total.saturating_mul(100) / u64::from(window).max(1),
+        ),
+        None => format!(
+            "context ~{} tokens, estimated (window unknown)",
+            tokens(total)
+        ),
+    };
+    let _ = write!(out, " · {}", usage.model);
+
+    let instructions: Vec<(String, u64)> = usage
+        .instructions
+        .iter()
+        .map(|(path, n)| (path.display().to_string(), *n))
+        .collect();
+    let sum = |items: &[(String, u64)]| items.iter().map(|(_, n)| n).sum::<u64>();
+    let row = |label, tokens, count, items| Row {
+        label,
+        tokens,
+        count,
+        items,
+    };
+    let mut rows = vec![row("system prompt", usage.system_prompt, None, &[][..])];
+    if usage.output_style > 0 {
+        rows.push(row("output style", usage.output_style, None, &[]));
+    }
+    rows.push(row("instructions", sum(&instructions), None, &instructions));
+    rows.push(row("skills", usage.skills, None, &[]));
+    rows.push(row(
+        "tools",
+        sum(&usage.tools),
+        Some(usage.tools.len()),
+        &usage.tools,
+    ));
+    rows.push(row(
+        "MCP tools",
+        sum(&usage.mcp_tools),
+        Some(usage.mcp_tools.len()),
+        &usage.mcp_tools,
+    ));
+    rows.push(row("messages", usage.messages, None, &[]));
+    let free = usage
+        .window
+        .map(|window| u64::from(window).saturating_sub(total));
+    let width = rows
+        .iter()
+        .map(|row| tokens(row.tokens).len())
+        .chain(free.map(|n| tokens(n).len()))
+        .max()
+        .unwrap_or(1);
+    for row in &rows {
+        let _ = write!(out, "\n  {:<14}{:>width$}", row.label, tokens(row.tokens));
+        if let Some(count) = row.count {
+            let _ = write!(out, "  ({count})");
+        }
+        if all {
+            let mut items: Vec<&(String, u64)> = row.items.iter().collect();
+            items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            for (name, n) in items {
+                let _ = write!(out, "\n    {name}  {}", tokens(*n));
+            }
+        }
+    }
+    if let Some(free) = free {
+        let _ = write!(out, "\n  {:<14}{:>width$}", "free", tokens(free));
+    }
+
+    let reserved = usage
+        .window
+        .map(|window| u64::from(window).saturating_sub(usage.reserve));
+    out.push('\n');
+    match (usage.listed, usage.autocompact_at) {
+        (false, _) => out.push_str("no automatic compaction: the model is not in the catalog"),
+        (true, None) => out.push_str("no automatic compaction: the model's window is unknown"),
+        (true, Some(at)) => {
+            let configured = usage.configured == Some(at) && reserved.is_none_or(|r| at <= r);
+            let _ = write!(out, "auto-compacts when messages pass ~{} (", tokens(at));
+            if configured {
+                out.push_str("[context] autocompact_window)");
+            } else {
+                let _ = write!(out, "window minus a {} reserve)", tokens(usage.reserve));
+            }
+        }
+    }
+    if let Some(window) = usage.window
+        && total > u64::from(window)
+    {
+        let _ = write!(
+            out,
+            "\nover the window by ~{} tokens: /compact or /clear frees space",
+            tokens(total - u64::from(window))
+        );
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,6 +583,111 @@ mod tests {
         assert_eq!(
             text,
             "internal — does it [project] (model only)\ndeploy — does it [user] (you only)\nstatus — does it [user] (hidden by /status)"
+        );
+    }
+
+    fn usage() -> ContextUsage {
+        ContextUsage {
+            model: "anthropic/claude-sonnet-5-5".into(),
+            window: Some(200_000),
+            autocompact_at: Some(183_616),
+            configured: None,
+            reserve: 16_384,
+            listed: true,
+            system_prompt: 2_100,
+            output_style: 0,
+            instructions: vec![("/w/FONTAINE.md".into(), 1_300)],
+            skills: 400,
+            tools: vec![("read".into(), 300), ("shell".into(), 900)],
+            mcp_tools: vec![("mcp__gh__issue".into(), 2_900)],
+            messages: 35_700,
+        }
+    }
+
+    #[test]
+    fn context_shows_the_window_the_rows_and_the_reserve() {
+        let text = context(&usage(), false);
+        assert_eq!(
+            text,
+            "context ~43.6k of 200k tokens (21%), estimated · anthropic/claude-sonnet-5-5\n  system prompt   2.1k\n  instructions    1.3k\n  skills           400\n  tools           1.2k  (2)\n  MCP tools       2.9k  (1)\n  messages       35.7k\n  free          156.4k\nauto-compacts when messages pass ~183.6k (window minus a 16.4k reserve)"
+        );
+    }
+
+    #[test]
+    fn context_all_lists_items_largest_first_and_the_style_row_only_when_set() {
+        let plain = context(&usage(), false);
+        assert!(!plain.contains("output style"), "{plain}");
+        let mut with_style = usage();
+        with_style.output_style = 150;
+        assert!(context(&with_style, false).contains("output style"));
+        let text = context(&usage(), true);
+        let shell = text.find("    shell").unwrap();
+        let read = text.find("    read").unwrap();
+        assert!(shell < read, "{text}");
+        assert!(text.contains("    /w/FONTAINE.md  1.3k"), "{text}");
+        assert!(text.contains("    mcp__gh__issue  2.9k"), "{text}");
+    }
+
+    #[test]
+    fn context_without_a_known_window_has_no_free_row() {
+        let mut u = usage();
+        u.window = None;
+        u.autocompact_at = None;
+        let text = context(&u, false);
+        assert!(
+            text.starts_with("context ~43.6k tokens, estimated (window unknown) · "),
+            "{text}"
+        );
+        assert!(!text.contains("free"), "{text}");
+        assert!(
+            text.ends_with("no automatic compaction: the model's window is unknown"),
+            "{text}"
+        );
+        u.configured = Some(150_000);
+        u.autocompact_at = Some(150_000);
+        assert!(
+            context(&u, false).ends_with(
+                "auto-compacts when messages pass ~150.0k ([context] autocompact_window)"
+            )
+        );
+    }
+
+    #[test]
+    fn context_names_the_configured_window_when_it_is_the_lower_limit() {
+        let mut u = usage();
+        u.configured = Some(50_000);
+        u.autocompact_at = Some(50_000);
+        assert!(
+            context(&u, false).ends_with(
+                "auto-compacts when messages pass ~50.0k ([context] autocompact_window)"
+            )
+        );
+        u.configured = Some(900_000);
+        u.autocompact_at = Some(183_616);
+        assert!(context(&u, false).ends_with("(window minus a 16.4k reserve)"));
+    }
+
+    #[test]
+    fn context_says_when_the_model_is_not_in_the_catalog() {
+        let mut u = usage();
+        u.window = None;
+        u.autocompact_at = None;
+        u.listed = false;
+        assert!(
+            context(&u, false)
+                .ends_with("no automatic compaction: the model is not in the catalog")
+        );
+    }
+
+    #[test]
+    fn context_warns_when_the_conversation_is_over_the_window() {
+        let mut u = usage();
+        u.window = Some(30_000);
+        u.autocompact_at = Some(13_616);
+        let text = context(&u, false);
+        assert!(
+            text.ends_with("over the window by ~13.6k tokens: /compact or /clear frees space"),
+            "{text}"
         );
     }
 }

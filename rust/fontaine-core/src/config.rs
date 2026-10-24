@@ -533,6 +533,12 @@ pub struct AgentsSection {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ContextSection {
+    pub autocompact_window: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ShellPreclassifierSection {
     pub allow_extra: Option<Vec<String>>,
 }
@@ -592,6 +598,7 @@ pub struct Settings {
     pub mcp: Option<McpSection>,
     pub auto_mode: Option<AutoModeSection>,
     pub agents: Option<AgentsSection>,
+    pub context: Option<ContextSection>,
     pub shell_preclassifier: Option<ShellPreclassifierSection>,
     pub telemetry: Option<TelemetrySection>,
 }
@@ -721,6 +728,9 @@ fn check_scope(s: &Settings, column: Column) -> Result<(), ScopeFailure> {
     }
     if s.agents.is_some() {
         return fail("agents", tighten);
+    }
+    if s.context.is_some() {
+        return fail("context", tighten);
     }
     if s.shell_preclassifier.is_some() {
         return fail("shell_preclassifier", tighten);
@@ -908,6 +918,11 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
                 "server names are non-empty, contain no `__`, neither start nor end with `_`, and use only letters, digits, `_` and `-`",
             );
         }
+    }
+    if let Some(c) = &s.context
+        && c.autocompact_window == Some(0)
+    {
+        return bad("context.autocompact_window", "must be at least 1");
     }
     if let Some(a) = &s.agents {
         if a.max_parallel == Some(0) {
@@ -1108,6 +1123,13 @@ impl fmt::Display for ScopeEntry {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Context {
+    /// Tokens of conversation above which compaction runs, when lower than the model's own
+    /// threshold.
+    pub autocompact_window: Option<u64>,
+}
+
 /// The merged, validated configuration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
@@ -1125,6 +1147,7 @@ pub struct Config {
     pub mcp_origins: BTreeMap<String, Origin>,
     pub auto_mode: AutoMode,
     pub agents: Agents,
+    pub context: Context,
     pub shell_preclassifier_allow_extra: Vec<String>,
     pub telemetry: Telemetry,
 }
@@ -1169,6 +1192,7 @@ impl Config {
                 session_cost_budget_usd: None,
                 types: BTreeMap::new(),
             },
+            context: Context::default(),
             shell_preclassifier_allow_extra: Vec::new(),
             telemetry: Telemetry {
                 enabled: false,
@@ -1334,6 +1358,9 @@ impl Config {
             for (name, ty) in a.types.iter().flatten() {
                 t.types.insert(name.clone(), ty.clone());
             }
+        }
+        if let Some(v) = s.context.as_ref().and_then(|c| c.autocompact_window) {
+            self.context.autocompact_window = Some(v);
         }
         if let Some(sp) = &s.shell_preclassifier {
             union(

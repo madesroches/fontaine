@@ -595,6 +595,7 @@ async fn the_request_is_built_from_the_ledger_and_never_from_a_compaction_summar
             &DenyAll,
         )
         .await
+        .usage()
         .expect("compacted");
     let after: Vec<String> = load(&rig.session.store(), CONVERSATION_LOG)
         .unwrap()
@@ -836,4 +837,32 @@ fn a_failing_sink_warns_the_human_once_and_each_sink_has_its_own_warning() {
     let warnings = rig.approver.warnings.lock().unwrap();
     assert_eq!(warnings.len(), 2, "{warnings:?}");
     assert!(warnings[1].contains("the session ledger"), "{warnings:?}");
+}
+
+#[tokio::test]
+async fn the_request_after_a_clear_carries_only_what_the_human_asked_since() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig(&fake, "");
+    let say = |text: &str| {
+        rig.session
+            .ledger
+            .append(Record::UserMessage { text: text.into() })
+            .unwrap();
+    };
+    say("MESSAGE-BEFORE-THE-CLEAR");
+    rig.session
+        .ledger
+        .append(Record::ContextCleared {})
+        .unwrap();
+    say("MESSAGE-AFTER-THE-CLEAR");
+
+    assert!(allowed(&rig.check("shell", shell("make all")).await));
+    let sent: String = fake
+        .mock
+        .requests()
+        .iter()
+        .map(|r| format!("{r:?}"))
+        .collect();
+    assert!(!sent.contains("MESSAGE-BEFORE-THE-CLEAR"), "{sent}");
+    assert!(sent.contains("MESSAGE-AFTER-THE-CLEAR"), "{sent}");
 }

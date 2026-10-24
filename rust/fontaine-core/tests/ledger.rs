@@ -3,13 +3,13 @@ mod common;
 use common::World;
 use fontaine_core::ledger::{FILE_INDEX_CAP, FileIndex, Ledger, Record};
 use fontaine_core::permissions::DenyAll;
-use fontaine_core::session::{CONVERSATION_LOG, Session, SessionError};
+use fontaine_core::session::{CONVERSATION_LOG, CompactResult, Session, SessionError};
 use rig_core::DynModel;
 use rig_core::catalog::{Catalog, ModelSpec};
 use rig_core::completion::{Cost, Message, Usage};
 use rig_core::operation::Completion;
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
-use rig_memory::{CompactReason, load, save};
+use rig_memory::{CompactReason, load, save, summary_state};
 
 const SESSION_ID: &str = "00000000-0000-4000-8000-0000000000aa";
 
@@ -98,7 +98,10 @@ async fn the_ledger_survives_a_compaction_the_user_asked_for() {
             &DenyAll,
         )
         .await;
-    assert!(usage.is_some(), "the summarizer answered");
+    assert!(
+        matches!(usage, CompactResult::Compacted { usage: Some(_), .. }),
+        "the summarizer answered: {usage:?}"
+    );
     assert_eq!(mock.request_count(), 1);
 
     let after = saved_texts(&session);
@@ -123,8 +126,16 @@ async fn a_threshold_compaction_between_runs_leaves_the_context_compacted_and_sa
         vec![MockTurn::text("THRESHOLD-SUMMARY")],
     );
     let before = saved_texts(&session).len();
-    let usage = session.compact_if_needed(&dynamic, true, &DenyAll).await;
-    assert!(usage.is_some());
+    let result = session.compact_if_needed(&dynamic, true, &DenyAll).await;
+    let CompactResult::Compacted {
+        before: was,
+        after: now,
+        ..
+    } = result
+    else {
+        panic!("{result:?}");
+    };
+    assert!(now < was);
     assert_eq!(mock.request_count(), 1);
     let after = saved_texts(&session);
     assert!(after.len() < before);
@@ -142,10 +153,8 @@ async fn an_unpriced_threshold_compaction_returns_usage_without_a_cost() {
         let w = World::new();
         let (session, _) = session_with_history(&w, 8);
         let (_, dynamic) = model(Some(small_window_spec(1_000)), vec![turn()]);
-        let usage = session
-            .compact_if_needed(&dynamic, priced, &DenyAll)
-            .await
-            .expect("the summarizer answered");
+        let result = session.compact_if_needed(&dynamic, priced, &DenyAll).await;
+        let usage = result.usage().expect("the summarizer answered");
         assert_eq!(usage.cost.is_some(), expect_cost, "priced = {priced}");
     }
 }
@@ -158,11 +167,9 @@ async fn a_conversation_that_fits_is_not_compacted() {
         Some(small_window_spec(1_000_000)),
         vec![MockTurn::text("unused")],
     );
-    assert!(
-        session
-            .compact_if_needed(&dynamic, true, &DenyAll)
-            .await
-            .is_none()
+    assert_eq!(
+        session.compact_if_needed(&dynamic, true, &DenyAll).await,
+        CompactResult::Skipped
     );
     assert_eq!(mock.request_count(), 0);
 }
@@ -174,19 +181,15 @@ async fn compaction_is_skipped_when_the_window_is_unknown() {
     let mut spec = small_window_spec(1_000);
     spec.context_window = None;
     let (mock, dynamic) = model(Some(spec), vec![MockTurn::text("unused")]);
-    assert!(
-        session
-            .compact_if_needed(&dynamic, true, &DenyAll)
-            .await
-            .is_none()
+    assert_eq!(
+        session.compact_if_needed(&dynamic, true, &DenyAll).await,
+        CompactResult::Skipped
     );
     assert_eq!(mock.request_count(), 0);
     let (mock, dynamic) = model(None, vec![MockTurn::text("unused")]);
-    assert!(
-        session
-            .compact_if_needed(&dynamic, true, &DenyAll)
-            .await
-            .is_none()
+    assert_eq!(
+        session.compact_if_needed(&dynamic, true, &DenyAll).await,
+        CompactResult::Skipped
     );
     assert_eq!(mock.request_count(), 0);
 }
@@ -199,7 +202,10 @@ async fn an_empty_summary_leaves_the_context_unchanged() {
     let before = saved_texts(&session);
     let usage = session.compact_if_needed(&dynamic, true, &DenyAll).await;
     assert_eq!(mock.request_count(), 1);
-    assert!(usage.is_some(), "a call that answered is still paid for");
+    assert!(
+        matches!(usage, CompactResult::Failed { usage: Some(_) }),
+        "a call that answered is still paid for: {usage:?}"
+    );
     assert_eq!(saved_texts(&session), before);
 }
 
@@ -209,11 +215,9 @@ async fn a_failed_summarizer_call_leaves_the_context_unchanged_and_does_not_fail
     let (session, _) = session_with_history(&w, 8);
     let (mock, dynamic) = model(Some(small_window_spec(1_000)), vec![]);
     let before = saved_texts(&session);
-    assert!(
-        session
-            .compact_if_needed(&dynamic, true, &DenyAll)
-            .await
-            .is_none()
+    assert_eq!(
+        session.compact_if_needed(&dynamic, true, &DenyAll).await,
+        CompactResult::Failed { usage: None }
     );
     assert_eq!(mock.request_count(), 1);
     assert_eq!(saved_texts(&session), before);
@@ -363,4 +367,190 @@ fn a_ledger_can_be_created_only_once_per_session_directory() {
     std::fs::create_dir_all(&dir).unwrap();
     let _first = Ledger::create(&dir).unwrap();
     assert!(Ledger::create(&dir).is_err());
+}
+
+#[test]
+fn the_autocompact_trigger_is_the_lower_of_the_reserve_and_the_configured_window() {
+    let w = World::new();
+    let mut session = Session::create(&w.data, SESSION_ID).unwrap();
+    let reserve = session.reserve(Some(&small_window_spec(200_000)));
+    let known = small_window_spec(200_000);
+    let mut unknown = small_window_spec(1);
+    unknown.context_window = None;
+
+    assert_eq!(
+        session.autocompact_at(Some(&known)),
+        Some(200_000 - reserve)
+    );
+    assert_eq!(session.autocompact_at(Some(&unknown)), None);
+    assert_eq!(session.autocompact_at(None), None);
+
+    session.set_autocompact_window(Some(50_000));
+    assert_eq!(session.autocompact_at(Some(&known)), Some(50_000));
+    assert_eq!(session.autocompact_at(Some(&unknown)), Some(50_000));
+    assert_eq!(session.autocompact_at(None), None);
+    assert!(session.over_threshold(50_001, &known));
+    assert!(!session.over_threshold(50_000, &known));
+
+    session.set_autocompact_window(Some(900_000));
+    assert_eq!(
+        session.autocompact_at(Some(&known)),
+        Some(200_000 - reserve)
+    );
+    assert!(session.over_threshold(200_000 - reserve + 1, &known));
+}
+
+#[tokio::test]
+async fn a_configured_window_compacts_a_conversation_the_reserve_would_leave_alone() {
+    let w = World::new();
+    let (mut session, _) = session_with_history(&w, 8);
+    let spec = small_window_spec(100_000);
+    let (mock, dynamic) = model(Some(spec.clone()), vec![MockTurn::text("unused")]);
+    assert_eq!(
+        session.compact_if_needed(&dynamic, true, &DenyAll).await,
+        CompactResult::Skipped
+    );
+    assert_eq!(mock.request_count(), 0);
+
+    // A summary about the size of the quarter of the window the summary is capped to.
+    let summary = "s".repeat(1_500);
+    session.set_autocompact_window(Some(2_000));
+    let (mock, dynamic) = model(
+        Some(spec),
+        vec![MockTurn::text(summary.clone()), MockTurn::text("unused")],
+    );
+    let result = session.compact_if_needed(&dynamic, true, &DenyAll).await;
+    let CompactResult::Compacted { after, .. } = result else {
+        panic!("{result:?}");
+    };
+    assert!(
+        after <= 2_000,
+        "the conversation is under the window: {after}"
+    );
+    assert_eq!(mock.request_count(), 1);
+    assert!(saved_texts(&session).iter().any(|m| m.contains(&summary)));
+    assert_eq!(
+        session.compact_if_needed(&dynamic, true, &DenyAll).await,
+        CompactResult::Skipped,
+        "the next turn does not summarize again"
+    );
+    assert_eq!(mock.request_count(), 1);
+}
+
+#[tokio::test]
+async fn a_listed_model_without_a_window_is_compacted_only_when_a_window_is_configured() {
+    let w = World::new();
+    let (mut session, _) = session_with_history(&w, 8);
+    let mut spec = small_window_spec(1_000);
+    spec.context_window = None;
+    let (mock, dynamic) = model(Some(spec.clone()), vec![MockTurn::text("SUMMARY")]);
+    assert_eq!(
+        session.compact_if_needed(&dynamic, true, &DenyAll).await,
+        CompactResult::Skipped
+    );
+    assert_eq!(mock.request_count(), 0);
+
+    session.set_autocompact_window(Some(2_000));
+    let result = session.compact_if_needed(&dynamic, true, &DenyAll).await;
+    assert!(
+        matches!(result, CompactResult::Compacted { .. }),
+        "{result:?}"
+    );
+    assert_eq!(mock.request_count(), 1);
+
+    // A model the catalog does not list is never compacted automatically.
+    let (mock, unlisted) = model(None, vec![MockTurn::text("unused")]);
+    assert_eq!(
+        session.compact_if_needed(&unlisted, true, &DenyAll).await,
+        CompactResult::Skipped
+    );
+    assert_eq!(mock.request_count(), 0);
+}
+
+struct Collect(std::sync::Mutex<Vec<String>>);
+
+impl fontaine_core::permissions::Approver for Collect {
+    fn approve<'a>(
+        &'a self,
+        _request: fontaine_core::permissions::ApprovalRequest,
+    ) -> futures::future::BoxFuture<'a, fontaine_core::permissions::Answer> {
+        Box::pin(async { fontaine_core::permissions::Answer::Deny { feedback: None } })
+    }
+
+    fn warn(&self, message: &str) {
+        self.0.lock().unwrap().push(message.to_string());
+    }
+}
+
+#[tokio::test]
+async fn asking_an_unlisted_model_to_summarize_warns_and_fails() {
+    let w = World::new();
+    let (session, _) = session_with_history(&w, 8);
+    let (mock, unlisted) = model(None, vec![MockTurn::text("unused")]);
+    let approver = Collect(Default::default());
+    let result = session
+        .compact_logged(
+            &unlisted,
+            true,
+            CompactReason::Asked {
+                focus: String::new(),
+            },
+            &approver,
+        )
+        .await;
+    assert_eq!(result, CompactResult::Failed { usage: None });
+    assert_eq!(mock.request_count(), 0);
+    assert!(approver.0.lock().unwrap()[0].contains("catalog entry is unknown"));
+}
+
+#[tokio::test]
+async fn a_clear_empties_the_context_and_drops_the_old_summary_but_the_log_keeps_the_messages() {
+    let w = World::new();
+    let (session, questions) = session_with_history(&w, 8);
+    let (mock, dynamic) = model(
+        Some(small_window_spec(100_000)),
+        vec![
+            MockTurn::text("OLD-CONVERSATION-SUMMARY"),
+            MockTurn::text("SECOND-SUMMARY"),
+        ],
+    );
+    let asked = || CompactReason::Asked {
+        focus: String::new(),
+    };
+    session.compact(&dynamic, asked(), &DenyAll).await;
+    assert!(
+        saved_texts(&session)
+            .iter()
+            .any(|m| m.contains("OLD-CONVERSATION-SUMMARY"))
+    );
+
+    session.clear().await.unwrap();
+    assert!(saved_texts(&session).is_empty());
+    let log = std::fs::read_to_string(
+        session
+            .dir
+            .join("logs")
+            .join(format!("{CONVERSATION_LOG}.jsonl")),
+    )
+    .unwrap();
+    assert!(
+        log.contains(&questions[0]),
+        "the old messages stay in the log"
+    );
+
+    // The next conversation is summarized from scratch.
+    let mut conversation = load(&session.store(), CONVERSATION_LOG).unwrap();
+    assert!(summary_state(&conversation).summary.is_empty());
+    for i in 0..6 {
+        conversation.extend([
+            Message::user(format!("fresh question {i}: {}", "ipsum ".repeat(200))),
+            Message::assistant(format!("fresh answer {i}: {}", "dolor ".repeat(200))),
+        ]);
+    }
+    save(&session.store(), CONVERSATION_LOG, &mut conversation).unwrap();
+    session.compact(&dynamic, asked(), &DenyAll).await;
+    assert_eq!(mock.request_count(), 2);
+    let sent = format!("{:?}", mock.requests().last().unwrap());
+    assert!(!sent.contains("OLD-CONVERSATION-SUMMARY"), "{sent}");
+    assert!(!sent.contains("question number"), "{sent}");
 }

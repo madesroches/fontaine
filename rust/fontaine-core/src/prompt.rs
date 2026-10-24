@@ -51,28 +51,62 @@ fn base(roots: &[PathBuf]) -> String {
         .to_string()
 }
 
+/// The layers of a system prompt, each exactly as [`assemble`] joins it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PromptPieces {
+    /// The base layer, or the `--system-prompt` replacement.
+    pub base: String,
+    /// Each instruction file's framed layer.
+    pub instructions: Vec<(PathBuf, String)>,
+    pub skills: Option<String>,
+    pub output_style: Option<String>,
+    pub append: Option<String>,
+}
+
+impl PromptPieces {
+    pub fn join(&self) -> String {
+        self.texts().collect::<Vec<_>>().join("\n\n")
+    }
+
+    fn texts(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.base.as_str())
+            .chain(self.instructions.iter().map(|(_, text)| text.as_str()))
+            .chain(self.skills.as_deref())
+            .chain(self.output_style.as_deref())
+            .chain(self.append.as_deref())
+    }
+}
+
+pub fn layers(parts: &PromptParts<'_>) -> PromptPieces {
+    PromptPieces {
+        base: match parts.system_prompt {
+            Some(replacement) => replacement.to_string(),
+            None => base(parts.roots),
+        },
+        instructions: parts
+            .instructions
+            .iter()
+            .map(|file| {
+                (
+                    file.path.clone(),
+                    format!(
+                        "Instructions from {}:\n\n{}",
+                        file.path.display(),
+                        file.text.trim_end()
+                    ),
+                )
+            })
+            .collect(),
+        skills: parts.skill_index.map(|index| index.trim_end().to_string()),
+        output_style: parts
+            .output_style
+            .map(|(name, text)| format!("Output style `{name}`:\n\n{}", text.trim_end())),
+        append: parts.append.map(str::to_string),
+    }
+}
+
 pub fn assemble(parts: &PromptParts<'_>) -> String {
-    let mut layers = vec![match parts.system_prompt {
-        Some(replacement) => replacement.to_string(),
-        None => base(parts.roots),
-    }];
-    for file in parts.instructions {
-        layers.push(format!(
-            "Instructions from {}:\n\n{}",
-            file.path.display(),
-            file.text.trim_end()
-        ));
-    }
-    if let Some(index) = parts.skill_index {
-        layers.push(index.trim_end().to_string());
-    }
-    if let Some((name, text)) = parts.output_style {
-        layers.push(format!("Output style `{name}`:\n\n{}", text.trim_end()));
-    }
-    if let Some(append) = parts.append {
-        layers.push(append.to_string());
-    }
-    layers.join("\n\n")
+    layers(parts).join()
 }
 
 /// What a subagent is told on top of the base prompt: who it works for and how to report.

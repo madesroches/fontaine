@@ -9,6 +9,9 @@ use std::time::Duration;
 
 pub mod routed;
 
+/// A model name the catalog lists, so a routed world has a window to compact against.
+pub const KNOWN_MODEL: &str = "gpt-4o-mini";
+
 use fontaine_core::agent::AgentSetup;
 use fontaine_core::config::{self, AccountKind, LoadParams, PermissionMode};
 use fontaine_core::models::{
@@ -165,6 +168,19 @@ impl World {
         ))
     }
 
+    /// A world whose routed model is one the catalog lists, on an `openai` account, which
+    /// speaks the Responses wire.
+    pub fn routed_known(url: &str, extra: &str) -> World {
+        let mut world = World::new(Vec::new());
+        world.routed = true;
+        world
+            .env
+            .push(("PAID_KEY".into(), "sk-test-not-a-real-key".into()));
+        world.with_config(&format!(
+            "[accounts.mock]\nkind = \"openai\"\nbase_url = \"{url}\"\napi_key_env = \"PAID_KEY\"\nmodels = [\"{KNOWN_MODEL}\"]\n\n[model]\nmodel = \"mock/{KNOWN_MODEL}\"\n{extra}"
+        ))
+    }
+
     /// The workspace's settings file, as a repository would carry it.
     pub fn with_project_settings(self, text: &str) -> World {
         let dir = self.work.join(".fontaine");
@@ -244,13 +260,18 @@ impl World {
             AccountKind::named("openai-compatible"),
             self.mock.clone().into(),
         );
+        let lookup: std::collections::HashMap<String, std::ffi::OsString> = self
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.into()))
+            .collect();
         let resolved = if self.routed {
             Some(
                 futures::executor::block_on(fontaine_core::models::resolve(
                     &fontaine_core::models::ResolveParams {
                         config: &config,
                         data_dir: &self.data,
-                        env: &|_| None,
+                        env: &|name| lookup.get(name).cloned(),
                         model_override: None,
                         session_id: None,
                     },

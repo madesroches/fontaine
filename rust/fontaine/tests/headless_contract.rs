@@ -604,3 +604,62 @@ async fn a_budget_the_summarizing_call_crosses_ends_the_run() {
     assert_eq!(endpoint.requests().await.len(), 5);
     assert_eq!(results[4]["num_turns"], json!(5));
 }
+
+/// Four prompts that the model's own window leaves alone. With a small `autocompact_window`
+/// the first three are summarized before the last, which still fits after the summary.
+async fn run_with_window(window: Option<u64>) -> (Output, Endpoint) {
+    let endpoint = Endpoint::start(
+        Wire::Responses,
+        vec![
+            Turn::text("a1"),
+            Turn::text("a2"),
+            Turn::text("a3"),
+            Turn::text("the summary"),
+            Turn::text("a4"),
+        ],
+    )
+    .await;
+    let s = Sandbox::priced(&endpoint.url());
+    let mut args = vec![
+        "-p".to_string(),
+        "--permission-mode".to_string(),
+        "manual".to_string(),
+        "--input-format".to_string(),
+        "stream-json".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+    ];
+    if let Some(window) = window {
+        let file = s.work.join("window.toml");
+        std::fs::write(&file, format!("[context]\nautocompact_window = {window}\n")).unwrap();
+        args.extend(["--settings".to_string(), file.display().to_string()]);
+    }
+    let big = "lorem ipsum dolor sit amet ".repeat(100);
+    let input: String = [big.as_str(), big.as_str(), big.as_str(), "last"]
+        .iter()
+        .map(|text| json!({"type": "user", "message": {"role": "user", "content": text}}))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = s.run_with_stdin(&args, &input).await;
+    (out, endpoint)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_configured_autocompact_window_summarizes_before_the_turn() {
+    let (out, endpoint) = run_with_window(None).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert_eq!(
+        endpoint.requests().await.len(),
+        4,
+        "the model's own window leaves this conversation alone"
+    );
+
+    let (out, endpoint) = run_with_window(Some(2_000)).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let requests = endpoint.requests().await;
+    assert_eq!(requests.len(), 5);
+    assert_ne!(requests[3]["stream"], json!(true), "the summarizer call");
+    assert!(requests[3].to_string().contains("<conversation>"));
+    assert!(requests[4].to_string().contains("the summary"));
+}

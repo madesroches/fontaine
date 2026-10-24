@@ -71,7 +71,12 @@ fn chunk(delta: Value, finish: Option<&str>) -> String {
 }
 
 fn first_user(body: &Value) -> String {
-    body["messages"]
+    let items = if body["messages"].is_array() {
+        &body["messages"]
+    } else {
+        &body["input"]
+    };
+    items
         .as_array()
         .into_iter()
         .flatten()
@@ -90,6 +95,130 @@ fn first_user(body: &Value) -> String {
         .unwrap_or_default()
 }
 
+/// The answer to a request that did not ask for a stream, such as the summarizer's.
+fn unary(turn: &Turn, delay: Option<&(usize, std::time::Duration)>) -> ResponseTemplate {
+    let message = match turn {
+        Turn::Text(text) => json!({"role": "assistant", "content": text}),
+        Turn::Tool { id, name, args } => json!({
+            "role": "assistant", "content": null,
+            "tool_calls": [{"id": id, "type": "function",
+                            "function": {"name": name, "arguments": args.to_string()}}],
+        }),
+    };
+    let mut response = ResponseTemplate::new(200).set_body_json(json!({
+        "id": "chatcmpl-routed", "object": "chat.completion", "created": 1, "model": "scripted",
+        "choices": [{"index": 0, "finish_reason": "stop", "message": message}],
+        "usage": {"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500},
+    }));
+    if let Some((_, delay)) = delay {
+        response = response.set_delay(*delay);
+    }
+    response
+}
+
+fn event(name: &str, data: Value) -> String {
+    format!("event: {name}\ndata: {data}\n\n")
+}
+
+/// The Responses wire's answer to a request that did not ask for a stream.
+fn responses_unary(
+    turn: &Turn,
+    at: usize,
+    delay: Option<&(usize, std::time::Duration)>,
+) -> ResponseTemplate {
+    let Turn::Text(text) = turn else {
+        return ResponseTemplate::new(500).set_body_string("only text answers are scripted here");
+    };
+    let mut response = ResponseTemplate::new(200).set_body_json(json!({
+        "id": format!("resp_{at}"), "object": "response", "created_at": 1,
+        "status": "completed", "model": "scripted",
+        "output": [{"type": "message", "id": format!("msg_{at}"), "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": text, "annotations": []}]}],
+        "usage": {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500},
+    }));
+    if let Some((_, delay)) = delay {
+        response = response.set_delay(*delay);
+    }
+    response
+}
+
+/// The Responses wire's streamed answer.
+fn responses_stream(
+    turn: &Turn,
+    at: usize,
+    delay: Option<&(usize, std::time::Duration)>,
+) -> ResponseTemplate {
+    let mut frames = vec![event(
+        "response.created",
+        json!({"type": "response.created",
+               "response": {"id": format!("resp_{at}"), "status": "in_progress", "output": []}}),
+    )];
+    let output = match turn {
+        Turn::Text(text) => {
+            let message = |content: Value, status: &str| {
+                json!({"type": "message", "id": format!("msg_{at}"), "role": "assistant",
+                       "status": status, "content": content})
+            };
+            frames.push(event(
+                "response.output_item.added",
+                json!({"type": "response.output_item.added", "output_index": 0,
+                       "item": message(json!([]), "in_progress")}),
+            ));
+            frames.push(event(
+                "response.output_text.delta",
+                json!({"type": "response.output_text.delta", "output_index": 0,
+                       "content_index": 0, "item_id": format!("msg_{at}"), "delta": text}),
+            ));
+            let done = message(
+                json!([{"type": "output_text", "text": text, "annotations": []}]),
+                "completed",
+            );
+            frames.push(event(
+                "response.output_item.done",
+                json!({"type": "response.output_item.done", "output_index": 0, "item": done}),
+            ));
+            json!([done])
+        }
+        Turn::Tool { id, name, args } => {
+            let call = |arguments: &str, status: &str| {
+                json!({"type": "function_call", "id": format!("fc_{at}"), "call_id": id,
+                       "name": name, "arguments": arguments, "status": status})
+            };
+            frames.push(event(
+                "response.output_item.added",
+                json!({"type": "response.output_item.added", "output_index": 0,
+                       "item": call("", "in_progress")}),
+            ));
+            frames.push(event(
+                "response.function_call_arguments.delta",
+                json!({"type": "response.function_call_arguments.delta", "output_index": 0,
+                       "item_id": format!("fc_{at}"), "delta": args.to_string()}),
+            ));
+            let done = call(&args.to_string(), "completed");
+            frames.push(event(
+                "response.output_item.done",
+                json!({"type": "response.output_item.done", "output_index": 0, "item": done}),
+            ));
+            json!([done])
+        }
+    };
+    frames.push(event(
+        "response.completed",
+        json!({"type": "response.completed", "response": {
+            "id": format!("resp_{at}"), "status": "completed", "output": output,
+            "usage": {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500},
+        }}),
+    ));
+    let mut response = ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_raw(frames.concat().into_bytes(), "text/event-stream");
+    if let Some((_, delay)) = delay {
+        response = response.set_delay(*delay);
+    }
+    response
+}
+
 impl Respond for Routed {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
@@ -102,6 +231,17 @@ impl Respond for Routed {
         let Some(turn) = route.turns.get(at).or(route.turns.last()) else {
             return ResponseTemplate::new(500).set_body_string("empty route");
         };
+        let delay = route.delays.iter().find(|(i, _)| *i == at);
+        if request.url.path().ends_with("/responses") {
+            return if body["stream"] == true {
+                responses_stream(turn, at, delay)
+            } else {
+                responses_unary(turn, at, delay)
+            };
+        }
+        if body["stream"] != true {
+            return unary(turn, delay);
+        }
         let mut frames = Vec::new();
         match turn {
             Turn::Text(text) => {
@@ -138,17 +278,28 @@ impl Respond for Routed {
     }
 }
 
+struct SharedRouted(std::sync::Arc<Routed>);
+
+impl Respond for SharedRouted {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        self.0.respond(request)
+    }
+}
+
 pub async fn start(routes: Vec<Route>) -> MockServer {
     let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .respond_with(Routed {
-            routes: routes
-                .into_iter()
-                .map(|r| (r, AtomicUsize::new(0)))
-                .collect(),
-        })
-        .mount(&server)
-        .await;
+    let routed = std::sync::Arc::new(Routed {
+        routes: routes
+            .into_iter()
+            .map(|r| (r, AtomicUsize::new(0)))
+            .collect(),
+    });
+    for route in ["/chat/completions", "/responses"] {
+        Mock::given(method("POST"))
+            .and(path(route))
+            .respond_with(SharedRouted(routed.clone()))
+            .mount(&server)
+            .await;
+    }
     server
 }

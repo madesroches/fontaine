@@ -38,6 +38,7 @@ use fontaine_core::ledger::Record;
 use fontaine_core::permissions::{
     Answer, ApprovalRequest, Approver, GuardianUnavailable, UnavailableChoice,
 };
+use fontaine_core::session::{CompactReason, CompactResult};
 use fontaine_core::tier::Tier;
 use fontaine_core::turn::{
     DEFAULT_MAX_TURNS, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
@@ -517,6 +518,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
             }
             Some(Command::Copy(argument)) => self.copy(&argument),
+            Some(Command::Clear(name)) => self.clear(runtime, &name).await,
+            Some(Command::Compact(focus)) => return self.compact(runtime, focus).await,
+            Some(Command::Context(argument)) => self.context(runtime, &argument).await,
             Some(Command::Other { name, argument }) => {
                 let known = runtime
                     .slash_skills()
@@ -663,6 +667,124 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 fontaine_tools::error_chain::chain(&e)
             )),
         }
+    }
+
+    /// `/clear`: empties the model's context and the transcript, and keeps the session.
+    async fn clear(&mut self, runtime: &AgentRuntime, name: &str) {
+        if !name.is_empty() {
+            self.app
+                .transcript
+                .error("naming the cleared conversation needs /resume, which is not available yet");
+            return;
+        }
+        match runtime.clear_conversation().await {
+            Ok(()) => {
+                self.app.transcript.clear();
+                // They described the conversation that is gone.
+                self.app.pending_notices.clear();
+                self.app.transcript.notice(
+                    "cleared the conversation; the session, its permissions and its mode carry on",
+                );
+            }
+            Err(e) => self
+                .app
+                .transcript
+                .error(fontaine_tools::error_chain::chain(&e)),
+        }
+    }
+
+    /// `/context`: what fills the window.
+    async fn context(&mut self, runtime: &AgentRuntime, argument: &str) {
+        let all = match commands::context_all(argument) {
+            Ok(all) => all,
+            Err(e) => {
+                self.app.transcript.error(e);
+                return;
+            }
+        };
+        match runtime.context_usage().await {
+            Ok(usage) => self.app.transcript.notice(reports::context(&usage, all)),
+            Err(e) => self
+                .app
+                .transcript
+                .error(fontaine_tools::error_chain::chain(&e)),
+        }
+    }
+
+    /// `/compact`: summarizes the conversation while still serving keys. Esc drops the call and
+    /// leaves the saved conversation as it was; text typed meanwhile is queued like a turn's and
+    /// handed back to the input afterwards, since no turn is there to receive it.
+    async fn compact(
+        &mut self,
+        runtime: &AgentRuntime,
+        focus: String,
+    ) -> std::ops::ControlFlow<()> {
+        use std::ops::ControlFlow::{Break, Continue};
+        self.app.running = true;
+        let mut closed = false;
+        let result = {
+            let mut run = Box::pin(runtime.session.compact_logged(
+                &runtime.models.main.completion,
+                runtime.models.main.catalog_billed(),
+                CompactReason::Asked { focus },
+                runtime.approver(),
+            ));
+            loop {
+                self.draw(runtime);
+                tokio::select! {
+                    biased;
+                    result = &mut run => break Some(result),
+                    input = self.input.recv() => match input {
+                        None => {
+                            closed = true;
+                            break None;
+                        }
+                        Some(input) => match self.app.handle_input(input) {
+                            Action::Interrupt | Action::Quit => break None,
+                            Action::CycleMode => self.cycle_mode(runtime),
+                            Action::RetryDenied(index) => self.retry_denied(runtime, index),
+                            Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
+                            Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                            Action::PickModel(purpose, reference) => {
+                                self.pending_pick = Some((purpose, reference));
+                            }
+                            Action::Providers(request) => self.queue_provider(request),
+                            Action::Queue(text) => {
+                                self.remember(&text);
+                                runtime.steering.queue(text);
+                            }
+                            Action::EditQueued => self.edit_queued(runtime),
+                            Action::Server(_)
+                            | Action::None
+                            | Action::Submit(_)
+                            | Action::Shell(_) => {}
+                        },
+                    },
+                    Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
+                }
+            }
+        };
+        let queued = runtime.steering.retract();
+        if !queued.is_empty() {
+            self.app.restore_to_input(&queued.join("\n\n"));
+        }
+        self.app.running = false;
+        self.app.deny_pending();
+        self.drain_prompts();
+        match result {
+            Some(CompactResult::Compacted { before, after, .. }) => {
+                self.app.transcript.notice(format!(
+                    "compacted the conversation: ~{} → ~{} tokens",
+                    reports::tokens(before),
+                    reports::tokens(after)
+                ));
+            }
+            Some(CompactResult::Skipped) => self.app.transcript.notice("nothing to compact"),
+            // Already warned through the approver.
+            Some(CompactResult::Failed { .. }) => {}
+            None => self.app.transcript.notice("interrupted"),
+        }
+        if closed { Break(()) } else { Continue(()) }
     }
 
     /// `/output-style`: shows the styles, or switches to one for the next turn.
