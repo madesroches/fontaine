@@ -320,7 +320,10 @@ impl Session {
     /// smaller for a small window.
     pub fn reserve(&self, spec: Option<&ModelSpec>) -> u64 {
         let window = spec.and_then(|spec| spec.context_window);
-        fitted_policy(&self.policy, window).summarizer.limits.reserve
+        fitted_policy(&self.policy, window)
+            .summarizer
+            .limits
+            .reserve
     }
 
     /// Compacts the conversation when it has outgrown the model's window. Nothing happens
