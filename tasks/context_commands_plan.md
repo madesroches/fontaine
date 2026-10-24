@@ -78,8 +78,7 @@ autocompact_window = 150000   # tokens; compaction runs once the conversation's 
   merged into `Config.context: Context { autocompact_window: Option<u64> }`, higher scope wins.
 - Validation: a positive integer; `0` is a load error (exit 2) naming the key.
 - Scope: not allowed from shared project scope (rejected like `agents` in the project-tighten
-  check), allowed from project-local (trusted), user and `--settings`. A shared repository file
-  should not decide how often a user's tokens are spent on summaries.
+  check), allowed from project-local (trusted), user and `--settings`.
 - `Session` gains `autocompact_window: Option<u64>` with a setter
   (`Session::set_autocompact_window`), set by `AgentRuntime::new` from `config.context`. The
   trigger becomes one function, `Session::over_threshold(tokens, spec) -> bool`:
@@ -89,7 +88,10 @@ autocompact_window = 150000   # tokens; compaction runs once the conversation's 
 - `set_autocompact_window` also sets `policy.keep_recent = policy.keep_recent.min(w / 4)` (the
   `window / 4` rule rig-memory applies to a known window). Without it a window below
   `keep_recent` (20k) never compacts (`cut_at` keeps that many tokens), and one just above it
-  stays over the window after each compaction, so the summarizer would run every turn.
+  stays over the window after each compaction, so the summarizer would run every turn. It also sets
+  `policy.summarizer.limits.summary_tokens = summary_tokens.min(w / 4)`: the summarizer's
+  `max_tokens` is `min(limits.summary_tokens, spec.max_output_tokens)` (12 000 by default), and a
+  summary above ~3w/4 would leave the conversation over `w` after every compaction.
 - The `Threshold` early return on an unknown model window is narrowed: with
   `autocompact_window` set, threshold compaction runs even when the catalog does not know the
   window (Claude Code's gateway case: "set the window … so sessions compact at that boundary").
@@ -98,7 +100,7 @@ autocompact_window = 150000   # tokens; compaction runs once the conversation's 
 ### `/compact [focus]`
 
 - `Session::compact_if_needed` is generalized to `Session::compact_logged(model, priced, reason,
-  approver) -> Option<Compacted>` (the span, the unpriced-cost drop), and `compact_if_needed`
+  approver) -> Option<CompactOutcome>` (the span, the unpriced-cost drop), and `compact_if_needed`
   becomes the `Threshold` call of it. The span gains a `compaction.reason` field
   (`threshold` / `asked`).
 - `compact` returns what it did instead of only the usage:
@@ -114,13 +116,15 @@ autocompact_window = 150000   # tokens; compaction runs once the conversation's 
   `None` stays "nothing was done" (no window for a threshold call, under the threshold, nothing
   new to summarize). Existing callers take `.usage`.
 - TUI: `Command::Compact(String)`; the arm runs `compact_logged` with
-  `CompactReason::Asked { focus }` on the main model, while the turn loop keeps serving keys and
-  draws a `compacting…` status (the same `running` flag a turn sets, so Enter queues text). Text
-  submitted meanwhile comes back as `Action::Queue`; the `/compact` loop queues it to
-  `runtime.steering` as the turn loop does, and when the compaction future ends or is interrupted
+  `CompactReason::Asked { focus }` on the main model, while its own `tokio::select!` loop (turn()'s
+  loop is tied to `run_turn`; this one is modeled on `shell()`, `lib.rs:752-823`, and
+  `expand_serving()`, `lib.rs:556-593`) keeps serving keys. The status bar shows the existing
+  working hint (the `running` flag is set, so Enter queues text). The loop handles Queue,
+  EditQueued and Interrupt. Text submitted meanwhile comes back as `Action::Queue`; the loop calls
+  `self.remember(&text)` and queues it to `runtime.steering` as `lib.rs:1401-1404` does, and when the compaction future ends or is interrupted
   calls `runtime.steering.retract()` and `self.app.restore_to_input(&messages.join("\n\n"))`, as
   `edit_queued` does, so the text is back in the input box and never reaches the next turn
-  mid-way. The usage goes to the `fontaine.compaction` span only, as the turn path's compaction
+  mid-way. A slash command typed meanwhile gets the existing refusal (`app.rs:665-668`). The usage goes to the `fontaine.compaction` span only, as the turn path's compaction
   does. Notices:
   - saved: `compacted the conversation: ~41.2k → ~6.3k tokens`
   - nothing to summarize: `nothing to compact`
@@ -169,7 +173,8 @@ A read-only notice, built by a pure function from a core snapshot.
   pub struct ContextUsage {
       pub window: Option<u32>,          // the main model's, from the catalog
       pub autocompact_at: Option<u64>,  // the effective trigger, None when it never fires
-      pub autocompact_source: TriggerSource, // Reserve | Configured
+      pub configured: Option<u64>,      // [context] autocompact_window
+      pub reserve: u64,                 // rig's summarizer reserve
       pub system_prompt: u64,           // base layer (or --system-prompt) and --append-system-prompt
       pub output_style: u64,
       pub instructions: Vec<(PathBuf, u64)>,
@@ -184,17 +189,23 @@ A read-only notice, built by a pure function from a core snapshot.
   (text counted as `count(&Message::user(text))`, tools with `count_tool`). The `messages` row and
   the trigger agree because both use `estimate_tokens` on the conversation and
   `Session::autocompact_at`; the trigger counts messages only, not the prompt or tools.
-- `build_agent` keeps what it assembled: the `Parts` → `PromptParts` texts are stored on
-  `AgentRuntime` as `prompt_pieces: PromptPieces` (owned strings for each layer), refreshed by
-  `rebuild`. Each layer string is stored exactly as `prompt::assemble` joins it (the filled base
+- `build_agent` keeps what it assembled: new `prompt::layers(&PromptParts) -> PromptPieces`
+  produces the framed layers (the `{{workspace_roots}}` substitution happens in the private
+  `base()`, `prompt.rs:42-77`), and `assemble` joins `layers(..)`. `build_agent` (`agent.rs:1297`)
+  returns `(Agent, PromptPieces)` at both call sites (`new`, `agent.rs:575`; `rebuild`,
+  `agent.rs:627`); the pieces are stored on `AgentRuntime` as `prompt_pieces: PromptPieces` (owned
+  strings for each layer), refreshed by `rebuild`. Each layer string is stored exactly as `prompt::assemble` joins it (the filled base
   with `{{workspace_roots}}` substituted, or the replacement; the framed instruction and
   output-style layers), so `/add-dir`'s rebuild updates the counts.
 - `Session::autocompact_at(spec) -> Option<u64>` gives the effective trigger (the min of
   `window - reserve` and the configured window) from the same inputs as `over_threshold`; the
-  report compares it with the `messages` row.
+  report compares it with the `messages` row, and `reports::context` derives which limit
+  applies (reserve or configured) by comparing `configured` and `reserve` with `autocompact_at`.
 - `AgentRuntime::context_usage(&self) -> ContextUsage` (async: it loads the conversation and the
   tool definitions).
-- TUI: `Command::Context(String)`; `reports::context(&ContextUsage, all: bool)`:
+- TUI: `Command::Context(String)`; `reports::context(&ContextUsage, all: bool) -> String`. The argument is parsed in
+  `commands.rs`/`lib.rs` like `/mcp` (`lib.rs:629-637`) and `/copy` (`commands.rs:205`,
+  `reply_number`), so the builder never sees a bad one:
 
   ```
   context ~48.6k of 200k tokens (24%), estimated · anthropic/claude-sonnet-5-5
@@ -209,7 +220,7 @@ A read-only notice, built by a pure function from a core snapshot.
   ```
 
   - With `all`, each instruction file, tool and MCP tool gets its own indented line under its
-    row, largest first. Any other argument is an error notice naming `all`.
+    row, largest first. Any other argument is an error notice naming `all`, produced by that parse.
   - Unknown window: the first line reads `~48.6k tokens, estimated (window unknown)`, no `free`
     row, and the last line `no automatic compaction: the model's window is unknown` unless
     `autocompact_window` is set (`auto-compacts when messages pass ~150.0k ([context] autocompact_window)`).
@@ -237,10 +248,14 @@ commands are terminal-UI only, as the other built-ins are.
 5. **Runtime.** In `agent.rs`: set the session's window from `config.context`; keep
    `PromptPieces` from `build_agent`; add `clear_conversation` and `context_usage` (the latter
    via the new `context.rs`, registered in `lib.rs` of `fontaine-core`).
-6. **Commands.** In `commands.rs`, rows for `clear` (aliases `reset`, `new`), `compact` (hint
-   `[focus]`), `context` (hint `[all]`), and the `Command` variants. In `reports.rs`, the
+6. **Commands.** In `commands.rs`, `BUILTINS` rows (name, aliases, hint, description, command) for
+   `clear` (aliases `reset`, `new`; hint empty; description "Start over with an empty context";
+   `Command::Clear`), `compact` (hint `[focus]`; "Summarize the conversation to free context";
+   `Command::Compact`), `context` (hint `[all]`; "Show what fills the context window";
+   `Command::Context`), in sorted position (`clear`, `compact`, `context`, then `copy`;
+   `the_table_is_sorted_by_name`), and the `Command` variants. In `reports.rs`, the
    `context` builder. In `transcript.rs`, `Transcript::clear`. In `lib.rs` `submit`, the three
-   arms; `/compact` runs through the same select loop a turn uses so keys and Esc are served.
+   arms; `/compact` runs in its own select loop (see `/compact`) so keys and Esc are served.
 7. **Docs and master plan.** See Documentation; add the Decisions lines below to
    `tasks/fontaine_harness_plan.md` `## Decisions`.
 
@@ -256,6 +271,7 @@ commands are terminal-UI only, as the other built-ins are.
 - `rust/fontaine-core/tests/ledger.rs`, `rust/fontaine-core/tests/permissions_auto.rs`
 - `rust/fontaine-tui/tests/tui.rs`, `rust/fontaine/tests/headless_contract.rs`
 - `docs/tui.md`, `docs/configuration.md`, `docs/headless.md`, `docs/architecture.md`,
+  `docs/telemetry.md`,
   `docs/guardian.md`, `docs/index.md`, `tasks/design/config.md`,
   `tasks/design/sessions.md`
 - `CHANGELOG.md` (PR step), `tasks/fontaine_harness_plan.md` (Decisions)
@@ -302,9 +318,13 @@ commands are terminal-UI only, as the other built-ins are.
 - `docs/configuration.md`: a `### [context]` section for `autocompact_window` (default unset,
   meaning the window minus rig's reserve; capped by it; applies when the window is unknown), and a
   row in the scope table (project: no; project-local: yes; CLI: yes).
-- `docs/headless.md` (~line 57): compaction honors `[context] autocompact_window`.
+- `docs/headless.md` (~line 57): compaction honors `[context] autocompact_window`; fix the "only
+  when the window is known" clause (`headless.md:55-59`).
 - `docs/architecture.md` (~line 155, the two stores): `/clear` empties the model context and adds
-  a `ContextCleared` ledger record; the ledger keeps everything.
+  a `ContextCleared` ledger record; the ledger keeps everything. Also line 157 (compaction is
+  described as threshold-only; add `/compact`) and the module list at line 31 (add `context`).
+- `docs/telemetry.md` (lines 105-107): the `fontaine.compaction` span also covers `/compact` and
+  carries `compaction.reason`.
 - `docs/guardian.md`: the human's messages the guardian sees start after the last `/clear`.
 - `docs/index.md`: the new commands in the terminal UI command list.
 - `tasks/design/config.md`: the `[context]` sample block and the scope-table row.
@@ -327,9 +347,10 @@ Unit tests:
   it the same way.
 - `reports::context`: known window (percent, free, reserve line); unknown window with and
   without the configured value; over the window; `all` lists items largest first; output style
-  row only when set; a bad argument is an error.
+  row only when set.
 - `commands.rs`: `/clear`, `/reset`, `/new` → `Clear`; `/compact keep the API notes` →
-  `Compact("keep the API notes")`; `/context all` → `Context("all")`; the table checks stay green.
+  `Compact("keep the API notes")`; `/context all` → `Context("all")`; `/context bogus` is an
+  error notice naming `all`; the table checks stay green.
 - `Transcript::clear`: entries and committed counters reset; `assistant_reply(1)` is `None`.
 
 Integration tests (offline: the deterministic test model / wiremock already used by
@@ -340,7 +361,8 @@ Integration tests (offline: the deterministic test model / wiremock already used
   still contains the old messages.
 - Threshold with a configured window: a conversation under `window - reserve` but over
   `autocompact_window` compacts; a small window (e.g. 8k) compacts and leaves the conversation
-  below it; a model with no catalog window compacts when the value is set
+  below it, with the fixture summary (today "SUMMARY-OF-THE-OLD-PART", `tests/ledger.rs:88`) made
+  about the capped `w / 4` size, and the next turn does not summarize again; a model with no catalog window compacts when the value is set
   and is left alone when it is not.
 - Guardian request after `/clear` (`tests/permissions_auto.rs`): a human message before the
   clear is absent from `recent_user_messages` and `task_intent`, one after it is present.
@@ -349,7 +371,9 @@ Integration tests (offline: the deterministic test model / wiremock already used
   message sends a request with no earlier user or assistant message and the ledger holds the
   record; `/context` after a reply shows the `messages` and `tools` rows; text typed while
   `/compact` runs is back in the input box afterwards and no steering message is delivered to the
-  next turn.
+  next turn (`World::routed` with a delayed route, `Route::delay`, `tests/common/routed.rs:54`,
+  as at `tests/tui.rs:1059`, matching the summarizer request; confirm the routed model has a
+  `spec()` with a window, since compact returns None without one, `session.rs:240`).
 - Headless (`headless_contract.rs`): a `--settings` file with a small `autocompact_window`
   triggers the summarizer call before the turn on a conversation the reserve alone would not
   compact.
