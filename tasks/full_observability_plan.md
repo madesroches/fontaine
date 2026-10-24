@@ -53,8 +53,8 @@ notebook under a new root `analytics/` folder.
   2. Its `SpanLocation` carries `metadata.file()` and `metadata.line()`. For a dependency callsite
      that is an absolute path under the user's home (`~/.cargo/registry/...`). The master plan's
      2026-10-21 Phase 1 decision says source locations are not exported.
-  A `filter_fn` on metadata can only keep or drop whole spans, so neither gap can be closed from
-  Fontaine's side.
+  A `filter_fn` on metadata can only keep or drop whole spans, and `tracing` exposes no way to
+  rebuild `Attributes` with different values, so neither gap can be closed from Fontaine's side.
 - **CPU tracing knob.** `TelemetryGuardBuilder::with_cpu_tracing_enabled(bool)` exists at
   `7a08f6541`. The explicit value wins over the environment variable.
 - **Events.** `api_error` and `internal_error` are in `tasks/design/observability.md` but are not
@@ -97,9 +97,10 @@ notebook under a new root `analytics/` folder.
   layers recording the same span would export it twice.
 - Fix whatever else 0.33 renames. Its changelog flags the `ListViewSetDefinitionsTableFunction`
   and retention signatures, which Fontaine does not use. The test helpers in
-  `tests/telemetry_micromegas.rs` (`init_in_memory_tracing` and the `MICROMEGAS_ENABLE_CPU_TRACING`
-  set at the top of the file) are rechecked against the new API. Tests may keep setting the
-  variable if the in-memory sink still reads it.
+  `tests/telemetry_micromegas.rs` (`init_in_memory_tracing`) are rechecked against the new API. The
+  in-memory tests need no change, because `init_in_memory_tracing` hard-codes CPU tracing on. The
+  comment at `tests/telemetry_micromegas.rs:345-346` that describes the env-var mechanism is
+  updated.
 
 ### 2. Upstream span capture: verify now, swap when the upstream hook lands
 
@@ -129,38 +130,46 @@ This step does three things:
 
 All on target `fontaine::telemetry`, content-free.
 
-- **`api_error`**, emitted from `turn.rs` when the stream yields `Err(PromptError)`, before the
-  failure is returned. Fields: `model`, `provider`, `query_source` (`main` for the root agent,
+- **`api_error`**, emitted from `turn.rs` when the stream yields `Err(PromptError::Provider(_))` or
+  `Err(PromptError::Report(_))`, before the failure is returned. `MaxTurns`, `Cancelled`, `Memory`
+  and `UnknownToolCall` are not failed API requests and do not emit it (`MaxTurns` already maps to
+  `TurnOutcome::MaxTurns`). Fields: `model`, `provider`, `query_source` (`main` for the root agent,
   `subagent` otherwise, the same values as on `api_request`), `agent.id`, `error_class`, and
-  `status_code` when the error carries an HTTP status structurally. `error_class` is a fixed enum
-  taken from the variant of `PromptError` / `CompletionError`: `http`, `provider`, `json`,
-  `request`, `response`, `max_turns`, `cancelled`, `other`. A provider's message can echo the
-  request, so the message text is not exported. Model and provider come from what `Drive` already
-  carries. The implementer adds them to `Drive` if they are missing. Claude Code's `api_error`
+  `status_code` when the error carries an HTTP status structurally. `error_class` is rig's stable
+  `ErrorKind::code()` (`ProviderError::kind().code()` for `Provider`, `ErrorReport.kind.code()` for
+  `Report`), and `status_code` comes from `PromptError::provider_response_status()`. A provider's
+  message can echo the request, so the message text is not exported. `model` and `provider` are
+  added to `TurnParams` and `Drive` (neither has them today), filled from `handle.completion.id()`
+  / `.name()` at the call sites (`headless.rs`, `fontaine-tui/src/lib.rs`, `child_runner.rs`).
+  Claude Code's `api_error`
   carries `error` (the message) and `attempt`. Fontaine sends the class instead of the message,
-  and no `attempt`, because rig's retries are not visible at this layer. That is a deviation and
-  gets a Decisions line.
+  and no `attempt`, because rig's retries are not visible at this layer. That is a deviation (see
+  Decisions).
 - **`internal_error`**, emitted from `SessionState::sink_failed` on every failure, not just the
   first one that `Approver::warn` shows. Field: `class`, which is `audit_write` or `ledger_write`
   (a `Sink::class()` next to `Sink::what()`). The io error text is not exported. It can contain a
   path.
 - **Dropped guardian spend.**
-  - `fontaine-guardian`: `Guardian::dropped_estimate(&AdjudicationRequest) -> Option<u64>`. It
-    returns `None` when the backend is unavailable or the verdict cache already holds the request,
-    because no request went out in either case. Otherwise it returns `(system.len() +
-    user.len()).div_ceil(4)` over `render(profile, shape(request))`. `cascade::Composed` gains
+  - `fontaine-guardian`: `Guardian::dropped_estimate(&AdjudicationRequest) -> u64`, returning
+    `(system.len() + user.len()).div_ceil(4)` over `render(profile, &profile.shape(request))`,
+    sharing the shape/render prelude with `run`. `cascade::Composed` gains
     `dropped_input_tokens: Option<u64>`, set only on the two branches that drop `guardian_call`.
-    The crate stays subscriber-free.
-  - `fontaine-core`: `DecisionRecord` gains `guardian_dropped_input_tokens: Option<u64>`, written
-    to the audit record and projected onto `tool_decision` as `guardian.dropped_input_tokens`,
-    next to the guardian's `guardian.model` and `model.priced` fields. To price the estimate, the
-    guardian must expose its provider and model ids. The implementer carries them next to
-    `GuardianSettings::priced`, from the resolved handle in `agent::build_guardian`.
+    The guardian also carries `spec.provider` / `spec.id` from `handle.completion.spec()` and
+    `handle.catalog_billed()` as the priced flag, set in `agent::build_guardian` next to
+    `GuardianSettings::priced`. (`guardian.model` is `handle.reference`, `{account}/{model}`, which
+    is not a catalog id.) The crate stays subscriber-free.
+  - `fontaine-core`: `DecisionRecord` gains `guardian_dropped_input_tokens: Option<u64>`,
+    `guardian_dropped_provider: Option<String>`, `guardian_dropped_model: Option<String>` and
+    `guardian_dropped_priced: Option<bool>`, written to the audit record and projected onto
+    `tool_decision` as `guardian.dropped_input_tokens`, `guardian.dropped_provider`,
+    `guardian.dropped_model` and `guardian.dropped_priced`. (`model.priced` is only on the
+    `fontaine.guardian` span, not on `tool_decision`.)
   - `span_bridge`: on a `tool_decision` with `guardian.dropped_input_tokens`, emit
-    `fontaine.token.usage {type = input, model, query_source = guardian, estimated = true}`. When
-    the guardian is priced, also emit `fontaine.cost.usage {model, query_source = guardian,
-    estimated = true}`, with the same `cost_usd` over an input-only `Usage`. Real usage carries
-    no `estimated` attribute. `estimated` is a Fontaine extension and gets a Decisions line.
+    `fontaine.token.usage {type = input, model, query_source = guardian, estimated = true}`, with
+    `model` = `guardian.dropped_model`. When `guardian.dropped_priced` is true, also emit
+    `fontaine.cost.usage {model, query_source = guardian, estimated = true}`, with `cost_usd` over
+    (`guardian.dropped_provider`, `guardian.dropped_model`) and an input-only `Usage`. Real usage
+    carries no `estimated` attribute. `estimated` is a Fontaine extension (see Decisions).
   - The session's `/cost` and budget debit are not changed here. They belong to the
     composable-guardian work (#137), which may make `seq` the default for priced guardians and
     leave nothing to estimate.
@@ -177,8 +186,8 @@ All on target `fontaine::telemetry`, content-free.
   with the native micromegas protocol.
 - Custom stream tags for opt-in content: tags are hard-coded in `micromegas_tracing::dispatch`
   (`log`, `metrics`, `cpu`). Not filed upstream now. Opt-in content is off by default and already
-  lives on `cpu`, the stream the recipe expires first, and the field hook in §2 comes first. This
-  gets a Decisions line.
+  lives on `cpu`, the stream the recipe expires first, and the field hook in §2 comes first (see
+  Decisions).
 - Correlation: `tool_decision.tool_use_id` matches the audit record's `tool_use_id`, so an operator
   with both can join them locally. Telemetry gains no content.
 
@@ -187,8 +196,11 @@ All on target `fontaine::telemetry`, content-free.
 - `analytics/notebooks/fontaine-overview.json`, in the `micromegas-screens` file format
   (`name`, `screen_type: "notebook"`, `config.cells`, a default time range of `now-7d`). It has
   one cell group per question in the issue. Each cell's SQL reads only `log_entries`
-  (`target = 'fontaine::telemetry'`, event name from `msg`, fields via `property_get(properties,
-  …)`) and `measures` (`name = 'fontaine.…'`, attributes via `property_get`):
+  (`target = 'fontaine::telemetry'`, event name via `split_part(msg, ' ', 1)`, fields via
+  `property_get(properties, …)`) and `measures` (`name = 'fontaine.…'`, attributes via
+  `property_get`). The native backend writes `msg` as `"<message> k1=v1 …"` and OTLP writes it
+  bare, so `split_part` works on both. `property_get` returns strings, so numeric properties are
+  `CAST`:
   - cost and tokens by session (`process_id`), `model` and `query_source`, with estimated spend
     apart;
   - guardian latency (p50/p95) by `model`, and fail-closed count by `reason`;
@@ -200,13 +212,13 @@ All on target `fontaine::telemetry`, content-free.
   - `api_error` / `internal_error` counts by class.
   Span-tree cells are left out, because the span tables differ between the two backends (below).
 - No materialized view set. Applying one needs a micromegas admin, and these queries run over the
-  base views at notebook scale. This gets a Decisions line, and a view set can follow if real
-  volumes need one.
+  base views at notebook scale (see Decisions). A view set can follow if real volumes need one.
 - OTLP: the same notebook works through `/ingestion/otlp`, because logs and metrics land in
   `log_entries` / `measures`. The docs say spans land in `otel_spans` instead of `async_events`,
-  that the notebook has no span cells for that reason, and that event attribute names arrive as
-  properties. The implementer confirms the last point against a live OTLP ingestion during manual
-  verification. If it is wrong, the docs say so, and the notebook is not changed to hide it.
+  that the notebook has no span cells for that reason, and that `msg` is bare on OTLP. Event
+  attributes arrive as `properties` and the tracing target arrives as `target` on both backends:
+  `opentelemetry-appender-tracing` sets the log record target to the tracing target, which
+  `opentelemetry-proto` carries as the scope name, which micromegas maps to `target`.
 - A new root directory means updating the `AGENTS.md` root-directory list and the master plan's
   workspace layout.
 
@@ -214,8 +226,8 @@ All on target `fontaine::telemetry`, content-free.
 
 Not added. micromegas's system monitor reports host-level CPU and memory and its own host
 properties, and Fontaine builds the sink with it off. A process-only collector would be new code
-with no consumer among the questions this telemetry answers. This gets a Decisions line.
-Revisit it if an operator asks.
+with no consumer among the questions this telemetry answers (see Decisions). Revisit it if an
+operator asks.
 
 ## Implementation Steps
 
@@ -228,11 +240,12 @@ Revisit it if an operator asks.
 3. **Parity test.** `tests/telemetry_micromegas.rs`: the two-layer tree comparison from §2,
    reusing the file's `spans()` helper and `serial()` guard.
 4. **`api_error`.** `fontaine-core/src/turn.rs` (emit, plus a small `error_class(&PromptError) ->
-   &'static str`), and `Drive` if it lacks model and provider.
+   &'static str`), and `TurnParams` / `Drive` (model and provider), plus the call sites in `headless.rs`,
+   `fontaine-tui/src/lib.rs` and `child_runner.rs`.
 5. **`internal_error`.** `fontaine-core/src/gate.rs` (`Sink::class`, emit in `sink_failed`).
 6. **Dropped spend.** `fontaine-guardian/src/guardian.rs` (`dropped_estimate`, provider and model
    ids next to `priced`), `cascade.rs` (`dropped_input_tokens`), `fontaine-core/src/agent.rs`
-   (ids from the handle), `audit.rs` (`DecisionRecord` field), `permissions.rs` (set it from
+   (ids from the handle), `audit.rs` (`DecisionRecord` fields), `permissions.rs` (set it from
    `composed`, project it in `record_decision`), `fontaine/src/telemetry/span_bridge.rs`
    (derive the estimated token and cost metrics).
 7. **Analytics.** Create `analytics/notebooks/fontaine-overview.json`. Update the `AGENTS.md`
@@ -245,8 +258,10 @@ Revisit it if an operator asks.
 
 - `rust/Cargo.toml`, `rust/Cargo.lock`, `rust/deny.toml`
 - `rust/fontaine/src/telemetry/{mod.rs,micromegas.rs,span_bridge.rs}`
-- `rust/fontaine/tests/telemetry_micromegas.rs`, `rust/fontaine/tests/telemetry_otlp.rs`
+- `rust/fontaine/tests/telemetry_micromegas.rs`
 - `rust/fontaine-core/src/{turn.rs,gate.rs,audit.rs,permissions.rs,agent.rs}`
+- `rust/fontaine/src/headless.rs`, `rust/fontaine-tui/src/lib.rs`, `child_runner.rs` (model and
+  provider into `TurnParams`)
 - `rust/fontaine-core/tests/audit_telemetry.rs`
 - `rust/fontaine-guardian/src/{guardian.rs,cascade.rs}`
 - `analytics/notebooks/fontaine-overview.json` (new)
@@ -255,21 +270,29 @@ Revisit it if an operator asks.
 
 ## Trade-offs
 
-- **Swap the bridge for the stock layer now vs. after an upstream hook.** Swapping now deletes
-  about 100 lines but exports content and absolute source paths, which breaks a product invariant.
-  A Fontaine-side wrapper cannot rewrite field values: `tracing` exposes no way to rebuild
-  `Attributes` with different values for an arbitrary field set. Waiting costs nothing at runtime,
-  and the parity test makes the later swap mechanical.
-- **Estimate dropped spend vs. leave it to #137.** The issue asks for the estimate here, and
-  bytes/4 over the rendered prompt is cheap and good enough for spend reporting. Tagging it
-  `estimated = true` keeps it separable, so a dashboard can include or exclude it.
-- **Notebook vs. materialized view set.** A notebook loads with the operator's own credentials and
-  reads base views. A view set needs admin and is only worth it at volumes Fontaine does not yet
-  produce.
 - **`api_error` from the turn loop vs. from the completion span.** The span closes the same way on
   error and on cancellation (a dropped guardian call). The turn loop holds the typed error.
 
 ## Decisions
+
+Step 9 copies these lines into the master plan's Decisions.
+
+- 2026-10-24: `api_error` exports `error_class` and `status_code` instead of Claude Code's `error`
+  message and `attempt`, because provider messages can echo the request and rig's retries are not
+  visible at this layer.
+- 2026-10-24: `fontaine.token.usage` / `fontaine.cost.usage` gain an `estimated` attribute, a
+  Fontaine extension, to separate the dropped-guardian-spend estimate from real usage.
+- 2026-10-24: No custom stream tags for opt-in content; tags are hard-coded upstream, and opt-in
+  content already lives on `cpu`, which the retention recipe expires first.
+- 2026-10-24: No materialized view set; applying one needs a micromegas admin and the notebook
+  queries run over base views.
+- 2026-10-24: No process-health collector; micromegas's system monitor is host-level and no
+  question the telemetry answers needs it.
+- 2026-10-24: The `SpanBridge` span half is kept despite the issue's done-when, because the stock
+  layer exports field content and absolute source paths; the swap waits on the upstream field hook
+  and location switch issue (number recorded in Step 8).
+- 2026-10-24: micromegas is on a git pin with `allow-git` in `deny.toml` until 0.33 is on
+  crates.io; the git pin is never shipped in a release.
 
 ## Documentation
 
@@ -277,12 +300,14 @@ Revisit it if an operator asks.
   - micromegas section: CPU tracing is switched on through the sink builder, and the environment
     is not touched.
   - Event table: add `api_error`, `internal_error` and `permission_mode_changed` (`from`, `to`).
-    Add `guardian.verdict`, the `screen.*` fields and `guardian.dropped_input_tokens` to
-    `tool_decision`.
+    Add `guardian.verdict`, the `screen.*` fields and `guardian.dropped_input_tokens`, `guardian.dropped_provider`, `guardian.dropped_model` and
+    `guardian.dropped_priced` to `tool_decision`.
   - Metrics: the `estimated` attribute.
   - New sections: "Retention", "Joining with the audit log", and "Analytics" (how to load the
     notebook with `micromegas-screens apply` from `analytics/notebooks`, and where the OTLP path
     differs).
+- `tasks/design/research-findings.md` (~line 205, "settable only through
+  `MICROMEGAS_ENABLE_CPU_TRACING`"): updated for the builder knob.
 - `tasks/design/observability.md`: micromegas paragraph (builder knob, the real swap trigger),
   event list (`api_error` / `internal_error` fields), the dropped-spend estimate, and `analytics/`.
 - `tasks/fontaine_harness_plan.md`: workspace layout gains `analytics/`, plus the Decisions lines.
@@ -293,23 +318,23 @@ Revisit it if an operator asks.
 Unit and integration tests, no live services:
 
 - `span_bridge.rs` unit tests: a `tool_decision` with `guardian.dropped_input_tokens` yields an
-  `estimated = true` input-token metric with `query_source = guardian`, and a cost metric only
-  when priced. A decision without the field yields neither. Existing token metrics carry no
+  `estimated = true` input-token metric with `query_source = guardian` and `model` from
+  `guardian.dropped_model`, and a cost metric only when `guardian.dropped_priced`. A decision without the field yields neither. Existing token metrics carry no
   `estimated`.
-- `fontaine-guardian` unit tests: `dropped_estimate` is `None` for an unavailable guardian and for
-  a cached request, and `Some(len.div_ceil(4))` otherwise. `cascade::adjudicate` with a scripted
+- `fontaine-guardian` unit tests: `dropped_estimate` is `len.div_ceil(4)` over the rendered prompt.
+  `cascade::adjudicate` with a scripted
   screen that stops or allows, and a guardian model that never answers, sets
   `dropped_input_tokens`. With the guardian answering first, or a shadow screen, it stays `None`.
-- `turn.rs` / `fontaine-core` test with `rig_core::test_utils` (a completion model that errors):
-  one `api_request`-free `api_error` event with the expected `error_class`, `query_source` and
-  model, and no message text. A subagent failure reports `query_source = subagent`.
-- `gate.rs` test: a failing audit sink emits `internal_error { class = audit_write }` on each
-  failure. Covered in `tests/audit_telemetry.rs` with `TraceCapture`.
+- `turn.rs` / `fontaine-core` test with `rig_core::test_utils` (`MockTurn::provider_response_error(
+  status, …)`): one `api_request`-free `api_error` event with the expected `error_class`,
+  `status_code`, `query_source` and model, and no message text. `MaxTurns` emits none. A subagent failure reports `query_source = subagent`.
+- `gate.rs` test: call `state.sink_failed(Sink::Audit, ..)` twice under `TraceCapture` and assert
+  two `internal_error { class = audit_write }` events with no error text, as
+  `tests/permissions_auto.rs:821-840` does.
 - `tests/telemetry_micromegas.rs`: the parity test from §2. The existing shipped-binary round trip
   against a mock ingestion endpoint keeps passing with nothing setting
   `MICROMEGAS_ENABLE_CPU_TRACING` in the parent environment. It pins that the builder knob really
   turns on the thread streams. Without them, span events vanish silently.
-- `tests/telemetry_otlp.rs`: `api_error` reaches the OTLP logs endpoint.
 - A test that parses `analytics/notebooks/fontaine-overview.json`. It checks that every
   `fontaine.*` metric name and every event name quoted in its SQL appears in `docs/telemetry.md`,
   so the notebook and the docs cannot drift silently. It lives in `rust/fontaine/tests/` and reads
@@ -326,7 +351,8 @@ Each step needs a running micromegas deployment, which unit tests cannot reach:
 2. `micromegas-screens apply` from `analytics/notebooks`, then open the notebook. Expected: every
    cell runs without a SQL error and shows the run from step 1.
 3. Repeat step 1 with `backend = "otlp"` and `endpoint = …/ingestion/otlp`. Expected: the
-   notebook's cells show the same events and metrics. Record any difference in the docs.
+   two backends agree on event names (`split_part(msg, ' ', 1)`) and values. Record any
+   difference in the docs.
 
 ## Open Questions
 
