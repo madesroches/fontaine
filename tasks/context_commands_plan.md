@@ -93,9 +93,9 @@ autocompact_window = 150000   # tokens; compaction runs once the conversation's 
   `max_tokens` is `min(limits.summary_tokens, spec.max_output_tokens)` (12 000 by default), and a
   summary above ~3w/4 would leave the conversation over `w` after every compaction.
 - The `Threshold` early return on an unknown model window is narrowed: with
-  `autocompact_window` set, threshold compaction runs even when the catalog does not know the
-  window (Claude Code's gateway case: "set the window … so sessions compact at that boundary").
-  Without it, behavior is unchanged.
+  `autocompact_window` set, threshold compaction runs for a catalog-listed model whose window the
+  catalog does not know. A model the catalog does not list (`spec()` is `None`: gateway and local
+  aliases) is never compacted automatically, with or without the setting.
 
 ### `/compact [focus]`
 
@@ -150,8 +150,9 @@ grants and mode. (Claude Code starts a new session id; see Decisions.)
   after the clear — the same view a new Claude Code session gives its classifier. Actions,
   denials, the file index and created-file facts are kept: they describe the workspace, not the
   conversation.
-- `async fn AgentRuntime::clear_conversation(&self) -> Result<(), ClearError>` runs `Session::clear`, then
-  appends the record. The record is appended only after the clear succeeded, so the ledger never
+- `async fn AgentRuntime::clear_conversation(&self) -> Result<(), ClearError>` first refuses while
+  `AgentTree::any_running()` (`subagents are still running; /clear waits until they finish`, nothing
+  changed), then runs `Session::clear`, then appends the record. The record is appended only after the clear succeeded, so the ledger never
   claims a clear that did not happen.
 - TUI: `Command::Clear(String)` with aliases `reset` and `new`. A non-empty argument is an error
   notice: `naming the cleared conversation needs /resume, which is not available yet`. The arm
@@ -161,8 +162,8 @@ grants and mode. (Claude Code starts a new session id; see Decisions.)
   (`pending_notices`, which described the old conversation), and adds the notice
   `cleared the conversation; the session, its permissions and its mode carry on`. On error, an
   error notice with `error_chain::chain`.
-- Background subagents keep running; a report that arrives later is a turn of the new
-  conversation, as it is after any turn.
+- The refusal exists because a running subagent's guardian requests read the root's live
+  `user_messages`: a clear under it would judge its later calls with an empty `task_intent`.
 
 ### `/context [all]`
 
@@ -223,6 +224,9 @@ A read-only notice, built by a pure function from a core snapshot.
 
   - With `all`, each instruction file, tool and MCP tool gets its own indented line under its
     row, largest first. Any other argument is an error notice naming `all`, produced by that parse.
+  - A model the catalog does not list: `window` and `autocompact_at` are `None`
+    (`autocompact_at` takes `Option<&ModelSpec>`), and the last line reads `no automatic
+    compaction: the model is not in the catalog`.
   - Unknown window: the first line reads `~48.6k tokens, estimated (window unknown)`, no `free`
     row, and the last line `no automatic compaction: the model's window is unknown` unless
     `autocompact_window` is set (`auto-compacts when messages pass ~150.0k ([context] autocompact_window)`).
@@ -311,15 +315,25 @@ commands are terminal-UI only, as the other built-ins are.
   with `/config` (#4).
 - 2026-10-24: AFK: `/context` is a text notice, not Claude Code's colored grid and suggestions.
   Reason: same as the other read-only reports.
+- 2026-10-24: AFK: `/clear` is refused while any subagent is running. Reason: a running subagent's
+  guardian requests read the root's live human messages, so clearing them under it would judge its
+  later calls with an empty task intent; refusing is the fail-closed choice over a warning or a
+  documented gap.
+- 2026-10-24: AFK: `[context] autocompact_window` enables threshold compaction only for
+  catalog-listed models; a model the catalog does not list gets no fallback `ModelSpec`, is never
+  compacted automatically, and `/context` says so. Reason: rig reports no spec for unlisted models
+  on purpose, and a guessed spec's request options and limits could be wrong for the real model; a
+  fallback can come later as its own change.
 
 ## Documentation
 
 - `docs/tui.md` `## Commands`: rows for `/clear` (`/reset`, `/new`), `/compact [<focus>]`,
   `/context [all]`, in sorted order; a short `## Context` section: what each does, that counts are
-  estimates, that `/clear` keeps the session, its permissions and mode and the pre-clear conversation cannot
+  estimates, that `/clear` is refused while subagents run and keeps the session, its permissions and mode and the pre-clear conversation cannot
   be resumed (`--resume` reopens the empty conversation), and that Esc interrupts `/compact`.
 - `docs/configuration.md`: a `### [context]` section for `autocompact_window` (default unset,
-  meaning the window minus rig's reserve; capped by it; applies when the window is unknown), and a
+  meaning the window minus rig's reserve; capped by it; applies when a listed model's window is unknown; a model the catalog does not
+  list is never compacted automatically), and a
   row in the scope table (project: no; project-local: yes; CLI: yes).
 - `docs/headless.md` (~line 57): compaction honors `[context] autocompact_window`; fix the "only
   when the window is known" clause (`headless.md:55-59`).
@@ -349,7 +363,7 @@ Unit tests:
   ones kept; actions, denials and `existence` are unchanged across it; a reopened ledger replays
   it the same way.
 - `reports::context`: known window (percent, free, reserve line); unknown window with and
-  without the configured value; over the window; `all` lists items largest first; output style
+  without the configured value; a model the catalog does not list; over the window; `all` lists items largest first; output style
   row only when set.
 - `commands.rs`: `/clear`, `/reset`, `/new` → `Clear`; `/compact keep the API notes` →
   `Compact("keep the API notes")`; `/context all` → `Context("all")`; `/context bogus` is an
@@ -365,10 +379,12 @@ Integration tests (offline: the deterministic test model / wiremock already used
 - Threshold with a configured window: a conversation under `window - reserve` but over
   `autocompact_window` compacts; a small window (e.g. 8k) compacts and leaves the conversation
   below it, with the fixture summary (today "SUMMARY-OF-THE-OLD-PART", `tests/ledger.rs:88`) made
-  about the capped `w / 4` size, and the next turn does not summarize again; a model with no catalog window compacts when the value is set
-  and is left alone when it is not.
+  about the capped `w / 4` size, and the next turn does not summarize again; a listed model with no catalog window compacts when the value is set
+  and is left alone when it is not; a model the catalog does not list is left alone either way.
 - Guardian request after `/clear` (`tests/permissions_auto.rs`): a human message before the
   clear is absent from `recent_user_messages` and `task_intent`, one after it is present.
+- TUI (`tests/tui.rs`): `/clear` while a background subagent runs shows the refusal notice, leaves
+  the conversation and ledger untouched (no `ContextCleared`), and works once the subagent ends.
 - TUI (`tests/tui.rs`): `/compact focus on the parser` sends a summarizer request containing
   `Additional focus: focus on the parser` and shows the `compacted` notice; `/clear` then a
   message sends a request with no earlier user or assistant message and the ledger holds the
