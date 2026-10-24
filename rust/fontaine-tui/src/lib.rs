@@ -655,7 +655,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         };
         match (self.clipboard)(&reply) {
             Ok(()) => self.app.transcript.notice(format!(
-                "copied reply {n} ({} characters) to the clipboard; this needs a terminal that supports OSC 52",
+                "copied reply {n} ({} characters) to the clipboard",
                 reply.chars().count()
             )),
             Err(e) => self.app.transcript.error(format!(
