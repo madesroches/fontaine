@@ -273,3 +273,16 @@ async fn the_llm_scanner_follows_a_guardian_installed_after_startup() {
     assert!(!after.contains("test/gone is unavailable"), "{after}");
     assert!(after.contains("no usable verdict"), "{after}");
 }
+
+#[tokio::test]
+async fn clear_is_refused_while_a_report_is_undelivered() {
+    let world = World::new();
+    let built = build(&world, Manual, Vec::new(), false);
+    queue_report(&built.runtime);
+    let err = built.runtime.clear_conversation().await.unwrap_err();
+    assert!(matches!(
+        err,
+        fontaine_core::session::ClearError::SubagentsRunning
+    ));
+    assert!(built.runtime.state.agents().has_notifications(ROOT_AGENT));
+}

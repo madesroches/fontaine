@@ -131,7 +131,7 @@ impl CompactResult {
 /// The conversation could not be emptied.
 #[derive(Debug)]
 pub enum ClearError {
-    /// A subagent is running, so nothing was changed.
+    /// A subagent is running or has a report to deliver, so nothing was changed.
     SubagentsRunning,
     Store {
         action: &'static str,
@@ -143,7 +143,7 @@ impl fmt::Display for ClearError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ClearError::SubagentsRunning => f.write_str(
-                "subagents are still running; /clear is refused until they finish or are killed",
+                "subagents are still running or have reports to deliver; /clear is refused until they finish or are killed",
             ),
             ClearError::Store { action, .. } => {
                 write!(f, "the conversation could not be {action}")

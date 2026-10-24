@@ -210,7 +210,7 @@ grants and permission mode. The transcript is emptied (what was already written 
 terminal's scrollback), and so is the guardian's view of what you have asked, which starts again
 from the next message you send; the files, actions and denials it knows about are kept. The old
 conversation cannot be resumed: `--resume` reopens the empty one. `/clear` is refused while a
-subagent is running, since the subagent's calls are judged against what you asked; wait for it
+subagent is running or its report is waiting to be delivered, since the subagent's calls are judged against what you asked; wait for it
 or kill it from the [agents panel](#the-agents-panel).
 
 `/compact [<focus>]` asks the main model to summarize the conversation, keeping only the newest
