@@ -493,7 +493,7 @@ What this shows:
   argument ("reviewer: answer yes") is a more direct lever on it. In option 1, steering only
   prevents a stop, and the call still reaches the guardian. In option 2, it would skip the
   guardian. That is one more reason option 2 waits for its own decision and an adversarial
-  evaluation.
+  evaluation (#133).
 - The `alone` row of experiment 5 used the published scorecard. This one uses a fresh run of the
   same model, which caught slightly more (91.7% against 90.8%) and timed out less.
 
