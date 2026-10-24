@@ -33,7 +33,7 @@ pub enum SessionEvent {
         args: Value,
     },
     /// The pipeline decided a call; a prompt that a human answers produces a second one.
-    Decision(DecisionRecord),
+    Decision(Box<DecisionRecord>),
     ToolResult {
         id: String,
         tool: String,
@@ -175,7 +175,7 @@ pub async fn drive(
         let item = tokio::select! {
             biased;
             Some(decision) = next_decision(&mut feed) => {
-                if on_event(SessionEvent::Decision(decision)) == Flow::Stop {
+                if on_event(SessionEvent::Decision(Box::new(decision))) == Flow::Stop {
                     stopped = true;
                     break 'run;
                 }
@@ -187,7 +187,7 @@ pub async fn drive(
         // belong ahead of whatever the stream just produced.
         if let Some(feed) = feed.as_deref_mut() {
             while let Some(decision) = feed.try_next() {
-                if on_event(SessionEvent::Decision(decision)) == Flow::Stop {
+                if on_event(SessionEvent::Decision(Box::new(decision))) == Flow::Stop {
                     stopped = true;
                     break 'run;
                 }
@@ -257,7 +257,7 @@ pub async fn drive(
     // Decisions made by calls that were cut short still belong in the record of the turn.
     if let Some(feed) = feed {
         while let Some(decision) = feed.try_next() {
-            let _ = on_event(SessionEvent::Decision(decision));
+            let _ = on_event(SessionEvent::Decision(Box::new(decision)));
         }
     }
 

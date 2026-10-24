@@ -369,6 +369,10 @@ fn gate_decision_event(session_id: &str, record: &DecisionRecord) -> Value {
             "confidence": record.confidence,
             "guardian_model": record.guardian_model,
             "fail_closed_reason": record.fail_closed_reason,
+            "screen_risk": record.screen_risk,
+            "screen_allow_risk": record.screen_allow_risk,
+            "screen_steering": record.screen_steering,
+            "screen_outcome": record.screen_outcome,
         }),
     )
 }

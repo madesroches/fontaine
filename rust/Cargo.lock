@@ -1631,6 +1631,7 @@ dependencies = [
  "candle-transformers",
  "futures",
  "insta",
+ "reqwest 0.13.5",
  "rig-agent",
  "rig-core",
  "schemars",
@@ -1640,6 +1641,7 @@ dependencies = [
  "tokenizers 0.23.2",
  "tokio",
  "tracing",
+ "url",
  "wiremock",
 ]
 

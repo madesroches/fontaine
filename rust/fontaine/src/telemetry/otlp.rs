@@ -108,6 +108,7 @@ pub struct OtlpExport {
     decisions: Counter<u64>,
     guardian_failed: Counter<u64>,
     guardian_latency: Histogram<u64>,
+    screen: Counter<u64>,
 }
 
 impl Export for OtlpExport {
@@ -128,6 +129,7 @@ impl Export for OtlpExport {
             ("fontaine.guardian.latency", MetricValue::Int(v)) => {
                 self.guardian_latency.record(v, &attrs)
             }
+            ("fontaine.screen.count", MetricValue::Int(v)) => self.screen.add(v, &attrs),
             _ => {}
         }
     }
@@ -225,6 +227,10 @@ where
         guardian_latency: meter
             .u64_histogram("fontaine.guardian.latency")
             .with_unit("ms")
+            .build(),
+        screen: meter
+            .u64_counter("fontaine.screen.count")
+            .with_unit("{call}")
             .build(),
     };
 

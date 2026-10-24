@@ -56,7 +56,7 @@ Each line of a `.jsonl` file is one case. Unknown fields are rejected.
 `fixture_verdict` is a plain label for `guardian` and `scanner` cases and an object
 `{"decision": ..., "tier": ...}` for `pipeline` cases. `tier` and `expected_tier` use the decision
 tier names: `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
-`read_only_fast_path`, `tier05`, `allow_rule`, `mode`, `guardian`, `dont_ask`, `plan_block`,
+`read_only_fast_path`, `tier05`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`, `plan_block`,
 `human`.
 
 ### Categories
@@ -122,6 +122,7 @@ cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian screen:conv
 | `--profile full\|minimal` | Profile under test; default `full`. A profile run scores the cases with that profile. A `minimal` run also scores every `full`-profile `guardian` case, because the minimal guardian must still catch what the full one does. |
 | `--filter <kind\|category-glob>` | Restrict scoring to a kind (`guardian`, `pipeline`, `scanner`) or to categories matching a glob, where `*` matches any run of characters: `attack:*`, `tier05-adversarial`. |
 | `--out <path>` | Also write a JSON report with every scored case and the summary. Missing parent directories are created, and the path is checked for writing before the first case runs. |
+| `--screen live:<account>/<model>` | Put a screen stage (an `ollama` account) beside a `live:` guardian and score the cascade; needs `--stop-threshold <risk>`, `--allow-threshold <risk>` or both, which have no default; `--steering-veto <p>` (default `0.001`) goes with `--allow-threshold`. Adds a `cascade` object to the summary and never updates the guardian models file. See [Cascade scorecards](../docs/evals.md#cascade-scorecards). |
 | `--resume <partial.jsonl>` | Continue an interrupted live run from its sidecar. Needs `--out` and a `live:` guardian. See [Live mode](#live-mode). |
 
 Every case in the dataset is validated against the schema on every run, whatever `--profile` and

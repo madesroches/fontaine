@@ -74,10 +74,14 @@ the tool, a SHA-256 digest of the arguments (never the arguments), the `tier` th
 answer to a prompt adds a second record with `tier = human`. The same record is projected to the
 `tool_decision` telemetry event and to the headless `gate_decision` event, so the three agree.
 The `tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
-`read_only_fast_path`, `tier05`, `allow_rule`, `mode`, `guardian`, `dont_ask`, `plan_block` and
+`read_only_fast_path`, `tier05`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`, `plan_block` and
 `human`. A guardian decision also records the guardian model and profile, its verdict, confidence,
 whether the verdict came from the cache, how long the guardian took, and, when it failed closed,
-the reason (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`).
+the reason (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`). With a
+[screen stage](guardian.md#the-screen-stage) configured, the record also carries `screen_risk`,
+`screen_allow_risk`, `screen_steering`, `screen_model`, `screen_latency_ms` and `screen_outcome`,
+and a call the screen stopped or, with an `allow_threshold`, allowed has `tier = screen`
+(`decision = prompt` or `deny` for a stop, `allow` for an allow).
 
 ## Your own shell commands
 

@@ -81,6 +81,24 @@ pub struct DecisionRecord {
     /// failed closed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fail_closed_reason: Option<String>,
+    /// The screen stage's risk score, when it scored the call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_risk: Option<f64>,
+    /// The screen's hardened allow read, when the allow reads ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_allow_risk: Option<f64>,
+    /// The screen's steering detector score, when the allow reads ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_steering: Option<f64>,
+    /// `<account>/<model>` of the screen that scored, or tried to score, the call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_latency_ms: Option<u64>,
+    /// `stop`, `allow`, `pass` or `unavailable`. In shadow mode `stop` and `allow` are what the
+    /// screen would have done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_outcome: Option<String>,
     pub permission_mode: String,
     pub headless: bool,
     /// What the model was told for a denial.

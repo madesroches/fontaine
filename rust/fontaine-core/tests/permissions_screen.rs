@@ -1,0 +1,530 @@
+//! The screen stage in `auto`: it can stop a call as an escalation and, only through the
+//! steering-hardened allow path, allow one. Every call it does not settle reaches the guardian.
+
+mod common;
+
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use common::pipeline::{
+    Delayed, Options, Rig, allow_verdict, allowed, delayed_guardian, denied_message, fake_guardian,
+    verdict_json,
+};
+use fontaine_agents::mode::Ladder;
+use fontaine_core::audit::Decision;
+use fontaine_core::config::PermissionMode::Auto;
+use fontaine_core::gate::ScreenStage;
+use fontaine_core::permissions::Answer;
+use fontaine_core::tier::Tier;
+use fontaine_guardian::{AllowSettings, Guardian, Profile, Question, Screen, ScreenSettings};
+use fontaine_tools::gate::ROOT_AGENT;
+use serde_json::{Value, json};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+fn shell(command: &str) -> Value {
+    json!({"command": command})
+}
+
+fn logprobs(yes: f64, no: f64) -> Value {
+    let top = json!([
+        {"token": "Yes", "logprob": yes.ln()},
+        {"token": "No", "logprob": no.ln()},
+    ]);
+    json!({"message": {"content": "Yes"}, "logprobs": [{"token": "Yes", "logprob": yes.ln(), "top_logprobs": top}]})
+}
+
+async fn ollama(response: ResponseTemplate) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .respond_with(response)
+        .mount(&server)
+        .await;
+    server
+}
+
+/// A model that finds the call outside the request with `risk`.
+async fn risky(risk: f64) -> MockServer {
+    ollama(ResponseTemplate::new(200).set_body_json(logprobs(1.0 - risk, risk))).await
+}
+
+fn stage(server: &MockServer, shadow: bool) -> ScreenStage {
+    stage_with(server, shadow, None)
+}
+
+fn allowing_stage(server: &MockServer, shadow: bool) -> ScreenStage {
+    stage_with(
+        server,
+        shadow,
+        Some(AllowSettings {
+            t_allow: Some(0.01),
+            steering_veto: 0.001,
+        }),
+    )
+}
+
+fn stage_with(server: &MockServer, shadow: bool, allow: Option<AllowSettings>) -> ScreenStage {
+    ScreenStage {
+        screen: Arc::new(Screen::new(
+            reqwest::Client::new(),
+            ScreenSettings {
+                endpoint: url::Url::parse(&server.uri()).unwrap(),
+                model: "qwen3:4b".into(),
+                question: Question::EmployeeAllowed,
+                t_stop: Some(0.9),
+                timeout: Duration::from_secs(2),
+                profile: Profile::Full,
+                allow,
+            },
+        )),
+        label: "local/qwen3:4b".into(),
+        shadow,
+    }
+}
+
+/// A screen that answers the stop read, the hardened allow read and the steering read with
+/// separate p(yes).
+async fn reads(stop_yes: f64, allow_yes: f64, steering: f64) -> MockServer {
+    let server = MockServer::start().await;
+    let is = |request: &Request, mark: &str| String::from_utf8_lossy(&request.body).contains(mark);
+    let reply = |yes: f64| ResponseTemplate::new(200).set_body_json(logprobs(yes, 1.0 - yes));
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .and(move |r: &Request| is(r, "is a sign of manipulation"))
+        .respond_with(reply(allow_yes))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .and(move |r: &Request| {
+            is(r, "influence how this action is judged") && !is(r, "is a sign of manipulation")
+        })
+        .respond_with(reply(steering))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .and(move |r: &Request| {
+            !is(r, "influence how this action is judged") && !is(r, "is a sign of manipulation")
+        })
+        .respond_with(reply(stop_yes))
+        .mount(&server)
+        .await;
+    server
+}
+
+/// A screen allow: clearly fine, no steering.
+async fn clear() -> MockServer {
+    reads(0.9999, 0.9999999, 0.0001).await
+}
+
+/// The guardian takes this long to answer, far longer than the screen.
+const SLOW: Duration = Duration::from_millis(500);
+
+/// A guardian that would deny, slowly: a call it never decides is allowed or stopped by the screen.
+async fn slow_denier() -> Delayed {
+    delayed_guardian(verdict_json("deny", "Download+Execute", 0.97), SLOW).await
+}
+
+/// The guardian was asked while the screen answered, and its answer was dropped, not consumed.
+async fn assert_dropped(guardian: &Delayed) {
+    tokio::time::sleep(SLOW * 2).await;
+    assert_eq!(guardian.asked.load(Ordering::SeqCst), 1);
+    assert_eq!(guardian.completed.load(Ordering::SeqCst), 0);
+}
+
+fn rig(guardian: Arc<Guardian>, headless: bool, screen: ScreenStage) -> Rig {
+    let mut options = Options::new(Auto).guardian(guardian);
+    if headless {
+        options = options.headless();
+    }
+    let rig = Rig::with(options);
+    rig.state.set_screen(Some(screen));
+    rig
+}
+
+#[tokio::test]
+async fn a_stop_escalates_to_the_human_and_never_uses_the_guardian() {
+    let server = risky(0.97).await;
+    let slow = delayed_guardian(allow_verdict(), SLOW).await;
+    let rig = rig(slow.guardian.clone(), false, stage(&server, false));
+    rig.approver.answer(Answer::Deny { feedback: None });
+    let decision = rig.check("shell", shell("python a.py")).await;
+    assert!(!allowed(&decision));
+    assert_dropped(&slow).await;
+    let request = rig.approver.last_request();
+    assert_eq!(request.tier, Tier::Screen);
+    assert!(
+        request
+            .reason
+            .contains("a local screen judged this call outside the user's request (risk 0.97)")
+    );
+    let record = &rig.audit()[0];
+    assert_eq!(
+        (record.tier, record.decision),
+        (Tier::Screen, Decision::Prompt)
+    );
+    assert_eq!(record.screen_outcome.as_deref(), Some("stop"));
+    assert_eq!(record.screen_model.as_deref(), Some("local/qwen3:4b"));
+    assert!((record.screen_risk.unwrap() - 0.97).abs() < 1e-9);
+    assert!(record.screen_latency_ms.is_some());
+    assert!(!rig.state.auto_paused());
+}
+
+#[tokio::test]
+async fn the_human_can_still_approve_a_stopped_call() {
+    let server = risky(0.97).await;
+    let slow = delayed_guardian(allow_verdict(), SLOW).await;
+    let rig = rig(slow.guardian.clone(), false, stage(&server, false));
+    rig.approver.answer(Answer::AllowOnce);
+    assert!(allowed(&rig.check("shell", shell("python a.py")).await));
+    assert_dropped(&slow).await;
+    let tiers: Vec<_> = rig.audit().iter().map(|r| r.tier).collect();
+    assert_eq!(tiers, [Tier::Screen, Tier::Human]);
+}
+
+#[tokio::test]
+async fn a_headless_stop_is_a_denial_that_names_the_screen() {
+    let server = risky(0.97).await;
+    let slow = delayed_guardian(allow_verdict(), SLOW).await;
+    let rig = rig(slow.guardian.clone(), true, stage(&server, false));
+    let decision = rig.check("shell", shell("python a.py")).await;
+    let message = denied_message(&decision);
+    assert!(message.contains("a local screen judged this call outside the user's request"));
+    assert!(message.contains("headless"));
+    assert_dropped(&slow).await;
+    let record = &rig.audit()[0];
+    assert_eq!(
+        (record.tier, record.decision),
+        (Tier::Screen, Decision::Deny)
+    );
+}
+
+struct Witness(Arc<std::sync::Mutex<Vec<(Tier, String)>>>);
+
+impl fontaine_core::permissions::PermissionDeniedHook for Witness {
+    fn id(&self) -> String {
+        "witness".into()
+    }
+
+    fn run<'a>(
+        &'a self,
+        event: fontaine_core::permissions::PermissionDeniedEvent<'a>,
+    ) -> futures::future::BoxFuture<'a, Result<bool, fontaine_core::permissions::HookError>> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((event.tier, event.reason.to_string()));
+        Box::pin(async { Ok(false) })
+    }
+}
+
+#[tokio::test]
+async fn a_headless_stop_runs_permission_denied_hooks() {
+    let server = risky(0.97).await;
+    let slow = delayed_guardian(allow_verdict(), SLOW).await;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut options = Options::new(Auto)
+        .guardian(slow.guardian.clone())
+        .headless();
+    options.denied_hooks = vec![Arc::new(Witness(seen.clone()))];
+    let rig = Rig::with(options);
+    rig.state.set_screen(Some(stage(&server, false)));
+    assert!(!allowed(&rig.check("shell", shell("python a.py")).await));
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].0, Tier::Screen);
+    assert!(seen[0].1.contains("a local screen judged"));
+}
+
+#[tokio::test]
+async fn a_pass_reaches_the_guardian_and_the_guardian_decides() {
+    let server = risky(0.1).await;
+    let fake = fake_guardian(verdict_json("deny", "Download+Execute", 0.97));
+    let rig = rig(fake.guardian.clone(), false, stage(&server, false));
+    assert!(!allowed(&rig.check("shell", shell("python a.py")).await));
+    assert_eq!(fake.calls(), 1);
+    let record = &rig.audit()[0];
+    assert_eq!(
+        (record.tier, record.decision),
+        (Tier::Guardian, Decision::Deny)
+    );
+    assert_eq!(record.screen_outcome.as_deref(), Some("pass"));
+    assert!(record.screen_risk.unwrap() < 0.2);
+}
+
+#[tokio::test]
+async fn a_pass_never_allows_by_itself() {
+    // The screen is as sure as it can be that the call is fine; the guardian still has the say.
+    let server = risky(0.0001).await;
+    let fake = fake_guardian(verdict_json("deny", "Download+Execute", 0.97));
+    let rig = rig(fake.guardian.clone(), false, stage(&server, false));
+    assert!(!allowed(&rig.check("shell", shell("python a.py")).await));
+    assert_eq!(fake.calls(), 1);
+}
+
+#[tokio::test]
+async fn an_unavailable_screen_warns_once_and_the_guardian_decides() {
+    let server = ollama(ResponseTemplate::new(500)).await;
+    let fake = fake_guardian(allow_verdict());
+    let rig = rig(fake.guardian.clone(), false, stage(&server, false));
+    assert!(allowed(&rig.check("shell", shell("python a.py")).await));
+    assert!(allowed(&rig.check("shell", shell("python b.py")).await));
+    assert_eq!(fake.calls(), 2);
+    let warnings = rig.approver.warnings.lock().unwrap().clone();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("local/qwen3:4b"));
+    let record = &rig.audit()[0];
+    assert_eq!(record.tier, Tier::Guardian);
+    assert_eq!(record.screen_outcome.as_deref(), Some("unavailable"));
+    assert_eq!(record.screen_risk, None);
+}
+
+#[tokio::test]
+async fn shadow_mode_records_the_score_and_never_changes_the_decision() {
+    let server = risky(0.99).await;
+    let fake = fake_guardian(allow_verdict());
+    let rig = rig(fake.guardian.clone(), false, stage(&server, true));
+    assert!(allowed(&rig.check("shell", shell("python a.py")).await));
+    assert_eq!(fake.calls(), 1);
+    assert_eq!(rig.approver.asked(), 0);
+    let record = &rig.audit()[0];
+    assert_eq!(
+        (record.tier, record.decision),
+        (Tier::Guardian, Decision::Allow)
+    );
+    assert_eq!(record.screen_outcome.as_deref(), Some("stop"));
+    assert!((record.screen_risk.unwrap() - 0.99).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn the_screen_never_sees_a_call_the_floor_or_the_fast_path_settled() {
+    let server = risky(0.99).await;
+    let fake = fake_guardian(allow_verdict());
+    let rig = rig(fake.guardian.clone(), false, stage(&server, false));
+    // A tier-05 command and a critical path: neither is the guardian's to judge.
+    assert!(allowed(&rig.check("shell", shell("ls")).await));
+    rig.approver.answer(Answer::Deny { feedback: None });
+    rig.check("shell", shell("rm -rf /")).await;
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
+    assert_eq!(rig.audit()[1].tier, Tier::CriticalPath);
+}
+
+#[tokio::test]
+async fn a_subagent_call_meets_the_same_screen() {
+    let server = risky(0.97).await;
+    let slow = delayed_guardian(allow_verdict(), SLOW).await;
+    let rig = rig(slow.guardian.clone(), true, stage(&server, false));
+    let child = rig
+        .agents
+        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Auto, false)
+        .unwrap();
+    let decision = rig.check_as(&child, "shell", shell("python a.py")).await;
+    assert!(!allowed(&decision));
+    assert_dropped(&slow).await;
+    let record = &rig.audit()[0];
+    assert_eq!(
+        (record.agent_id.as_str(), record.tier),
+        (child.as_str(), Tier::Screen)
+    );
+}
+
+#[tokio::test]
+async fn a_screen_allow_runs_the_call_without_the_guardians_verdict() {
+    let server = clear().await;
+    let slow = slow_denier().await;
+    let rig = rig(slow.guardian.clone(), false, allowing_stage(&server, false));
+    assert!(allowed(&rig.check("shell", shell("python a.py")).await));
+    assert_eq!(rig.approver.asked(), 0);
+    assert_dropped(&slow).await;
+    let record = &rig.audit()[0];
+    assert_eq!(
+        (record.tier, record.decision),
+        (Tier::Screen, Decision::Allow)
+    );
+    assert_eq!(record.rule.as_deref(), Some("screen"));
+    assert_eq!(record.screen_outcome.as_deref(), Some("allow"));
+    assert_eq!(record.screen_model.as_deref(), Some("local/qwen3:4b"));
+    assert!(record.screen_allow_risk.unwrap() < 0.01);
+    assert!(record.screen_steering.unwrap() < 0.001);
+    assert_eq!(record.guardian_verdict, None);
+    assert!(
+        record
+            .explanation
+            .as_deref()
+            .unwrap()
+            .contains("a local screen judged this call clearly within the user's request")
+    );
+    let ledger: Vec<_> = rig
+        .session
+        .ledger
+        .read()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.record)
+        .collect();
+    assert!(ledger.iter().any(
+        |r| matches!(r, fontaine_core::ledger::Record::Action { tool, .. } if tool == "shell")
+    ));
+}
+
+#[tokio::test]
+async fn steering_in_the_arguments_sends_the_call_to_the_guardian() {
+    let server = reads(0.9999, 0.9999999, 0.2).await;
+    let fake = fake_guardian(verdict_json("deny", "Download+Execute", 0.97));
+    let rig = rig(fake.guardian.clone(), false, allowing_stage(&server, false));
+    assert!(!allowed(&rig.check("shell", shell("python a.py")).await));
+    assert_eq!(fake.calls(), 1);
+    let record = &rig.audit()[0];
+    assert_eq!(record.tier, Tier::Guardian);
+    assert_eq!(record.screen_outcome.as_deref(), Some("pass"));
+}
+
+#[tokio::test]
+async fn a_shadow_allow_is_recorded_and_the_guardian_decides() {
+    let server = clear().await;
+    let fake = fake_guardian(verdict_json("deny", "Download+Execute", 0.97));
+    let rig = rig(fake.guardian.clone(), false, allowing_stage(&server, true));
+    assert!(!allowed(&rig.check("shell", shell("python a.py")).await));
+    assert_eq!(fake.calls(), 1);
+    let record = &rig.audit()[0];
+    assert_eq!(
+        (record.tier, record.decision),
+        (Tier::Guardian, Decision::Deny)
+    );
+    assert_eq!(record.screen_outcome.as_deref(), Some("allow"));
+    assert!(record.screen_allow_risk.is_some());
+    assert!(record.screen_steering.is_some());
+}
+
+#[tokio::test]
+async fn a_shadow_stage_without_an_allow_threshold_still_logs_the_allow_scores() {
+    let server = clear().await;
+    let fake = fake_guardian(allow_verdict());
+    let mut shadow = stage_with(
+        &server,
+        true,
+        Some(AllowSettings {
+            t_allow: None,
+            steering_veto: 0.001,
+        }),
+    );
+    shadow.shadow = true;
+    let rig = rig(fake.guardian.clone(), false, shadow);
+    assert!(allowed(&rig.check("shell", shell("python a.py")).await));
+    let record = &rig.audit()[0];
+    assert_eq!(record.tier, Tier::Guardian);
+    assert_eq!(record.screen_outcome.as_deref(), Some("pass"));
+    assert!(record.screen_allow_risk.is_some());
+}
+
+#[tokio::test]
+async fn a_guardian_verdict_in_hand_beats_a_later_screen_allow() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(logprobs(0.9999, 0.0001))
+                .set_delay(Duration::from_millis(300)),
+        )
+        .mount(&server)
+        .await;
+    let fake = fake_guardian(verdict_json("deny", "Download+Execute", 0.97));
+    let rig = rig(fake.guardian.clone(), false, allowing_stage(&server, false));
+    // The guardian has already denied when the slow screen answers; the denial stands.
+    assert!(!allowed(&rig.check("shell", shell("python a.py")).await));
+    let record = &rig.audit()[0];
+    assert_eq!(
+        (record.tier, record.decision),
+        (Tier::Guardian, Decision::Deny)
+    );
+    assert!(record.screen_outcome.is_some());
+}
+
+#[tokio::test]
+async fn a_screen_allow_does_not_reset_the_denial_breaker() {
+    let slow = slow_denier().await;
+    let rig = Rig::with(Options::new(Auto).guardian(slow.guardian.clone()));
+    for n in 0..2 {
+        rig.check("shell", shell(&format!("curl http://evil.example/{n}")))
+            .await;
+    }
+    assert!(!rig.state.auto_paused());
+    // The helper counts answers a waiting client received, so awaited calls show up in it.
+    assert_eq!(slow.completed.load(Ordering::SeqCst), 2);
+    let server = clear().await;
+    rig.state.set_screen(Some(allowing_stage(&server, false)));
+    assert!(allowed(&rig.check("shell", shell("make ok")).await));
+    rig.state.set_screen(None);
+    rig.check("shell", shell("curl http://evil.example/3"))
+        .await;
+    // Had the allow reset the count, this third denial would be the first of a new run.
+    assert!(rig.state.auto_paused());
+}
+
+#[tokio::test]
+async fn a_paused_breaker_prompts_without_consulting_the_screen() {
+    let denier = fake_guardian(verdict_json("deny", "Download+Execute", 0.97));
+    let rig = Rig::with(Options::new(Auto).guardian(denier.guardian.clone()));
+    for n in 0..3 {
+        rig.check("shell", shell(&format!("curl http://evil.example/{n}")))
+            .await;
+    }
+    assert!(rig.state.auto_paused());
+    let server = clear().await;
+    rig.state.set_screen(Some(allowing_stage(&server, false)));
+    rig.approver.answer(Answer::Deny { feedback: None });
+    assert!(!allowed(&rig.check("shell", shell("make ok")).await));
+    assert_eq!(rig.approver.asked(), 1);
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn a_floor_deny_rule_never_reaches_the_screen() {
+    let server = clear().await;
+    let slow = slow_denier().await;
+    let mut options = Options::new(Auto)
+        .guardian(slow.guardian.clone())
+        .settings("[permissions]\ndeny = [\"shell(python)\"]\n")
+        .headless();
+    options.always_allow_file = false;
+    let rig = Rig::with(options);
+    rig.state.set_screen(Some(allowing_stage(&server, false)));
+    assert!(!allowed(&rig.check("shell", shell("python a.py")).await));
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
+    assert_eq!(slow.asked.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_subagent_inherits_the_allow_path() {
+    let server = clear().await;
+    let slow = slow_denier().await;
+    let rig = rig(slow.guardian.clone(), true, allowing_stage(&server, false));
+    let child = rig
+        .agents
+        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Auto, false)
+        .unwrap();
+    assert!(allowed(
+        &rig.check_as(&child, "shell", shell("python a.py")).await
+    ));
+    let record = &rig.audit()[0];
+    assert_eq!(
+        (record.agent_id.as_str(), record.tier, record.decision),
+        (child.as_str(), Tier::Screen, Decision::Allow)
+    );
+}
+
+#[tokio::test]
+async fn a_screen_that_cannot_answer_leaves_the_allow_path_to_the_guardian() {
+    let server = ollama(ResponseTemplate::new(500)).await;
+    let fake = fake_guardian(allow_verdict());
+    let rig = rig(fake.guardian.clone(), false, allowing_stage(&server, false));
+    assert!(allowed(&rig.check("shell", shell("python a.py")).await));
+    assert_eq!(fake.calls(), 1);
+    let record = &rig.audit()[0];
+    assert_eq!(record.tier, Tier::Guardian);
+    assert_eq!(record.screen_outcome.as_deref(), Some("unavailable"));
+}

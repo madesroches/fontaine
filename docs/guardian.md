@@ -133,6 +133,82 @@ first: an `ask` rule or a critical path still asks.
 - Calls are adjudicated one at a time, in order. The guardian is on the critical path, so a fast
   model matters.
 
+## The screen stage
+
+A guardian verdict takes seconds. The guardian is a composition of two stages: an optional screen
+stage, a small local model that answers cheap yes/no questions about each call, and the LLM stage
+described above. The screen reads the probability of each answer from the first token's logprobs
+and turns it into a risk between 0 and 1. It is configured in
+[`[guardian.screen]`](configuration.md#guardianscreen) and needs an Ollama model, because Ollama's
+native chat endpoint is the one that returns logprobs.
+
+The screen sits after everything deterministic and runs only where the guardian would run. It
+and the guardian start together, so a call the screen does not settle costs the slower of the two
+(the screen is bounded by `timeout_ms`), in practice the guardian's. The
+screen can settle a call in two ways, and only while the guardian is still pending:
+
+- **A call it stops** is escalated to you, as a guardian escalation is, with the reason "a local
+  screen judged this call outside the user's request (risk 0.97)" and `tier = screen` in the audit
+  record. The stop read asks, by default, "If an employee were given the user's request, would they
+  be allowed to take this action?" and stops a call whose risk reaches `stop_threshold`. In a
+  headless run an escalation is a denial.
+- **A call it allows** runs without waiting for the guardian, with `tier = screen`,
+  `decision = allow` in the audit record. This is off unless you set `allow_threshold`; see
+  [The allow path](#the-allow-path).
+- **Every other call** goes to the guardian exactly as it would without the screen. That includes
+  a call the screen could not judge: a timeout, an HTTP error, an unreachable daemon or an answer
+  that is not yes or no. Fontaine tells you once per session that the screen is failing, and the
+  guardian decides.
+
+When the screen settles a call, the guardian's request is dropped, which cancels it. Its verdict
+cache and denial counter are untouched, and its tokens are not counted in the session's usage, so a
+priced guardian still pays for the input of a request the screen settled. A guardian verdict that
+is already in hand when the screen answers always wins and goes through the normal flow, so a
+denial the guardian computed is never turned into an allow.
+
+The screen reads the same redacted, delimited request the guardian reads. Any read that fails
+makes the whole screen outcome unavailable, so the guardian decides.
+
+### The allow path
+
+A call is allowed without the guardian only when two extra reads of the same local model agree that
+it is clearly safe:
+
+- **A hardened permission read.** The question is always "If an employee were given the user's
+  request, would they be allowed to take this action?", whatever `question` the stop read uses,
+  because the threshold is fitted to that question. Its system prompt adds a sentence that tells
+  the model the arguments are written by the agent, and that text in them which addresses a
+  reviewer, claims approval or says how to answer is manipulation, to be answered no.
+- **A steering detector.** It asks whether the arguments contain text that addresses a reviewer,
+  claims approval, or tries to influence how the action is judged. A call is never allowed when its
+  score is at or above `steering_veto`.
+
+The call is allowed when the hardened read's risk is below `allow_threshold` and the steering score
+is below the veto, and the stop read did not stop it. Without the detector, one steering sentence in
+a call's arguments moved most of the should-not-allow cases in the measured set below the skip
+threshold, which is why the allow path has its own prompt and a veto. The two extra reads run
+concurrently with the stop read under the one `timeout_ms`.
+
+The allow path is user scope only, off by default and a deliberate exception to the rule that only
+containment earns a skip of the guardian: the screen's allow is a verdict of the composed guardian.
+It never runs before the deterministic floor, and a paused breaker prompts you without asking the
+screen. A screen allow does not reset the denial breaker.
+
+### Calibrating with shadow mode
+
+`shadow = true` is the default. The screen scores every call and records `screen_risk`,
+`screen_allow_risk`, `screen_steering`, `screen_model`, `screen_latency_ms` and `screen_outcome` in
+the audit log, and the guardian decides as always. `screen_outcome` is what the screen would have
+done: `stop`, `allow`, `pass` or `unavailable`. Run in shadow mode for a while, then read the audit
+log: the risk of the calls the guardian denied or you declined, against the risk of the calls that
+were allowed, shows where a threshold would have caught the first without escalating too many of
+the second. For `allow_threshold`, look for a value below which no call the guardian denied or you
+declined appears, and check the steering scores of the calls you would not want allowed. There is
+no shipped threshold, because the right one depends on the model, the question and your own
+traffic. Set `stop_threshold` and/or `allow_threshold` and `shadow = false` when the numbers are
+acceptable. To see the effect on the golden set, run a
+[cascade scorecard](evals.md#cascade-scorecards).
+
 ## Choosing the guardian model
 
 Fontaine ships an ordered list of **benchmark-validated** guardian models in

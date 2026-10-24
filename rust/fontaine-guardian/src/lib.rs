@@ -4,6 +4,7 @@
 
 mod breaker;
 mod cache;
+pub mod cascade;
 mod guardian;
 pub mod models;
 mod profile;
@@ -12,10 +13,12 @@ mod request;
 mod rule_label;
 pub mod rules;
 pub mod scanner;
+mod screen;
 mod verdict;
 
 pub use breaker::{CONSECUTIVE_LIMIT, LoopBreaker, TOTAL_LIMIT};
 pub use cache::TTL as CACHE_TTL;
+pub use cascade::{Composed, Decided, ScreenInput};
 pub use guardian::{Adjudication, EXTRACTOR_RETRIES, Guardian, Settings};
 pub use profile::{FULL_PROMPT, MINIMAL_PROMPT, Profile};
 pub use request::{
@@ -26,4 +29,8 @@ pub use request::{
 pub use rule_label::RuleLabel;
 pub use rules::{EnvironmentConfig, RuleConfig};
 pub use scanner::{CommandScanner, LlmScanner, Scan, Scanner};
+pub use screen::{
+    AllowSettings, DEFAULT_STEERING_VETO, Question, Screen, ScreenOutcome, ScreenScores,
+    ScreenSettings,
+};
 pub use verdict::{AuditLabel, Decision, FailClosed, Verdict};

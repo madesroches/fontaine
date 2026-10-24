@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use fontaine_agents::budget::Spend;
 use fontaine_agents::mode::{Ladder, RootMode};
 use fontaine_agents::tree::AgentTree;
-use fontaine_guardian::{EnvironmentConfig, Guardian, LoopBreaker, RuleConfig, Settings};
+use fontaine_guardian::{EnvironmentConfig, Guardian, LoopBreaker, RuleConfig, Screen, Settings};
 use fontaine_tools::scope::Scope;
 use rig_core::completion::Usage;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -112,6 +112,16 @@ pub struct AutoContext {
     pub rules: RuleConfig,
     /// The primary root's and the user's instruction files, as the agent itself reads them.
     pub project_instructions: Option<String>,
+}
+
+/// The screen stage as a session runs it.
+#[derive(Clone)]
+pub struct ScreenStage {
+    pub screen: Arc<Screen>,
+    /// `<account>/<model>`.
+    pub label: String,
+    /// Score and record every call, but never stop or allow one.
+    pub shadow: bool,
 }
 
 /// The guardian a session has when nothing configured one: every adjudication is a denial.
@@ -229,6 +239,8 @@ pub struct SessionState {
     waiting: Mutex<HashMap<String, usize>>,
     agent_logs: Mutex<HashMap<String, Vec<String>>>,
     guardian: RwLock<Arc<Guardian>>,
+    screen: RwLock<Option<ScreenStage>>,
+    screen_warned: AtomicBool,
     pub auto: AutoContext,
     breaker: Mutex<LoopBreaker>,
     denied: Mutex<Vec<DeniedCall>>,
@@ -274,6 +286,8 @@ impl SessionState {
                 allow: params.allow,
             }),
             guardian: RwLock::new(params.guardian),
+            screen: RwLock::new(None),
+            screen_warned: AtomicBool::new(false),
             auto: params.auto,
             breaker: Mutex::default(),
             denied: Mutex::default(),
@@ -333,6 +347,23 @@ impl SessionState {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    /// The screen stage in front of the guardian, when one is configured.
+    pub fn screen(&self) -> Option<ScreenStage> {
+        self.screen
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn set_screen(&self, stage: Option<ScreenStage>) {
+        *self.screen.write().unwrap_or_else(|e| e.into_inner()) = stage;
+    }
+
+    /// True the first time it is asked, so a broken screen is reported once per session.
+    pub fn first_screen_warning(&self) -> bool {
+        !self.screen_warned.swap(true, Ordering::Relaxed)
     }
 
     /// Replaces the guardian for the next adjudication; its verdict cache starts empty.

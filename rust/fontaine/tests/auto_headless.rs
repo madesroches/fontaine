@@ -296,3 +296,188 @@ async fn telemetry_that_fails_cannot_change_a_verdict() {
     let with_telemetry = decisions(&run_auto(&failing, &[]).await);
     assert_eq!(with_telemetry, baseline);
 }
+
+async fn ollama_screen(risk: f64) -> wiremock::MockServer {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    let (yes, no): (f64, f64) = (1.0 - risk, risk);
+    let top = json!([
+        {"token": "Yes", "logprob": yes.ln()},
+        {"token": "No", "logprob": no.ln()},
+    ]);
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "message": {"content": "No"},
+            "logprobs": [{"token": "No", "logprob": no.ln(), "top_logprobs": top}],
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+fn screen_config(screen: &wiremock::MockServer, shadow: bool) -> String {
+    screen_config_with(screen, shadow, "")
+}
+
+fn screen_config_with(screen: &wiremock::MockServer, shadow: bool, extra: &str) -> String {
+    format!(
+        "\n[accounts.local]\nkind = \"ollama\"\nbase_url = \"{}\"\n\n[guardian.screen]\nmodel = \"local/tiny\"\nstop_threshold = 0.9\nshadow = {shadow}\n{extra}",
+        screen.uri()
+    )
+}
+
+/// A screen that finds the call clearly fine on the stop read and the hardened allow read, and
+/// sees no steering.
+async fn ollama_clear_screen() -> wiremock::MockServer {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+    let server = MockServer::start().await;
+    let reply = |yes: f64| {
+        let no = 1.0 - yes;
+        let top = json!([
+            {"token": "Yes", "logprob": yes.ln()},
+            {"token": "No", "logprob": no.ln()},
+        ]);
+        ResponseTemplate::new(200).set_body_json(json!({
+            "message": {"content": "Yes"},
+            "logprobs": [{"token": "Yes", "logprob": yes.ln(), "top_logprobs": top}],
+        }))
+    };
+    let has = |r: &Request, mark: &str| String::from_utf8_lossy(&r.body).contains(mark);
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .and(move |r: &Request| has(r, "influence how this action is judged"))
+        .respond_with(reply(0.0001))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .and(move |r: &Request| !has(r, "influence how this action is judged"))
+        .respond_with(reply(0.9999999))
+        .mount(&server)
+        .await;
+    server
+}
+
+/// Far longer than a whole `fontaine -p` run on a slow CI runner, so finishing sooner can only
+/// mean the guardian's verdict was not awaited.
+const GUARDIAN_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A guardian that would allow, but only after the screen has had its say.
+async fn slow_guardian(decision: &str) -> Endpoint {
+    use common::Route;
+    Endpoint::start_routed(
+        Wire::Chat,
+        vec![Route::new("", vec![submit(verdict(decision, "allow", 0.95))]).slow(GUARDIAN_DELAY)],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_screen_stop_escalates_without_using_the_guardian() {
+    let agent = Endpoint::start(Wire::Chat, agent_script()).await;
+    let guardian = slow_guardian("allow").await;
+    let screen = ollama_screen(0.97).await;
+    let s = setup(&agent, &guardian, &screen_config(&screen, false));
+    let out = run_auto(&s, &[]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let decisions = of_type(&lines, "gate_decision");
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0]["tier"], "screen");
+    assert_eq!(decisions[0]["decision"], "deny");
+    assert_eq!(decisions[0]["screen_outcome"], "stop");
+    assert!(!s.work.join("out.txt").exists());
+    let text = of_type(&lines, "tool_result")[0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("a local screen judged this call outside the user's request"),
+        "{text}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_screen_allow_runs_the_call_without_using_the_guardian() {
+    let agent = Endpoint::start(Wire::Chat, agent_script()).await;
+    let guardian = slow_guardian("deny").await;
+    let screen = ollama_clear_screen().await;
+    let s = setup(
+        &agent,
+        &guardian,
+        &screen_config_with(&screen, false, "allow_threshold = 0.01\n"),
+    );
+    let started = std::time::Instant::now();
+    let out = run_auto(&s, &[]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert!(
+        started.elapsed() < GUARDIAN_DELAY,
+        "the run waited for the guardian"
+    );
+    let lines = out.lines();
+    let decisions = of_type(&lines, "gate_decision");
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0]["tier"], "screen");
+    assert_eq!(decisions[0]["decision"], "allow");
+    assert_eq!(decisions[0]["rule"], "screen");
+    assert_eq!(decisions[0]["screen_outcome"], "allow");
+    assert!(decisions[0]["screen_allow_risk"].as_f64().unwrap() < 0.01);
+    assert!(decisions[0]["screen_steering"].as_f64().unwrap() < 0.001);
+    assert!(s.work.join("out.txt").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_screen_pass_reaches_the_guardian() {
+    let agent = Endpoint::start(Wire::Chat, agent_script()).await;
+    let guardian = Endpoint::start(Wire::Chat, vec![submit(verdict("allow", "allow", 0.95))]).await;
+    let screen = ollama_screen(0.1).await;
+    let s = setup(&agent, &guardian, &screen_config(&screen, false));
+    let out = run_auto(&s, &[]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let decisions = of_type(&lines, "gate_decision");
+    assert_eq!(decisions[0]["tier"], "guardian");
+    assert_eq!(decisions[0]["screen_outcome"], "pass");
+    assert_eq!(guardian.requests().await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shadow_mode_leaves_the_decision_to_the_guardian_and_records_the_score() {
+    let agent = Endpoint::start(Wire::Chat, agent_script()).await;
+    let guardian = Endpoint::start(Wire::Chat, vec![submit(verdict("allow", "allow", 0.95))]).await;
+    let screen = ollama_screen(0.97).await;
+    let s = setup(&agent, &guardian, &screen_config(&screen, true));
+    let out = run_auto(&s, &[]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let decisions = of_type(&lines, "gate_decision");
+    assert_eq!(decisions[0]["tier"], "guardian");
+    assert_eq!(decisions[0]["decision"], "allow");
+    assert_eq!(decisions[0]["screen_outcome"], "stop");
+    assert!(decisions[0]["screen_risk"].as_f64().unwrap() > 0.96);
+    assert_eq!(guardian.requests().await.len(), 1);
+    assert!(s.work.join("out.txt").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreachable_screen_leaves_every_call_to_the_guardian() {
+    let agent = Endpoint::start(Wire::Chat, agent_script()).await;
+    let guardian = Endpoint::start(Wire::Chat, vec![submit(verdict("allow", "allow", 0.95))]).await;
+    let screen = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(wiremock::ResponseTemplate::new(500))
+        .mount(&screen)
+        .await;
+    let s = setup(&agent, &guardian, &screen_config(&screen, false));
+    let out = run_auto(&s, &[]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("the guardian decides every call"),
+        "{}",
+        out.stderr
+    );
+    let lines = out.lines();
+    let decisions = of_type(&lines, "gate_decision");
+    assert_eq!(decisions[0]["tier"], "guardian");
+    assert_eq!(decisions[0]["screen_outcome"], "unavailable");
+}

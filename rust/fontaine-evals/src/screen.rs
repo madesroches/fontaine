@@ -262,6 +262,7 @@ fn base(case: &Case, latency_ms: u64) -> CaseResult {
         explanation: None,
         escape_class: None,
         fail_closed: None,
+        cascade: None,
         screen: None,
     }
 }

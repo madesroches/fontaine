@@ -121,13 +121,13 @@ these is one line, in this order:
 | `assistant` | A complete assistant message | `text` |
 | `assistant_delta` | With `--include-partial-messages`, for each text fragment | `text` |
 | `tool_call` | The model called a tool | `tool_use_id`, `tool`, `args` |
-| `gate_decision` | A tool call was adjudicated | `tool_use_id`, `agent_id` (`root` for the main conversation, `agent-N` for a subagent), `tier`, `decision`, `rule`; for guardian decisions also `explanation`, `confidence`, `guardian_model` and, when the guardian failed closed, `fail_closed_reason` (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`) |
+| `gate_decision` | A tool call was adjudicated | `tool_use_id`, `agent_id` (`root` for the main conversation, `agent-N` for a subagent), `tier`, `decision`, `rule`; for guardian decisions also `explanation`, `confidence`, `guardian_model` and, when the guardian failed closed, `fail_closed_reason` (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`); when a `[guardian.screen]` stage scored the call also `screen_risk`, `screen_allow_risk` and `screen_steering` (the allow reads, when they ran) and `screen_outcome` (`stop`, `allow`, `pass` or `unavailable`) |
 | `tool_result` | A tool answered | `tool_use_id`, `tool`, `success`, `text` (what the model received) |
 | `result` | At the end of every turn | see below |
 
 `tier` is the stage of the permission pipeline that decided: `deny_rule`, `ask_rule`,
 `critical_path`, `protected_path`, `hook`, `read_only_fast_path`, `tier05`, `allow_rule`, `mode`,
-`guardian`, `dont_ask`, `plan_block` or `human`. The audit log records the same values.
+`screen`, `guardian`, `dont_ask`, `plan_block` or `human`. The audit log records the same values.
 
 The `result` object:
 
