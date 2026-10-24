@@ -98,7 +98,7 @@ pub fn log_out(data_dir: &Path, name: &str) -> Result<bool, ConfigError>;
 pub fn remove(user_file: &Path, data_dir: &Path, name: &str) -> Result<(), AccountsError>;
 ```
 
-- `rows` reuses `models.rs`'s `credential()` (made `pub(crate)`) so the list says exactly what
+- `rows` reuses `models.rs`'s `credential()` (made `pub(crate)`, as is the `Credential` enum it returns) so the list says exactly what
   resolution will do. `endpoint` is the account's `base_url`, or the kind's default
   (`Provider::default_endpoint()`, a new defaulted trait method returning `Option<&'static str>`;
   `opencode-go` returns `DEFAULT_BASE_URL`, the others their rig default or `None` shown as
@@ -110,7 +110,9 @@ pub fn remove(user_file: &Path, data_dir: &Path, name: &str) -> Result<(), Accou
   checks move out of `validate_values` into `pub(crate) fn check_account(name, &Account) ->
   Result<(), (String, String)>` in `config.rs`, called from both places (DRY: one rule set).
   For `openai-compatible` the base URL is required; for `ollama` and `opencode-go` it is optional;
-  the other kinds ask for none. A given base URL must parse as http(s) with a host.
+  the other kinds ask for none. A given base URL must parse as http(s) with a host; that rule lives only in
+  `accounts::build`, not at load time. `check_account` wraps the name check, the `wires` check and
+  `Provider::validate`.
 - `add` writes `[accounts.<name>]` with `kind` and, when given, `base_url` to the **user** file via
   a new `user_config::add_account(path, name, &Account)` (format-preserving; refuses when the
   table already exists in the file, never overwrites). It returns the `Account` so the caller can
@@ -132,15 +134,17 @@ pub fn remove(user_file: &Path, data_dir: &Path, name: &str) -> Result<(), Accou
   `AgentRuntime::removable(name)` first (below). `AccountsError` is a small enum only because the
   dialog dispatches on it (`InUse`, `NotInUserFile`, `Invalid(String)`, `Io` with `source()`).
 
-`Target::Telemetry` and `credentials::store`'s telemetry branch are removed with the CLI; reading
-the `[telemetry]` entry stays.
+`Target` and `Target::Telemetry` are removed with the CLI: `credentials::store` takes `name: &str`
+like `store_oauth`; reading the `[telemetry]` entry stays.
 
 ### Core: live session effects (`AgentRuntime`)
 
 New `AgentRuntime` methods, all driven by the dialog:
 
-- `account_added(&mut self, name, Account)`: inserts into `self.config.accounts`,
-  `self.setup.config.accounts` and the `Switcher`'s `config.accounts`.
+- `account_added(&mut self, name, Account)`: inserts into `AgentRuntime.config.accounts` and the
+  `Switcher`'s `config.accounts`. `Setup` has no `config` field. The switcher is one
+  `Arc<RwLock<Switcher>>` shared by the runtime and `ChildContext` (which `model_for` resolves
+  through), like `main: Arc<RwLock<MainModel>>`, so added and removed accounts reach subagents.
 - `credentials_changed(&mut self, name) -> CredentialEffect`: called after a key is stored, a
   sign-in finishes, or a log-out.
   - Drops `name`'s cached entry from `self.listings`; `model_listings` additionally fetches any
@@ -158,11 +162,12 @@ New `AgentRuntime` methods, all driven by the dialog:
   before `accounts::remove`, so nothing is written for a refused removal. (The pre-session setup
   has no live session and runs no in-use check.)
 - `account_removed(&mut self, name)`: called after a successful `accounts::remove`; removes the
-  account from the three config copies and the listing cache.
+  account from `AgentRuntime.config`, the shared `Switcher`'s config and the listing cache.
 
 Log-out on the account the live main model uses: the stored credential is removed and
 `credentials_changed` runs; resolution then fails for a key kind, so the live client keeps the key
-it was built with until the session ends or the model is switched, and the dialog says so. An
+it was built with until the session ends or the model is switched (there is no failing `DynModel`
+today and the key in memory is the user's own), and the dialog says so. An
 `opencode-go` client stops at its next token refresh (`TokenError::NoSignIn`).
 
 ### TUI: the dialog (`rust/fontaine-tui/src/provider_dialog.rs`)
@@ -178,7 +183,7 @@ requests the host executes and feeds results back with `ProviderDialog::finish(O
  > local      ollama             http://localhost:11434     no key needed
   + add account
  ───────────────────────────────────────────────────────────────────────
-  Enter log in · o log out · d remove · a add · Esc close
+  Enter log in · m pick model · o log out · d remove · a add · Esc close
 ```
 
 Screens (`enum Screen`): `List`; `Kind` (choose one of `providers::names()`); `Name` (text,
@@ -201,6 +206,8 @@ Flow:
   `ollama`). After the log-in succeeds — or is skipped on a keyless kind — the dialog closes and
   the model picker opens on the new account's models (`PickModel(name)`); picking switches the
   main model through the existing `/model` path (and persists it), Esc keeps the current model.
+- `m` on an account row emits `PickModel(name)` in both hosts, so an existing account's model can
+  be chosen (a missing or stale main model needs it).
 - Log in on an account with `api_key_env` set shows the existing warning that the stored key is
   ignored while the variable is set (moved from `auth.rs`).
 - Log out and Remove go through `Confirm`.
@@ -226,8 +233,11 @@ lines ("stored the key for `work`", "signed in to OpenCode Go as …").
   `models::resolve` fails in the interactive UI with an error the dialog can act on,
   `setup::run(SetupParams { config, dirs, env, error, model_override, session_id, user_file })`
   (`model_override` is `cli.model`, `session_id` is `prep.session.id`, as the first resolve uses
-  them, `rust/fontaine/src/lib.rs:479-485`) opens a full-screen terminal (as `trust_prompt::ask`
-  does) showing the resolution error above the same `ProviderDialog`. It executes requests
+  them, `rust/fontaine/src/lib.rs:479-485`) opens a full-screen terminal (pre-session, like `trust_prompt::ask`, but not synchronous
+  key-only polling: it reuses `read_terminal` and the `UnboundedReceiver<Input>` channel,
+  `EnableBracketedPaste` and the panic-restore hook from `fontaine-tui/src/lib.rs`, so pastes reach
+  the masked field, and runs the same `select!` over the sign-in future, step channel and input as
+  the in-session host, so Esc cancels a sign-in; it hosts `ModelPicker` for `PickModel`) showing the resolution error above the same `ProviderDialog`. It executes requests
   directly against `accounts::*`, and installs added accounts into its own copy of the `Config`.
   To offer models for `PickModel(name)` it builds a `Switcher` from that config and lists the
   account through `Switcher::listings` with `only = [name]`; `main` there becomes
@@ -239,14 +249,16 @@ lines ("stored the key for `work`", "signed in to OpenCode Go as …").
   today without opening the setup screen. `setup::run` returns `(Models, Config)` (or `None` on
   Esc, with the original error), and `run_interactive` builds `Launch`, the scanner and
   `agent_setup` from the returned config. Esc exits with the original error's message and exit
-  code, so dismissing it behaves exactly as today. `--model` is honored in the retry. Headless
-  runs (`-p`) never open it.
+  code, so dismissing it behaves exactly as today. After a pick, the picked
+  reference replaces `model_override` for the retry (`resolve_with` prefers `model_override` over
+  `config.model`, and `/model` switches regardless of `--model`); `--model` is honored only for
+  retries following an add or log-in. Headless runs (`-p`) never open it.
 
 ### CLI removal
 
 Delete `rust/fontaine/src/auth.rs`, `Command::Auth` / `AuthCommand` (`cli.rs`), its dispatch and
-the `load_unresolved` branch in `lib.rs` (keep `config::load_unresolved` only if another caller
-remains; otherwise make it private), and the `rpassword` dependency. Every hint that names
+the `load_unresolved` branch in `lib.rs` (`config::load_unresolved` is then called only by `load`:
+make it private and drop its doc comment, `config.rs:1405-1406`), and the `rpassword` dependency. Every hint that names
 `fontaine auth login <account>` names `/login <account>` instead (for example "account `go` is
 not signed in; run `/login go` in `fontaine`"). The telemetry ingestion key becomes
 `api_key_env` or a hand-provisioned `[telemetry]` entry in `credentials.toml`, as automation
@@ -258,14 +270,14 @@ already does; no TUI command is added for it.
    - `config.rs`: extract `check_account` from `validate_values`; call it from there.
    - `user_config.rs`: `add_account`, `remove_account` (format-preserving, atomic, refuse
      overwrite).
-   - `credentials.rs`: `remove`; drop `Target::Telemetry` writes (keep the read).
+   - `credentials.rs`: `remove`; remove `Target` (`store` takes `name: &str`); keep the telemetry read.
 2. **Sign-in progress**
    - `providers/mod.rs`: `SignInStep`, `progress` parameter on `SignIn::sign_in`,
      `Provider::default_endpoint`.
    - `providers/opencode_go.rs`: report through `progress`; update its hint strings.
 3. **`accounts.rs`**: `NewAccount`, `SignInState`, `AccountRow`, `rows`, `check_name`, `build`,
    `add`, `store_key`, `sign_in`, `log_out`, `remove`, `AccountsError`; make `models::credential`
-   `pub(crate)`.
+   and `Credential` `pub(crate)`.
 4. **Live effects** (`agent.rs`, `models.rs`): `install_main` split, `account_added`,
    `credentials_changed`, `removable`, `account_removed`; `model_listings` fetches uncached
    accounts; `Switcher::listings`' `main` becomes `Option<(&ModelRef, &[String])>`.
@@ -274,18 +286,23 @@ already does; no TUI command is added for it.
 6. **In-session host** (`fontaine-tui/src/lib.rs`): dispatch `Action::Providers` (call
    `AgentRuntime::removable` before `accounts::remove`), sign-in `select!` with the step
    channel, open the model picker on the new account (`open_model_picker` gains an optional
-   account filter passed through `model_listings`/`Switcher::listings`' existing `only`).
+   account filter passed through `model_listings`/`Switcher::listings`' existing `only`; with a
+   filter, `model_listings` fetches the named account, cached or not, and returns only that
+   account's listing, where it otherwise sets `only` itself to the failed accounts).
 7. **Pre-session setup** (`fontaine-tui/src/setup.rs`, `rust/fontaine/src/lib.rs`
    `run_interactive`): `SetupParams` carries `model_override`, `session_id` and the user file
    path; `setup::run` returns `(Models, Config)` and `run_interactive` builds `Launch`, the
-   scanner and `agent_setup` from it; retry after every add, log-in or pick.
+   scanner and `agent_setup` from it; retry after every add, log-in or pick. Setup reuses
+   `read_terminal`, the `Input` channel, bracketed paste and the panic-restore hook, runs the
+   sign-in `select!`, hosts `ModelPicker`, and a pick replaces `model_override` for the retry.
 8. **CLI removal and hints**: `auth.rs`, `cli.rs`, `lib.rs`, `Cargo.toml` (`rpassword`), hint
    strings in `models.rs`, `token_source.rs`, `opencode_go.rs`, `providers/mod.rs`,
    `transport.rs`, and the tests asserting them (`fontaine-core/tests/{accounts,providers,
-   token_source,opencode_go}.rs`; in `rust/fontaine/tests/headless_smoke.rs` rewrite
+   token_source,opencode_go,credentials}.rs`, where `credentials.rs` drops `Target::Telemetry` and
+   `a_later_login_keeps_the_earlier_entries` seeds a hand-written `[telemetry]` entry; in `rust/fontaine/tests/headless_smoke.rs` rewrite
    `auth_is_a_subcommand_never_a_prompt` (:245) to pin `fontaine auth login` → exit 2 and delete
    `auth_login_*` (:273, :293, :312)); also the doc comments naming `auth login`
-   (`config.rs:1405` `load_unresolved`, `providers/mod.rs:30`, `:70`).
+   (`providers/mod.rs:30`, `:70`).
 9. **Master plan**: add a dated line to `tasks/fontaine_harness_plan.md` `## Decisions` recording
    the removal of `fontaine auth login|logout|status`-style CLI login (Claude Code keeps
    `claude auth login`) in favor of `/login`; automation provisions config plus `api_key_env` or
@@ -313,9 +330,6 @@ already does; no TUI command is added for it.
   main-model fallback and the status bar, and would need a placeholder model for turns. Running
   the same dialog before the session is built keeps every runtime invariant (a main model always
   exists; the guardian is resolved by the normal path) and still needs no restart.
-- **Log-out leaves live clients alone** rather than swapping in a failing model: there is no
-  failing `DynModel` today and the key in memory is the user's own; removing it from disk is what
-  `/logout` promises. The guardian path still fails closed on its next rebuild or refresh.
 
 ## Decisions
 
@@ -365,17 +379,18 @@ Unit tests (all reachable with constructed inputs):
 - `ProviderDialog`: every transition (add flow per kind, skip on optional, Esc at each screen,
   `/login <account>` entry, unknown account, confirm/decline log-out and remove, paste into the
   masked field); `body()` renders `•` and never the key text; `Secret`'s `Debug` redacts.
-- `App`: paste routed to the dialog; `covered()`; `parse_command("/login go")`.
+- `App`: paste routed to the dialog; `covered()`; `parse_command("/login go")`; type and paste a key
+  on the Key screen, press Enter: `App::input` is empty, no `Submit`/`Queue` action, the action is
+  `Providers(StoreKey)`.
 - `opencode_go::sign_in_at` against the existing wiremock Console
-  (`fontaine-core/tests/opencode_go.rs`): progress receives `Code` with the URL and code, nothing
-  is written to stderr, tokens stored.
+  (`fontaine-core/tests/opencode_go.rs`): progress receives `Code` (with the URL and code) and `Waiting`, tokens stored.
 
 Integration (`fontaine-core/tests`, deterministic models / wiremock, no live APIs):
 - `AgentRuntime::credentials_changed` after storing a key for the main model's account rebuilds
   the main model (wiremock sees the new key); on the guardian's account with the key removed, the
   guardian is `Unavailable` and an adjudication denies — pins the fail-closed invariant.
 - `model_listings` lists an account added mid-session.
-- `account_removed` refuses the main/guardian/screen account.
+- `removable` refuses the main/guardian/screen account; `account_removed` drops the account and its listing.
 - In `rust/fontaine/tests/headless_smoke.rs`: `fontaine auth login` is a clap usage error, exit 2
   (a bare `fontaine auth` parses as a positional prompt).
 
@@ -391,7 +406,6 @@ Terminal rendering and the pre-session screen need a real TTY; breakage is obvio
    `/login work`, enter the key again → a turn succeeds without restarting.
 3. Add an `opencode-go` account → URL and code shown inside the dialog, Esc cancels cleanly;
    repeat and approve → "signed in to OpenCode Go as …".
-4. `grep` the session ledger, `history.jsonl` and a `--debug-file` log for the key → no match.
 
 ## Open Questions
 
