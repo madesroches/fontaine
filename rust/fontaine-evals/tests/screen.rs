@@ -255,6 +255,10 @@ async fn usage_errors_exit_two() {
         json!({"summary": {"dataset_version": "000000000000"}, "cases": []}).to_string(),
     )
     .unwrap();
+    let notjson = data.path().join("notjson.json");
+    std::fs::write(&notjson, "nope").unwrap();
+    let nocases = data.path().join("nocases.json");
+    std::fs::write(&nocases, "{}").unwrap();
     let cases: Vec<(Vec<&str>, &str)> = vec![
         (
             vec!["--guardian", "screen:m", "--profile", "minimal"],
@@ -278,6 +282,41 @@ async fn usage_errors_exit_two() {
             "scored on dataset 000000000000",
         ),
         (vec!["--guardian", "screen:"], "screen:<model>"),
+        (
+            vec!["--guardian", "screen:m", "--screen-url", "localhost:8000"],
+            "invalid --screen-url",
+        ),
+        (
+            vec!["--guardian", "screen:m", "--screen-url", "127.0.0.1:8000"],
+            "invalid --screen-url",
+        ),
+        (
+            vec![
+                "--guardian",
+                "screen:m",
+                "--screen-reference",
+                "/nonexistent/ref.json",
+            ],
+            "cannot read --screen-reference",
+        ),
+        (
+            vec![
+                "--guardian",
+                "screen:m",
+                "--screen-reference",
+                notjson.to_str().unwrap(),
+            ],
+            "is not JSON",
+        ),
+        (
+            vec![
+                "--guardian",
+                "screen:m",
+                "--screen-reference",
+                nocases.to_str().unwrap(),
+            ],
+            "has no `cases`",
+        ),
     ];
     for (args, needle) in cases {
         let result = run(data.path(), None, &args).await;

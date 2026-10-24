@@ -79,9 +79,23 @@ pub fn connect(model: &str, url: &str, timeout: Duration) -> Result<Screen, Stri
     if model.is_empty() {
         return Err("`screen:` must be `screen:<model>`".into());
     }
-    let client = reqwest::Client::builder()
-        .build()
-        .map_err(|e| format!("cannot build the HTTP client: {e}"))?;
+    let parsed = reqwest::Url::parse(url).map_err(|e| {
+        format!(
+            "invalid --screen-url `{url}`: {}",
+            fontaine_tools::error_chain::chain(&e)
+        )
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(format!(
+            "invalid --screen-url `{url}`: expected http:// or https:// with a host"
+        ));
+    }
+    let client = reqwest::Client::builder().build().map_err(|e| {
+        format!(
+            "cannot build the HTTP client: {}",
+            fontaine_tools::error_chain::chain(&e)
+        )
+    })?;
     Ok(Screen {
         client,
         endpoint: format!("{}/v1/systemone", url.trim_end_matches('/')),
