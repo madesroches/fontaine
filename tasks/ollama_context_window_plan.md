@@ -45,7 +45,7 @@ re-scores the local models.
   (`fontaine-core/src/turn.rs:236`, `MultiTurnStreamItem::CompletionCall`) and the guardian's
   adjudication (`fontaine-core/src/permissions.rs:1159`, `add_guardian_usage`). Ollama reports
   `prompt_eval_count` as `usage.input_tokens` (`rig-core/src/providers/ollama/streaming.rs:149`).
-- `ModelHandle` (`fontaine-core/src/models.rs:106`) carries `reference`, `kind`, `completion`; `models.rs` builds the
+- `ModelHandle` (`fontaine-core/src/models.rs:107`) carries `reference`, `kind`, `completion`; `models.rs` builds the
   handle and `agent::build_guardian` (`agent.rs:113`) turns it into the `Guardian`. The eval runner
   skips `build_guardian` and calls `Guardian::new(handle.completion, spec, settings)` directly
   (`fontaine-evals/src/live.rs:117`).
@@ -109,8 +109,7 @@ inherits it with no call-site change. `connect` reads the two keys from `ctx.acc
 `ScreenSettings` gains `context_tokens: u32`; `build_screen` fills it from the screen account
 (`context_tokens` or the default — one shared `Account::ollama_context_tokens()` helper so both
 paths resolve the same number), and `Screen::ask` adds `"num_ctx"` to its `options`. The screen
-already sends `think: false`; unchanged. A screen and a guardian share a loaded model
-only when they use the same account or accounts with equal `context_tokens`.
+already sends `think: false`; unchanged.
 
 ### Window warning
 
@@ -120,7 +119,8 @@ only when they use the same account or accounts with equal `context_tokens`.
 `Guardian` gets a plain `Option<u32>` field and accessor (keeping `fontaine-guardian`
 dependency-light), filled in `build_guardian` from the handle, so a `/guardian-model` swap
 (`set_guardian`) replaces it with the guardian. `TurnParams`, `Drive` and the child runner's
-`ChildModel` each carry the window of the model they drive. A shared helper:
+`ChildModel` each carry the handle's `ModelRef` alongside its window: their `model` is only the
+wire id (`ModelHandle::wire_ids()`), which names neither the account nor the reference. A shared helper:
 
 ```rust
 /// Whether a reply's prompt filled the window: Ollama never reports more than it kept.
@@ -131,12 +131,15 @@ pub fn filled_window(input_tokens: u64, context_tokens: u32) -> bool {
 
 At both usage sites, when it returns true, the session warns once per model through
 `Approver::warn`: "`local/qwen3:4b`'s prompt used N of its `context_tokens = M`; Ollama drops the
-start of a longer prompt. Raise `context_tokens` on account `local`." The once-per-model memo lives
-in `SessionState` (a `Mutex<HashSet<String>>`). The guardian site reads the window from `state.guardian()`; the turn site reads it from `Drive`.
-A warning never changes a verdict.
+start of a longer prompt. Raise `context_tokens` on account `local`." A `SessionState` method,
+following its existing one-shot warn pattern (`sink_warned`, `first_screen_warning`), takes the
+reference, the input tokens and the window; its memo is a `Mutex<HashSet<String>>` keyed by the
+reference string. The guardian site reads the window from `state.guardian()`; the turn site reads
+the reference and window from `Drive`. A warning never changes a verdict.
 
-The exact 90% threshold is checked against live Ollama behavior (Testing Strategy, live step 3) and
-adjusted there if the daemon reports a truncated prompt below it.
+The eval runner's guardian window (`live.rs:117`) only feeds pipeline cases, each with a fresh
+`SessionState` (`fontaine-evals/src/none.rs:105`), so it warns once per case; `live:` guardian cases
+call `cascade::adjudicate` directly (`live.rs:330`) and never warn.
 
 ## Implementation Steps
 
@@ -149,8 +152,8 @@ adjusted there if the daemon reports a truncated prompt below it.
    `ask` sends it. For the screen, `fontaine-evals/src/live.rs` needs no change: `add_screen` goes through
    `build_screen`.
 4. **Warning.** `ModelHandle::context_tokens` + builder, set in `models.rs` (main and guardian
-   resolution), `filled_window`, the window on `Guardian`, `TurnParams`, `Drive` and
-   `ChildModel`, the memo on `SessionState`, and the call sites (`turn.rs`, `permissions.rs`).
+   resolution), `filled_window`, the window on `Guardian`, the `ModelRef` and window on `TurnParams`, `Drive` and
+   `ChildModel`, the memo and warn method on `SessionState`, and the call sites (`turn.rs`, `permissions.rs`).
    Set the guardian window from the handle in `fontaine-evals/src/live.rs:117` too.
 5. **Docs** (see Documentation).
 6. **Live verification and re-score** (Testing Strategy, live steps), recording numbers in the
@@ -169,9 +172,9 @@ adjusted there if the daemon reports a truncated prompt below it.
 - `rust/fontaine-core/src/agent.rs` — `build_screen`, `build_guardian` fills the guardian window.
 - `rust/fontaine-core/src/models.rs` — `ModelHandle::context_tokens`.
 - `rust/fontaine-core/tests/models.rs` — `num_ctx` / `think` regression assertions.
-- `rust/fontaine-core/src/gate.rs` — warning memo on `SessionState`.
-- `rust/fontaine-core/src/turn.rs` — `TurnParams`/`Drive` window, warning site.
-- `rust/fontaine-core/src/child_runner.rs` — `ChildModel` window, `Drive` construction.
+- `rust/fontaine-core/src/gate.rs` — warning memo and one-shot warn method on `SessionState`.
+- `rust/fontaine-core/src/turn.rs` — `TurnParams`/`Drive` reference and window, warning site.
+- `rust/fontaine-core/src/child_runner.rs` — `ChildModel` reference and window, `Drive` construction.
 - `rust/fontaine-core/src/permissions.rs` — warning call site (guardian).
 - `rust/fontaine-evals/src/live.rs` — guardian window set from the handle (`:117`).
 - `TurnParams` constructors: `rust/fontaine-tui/src/lib.rs`, `rust/fontaine/src/headless.rs`,
@@ -206,16 +209,17 @@ adjusted there if the daemon reports a truncated prompt below it.
 
 - `docs/configuration.md`: `context_tokens` and `think` rows in the `[accounts.<name>]` table;
   the Ollama example gains `context_tokens`; a short paragraph on the GPU-memory trade-off, the
-  override of the daemon's own setting, and the window warning.
+  override of the daemon's own setting, and the window warning; the `[guardian.screen]` `model`
+  row (~line 368) also says the account's `context_tokens` is used, and that equal values are
+  needed to avoid reloads.
 - `docs/guardian.md`: in the local-guardian / screen guidance, that the guardian prompt needs
   more than Ollama's default window and the screen uses the account's `context_tokens`; a screen
   and guardian avoid reloads only on the same account or equal `context_tokens`.
-- `docs/configuration.md`: the `[guardian.screen]` `model` row (~line 368) also says the account's
-  `context_tokens` is used, and that equal values are needed to avoid reloads.
 - `README.md`: the "Quickstart: a local agent with Ollama" example (`:43-55`) mentions
   `context_tokens` and links to the configuration row.
 - `docs/evals.md`: scoring a local model relies on the account's window; note the re-score, and
-  rewrite the stale truncation sentence for `local/qwen3:4b` (`:130-132`).
+  rewrite the stale truncation sentence for `local/qwen3:4b` (`:130-132`), and update the Results
+  intro (`:122-126`), the score rows (`:144`, `:162`) and the prose at `:153` from the re-scored numbers.
 - `CHANGELOG.md`: via the PR step.
 
 ## Testing Strategy
@@ -240,12 +244,13 @@ behavior.
 1. `ollama ps` during `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian
    live:local/qwen3:4b` shows `CONTEXT 16384` (and the configured value after setting
    `context_tokens`).
-2. With a cascade (`--screen live:local/qwen3:4b-instruct-2507-q4_K_M`, guardian on the same
+2. With a cascade (`--screen live:local/qwen3:4b-instruct-2507-q4_K_M --stop-threshold <t>`, guardian on the same
    daemon) and with screen and guardian on the *same* model: no reload between calls (`ollama ps`
    UNTIL/load stays stable; per-call latency has no reload spikes).
 3. Truncation: send a prompt longer than a small `context_tokens` (e.g. 2048) and record the
-   reported `prompt_eval_count`; confirm `filled_window` fires and the warning appears once. Adjust
-   the threshold if the daemon reports less.
+   reported `prompt_eval_count`; confirm `filled_window` fires and the warning appears once. Run it
+   through a real session (`cargo run -p fontaine -- -p …` with an `ollama` account at
+   `context_tokens = 2048`), not the eval runner.
 4. Memory: `ollama ps` SIZE/PROCESSOR for `qwen3:4b` and `qwen3:8b` at 16384 on the 6 GB GTX
    1060; record whether either spills to CPU, for the docs' trade-off paragraph.
 5. `think = false` on `qwen3:4b`: full scorecard with and without it; record accuracy, fail-closed
@@ -254,3 +259,5 @@ behavior.
    `evals/scorecards/qwen3-4b.json`; record before/after in the PR.
 
 ## Open Questions
+
+None.
