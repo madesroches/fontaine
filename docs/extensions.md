@@ -83,7 +83,8 @@ The names and descriptions of the skills go into the system prompt, between the 
 and the output style. The body loads through the `skill` tool, whose only argument is the skill's
 name. Because it can load nothing but skill text, `skill` is a read-only tool and needs no approval;
 what the skill then asks the model to do goes through the permission pipeline like anything else.
-A personal skill outranks a repository skill of the same name.
+A personal skill outranks a repository skill of the same name. In the terminal UI, `/skills` lists
+every loaded skill with its scope.
 
 ### Slash commands and arguments
 
@@ -95,6 +96,9 @@ line as its arguments:
   argument counting from 0 (words, with single or double quotes keeping one together); one past the
   end is empty.
 - A body with no such placeholder gets `ARGUMENTS: <arguments>` appended when there are arguments.
+
+A built-in command wins over a skill of the same name or alias. The skill gets no `/` menu entry,
+startup names it, and the model can still load it with the `skill` tool.
 
 What you typed (`/name some arguments`) is recorded as your message; the skill's text is the
 agent's prompt for that turn, not your words.

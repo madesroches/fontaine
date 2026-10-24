@@ -13,6 +13,8 @@ There are three events:
 | `post_tool_use` | After the tool ran, in the result pipeline. | Add a note to the result the agent reads. |
 | `permission_denied` | When the pipeline denied the call. | Say the agent may retry a call the guardian denied. |
 
+In the terminal UI, `/hooks` lists the configured hooks by event with their scope.
+
 ## Configuring hooks
 
 ```toml

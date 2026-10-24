@@ -127,7 +127,7 @@ user file or `[agents.types]` entry of the same name, and so stays narrowed.
 
 ## Watching and stopping subagents
 
-In the terminal UI, `Ctrl+T` (or `/agents`) opens the [agents panel](tui.md#the-agents-panel): one row
+In the terminal UI, `Ctrl+T` (or `/agents`, or `/tasks`) opens the [agents panel](tui.md#the-agents-panel): one row
 per subagent with its status, spend against budget, a view of what it did and the gate decisions it
 got, and a key to kill it. A background subagent's approval prompts appear like any other, labelled
 with its id, and the panel lists them per agent, so none hides behind the main transcript.

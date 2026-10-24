@@ -1081,3 +1081,94 @@ async fn a_pick_made_during_a_notification_turn_applies_when_the_turn_ends() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plan_enters_plan_mode_and_a_description_is_sent_in_that_mode() {
+    let w = World::new(vec![
+        tool_turn(
+            "c1",
+            "write",
+            json!({"path": "notes.txt", "content": "hello"}),
+        ),
+        text_turn("planned"),
+    ]);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/plan");
+        ui.wait_for("plan mode on").await;
+        ui.wait_for("⏸ plan mode on").await;
+        ui.press(KeyCode::BackTab);
+        ui.wait_for("⏵⏵ auto mode on").await;
+        ui.press(KeyCode::BackTab);
+        ui.wait_for("manual").await;
+        ui.send("/plan do x");
+        ui.wait_for("planned").await;
+        // Plan mode's rules handled the write; manual mode would have asked.
+        assert!(!ui.screen().contains("Allow write?"), "{}", ui.screen());
+    })
+    .await;
+    assert!(w.requests()[0].contains("do x"));
+    assert!(!w.work.join("notes.txt").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn permissions_shows_the_rules_with_their_scopes() {
+    let w = World::new(vec![])
+        .with_config("[permissions]\ndeny = [\"shell(sudo)\"]\n")
+        .with_project_settings("[permissions]\nask = [\"shell(ls)\"]\n");
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/permissions");
+        ui.wait_for("/denied lists what the guardian denied").await;
+        let screen = ui.screen();
+        assert!(screen.contains("shell(sudo) [user]"), "{screen}");
+        assert!(screen.contains("shell(ls) [project]"), "{screen}");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn copy_sends_the_latest_reply_to_the_clipboard() {
+    let w = World::new(vec![text_turn("first reply"), text_turn("second reply")]);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("one");
+        ui.wait_for("first reply").await;
+        idle(&ui).await;
+        ui.send("two");
+        ui.wait_for("second reply").await;
+        idle(&ui).await;
+        ui.send("/copy");
+        ui.wait_for("copied reply 1").await;
+        assert_eq!(ui.clipboard(), vec!["second reply".to_string()]);
+        ui.send("/copy 2");
+        ui.wait_for("copied reply 2").await;
+        assert_eq!(ui.clipboard().last().unwrap(), "first reply");
+        ui.send("/copy 9");
+        ui.wait_for("no assistant reply number 9").await;
+        assert_eq!(ui.clipboard().len(), 2);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn status_and_help_report_without_a_turn() {
+    let w = World::new(vec![]);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/status");
+        ui.wait_for("MCP servers: 0 of 0 connected").await;
+        ui.send("/help");
+        ui.wait_for("esc interrupt").await;
+        let screen = ui.screen();
+        assert!(screen.contains("/exit, /quit"), "{screen}");
+        ui.send("/hooks");
+        ui.wait_for("no hooks configured").await;
+        ui.send("/mcp");
+        ui.wait_for("no MCP servers configured").await;
+        ui.send("/mcp reconnect");
+        ui.wait_for("/mcp takes no arguments").await;
+    })
+    .await;
+    assert!(w.requests().is_empty());
+}

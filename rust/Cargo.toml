@@ -20,6 +20,7 @@ fontaine-mcp = { path = "fontaine-mcp" }
 fontaine-tui = { path = "fontaine-tui" }
 
 clap = { version = "4.6.7", features = ["derive"] }
+crossterm = { version = "=0.29.0", features = ["osc52"] }
 dirs = "7.0.0"
 gix = { version = "=0.90.0", default-features = false, features = ["index", "sha1"] }
 schemars = { version = "1.2.3", features = ["derive"] }

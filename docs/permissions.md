@@ -8,7 +8,7 @@ result and the run goes on.
 ## Modes
 
 The session mode is set by `[permissions] default_mode` or `--permission-mode`, and in the
-terminal UI Shift+Tab cycles it. With neither set, the terminal UI starts in `auto` and a headless
+terminal UI Shift+Tab cycles it, and `/plan` enters plan mode. With neither set, the terminal UI starts in `auto` and a headless
 run (`fontaine -p`) starts in `manual`, as Claude Code's `-p` starts in `default`.
 
 | Mode | What happens to a call nothing pre-approved |
@@ -18,6 +18,10 @@ run (`fontaine -p`) starts in `manual`, as Claude Code's `-p` starts in `default
 | `plan` | No edit ever runs: `write` and `edit` are blocked outright. Other consequential calls (write-capable or unparsed `shell`, `webfetch`, every MCP call, shell reads outside the roots) go to the guardian, as in `auto`. |
 | `dontAsk` | Denied. Only calls that are pre-approved run. |
 | `auto` | The [guardian](guardian.md) decides: allow, deny with a reason, or ask you. |
+
+In the terminal UI, `/permissions` shows the mode and the effective rules with the scope each came
+from, including session and always grants; in `auto` it marks the broad allow rules that mode sets
+aside.
 
 There is no bypass mode. The deterministic floor below applies in every mode, and no mode, flag or
 allow rule reaches past it. In a headless run (`fontaine -p`) nothing can ask, so every call that

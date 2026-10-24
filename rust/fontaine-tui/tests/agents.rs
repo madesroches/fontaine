@@ -217,6 +217,35 @@ async fn a_server_the_repository_defines_does_not_start_when_the_user_declined_t
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mcp_reports_a_declined_project_server_as_left_off() {
+    let w = World::new(vec![]);
+    let settings = project_server(&w);
+    let w = w.with_project_settings(&settings);
+    w.run(|ui| async move {
+        ui.wait_for_prompt("Start the MCP server `repo`?").await;
+        ui.press(KeyCode::Char('n'));
+        idle(&ui).await;
+        ui.send("/mcp");
+        ui.wait_for("repo: left off").await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_reports_a_project_server_of_an_untrusted_workspace() {
+    let w = World::new(vec![]).untrusted();
+    let settings = project_server(&w);
+    let w = w.with_project_settings(&settings);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/mcp");
+        ui.wait_for("repo: not loaded (workspace not trusted)")
+            .await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_trusted_root_still_asks_before_each_new_project_server() {
     let w = World::new(vec![]);
     let settings = project_server(&w);

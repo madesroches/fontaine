@@ -355,9 +355,20 @@ impl World {
             let top = usize::from(area.top());
             *shown_live.borrow_mut() = visible[top..usize::from(area.bottom())].join("\n");
         };
-        let ui = Ui { keys, screen, live };
+        let copied = Rc::new(RefCell::new(Vec::new()));
+        let sink = copied.clone();
+        let clipboard = move |text: &str| {
+            sink.borrow_mut().push(text.to_string());
+            Ok(())
+        };
+        let ui = Ui {
+            keys,
+            screen,
+            live,
+            copied,
+        };
         let (result, ()) = tokio::join!(
-            drive(self.setup(), self.work.clone(), rx, render),
+            drive(self.setup(), self.work.clone(), rx, render, clipboard),
             script(ui)
         );
         result.unwrap();
@@ -395,6 +406,7 @@ pub struct Ui {
     keys: UnboundedSender<Input>,
     screen: Rc<RefCell<String>>,
     live: Rc<RefCell<String>>,
+    copied: Rc<RefCell<Vec<String>>>,
 }
 
 impl Ui {
@@ -423,6 +435,11 @@ impl Ui {
 
     pub fn screen(&self) -> String {
         self.screen.borrow().clone()
+    }
+
+    /// What `/copy` has sent to the clipboard, oldest first.
+    pub fn clipboard(&self) -> Vec<String> {
+        self.copied.borrow().clone()
     }
 
     /// Only the live area: what the next frame redraws.
