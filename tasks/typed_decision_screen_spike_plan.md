@@ -233,6 +233,9 @@ better, and the base `laya` is secondary.
 - 2026-10-23: One `choice` verdict question rather than per-class `noul` questions.
 - 2026-10-23 AFK: Without a per-option map, derived risk is `(1 + c)/2` for a `deny`/`escalate` choice and `1 − c` for `allow`, not `c`; `risk = c` let a low-confidence deny rank below an allow, understating option 2's benign-clear share and distorting the sweep and reliability bins.
 
+- 2026-10-23: `ScreenScore` also records `truncated` when the server reports it (laya-serve does), so a cut state is visible beside `input_tokens`.
+- 2026-10-23: The base checkpoint is scored as `screen:english`; laya-serve reads the model value `convaiinnovations/laya` as "let the router choose", not as the base checkpoint.
+
 ## Documentation
 
 - `evals/README.md`: the `screen:` mode, its flags, what it scores and skips, and that it is

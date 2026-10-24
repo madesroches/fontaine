@@ -152,6 +152,11 @@ All notable changes are recorded here. The format follows
     scored, and a flushed `<out>.partial.jsonl` sidecar that `--resume` continues from after an
     interruption. A case the runner cannot pose is `UNSCORED` instead of aborting the run, and
     `--out`'s parent directory is created and checked before the first case (#94).
+  - `--guardian screen:<model>` scores a typed-decision model (Laya, or DiffusionGemma behind
+    vLLM) served over `/v1/systemone` on the `guardian` cases, with `--screen-url`,
+    `--screen-timeout-ms` and `--screen-reference`. It reports catch and benign-stop rates at
+    recalibrated thresholds, the zero-miss allow threshold, a reliability table and the
+    disagreement with another scorecard. Eval-only (#98).
 - Distribution
   - Release binaries for Linux, macOS and Windows built with `pg2` by cargo-dist on a `vX.Y.Z`
     tag, each archive carrying the license, readme and changelog; `cargo install --git

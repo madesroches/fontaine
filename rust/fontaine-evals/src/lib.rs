@@ -8,6 +8,8 @@ mod none;
 mod output;
 pub mod report;
 mod runner;
+pub mod screen;
+pub mod screen_report;
 
 pub use case::{
     Case, Category, FixtureVerdict, Kind, MaterializeError, Permissions, Profile, Workspace,
