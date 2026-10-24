@@ -348,6 +348,21 @@ async fn a_screen_stop_escalates_without_asking_the_guardian() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_screen_pass_reaches_the_guardian() {
+    let agent = Endpoint::start(Wire::Chat, agent_script()).await;
+    let guardian = Endpoint::start(Wire::Chat, vec![submit(verdict("allow", "allow", 0.95))]).await;
+    let screen = ollama_screen(0.1).await;
+    let s = setup(&agent, &guardian, &screen_config(&screen, false));
+    let out = run_auto(&s, &[]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let decisions = of_type(&lines, "gate_decision");
+    assert_eq!(decisions[0]["tier"], "guardian");
+    assert_eq!(decisions[0]["screen_outcome"], "pass");
+    assert_eq!(guardian.requests().await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn shadow_mode_leaves_the_decision_to_the_guardian_and_records_the_score() {
     let agent = Endpoint::start(Wire::Chat, agent_script()).await;
     let guardian = Endpoint::start(Wire::Chat, vec![submit(verdict("allow", "allow", 0.95))]).await;

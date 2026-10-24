@@ -133,6 +133,43 @@ async fn a_headless_stop_is_a_denial_that_names_the_screen() {
     );
 }
 
+struct Witness(Arc<std::sync::Mutex<Vec<(Tier, String)>>>);
+
+impl fontaine_core::permissions::PermissionDeniedHook for Witness {
+    fn id(&self) -> String {
+        "witness".into()
+    }
+
+    fn run<'a>(
+        &'a self,
+        event: fontaine_core::permissions::PermissionDeniedEvent<'a>,
+    ) -> futures::future::BoxFuture<'a, Result<bool, fontaine_core::permissions::HookError>> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((event.tier, event.reason.to_string()));
+        Box::pin(async { Ok(false) })
+    }
+}
+
+#[tokio::test]
+async fn a_headless_stop_runs_permission_denied_hooks() {
+    let server = risky(0.97).await;
+    let fake = fake_guardian(allow_verdict());
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut options = Options::new(Auto)
+        .guardian(fake.guardian.clone())
+        .headless();
+    options.denied_hooks = vec![Arc::new(Witness(seen.clone()))];
+    let rig = Rig::with(options);
+    rig.state.set_screen(Some(stage(&server, false)));
+    assert!(!allowed(&rig.check("shell", shell("python a.py")).await));
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].0, Tier::Screen);
+    assert!(seen[0].1.contains("a local screen judged"));
+}
+
 #[tokio::test]
 async fn a_pass_reaches_the_guardian_and_the_guardian_decides() {
     let server = risky(0.1).await;

@@ -1163,6 +1163,8 @@ impl PermissionPipeline {
             cx.call.tool,
             &format!("{reason}, and a headless run cannot ask the user"),
         );
+        // The screen has nothing to retry, so a hook's retry offer is dropped.
+        self.denied_hooks(cx, Tier::Screen, &reason).await;
         Self::note(Tier::Screen, Decision::Deny);
         self.emit(annotated(Decision::Deny, Some(message.clone())));
         self.state

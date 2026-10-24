@@ -88,7 +88,7 @@ The user file may set every key. For the other scopes:
 | `[model] model` | no | yes | yes |
 | `[guardian] model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache` | no | yes | yes |
 | `[guardian] scanner`, `scanner_command`, `scanner_model_path`, `scanner_hf_token_env` | no | no | no |
-| `[guardian.screen]` | `shadow = true` only | `shadow = true` only | no |
+| `[guardian.screen]` | `shadow = true` only | `shadow = true` only | `shadow = true` only |
 | `[permissions] default_mode` | `manual` or `dontAsk` only | `manual` or `dontAsk` only | yes |
 | `[permissions] deny`, `ask` | add only | add only | add only |
 | `[permissions] allow` | no | yes | yes |
