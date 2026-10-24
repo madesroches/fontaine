@@ -267,6 +267,30 @@ fn remove_deletes_the_account_and_its_credential() {
 }
 
 #[test]
+fn remove_refuses_an_account_a_user_file_model_names() {
+    for key in [
+        "[model]\nmodel",
+        "[guardian]\nmodel",
+        "[guardian.screen]\nmodel",
+    ] {
+        let w = World::new();
+        w.user_file(&format!(
+            "[accounts.a]\nkind = \"anthropic\"\n\n{key} = \"a/m\"\n"
+        ));
+        accounts::store_key(&w.data, "a", "k").unwrap();
+        let file = w.config.join("config.toml");
+        let err = accounts::remove(&file, &w.data, "a").unwrap_err();
+        assert!(matches!(err, AccountsError::InUse { .. }), "{err:?}");
+        assert!(
+            std::fs::read_to_string(&file)
+                .unwrap()
+                .contains("[accounts.a]")
+        );
+        assert!(Credentials::load(&w.data).unwrap().account("a").is_some());
+    }
+}
+
+#[test]
 fn removing_an_account_from_another_file_changes_nothing() {
     let w = World::new();
     w.user_file("[model]\nmodel = \"p/m\"\n");

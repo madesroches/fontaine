@@ -70,7 +70,8 @@ pub struct AccountRow {
 /// variants; everything else is an I/O failure with its cause kept as the source.
 #[derive(Debug)]
 pub enum AccountsError {
-    /// The live session uses the account, as `by` says ("the main model", "the guardian").
+    /// The live session or the user settings file uses the account, as `by` says ("the main
+    /// model", "`[guardian] model`").
     InUse {
         by: &'static str,
     },
@@ -278,8 +279,14 @@ pub fn log_out(data_dir: &Path, name: &str) -> Result<bool, ConfigError> {
 
 /// Deletes `[accounts.<name>]` from the user settings file and then the account's stored
 /// credential, so no orphaned secret is left. It has no view of the live session: a host that
-/// has one refuses a removal of an account in use before calling this.
+/// has one refuses a removal of an account in use before calling this. A model setting in the
+/// user file that names the account also refuses it, so the file is never left dangling.
 pub fn remove(user_file: &Path, data_dir: &Path, name: &str) -> Result<(), AccountsError> {
+    let key = user_config::model_key_naming(user_file, name)
+        .map_err(|e| io_error(format!("could not read {}", user_file.display()), e))?;
+    if let Some(key) = key {
+        return Err(AccountsError::InUse { by: key });
+    }
     let removed = user_config::remove_account(user_file, name).map_err(|e| {
         io_error(
             format!("could not remove `{name}` from {}", user_file.display()),

@@ -279,7 +279,8 @@ it are denied until it has a credential again.
 
 **Removing** deletes the account's table from your user settings file and its stored credential. It
 is refused while the live main model, the live guardian or the `[guardian.screen]` model uses the
-account, and for an account defined in a settings file other than your user file.
+account, while your user file's `[model] model`, `[guardian] model` or `[guardian.screen] model`
+names it, and for an account defined in a settings file other than your user file.
 
 ### When no model is ready at startup
 

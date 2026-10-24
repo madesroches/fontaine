@@ -131,6 +131,40 @@ pub fn remove_account(path: &Path, name: &str) -> io::Result<bool> {
     Ok(true)
 }
 
+/// The settings key in the file at `path` whose model reference names account `name`, if any.
+/// `None` when the file does not define the account, since there is nothing to remove from it.
+pub fn model_key_naming(path: &Path, name: &str) -> io::Result<Option<&'static str>> {
+    let doc = read_document(path)?;
+    if doc.get("accounts").and_then(|a| a.get(name)).is_none() {
+        return Ok(None);
+    }
+    let names = |item: Option<&Item>| {
+        item.and_then(Item::as_str)
+            .and_then(crate::models::ModelRef::parse)
+            .is_some_and(|r| r.account == name)
+    };
+    let keys: [(&'static str, Option<&Item>); 3] = [
+        (
+            "[model] model",
+            doc.get("model").and_then(|t| t.get("model")),
+        ),
+        (
+            "[guardian] model",
+            doc.get("guardian").and_then(|t| t.get("model")),
+        ),
+        (
+            "[guardian.screen] model",
+            doc.get("guardian")
+                .and_then(|t| t.get("screen"))
+                .and_then(|t| t.get("model")),
+        ),
+    ];
+    Ok(keys
+        .into_iter()
+        .find(|(_, item)| names(*item))
+        .map(|(k, _)| k))
+}
+
 fn read_document(path: &Path) -> io::Result<DocumentMut> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,

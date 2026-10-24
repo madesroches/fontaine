@@ -849,11 +849,20 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     /// What a changed credential did to the session, as text to append to the summary line.
-    async fn credential_effects(&mut self, runtime: &mut AgentRuntime, account: &str) -> String {
+    async fn credential_effects(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        account: &str,
+        logged_out: bool,
+    ) -> String {
         let effect = runtime.credentials_changed(account).await;
         let mut text = String::new();
         if effect.main_rebuilt {
-            text.push_str("; the main model now uses it");
+            text.push_str(if logged_out {
+                "; the main model was rebuilt without the stored credential"
+            } else {
+                "; the main model now uses it"
+            });
         }
         if let Some(why) = effect.main_error {
             text.push_str(&format!(
@@ -881,7 +890,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if let Err(e) = stored {
             return self.failed(&e);
         }
-        let effects = self.credential_effects(runtime, account).await;
+        let effects = self.credential_effects(runtime, account, false).await;
         let api_key_env = runtime
             .config
             .accounts
@@ -955,7 +964,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         match result {
             Some(Ok(summary)) => {
                 let mut summary = summary;
-                summary.push_str(&self.credential_effects(runtime, name).await);
+                summary.push_str(&self.credential_effects(runtime, name, false).await);
                 self.finish_login(runtime, name, summary)
             }
             Some(Err(e)) => self.tell_dialog(Outcome::Failed(sign_in_failure(e))),
@@ -982,7 +991,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Err(e) => return self.failed(&e),
         };
         let mut summary = log_out_summary(account, removed);
-        summary.push_str(&self.credential_effects(runtime, account).await);
+        summary.push_str(&self.credential_effects(runtime, account, true).await);
         self.app.transcript.notice(summary.clone());
         self.refresh_rows(runtime);
         self.tell_dialog(Outcome::Done(summary))
