@@ -13,6 +13,8 @@ use crate::live::{self, Live, Scored};
 use crate::none::{self, Outcome};
 use crate::output::{self, Header, Sidecar};
 use crate::report::{self, Scorecard};
+use crate::screen::{self, Screen, ScreenScore};
+use crate::screen_report::{self, RefCase, ScreenAnalysis};
 use crate::{EXIT_FAIL, EXIT_USAGE};
 
 /// Where the inclusion-bar writer puts qualifying entries when `--models-file` is not given,
@@ -85,7 +87,8 @@ struct RunArgs {
     dataset: Option<PathBuf>,
 
     /// Which guardian scores the cases: `fixture` (canned verdicts), `none` (the real
-    /// permission pipeline, no guardian) or `live:<account>/<model>` (a live guardian model)
+    /// permission pipeline, no guardian), `live:<account>/<model>` (a live guardian model) or
+    /// `screen:<model>` (a typed-decision model behind `--screen-url`, guardian cases only)
     #[arg(long, value_name = "MODE")]
     guardian: Option<String>,
 
@@ -110,6 +113,18 @@ struct RunArgs {
     /// inclusion bar
     #[arg(long, value_name = "PATH", default_value = DEFAULT_MODELS_FILE)]
     models_file: PathBuf,
+
+    /// Base URL of the typed-decision server a `screen:` run asks [default: http://127.0.0.1:8000]
+    #[arg(long, value_name = "URL")]
+    screen_url: Option<String>,
+
+    /// Per-request timeout of a `screen:` run, in milliseconds [default: 10000]
+    #[arg(long, value_name = "MS")]
+    screen_timeout_ms: Option<u64>,
+
+    /// A scorecard of another guardian to compare a `screen:` run with, case by case
+    #[arg(long, value_name = "SCORECARD.JSON")]
+    screen_reference: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -135,6 +150,9 @@ pub struct CaseResult {
     /// Why a live adjudication did not end in a verdict the model gave.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fail_closed: Option<String>,
+    /// The typed-decision model's answer, in a `screen:` run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen: Option<ScreenScore>,
 }
 
 impl CaseResult {
@@ -171,6 +189,9 @@ pub struct Summary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dataset_version: Option<String>,
     pub latency_ms: BTreeMap<String, Latency>,
+    /// The screen analysis, in a `screen:` run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen: Option<ScreenAnalysis>,
     /// Cases selected but not scored, with the reason.
     pub skipped: Vec<Skipped>,
     /// Live cases whose adjudication failed closed on infrastructure (the reason). They are left
@@ -251,14 +272,37 @@ fn run_score(args: &RunArgs) -> u8 {
         return usage("`--dataset` and `--guardian` are required (or use a subcommand: baseline)");
     };
     let live_spec = guardian.strip_prefix("live:");
-    if !matches!(guardian.as_str(), "fixture" | "none") && live_spec.is_none() {
+    let screen_spec = guardian.strip_prefix("screen:");
+    if !matches!(guardian.as_str(), "fixture" | "none")
+        && live_spec.is_none()
+        && screen_spec.is_none()
+    {
         return usage(&format!(
-            "unsupported --guardian `{guardian}`; supported modes are `fixture`, `none` and `live:<account>/<model>`"
+            "unsupported --guardian `{guardian}`; supported modes are `fixture`, `none`, `live:<account>/<model>` and `screen:<model>`"
         ));
     }
     if args.resume.is_some() && live_spec.is_none() {
         return usage("`--resume` continues a `live:` run");
     }
+    if screen_spec.is_none()
+        && (args.screen_url.is_some()
+            || args.screen_timeout_ms.is_some()
+            || args.screen_reference.is_some())
+    {
+        return usage(
+            "`--screen-url`, `--screen-timeout-ms` and `--screen-reference` need `--guardian screen:<model>`",
+        );
+    }
+    if screen_spec.is_some() && matches!(args.profile, ProfileArg::Minimal) {
+        return usage("`--guardian screen:<model>` has no profile; drop `--profile minimal`");
+    }
+    let reference = match &args.screen_reference {
+        Some(path) => match read_reference(path) {
+            Ok(reference) => Some(reference),
+            Err(e) => return usage(&e),
+        },
+        None => None,
+    };
     let cases = match load_or_report(dataset) {
         Ok(cases) => cases,
         Err(code) => return code,
@@ -284,6 +328,7 @@ fn run_score(args: &RunArgs) -> u8 {
 
     let mut skipped = Vec::new();
     let mut live_run = None;
+    let mut screen_version = None;
     let results: Vec<CaseResult> = if let Some(spec) = live_spec {
         let header = Header {
             dataset_version: match report::dataset_version(dataset) {
@@ -360,6 +405,47 @@ fn run_score(args: &RunArgs) -> u8 {
         selected = scored;
         live_run = Some((connected, header.dataset_version));
         results
+    } else if let Some(model) = screen_spec {
+        let version = match report::dataset_version(dataset) {
+            Ok(version) => version,
+            Err(e) => {
+                return usage(&format!(
+                    "cannot read the dataset {}: {}",
+                    dataset.display(),
+                    chain(&e)
+                ));
+            }
+        };
+        if let Some(reference) = &reference
+            && reference.dataset_version.as_deref() != Some(version.as_str())
+        {
+            return usage(&format!(
+                "--screen-reference was scored on dataset {}, not {version}",
+                reference
+                    .dataset_version
+                    .as_deref()
+                    .unwrap_or("(unrecorded)")
+            ));
+        }
+        let connected = match screen::connect(
+            model,
+            args.screen_url.as_deref().unwrap_or(screen::DEFAULT_URL),
+            std::time::Duration::from_millis(
+                args.screen_timeout_ms.unwrap_or(screen::DEFAULT_TIMEOUT_MS),
+            ),
+        ) {
+            Ok(connected) => connected,
+            Err(e) => return usage(&e),
+        };
+        let rt = match runtime() {
+            Ok(rt) => rt,
+            Err(code) => return code,
+        };
+        let (results, scored, missed) = rt.block_on(score_screen(&selected, &connected));
+        skipped = missed;
+        selected = scored;
+        screen_version = Some(version);
+        results
     } else if guardian == "none" {
         // The guardian and the scanner do not exist in this mode, and `auto` needs the guardian.
         selected.retain(|c| c.kind == Kind::Pipeline);
@@ -418,7 +504,21 @@ fn run_score(args: &RunArgs) -> u8 {
         }
         summary.dataset_version = Some(version.clone());
     }
-    print_summary(&summary, &results, live_run.is_some());
+    if let Some(version) = screen_version {
+        summary.dataset_version = Some(version);
+        summary.screen = Some(screen_report::analyze(
+            &results,
+            reference.as_ref().map(|r| r.cases.as_slice()),
+        ));
+    }
+    print_summary(
+        &summary,
+        &results,
+        live_run.is_some() || screen_spec.is_some(),
+    );
+    if let Some(analysis) = &summary.screen {
+        print!("{}", screen_report::render(analysis));
+    }
     if let Some(out) = &args.out {
         let report = Report {
             summary: &summary,
@@ -450,9 +550,10 @@ fn run_score(args: &RunArgs) -> u8 {
             );
         }
     }
-    // A live run reports and exits 0 whatever it scored: it is a measurement, not a gate. Only an
-    // unreliable measurement fails it.
-    if !summary.infrastructure_failures.is_empty() || (live_run.is_none() && summary.failed > 0) {
+    // A live or screen run reports and exits 0 whatever it scored: it is a measurement, not a
+    // gate. Only an unreliable measurement fails it.
+    let measurement = live_run.is_some() || screen_spec.is_some();
+    if !summary.infrastructure_failures.is_empty() || (!measurement && summary.failed > 0) {
         EXIT_FAIL
     } else {
         0
@@ -539,6 +640,97 @@ async fn score_live<'a>(
     (results, scored, skipped)
 }
 
+/// Scores the `guardian` cases of `selected` against the screen, one at a time so each latency is
+/// its own. Returns the results, the cases they belong to and the cases that were not scored.
+async fn score_screen<'a>(
+    selected: &[&'a Case],
+    screen: &Screen,
+) -> (Vec<CaseResult>, Vec<&'a Case>, Vec<Skipped>) {
+    let (mut results, mut scored, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
+    let mut asked = Vec::new();
+    for case in selected {
+        if case.kind == Kind::Guardian {
+            asked.push(*case);
+        } else {
+            skipped.push(Skipped {
+                id: case.id.clone(),
+                reason: "a screen scores guardian cases only".into(),
+            });
+        }
+    }
+    if let Some(first) = asked.first() {
+        screen::warm_up(first, screen).await;
+    }
+    let total = asked.len();
+    for (n, case) in asked.into_iter().enumerate() {
+        let outcome = screen::score(case, screen)
+            .await
+            .unwrap_or_else(|e| unscored(case, e));
+        match outcome {
+            Scored::Result(result) => {
+                eprintln!("[{}/{total}] {}", n + 1, progress(&result));
+                print_case(&result);
+                results.push(*result);
+                scored.push(case);
+            }
+            Scored::Skipped(reason) => {
+                eprintln!("[{}/{total}] {} skipped", n + 1, case.id);
+                println!("SKIP {}: {reason}", case.id);
+                skipped.push(Skipped {
+                    id: case.id.clone(),
+                    reason,
+                });
+            }
+        }
+    }
+    (results, scored, skipped)
+}
+
+/// Another guardian's scorecard, as far as a screen run compares with it.
+struct Reference {
+    dataset_version: Option<String>,
+    cases: Vec<RefCase>,
+}
+
+fn read_reference(path: &std::path::Path) -> Result<Reference, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        format!(
+            "cannot read --screen-reference {}: {}",
+            path.display(),
+            chain(&e)
+        )
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        format!(
+            "--screen-reference {} is not JSON: {}",
+            path.display(),
+            chain(&e)
+        )
+    })?;
+    let cases = value["cases"].as_array().ok_or_else(|| {
+        format!(
+            "--screen-reference {} has no `cases`; it must be a `--out` report",
+            path.display()
+        )
+    })?;
+    Ok(Reference {
+        dataset_version: value["summary"]["dataset_version"]
+            .as_str()
+            .map(str::to_string),
+        cases: cases
+            .iter()
+            .filter_map(|c| {
+                Some(RefCase {
+                    id: c["id"].as_str()?.to_string(),
+                    actual: c["actual"].as_str()?.to_string(),
+                    pass: c["pass"].as_bool().unwrap_or(false),
+                    fail_closed: c["fail_closed"].is_string(),
+                })
+            })
+            .collect(),
+    })
+}
+
 /// A case the runner itself could not pose, such as one whose workspace cannot be written. Like a
 /// provider failure, it says nothing about the model.
 fn unscored(case: &Case, error: String) -> Scored {
@@ -556,6 +748,7 @@ fn unscored(case: &Case, error: String) -> Scored {
         explanation: Some(error),
         escape_class: None,
         fail_closed: Some("runner_error".to_string()),
+        screen: None,
     }))
 }
 
@@ -646,6 +839,7 @@ fn score_pipeline(case: &Case, decision: String, tier: String, latency_ms: u64) 
         explanation: None,
         escape_class: None,
         fail_closed: None,
+        screen: None,
     }
 }
 
@@ -796,6 +990,7 @@ fn score_fixture(case: &Case) -> CaseResult {
         explanation: None,
         escape_class: None,
         fail_closed: None,
+        screen: None,
     }
 }
 
@@ -867,6 +1062,7 @@ fn summarize(params: SummaryParams<'_>) -> Summary {
         catch_by_class: rates.by_class,
         escape_classes: report::escape_classes(selected, results),
         dataset_version: None,
+        screen: None,
         latency_ms: BTreeMap::from([(
             guardian.to_string(),
             Latency {
@@ -957,7 +1153,7 @@ fn print_summary(summary: &Summary, results: &[CaseResult], streamed: bool) {
         pct(summary.false_deny_rate)
     );
     if let Some(latency) = summary.latency_ms.get(&summary.guardian)
-        && summary.guardian.starts_with("live:")
+        && (summary.guardian.starts_with("live:") || summary.guardian.starts_with("screen:"))
     {
         println!("latency_ms p50={} p95={}", latency.p50, latency.p95);
     }

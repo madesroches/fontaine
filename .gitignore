@@ -20,3 +20,6 @@ flycheck_*.el
 .projectile
 .dir-locals-2.el
 TAGS
+
+# Python
+__pycache__/
