@@ -1051,6 +1051,25 @@ fn a_screen_needs_a_model_on_an_ollama_account() {
 }
 
 #[test]
+fn a_screen_account_needs_a_usable_base_url() {
+    for url in ["not a url", "ftp://host/", "http://"] {
+        let text = format!(
+            "[accounts.local]\nkind = \"ollama\"\nbase_url = \"{url}\"\n\n[guardian.screen]\nmodel = \"local/m\"\n"
+        );
+        let w = World::new();
+        w.user_file(&text);
+        let err = w.load().unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{url}");
+        assert!(err.to_string().contains("accounts.local.base_url"), "{err}");
+    }
+    let w = World::new();
+    w.user_file(
+        "[accounts.local]\nkind = \"ollama\"\nbase_url = \"http://box:11434\"\n\n[guardian.screen]\nmodel = \"local/m\"\n",
+    );
+    w.load().unwrap();
+}
+
+#[test]
 fn screen_values_are_validated() {
     for bad in [
         "stop_threshold = 0.0",

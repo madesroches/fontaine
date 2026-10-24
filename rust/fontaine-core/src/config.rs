@@ -1542,7 +1542,18 @@ fn check_screen(config: &mut Config, user_path: &Path) -> Result<(), ConfigError
     }
     let account = screen.model.split_once('/').map_or("", |(a, _)| a);
     match config.accounts.get(account) {
-        Some(a) if a.kind.as_str() == "ollama" => {}
+        Some(a) if a.kind.as_str() == "ollama" => {
+            if let Some(base) = a.base_url.as_deref().filter(|u| !u.is_empty()) {
+                let usable = url::Url::parse(base)
+                    .is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.has_host());
+                if !usable {
+                    return bad(
+                        &format!("accounts.{account}.base_url"),
+                        "the screen stage requires an http or https URL with a host",
+                    );
+                }
+            }
+        }
         Some(_) => {
             return bad(
                 "guardian.screen.model",
