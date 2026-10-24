@@ -169,6 +169,18 @@ All notable changes are recorded here. The format follows
   - `subagent` and `mcp_server_connection` events. MCP server and tool names read `third-party`
     unless `log_tool_details = true`.
   - An optional owner-only debug file (`--debug-file`, `FONTAINE_LOG`).
+  - `api_error` (the error class and HTTP status of a failed model call, never the message) and
+    `internal_error` (an audit or ledger write failure, by class) events. `permission_mode_changed`
+    and the `screen.*` fields of `tool_decision` are documented (#139).
+  - Guardian spend dropped when an enforcing screen settles a call is estimated from the
+    rendered request and counted in `fontaine.token.usage` and `fontaine.cost.usage` with
+    `estimated = true`; the audit record carries the estimate as `guardian_dropped_*` (#139).
+  - A micromegas notebook under `analytics/notebooks` for cost, guardian latency and fail-closed
+    reasons, decision tiers, screen outcomes, tool results, subagents and errors, plus a
+    per-stream-tag retention recipe and the `tool_use_id` join with the audit log in the docs (#139).
+  - The micromegas backend turns CPU tracing on through the sink builder and no longer sets
+    `MICROMEGAS_ENABLE_CPU_TRACING` in Fontaine's environment. micromegas is pinned to a git
+    commit until 0.33 is published (#139, #141).
 - Evals
   - A golden dataset and the `fontaine-evals` runner: `--guardian fixture` (offline),
     `--guardian none` (cases through the real pipeline) and `--guardian live:<account>/<model>`
