@@ -361,15 +361,16 @@ async fn ollama_clear_screen() -> wiremock::MockServer {
     server
 }
 
+/// Far longer than a whole `fontaine -p` run on a slow CI runner, so finishing sooner can only
+/// mean the guardian's verdict was not awaited.
+const GUARDIAN_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// A guardian that would allow, but only after the screen has had its say.
 async fn slow_guardian(decision: &str) -> Endpoint {
     use common::Route;
     Endpoint::start_routed(
         Wire::Chat,
-        vec![
-            Route::new("", vec![submit(verdict(decision, "allow", 0.95))])
-                .slow(std::time::Duration::from_millis(1500)),
-        ],
+        vec![Route::new("", vec![submit(verdict(decision, "allow", 0.95))]).slow(GUARDIAN_DELAY)],
     )
     .await
 }
@@ -410,7 +411,7 @@ async fn a_screen_allow_runs_the_call_without_using_the_guardian() {
     let out = run_auto(&s, &[]).await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     assert!(
-        started.elapsed() < std::time::Duration::from_millis(1500),
+        started.elapsed() < GUARDIAN_DELAY,
         "the run waited for the guardian"
     );
     let lines = out.lines();
