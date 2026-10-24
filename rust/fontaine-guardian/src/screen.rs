@@ -103,6 +103,9 @@ pub struct ScreenSettings {
     /// The Ollama base URL.
     pub endpoint: Url,
     pub model: String,
+    /// The window requested with every call (`options.num_ctx`); a request that names another
+    /// size makes the daemon reload the model.
+    pub context_tokens: u32,
     pub question: Question,
     /// A call whose risk reaches this is stopped. With none, the screen only scores.
     pub t_stop: Option<f64>,
@@ -206,8 +209,12 @@ impl Screen {
             .endpoint
             .join("api/chat")
             .map_err(|e| format!("bad screen endpoint: {e}"))?;
-        let body =
-            json!({ "model": self.settings.model, "messages": [], "keep_alive": KEEP_ALIVE });
+        let body = json!({
+            "model": self.settings.model,
+            "messages": [],
+            "keep_alive": KEEP_ALIVE,
+            "options": { "num_ctx": self.settings.context_tokens },
+        });
         let response = tokio::time::timeout(
             WARM_UP_TIMEOUT,
             self.client
@@ -340,9 +347,14 @@ impl Screen {
             "stream": false,
             "keep_alive": KEEP_ALIVE,
             "think": false,
+            "truncate": false,
             "logprobs": true,
             "top_logprobs": TOP_LOGPROBS,
-            "options": { "num_predict": 1, "temperature": 0 },
+            "options": {
+                "num_ctx": self.settings.context_tokens,
+                "num_predict": 1,
+                "temperature": 0,
+            },
         });
         let url = self
             .settings
@@ -363,7 +375,13 @@ impl Screen {
             .await
             .map_err(|e| format!("reading the answer failed: {}", chain(&e)))?;
         if !status.is_success() {
-            return Err(format!("the screen model answered HTTP {status}"));
+            let daemon_error = serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned));
+            return Err(match daemon_error {
+                Some(text) => format!("the screen model answered HTTP {status}: {text}"),
+                None => format!("the screen model answered HTTP {status}"),
+            });
         }
         let value: Value =
             serde_json::from_slice(&bytes).map_err(|e| format!("unparseable answer: {e}"))?;
@@ -461,6 +479,7 @@ mod tests {
             ScreenSettings {
                 endpoint: Url::parse(&server.uri()).unwrap(),
                 model: "qwen3:4b".into(),
+                context_tokens: 16384,
                 question,
                 t_stop,
                 timeout: Duration::from_secs(2),
@@ -593,6 +612,8 @@ mod tests {
         assert_eq!(sent["logprobs"], json!(true));
         assert_eq!(sent["top_logprobs"], json!(20));
         assert_eq!(sent["options"]["num_predict"], json!(1));
+        assert_eq!(sent["options"]["num_ctx"], json!(16384));
+        assert_eq!(sent["truncate"], json!(false));
         assert_eq!(sent["keep_alive"], json!(KEEP_ALIVE));
         assert_eq!(sent["messages"][0]["content"], json!(SYSTEM_PROMPT));
         let user = sent["messages"][1]["content"].as_str().unwrap();
@@ -616,6 +637,7 @@ mod tests {
         let sent: Value = serde_json::from_slice(&received[0].body).unwrap();
         assert_eq!(sent["messages"], json!([]));
         assert_eq!(sent["keep_alive"], json!(KEEP_ALIVE));
+        assert_eq!(sent["options"]["num_ctx"], json!(16384));
     }
 
     #[tokio::test]
@@ -636,6 +658,24 @@ mod tests {
             .screen(&request())
             .await;
         assert!(matches!(outcome, ScreenOutcome::Unavailable { .. }));
+    }
+
+    #[tokio::test]
+    async fn the_daemons_refusal_text_reaches_the_unavailable_reason() {
+        let server = serve(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "request (6028 tokens) exceeds the available context size (2048 tokens), try increasing it"
+        })))
+        .await;
+        let outcome = screen_for(&server, Question::EmployeeAllowed, Some(0.9))
+            .screen(&request())
+            .await;
+        let ScreenOutcome::Unavailable { reason, .. } = outcome else {
+            panic!("expected Unavailable, got {outcome:?}");
+        };
+        assert!(
+            reason.contains("exceeds the available context size"),
+            "{reason}"
+        );
     }
 
     #[tokio::test]

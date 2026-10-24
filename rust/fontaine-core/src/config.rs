@@ -316,6 +316,25 @@ pub struct Account {
     pub models: Option<Vec<String>>,
     /// Per-model wire overrides, for kinds that route one account over several wires.
     pub wires: Option<BTreeMap<String, Wire>>,
+    /// `ollama` only: the context window requested with every call (`options.num_ctx`).
+    pub context_tokens: Option<u32>,
+    /// `ollama` only: `false` asks a thinking model to answer without reasoning.
+    pub think: Option<bool>,
+}
+
+/// The window an `ollama` account requests when it sets no `context_tokens`: Ollama's own
+/// default (4096) cannot hold the guardian's rules.
+pub const DEFAULT_OLLAMA_CONTEXT_TOKENS: u32 = 16384;
+
+/// The smallest `context_tokens` accepted; a guard against typos, not a size that fits the
+/// guardian prompt.
+const MIN_OLLAMA_CONTEXT_TOKENS: u32 = 2048;
+
+impl Account {
+    /// The context window an `ollama` call requests: the configured value or the default.
+    pub fn ollama_context_tokens(&self) -> u32 {
+        self.context_tokens.unwrap_or(DEFAULT_OLLAMA_CONTEXT_TOKENS)
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -729,6 +748,25 @@ pub(crate) fn check_account(name: &str, account: &Account) -> Result<(), (String
         return Err((
             format!("accounts.{name}.wires"),
             format!("not used by kind = \"{}\"", provider.name()),
+        ));
+    }
+    for (key, set) in [
+        ("context_tokens", account.context_tokens.is_some()),
+        ("think", account.think.is_some()),
+    ] {
+        if set && !provider.accepts_model_options() {
+            return Err((
+                format!("accounts.{name}.{key}"),
+                format!("not used by kind = \"{}\"", provider.name()),
+            ));
+        }
+    }
+    if let Some(tokens) = account.context_tokens
+        && tokens < MIN_OLLAMA_CONTEXT_TOKENS
+    {
+        return Err((
+            format!("accounts.{name}.context_tokens"),
+            format!("must be at least {MIN_OLLAMA_CONTEXT_TOKENS}"),
         ));
     }
     provider

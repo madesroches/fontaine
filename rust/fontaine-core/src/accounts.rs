@@ -220,6 +220,8 @@ pub fn build(new: &NewAccount, config: &Config) -> Result<Account, String> {
         base_url: base_url.map(str::to_string),
         models: None,
         wires: None,
+        context_tokens: None,
+        think: None,
     };
     check_account(&new.name, &account).map_err(|(key, message)| format!("{key}: {message}"))?;
     Ok(account)

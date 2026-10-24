@@ -317,6 +317,8 @@ mod tests {
             base_url: base_url.map(str::to_string),
             models: None,
             wires: None,
+            context_tokens: None,
+            think: None,
         }
     }
 

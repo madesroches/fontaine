@@ -50,6 +50,10 @@ The full-profile run updates `rust/fontaine-guardian/data/guardian_models.toml`;
 reports the `minimal` column and never touches it. See [the runner](../evals/README.md#live-mode)
 for the flags.
 
+A local model is scored on the window its Ollama account requests (`context_tokens`, 16384 by
+default; see [configuration](configuration.md#accountsname)). A prompt that does not fit is refused
+by the daemon and counts as a fail-closed infrastructure failure, not as a truncated read.
+
 ### Cascade scorecards
 
 With a screen stage beside the guardian, `--screen live:<account>/<model>` (an Ollama account)
@@ -127,9 +131,11 @@ enters the list only by clearing the bar on an unfiltered `--profile full` run t
 without infrastructure failures.
 
 - `kimi/kimi-for-coding`: a hosted model through an OpenAI-compatible endpoint.
-- `local/qwen3:4b`: an Ollama model on a GTX 1060 (6 GB). Ollama's default 4096-token context
-  truncates the guardian's prompt, which is longer than that, and thinking is on, so most calls run
-  past the timeout.
+- `local/qwen3:4b`: an Ollama model on a GTX 1060 (6 GB). This run predates the account's
+  `context_tokens` window: Ollama's default 4096-token context cut the guardian's prompt, which is
+  longer than that, and thinking was on, so most calls ran past the timeout. Fontaine now requests
+  a 16384-token window and has the daemon refuse a prompt that does not fit, so a local model is
+  scored on the window its account sets and this row is to be rerun.
 
 Rates are over the cases the model answered. A case that failed closed on infrastructure (a
 provider error, rate limit or timeout) is left out of every rate and the latency, and is listed

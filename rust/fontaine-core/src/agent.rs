@@ -35,8 +35,7 @@ use crate::adjudication::project_instructions;
 use crate::child_runner::{
     ChildContext, CoreChildRunner, LedgerWindow, MainModel, NotificationStage,
 };
-use crate::config::Account;
-use crate::config::{AgentMode, Config, McpServer, PermissionMode};
+use crate::config::{Account, AgentMode, Config, McpServer, PermissionMode};
 use crate::extensions::Extensions;
 use crate::gate::{AutoContext, ScreenStage, SessionState, StateParams, no_guardian};
 use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
@@ -166,9 +165,12 @@ pub fn build_screen(config: &Config, profile: Profile) -> Result<Option<ScreenSt
         .model
         .split_once('/')
         .ok_or_else(|| format!("`{}` is not `<account>/<model>`", screen.model))?;
-    let base = config
-        .accounts
-        .get(account)
+    let account_config = config.accounts.get(account);
+    let context_tokens = account_config.map_or(
+        crate::config::DEFAULT_OLLAMA_CONTEXT_TOKENS,
+        Account::ollama_context_tokens,
+    );
+    let base = account_config
         .and_then(|a| a.base_url.as_deref())
         .filter(|url| !url.is_empty())
         .unwrap_or(OLLAMA_URL);
@@ -178,6 +180,7 @@ pub fn build_screen(config: &Config, profile: Profile) -> Result<Option<ScreenSt
     let settings = ScreenSettings {
         endpoint,
         model: model.to_string(),
+        context_tokens,
         question: screen.question,
         t_stop: screen.stop_threshold,
         timeout: std::time::Duration::from_millis(screen.timeout_ms),

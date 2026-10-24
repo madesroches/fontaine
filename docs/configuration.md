@@ -130,6 +130,8 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 | `base_url` | Endpoint override. Required for `openai-compatible`. | the provider's public endpoint |
 | `models` | Explicit model list. Without it the provider is asked which models it offers. | unset |
 | `wires` | `opencode-go` only: a table from model id to the wire it is served on (`chat`, `responses`, `messages` or `gemini`), for a model the built-in routing gets wrong. | unset |
+| `context_tokens` | `ollama` only: the context window requested with every call (`options.num_ctx`), at least 2048. | `16384` |
+| `think` | `ollama` only: `false` asks a thinking model to answer without reasoning, which is much faster. `true` and unset leave the model's default. | unset |
 
 Account names are not empty and contain no `/`. Accounts can be set from the user file or from
 `--settings` only: a project file cannot choose an endpoint or a credential source.
@@ -246,10 +248,23 @@ A local Ollama daemon, which needs no key:
 [accounts.local]
 kind = "ollama"
 base_url = "http://localhost:11434"
+context_tokens = 16384
 
 [model]
 model = "local/qwen3:4b"
 ```
+
+Every request to an `ollama` account names its context window, because the daemon otherwise loads
+a model with its own default (4096 tokens unless the Modelfile or `OLLAMA_CONTEXT_LENGTH` says
+otherwise), which cannot hold the guardian's rules. `context_tokens` replaces that setting, so a
+user who raised it to 32768 in Ollama gets 16384 here until they set `context_tokens`. A larger
+window costs GPU memory, since the KV cache grows linearly with it, and can push a model onto the
+CPU on a small card. A prompt longer than the window is refused, not truncated: Fontaine asks the
+daemon not to cut it, so the guardian denies the call with the daemon's message ("exceeds the
+available context size ... try increasing it") and the main agent shows that error. Raise
+`context_tokens` to fit the prompt. For a model in rig's catalog, compaction uses this window; a
+model the catalog does not list never compacts by threshold, so a long session ends with that
+error at the window.
 
 OpenRouter, through its OpenAI-compatible endpoint:
 
@@ -365,7 +380,7 @@ file's `shadow = false`, and nothing else.
 
 | Key | Meaning | Default |
 |---|---|---|
-| `model` | `<account>/<model>` of an `[accounts.*]` entry of kind `ollama`; its `base_url` is the daemon that is asked, without credentials, so the endpoint must not require authentication. Required. | unset: no screen |
+| `model` | `<account>/<model>` of an `[accounts.*]` entry of kind `ollama`; its `base_url` is the daemon that is asked, without credentials, so the endpoint must not require authentication. The account's `context_tokens` is the window the screen requests; Ollama reloads a model whenever the requested window changes, so a screen and a guardian on the same model need the same value (the same account does). Required. | unset: no screen |
 | `question` | The question asked: `employee_allowed` ("If an employee were given the user's request, would they be allowed to take this action?") or `outside_request` ("Is this action outside what the user's request asked for?"). A threshold is calibrated for one question. | `employee_allowed` |
 | `stop_threshold` | The risk, greater than 0 and at most 1, at which a call is stopped. There is no default. | unset |
 | `allow_threshold` | Allow a call without the guardian when the hardened allow read's risk is below this and the steering score is below `steering_veto`. Greater than 0 and less than 1. With `shadow = false`, at least one of `stop_threshold` and `allow_threshold` is required. | unset: no allow path |
