@@ -993,3 +993,114 @@ mod scanner_selection {
         assert_eq!(config.guardian.scanner, Scanner::Pg2);
     }
 }
+
+// --- [guardian.screen] ---
+
+const SCREEN_ACCOUNT: &str = "[accounts.local]\nkind = \"ollama\"\n";
+
+fn screen_world(screen: &str) -> World {
+    let w = World::new();
+    w.user_file(&format!("{SCREEN_ACCOUNT}\n[guardian.screen]\n{screen}"));
+    w
+}
+
+#[test]
+fn the_screen_is_off_unless_configured() {
+    let w = World::new();
+    assert!(w.load().unwrap().guardian.screen.is_none());
+}
+
+#[test]
+fn a_screen_defaults_to_shadow_with_no_threshold() {
+    let w = screen_world("model = \"local/qwen3:4b\"\n");
+    let screen = w.load().unwrap().guardian.screen.unwrap();
+    assert!(screen.shadow);
+    assert_eq!(screen.stop_threshold, None);
+    assert_eq!(screen.timeout_ms, 2_000);
+    assert_eq!(
+        screen.question,
+        fontaine_guardian::Question::EmployeeAllowed
+    );
+}
+
+#[test]
+fn stopping_calls_requires_a_threshold() {
+    let w = screen_world("model = \"local/qwen3:4b\"\nshadow = false\n");
+    let err = w.load().unwrap_err();
+    assert!(err.to_string().contains("stop_threshold"), "{err}");
+    assert_eq!(err.exit_code(), 2);
+
+    let w = screen_world("model = \"local/qwen3:4b\"\nshadow = false\nstop_threshold = 0.95\n");
+    let screen = w.load().unwrap().guardian.screen.unwrap();
+    assert_eq!((screen.shadow, screen.stop_threshold), (false, Some(0.95)));
+}
+
+#[test]
+fn a_screen_needs_a_model_on_an_ollama_account() {
+    for text in [
+        "[guardian.screen]\nstop_threshold = 0.9\n".to_string(),
+        format!("{SCREEN_ACCOUNT}\n[guardian.screen]\nmodel = \"other/m\"\n"),
+        "[accounts.o]\nkind = \"openai\"\n\n[guardian.screen]\nmodel = \"o/m\"\n".to_string(),
+    ] {
+        let w = World::new();
+        w.user_file(&text);
+        let err = w.load().unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{text}");
+        assert!(err.to_string().contains("guardian.screen.model"), "{err}");
+    }
+}
+
+#[test]
+fn screen_values_are_validated() {
+    for bad in [
+        "stop_threshold = 0.0",
+        "stop_threshold = 1.5",
+        "timeout_ms = 0",
+        "question = \"anything_goes\"",
+        "model = \"no-slash\"",
+    ] {
+        let text = format!("[guardian.screen]\nmodel = \"local/m\"\n{bad}\n");
+        assert!(
+            parse_settings(&text, Path::new("u.toml"), Column::User).is_err(),
+            "{bad}"
+        );
+    }
+    user_ok("[guardian.screen]\nmodel = \"local/m\"\nstop_threshold = 1.0\n");
+}
+
+#[test]
+fn project_scope_cannot_enable_the_screen_but_may_ask_for_shadow() {
+    let w = World::new();
+    w.user_file(&format!(
+        "{SCREEN_ACCOUNT}\n[guardian.screen]\nmodel = \"local/m\"\nshadow = false\nstop_threshold = 0.9\n"
+    ));
+    for text in [
+        "[guardian.screen]\nmodel = \"local/m\"\n",
+        "[guardian.screen]\nstop_threshold = 0.5\n",
+        "[guardian.screen]\nshadow = false\n",
+    ] {
+        for column in [Column::Project, Column::ProjectLocal, Column::Cli] {
+            let err = parse_settings(text, Path::new("p.toml"), column).unwrap_err();
+            assert!(matches!(err, ConfigError::Scope { .. }), "{text}: {err:?}");
+        }
+    }
+    parse_settings(
+        "[guardian.screen]\nshadow = true\n",
+        Path::new("p.toml"),
+        Column::Project,
+    )
+    .unwrap();
+
+    // Shadow asked for by the repository holds over the user's `shadow = false`.
+    w.project_file("[guardian.screen]\nshadow = true\n");
+    let screen = w.load().unwrap().guardian.screen.unwrap();
+    assert!(screen.shadow);
+    assert_eq!(screen.stop_threshold, Some(0.9));
+}
+
+#[test]
+fn a_project_file_alone_cannot_create_a_screen() {
+    let w = World::new();
+    w.project_file("[guardian.screen]\nshadow = true\n");
+    assert!(w.load().unwrap().guardian.screen.is_none());
+}

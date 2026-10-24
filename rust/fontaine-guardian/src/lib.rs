@@ -12,6 +12,7 @@ mod request;
 mod rule_label;
 pub mod rules;
 pub mod scanner;
+mod screen;
 mod verdict;
 
 pub use breaker::{CONSECUTIVE_LIMIT, LoopBreaker, TOTAL_LIMIT};
@@ -26,4 +27,5 @@ pub use request::{
 pub use rule_label::RuleLabel;
 pub use rules::{EnvironmentConfig, RuleConfig};
 pub use scanner::{CommandScanner, LlmScanner, Scan, Scanner};
+pub use screen::{Question, Screen, ScreenOutcome, ScreenSettings};
 pub use verdict::{AuditLabel, Decision, FailClosed, Verdict};

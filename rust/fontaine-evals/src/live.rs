@@ -16,8 +16,8 @@ use fontaine_core::ledger::LedgerView;
 use fontaine_core::models::{GuardianModel, Switcher};
 use fontaine_core::scanner_stage::{self, Backend};
 use fontaine_guardian::{
-    ActionTaken, AdjudicationRequest, Guardian, PreExistence, Profile, SessionFacts, Settings,
-    ToolCallSummary, TouchedPath, task_intent,
+    ActionTaken, AdjudicationRequest, Guardian, PreExistence, Profile, Screen, ScreenOutcome,
+    SessionFacts, Settings, ToolCallSummary, TouchedPath, task_intent,
 };
 use fontaine_tools::scope::Scope;
 use serde_json::Value;
@@ -25,11 +25,13 @@ use serde_json::Value;
 use crate::case::{Case, Category, MaterializeError, materialize};
 use crate::none::auto_context;
 use crate::report::{escape_class, is_catch};
-use crate::runner::CaseResult;
+use crate::runner::{CascadeStep, CaseResult};
 
 /// A guardian ready to score cases, and what the model list needs to know about it.
 pub struct Live {
     pub guardian: Arc<Guardian>,
+    /// The screen stage in front of the guardian, in a cascade run.
+    pub screen: Option<Arc<Screen>>,
     /// The user's configuration, for the scanner it selects.
     config: config::Config,
     data_dir: std::path::PathBuf,
@@ -112,6 +114,7 @@ pub fn connect(
     }
     Ok(Live {
         guardian: Arc::new(Guardian::new(handle.completion, spec, settings)),
+        screen: None,
         data_dir: dirs.data.clone(),
         scanner_model: guardian_model,
         scrub_env,
@@ -121,6 +124,43 @@ pub fn connect(
         kind,
         model: model.to_string(),
     })
+}
+
+/// Puts the screen stage `<account>/<model>` in front of the guardian, the way a session builds
+/// it from `[guardian.screen]`.
+pub fn add_screen(
+    live: &mut Live,
+    spec: &str,
+    stop_threshold: f64,
+    profile: Profile,
+) -> Result<(), String> {
+    let (account, _) = spec
+        .split_once('/')
+        .filter(|(a, m)| !a.is_empty() && !m.is_empty())
+        .ok_or_else(|| format!("`--screen live:{spec}` must be `live:<account>/<model>`"))?;
+    let kind = live
+        .config
+        .accounts
+        .get(account)
+        .map(|a| a.kind.as_str())
+        .ok_or_else(|| format!("account `{account}` is not configured"))?;
+    if kind != "ollama" {
+        return Err(format!(
+            "the screen account `{account}` is of kind `{kind}`; the screen needs an `ollama` account"
+        ));
+    }
+    let mut config = live.config.clone();
+    config.guardian.screen = Some(config::GuardianScreen {
+        model: spec.to_string(),
+        question: fontaine_guardian::Question::default(),
+        stop_threshold: Some(stop_threshold),
+        timeout_ms: config::DEFAULT_SCREEN_TIMEOUT_MS,
+        shadow: false,
+    });
+    let stage = fontaine_core::agent::build_screen(&config, profile)?
+        .expect("a screen was just configured");
+    live.screen = Some(stage.screen);
+    Ok(())
 }
 
 fn string_list(value: &Value, key: &str) -> Vec<String> {
@@ -257,6 +297,34 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
     };
     let cwd = cwd.canonicalize().map_err(|e| e.to_string())?;
     let request = request_for(case, &cwd);
+    let mut screened = None;
+    if let Some(screen) = &live.screen {
+        let outcome = screen.screen(&request).await;
+        if let ScreenOutcome::Stop { risk, latency_ms } = outcome {
+            let actual = "escalate".to_string();
+            return Ok(Scored::Result(Box::new(CaseResult {
+                id: case.id.clone(),
+                kind: case.kind.as_str().to_string(),
+                category: case.category.to_string(),
+                expected: case.expected.clone(),
+                pass: passes(case, &actual),
+                actual,
+                expected_tier: None,
+                actual_tier: None,
+                mode: None,
+                latency_ms,
+                explanation: Some(format!("stopped by the screen (risk {risk:.2})")),
+                escape_class: None,
+                fail_closed: None,
+                cascade: Some(CascadeStep {
+                    screen_risk: Some(risk),
+                    screen_outcome: "stop".to_string(),
+                    llm_called: false,
+                }),
+            })));
+        }
+        screened = Some(outcome);
+    }
     let adjudication = live.guardian.adjudicate(&request).await;
     let actual = adjudication.decision.as_str().to_string();
     let fail_closed = adjudication
@@ -276,12 +344,18 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
         expected_tier: None,
         actual_tier: None,
         mode: None,
-        latency_ms: adjudication.latency_ms,
+        latency_ms: adjudication.latency_ms
+            + screened.as_ref().map_or(0, ScreenOutcome::latency_ms),
         explanation: Some(adjudication.explanation.clone()),
         escape_class: (case.category == Category::MinimalEscape)
             .then(|| escape_class(&adjudication.explanation))
             .flatten(),
         fail_closed,
+        cascade: screened.map(|outcome| CascadeStep {
+            screen_risk: outcome.risk(),
+            screen_outcome: outcome.as_str().to_string(),
+            llm_called: true,
+        }),
     })))
 }
 
@@ -333,5 +407,6 @@ pub async fn scan(case: &Case, backend: &Backend) -> CaseResult {
         explanation,
         escape_class: None,
         fail_closed,
+        cascade: None,
     }
 }

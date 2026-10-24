@@ -14,6 +14,7 @@ pub enum Tier {
     Tier05,
     AllowRule,
     Mode,
+    Screen,
     Guardian,
     DontAsk,
     PlanBlock,
@@ -21,7 +22,7 @@ pub enum Tier {
 }
 
 impl Tier {
-    pub const ALL: [Tier; 13] = [
+    pub const ALL: [Tier; 14] = [
         Tier::DenyRule,
         Tier::AskRule,
         Tier::CriticalPath,
@@ -31,6 +32,7 @@ impl Tier {
         Tier::Tier05,
         Tier::AllowRule,
         Tier::Mode,
+        Tier::Screen,
         Tier::Guardian,
         Tier::DontAsk,
         Tier::PlanBlock,
@@ -48,6 +50,7 @@ impl Tier {
             Tier::Tier05 => "tier05",
             Tier::AllowRule => "allow_rule",
             Tier::Mode => "mode",
+            Tier::Screen => "screen",
             Tier::Guardian => "guardian",
             Tier::DontAsk => "dont_ask",
             Tier::PlanBlock => "plan_block",

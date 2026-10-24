@@ -50,6 +50,21 @@ The full-profile run updates `rust/fontaine-guardian/data/guardian_models.toml`;
 reports the `minimal` column and never touches it. See [the runner](../evals/README.md#live-mode)
 for the flags.
 
+### Cascade scorecards
+
+With a screen stage in front of the guardian, `--screen live:<account>/<model>` (an Ollama account)
+and `--stop-threshold <risk>` score the cascade from one run: each guardian case meets the screen
+first, and reaches the guardian model only if the screen does not stop it. A stopped case counts as
+an `escalate`. The summary adds a `cascade` object with the share of cases that reached the
+guardian model (`llm_call_rate`), the mean latency of the two stages together, and the share of
+benign cases that were escalated (`allowed_escalated_rate`); `catch_rate` and `false_deny_rate`
+are the cascade's. A cascade run is its own measurement and never updates the guardian models
+file.
+
+```
+cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:work/claude-haiku-5-5 --screen live:local/qwen3:4b-instruct-2507-q4_K_M --stop-threshold 0.95 --out ../evals/scorecards/cascade.json
+```
+
 ## Results
 
 Two models were scored on 2026-10-23 against dataset `5a79aa741c27`, with the default `[guardian]`

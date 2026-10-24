@@ -42,6 +42,7 @@ fn result(id: &str, actual: &str) -> CaseResult {
         explanation: None,
         escape_class: None,
         fail_closed: None,
+        cascade: None,
     }
 }
 

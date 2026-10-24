@@ -10,7 +10,7 @@ use fontaine_agents::mode::ModeSetting;
 use fontaine_agents::registry::{AgentType, AgentTypes, ModelSpec, TypeOrigin};
 use fontaine_agents::spawn::{AgentTool, SendMessageTool};
 use fontaine_agents::tree::{AgentTree, Limits};
-use fontaine_guardian::{Guardian, Profile, Settings as GuardianSettings};
+use fontaine_guardian::{Guardian, Profile, Screen, ScreenSettings, Settings as GuardianSettings};
 use fontaine_mcp::{Connected, ServerSpec, Transport, connect as connect_server};
 use fontaine_tools::builtins::Seen;
 use fontaine_tools::gate::{AgentId, CallView, ROOT_AGENT};
@@ -34,7 +34,7 @@ use crate::child_runner::{
 };
 use crate::config::{AgentMode, Config, McpServer, PermissionMode};
 use crate::extensions::Extensions;
-use crate::gate::{AutoContext, SessionState, StateParams, no_guardian};
+use crate::gate::{AutoContext, ScreenStage, SessionState, StateParams, no_guardian};
 use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
 use crate::models::{AccountListing, GuardianChoice, GuardianModel, ModelRef, Models, Switcher};
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
@@ -144,6 +144,43 @@ pub fn build_guardian(
             )
         }
     }
+}
+
+/// The default address of a local Ollama daemon.
+const OLLAMA_URL: &str = "http://localhost:11434";
+
+/// The screen stage `[guardian.screen]` configures, or `None` when it is not configured. The
+/// model names an account of kind `ollama`, whose `base_url` is the daemon to ask.
+pub fn build_screen(config: &Config, profile: Profile) -> Result<Option<ScreenStage>, String> {
+    let Some(screen) = &config.guardian.screen else {
+        return Ok(None);
+    };
+    let (account, model) = screen
+        .model
+        .split_once('/')
+        .ok_or_else(|| format!("`{}` is not `<account>/<model>`", screen.model))?;
+    let base = config
+        .accounts
+        .get(account)
+        .and_then(|a| a.base_url.as_deref())
+        .filter(|url| !url.is_empty())
+        .unwrap_or(OLLAMA_URL);
+    // `join` replaces the last path segment unless the base ends in a slash.
+    let endpoint = url::Url::parse(&format!("{}/", base.trim_end_matches('/')))
+        .map_err(|e| format!("the base_url of account `{account}` is not a URL: {e}"))?;
+    let settings = ScreenSettings {
+        endpoint,
+        model: model.to_string(),
+        question: screen.question,
+        t_stop: screen.stop_threshold,
+        timeout: std::time::Duration::from_millis(screen.timeout_ms),
+        profile,
+    };
+    Ok(Some(ScreenStage {
+        screen: Arc::new(Screen::new(crate::transport::reqwest_client()?, settings)),
+        label: screen.model.clone(),
+        shadow: screen.shadow,
+    }))
 }
 
 /// Tells the permission state which model tool call a tool is serving.
@@ -384,6 +421,13 @@ impl AgentRuntime {
             agents: tree.clone(),
             reveal_mcp_names,
         }));
+
+        match build_screen(&setup.config, setup.guardian_profile) {
+            Ok(stage) => state.set_screen(stage),
+            Err(e) => setup
+                .approver
+                .warn(&format!("the guardian screen stage is off: {e}")),
+        }
 
         let hook_process = Arc::new(HookProcess {
             scrub_env: setup.scrub_env.clone(),

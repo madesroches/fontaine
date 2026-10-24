@@ -168,3 +168,4 @@ shadow = true          # default: score and log, never stop
   as today.
 - AFK: no starter threshold ships. Shadow mode logs raw risk scores, and the user sets
   `stop_threshold` after calibrating.
+- 2026-10-24: The stage is option 1 only (stop-only, never allow); it is recorded in the master plan's Decisions. A screen failure routes to the guardian. `stop_threshold` is required unless `shadow = true`, so a shadow-only configuration records raw risk with no threshold. A second question, `outside_request`, ships beside `employee_allowed` to cover the negative polarity; only `employee_allowed` was calibrated in the spike.

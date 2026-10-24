@@ -32,6 +32,7 @@
         "tier05",
         "allow_rule",
         "mode",
+        "screen",
         "guardian",
         "dont_ask",
         "plan_block",
@@ -158,6 +159,8 @@
             "explanation": { "type": ["string", "null"] },
             "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
             "guardian_model": { "type": ["string", "null"] },
+            "screen_risk": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+            "screen_outcome": { "enum": ["stop", "pass", "unavailable", null] },
             "fail_closed_reason": {
               "enum": ["error", "timeout", "unparseable", "low_confidence", "unavailable", null]
             }

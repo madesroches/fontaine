@@ -292,6 +292,14 @@ where
                 attrs,
             });
         }
+        if let Some(outcome) = lookup(&fields, "screen.outcome") {
+            self.export.metric(Metric {
+                name: "fontaine.screen.count",
+                unit: "{call}",
+                value: MetricValue::Int(1),
+                attrs: vec![("outcome", outcome.to_string())],
+            });
+        }
         if let Some(reason) = lookup(&fields, "fail_closed_reason") {
             self.export.metric(Metric {
                 name: "fontaine.guardian.fail_closed.count",
@@ -672,6 +680,33 @@ mod tests {
             .map(|e| e.fields["query_source"].clone())
             .collect();
         assert_eq!(sources, ["scanner"]);
+    }
+
+    #[test]
+    fn screen_outcomes_are_counted_from_the_decision_event() {
+        let (recorder, _capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                target: TARGET,
+                tier = "screen",
+                decision = "prompt",
+                screen.outcome = "stop",
+                screen.risk = 0.97,
+                "tool_decision"
+            );
+            tracing::info!(target: TARGET, tier = "tier05", decision = "allow", "tool_decision");
+        });
+        let metrics = recorder.0.lock().unwrap();
+        let counted: Vec<_> = metrics
+            .iter()
+            .filter(|(n, _, _)| n == "fontaine.screen.count")
+            .collect();
+        assert_eq!(counted.len(), 1);
+        assert!(
+            counted[0]
+                .2
+                .contains(&("outcome".to_string(), "stop".to_string()))
+        );
     }
 
     #[test]

@@ -39,6 +39,16 @@ All notable changes are recorded here. The format follows
   - `[permissions] default_mode` is optional: the terminal UI starts in `auto` and a headless run
     in `manual`. `auto` is accepted from the user file, `--settings` and `--permission-mode`;
     both project scopes (shared and project-local) accept only `manual` and `dontAsk`.
+- Cascade screen stage (#130)
+  - An optional `[guardian.screen]` stage (user file only) asks a small local Ollama model one
+    yes/no question per call in `auto` and `plan` mode and reads `p(yes)` from its first-token
+    logprobs. A call it confidently judges outside the user's request is escalated with
+    `tier = screen`; every other call, including one the screen could not judge, goes to the
+    guardian as before. The screen never allows. `stop_threshold` has no default, and `shadow = true`
+    (the default) scores and records every call without changing a decision. The audit record,
+    the `fontaine.guardian.screen` span and the `fontaine.screen.count` metric carry the result.
+  - `fontaine-evals --screen live:<account>/<model> --stop-threshold <risk>` scores the cascade
+    (catch, guardian calls, latency, benign cases escalated) from one run.
 - Tools
   - The built-in tools `read`, `ls`, `glob`, `grep`, `write`, `edit`, `shell` and `webfetch`. Every
     tool has a risk class and sits behind one gate, and each call emits a `fontaine.tool` span and

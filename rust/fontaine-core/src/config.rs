@@ -336,6 +336,30 @@ pub struct GuardianSection {
     pub scanner_command: Option<String>,
     pub scanner_model_path: Option<String>,
     pub scanner_hf_token_env: Option<String>,
+    pub screen: Option<GuardianScreenSection>,
+}
+
+/// `[guardian.screen]`: the fast typed-decision stage in front of the guardian.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuardianScreenSection {
+    /// `<account>/<model>`, an account of kind `ollama`.
+    pub model: Option<String>,
+    pub question: Option<fontaine_guardian::Question>,
+    pub stop_threshold: Option<f64>,
+    pub timeout_ms: Option<u64>,
+    pub shadow: Option<bool>,
+}
+
+impl GuardianScreenSection {
+    /// Whether the section does anything beyond asking for shadow mode, which can only tighten.
+    fn loosens(&self) -> bool {
+        self.model.is_some()
+            || self.question.is_some()
+            || self.stop_threshold.is_some()
+            || self.timeout_ms.is_some()
+            || self.shadow == Some(false)
+    }
 }
 
 impl GuardianSection {
@@ -602,6 +626,14 @@ fn check_scope(s: &Settings, column: Column) -> Result<(), ScopeFailure> {
             "scanner settings come only from the user file",
         );
     }
+    if let Some(screen) = s.guardian.as_ref().and_then(|g| g.screen.as_ref())
+        && screen.loosens()
+    {
+        return fail(
+            "guardian.screen",
+            "the screen stage is configured only in the user file; other scopes may only set `shadow = true`",
+        );
+    }
     if column == Column::Cli {
         return Ok(());
     }
@@ -718,6 +750,24 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
             && !(0.0..=1.0).contains(&t)
         {
             return bad("guardian.confidence_threshold", "must be between 0 and 1");
+        }
+        if let Some(screen) = &g.screen {
+            if let Some(model) = screen.model.as_deref()
+                && !model_ref_ok(model)
+            {
+                return bad("guardian.screen.model", "expected `<account>/<model>`");
+            }
+            if let Some(t) = screen.stop_threshold
+                && !(t > 0.0 && t <= 1.0)
+            {
+                return bad(
+                    "guardian.screen.stop_threshold",
+                    "must be greater than 0 and at most 1",
+                );
+            }
+            if screen.timeout_ms == Some(0) {
+                return bad("guardian.screen.timeout_ms", "must be greater than zero");
+            }
         }
     }
     if let Some(p) = &s.permissions {
@@ -867,7 +917,26 @@ pub struct Guardian {
     /// The variable holding the Hugging Face token. Always set, so the shell and hook
     /// environments are scrubbed of it whatever `scanner` is.
     pub scanner_hf_token_env: String,
+    /// Set only by the user file; see [`GuardianScreen`].
+    pub screen: Option<GuardianScreen>,
+    /// A shared project file asked for shadow mode, which no other scope can undo.
+    pub screen_shadow_forced: bool,
 }
+
+/// The merged `[guardian.screen]` stage.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GuardianScreen {
+    /// `<account>/<model>`.
+    pub model: String,
+    pub question: fontaine_guardian::Question,
+    /// Absent only in shadow mode, where the raw score is all that is recorded.
+    pub stop_threshold: Option<f64>,
+    pub timeout_ms: u64,
+    pub shadow: bool,
+}
+
+/// The screen's default time limit.
+pub const DEFAULT_SCREEN_TIMEOUT_MS: u64 = 2_000;
 
 /// The variable `scanner_hf_token_env` names when the user sets none.
 pub const DEFAULT_HF_TOKEN_ENV: &str = "HF_TOKEN";
@@ -1006,6 +1075,8 @@ impl Config {
                 scanner_command: None,
                 scanner_model_path: None,
                 scanner_hf_token_env: DEFAULT_HF_TOKEN_ENV.to_string(),
+                screen: None,
+                screen_shadow_forced: false,
             },
             permissions: Permissions {
                 default_mode: None,
@@ -1084,6 +1155,35 @@ impl Config {
             }
             if let Some(v) = &g.scanner_hf_token_env {
                 t.scanner_hf_token_env = v.clone();
+            }
+            if let Some(screen) = &g.screen {
+                if column != Column::User && screen.shadow == Some(true) {
+                    t.screen_shadow_forced = true;
+                }
+                if screen.loosens() {
+                    let merged = t.screen.get_or_insert_with(|| GuardianScreen {
+                        model: String::new(),
+                        question: fontaine_guardian::Question::default(),
+                        stop_threshold: None,
+                        timeout_ms: DEFAULT_SCREEN_TIMEOUT_MS,
+                        shadow: true,
+                    });
+                    if let Some(v) = &screen.model {
+                        merged.model = v.clone();
+                    }
+                    if let Some(v) = screen.question {
+                        merged.question = v;
+                    }
+                    if let Some(v) = screen.stop_threshold {
+                        merged.stop_threshold = Some(v);
+                    }
+                    if let Some(v) = screen.timeout_ms {
+                        merged.timeout_ms = v;
+                    }
+                    if let Some(v) = screen.shadow {
+                        merged.shadow = v;
+                    }
+                }
             }
         }
         if let Some(p) = &s.permissions {
@@ -1399,6 +1499,7 @@ pub fn load_unresolved(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
     }
 
     check_scanner(&config.guardian, &user_path)?;
+    check_screen(&mut config, &user_path)?;
     Ok(config)
 }
 
@@ -1425,6 +1526,46 @@ fn check_scanner(guardian: &Guardian, user_path: &Path) -> Result<(), ConfigErro
         ),
         _ => Ok(()),
     }
+}
+
+/// The screen settings come only from the user file, so that is where an incomplete stage is
+/// reported. It must name a model on an Ollama account, and it stops calls only with a threshold
+/// the user chose.
+fn check_screen(config: &mut Config, user_path: &Path) -> Result<(), ConfigError> {
+    let forced = config.guardian.screen_shadow_forced;
+    let Some(screen) = &mut config.guardian.screen else {
+        return Ok(());
+    };
+    let bad = |key: &str, message: &str| Err(ConfigError::invalid(user_path, key, message));
+    if screen.model.is_empty() {
+        return bad("guardian.screen.model", "the screen stage requires `model`");
+    }
+    let account = screen.model.split_once('/').map_or("", |(a, _)| a);
+    match config.accounts.get(account) {
+        Some(a) if a.kind.as_str() == "ollama" => {}
+        Some(_) => {
+            return bad(
+                "guardian.screen.model",
+                &format!("account `{account}` is not of kind = \"ollama\""),
+            );
+        }
+        None => {
+            return bad(
+                "guardian.screen.model",
+                &format!("account `{account}` is not configured"),
+            );
+        }
+    }
+    if forced {
+        screen.shadow = true;
+    }
+    if !screen.shadow && screen.stop_threshold.is_none() {
+        return bad(
+            "guardian.screen.stop_threshold",
+            "there is no default; set it to stop calls, or keep `shadow = true` to log scores first",
+        );
+    }
+    Ok(())
 }
 
 fn resolve_telemetry(t: &Telemetry, params: &LoadParams<'_>) -> Result<(), ConfigError> {

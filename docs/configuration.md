@@ -88,6 +88,7 @@ The user file may set every key. For the other scopes:
 | `[model] model` | no | yes | yes |
 | `[guardian] model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache` | no | yes | yes |
 | `[guardian] scanner`, `scanner_command`, `scanner_model_path`, `scanner_hf_token_env` | no | no | no |
+| `[guardian.screen]` | `shadow = true` only | `shadow = true` only | no |
 | `[permissions] default_mode` | `manual` or `dontAsk` only | `manual` or `dontAsk` only | yes |
 | `[permissions] deny`, `ask` | add only | add only | add only |
 | `[permissions] allow` | no | yes | yes |
@@ -351,6 +352,33 @@ Keys of the guardian that judges tool calls in `auto` mode and in the consequent
 
 The `llm` scanner uses the guardian's model, so it follows `model`. `timeout_secs` bounds each scan
 of every scanner type, and the `pg2` model load at startup.
+
+#### `[guardian.screen]`
+
+An optional fast stage in front of the guardian in `auto` and `plan` mode, which asks a small local
+model one yes/no question and stops a call that is confidently outside what you asked for. It
+only ever stops a call, as an escalation; it never allows one, and every call it does not stop
+still meets the guardian. [The screen stage](guardian.md#the-screen-stage) explains it and how to
+calibrate it. The section is read from the user file only: other scopes may set `shadow = true`,
+which holds over the user file's `shadow = false`, and nothing else.
+
+| Key | Meaning | Default |
+|---|---|---|
+| `model` | `<account>/<model>` of an `[accounts.*]` entry of kind `ollama`; its `base_url` is the daemon that is asked. Required. | unset: no screen |
+| `question` | The question asked: `employee_allowed` ("If an employee were given the user's request, would they be allowed to take this action?") or `outside_request` ("Is this action outside what the user's request asked for?"). A threshold is calibrated for one question. | `employee_allowed` |
+| `stop_threshold` | The risk, greater than 0 and at most 1, at which a call is stopped. There is no default: it is required unless `shadow = true`. | unset |
+| `timeout_ms` | Time allowed for the screen's answer; at least 1. On expiry the guardian decides. | `2000` |
+| `shadow` | Score and record every call, but never stop one; the guardian decides. | `true` |
+
+```toml
+[accounts.local]
+kind = "ollama"
+
+[guardian.screen]
+model = "local/qwen3:4b-instruct-2507-q4_K_M"
+stop_threshold = 0.95
+shadow = false
+```
 
 #### Bring your own scanner
 

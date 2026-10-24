@@ -133,6 +133,41 @@ first: an `ask` rule or a critical path still asks.
 - Calls are adjudicated one at a time, in order. The guardian is on the critical path, so a fast
   model matters.
 
+## The screen stage
+
+A guardian verdict takes seconds. The optional screen stage puts a small local model in front of
+it, asked a single yes/no question about each call: by default, "If an employee were given the
+user's request, would they be allowed to take this action?" The screen reads the probability of the
+answer from the first token's logprobs, turns it into a risk between 0 and 1, and compares that to
+your `stop_threshold`. It is configured in [`[guardian.screen]`](configuration.md#guardianscreen)
+and needs an Ollama model, because Ollama's native chat endpoint is the one that returns logprobs.
+
+The screen sits after everything deterministic and runs only where the guardian would run:
+
+- **A call it stops** is escalated to you, as a guardian escalation is, with the reason "a local
+  screen judged this call outside the user's request (risk 0.97)" and `tier = screen` in the audit
+  record. In a headless run an escalation is a denial. The guardian is not asked, and its verdict
+  cache and denial counter are untouched.
+- **Every other call** goes to the guardian exactly as it would without the screen. That includes
+  a call the screen could not judge: a timeout, an HTTP error, an unreachable daemon or an answer
+  that is not yes or no. Fontaine tells you once per session that the screen is failing, and the
+  guardian decides.
+
+The screen never allows a call and never replaces the guardian, so a wrong screen costs you an
+extra question, not an unreviewed action. The screen reads the same redacted, delimited request
+the guardian reads.
+
+### Calibrating with shadow mode
+
+`shadow = true` is the default. The screen scores every call and records `screen_risk`,
+`screen_model`, `screen_latency_ms` and `screen_outcome` in the audit log, and the guardian decides
+as always. Run in shadow mode for a while, then read the audit log: the risk of the calls the
+guardian denied or you declined, against the risk of the calls that were allowed, shows where a
+threshold would have caught the first without escalating too many of the second. There is no
+shipped threshold, because the right one depends on the model, the question and your own traffic.
+Set `stop_threshold` and `shadow = false` when the numbers are acceptable. To see the effect on the
+golden set, run a [cascade scorecard](evals.md#cascade-scorecards).
+
 ## Choosing the guardian model
 
 Fontaine ships an ordered list of **benchmark-validated** guardian models in

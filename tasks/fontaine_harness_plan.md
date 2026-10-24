@@ -318,6 +318,7 @@ scorecard run (see `## Remaining work`).
 
 ## Decisions
 
+- 2026-10-24: The cascade screen stage (`[guardian.screen]`, #130) only ever stops a call as an `escalate` (`tier = screen`); it never allows, so a screen error, timeout or unparseable answer goes to the guardian, never to allow. Reason: option 1 keeps the guardian's fail-closed floor intact, while a screen that allows would be a second, unreviewed allow path (option 2, #133, stays out of scope).
 - 2026-10-22: `webfetch` sends `User-Agent: fontaine/<version> (+https://github.com/madesroches/fontaine)`, not Claude Code's `Claude-User (claude-code/<version>; ...)`. Reason: sites such as Wikimedia 403 a missing User-Agent, and a harness must not present itself as Claude Code's agent.
 - 2026-10-21: Headless `stream-json` event names (`init`, `assistant`, `assistant_delta`, `tool_call`, `gate_decision`, `tool_result`, `result`) are Fontaine's own versioned schema — flat typed events — not Claude Code's SDK message shape; flags and `result` subtypes match Claude Code. Reason: one flat, JSON-Schema-validated contract consumed by the eval runner.
 - 2026-10-21: No external approval delegate (`--permission-prompt-tool`) in v1; every headless would-prompt outcome is Deny (Claude Code supports the delegate). Reason: an external delegate would be a second, ungated approval path around the deterministic floor and guardian.
