@@ -10,7 +10,7 @@
 loaders do the opposite: they flatten the cause into a `String` (or print `{e}`), so TLS, proxy and
 DNS reasons vanish from user-visible failures and no caller can inspect what failed. This plan
 gives the runtime one error type that keeps its cause, renders chains at the human edges, and
-makes `HookError` and the scanner loaders keep their sources. No permission decision changes.
+makes `HookError` and `FetchError` keep their sources. No permission decision changes.
 
 ## Current State
 
@@ -70,9 +70,10 @@ that does not repeat the cause (`chain` also de-duplicates a source already cont
 ### Signature changes
 
 - All `Result<_, String>` in `agent.rs` (list above) → `Result<_, RuntimeError>`; `persist`
-  returns `Option<RuntimeError>`, and `Switched::persist_error` becomes `Option<RuntimeError>` and is
-  rendered by the TUI with `chain`. If other public structs carry the same strings
-  (`rg 'persist_error'`), convert them the same way.
+  returns `Option<RuntimeError>`, and the three `Switched` constructors (`:1020`, `:1207`, `:1237`)
+  render it once with `chain` into `Switched::persist_error: Option<String>`, so `Switched` keeps its
+  `Clone`/`Debug`/`PartialEq`/`Eq` derives and its field type (`RuntimeError` is neither `Clone` nor
+  `PartialEq`).
 - `accounts::{check_name, check_name_in, check_base_url, build}` → `Result<_, RuntimeError>`.
   `check_name_in` feeds `provider_dialog.rs:370`, which only displays text → `.err().map(|e| chain(&e))`
   (no source there, so identical text).
@@ -85,7 +86,7 @@ that does not repeat the cause (`chain` also de-duplicates a source already cont
   `agent.rs:208` propagates `RuntimeError`. `fontaine-evals/src/live.rs:168` and
   `fontaine-tui/src/lib.rs:183` render with `chain` at their own edge.
 - `fontaine-tui/src/ui/commands/model.rs:144` `finish_switch(message, persist_error: Option<String>)`
-  (callers `:21`, `:76`, `:197`) takes `Option<RuntimeError>` and renders with `chain`;
+  (callers `:21`, `:76`, `:197`) keeps `Option<String>` (already rendered by `chain` in `agent.rs`);
   `appearance.rs:43-53` already uses `chain`.
 
 ### Rendering at the human edges
@@ -119,13 +120,8 @@ their Debug output. The hook outcome stays "no decision": no permission behaviou
 
 ### Scanner loaders (`fontaine-guardian`)
 
-Scanner errors stay `String` (`Scan::Failed { reason }`, `Pg2Scanner::load -> Result<_, String>`,
-public API). At each point of failure in `scanner.rs` and `scanner/pg2.rs`, render the `io`/
-`serde_json`/tokenizer/candle cause into the string, as `transport::reqwest_client` does, reusing the
-crate's existing chain helper. It is private at `screen.rs:392` and `mod screen` is private (scanner and
-`pg2` are sibling modules, `pg2` feature-gated), so it moves to a small ungated `pub(crate)` module
-(e.g. `error_text`) used by all three; the guardian crate cannot depend on `fontaine-tools`. No new type, no signature change. Fail-closed behaviour and every
-Deny stay exactly as they are; error text only explains.
+Unchanged. Their errors stay `String` (`Scan::Failed { reason }`, `Pg2Scanner::load -> Result<_, String>`,
+public API); see Decisions.
 
 ### PromptGuard download notice
 
@@ -140,7 +136,7 @@ and `FetchError::Failed` keeps a source: change it to
 1. Add `runtime_error.rs` with unit tests (Display, `source()`, `chain` output); export it.
 2. `transport.rs` and `accounts.rs`: new signatures; fix providers, `device_flow`, `opencode_go`,
    `fontaine-evals` and tests that call them.
-3. `agent.rs`: convert every listed signature, `persist`/`Switched::persist_error`, `guardian_for`;
+3. `agent.rs`: convert every listed signature, `persist` (rendering into `Switched::persist_error` with `chain`), `guardian_for`;
    render `:488` with `chain`.
 4. `HookError` + `user_hooks.rs`; update the constructor in `tests/hook_slot.rs:47-48`
    (`permissions_auto.rs` and `permissions_screen.rs` only name the type).
@@ -148,10 +144,9 @@ and `FetchError::Failed` keeps a source: change it to
 6. `FetchError`: implement `Error`, `Failed` keeps a source (constructors at `scanner_model.rs:95`,
    `:102` already renders the chain into the text, so it keeps the typed source with `without_url()` instead, `:112`, `:132`, `:144`, `:148`, `:162`); update `tests/scanner_model.rs:180` and `:228` to
    `FetchError::Failed { .. }`; `scanner_stage.rs` comment and `chain`.
-7. `fontaine-guardian`: render causes into the `String` at the failure points in scanner.rs / pg2.rs
-   with the shared `pub(crate)` chain helper (moved out of `screen.rs` into an ungated module).
+7. (dropped: scanner loaders are out of scope, see Decisions.)
 8. TUI: `expand_serving` (`ui/turn.rs:106-112`, inner `Result<String, String>` → `RuntimeError`) and its
-   consumer `ui/mod.rs:288-291`; update every slash handler (`model.rs` `finish_switch` takes `Option<RuntimeError>`,
+   consumer `ui/mod.rs:288-291`; update every slash handler (`model.rs` `finish_switch` unchanged,
    `appearance.rs`), `lib.rs`, `mcp.rs`, `turn.rs`, `provider_dialog.rs`; headless `fontaine/src/lib.rs`.
 9. Sweep: `rg -U 'format!\("[^"]*\{e\}' rust/fontaine-core/src rust/fontaine-tui/src` plus
    `rg -n -e '\{e\}'` on the same dirs, then a manual pass: the single-line form misses multi-line
@@ -162,7 +157,7 @@ and `FetchError::Failed` keeps a source: change it to
 
 `fontaine-core/src/{runtime_error.rs (new), lib.rs, agent.rs, accounts.rs, transport.rs, session.rs,
 permissions.rs, user_hooks.rs, scanner_stage.rs, scanner_model.rs, providers/*}`,
-`fontaine-guardian/src/{scanner.rs, scanner/pg2.rs}`, `fontaine-tui/src/{lib.rs, provider_dialog.rs,
+`fontaine-tui/src/{lib.rs, provider_dialog.rs,
 ui/mod.rs, ui/mcp.rs, ui/turn.rs, ui/commands/*}`, `fontaine/src/lib.rs`, `fontaine-evals/src/live.rs`,
 plus the affected tests under `fontaine-core/tests/` and `CHANGELOG.md`.
 
@@ -185,7 +180,8 @@ the assignment.
 - Struct, not enum, for `RuntimeError`: no caller dispatches on a kind today.
 - The PromptGuard download notice stays on stderr: it is shown before the TUI starts, which a
   returned notice cannot do.
-- Scanner errors stay `String` in the guardian crate; causes are rendered into the text at the failure point (no new error type).
+- AFK: Scanner loaders (`scanner.rs`, `scanner/pg2.rs`) are left untouched and the scanner-cause test is dropped: the `{e}` sites wrap `io`/`serde_json`/candle/tokenizer errors that have no `source()` (candle `Error::Wrapped` holds a `Display`), so no concrete nested-source failure exists and `{e}` already carries the whole text; the acceptance criteria and sweep cover only core/tui.
+- AFK: `Switched::persist_error` stays `Option<String>`; `persist` yields `Option<RuntimeError>` and the `Switched` constructors render it once with `chain`, so the `Clone`/`Debug`/`PartialEq`/`Eq` derives stay (`RuntimeError` derives only `Debug`).
 - `HookError.source` is optional: some failures have no underlying cause.
 - Model-facing `ToolExecutionError` text and the guardian crate's `Deny` explanations are untouched;
   error text never changes a Deny.
@@ -201,7 +197,7 @@ show their full cause). Check `docs/` for any page quoting a changed message (`r
 
 - Unit: `RuntimeError` display/source/chain (in `runtime_error.rs`); `HookError` keeps its source
   (`user_hooks` test with a failing command and malformed stdout, asserting `source()` is the
-  `io`/`serde_json` error); `FetchError::Failed` keeps its source; a scanner load failure's string contains the inner cause.
+  `io`/`serde_json` error); `FetchError::Failed` keeps its source.
 - Regression for the dropped cause: a compaction test (in `fontaine-core/tests/ledger.rs`, via `compact` `:93` /
   `compact_if_needed` `:129`, extending the existing tests that use the `Collect` approver, `:213` and `:486`; rig's
   `MockTurn`/`MockError` cannot produce a nested source, so the test uses a small hand-written
