@@ -287,6 +287,9 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- A tool call from an agent the session no longer knows (an id that was never reserved, was
+  released, or sits under a released ancestor) is denied in every mode, with rule `agent registry`,
+  before hooks or the guardian see it, instead of being judged with the root's mode (#184).
 - `trust.toml` and the user settings file are replaced atomically and edited under a lock, so a
   crash cannot truncate them and concurrent sessions no longer drop each other's changes. An
   unparseable `trust.toml` is reported once at session start instead of silently trusting nothing (#183).

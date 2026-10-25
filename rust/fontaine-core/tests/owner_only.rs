@@ -105,14 +105,32 @@ fn an_atomic_write_replaces_the_content_and_stays_owner_only() {
 fn concurrent_atomic_writes_to_one_path_leave_one_complete_file() {
     let w = World::new();
     let path = w.root.join("shared.txt");
+    owner_only::write_atomic(&path, b"writer start").unwrap();
+    let writing = std::sync::atomic::AtomicBool::new(true);
     std::thread::scope(|scope| {
-        for i in 0..8 {
-            let path = &path;
-            scope.spawn(move || {
-                for _ in 0..20 {
-                    owner_only::write_atomic(path, format!("writer {i}").as_bytes()).unwrap();
-                }
-            });
+        // An open reader handle is what a plain rename onto the target cannot replace.
+        let reader = scope.spawn(|| {
+            while writing.load(std::sync::atomic::Ordering::Relaxed) {
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert!(text.starts_with("writer "), "{text}");
+            }
+        });
+        let writers: Vec<_> = (0..8)
+            .map(|i| {
+                let path = &path;
+                scope.spawn(move || {
+                    for _ in 0..20 {
+                        owner_only::write_atomic(path, format!("writer {i}").as_bytes()).unwrap();
+                    }
+                })
+            })
+            .collect();
+        // Stop the reader before surfacing a writer's panic, or the scope would wait on it.
+        let results: Vec<_> = writers.into_iter().map(|w| w.join()).collect();
+        writing.store(false, std::sync::atomic::Ordering::Relaxed);
+        reader.join().unwrap();
+        for result in results {
+            result.unwrap();
         }
     });
     let text = std::fs::read_to_string(&path).unwrap();
@@ -135,6 +153,23 @@ fn an_atomic_write_through_a_symlink_replaces_the_target_and_keeps_the_link() {
     std::os::unix::fs::symlink(&target, &link).unwrap();
     owner_only::write_atomic(&link, b"new").unwrap();
     assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+    assert_eq!(std::fs::read(&target).unwrap(), b"new");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_atomic_write_through_a_relative_symlink_chain_replaces_the_final_target() {
+    let w = World::new();
+    std::fs::create_dir(w.root.join("sub")).unwrap();
+    let target = w.root.join("sub").join("target.txt");
+    let inner = w.root.join("sub").join("inner.txt");
+    let outer = w.root.join("outer.txt");
+    std::fs::write(&target, b"old").unwrap();
+    std::os::unix::fs::symlink("target.txt", &inner).unwrap();
+    std::os::unix::fs::symlink("sub/inner.txt", &outer).unwrap();
+    owner_only::write_atomic(&outer, b"new").unwrap();
+    assert!(std::fs::symlink_metadata(&outer).unwrap().is_symlink());
+    assert!(std::fs::symlink_metadata(&inner).unwrap().is_symlink());
     assert_eq!(std::fs::read(&target).unwrap(), b"new");
 }
 

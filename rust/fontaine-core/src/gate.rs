@@ -26,6 +26,9 @@ use crate::permissions::Approver;
 
 const TARGET: &str = "fontaine::telemetry";
 
+/// Why a call from an agent the session's tree no longer holds is refused.
+pub const UNREGISTERED_AGENT: &str = "the calling agent is no longer registered";
+
 /// Decisions kept per agent for the panel.
 const DECISIONS_PER_AGENT: usize = 200;
 
@@ -515,6 +518,9 @@ impl SessionState {
     /// Why `agent`'s agent file, or any ancestor's, forbids this call: a subagent never holds
     /// more authority than the agent that spawned it.
     pub fn child_restriction(&self, agent: &str, call: &CallContext<'_>) -> Option<String> {
+        if !self.agents().lineage_intact(agent) {
+            return Some(UNREGISTERED_AGENT.to_string());
+        }
         let held = lock(&self.child_restrictions, "child restrictions");
         let mut at = Some(agent.to_string());
         // A tree is a few layers deep; the bound keeps a corrupt parent link finite.
