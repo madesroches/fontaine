@@ -56,3 +56,23 @@ async fn an_account_connects_with_its_own_proxy_over_the_global_one() {
     assert!(!own.received_requests().await.unwrap().is_empty());
     assert!(global.received_requests().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn a_ca_bundle_that_is_not_valid_der_fails_the_client_build_with_its_cause() {
+    let w = World::new();
+    let bundle = w.data.join("bad-ca.pem");
+    std::fs::write(
+        &bundle,
+        "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+    )
+    .unwrap();
+    w.user_file(&format!(
+        "[network]\nca_bundle = \"{}\"\n",
+        bundle.display().to_string().replace('\\', "/")
+    ));
+    let network = w.load().unwrap().loaded_network(None).unwrap();
+    let error = reqwest_client(&network).expect_err("the certificate is not valid DER");
+    assert_eq!(error.to_string(), "could not build the HTTP client");
+    let text = fontaine_tools::error_chain::chain(&error);
+    assert!(text.len() > error.to_string().len(), "{text}");
+}

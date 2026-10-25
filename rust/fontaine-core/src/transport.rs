@@ -444,20 +444,6 @@ mod tests {
         );
         assert!(text.contains("tcp connect error"), "{text}");
     }
-
-    #[tokio::test]
-    async fn a_client_build_failure_keeps_its_cause_and_drops_the_url() {
-        let error = reqwest::Client::new()
-            .get("http://127.0.0.1:1/v1?key=SECRETKEY")
-            .send()
-            .await
-            .expect_err("refused");
-        let failure = client_error(error);
-        assert_eq!(failure.to_string(), "could not build the HTTP client");
-        let text = chain(&failure);
-        assert!(text.contains("tcp connect error"), "{text}");
-        assert!(!text.contains("SECRETKEY"), "{text}");
-    }
 }
 
 #[cfg(test)]

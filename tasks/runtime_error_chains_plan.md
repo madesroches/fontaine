@@ -106,8 +106,8 @@ without a `source()` keep `{e}` with a one-line comment saying so (acceptance cr
 
 ```rust
 pub enum HookError {
-    Failed { context: &'static str, source: Option<Box<dyn Error + Send + Sync>> },
-    Malformed { context: &'static str, source: Option<Box<dyn Error + Send + Sync>> },
+    Failed { context: String, source: Option<Box<dyn Error + Send + Sync>> },
+    Malformed { context: String, source: Option<Box<dyn Error + Send + Sync>> },
 }
 ```
 
@@ -115,7 +115,7 @@ pub enum HookError {
 `:339`, `:352`) have no underlying cause and use a context-only constructor; `:88`, `:91`, `:101`,
 `:165` keep the `io::Error`/`serde_json::Error`. Implements `Display` (context) and `Error::source`.
 Nothing dispatches on the kinds; the benefit is that the `tracing::warn!(error = ?e)` sites
-(`permissions.rs:495-497`, `:978-979`, `user_hooks.rs:374`, `:435`, `:454`) now carry the source in
+(`permissions.rs:560`, `:1044`, `user_hooks.rs:374`, `:435`, `:454`) now carry the source in
 their Debug output. The hook outcome stays "no decision": no permission behaviour changes.
 
 ### Scanner loaders (`fontaine-guardian`)
