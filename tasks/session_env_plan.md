@@ -63,9 +63,11 @@ RUST_LOG = "warn"
 
 - `Settings` gains `pub env: Option<BTreeMap<String, EnvValue>>`; `Config` gains
   `pub env: BTreeMap<String, EnvValue>`.
-- `EnvValue` is a newtype over `String` (`#[serde(transparent)]`) whose `Debug` prints
-  `EnvValue(<redacted>)`, so no `{:?}` of `Settings`/`Config` can carry a value into a log or a
-  panic message. It exposes `as_str()` for the one place that builds the child environment.
+- `EnvValue` is a newtype over `String` with a hand-written `Deserialize` (a visitor accepting only
+  strings; any other TOML type fails with the fixed message "environment values must be strings",
+  never echoing the value) and a `Debug` that prints `EnvValue(<redacted>)`, so no `{:?}` of
+  `Settings`/`Config` carries a value into a log or a panic message. It exposes `as_str()` for the
+  one place that builds the child environment.
 - **Merge**: per key, the higher-precedence scope wins (the existing map-valued rule, like
   `resource_attributes`); on Windows names are folded case-insensitively during the merge, so a
   user `PATH` and a CLI `Path` are one key and the higher scope wins. There is no unset syntax.
@@ -77,11 +79,13 @@ RUST_LOG = "warn"
     `FONTAINE_PROJECT_DIR` tells hooks their project, and an override of either would break the
     "the command that was judged is the one that runs" property or mislead hooks;
   - value contains no NUL;
-  - a non-string value is a schema error (TOML type mismatch).
+  - a non-string value is a schema error, reported with `EnvValue`'s fixed text (an integer `PIN = 12345` must not appear in the message).
 - **Parse errors carry no source text**: toml's `Display` quotes the offending line, which for a
-  malformed `[env]` entry would echo a secret to stderr. Like `ConfigError::Credentials`, settings
-  parse errors are rendered as path + line/column (from `de::Error::span()`) + toml's `message()`,
-  without the quoted source line.
+  malformed `[env]` entry would echo a secret to stderr. Like `ConfigError::Credentials` (which
+  reports only the span position plus a fixed text), settings parse errors are rendered as path +
+  line/column (from `de::Error::span()`) + toml's `message()`, without the quoted source line. For
+  an `[env]` type error that `message()` is `EnvValue`'s fixed text, so toml's own "invalid type:
+  integer `12345`" wording never appears.
 - **Scope**: `check_scope` rejects `env` in the `Project` column with reason "environment
   overrides come only from user-trust scopes" (placed with the other `tighten` checks, after the
   `ProjectLocal` early return). User, CLI (`--settings`) and trusted project-local may set it. A
@@ -98,17 +102,18 @@ One computed list, built once per session next to `scrub_env`:
 pub fn subprocess_env(config: &Config) -> Vec<(OsString, OsString)>
 ```
 
-It flows as a sibling field `set_env: Vec<(OsString, OsString)>` on `SessionPrep`, `AgentSetup`,
-the runtime setup, `RegistryParams`, `ShellSettings` and `HookProcess` only — not on
-`ScannerParams` / `CommandScanner`. Order of application at each spawn site — **scrub, then `[env]`, then Fontaine's
+It is called with the `Config` at each construction site (`HookProcess` in `AgentRuntime` setup,
+`RegistryParams` in `build_agent`, `connect_mcp`, `run_user_shell`) and flows as a field
+`set_env: Vec<(OsString, OsString)>` on `RegistryParams`, `ShellSettings`, `HookProcess` and
+`Transport::Stdio` only — not on `SessionPrep`, `AgentSetup`, `ScannerParams` / `CommandScanner`. Order of application at each spawn site — **scrub, then `[env]`, then Fontaine's
 own variables**:
 
 | Site | Change |
 |---|---|
 | `shell_for` | after `.without_env(scrub_env)`, `.with_env(name, value)` for each `set_env` pair; the Git Bash `PATH` is then built from the configured `PATH` when `[env]` sets one, else from `std::env::var_os("PATH")`, so Git for Windows' directories stay in front either way. `ShellTool::prepared` already adds `FONTAINE_SH_COMMAND` last. |
-| `run_user_shell` | passes `self.setup.set_env` into its `ShellSettings`. |
+| `run_user_shell` | passes `tools::subprocess_env(&self.config)` into its `ShellSettings`. |
 | `HookProcess::run` | after the `env_remove` loop, `process.env(name, value)` per pair; then `FONTAINE_PROJECT_DIR`, the Git Bash command variable and `PATH` as today (the `PROJECT_DIR_VAR` `.env` call moves below the loop; the `FONTAINE_` rejection makes the order moot but keeps it obviously right). Git Bash `PATH` uses the same "configured `PATH` else process `PATH`" base. |
-| MCP `start` | `Transport::Stdio` gains `env: Vec<(OsString, OsString)>`; after the `BASE_ENV` + `env_vars` copy, each pair is set (overriding a copied value of the same name). `connect_mcp` fills it from `setup.set_env`. |
+| MCP `start` | `Transport::Stdio` gains `env: Vec<(OsString, OsString)>`; after the `BASE_ENV` + `env_vars` copy, each pair is set (overriding a copied value of the same name). `connect_mcp` fills it from `tools::subprocess_env(&self.config)`. |
 
 A small helper in `fontaine-tools/src/git_bash.rs` — `fn base_path(set_env: &[(OsString,
 OsString)]) -> Option<OsString>` (configured `PATH` if present, else the process `PATH`) — is shared
@@ -124,13 +129,13 @@ inherited credential, so nothing of Fontaine's leaks.
 Not covered: the guardian's `scanner = "command"` program and provider/telemetry clients get no
 `[env]`; Fontaine's own process environment is unchanged.
 
-Subagents share the parent runtime's setup, so children get the same `set_env` with no extra code.
+Subagents share the parent runtime's config, so children get the same `set_env` with no extra code.
 
 ### Guardian sees keys
 
 - `Record::SessionStart` gains `#[serde(default, skip_serializing_if = "Vec::is_empty")]
   env_keys: Vec<String>` (old ledgers still parse); `AgentRuntime` writes the sorted names from
-  `setup.set_env` at session start (`agent.rs:1240`).
+  `tools::subprocess_env(&self.config)` at session start (`agent.rs:1240`).
 - `LedgerView` gains `env_keys`, copied in `apply`.
 - `SessionFacts` gains `env_keys: Vec<String>`; the private `adjudication::facts` copies it.
 - `prompt_builder` renders, when non-empty, one line inside `session_facts`:
@@ -141,14 +146,12 @@ Subagents share the parent runtime's setup, so children get the same `set_env` w
 
 1. **Config** (`rust/fontaine-core/src/config.rs`): `EnvValue` newtype with redacting `Debug`;
    `Settings.env`, `Config.env` (+ `defaults`), merge in `apply`, scope rule in `check_scope`,
-   value checks in `validate_values`; render settings parse errors (`parse_settings_with_hint`)
-   from `message()` and `span()` instead of `e.to_string()`.
+   value checks in `validate_values`; `EnvValue`'s string-only `Deserialize`; render settings parse
+   errors (`parse_settings_with_hint`) from `message()` and `span()` instead of `e.to_string()`.
 2. **Plumbing**: `tools::subprocess_env` (`fontaine-core/src/tools.rs`); `set_env` field on
-   `ShellSettings` (+ `Default`), `HookProcess`, `RegistryParams`, `AgentSetup`, runtime setup,
-   `SessionPrep` (`rust/fontaine/src/lib.rs`, filled in `prepare_session`). Update every struct
-   literal: test helpers in `fontaine-core/tests/common/runtime.rs`,
-   `choke_point.rs`, `extensions.rs`, `project_origins.rs`, `user_hooks.rs`,
-   `fontaine-tools/tests/choke_point.rs`, `fontaine-tui/tests/common/mod.rs`.
+   `ShellSettings` (+ `Default`), `HookProcess`, `RegistryParams`. Update every struct
+   literal: `choke_point.rs`, `extensions.rs`, `project_origins.rs`, `user_hooks.rs`,
+   `fontaine-tools/tests/choke_point.rs`.
 3. **Spawn sites**: `git_bash::base_path`; `shell_for`; `run_user_shell`; `HookProcess::run`;
    `Transport::Stdio.env` + `start` in `fontaine-mcp/src/servers.rs`; `connect_mcp`; fix the
    existing `Transport::Stdio` literals in `fontaine-mcp/tests/mcp_registration.rs`.
@@ -173,24 +176,25 @@ Subagents share the parent runtime's setup, so children get the same `set_env` w
 - `rust/fontaine-tools/src/builtins.rs`, `git_bash.rs`
 - `rust/fontaine-mcp/src/servers.rs`
 - `rust/fontaine-guardian/src/request.rs`, `prompt_builder.rs`, `profile.rs`
-- `rust/fontaine/src/lib.rs`
 - `rust/fontaine-evals/src/none.rs`
 - `rust/fontaine-guardian/prompts/guardian_prompt.md`, `guardian_minimal.md`
-- Tests: `rust/fontaine-core/tests/{config*,tools,user_hooks,common/runtime,choke_point,extensions,project_origins,sessions}.rs`,
+- Tests: `rust/fontaine-core/tests/{config*,tools,user_hooks,choke_point,extensions,project_origins,sessions}.rs`,
   `rust/fontaine-tools/tests/{choke_point,guarded}.rs`, `rust/fontaine-mcp/tests/mcp_registration.rs`,
-  `rust/fontaine-tui/tests/common/mod.rs`, `rust/fontaine/tests/headless_tools.rs`
-- Docs: `docs/configuration.md`, `docs/tools.md`, `docs/hooks.md`, `docs/mcp.md`, `docs/guardian.md`
-- Design: `tasks/design/config.md`, `tasks/fontaine_harness_plan.md`,
+  `rust/fontaine/tests/headless_tools.rs`
+- Docs: `docs/configuration.md`, `docs/tools.md`, `docs/hooks.md`, `docs/mcp.md`, `docs/guardian.md`,
+  `docs/architecture.md`
+- Design: `tasks/design/config.md`, `tasks/design/sessions.md`, `tasks/fontaine_harness_plan.md`,
   `research/research-claude-code-parity.md`
 
 ## Trade-offs
 
 - **A redacting newtype vs. plain `String`.** Plain strings are simpler, but `Config` derives
-  `Debug` and one stray `{config:?}` would leak a proxy password; the newtype makes the guarantee
-  structural.
-- **Separate `set_env` field vs. folding into a richer "subprocess env policy" struct.** A struct
-  holding both `scrub_env` and `set_env` would be tidier but touches every existing `scrub_env`
-  site for no behavior change; a sibling field follows the existing pattern.
+  `Debug` and one stray `{config:?}` would leak a proxy password; the newtype covers `Settings` and
+  `Config`, the types most likely to be dumped. The values are copied as plain `OsString` pairs into
+  later types (`ShellSettings`, `Transport`), which are not redacted.
+- **Computing `set_env` at each construction site vs. threading it through `SessionPrep` /
+  `AgentSetup`.** `subprocess_env(&Config)` depends only on config, which every consumer already
+  holds, so no setup field or test-helper edit is needed.
 - **Keys in `SessionStart` vs. a new ledger record.** The overrides are fixed for the session, the
   same lifetime as roots and trust, so they belong in the same record.
 
@@ -210,11 +214,14 @@ Subagents share the parent runtime's setup, so children get the same `set_env` w
 - `docs/tools.md`: the shell environment = inherited minus scrubbed plus `[env]`.
 - `docs/hooks.md` (line ~66): hooks get `[env]` too.
 - `docs/mcp.md` "Environment" paragraph: stdio servers also get every `[env]` entry.
-- `docs/guardian.md`: the request's session facts include the names of `[env]` overrides; the
+- `docs/guardian.md`: the request-table `session_facts` row (~line 49) and the session facts
+  include the names of `[env]` overrides; the
   passage (~lines 264-265) listing what the minimal profile receives (roots, remotes, touched
   paths) also names env keys.
 - `docs/configuration.md` (~line 414): the `command` scanner's "same scrubbed environment as
   hooks" becomes "the same scrubbed environment as hooks, without `[env]`".
+- `docs/architecture.md` (~lines 158-165) and `tasks/design/sessions.md` (lines 8-10): the lists of
+  what the session ledger / `SessionStart` hold also name the `[env]` key names (never values).
 - `tasks/design/config.md`: add `[env]` to the example TOML block and the per-key table.
 - `tasks/fontaine_harness_plan.md` `## Decisions`: copy the two dated lines from this plan's
   `## Decisions`.
@@ -230,7 +237,8 @@ All unit/integration, no live APIs.
   empty name, `=` in name, NUL in name or value, `FONTAINE_SH_COMMAND` and `fontaine_x`
   (case-insensitive prefix), non-string value; the rejection message never contains the value;
   `format!("{config:?}")` does not contain a value; a malformed `[env]` line (unterminated string,
-  non-string value) yields a parse error whose text does not contain the value.
+  non-string value, including an integer such as `PIN = 12345`) yields a parse error whose text does
+  not contain the value and, for the type error, is `EnvValue`'s fixed message.
 - **Shell** (`fontaine-tools` tests, unix): a `ShellTool` from `shell_for` with `set_env` sees
   the value (`printf %s "$X"`); a name both scrubbed and set gets the set value; a value with
   `$HOME` is passed literally. `base_path` unit tests: configured `PATH` wins over the process
