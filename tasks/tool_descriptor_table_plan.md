@@ -15,8 +15,7 @@ reviewed table and never moves onto the tool. No permission decision changes.
 
 - `fontaine-tools/src/names.rs`: `BUILTIN_TOOL_NAMES: [&str; 13]` (fixed-size) plus `is_builtin`,
   `is_mcp`. Used by rule parsing, `[agents]` toolset validation (`config.rs:1076`), skill
-  `allowed-tools` (`skill`-loading in `fontaine-core/src/skills.rs`-area `names_a_known_tool`,
-  `extensions.rs:267`) and `map_tool_entry`.
+  `allowed-tools` (`extensions.rs:267` `names_a_known_tool`) and `map_tool_entry`.
 - `fontaine-tools/src/risk.rs`: `BUILTIN_RISK: [_; 8]` and `EXTENSION_RISK: [_; 5]` with
   `builtin_risk`, `extension_risk`, `registered_risk`. `builtins.rs:334` (`risk_of`) and
   `fontaine-core/src/tools.rs:96` (`register_extension`) look risk up by `T::NAME`, defaulting to
@@ -53,7 +52,6 @@ there is no length to bump):
 struct ToolDescriptor {
     name: &'static str,
     risk: RiskClass,
-    assembly: Assembly,            // Builtins (built by builtins::build) | Extension (assembled by core)
     path_free: bool,               // names no path, so containment has nothing to check
     destructive: Destructive,      // Never | Always | FileWrite | Shell
     specifier: Specifier,          // None | Shell | Domain | Path | Name
@@ -77,7 +75,7 @@ todo_write `ReadOnly`, `Never`, `None`, path-free. Claude aliases as in `claude_
 ### Lookups
 
 `descriptor::find(name) -> Option<&ToolDescriptor>` plus the existing helpers reimplemented over
-it: `is_builtin` (row exists), `registered_risk`, and `builtins`/`extensions` iterators for tests.
+it: `is_builtin` (row exists) and `registered_risk`.
 `BUILTIN_TOOL_NAMES`, `BUILTIN_RISK`, `EXTENSION_RISK`, `builtin_risk`, `extension_risk` go away.
 `builtins::risk_of` and `register_extension` call `find(T::NAME)` and keep the `Arbitrary` default
 for a missing row.
@@ -109,7 +107,8 @@ pub struct ExtensionTools(pub Vec<ExtensionTool>);
 needs runtime dependencies (agent tree, approver, session), so `agent/build.rs` still builds each
 tool; it now pushes `ExtensionTool::new(...)` into a list rather than filling named fields. A
 registered extension tool with no descriptor row registers as `Arbitrary` (fail-closed), and the
-choke-point test fails on it.
+choke-point test fails on it. `ExtensionTool` erases `T`, so the test runs `registry()` and asserts
+`find(registered.name).is_some()` for each returned `Registered`.
 
 ## Implementation Steps
 
@@ -121,7 +120,10 @@ choke-point test fails on it.
    to the descriptor.
 3. `fontaine-core`: `ExtensionTools` to a registration list; update `tools.rs`, `agent/build.rs`.
 4. Update tests: both `choke_point.rs` files, `tests/docs.rs`, `tests/common/pipeline.rs`,
-   `fontaine-evals/src/none.rs` for the removed names.
+   `fontaine-evals/src/none.rs` for the removed names. In `fontaine-core/tests/choke_point.rs`, the
+   `run_ask` helper (struct-update syntax on `ExtensionTools`, ~lines 302-304) and
+   `without_the_extension_the_registry_is_the_eight_built_ins` (pins `EXTENSION_RISK` literally and
+   uses `BUILTIN_RISK.len()`) need reworking.
 5. Docs (below), then `cargo fmt --check`, `clippy --all-targets -D warnings`, `cargo test`.
 
 ## Files to Modify
@@ -159,7 +161,6 @@ choke-point test fails on it.
 - `docs/tools.md` keeps its inventory row per tool (the docs test now iterates the table).
 - Add a short "Adding a tool" note to `CONTRIBUTING.md`: one table row in
   `fontaine-tools/src/descriptor.rs`, the tool module, its construction line, the docs row.
-- `tasks/design/permissions.md`: point any mention of the per-list registration at the table, if present.
 
 ## Testing Strategy
 
@@ -171,12 +172,13 @@ All unit-level; no live services.
 - Behavior pin: a test in `fontaine-tools` that spells out the full expected row set (name, risk,
   path_free, destructive, specifier, aliases) for the 13 tools, so any change to a decision input
   is a visible diff.
-- Existing permission, destructive, permission-rule and extension tests
+- Existing behavioral suites: permission, destructive, permission-rule and extension tests
   (`fontaine-core/tests/{permissions,destructive,permission_rules}.rs`, `extensions.rs` unit
-  tests) must pass unchanged; they are the "same decisions for every existing tool" check.
-- Choke-point tests: registered names equal the table (builtins from `builtins::build`,
-  extensions from the registration list), each registered tool's risk equals its row, MCP tools
-  remain `Arbitrary`, a registration without a row is detected.
+  tests) must pass unchanged; the choke-point tests and the docs test are rewritten. The behavioral suites are the "same decisions for every existing tool" check.
+- Choke-point tests: registered names equal the table (split on the registered `source` or the
+  explicit registration list), each registered tool's risk equals its row, MCP tools
+  remain `Arbitrary`, a registration without a row is detected by running `registry()` and asserting
+  `find(registered.name).is_some()` for each `Registered` (`ExtensionTool` erases `T`).
 - `map_tool_entry` error message still names every Claude Code alias (assert it contains each).
 
 ## Open Questions
