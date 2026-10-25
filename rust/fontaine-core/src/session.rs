@@ -1,5 +1,5 @@
-//! A session's two stores, plus its task list file. rig-memory holds the model context, which compaction may rewrite;
-//! the ledger beside it is append-only. Both live in `<data dir>/sessions/<session id>/`.
+//! A session's two stores, plus its task list file. rig-memory holds the model context, which compaction
+//! may rewrite; the ledger beside it is append-only. Both live in `<data dir>/sessions/<session id>/`.
 
 use std::fmt;
 use std::io;

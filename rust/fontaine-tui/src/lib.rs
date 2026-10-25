@@ -1636,7 +1636,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         };
         let todos_changed = matches!(
             &event,
-            SessionEvent::ToolResult { tool, success: true, .. } if tool == "todo_write"
+            SessionEvent::ToolResult { tool, .. } if tool == "todo_write"
         );
         self.app.on_event(event);
         if todos_changed {
