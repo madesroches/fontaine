@@ -1,4 +1,4 @@
-//! A session's two stores, plus its task list file. rig-memory holds the model context, which compaction
+//! A session's two stores, plus its task list and schedule files. rig-memory holds the model context, which compaction
 //! may rewrite; the ledger beside it is append-only. Both live in `<data dir>/sessions/<session id>/`.
 
 use std::fmt;
@@ -22,6 +22,7 @@ use crate::audit::AuditLog;
 use crate::ledger::Ledger;
 use crate::owner_only;
 use crate::permissions::Approver;
+use crate::schedule::{Clock, Scheduler, SystemClock};
 use crate::todos::SessionTodos;
 
 pub const SESSIONS_DIR: &str = "sessions";
@@ -170,6 +171,7 @@ pub struct Session {
     pub ledger: Arc<Ledger>,
     pub audit: Arc<AuditLog>,
     todos: Arc<SessionTodos>,
+    scheduler: Arc<Scheduler>,
     store: DirStore,
     policy: CompactionPolicy,
     autocompact_window: Option<u64>,
@@ -201,9 +203,11 @@ impl Session {
         let audit = AuditLog::create(data_dir, id)
             .map_err(io_error(&data_dir.join(crate::audit::AUDIT_DIR)))?;
         let store = DirStore::open(&dir).map_err(|e| SessionError::Store(e.to_string()))?;
+        let ledger = Arc::new(ledger);
         Ok(Session {
             id: id.to_string(),
-            ledger: Arc::new(ledger),
+            scheduler: Arc::new(Scheduler::new(&dir, ledger.clone(), Arc::new(SystemClock))),
+            ledger,
             audit: Arc::new(audit),
             todos: Arc::new(SessionTodos::new(&dir)),
             dir,
@@ -235,9 +239,11 @@ impl Session {
         let audit = AuditLog::create(data_dir, id)
             .map_err(io_error(&data_dir.join(crate::audit::AUDIT_DIR)))?;
         let store = DirStore::open(&dir).map_err(|e| SessionError::Store(e.to_string()))?;
+        let ledger = Arc::new(ledger);
         Ok(Session {
             id: id.to_string(),
-            ledger: Arc::new(ledger),
+            scheduler: Arc::new(Scheduler::load(&dir, ledger.clone(), Arc::new(SystemClock))),
+            ledger,
             audit: Arc::new(audit),
             todos: Arc::new(SessionTodos::load(&dir)),
             dir,
@@ -283,6 +289,18 @@ impl Session {
     /// The task lists of this session, shared by every clone of it.
     pub fn todos(&self) -> &Arc<SessionTodos> {
         &self.todos
+    }
+
+    /// The scheduled prompts of this session, shared by every clone of it.
+    pub fn scheduler(&self) -> &Arc<Scheduler> {
+        &self.scheduler
+    }
+
+    /// Runs the schedule on `clock` instead of the wall clock, reloading what is saved. A seam
+    /// for tests, which move time themselves; call it before the session is used.
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Session {
+        self.scheduler = Arc::new(Scheduler::load(&self.dir, self.ledger.clone(), clock));
+        self
     }
 
     pub fn store(&self) -> DirStore {

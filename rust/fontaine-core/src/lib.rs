@@ -28,6 +28,7 @@ pub mod runtime_error;
 #[cfg(feature = "pg2")]
 pub mod scanner_model;
 pub mod scanner_stage;
+pub mod schedule;
 pub mod session;
 pub mod skills;
 pub mod steering;

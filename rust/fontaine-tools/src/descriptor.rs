@@ -161,6 +161,38 @@ pub static TOOLS: &[ToolDescriptor] = &[
         Specifier::None,
         &["TodoWrite"],
     ),
+    row(
+        "cron_create",
+        RiskClass::Arbitrary,
+        true,
+        Destructive::Always,
+        Specifier::None,
+        &["CronCreate"],
+    ),
+    row(
+        "cron_jobs",
+        RiskClass::ReadOnly,
+        true,
+        Destructive::Never,
+        Specifier::None,
+        &["CronList"],
+    ),
+    row(
+        "cron_delete",
+        RiskClass::ReadOnly,
+        true,
+        Destructive::Never,
+        Specifier::None,
+        &["CronDelete"],
+    ),
+    row(
+        "schedule_wakeup",
+        RiskClass::ReadOnly,
+        true,
+        Destructive::Never,
+        Specifier::None,
+        &["ScheduleWakeup"],
+    ),
 ];
 
 pub fn find(name: &str) -> Option<&'static ToolDescriptor> {
@@ -222,7 +254,7 @@ mod tests {
         use RiskClass as R;
         use Specifier as S;
         type Pinned = (&'static str, R, bool, D, S, &'static [&'static str]);
-        let expected: [Pinned; 13] = [
+        let expected: [Pinned; 17] = [
             ("shell", R::Arbitrary, false, D::Shell, S::Shell, &["Bash"]),
             ("read", R::ReadOnly, false, D::Never, S::Path, &["Read"]),
             (
@@ -284,6 +316,38 @@ mod tests {
                 D::Never,
                 S::None,
                 &["TodoWrite"],
+            ),
+            (
+                "cron_create",
+                R::Arbitrary,
+                true,
+                D::Always,
+                S::None,
+                &["CronCreate"],
+            ),
+            (
+                "cron_jobs",
+                R::ReadOnly,
+                true,
+                D::Never,
+                S::None,
+                &["CronList"],
+            ),
+            (
+                "cron_delete",
+                R::ReadOnly,
+                true,
+                D::Never,
+                S::None,
+                &["CronDelete"],
+            ),
+            (
+                "schedule_wakeup",
+                R::ReadOnly,
+                true,
+                D::Never,
+                S::None,
+                &["ScheduleWakeup"],
             ),
         ];
         let actual: Vec<_> = TOOLS

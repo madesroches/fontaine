@@ -102,6 +102,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[auto_mode] soft_deny`, `hard_deny` | add only | add only | add only |
 | `[agents]` keys and `[agents.types]` | no | yes | yes |
 | `[context] autocompact_window` | no | yes | yes |
+| `[schedule] enabled` | no | no | yes |
 | `[shell_preclassifier] allow_extra` | no | yes | yes |
 | Agent files `agents/*.md` | narrowing only | n/a | n/a |
 | `[[hooks.*]]` | yes, after workspace trust; `allow` ignored | yes, after workspace trust | yes |
@@ -514,7 +515,7 @@ the user file for you.
 Rule strings use the `Tool` or `Tool(specifier)` form described in
 [Permissions](permissions.md#rules). At load, Fontaine checks the outer shape, that the tool is one
 of `shell`, `read`, `edit`, `write`, `ls`, `glob`, `grep`, `webfetch`, `agent`, `skill`,
-`send_message`, `ask_user_question`, `todo_write` or an `mcp__<server>[__<tool>|__*]` name, and that the specifier is valid for the
+`send_message`, `ask_user_question`, `todo_write`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup` or an `mcp__<server>[__<tool>|__*]` name, and that the specifier is valid for the
 tool (a `shell` specifier is literal command words, a path specifier a gitignore-style pattern, a
 `webfetch` specifier `domain:<host>` or `domain:*.<host>`). A bad rule is a configuration error.
 `deny` and `ask` rules apply in every mode; `allow` rules act after the floor.
@@ -660,6 +661,17 @@ It applies to [headless runs](headless.md) too. See [Context](tui.md#context) fo
 ```toml
 [context]
 autocompact_window = 150000
+```
+
+### `[schedule]`
+
+| Key | Meaning | Default |
+|---|---|---|
+| `enabled` | Whether the [scheduling tools and `/loop`](tui.md#scheduled-prompts) are available in the terminal UI. When `false` the tools are not registered, `/loop` says scheduling is off, and a schedule saved by an earlier session is left on disk and never runs. Only the user file and `--settings` can set it. | `true` |
+
+```toml
+[schedule]
+enabled = false
 ```
 
 ### `[shell_preclassifier]`

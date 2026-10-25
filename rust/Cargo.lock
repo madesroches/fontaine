@@ -1633,6 +1633,7 @@ dependencies = [
 name = "fontaine-core"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "fontaine-agents",
  "fontaine-guardian",
  "fontaine-mcp",

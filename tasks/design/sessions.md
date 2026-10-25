@@ -17,5 +17,11 @@ without session grants; a rewind of the conversation (rig-memory `as_of`) trunca
 appends to the ledger — denial and approval history is never removed. Both stores persist as JSONL
 under `<data dir>/sessions/<session-id>/` (owner-only); the ledger is `ledger/ledger.jsonl` there,
 outside the `logs/` and `files/` folders rig-memory's store reads (a top-level `*.jsonl` would make
-it refuse the dir). Ledger in Phase 2; guardian
+it refuse the dir). Beside them sit the root agent's task list (`todos.json`) and the session's
+scheduled prompts (`schedule.json`, written atomically and owner-only on every change). A due
+scheduled prompt runs as a harness-started turn, never as a `UserMessage`; the ledger records
+`Scheduled { created | fired | deleted | expired }` for the audit trail, and `LedgerView` ignores
+it, so the guardian's intent is untouched. `/clear` also clears the schedule, since it drops the
+intent a model-created job was scheduled under; resume drops expired and wakeup jobs and re-arms
+the rest from now. Ledger in Phase 2; guardian
 reads it in Phase 4; resume/fork in Phase 5.

@@ -63,6 +63,8 @@ pub enum Action {
     Providers(DialogKey),
     /// The human answered the question about starting a repository's MCP server.
     Server(bool),
+    /// Esc at the idle prompt while a self-paced loop waits for its next iteration.
+    CancelWakeup,
 }
 
 /// Ctrl-R: the query typed so far and the history entry it found.
@@ -107,6 +109,10 @@ pub struct App {
     pub menu: Vec<MenuEntry>,
     /// Subagents running right now, for the status bar.
     pub running_agents: usize,
+    /// Scheduled tasks, for the status bar.
+    pub scheduled: usize,
+    /// A self-paced loop has its next iteration pending, which Esc at the idle prompt cancels.
+    pub wakeup_pending: bool,
     /// `/denied` while it is open.
     pub denied: Option<DeniedList>,
     /// The pinned guardian cannot be used, and the human has to say what to do.
@@ -167,6 +173,8 @@ impl App {
             providers: None,
             menu: builtin_menu(),
             running_agents: 0,
+            scheduled: 0,
+            wakeup_pending: false,
             denied: None,
             unavailable: None,
             pending_notices: Vec::new(),
@@ -583,6 +591,9 @@ impl App {
         if let Some(action) = self.slash_key(key) {
             self.refresh_slash();
             return action;
+        }
+        if key.code == KeyCode::Esc && self.wakeup_pending && !self.running {
+            return Action::CancelWakeup;
         }
         if control && key.code == KeyCode::Char('d') {
             return if !self.running && self.input.is_empty() {

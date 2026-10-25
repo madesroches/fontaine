@@ -20,6 +20,10 @@ result passes one post-call step before the model sees it.
 | `skill` | read-only | Loads a [skill](extensions.md#skills) by name into the conversation. |
 | `ask_user_question` | read-only | Asks you 1 to 4 multiple-choice questions and returns your answers; see [Questions](tui.md#questions-from-the-model). Only the main conversation can ask. |
 | `todo_write` | read-only | Replaces the session task list. Argument: `todos`, a list of up to 50 items of `content` (at most 500 characters) and `status` (`pending`, `in_progress` or `completed`), at most one `in_progress`. An empty list clears it. The [terminal UI](tui.md#the-task-panel) shows the list. |
+| `cron_create` | arbitrary | Schedules a prompt to run later in the session, once or on a recurring schedule, when the conversation is idle. Arguments: `cron` (five fields in your local time), `prompt` (at most 2,000 characters) and `recurring` (default true). See [Scheduled prompts](tui.md#scheduled-prompts). Only the main conversation can call it, and only in the terminal UI. |
+| `cron_jobs` | read-only | Lists the scheduled tasks: id, cadence, who set it, next run and the start of the prompt. |
+| `cron_delete` | read-only | Cancels a scheduled task. Argument: `id`. |
+| `schedule_wakeup` | read-only | Paces a self-paced `/loop` you started: `delay_seconds` (60 to 3,600) and `reason` pick when the loop's own prompt runs next, or `stop: true` ends the loop. It carries no prompt, so it can re-time text you wrote and never add new text. It fails when no such loop runs. |
 | `send_message` | arbitrary | Sends a queued message to another agent or to the main conversation; see [Subagents](agents.md#messages-between-agents). |
 
 `read`, `write`, `edit` and `shell` are the file and process tools of the rig runtime, configured
@@ -55,11 +59,13 @@ outside every root, is outside the fast path.
 File-tool calls on such a path are denied with a hint to add the directory with `/add-dir` or
 `--add-dir`; they are never offered for approval.
 
-The `skill`, `ask_user_question` and `todo_write` tools are the read-only tools that name no path. `skill` takes
+The `skill`, `ask_user_question`, `todo_write`, `cron_jobs`, `cron_delete` and `schedule_wakeup` tools are the read-only tools that name no path. `skill` takes
 only a skill name, resolved against the skills loaded at startup, so all it can do is put that
 skill's text in the conversation. `ask_user_question` can only show you text and collect your
 choice, and its answer comes from you alone, never from a permission mode. `todo_write` takes only
-the task list, which it keeps in the session. None needs a scope check. The deterministic floor
+the task list, which it keeps in the session. The three scheduling tools only list, cancel or re-time
+scheduled text; `cron_create` is [arbitrary](permissions.md#scheduled-prompts) because it plants model-written text that
+later runs as a turn without you typing anything. None needs a scope check. The deterministic floor
 still runs first, so a deny or ask rule or a `pre_tool_use` hook can block any of them. An MCP tool
 that declares itself read-only does not get the
 same treatment: such tools are registered as arbitrary whatever the server says.

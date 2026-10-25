@@ -10,6 +10,7 @@ pub mod names;
 pub mod preclassify;
 pub mod result_pipeline;
 pub mod risk;
+pub mod schedule;
 pub mod scope;
 pub mod skill;
 pub mod tls;

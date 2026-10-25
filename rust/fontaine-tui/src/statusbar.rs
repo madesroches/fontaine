@@ -59,12 +59,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         1 => " · 1 agent running".to_string(),
         n => format!(" · {n} agents running"),
     };
+    let scheduled = match app.scheduled {
+        0 => String::new(),
+        n => format!(" · ⏱ {n}"),
+    };
     let line = Line::from(vec![
         Span::styled(
             format!(" {} ", mode_label(app.mode)),
             mode_style(app.mode, &app.theme),
         ),
-        Span::styled(format!("· {}{agents} · {hint}", app.model), dim),
+        Span::styled(format!("· {}{agents}{scheduled} · {hint}", app.model), dim),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }

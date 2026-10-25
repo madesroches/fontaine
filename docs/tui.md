@@ -45,7 +45,7 @@ tools are checked like any `arbitrary` tool. A headless run does not ask and loa
 
 ## Status bar
 
-The bar shows the permission mode, the model, how many subagents are running, and a key hint. The mode labels are `manual`,
+The bar shows the permission mode, the model, how many subagents are running, `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, and a key hint. The mode labels are `manual`,
 `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on` and `dontAsk`.
 
 ## Keys
@@ -58,6 +58,7 @@ The bar shows the permission mode, the model, how many subagents are running, an
 | Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. |
 | Shift+Tab | Cycle the mode: manual, accept edits, plan, auto, and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` lists the broad allow rules it sets aside and says so when the guardian cannot be asked. |
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. |
+| Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
 | Ctrl-C, or Ctrl-D on an empty input, when idle | Quit. |
 | PageUp, PageDown | Scroll the command in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/U/K/W/B/F | Edit the input. |
@@ -229,6 +230,7 @@ conversation. The session starts in the mode your settings give, with no grants 
 | `/help` | Lists the built-in commands, your user-invocable skills and the main keys. |
 | `/hooks` | Lists the [hooks](hooks.md) by event with their matcher, command and scope, and marks a repository's hooks that did not load because the workspace is not trusted. |
 | `/login [<account>]` | Opens the [provider dialog](#managing-providers) to add an account, log in, log out or remove one. With an account name it opens straight on that account's log-in: a hidden key prompt, or the device sign-in for `opencode-go`. Only between turns. |
+| `/loop [<interval>] <prompt>`, `/loop list`, `/loop stop [<id>]` | Runs a prompt again and again while the session is idle; see [Scheduled prompts](#scheduled-prompts). |
 | `/mcp` | Lists each [MCP server](mcp.md) as `connected`, `failed` with the error, `left off` (you declined it) or `not loaded` (the workspace is not trusted). It takes no arguments. |
 | `/model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model). With one, switches the live session to that model, rebuilds the agent on it with the conversation kept, and saves it as `[model] model` in your user settings file. The guardian moves with it only when it is on the main-model fallback (no `[guardian] model` and no validated model available); a pinned or validated guardian stays. |
 | `/output-style [<name>\|none]` | Without an argument, lists the [output styles](extensions.md#output-styles). With one, switches to it for the next turn; `none` removes it. |
@@ -403,6 +405,50 @@ one-line entry with its counts.
 The list is the main agent's; a subagent's list is not shown. It is kept with the session, so a
 resumed or forked session shows it again, and `/clear` empties it. In screen-reader mode there is
 no panel: the whole list is printed as plain `[ ]`, `[~]` and `[x]` lines each time it changes.
+
+## Scheduled prompts
+
+The terminal UI can run a prompt again later, while the conversation is idle. There are two ways
+to set it up, and both end up as tasks in the same per-session schedule.
+
+- **`/loop`**, typed by you:
+  - `/loop 5m check the build` (or `/loop check the build every 5 minutes`) runs the prompt now,
+    then at a fixed cadence. Units are `s`, `m`, `h` and `d`. Only even cadences are accepted: a
+    minute step that divides an hour (1, 2, 5, 10, 15, 20 or 30), a whole number of hours that
+    divides a day (1, 2, 3, 4, 6, 8 or 12), or 1 to 31 days. Seconds round up to a whole minute
+    first, and any other interval is rounded to the nearest accepted cadence, the shorter one when
+    two are equally near (`7m` becomes 5 minutes, `90m` becomes 1 hour). The transcript states the
+    cadence it chose. Cadences follow the wall clock (`5m` fires at :00, :05, :10 and so on), not
+    the moment you typed the command, and a multi-day cadence restarts at each month's start.
+  - `/loop check the build` with no interval is a self-paced loop. It runs the prompt now, and the
+    model ends each iteration by calling `schedule_wakeup` to say when the next one should run,
+    or to stop. If an iteration schedules nothing, the loop tries once more 20 minutes later and
+    ends if that one schedules nothing either. Only one self-paced loop runs at a time; Esc at the
+    idle prompt while it waits, or `/loop stop`, ends it. A self-paced
+    loop is not restored when the session is resumed.
+  - `/loop list` shows the tasks and `/loop stop <id>` cancels one; `/loop stop` cancels all of
+    them. `/loop` alone, or with an interval and no prompt, prints its usage. The text after the
+    interval is a plain prompt; a skill name there is not expanded.
+- **The model's tools**, [`cron_create`, `cron_jobs`, `cron_delete` and `schedule_wakeup`](tools.md),
+  which the model uses when you ask for something to happen later or repeatedly. `cron_create`
+  takes a five-field cron expression in your local time: `*`, values, ranges, steps and lists, with
+  Sunday as 0 or 7, and either day field matching when both are restricted. Names such as `MON`
+  and the `L`, `W` and `?` forms are not supported.
+
+A task runs only when the conversation is idle. One that comes due during a turn waits and runs once
+afterwards, however many runs it missed. The turn it starts is announced in the transcript as
+`scheduled: <id>` and carries a note saying it is a scheduled task and not you; it is not a user
+message, so what you asked for earlier stays the only intent the guardian reads. A draft you were
+typing stays in the input, and messages you queue while it runs are sent as the next turn.
+
+A session holds at most 50 tasks and a prompt is at most 2,000 characters. A recurring task
+expires 7 days after it was created: it runs one last time and is removed. Tasks are saved with
+the session. Resuming drops tasks that expired or whose time passed while it was closed, tells
+you how many, and re-arms the rest from now without replaying missed runs. `/clear` cancels every
+task, because it drops the intent they were scheduled under. A headless run does not
+have them, and `[schedule] enabled = false` turns them off; see
+[Configuration](configuration.md#schedule). There is no random delay: a task runs at its scheduled
+minute.
 
 ## The agents panel
 

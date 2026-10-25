@@ -227,6 +227,50 @@ async fn a_failed_summarizer_call_leaves_the_context_unchanged_and_does_not_fail
 }
 
 #[test]
+fn a_scheduled_record_is_kept_but_adds_nothing_to_what_the_user_asked() {
+    use fontaine_core::ledger::ScheduleEvent;
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::create(dir.path()).unwrap();
+    ledger
+        .append(Record::UserMessage {
+            text: "check the build every 5 minutes".into(),
+        })
+        .unwrap();
+    for event in [
+        ScheduleEvent::Created,
+        ScheduleEvent::Fired,
+        ScheduleEvent::Deleted,
+        ScheduleEvent::Expired,
+    ] {
+        ledger
+            .append(Record::Scheduled {
+                event,
+                id: "ab12cd34".into(),
+                origin: "model".into(),
+                cron: "*/5 * * * *".into(),
+                recurring: true,
+            })
+            .unwrap();
+    }
+    let check = |ledger: &Ledger| {
+        assert_eq!(
+            ledger.view().user_messages,
+            ["check the build every 5 minutes"]
+        );
+        assert_eq!(ledger.read().unwrap().len(), 5);
+    };
+    check(&ledger);
+    let text = std::fs::read_to_string(ledger.path()).unwrap();
+    assert!(text.contains("\"kind\":\"scheduled\"") && text.contains("\"event\":\"fired\""));
+    assert!(
+        !text.contains("prompt"),
+        "a task's prompt is never recorded"
+    );
+    drop(ledger);
+    check(&Ledger::open(dir.path()).unwrap());
+}
+
+#[test]
 fn the_ledger_is_append_only_and_owner_only() {
     let w = World::new();
     let session = Session::create(&w.data, SESSION_ID).unwrap();

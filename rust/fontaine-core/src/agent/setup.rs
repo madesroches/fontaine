@@ -322,6 +322,7 @@ pub(super) fn retained(setup: &AgentSetup) -> Result<Setup, RuntimeError> {
             .map(|switcher| Arc::new(RwLock::new(switcher))),
         project_executables: setup.project_executables,
         confirm_project_servers: setup.confirm_project_servers,
+        scheduling: setup.scheduling,
         env: setup.env.clone(),
     })
 }
@@ -384,6 +385,7 @@ fn child_runner(
                     system_prompt: preamble_system.as_deref(),
                     instructions: &instructions,
                     skill_index: None,
+                    scheduling: None,
                     output_style: None,
                     append: Some(&layer),
                 })
