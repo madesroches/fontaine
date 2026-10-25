@@ -425,10 +425,7 @@ impl AgentRuntime {
     /// tool result; a task the user typed is their own words and goes through as written.
     pub async fn scheduled_prompt(&self, fired: &Fired) -> String {
         let job = &fired.job;
-        let by = match job.origin {
-            Origin::User => "you",
-            Origin::Model => "the model",
-        };
+        let by = job.origin.who();
         let ending = if fired.last_run {
             " This was its last run: recurring tasks expire after 7 days."
         } else {

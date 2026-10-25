@@ -149,7 +149,7 @@ async fn a_due_task_becomes_a_harness_note_followed_by_its_prompt() {
     let own = runtime
         .scheduled_prompt(&fired("my words", Origin::User, Kind::Cron, true))
         .await;
-    assert!(own.contains("set by you"), "{own}");
+    assert!(own.contains("set by the user"), "{own}");
     assert!(own.contains("last run"), "{own}");
     assert!(own.contains("\n\nmy words"), "{own}");
 }

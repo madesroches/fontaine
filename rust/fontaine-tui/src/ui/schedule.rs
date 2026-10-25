@@ -71,7 +71,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 "the loop scheduled no next iteration again, so it has ended; /loop <prompt> starts it again",
             ),
             Ok(LoopStep::Continues | LoopStep::NoLoop) => {}
-            Err(e) => self.app.transcript.error(chain(&e)),
+            Err(e) => {
+                self.app.transcript.error(chain(&e));
+                if runtime.session.scheduler().active_loop().is_none() {
+                    self.app
+                        .transcript
+                        .notice("the loop has ended; /loop <prompt> starts it again");
+                }
+            }
         }
     }
 

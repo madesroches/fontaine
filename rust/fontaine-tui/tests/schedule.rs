@@ -174,7 +174,7 @@ async fn loop_with_an_interval_runs_now_then_on_the_clock_until_stopped() {
     assert_eq!(seen.len(), 2, "{seen:?}");
     assert!(seen[0].contains("check the build") && !seen[0].contains("Harness note"));
     assert!(seen[1].contains("Harness note, not the user's words"));
-    assert!(seen[1].contains("set by you"));
+    assert!(seen[1].contains("set by the user"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

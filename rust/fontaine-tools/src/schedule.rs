@@ -462,7 +462,7 @@ mod tests {
         JobInfo {
             id: id.to_string(),
             cadence: "every 5 minutes".to_string(),
-            origin: "model",
+            origin: "the model",
             next_run: "2026-01-02 03:05".to_string(),
             prompt: "check the build".to_string(),
         }
@@ -639,7 +639,7 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2);
         assert!(
-            lines[0].starts_with("aaaa0001 (every 5 minutes, set by model)"),
+            lines[0].starts_with("aaaa0001 (every 5 minutes, set by the model)"),
             "{text}"
         );
         assert!(lines[0].ends_with("..."), "{text}");

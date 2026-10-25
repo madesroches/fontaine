@@ -78,6 +78,11 @@ fn local(ms: i64) -> DateTime<Local> {
         .expect("an instant has exactly one local time")
 }
 
+/// Whether chrono can show `ms` as a local time; a saved file can hold anything.
+fn representable(ms: i64) -> bool {
+    Local.timestamp_millis_opt(ms).single().is_some()
+}
+
 /// A time as the user reads it, in their local zone.
 pub fn local_time(ms: i64) -> String {
     local(ms).format("%Y-%m-%d %H:%M").to_string()
@@ -334,6 +339,14 @@ pub enum Origin {
 }
 
 impl Origin {
+    /// Who set a task, as the model reads it: "you" would read as the model itself.
+    pub fn who(self) -> &'static str {
+        match self {
+            Origin::User => "the user",
+            Origin::Model => "the model",
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Origin::User => "user",
@@ -381,10 +394,7 @@ impl Job {
         JobInfo {
             id: self.id.clone(),
             cadence: self.cadence(),
-            origin: match self.origin {
-                Origin::User => "you",
-                Origin::Model => "model",
-            },
+            origin: self.origin.who(),
             next_run: local_time(self.next_ms),
             prompt: self.prompt.clone(),
         }
@@ -432,6 +442,7 @@ pub enum LoopStep {
 
 struct LoopState {
     active: ActiveLoop,
+    started_ms: i64,
     last_was_fallback: bool,
 }
 
@@ -520,17 +531,19 @@ impl Scheduler {
         let mut kept = Vec::new();
         let mut dropped = Vec::new();
         for mut job in saved {
-            let alive = match job.kind {
-                Kind::Wakeup { .. } => false,
-                Kind::Cron if !job.recurring => job.next_ms > now,
-                Kind::Cron => {
-                    now < job.created_ms + WEEK_MS
-                        && Cron::parse(&job.cron)
-                            .and_then(|cron| cron.next_after(&local(now)))
-                            .map(|next| job.next_ms = next.timestamp_millis())
-                            .is_ok()
-                }
-            };
+            let alive = representable(job.next_ms)
+                && representable(job.created_ms)
+                && match job.kind {
+                    Kind::Wakeup { .. } => false,
+                    Kind::Cron if !job.recurring => job.next_ms > now,
+                    Kind::Cron => {
+                        now < job.created_ms.saturating_add(WEEK_MS)
+                            && Cron::parse(&job.cron)
+                                .and_then(|cron| cron.next_after(&local(now)))
+                                .map(|next| job.next_ms = next.timestamp_millis())
+                                .is_ok()
+                    }
+                };
             if alive {
                 kept.push(job);
             } else {
@@ -622,44 +635,28 @@ impl Scheduler {
             let mut state = lock(&self.state, "schedule");
             self.insert(
                 &mut state,
-                spec.origin,
-                Kind::Cron,
-                cron.text().to_string(),
-                spec.prompt,
-                spec.recurring,
-                now,
-                next,
+                Job {
+                    id: String::new(),
+                    cron: cron.text().to_string(),
+                    prompt: spec.prompt,
+                    recurring: spec.recurring,
+                    origin: spec.origin,
+                    kind: Kind::Cron,
+                    created_ms: now,
+                    next_ms: next,
+                },
             )?
         };
         self.record(ScheduleEvent::Created, &job);
         Ok(job)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn insert(
-        &self,
-        state: &mut State,
-        origin: Origin,
-        kind: Kind,
-        cron: String,
-        prompt: String,
-        recurring: bool,
-        now: i64,
-        next: i64,
-    ) -> Result<Job, ScheduleError> {
+    /// Gives `job` its id and adds it.
+    fn insert(&self, state: &mut State, mut job: Job) -> Result<Job, ScheduleError> {
         if state.jobs.len() >= MAX_JOBS {
             return Err(ScheduleError::TooMany);
         }
-        let job = Job {
-            id: fresh_id(&state.jobs),
-            cron,
-            prompt,
-            recurring,
-            origin,
-            kind,
-            created_ms: now,
-            next_ms: next,
-        };
+        job.id = fresh_id(&state.jobs);
         state.jobs.push(job.clone());
         if let Err(e) = self.save(&state.jobs) {
             state.jobs.pop();
@@ -794,6 +791,7 @@ impl Scheduler {
         };
         state.active = Some(LoopState {
             active: active.clone(),
+            started_ms: self.clock.now_ms(),
             last_was_fallback: false,
         });
         Ok(active)
@@ -864,6 +862,14 @@ impl Scheduler {
         }
         let (job, replaced) = {
             let mut state = lock(&self.state, "schedule");
+            if self.loop_expired(&state) {
+                let removed = self.finish_loop(&mut state)?;
+                drop(state);
+                for job in &removed {
+                    self.record(ScheduleEvent::Deleted, job);
+                }
+                return Err(ScheduleError::NoLoop);
+            }
             self.arm(&mut state, seconds, fallback)?
         };
         if let Some(old) = &replaced {
@@ -891,16 +897,19 @@ impl Scheduler {
         let next = now + i64::try_from(seconds).unwrap_or(i64::MAX / 2) * 1000;
         let result = self.insert(
             state,
-            Origin::User,
-            Kind::Wakeup {
-                loop_id: active.id,
-                fallback,
+            Job {
+                id: String::new(),
+                cron: pinned_minute(next),
+                prompt: active.prompt,
+                recurring: false,
+                origin: Origin::User,
+                kind: Kind::Wakeup {
+                    loop_id: active.id,
+                    fallback,
+                },
+                created_ms: now,
+                next_ms: next,
             },
-            pinned_minute(next),
-            active.prompt,
-            false,
-            now,
-            next,
         );
         match result {
             Ok(job) => Ok((job, replaced)),
@@ -911,6 +920,25 @@ impl Scheduler {
         }
     }
 
+    /// The loop has run its 7 days, like any recurring task.
+    fn loop_expired(&self, state: &State) -> bool {
+        state
+            .active
+            .as_ref()
+            .is_some_and(|active| self.clock.now_ms() >= active.started_ms.saturating_add(WEEK_MS))
+    }
+
+    /// Ends the loop and cancels its wakeup; the loop stays active if the save fails.
+    fn finish_loop(&self, state: &mut State) -> Result<Vec<Job>, ScheduleError> {
+        let Some(previous) = state.active.take() else {
+            return Ok(Vec::new());
+        };
+        self.drop_wakeups(state, &previous.active.id)
+            .inspect_err(|_| {
+                state.active = Some(previous);
+            })
+    }
+
     fn drop_wakeups_in_memory(&self, state: &mut State, loop_id: &str) -> Option<Job> {
         let index = state.jobs.iter().position(
             |job| matches!(&job.kind, Kind::Wakeup { loop_id: id, .. } if id == loop_id),
@@ -919,7 +947,8 @@ impl Scheduler {
     }
 
     /// Called when an iteration of the self-paced loop has returned: sees whether the model
-    /// scheduled the next one, and if not arms a fallback once, then ends the loop.
+    /// scheduled the next one, and if not arms a fallback once, then ends the loop. A loop that
+    /// cannot arm its fallback, or is 7 days old, ends too; an `Err` for the former leaves it ended.
     pub fn iteration_ended(&self) -> Result<LoopStep, ScheduleError> {
         let mut ended = Vec::new();
         let mut armed = None;
@@ -930,7 +959,10 @@ impl Scheduler {
             };
             let id = active.active.id.clone();
             let was_fallback = active.last_was_fallback;
-            if Self::pending_wakeup(&state.jobs, &id).is_some() {
+            if self.loop_expired(&state) {
+                ended = self.finish_loop(&mut state)?;
+                LoopStep::Ended
+            } else if Self::pending_wakeup(&state.jobs, &id).is_some() {
                 state
                     .active
                     .as_mut()
@@ -938,7 +970,14 @@ impl Scheduler {
                     .last_was_fallback = false;
                 LoopStep::Continues
             } else if !was_fallback {
-                armed = Some(self.arm(&mut state, FALLBACK_SECONDS, true)?.0);
+                match self.arm(&mut state, FALLBACK_SECONDS, true) {
+                    Ok((job, _)) => armed = Some(job),
+                    Err(e) => {
+                        // Nothing pends and nothing will fire, so the loop cannot stay open.
+                        state.active = None;
+                        return Err(e);
+                    }
+                }
                 state
                     .active
                     .as_mut()
@@ -1656,7 +1695,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(info.origin, "model");
+        assert_eq!(info.origin, "the model");
         assert_eq!(info.cadence, "every 5 minutes");
         assert_eq!(rig.scheduler.list()[0].origin, Origin::Model);
     }
@@ -1671,6 +1710,67 @@ mod tests {
         assert!(rig.scheduler.delete(&wake.id).unwrap());
         assert!(rig.scheduler.active_loop().is_none());
         rig.scheduler.begin_loop("again").unwrap();
+    }
+
+    #[test]
+    fn a_fallback_that_cannot_be_armed_ends_the_loop() {
+        let rig = rig();
+        for _ in 0..MAX_JOBS {
+            rig.scheduler.create(spec("*/5 * * * *", true)).unwrap();
+        }
+        rig.scheduler.begin_loop("watch").unwrap();
+        assert!(matches!(
+            rig.scheduler.iteration_ended(),
+            Err(ScheduleError::TooMany)
+        ));
+        assert!(rig.scheduler.active_loop().is_none());
+        rig.scheduler.begin_loop("again").unwrap();
+    }
+
+    #[test]
+    fn a_loop_ends_seven_days_after_it_began() {
+        let rig = rig();
+        rig.scheduler.begin_loop("watch").unwrap();
+        rig.scheduler.wake(600, false).unwrap();
+        rig.clock.set(START_MS + WEEK_MS);
+        assert_eq!(rig.scheduler.iteration_ended().unwrap(), LoopStep::Ended);
+        assert!(rig.scheduler.active_loop().is_none());
+        assert_eq!(rig.scheduler.count(), 0);
+
+        rig.scheduler.begin_loop("again").unwrap();
+        rig.clock.set(START_MS + 2 * WEEK_MS);
+        assert!(matches!(
+            rig.scheduler.wake(600, false),
+            Err(ScheduleError::NoLoop)
+        ));
+        assert!(rig.scheduler.active_loop().is_none());
+    }
+
+    #[test]
+    fn a_saved_time_chrono_cannot_show_is_dropped_not_a_panic() {
+        let rig = rig();
+        let job = rig.scheduler.create(spec("*/5 * * * *", true)).unwrap();
+        let mut bad = job.clone();
+        bad.id = "bad00001".into();
+        bad.next_ms = i64::MAX;
+        let mut worse = job.clone();
+        worse.id = "bad00002".into();
+        worse.created_ms = i64::MIN;
+        let file = rig.dir.path().join(SCHEDULE_FILE);
+        std::fs::write(
+            &file,
+            serde_json::to_vec(&[job.clone(), bad, worse]).unwrap(),
+        )
+        .unwrap();
+        let loaded = rig.reopen();
+        assert_eq!(loaded.list().len(), 1);
+        loaded.settle_expired();
+        assert!(
+            loaded
+                .take_warning()
+                .unwrap()
+                .contains("2 scheduled tasks expired")
+        );
     }
 
     #[test]

@@ -442,7 +442,7 @@ message, so what you asked for earlier stays the only intent the guardian reads.
 typing stays in the input, and messages you queue while it runs are sent as the next turn.
 
 A session holds at most 50 tasks and a prompt is at most 2,000 characters. A recurring task
-expires 7 days after it was created: it runs one last time and is removed. Tasks are saved with
+expires 7 days after it was created: it runs one last time and is removed. A self-paced `/loop` ends 7 days after it started, with no further iterations. Tasks are saved with
 the session. Resuming drops tasks that expired or whose time passed while it was closed, and a pending
 wakeup of a self-paced loop, tells you how many (a dropped wakeup counts as expired), and re-arms the rest from now without replaying missed runs. `/clear` cancels every
 task, because it drops the intent they were scheduled under. A headless run does not
