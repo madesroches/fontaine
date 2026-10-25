@@ -8,7 +8,7 @@ Claude Code's `AskUserQuestion` lets the model stop and ask the human 1–4 mult
 clarifying questions mid-task. No permission mode answers it for the human. Fontaine gets the
 same capability as an `ask_user_question` tool: the TUI shows a question dialog, headless runs
 (where nobody can answer) return an "unavailable, proceed with your best judgment" result, and
-the human's answers are recorded as user messages so the guardian sees them as intent.
+the human's own answers are recorded as user messages so the guardian sees them as intent.
 
 ## Current State
 
@@ -50,7 +50,7 @@ pub trait QuestionSource: Send + Sync {
     fn ask<'a>(&'a self, agent: &'a str, questions: Vec<Question>)
         -> BoxFuture<'a, Reply>;
 }
-pub enum Reply { Answered(Vec<Answer>), Unavailable }
+pub enum Reply { Answered(Vec<Answer>), Declined, Unavailable }
 pub struct Answer { pub question: String, pub selected: Vec<String>, pub other: Option<String> }
 ```
 
@@ -62,14 +62,17 @@ returns `User input is unavailable in this session; proceed with your best judgm
 your assumptions.`
 
 The tool is **root-agent only**: if the calling `AgentId` is not `ROOT_AGENT` it returns the
-same unavailable result without asking. Built-in child toolsets do not include it, and
-user-defined agent types that name it get the refusal, so a background subagent can never put a
+same unavailable result without asking. Built-in child toolsets do not include it. Loaders accept
+any built-in name, so user-defined agent types may name it, and a type naming no tools inherits
+every parent tool (`AgentType::toolset`, `registry.rs`); the name is accepted and refused at call
+time, as for `agent`, `skill` and `send_message`, so a background subagent can never put a
 dialog in front of the human.
 
 ### Risk class and gate
 
 `ask_user_question` is `ReadOnly` in `EXTENSION_RISK`, added to `BUILTIN_TOOL_NAMES`
-(and its permission-rule name mapping in `extensions.rs:114` as `AskUserQuestion`). The
+(and its permission-rule name mapping beside `extensions.rs:115` as `AskUserQuestion`; the
+rule takes no specifier, with an arm like `send_message` in `permission_rules.rs:164` and :588). The
 fast-path carve-out in `permissions.rs:647` becomes "tools that name no path" (`skill`,
 `ask_user_question`) via one small helper rather than a second `||` clause. Because the call can
 only show the human text and collect their choice, it needs no guardian verdict; the floor still
@@ -89,10 +92,12 @@ fn ask_user<'a>(&'a self, agent: &'a str, questions: Vec<Question>) -> BoxFuture
 
 so `DenyAll`, test approvers and headless are unavailable by default with no change. Core's
 `QuestionSource` implementation (next to the `SkillRuntime` wiring in `agent.rs`) calls
-`approver.ask_user`, and on `Answered` appends one `Record::UserMessage` containing the
-questions and answers verbatim, so they feed `recent_user_messages` / task intent exactly as
-typed text does. Cancel (Esc) yields `Reply::Unavailable` with a distinct text, "The user
-declined to answer; proceed with your best judgment or ask in plain text", and appends nothing.
+`approver.ask_user`, and on `Answered` appends one `Record::UserMessage` containing only
+human-supplied content: the selected option labels and typed "Other" text. The model-authored
+question text and option descriptions are not appended, so model text never becomes guardian
+intent. Esc yields `Reply::Declined`, rendered as "The user declined to answer; proceed with your
+best judgment or ask in plain text", and appends nothing; `Reply::Unavailable` renders the
+unavailable text above.
 
 ### TUI
 
@@ -100,47 +105,64 @@ declined to answer; proceed with your best judgment or ask in plain text", and a
 header chip, question, numbered options with descriptions, an "Other" row that opens an
 `InputBuffer`, Up/Down/number keys to move, Space to toggle for `multi_select`, Enter to confirm
 and advance to the next question, Esc to cancel the whole call. Keys typed ahead during the turn
-must not answer it: reuse the `ANSWER_GRACE` guard. `ChannelApprover` gets a `Prompt::Question`
-variant mirrored on `Prompt::Ask` (oneshot reply, dropped sender = unavailable, closed receiver
-pruned like `prune_closed`). Queued behind an open approval like other panels. Screen-reader mode
-renders the same content linearly (follow `accessibility.rs` / `linear.rs`).
+must not answer it: import `ANSWER_GRACE` from `server_prompt.rs` (`pub(crate)`; `approval.rs` and
+`denials.rs` keep private copies). `ChannelApprover` gets a `Prompt::Question` variant mirrored
+on `Prompt::Ask` (oneshot reply, dropped sender = unavailable), with `on_prompt` (~`lib.rs:277`)
+and `drain_prompts` (~:290) gaining a Question arm. `App` keeps one slot per panel (`app.rs:87-105`)
+and `prune_closed` / `pending_for` handle only approvals, so a question gets its own slot, queue
+behind an open approval, and closed-reply pruning. `view.rs:177-221` picks overlays by title
+(`is_approval` flag), so it gains a branch for the question title. Screen-reader mode renders
+linearly in `linear.rs` (`accessibility.rs` only resolves the screen-reader flag): `NEEDS_ANSWER`
+(`linear.rs:24`) must gain the new overlay title.
 
 ### Headless
 
-Nothing to add beyond the default: `fontaine -p` returns the unavailable result. The system
-prompt text for the tool says to use it only when the interface can ask; headless sessions drop
-the tool's mention if the prompt builder already varies by surface, otherwise rely on the result.
+Nothing to add beyond the default: `fontaine -p` returns the unavailable result. The base
+system prompt is static and `PromptParts` has no surface field, so the guidance line is the same
+on all surfaces and headless relies on the unavailable result.
 
 ### Security
 
-No security invariant is weakened: the call is not a path to any side effect, the guardian is
-unchanged, the floor still precedes it, the answer is never model- or mode-supplied, and
-children cannot reach the human. The only new trust edge is that the human's answer text becomes
-guardian intent, which is the intended behaviour (it is human-authored).
+The call is not a path to any side effect, the guardian is unchanged, the floor still precedes
+it, the answer is never model- or mode-supplied, and children cannot reach the human. The one new
+trust edge is human answer text becoming guardian intent; `docs/guardian.md` counts only
+human-typed messages as intent, and `adjudication.rs:109-123` builds `task_intent` /
+`recent_user_messages` verbatim from `UserMessage` records. Recording the question text would
+launder model-authored text into intent, so only selected labels and typed "Other" text are
+appended. A selected label is still chosen from model-written options; the human's selection, not
+the label's wording, is what counts as intent.
 
 ## Implementation Steps
 
 1. `fontaine-tools/src/ask_user.rs`: types, validation, `QuestionSource`, tool; register in
-   `lib.rs`, `names.rs`, `risk.rs` (`EXTENSION_RISK` size 3 → 4).
+   `lib.rs`, `names.rs` (`BUILTIN_TOOL_NAMES` `[&str; 11]` → 12), `risk.rs` (`EXTENSION_RISK`
+   size 3 → 4).
 2. `fontaine-core/src/permissions.rs`: `Approver::ask_user` default; fast-path helper for
-   pathless read-only tools.
+   pathless read-only tools; `permission_rules.rs` specifier validation (:157-165) and rule-spec
+   derivation (:586-588) get a no-specifier arm like `send_message`; `destructive.rs:62` lists
+   the tool beside `skill` as non-destructive (else `_ => true`).
 3. `fontaine-core/src/tools.rs`, `agent.rs`, `extensions.rs`: add to `ExtensionTools`, build the
-   `QuestionSource` over the approver and ledger, rule-name mapping.
+   `QuestionSource` over the approver and ledger, rule-name mapping beside `extensions.rs:115`,
+   and add `AskUserQuestion` to the known-Claude-tool-names error string (`extensions.rs:133`).
 4. `fontaine-tui`: `question.rs` panel, `Prompt::Question`, `App` hosting/queueing/pruning, view
-   and key routing, linear rendering.
-5. System prompt guidance line for the tool (`fontaine-core/src/prompt.rs`).
-6. Docs: `docs/tools.md`, `docs/tui.md`, `docs/headless.md`, `docs/permissions.md`; flip the
+   (overlay-title branch), `lib.rs` `on_prompt` / `drain_prompts` arms, key routing, `linear.rs`
+   (`NEEDS_ANSWER`).
+5. One system prompt guidance line for the tool, on all surfaces (`fontaine-core/src/prompt.rs`).
+6. Docs: the files listed under Documentation; flip the
    parity row in `research/research-claude-code-parity.md`; `CHANGELOG.md`.
-7. Add the dated `## Decisions` line to `tasks/fontaine_harness_plan.md` for the deviations
-   below.
+7. Add dated `## Decisions` lines to `tasks/fontaine_harness_plan.md` for the deviations
+   named in this plan's Decisions (root-only, pathless fast-path carve-out, Esc declined
+   result, answers-as-intent rule).
 
 ## Files to Modify
 
 - `rust/fontaine-tools/src/{ask_user.rs (new), lib.rs, names.rs, risk.rs}`
-- `rust/fontaine-core/src/{permissions.rs, tools.rs, agent.rs, extensions.rs, prompt.rs}`
+- `rust/fontaine-core/src/{permissions.rs, permission_rules.rs, destructive.rs, tools.rs, agent.rs, extensions.rs, prompt.rs}`
 - `rust/fontaine-tui/src/{question.rs (new), lib.rs, app.rs, view.rs, linear.rs}`
-- `rust/fontaine-core/tests/choke_point.rs`, `rust/fontaine-tools/tests/choke_point.rs`
-- `docs/{tools,tui,headless,permissions}.md`, `CHANGELOG.md`,
+- `rust/fontaine-core/tests/{choke_point.rs (ExtensionTools literal at :71), permission_rules.rs (tool-name lists at :71, :84)}`,
+  `rust/fontaine-tools/tests/choke_point.rs`, `rust/fontaine/tests/headless_smoke.rs` (hard-coded
+  tool names)
+- `docs/{tools,tui,headless,permissions,configuration,guardian,agents,architecture,extensions}.md`, `CHANGELOG.md`,
   `research/research-claude-code-parity.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
@@ -157,19 +179,25 @@ guardian intent, which is the intended behaviour (it is human-authored).
 
 - Tool name is `ask_user_question` (snake_case like the other tools); the permission-rule name
   is `AskUserQuestion`, matching the existing mapping convention.
-- Esc cancels the whole call and returns a distinct "declined" result rather than an error.
+- Esc cancels the whole call and returns a distinct "declined" result (`Reply::Declined`) rather than an error.
+- 2026-10-25: `ask_user_question` is root-agent only, refused at call time for children (including custom types that inherit it), because background subagents must not put a dialog in front of the human (#23).
+- 2026-10-25: `ask_user_question` is `ReadOnly` and takes the fast path through a pathless-tool carve-out (with `skill`), because it only shows the human text and collects a choice (#23).
+- 2026-10-25: Esc gives a "declined" result rather than an error or the unavailable text, so the model can tell a refusal from a headless session (#23).
+- 2026-10-25: Only human-supplied content (selected labels, typed "Other" text) is appended as a `UserMessage`, never question text or option descriptions, because model text must not become guardian intent (#23).
 
 ## Documentation
 
-`docs/tools.md` (table row, fast-path note), `docs/tui.md` (dialog keys), `docs/headless.md`
-(unavailable result), `docs/permissions.md` (never auto-answered; answers become intent),
-`CHANGELOG.md`.
+`docs/tools.md` (table row, fast-path note; ~:33), `docs/tui.md` (dialog keys),
+`docs/headless.md` (unavailable result), `docs/permissions.md` (never auto-answered; answers
+become intent; ~:60 and ~:108-115), `docs/configuration.md` (~:457-458), `docs/guardian.md`
+(~:56-60 intent rule, ~:130), `docs/agents.md` (~:38-39, ~:93), `docs/architecture.md` (~:108),
+`docs/extensions.md` (~:65), `CHANGELOG.md`.
 
 ## Testing Strategy
 
 - Unit (`ask_user.rs`): argument validation (0 or 5 questions, 1 or 5 options, duplicate labels,
   unknown field, over-long header), result rendering for single/multi-select/other, root-only
-  refusal, unavailable text.
+  refusal, unavailable and declined texts.
 - Unit (`question.rs`): key handling — navigation, toggle, Other entry, advance, Esc cancel,
   ahead-typed keys ignored within the grace period, dropped sender → closed.
 - Core: with a scripted `Approver`, `Answered` appends a `UserMessage` that appears in the
@@ -177,11 +205,6 @@ guardian intent, which is the intended behaviour (it is human-authored).
   and appends nothing; every permission mode (including `auto`) still reaches the approver and
   never answers itself; a deny rule blocks the call before any dialog.
 - Choke-point tests: the tool is registered wrapped with `ReadOnly` risk (update the table-size
-  assertions); child toolsets exclude it.
+  assertions); built-in child toolsets exclude it, and a custom agent type that inherits every parent tool is refused at call time.
 - Headless integration (`fontaine -p` with a deterministic completion model): the tool call
   returns the unavailable result and the run continues.
-
-## Open Questions
-
-- Should user-defined agent types be allowed to list the tool at all, or should the loader
-  reject it up front? This plan accepts the name and refuses at call time.
