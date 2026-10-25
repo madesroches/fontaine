@@ -57,11 +57,12 @@ result: "Updated todo list: N items (P pending, I in progress, C completed)"
 
 `fontaine-core` implements `TodoStore` as `SessionTodos`: a `Mutex<HashMap<agent id, Vec<TodoItem>>>`.
 Only the root agent's list is written through to `<session dir>/todos.json` (owner-only, atomic
-write via temp file + rename) on every root replace; subagent lists stay in memory.
-`Session::open` loads it; a missing or unparseable file yields an empty list and one
+write via `owner_only::write_atomic`, temp file + rename) on every root replace; subagent lists stay in memory.
+`Session::create` and `open` build the struct literally (`session.rs` ~201, ~234), so both set the new
+field; `open` loads it; a missing or unparseable file yields an empty list and one
 `Approver::warn` for the unparseable case. `Session::fork` already copies the directory; a test pins
 that `todos.json` comes along. A write failure is returned as the tool's error result and warned,
-never swallowed. The file write happens inside the store `Mutex` (`write_atomic`'s temp name is
+never swallowed. The file write happens inside the store `Mutex` (`owner_only::write_atomic`'s temp name is
 `.<name>.<pid>.tmp`, so concurrent writes would race) and never across an await. Lists are keyed by
 agent in memory so a subagent's calls cannot overwrite the root's; the TUI shows the root's list.
 `SessionTodos` is an `Arc` field on `Session` (`Session` is `Clone`, and `build_agent` re-runs on
@@ -85,21 +86,24 @@ agent in memory so a subagent's calls cannot overwrite the root's; the TUI shows
   above the input: `Tasks 3/7 · ▶ <in-progress content>`; expanded it lists every item with
   plain `[ ]`, `[~]`, `[x]` markers. Hidden when the list is empty. Toggled by Ctrl-O, a plain
   bool toggle checked beside Ctrl-T in `handle_input` (`app.rs:518`) under the same `!typing_reason`
-  guard, and by a new `/todos` slash command. Not `/tasks`, which aliases the agents panel.
+  guard (the Ctrl-T check follows the `if let Some(panel) = &mut self.agents` early return, so Ctrl-O
+  is ignored while the agents panel is open), and by a new `/todos` slash command. Not `/tasks`, which aliases the agents panel.
 - `/todos` wiring (`commands.rs`): a `Command::Todos` variant, a `BUILTINS` entry in alphabetical
   position (`the_table_is_sorted_by_name` enforces it), a match arm near `Command::Agents`
   (`lib.rs` ~503), and a `parse_command("/todos")` test.
 - Layout (`view.rs`): the draw path uses a fixed vertical stack (:85-92) and `view::height`
   (:47-62) computes the inline live-area height; both get the todo-row constraint (0 when hidden,
   1 collapsed, item count when expanded). The `KEYS` help line (`reports.rs:28-29`) gains
-  `ctrl+o todos`.
+  `ctrl+o todos`; optionally the `statusbar.rs:55` hint too.
 - Screen-reader/linear mode (`linear.rs`): no panel; on each change the list is rendered as plain
   lines.
 - Updates: in `on_event` (`fontaine-tui/src/lib.rs`), after a successful `todo_write` `ToolResult`,
-  the driver reads the store and calls `panel.set_items(...)`. At start the panel is seeded from `runtime.session` (covers resume).
+  the driver reads the store and calls `panel.set_items(...)`. At start the panel is seeded from `runtime.session` (covers resume); the Session exposes the store
+  via a read accessor the driver uses. `/clear` empties the list (and `todos.json`); `rebuild()` keeps it.
 - The transcript keeps its one-line `Entry::Tool` for the call. `summarize(args)` in `transcript.rs`
-  is not per-tool (first of `SUMMARY_KEYS`, else raw JSON; called with args only), so a `todo_write`
-  special case is added there, computing the counts from `args.todos`.
+  is not per-tool (first of `SUMMARY_KEYS`, else raw JSON; called with args only, `transcript.rs:56-62`), so
+  `summarize` (or its call site) gains the tool name and a `todo_write`
+  special case is added, computing the counts from `args.todos`.
 - Headless (`fontaine -p`): no panel; the tool works and the call appears in the event stream like
   any other.
 
@@ -126,7 +130,8 @@ at `prompt.rs:7`), telling the model to use `todo_write` for multi-step work, ke
    command, transcript `summarize` special case, linear-mode rendering, and seeding/refresh in
    `fontaine-tui/src/lib.rs` (`refresh_panel` ~227, `set_rows` ~270, `on_event` ~1593).
 5. Update `choke_point.rs` (it asserts `EXTENSION_RISK` is exactly the listed entries; the array
-   type in `risk.rs:62` goes `[_; 3]` to `[_; 4]`) and `headless_smoke.rs` tool list; docs
+   type in `risk.rs:62` goes `[_; 3]` to `[_; 4]`) and `headless_smoke.rs` tool list; the "three beyond the built-ins" comment at `choke_point.rs:112` goes
+   stale; docs
    (`tests/docs.rs` requires a `` | `todo_write` | `` row in `docs/tools.md` for every
    `EXTENSION_RISK` entry); CHANGELOG.
 
