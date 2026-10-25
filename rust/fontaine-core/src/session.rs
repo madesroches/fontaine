@@ -6,6 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use fontaine_tools::error_chain::chain;
 use rig_core::DynModel;
 use rig_core::catalog::ModelSpec;
 use rig_core::completion::Usage;
@@ -404,7 +405,10 @@ impl Session {
         let mut conversation = match load_async(&self.store, CONVERSATION_LOG).await {
             Ok(conversation) => conversation,
             Err(e) => {
-                warn(&format!("the conversation could not be read: {e}"));
+                warn(&format!(
+                    "the conversation could not be read: {}",
+                    chain(&e)
+                ));
                 return failed(None);
             }
         };
@@ -418,14 +422,17 @@ impl Session {
             Ok(Some(plan)) => plan,
             Ok(None) => return CompactResult::Skipped,
             Err(e) => {
-                warn(&format!("the model cannot be asked to summarize: {e}"));
+                warn(&format!(
+                    "the model cannot be asked to summarize: {}",
+                    chain(&e)
+                ));
                 return failed(None);
             }
         };
         let response = match model.call(plan.request.clone()).await {
             Ok(response) => response,
             Err(e) => {
-                warn(&format!("the summarizing call failed: {e}"));
+                warn(&format!("the summarizing call failed: {}", chain(&e)));
                 return failed(None);
             }
         };
@@ -434,7 +441,7 @@ impl Session {
         state.summary = match Summarizer::summary_text(&response) {
             Ok(text) => text,
             Err(e) => {
-                warn(&format!("the summary cannot be used: {e}"));
+                warn(&format!("the summary cannot be used: {}", chain(&e)));
                 return failed(Some(usage));
             }
         };
@@ -445,7 +452,8 @@ impl Session {
         let after = estimate_tokens(conversation.messages());
         if let Err(e) = save_async(&self.store, CONVERSATION_LOG, &mut conversation).await {
             warn(&format!(
-                "the compacted conversation could not be saved: {e}"
+                "the compacted conversation could not be saved: {}",
+                chain(&e)
             ));
             return failed(Some(usage));
         }

@@ -19,7 +19,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     .transcript
                     .notice(format!("added workspace root {}", root.display()));
             }
-            Err(e) => self.app.transcript.error(format!("/add-dir: {e}")),
+            Err(e) => self.app.transcript.error(format!(
+                "/add-dir: {}",
+                fontaine_tools::error_chain::chain(&e)
+            )),
         }
     }
 

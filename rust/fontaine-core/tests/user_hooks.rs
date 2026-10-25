@@ -670,3 +670,65 @@ async fn a_permission_denied_hook_hears_about_floor_denials_too() {
     assert_eq!(event["tier"], "deny_rule");
     assert!(event["reason"].as_str().unwrap().contains("git push"));
 }
+
+async fn run_directly(
+    hook: &CommandHook,
+) -> Result<fontaine_core::permissions::HookDecision, fontaine_core::permissions::HookError> {
+    let args = json!({});
+    let cwd = std::env::temp_dir();
+    PreToolUseHook::run(
+        hook,
+        fontaine_core::permissions::PreToolUseEvent {
+            tool: "shell",
+            args: &args,
+            agent: ROOT_AGENT,
+            tool_use_id: None,
+            session_id: "s",
+            cwd: &cwd,
+            permission_mode: "manual",
+            workspace_roots: &[],
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_hook_that_cannot_start_keeps_the_io_error_as_its_source() {
+    let missing = tempfile::tempdir().unwrap().path().join("gone");
+    let process = Arc::new(HookProcess {
+        scrub_env: Vec::new(),
+        set_env: Vec::new(),
+        git_bash: common::git_bash(),
+        project_dir: missing,
+    });
+    let h = hook(None, command(&[]), user());
+    let error = run_directly(&CommandHook::new("pre_tool_use", &h, process))
+        .await
+        .expect_err("no working directory to start in");
+    assert!(matches!(
+        error,
+        fontaine_core::permissions::HookError::Failed { .. }
+    ));
+    let source = std::error::Error::source(&error).expect("a cause");
+    assert!(
+        source.downcast_ref::<std::io::Error>().is_some(),
+        "{source}"
+    );
+}
+
+#[tokio::test]
+async fn malformed_hook_output_keeps_the_json_error_as_its_source() {
+    let h = hook(None, command(&["--reply", "this is not json"]), user());
+    let error = run_directly(&CommandHook::new("pre_tool_use", &h, process(Vec::new())))
+        .await
+        .expect_err("stdout is not JSON");
+    assert!(matches!(
+        error,
+        fontaine_core::permissions::HookError::Malformed { .. }
+    ));
+    let source = std::error::Error::source(&error).expect("a cause");
+    assert!(
+        source.downcast_ref::<serde_json::Error>().is_some(),
+        "{source}"
+    );
+}

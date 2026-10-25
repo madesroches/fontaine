@@ -641,8 +641,8 @@ async fn run_headless(
     );
     let mut runtime = match AgentRuntime::new(setup) {
         Ok(runtime) => runtime,
-        Err(message) => {
-            eprintln!("fontaine: {message}");
+        Err(e) => {
+            eprintln!("fontaine: {}", fontaine_tools::error_chain::chain(&e));
             return 1;
         }
     };

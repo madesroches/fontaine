@@ -424,7 +424,7 @@ impl Setup {
                 Some(Box::new((models, self.config.clone())))
             }
             Err(e) => {
-                self.error = e.to_string();
+                self.error = chain(&e);
                 None
             }
         })
@@ -433,8 +433,9 @@ impl Setup {
     async fn pick<S: Surface>(&mut self, io: &mut Io<S>, reference: String) -> io::Result<Step> {
         if let Err(e) = user_config::set_model(&self.user_file, &reference) {
             self.warnings.push(format!(
-                "could not save {reference} as your model in {}: {e}",
-                self.user_file.display()
+                "could not save {reference} as your model in {}: {}",
+                self.user_file.display(),
+                chain(&e)
             ));
         }
         self.config.model = Some(reference.clone());

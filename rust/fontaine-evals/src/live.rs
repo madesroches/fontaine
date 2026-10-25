@@ -165,7 +165,8 @@ pub fn add_screen(
         timeout_ms: config::DEFAULT_SCREEN_TIMEOUT_MS,
         shadow: false,
     });
-    let stage = fontaine_core::agent::build_screen(&config, profile)?
+    let stage = fontaine_core::agent::build_screen(&config, profile)
+        .map_err(|e| fontaine_tools::error_chain::chain(&e))?
         .expect("a screen was just configured");
     live.screen = Some(stage.screen);
     Ok(())

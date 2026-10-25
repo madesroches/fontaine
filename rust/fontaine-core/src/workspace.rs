@@ -51,7 +51,10 @@ pub fn resolve(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 warnings.push(skip("it does not exist"));
             }
-            Err(e) => warnings.push(skip(&format!("it cannot be resolved ({e})"))),
+            Err(e) => warnings.push(skip(&format!(
+                "it cannot be resolved ({})",
+                fontaine_tools::error_chain::chain(&e)
+            ))),
             Ok(canonical) if !canonical.is_dir() => warnings.push(skip("it is not a directory")),
             Ok(canonical) => {
                 if !roots.contains(&canonical) {

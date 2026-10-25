@@ -221,7 +221,8 @@ async fn start_pg2(params: &StartParams<'_>, timeout: Duration) -> ScannerStart 
             let dir = scanner_model::default_dir(params.data_dir);
             let token = (params.env)(token_var).and_then(|v| v.into_string().ok());
             let base_url = params.model_base_url.unwrap_or(scanner_model::BASE_URL);
-            // Before the TUI takes the terminal, so a slow first start does not look hung.
+            // Straight to stderr rather than a returned notice: it must show before the TUI takes
+            // the terminal, so a slow first start does not look hung.
             if token.is_some() && !scanner_model::missing(&dir).is_empty() {
                 eprintln!(
                     "fontaine: downloading PromptGuard 2 to {} (first start only)...",
@@ -234,7 +235,7 @@ async fn start_pg2(params: &StartParams<'_>, timeout: Duration) -> ScannerStart 
             };
             if let Err(e) = scanner_model::ensure(&dir, base_url, token.as_deref(), &network).await
             {
-                return fail(notices, e.to_string());
+                return fail(notices, fontaine_tools::error_chain::chain(&e));
             }
             dir
         }

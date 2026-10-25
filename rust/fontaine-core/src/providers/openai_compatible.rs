@@ -7,6 +7,7 @@ use super::openai::Connected;
 use super::{AccountClient, ConnectContext, CredentialPolicy, Provider};
 use crate::config::Account;
 use crate::transport::caused_client;
+use fontaine_tools::error_chain::chain;
 
 /// The one gateway dialect every `openai-compatible` account speaks. Its name is the vendor
 /// rig prices by, so it is the kind name and never an account name: such endpoints are unpriced.
@@ -43,8 +44,8 @@ impl Provider for OpenAiCompatible {
         if let Some(url) = ctx.base_url() {
             config = config.with_base_url(url);
         }
-        Ok(Arc::new(Connected(
-            config.connect(caused_client(ctx.network)?),
-        )))
+        Ok(Arc::new(Connected(config.connect(
+            caused_client(ctx.network).map_err(|e| chain(&e))?,
+        ))))
     }
 }

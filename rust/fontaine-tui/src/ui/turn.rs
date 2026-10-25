@@ -1,4 +1,5 @@
 use crate::{Action, App, Ui};
+use fontaine_core::RuntimeError;
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::Decision;
 use fontaine_core::ledger::Record;
@@ -108,7 +109,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         runtime: &AgentRuntime,
         name: &str,
         argument: &str,
-    ) -> Result<Result<String, String>, TurnEnd> {
+    ) -> Result<Result<String, RuntimeError>, TurnEnd> {
         let mut expansion = Box::pin(runtime.expand_skill(name, argument));
         let end = match self
             .serve_while(runtime, &mut expansion, Serve::Prompts)

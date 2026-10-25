@@ -367,7 +367,9 @@ impl ProviderDialog {
     }
 
     fn name_problem(&self, name: &str) -> Option<String> {
-        accounts::check_name_in(name, &|taken| self.rows.iter().any(|r| r.name == taken)).err()
+        accounts::check_name_in(name, &|taken| self.rows.iter().any(|r| r.name == taken))
+            .err()
+            .map(|e| chain(&e))
     }
 
     fn name_key(&mut self, key: KeyEvent) -> DialogKey {

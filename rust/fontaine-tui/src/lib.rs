@@ -180,7 +180,8 @@ pub async fn drive(
     let data_dir = setup.data_dir.clone();
     let user_config = setup.user_config.clone();
     let env = setup.env.clone();
-    let mut runtime = AgentRuntime::new(setup)?;
+    let mut runtime =
+        AgentRuntime::new(setup).map_err(|e| fontaine_tools::error_chain::chain(&e))?;
     runtime.record_session_start().await;
     let theme = Theme::preset(runtime.config.tui.theme);
     let mut ui = Ui {
@@ -306,7 +307,12 @@ pub async fn run(
     launch_dir: PathBuf,
     screen_reader: Option<accessibility::Source>,
 ) -> Result<(), String> {
-    enable_raw_mode().map_err(|e| format!("could not start the terminal UI: {e}"))?;
+    enable_raw_mode().map_err(|e| {
+        format!(
+            "could not start the terminal UI: {}",
+            fontaine_tools::error_chain::chain(&e)
+        )
+    })?;
     let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -323,7 +329,10 @@ pub async fn run(
             Ok(screen) => Some(Arc::new(Mutex::new(screen))),
             Err(e) => {
                 restore_terminal();
-                return Err(format!("could not start the terminal UI: {e}"));
+                return Err(format!(
+                    "could not start the terminal UI: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                ));
             }
         }
     };

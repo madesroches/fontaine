@@ -134,7 +134,8 @@ impl DeviceFlow {
     pub fn new(endpoints: DeviceFlowEndpoints, network: &LoadedNetwork) -> Result<Self, String> {
         Ok(DeviceFlow {
             endpoints,
-            http: crate::transport::reqwest_client(network)?,
+            http: crate::transport::reqwest_client(network)
+                .map_err(|e| fontaine_tools::error_chain::chain(&e))?,
             request_timeout: Some(REQUEST_TIMEOUT),
         })
     }

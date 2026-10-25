@@ -40,8 +40,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 match runtime.approve_mcp_server(&plan) {
                     Ok(()) => {}
                     Err(e) => self.app.transcript.error(format!(
-                        "could not remember the approval of `{}`: {e}",
-                        plan.name
+                        "could not remember the approval of `{}`: {}",
+                        plan.name,
+                        fontaine_tools::error_chain::chain(&e)
                     )),
                 }
                 approved.push(plan.name.clone());

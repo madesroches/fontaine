@@ -286,7 +286,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 let prompt = match self.expand_serving(runtime, &name, &argument).await {
                     Ok(Ok(prompt)) => prompt,
                     Ok(Err(e)) => {
-                        self.app.transcript.error(format!("/{name}: {e}"));
+                        self.app.transcript.error(format!(
+                            "/{name}: {}",
+                            fontaine_tools::error_chain::chain(&e)
+                        ));
                         return Continue(());
                     }
                     Err(TurnEnd::InputClosed) => return Break(()),

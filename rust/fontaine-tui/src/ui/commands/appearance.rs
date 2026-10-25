@@ -79,7 +79,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 .app
                 .transcript
                 .notice(format!("output style is now {}", choice.unwrap_or("none"))),
-            Err(e) => self.app.transcript.error(format!("/output-style: {e}")),
+            Err(e) => self.app.transcript.error(format!(
+                "/output-style: {}",
+                fontaine_tools::error_chain::chain(&e)
+            )),
         }
     }
 }

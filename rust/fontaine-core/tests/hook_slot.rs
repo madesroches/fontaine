@@ -44,8 +44,8 @@ impl PreToolUseHook for Double {
         Box::pin(async move {
             match &self.reply {
                 Reply::Decide(decision) => Ok(decision.clone()),
-                Reply::Fail => Err(HookError::Failed("boom".into())),
-                Reply::Malformed => Err(HookError::Malformed("not json".into())),
+                Reply::Fail => Err(HookError::failed("boom")),
+                Reply::Malformed => Err(HookError::malformed("not json")),
                 Reply::Hang => {
                     tokio::time::sleep(Duration::from_secs(30)).await;
                     Ok(HookDecision::default())

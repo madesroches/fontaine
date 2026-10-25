@@ -49,6 +49,7 @@ fn names_are_checked_against_the_dialog_rule_and_the_existing_accounts() {
     assert!(
         accounts::check_name("work", &config)
             .unwrap_err()
+            .to_string()
             .contains("already exists")
     );
     for ok in ["home", "my-gateway_2", "X"] {
@@ -65,7 +66,7 @@ fn build_runs_the_checks_the_loader_runs() {
         w.load().unwrap_err().to_string()
     };
     let built = accounts::build(&new_account("gw", "openai-compatible", None), &config);
-    let message = built.unwrap_err();
+    let message = built.unwrap_err().to_string();
     assert!(message.contains("accounts.gw.base_url"), "{message}");
     assert!(
         loader_error.contains("accounts.gw.base_url"),

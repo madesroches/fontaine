@@ -85,10 +85,10 @@ impl HookProcess {
         }
         let mut child = process
             .spawn()
-            .map_err(|e| HookError::Failed(format!("cannot start the hook: {e}")))?;
+            .map_err(|e| HookError::failed_by("cannot start the hook", e))?;
         if let Some(mut input) = child.stdin.take() {
             let bytes = serde_json::to_vec(stdin)
-                .map_err(|e| HookError::Failed(format!("cannot encode the event: {e}")))?;
+                .map_err(|e| HookError::failed_by("cannot encode the event", e))?;
             // A hook that never reads its input is fine; the write simply fails.
             tokio::spawn(async move {
                 let _ = input.write_all(&bytes).await;
@@ -98,7 +98,7 @@ impl HookProcess {
         let output = child
             .wait_with_output()
             .await
-            .map_err(|e| HookError::Failed(format!("the hook did not finish: {e}")))?;
+            .map_err(|e| HookError::failed_by("the hook did not finish", e))?;
         Ok(HookOutput {
             code: output.status.code(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -161,23 +161,23 @@ fn parse_specific(output: &HookOutput, event: &str) -> Result<Option<Value>, Hoo
     if text.is_empty() {
         return Ok(None);
     }
-    let value: Value = serde_json::from_str(text)
-        .map_err(|e| HookError::Malformed(format!("stdout is not JSON: {e}")))?;
+    let value: Value =
+        serde_json::from_str(text).map_err(|e| HookError::malformed_by("stdout is not JSON", e))?;
     let Some(object) = value.as_object() else {
-        return Err(HookError::Malformed("stdout is not a JSON object".into()));
+        return Err(HookError::malformed("stdout is not a JSON object"));
     };
     let Some(specific) = object.get("hookSpecificOutput") else {
         return Ok(None);
     };
     let Some(map) = specific.as_object() else {
-        return Err(HookError::Malformed(
-            "`hookSpecificOutput` is not an object".into(),
+        return Err(HookError::malformed(
+            "`hookSpecificOutput` is not an object",
         ));
     };
     if let Some(name) = map.get("hookEventName").and_then(Value::as_str)
         && name != event
     {
-        return Err(HookError::Malformed(format!(
+        return Err(HookError::malformed(format!(
             "`hookEventName` is `{name}`, not `{event}`"
         )));
     }
@@ -257,7 +257,7 @@ impl PreToolUseHook for CommandHook {
                     });
                 }
                 other => {
-                    return Err(HookError::Failed(format!(
+                    return Err(HookError::failed(format!(
                         "the hook exited with {}",
                         other.map_or_else(|| "a signal".to_string(), |c| c.to_string())
                     )));
@@ -272,7 +272,7 @@ impl PreToolUseHook for CommandHook {
                 Some("deny") => Some(HookPermission::Deny),
                 Some("ask") => Some(HookPermission::Ask),
                 Some(other) => {
-                    return Err(HookError::Malformed(format!(
+                    return Err(HookError::malformed(format!(
                         "`permissionDecision` is `{other}`, not allow, deny or ask"
                     )));
                 }
@@ -336,7 +336,7 @@ impl PermissionDeniedHook for CommandHook {
             input["tier"] = json!(event.tier.as_str());
             let output = self.call(wire::DENIED, input).await?;
             if output.code != Some(0) {
-                return Err(HookError::Failed(format!(
+                return Err(HookError::failed(format!(
                     "the hook exited with {}",
                     output
                         .code
@@ -349,7 +349,7 @@ impl PermissionDeniedHook for CommandHook {
             match specific.get("retry") {
                 None => Ok(false),
                 Some(Value::Bool(retry)) => Ok(*retry),
-                Some(_) => Err(HookError::Malformed("`retry` is not a boolean".into())),
+                Some(_) => Err(HookError::malformed("`retry` is not a boolean")),
             }
         })
     }
