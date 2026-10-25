@@ -52,13 +52,15 @@ result: "Updated todo list: N items (P pending, I in progress, C completed)"
 
 ### Store and persistence
 
-`fontaine-core` implements `TodoStore` as `SessionTodos`: a `Mutex<HashMap<agent id, Vec<TodoItem>>>`
-written through to `<session dir>/todos.json` (owner-only, atomic write via temp file + rename) on
-every replace. `Session::open` loads it; a missing or unparseable file yields an empty list and one
+`fontaine-core` implements `TodoStore` as `SessionTodos`: a `Mutex<HashMap<agent id, Vec<TodoItem>>>`.
+Only the root agent's list is written through to `<session dir>/todos.json` (owner-only, atomic
+write via temp file + rename) on every root replace; subagent lists stay in memory. Subagent ids
+are counter-based and the agent tree is not persisted, so persisted non-root entries would be
+orphaned or wrongly inherited by a different agent after resume. `Session::open` loads it; a missing or unparseable file yields an empty list and one
 `Approver::warn` for the unparseable case. `Session::fork` already copies the directory; a test pins
 that `todos.json` comes along. A write failure is returned as the tool's error result and warned,
-never swallowed. Lists are keyed by agent so a subagent's calls cannot overwrite the root's; the
-TUI shows the root's list. Sharing one list with subagents is left for later, as the issue says.
+never swallowed. Lists are keyed by agent in memory so a subagent's calls cannot overwrite the
+root's; the TUI shows the root's list. Sharing one list with subagents is left for later, as the issue says.
 
 ### Permissions
 
@@ -75,22 +77,29 @@ TUI shows the root's list. Sharing one list with subagents is left for later, as
 
 - New `fontaine-tui/src/todo_panel.rs`: `TodoPanel { items, expanded }`. Collapsed it is one line
   above the input: `Tasks 3/7 · ▶ <in-progress content>`; expanded it lists every item with
-  `[ ]`, `[~]`, `[x]` markers (reuse `theme.rs` styles, and the glyph fallbacks `accessibility.rs`
-  already uses). Hidden when the list is empty. Toggled by a key binding registered next to the
-  agents panel's.
-- Updates: the driver reads the store after a successful `todo_write` `ToolResult` and calls
-  `panel.set_items(...)`, the same pull model as the agents panel rows, so no new `SessionEvent`
-  variant. On session start/resume the driver seeds the panel from the store.
-- The transcript keeps its one-line `Entry::Tool` for the call; its summary for `todo_write` shows
-  the counts instead of the raw JSON.
+  plain `[ ]`, `[~]`, `[x]` markers. Hidden when the list is empty. Toggled by Ctrl-O, added as
+  another `if` beside the Ctrl-T check in `handle_input` (`app.rs`), and by a new `/todos` slash
+  command (`commands.rs` plus its help text). Not `/tasks`, which aliases the agents panel.
+- Screen-reader/linear mode (`linear.rs`): no panel; on each change the list is rendered as plain
+  lines.
+- Updates: in `on_event` (`fontaine-tui/src/lib.rs`), after a successful `todo_write` `ToolResult`,
+  the driver reads the store and calls `panel.set_items(...)`. This is a new trigger, unlike the
+  agents panel's per-tick `refresh_panel`, but the same pull model, so no new `SessionEvent`
+  variant. At start the panel is seeded from `runtime.session` (covers resume).
+- The transcript keeps its one-line `Entry::Tool` for the call. `summarize(args)` in `transcript.rs`
+  is not per-tool (first of `SUMMARY_KEYS`, else raw JSON; called with args only), so a `todo_write`
+  special case is added there, computing the counts from `args.todos`.
 - Headless (`fontaine -p`): no panel; the tool works and the call appears in the event stream like
   any other.
 
 ### System prompt
 
-One short paragraph in the system prompt (`fontaine-core/src/prompt.rs`) telling the model to use
-`todo_write` for multi-step work, keep one item `in_progress`, and mark items complete as it
-finishes them. Snapshot test in `tests/snapshots` updated.
+One short paragraph appended to the base prompt `fontaine-core/prompts/system_prompt.md` (included
+at `prompt.rs:7`), telling the model to use `todo_write` for multi-step work, keep one item
+`in_progress`, and mark items complete as it finishes them. The base prompt also goes to subagents
+(`agent.rs:570-590`), so it is worded conditionally ("if you have `todo_write`"). Snapshot
+`fontaine-core/tests/snapshots/system_prompt__the_assembled_prompt_is_stable.snap` (driven by
+`tests/system_prompt.rs`) is updated.
 
 ## Implementation Steps
 
@@ -100,19 +109,25 @@ finishes them. Snapshot test in `tests/snapshots` updated.
    `Session`; add `todo: TodoTool` to `ExtensionTools`, register it in `tools.rs`, construct it in
    `agent.rs`.
 3. `fontaine-core`: fast-path and destructive changes in `permissions.rs` / `destructive.rs`;
-   system prompt paragraph.
-4. `fontaine-tui`: `todo_panel.rs`, wire into `app.rs` / `view.rs`, key binding, transcript summary,
-   driver seeding and refresh.
-5. Update `choke_point.rs` tables and `headless_smoke.rs` tool list; docs; CHANGELOG.
+   system prompt paragraph in `prompts/system_prompt.md`.
+4. `fontaine-tui`: `todo_panel.rs`, wire into `app.rs` / `view.rs`, Ctrl-O binding and `/todos`
+   command, transcript `summarize` special case, linear-mode rendering, and seeding/refresh in
+   `fontaine-tui/src/lib.rs` (`refresh_panel` ~227, `set_rows` ~270, `on_event` ~1593).
+5. Update `choke_point.rs` (it asserts `EXTENSION_RISK` is exactly the listed entries; the array
+   type in `risk.rs:62` goes `[_; 3]` to `[_; 4]`) and `headless_smoke.rs` tool list; docs
+   (`tests/docs.rs` requires a `` | `todo_write` | `` row in `docs/tools.md` for every
+   `EXTENSION_RISK` entry); CHANGELOG.
 
 ## Files to Modify
 
 - `rust/fontaine-tools/src/{todo.rs (new), lib.rs, names.rs, risk.rs}`
-- `rust/fontaine-core/src/{todos.rs (new), lib.rs, session.rs, tools.rs, agent.rs, permissions.rs, destructive.rs, prompt.rs}`
-- `rust/fontaine-tui/src/{todo_panel.rs (new), lib.rs, app.rs, view.rs, transcript.rs}`
-- `rust/fontaine/src/lib.rs` (driver seeding/refresh)
-- `rust/fontaine-core/tests/choke_point.rs`, `rust/fontaine/tests/headless_smoke.rs`, snapshots
-- `docs/tools.md`, `docs/tui.md`, `docs/permissions.md`, `CHANGELOG.md`
+- `rust/fontaine-core/src/{todos.rs (new), lib.rs, session.rs, tools.rs, agent.rs, permissions.rs, destructive.rs}`
+- `rust/fontaine-core/prompts/system_prompt.md`
+- `rust/fontaine-tui/src/{todo_panel.rs (new), lib.rs (seeding/refresh), app.rs, commands.rs, view.rs, linear.rs, transcript.rs}`
+- `rust/fontaine-core/tests/choke_point.rs`, `rust/fontaine-core/tests/system_prompt.rs`,
+  `rust/fontaine-core/tests/snapshots/system_prompt__the_assembled_prompt_is_stable.snap`,
+  `rust/fontaine/tests/headless_smoke.rs`
+- `docs/tools.md`, `docs/tui.md`, `docs/permissions.md`, `docs/architecture.md`, `docs/headless.md`, `CHANGELOG.md`
 
 ## Trade-offs
 
@@ -129,29 +144,35 @@ finishes them. Snapshot test in `tests/snapshots` updated.
 
 - 2026-10-25: Single `todo_write` tool, replace-whole-list semantics (see Trade-offs).
 - 2026-10-25: Lists are keyed by agent id and the TUI shows only the root's; shared lists are a follow-up.
+- 2026-10-25: Only the root's list is persisted to `todos.json`; subagent lists are in-memory (agent ids are not stable across resume).
+- 2026-10-25: Panel toggle is Ctrl-O (unbound; Ctrl-T is the agents panel) plus a `/todos` slash command (`/tasks` aliases the agents panel).
+- 2026-10-25: Screen-reader/linear mode renders the list as plain lines on change; no glyph fallbacks or per-item theme styles.
 
 ## Documentation
 
-- `docs/tools.md`: add `todo_write` to the table (read-only class) with its arguments.
-- `docs/tui.md`: the task panel, its collapsed/expanded forms and the toggle key.
-- `docs/permissions.md`: note that `todo_write` takes the fast path and can still be denied by rule.
+- `docs/tools.md`: add the `todo_write` row (read-only class) with its arguments; fix line ~56
+  ("skill is the one read-only tool that names no path"), which becomes false.
+- `docs/tui.md`: the task panel, its collapsed/expanded forms, a Ctrl-O row in the keys table (51-64)
+  and the `/todos` command.
+- `docs/permissions.md`: note that `todo_write` takes the fast path and can still be denied by rule;
+  check line ~114 for a per-tool row that needs a `todo_write` entry.
+- `docs/architecture.md` (152-180): sessions keep two stores and resume/fork copy "both stores"; now
+  a third file, `todos.json`.
+- `docs/headless.md:56`: add `todos.json` to the session dir contents.
 - `CHANGELOG.md`: entry under unreleased.
 
 ## Testing Strategy
 
 Unit (no live APIs):
 - `todo.rs`: schema parse, unknown field rejected, each validation limit, empty array clears, result text counts.
-- `SessionTodos`: replace/read per agent, write-through file contents, load on open, corrupt file →
+- `SessionTodos`: replace/read per agent in memory, write-through file contents (root only; a subagent replace leaves `todos.json` untouched), load on open, corrupt file →
   empty list + warning, forked session carries the list, write failure surfaces as an error result.
 - Permissions: `todo_write` in default mode takes the fast path; a `deny` rule on it still denies
   (floor precedence); `choke_point.rs` expects the new name with `ReadOnly`; destructive derive is false.
+- `choke_point.rs`: `EXTENSION_RISK` has exactly four entries including `todo_write`; `tests/docs.rs` finds the `docs/tools.md` row.
 - Child toolset: an agent type narrowed to `read` does not get `todo_write`.
-- TUI: `TodoPanel` rendering (collapsed, expanded, empty, ASCII fallback) via ratatui `TestBackend`
-  snapshots; toggle key; driver refresh after a `todo_write` result using `rig_core::test_utils`
+- TUI: `TodoPanel` rendering (collapsed, expanded, empty) via ratatui `TestBackend`
+  snapshots; Ctrl-O and `/todos` toggle; linear-mode plain-line rendering; driver refresh after a `todo_write` result using `rig_core::test_utils`
   deterministic models.
 - Headless integration: a scripted model calls `todo_write`; the `tool_result` event succeeds and
   `todos.json` appears in the session dir; resuming that session reloads it.
-
-## Open Questions
-
-- Which key toggles the panel? Choose one not already bound in `app.rs` (check the keymap in `docs/tui.md`).
