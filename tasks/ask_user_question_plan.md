@@ -111,11 +111,18 @@ on `Prompt::Ask` (oneshot reply, dropped sender = unavailable), with `on_prompt`
 and `drain_prompts` (~:290) gaining a Question arm. `App` keeps one slot per panel (`app.rs:87-105`),
 and `begin_server` / `begin_unavailable` overwrite a single slot, which would drop a first
 question's reply sender (the call would return unavailable). Questions therefore get a
-`VecDeque` (open one at the front) with closed-reply pruning in `prune_closed`. An open
-approval shows first; a question waits behind it. `handle_key` routes to the question panel
-before the `running` Esc-interrupt at `app.rs:525` (as for the server/unavailable/denied
-prompts, ~:454-470), since a question is open only while a turn runs, so Esc yields
-`Reply::Declined` rather than interrupting; `overlay()` follows the same order. An interrupt
+`VecDeque` (open one at the front) with closed-reply pruning in `prune_closed`. The question slot is
+consulted only when no approval is open (approvals can come from background subagents while the
+root asks), in `handle_key`, `overlay()` (which ranks approval below the server/unavailable
+prompts, `view.rs:213`), `covered()` (~:424), the paste `above_dialog` list (~:393) and the
+Ctrl-C/Esc lines. With no approval open, `handle_key` routes to the question panel before the
+`running` Esc-interrupt at `app.rs:525` (as for the server/unavailable/denied prompts,
+~:454-470), since a question is open only while a turn runs, so Esc yields `Reply::Declined`
+rather than interrupting. Esc while typing in the "Other" `InputBuffer` only leaves the field
+(as the approval panel's `typing_reason` exception, ~:436, :524); Esc elsewhere declines the whole
+call. The body is windowed around the selected option as the model picker does with `body_rows`
+(`view.rs:128`), since `draw_overlay` (`view.rs:339-341`) otherwise shows only the tail of a
+tall body. An interrupt
 (`deny_pending`, ~:355, which today handles only approvals) answers the root agent's pending
 questions `Declined`. `view.rs:177-221` picks overlays by title
 (`is_approval` flag), so it gains a branch for the question title. Screen-reader mode renders
@@ -177,21 +184,10 @@ the label's wording, is what counts as intent.
 - `docs/{tools,tui,headless,permissions,configuration,guardian,agents,architecture,extensions}.md`, `CHANGELOG.md`,
   `research/research-claude-code-parity.md`, `tasks/fontaine_harness_plan.md`
 
-## Trade-offs
-
-- **Reuse `Approver` vs a separate channel.** A defaulted method on `Approver` keeps every
-  existing approver (headless, tests) correct and reuses the TUI's single prompt channel and
-  queueing; a separate trait would need its own plumbing through every surface.
-- **Read-only fast path vs prompting for the call itself.** Asking the human whether the model
-  may ask them a question would be absurd; the dialog is the human interaction.
-- **Root only.** Claude Code does not offer the tool to subagents; background children
-  interrupting the human is also hard to attribute.
-
 ## Decisions
 
-- Tool name is `ask_user_question` (snake_case like the other tools); the permission-rule name
+- 2026-10-25: Tool name is `ask_user_question` (snake_case like the other tools); the permission-rule name
   is `AskUserQuestion`, matching the existing mapping convention.
-- Esc cancels the whole call and returns a distinct "declined" result (`Reply::Declined`) rather than an error.
 - 2026-10-25: `ask_user_question` is root-agent only, refused at call time for children (including custom types that inherit it), because background subagents must not put a dialog in front of the human (#23).
 - 2026-10-25: `ask_user_question` is `ReadOnly` and takes the fast path through a pathless-tool carve-out (with `skill`), because it only shows the human text and collects a choice (#23).
 - 2026-10-25: Esc gives a "declined" result rather than an error or the unavailable text, so the model can tell a refusal from a headless session (#23).
@@ -212,7 +208,9 @@ become intent; ~:60 and ~:108-115), `docs/configuration.md` (~:457-458), `docs/g
   refusal, unavailable and declined texts.
 - TUI (`app.rs`): a second question does not drop the first (queued, shown in order);
   Esc while `running` with a question open yields `Reply::Declined`, not `Action::Interrupt`;
-  interrupt declines pending root questions.
+  interrupt declines pending root questions; with an approval open and a question waiting,
+  Down/Enter go to the approval; Esc while typing in "Other" leaves the field without declining,
+  Esc elsewhere declines the call; a short terminal keeps the selected option visible.
 - Unit (`question.rs`): key handling — navigation, toggle, Other entry, advance, Esc cancel,
   ahead-typed keys ignored within the grace period, dropped sender → closed.
 - Core: with a scripted `Approver`, `Answered` appends a `UserMessage` that appears in the
