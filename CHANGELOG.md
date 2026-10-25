@@ -257,6 +257,14 @@ All notable changes are recorded here. The format follows
     scanner-model download, the `opencode-go` sign-in and HTTP MCP servers. An invalid setting is a
     configuration error (exit code 2), never a fallback to a direct or default-trust connection.
 
+### Changed
+
+- CI runs faster: the pg2 clippy and test legs and the fixture eval runs are Linux-only (macOS and
+  Windows still run `cargo check --features fontaine/pg2` and the `--guardian none` eval), the
+  Rust cache is saved only on `main`, pull-request runs cancel when superseded, debug info in the
+  dev and test profiles is reduced to line tables, and a PR touching only `tasks/` or `AGENTS.md`
+  skips the Rust steps (#178).
+
 ### Fixed
 
 - A host with no system CA bundle no longer stops startup: `webfetch` and the scanner-model
