@@ -23,6 +23,7 @@ pub mod server_prompt;
 pub mod setup;
 pub mod statusbar;
 pub mod theme;
+pub mod todo_panel;
 pub mod transcript;
 pub mod trust_prompt;
 pub mod view;
@@ -528,6 +529,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.app.denied = Some(DeniedList::new(runtime.state.denied_calls()));
             }
             Some(Command::Agents) => self.app.agents = Some(AgentsPanel::new()),
+            Some(Command::Todos) => self.app.todos.toggle(),
             Some(Command::OutputStyle(name)) => self.output_style(runtime, &name),
             Some(Command::Model(reference)) => self.model(runtime, &reference).await,
             Some(Command::GuardianModel(reference)) => self.guardian_model(runtime, &reference),
@@ -744,6 +746,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         match runtime.clear_conversation().await {
             Ok(()) => {
                 self.app.transcript.clear();
+                self.app.todos.set_items(runtime.session.todos().root());
                 // They described the conversation that is gone.
                 self.app.pending_notices.clear();
                 self.app.transcript.notice(
@@ -1631,7 +1634,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
             _ => None,
         };
+        let todos_changed = matches!(
+            &event,
+            SessionEvent::ToolResult { tool, .. } if tool == "todo_write"
+        );
         self.app.on_event(event);
+        if todos_changed {
+            self.app.todos.set_items(runtime.session.todos().root());
+        }
         if let Some(call) = denial {
             self.app.transcript.guardian_denied(
                 call.tool_use_id.as_deref().unwrap_or(""),
@@ -1713,6 +1723,7 @@ pub async fn drive(
     ui.app.theme = theme;
     ui.app.history = history;
     ui.app.primary_root = primary_root;
+    ui.app.todos.set_items(runtime.session.todos().root());
     for error in [history_error, recent_error].into_iter().flatten() {
         ui.app.transcript.notice(error);
     }

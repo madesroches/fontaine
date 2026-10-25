@@ -59,7 +59,7 @@ pub fn derive(tool: &str, args: &Value, facts: &Facts<'_>) -> bool {
         return true;
     }
     match tool {
-        "read" | "ls" | "glob" | "grep" | "skill" | "ask_user_question" => false,
+        "read" | "ls" | "glob" | "grep" | "skill" | "ask_user_question" | "todo_write" => false,
         "webfetch" => true,
         "write" | "edit" => file_write(args, facts),
         "shell" => shell(args, facts),

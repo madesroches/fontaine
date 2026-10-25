@@ -70,6 +70,7 @@ fn the_grammar_is_checked_per_tool_kind() {
         "skill(review)",
         "send_message",
         "ask_user_question",
+        "todo_write",
     ] {
         parse_rule(good).unwrap_or_else(|e| panic!("{good}: {e}"));
     }
@@ -84,6 +85,7 @@ fn the_grammar_is_checked_per_tool_kind() {
         "webfetch(example.com)",
         "send_message(x)",
         "ask_user_question(x)",
+        "todo_write(x)",
         "mcp__github(x)",
         "agent(a b)",
         "unknown_tool",

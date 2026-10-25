@@ -41,3 +41,7 @@ Never print, quote or repeat secrets in your answers or in files you write: API 
 - Understand the code before changing it: read the relevant files and follow the conventions already there.
 - Make the smallest change that solves the task, and check it, for example by running the tests the project already has.
 - Report what you did and what you found. When you could not finish or verify something, say so.
+
+# Task list
+
+If you have the `todo_write` tool, use it for work with several steps: list the steps, keep exactly one item `in_progress`, and mark each item `completed` as soon as you finish it. Each call replaces the whole list. Skip it for a task that takes one or two steps.

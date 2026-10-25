@@ -250,7 +250,7 @@ fn network_and_mcp_and_unknown_tools_are_destructive() {
     ));
     assert!(derive("mcp__github__list_issues", &json!({}), &facts));
     assert!(derive("agent", &json!({}), &facts));
-    for tool in ["read", "ls", "glob", "grep"] {
+    for tool in ["read", "ls", "glob", "grep", "skill", "todo_write"] {
         assert!(!derive(tool, &json!({"path": "."}), &facts), "{tool}");
     }
 }

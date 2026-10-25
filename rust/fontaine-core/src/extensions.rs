@@ -114,6 +114,7 @@ fn claude_tool(name: &str) -> Option<&'static str> {
         "Skill" => "skill",
         "SendMessage" => "send_message",
         "AskUserQuestion" => "ask_user_question",
+        "TodoWrite" => "todo_write",
         _ => return None,
     })
 }
@@ -131,7 +132,7 @@ pub fn map_tool_entry(entry: &str) -> Result<String, String> {
         None if is_builtin(name) || is_mcp(name) => name.to_string(),
         None => {
             return Err(format!(
-                "`{name}` is not a tool Fontaine has; the Claude Code names it knows are Read, Edit, MultiEdit, Write, Glob, Grep, LS, Bash, WebFetch, Task, Agent, Skill, SendMessage and AskUserQuestion"
+                "`{name}` is not a tool Fontaine has; the Claude Code names it knows are Read, Edit, MultiEdit, Write, Glob, Grep, LS, Bash, WebFetch, Task, Agent, Skill, SendMessage, AskUserQuestion and TodoWrite"
             ));
         }
     };
@@ -451,11 +452,16 @@ mod tests {
     }
 
     #[test]
+    fn todo_write_maps_to_todo_write() {
+        assert_eq!(map_tool_entry("TodoWrite").unwrap(), "todo_write");
+    }
+
+    #[test]
     fn unmapped_names_and_bad_specifiers_are_errors() {
         assert!(
-            map_tool_entry("TodoWrite")
+            map_tool_entry("NotebookEdit")
                 .unwrap_err()
-                .contains("TodoWrite")
+                .contains("NotebookEdit")
         );
         assert!(map_tool_entry("WebSearch").is_err());
         assert!(map_tool_entry("Bash(git add:*)").is_err());

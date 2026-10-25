@@ -48,6 +48,12 @@ All notable changes are recorded here. The format follows
     stdio MCP server, after the credential scrub. It loads only from the user-trust scopes,
     rejects `FONTAINE_*` names, never shows a value in a configuration error, and the guardian
     sees the variable names, not their values (#5).
+- Task list (#22)
+  - The `todo_write` tool keeps a session task list the model replaces whole on each call. It is
+    read-only and takes the fast path, and is kept in `todos.json` in the session directory so
+    `--continue`, `--resume` and `--fork-session` bring it back. The terminal UI shows it above the
+    input, collapsed to one line or expanded (Ctrl-O or `/todos`); the screen-reader mode prints
+    it as plain lines when it changes.
 - Cascade screen stage (#130)
   - An optional `[guardian.screen]` stage (user file only) asks a small local Ollama model one
     yes/no question per call in `auto` and `plan` mode and reads `p(yes)` from its first-token

@@ -247,6 +247,21 @@ mod tests {
     }
 
     #[test]
+    fn a_type_narrowed_to_read_does_not_get_the_task_list() {
+        let mut ty = AgentTypes::builtin().get("worker").unwrap().clone();
+        ty.tools = Some(names(&["read"]));
+        assert_eq!(
+            ty.toolset(&names(&["read", "todo_write"])),
+            names(&["read"])
+        );
+        ty.tools = None;
+        assert_eq!(
+            ty.toolset(&names(&["read", "todo_write"])),
+            names(&["read", "todo_write"])
+        );
+    }
+
+    #[test]
     fn disallowed_tools_are_subtracted_and_a_specifier_keeps_the_tool() {
         let mut ty = AgentTypes::builtin().get("worker").unwrap().clone();
         ty.disallowed = names(&["shell", "edit(src/**)"]);

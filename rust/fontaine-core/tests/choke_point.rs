@@ -29,6 +29,7 @@ use fontaine_tools::names::BUILTIN_TOOL_NAMES;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::{BUILTIN_RISK, EXTENSION_RISK, RiskClass, registered_risk};
 use fontaine_tools::skill::{SkillSource, SkillTool};
+use fontaine_tools::todo::{TodoError, TodoItem, TodoStore, TodoTool};
 use futures::future::BoxFuture;
 use rig_agent::tool::server::ToolServer;
 use rig_core::tool::ToolContext;
@@ -69,6 +70,14 @@ impl QuestionSource for NoQuestions {
     }
 }
 
+struct NoTodos;
+
+impl TodoStore for NoTodos {
+    fn replace(&self, _: &str, _: Vec<TodoItem>) -> Result<(), TodoError> {
+        Ok(())
+    }
+}
+
 fn extension() -> ExtensionTools {
     let tree = Arc::new(AgentTree::new(Limits::default()));
     ExtensionTools {
@@ -87,6 +96,9 @@ fn extension() -> ExtensionTools {
         },
         ask_user: AskUserTool {
             source: Arc::new(NoQuestions),
+        },
+        todo: TodoTool {
+            store: Arc::new(NoTodos),
         },
     }
 }
@@ -124,7 +136,7 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         .map(|(name, _)| *name)
         .collect();
     assert_eq!(unique, expected);
-    // The four beyond the built-ins are exactly these.
+    // The five beyond the built-ins are exactly these.
     assert_eq!(
         EXTENSION_RISK,
         [
@@ -132,6 +144,7 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
             ("skill", RiskClass::ReadOnly),
             ("send_message", RiskClass::Arbitrary),
             ("ask_user_question", RiskClass::ReadOnly),
+            ("todo_write", RiskClass::ReadOnly),
         ]
     );
     // The non-MCP names are the names rules can use.

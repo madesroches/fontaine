@@ -25,6 +25,7 @@ use crate::provider_dialog::{DialogKey, ProviderDialog};
 use crate::question::QuestionPanel;
 use crate::server_prompt::ServerPrompt;
 use crate::theme::Theme;
+use crate::todo_panel::TodoPanel;
 use crate::transcript::Transcript;
 
 pub use crate::commands::Command;
@@ -94,6 +95,8 @@ pub struct App {
     pub questions: VecDeque<QuestionPanel>,
     /// The `/agents` panel while it is open.
     pub agents: Option<AgentsPanel>,
+    /// The model's task list, shown above the input.
+    pub todos: TodoPanel,
     /// A repository's MCP server waiting for the human's say-so.
     pub server: Option<ServerPrompt>,
     /// The `/model` or `/guardian-model` picker while it is open.
@@ -158,6 +161,7 @@ impl App {
             queued_approvals: VecDeque::new(),
             questions: VecDeque::new(),
             agents: None,
+            todos: TodoPanel::default(),
             server: None,
             models: None,
             providers: None,
@@ -553,6 +557,10 @@ impl App {
         }
         if control && key.code == KeyCode::Char('t') && !typing_reason {
             self.agents = Some(AgentsPanel::new());
+            return Action::None;
+        }
+        if control && key.code == KeyCode::Char('o') && !typing_reason {
+            self.todos.toggle();
             return Action::None;
         }
         if key.code == KeyCode::Esc && self.approval.is_none() && self.close_palette() {
@@ -1507,6 +1515,19 @@ mod tests {
         press(&mut app, KeyCode::Char('e'));
         press(&mut app, KeyCode::Backspace);
         assert_ne!(selected_name(&app), moved);
+    }
+
+    #[test]
+    fn ctrl_o_toggles_the_task_list_unless_the_agents_panel_has_the_keys() {
+        let mut app = app();
+        assert_eq!(ctrl(&mut app, 'o'), Action::None);
+        assert!(app.todos.expanded);
+        app.agents = Some(AgentsPanel::new());
+        ctrl(&mut app, 'o');
+        assert!(app.todos.expanded);
+        app.agents = None;
+        ctrl(&mut app, 'o');
+        assert!(!app.todos.expanded);
     }
 
     #[test]

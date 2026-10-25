@@ -7,10 +7,12 @@ use std::collections::HashSet;
 use std::io::{self, Write};
 
 use fontaine_core::config::PermissionMode;
+use fontaine_tools::todo::TodoItem;
 use ratatui::style::Modifier;
 use ratatui::text::Line;
 
 use crate::app::App;
+use crate::todo_panel;
 use crate::transcript::{Cut, Entry, Settled, ToolStatus};
 use crate::view;
 
@@ -277,6 +279,8 @@ pub struct Linear<W: Write> {
     prompt_open: bool,
     /// The deny-reason field, not the message box, is what is being typed into.
     on_field: bool,
+    /// The task list as last printed.
+    todos_printed: Vec<TodoItem>,
 }
 
 impl<W: Write> Linear<W> {
@@ -289,6 +293,7 @@ impl<W: Write> Linear<W> {
             echoed: String::new(),
             prompt_open: false,
             on_field: false,
+            todos_printed: Vec::new(),
         }
     }
 
@@ -305,6 +310,16 @@ impl<W: Write> Linear<W> {
                     .filter(|c| !c.is_control() || *c == '\t')
                     .collect::<String>()
             }));
+        }
+
+        // The list prints in full each time it changes, since there is no panel to look at.
+        if app.todos.items() != self.todos_printed.as_slice() {
+            self.todos_printed = app.todos.items().to_vec();
+            lines.extend(
+                todo_panel::plain_lines(&self.todos_printed)
+                    .iter()
+                    .map(|line| terminal_text(line)),
+            );
         }
 
         let overlay = view::overlay(app, WIDTH, u16::MAX, true);

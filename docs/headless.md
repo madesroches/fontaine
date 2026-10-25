@@ -54,7 +54,7 @@ the guardian's calls and the subagents' model calls.
 
 Each run is a session, named by a UUID: the one given with `--session-id`, or a fresh one. Its
 files live in `<data dir>/sessions/<session id>/`, created readable by the current user only. The
-conversation is kept there between turns, and it is compacted by a summarizing call when it
+conversation and the task list (`todos.json`) are kept there between turns, and the conversation is compacted by a summarizing call when it
 outgrows the model's context window less a reserve, or earlier when
 [`[context] autocompact_window`](configuration.md#context) is set (only for a model the catalog
 lists, and, without that setting, only when its window is known; the summarizing call counts

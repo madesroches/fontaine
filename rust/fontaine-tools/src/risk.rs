@@ -57,13 +57,14 @@ pub fn builtin_risk(name: &str) -> Option<RiskClass> {
 }
 
 /// The risk class of the tools Fontaine registers beyond the built-ins: the subagent and
-/// messaging tools, the skill loader and the question dialog. They are assembled by
+/// messaging tools, the skill loader, the question dialog and the task list. They are assembled by
 /// `fontaine-core`, not by `builtins::build`, so they have a table of their own.
-pub const EXTENSION_RISK: [(&str, RiskClass); 4] = [
+pub const EXTENSION_RISK: [(&str, RiskClass); 5] = [
     ("agent", RiskClass::Arbitrary),
     ("skill", RiskClass::ReadOnly),
     ("send_message", RiskClass::Arbitrary),
     ("ask_user_question", RiskClass::ReadOnly),
+    ("todo_write", RiskClass::ReadOnly),
 ];
 
 pub fn extension_risk(name: &str) -> Option<RiskClass> {

@@ -29,6 +29,7 @@ pub mod session;
 pub mod skills;
 pub mod steering;
 pub mod tier;
+pub mod todos;
 pub mod tools;
 pub mod transport;
 pub mod trust;

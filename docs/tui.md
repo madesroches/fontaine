@@ -62,6 +62,7 @@ The bar shows the permission mode, the model, how many subagents are running, an
 | PageUp, PageDown | Scroll the command in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/U/K/W/B/F | Edit the input. |
 | Ctrl-T | Open or close the [agents panel](#the-agents-panel), even over an approval prompt. |
+| Ctrl-O | Expand or collapse the [task list](#the-task-panel). Ignored while the agents panel is open. |
 | `/` as the first character | Opens the [slash-command menu](#slash-command-menu). |
 
 ## Slash-command menu
@@ -236,6 +237,7 @@ conversation. The session starts in the mode your settings give, with no grants 
 | `/skills` | Lists every loaded [skill](extensions.md#skills) with its scope, marking those only the model can use, those only you can run, and those a built-in command hides. |
 | `/status` | Shows the version, the session id, the workspace roots, the permission mode, the main model, the guardian (or why it is unavailable) with its profile, the output style, and how many MCP servers are connected. |
 | `/theme [<name>]` | Without an argument, lists the colour themes, marks the current one and names the file the choice is saved to. With a name, switches to that theme at once and saves it as `[tui] theme` in your user settings file. An unknown name is an error that lists the themes. See [Terminal setup](terminal.md#colours). |
+| `/todos` | Expands or collapses the [task list](#the-task-panel), as Ctrl-O does. |
 | `/<skill> [arguments]` | Runs a [skill](extensions.md#slash-commands-and-arguments). |
 
 Typing `/` lists the built-in commands and your user-invocable skills with their argument hints,
@@ -388,6 +390,19 @@ A repository-defined [MCP server](mcp.md#servers-a-repository-defines) in a trus
 about before it starts: `y` starts it and remembers the answer for this exact definition, `n`
 leaves it off for this session. Servers from your own settings start without a question; a server
 that cannot start is reported in the transcript and skipped.
+
+## The task panel
+
+When the model keeps a task list with the [`todo_write` tool](tools.md), it shows above the message
+box. Collapsed it is one line, `Tasks 3/7 · ▶ the item in progress`; expanded (Ctrl-O or `/todos`)
+it lists every item, marked `[ ]` pending, `[~]` in progress or `[x]` completed. A list taller than
+the screen allows ends with a `+N more` line, and an approval prompt shrinks before the list does.
+The panel is hidden while the list is empty. The transcript still shows each `todo_write` call as a
+one-line entry with its counts.
+
+The list is the main agent's; a subagent's list is not shown. It is kept with the session, so a
+resumed or forked session shows it again, and `/clear` empties it. In screen-reader mode there is
+no panel: the whole list is printed as plain `[ ]`, `[~]` and `[x]` lines each time it changes.
 
 ## The agents panel
 

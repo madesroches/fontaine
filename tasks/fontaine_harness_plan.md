@@ -323,6 +323,10 @@ scorecard run (see `## Remaining work`).
 
 ## Decisions
 
+- 2026-10-25: One `todo_write` tool (the whole list replaced per call) stands in for Claude Code's TaskCreate/TaskGet/TaskList/TaskUpdate, because a single replace-all call is one testable path and Claude Code's `TodoWrite` already works that way (#22).
+- 2026-10-25: Only the root agent's list is displayed and persisted with the session; a subagent's list lives and dies with that subagent, because the panel and the session file have one slot and a child's list is scratch state that is never shown or saved (#22).
+- 2026-10-25: Ctrl-O and `/todos` both toggle the task panel (`/todos` does not print), because the panel can be hidden to reclaim height (#22).
+- 2026-10-25: `todo_write` takes the name-based read-only fast path, like `skill`, because it touches no file the model names, process or network, and only writes the session's own `todos.json` (#22).
 - 2026-10-24: `/help`, `/status`, `/permissions`, `/mcp`, `/hooks` and `/skills` are read-only transcript notices instead of Claude Code's interactive dialogs, because it is one testable path, rule editing stays in config files (2026-10-21), and the text stays in scrollback (#47).
 - 2026-10-24: `/copy` uses OSC 52, preceded inside tmux by `tmux load-buffer -w -` (falling back to `tmux load-buffer -`) as Claude Code does, with no code-block picker and no `w`-to-file, because it adds no dependency and works over SSH, where `arboard` needs X11/Wayland; tmux's default `set-clipboard external` drops an application's OSC 52. The text goes to a clipboard sink passed to `drive`, so the write's `Result` reaches the command in the same call (#47).
 - 2026-10-24: `/diff` is not implemented, because it would spawn `git`, which runs repo-controlled config (`diff.external`, textconv drivers); a `gix` diff is a feature of its own, and `!git diff` covers it as the human's own action (#47).
