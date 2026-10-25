@@ -9,6 +9,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use fontaine_tools::error_chain::chain;
+use fontaine_tools::tls::LoadedNetwork;
 use futures::StreamExt;
 use http::header::{AUTHORIZATION, HeaderName, USER_AGENT};
 use rig_core::http_client::{
@@ -121,13 +122,15 @@ fn named_body<U: Send + 'static>(response: Response<LazyBody<U>>) -> Response<La
 /// connection outlives the runtime that made it. Mirrors rig's default build, including its
 /// fallback to the bundled roots on a host with no system CA certificates
 /// ([`fontaine_tools::tls::build_client`]).
-pub fn caused_client() -> std::result::Result<CausedClient, String> {
-    Ok(CausedClient::new(ReqwestClient::from(reqwest_client()?)))
+pub fn caused_client(network: &LoadedNetwork) -> std::result::Result<CausedClient, String> {
+    Ok(CausedClient::new(ReqwestClient::from(reqwest_client(
+        network,
+    )?)))
 }
 
 /// The plain client behind [`caused_client`], for requests that do not go through rig.
-pub fn reqwest_client() -> std::result::Result<reqwest::Client, String> {
-    fontaine_tools::tls::build_client(reqwest::Client::builder).map_err(|e| {
+pub fn reqwest_client(network: &LoadedNetwork) -> std::result::Result<reqwest::Client, String> {
+    fontaine_tools::tls::build_client(network, reqwest::Client::builder).map_err(|e| {
         format!(
             "could not build the HTTP client: {}",
             chain(&e.without_url())

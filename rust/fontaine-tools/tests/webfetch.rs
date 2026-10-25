@@ -14,7 +14,7 @@ async fn fetch(
     config: WebfetchConfig,
     url: &str,
 ) -> Result<String, rig_core::tool::ToolExecutionError> {
-    let tool = Webfetch::new(config).unwrap();
+    let tool = Webfetch::new(config, &Default::default()).unwrap();
     tool.call(
         &mut ToolContext::new(),
         WebfetchArgs {
@@ -272,7 +272,7 @@ fn only_a_url_is_accepted() {
         serde_json::from_value(json!({"url": "https://example.com", "prompt": "summarize"}));
     assert!(extra.is_err());
 
-    let tool = Webfetch::new(config()).unwrap();
+    let tool = Webfetch::new(config(), &Default::default()).unwrap();
     let schema = tool.parameters();
     let properties = schema["properties"].as_object().unwrap();
     assert_eq!(properties.keys().collect::<Vec<_>>(), ["url"]);

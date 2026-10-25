@@ -15,6 +15,7 @@ use crate::credentials::{Credentials, StoredCredential};
 use crate::providers::{AccountClient, Billing, ConnectContext, CredentialPolicy};
 use fontaine_guardian::WireIds;
 use fontaine_guardian::models::{ModelEntry, ModelsFile};
+use fontaine_tools::tls::LoadedNetwork;
 
 type Client = Arc<dyn AccountClient>;
 
@@ -266,6 +267,7 @@ fn client_for(
     account: &Account,
     env: EnvLookup<'_>,
     src: &Sources<'_>,
+    network: &LoadedNetwork,
 ) -> Result<Client, String> {
     let provider = account.kind.provider();
     let credential = match credential(name, account, env, &src.stored) {
@@ -292,6 +294,17 @@ fn client_for(
         credential,
         data_dir: src.data_dir,
         session_id: src.session_id,
+        network,
+    })
+}
+
+/// The loaded network settings for one account, or why they cannot be loaded.
+pub fn account_network(config: &Config, account: &str) -> Result<LoadedNetwork, String> {
+    config.loaded_network(Some(account)).map_err(|e| {
+        format!(
+            "account `{account}`: {}",
+            fontaine_tools::error_chain::chain(&e)
+        )
     })
 }
 
@@ -379,7 +392,8 @@ async fn resolve_main_model<E: Fn(&str) -> Option<std::ffi::OsString> + ?Sized>(
     let main_account = account_of(config, &main_ref, what)?;
     let main_client = {
         let lookup = |name: &str| env(name);
-        client_for(&main_ref.account, main_account, &lookup, src).map_err(config_error)?
+        let network = account_network(config, &main_ref.account).map_err(config_error)?;
+        client_for(&main_ref.account, main_account, &lookup, src, &network).map_err(config_error)?
     };
     let main_models = match &main_account.models {
         Some(list) => list.clone(),
@@ -511,7 +525,8 @@ fn build_guardian(
 
     let client = match main_client {
         Some(client) if same_account => Ok(client.clone()),
-        _ => client_for(&reference.account, account, env, stored),
+        _ => account_network(config, &reference.account)
+            .and_then(|network| client_for(&reference.account, account, env, stored, &network)),
     };
     Ok(match client {
         Ok(client) => GuardianModel::Ready(ModelHandle::from_client(
@@ -733,7 +748,9 @@ impl Switcher {
             } else if let Some(main) = main.filter(|main| *name == main.0.account) {
                 Ok(main.1.to_vec())
             } else {
-                match client_for(name, account, &*self.env, stored) {
+                let client = account_network(&self.config, name)
+                    .and_then(|network| client_for(name, account, &*self.env, stored, &network));
+                match client {
                     Err(reason) => Err(reason),
                     Ok(client) => match tokio::time::timeout(timeout, client.list()).await {
                         Ok(Ok(models)) => Ok(models),

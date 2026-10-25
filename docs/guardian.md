@@ -136,6 +136,10 @@ first: an `ask` rule or a critical path still asks.
 - Calls are adjudicated one at a time, in order. The guardian is on the critical path, so a fast
   model matters.
 
+The guardian's model endpoint inherits the [network settings](configuration.md#network) of its
+account, and the screen those of its Ollama account. An invalid `[network]` stops startup with exit
+code 2; the guardian never falls back to a direct connection.
+
 ## The screen stage
 
 A guardian verdict takes seconds. The guardian is a composition of two stages: an optional screen

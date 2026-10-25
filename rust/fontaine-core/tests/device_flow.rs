@@ -11,12 +11,15 @@ use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn flow(server: &MockServer) -> DeviceFlow {
-    DeviceFlow::new(DeviceFlowEndpoints {
-        code_url: format!("{}/auth/device/code", server.uri()),
-        token_url: format!("{}/auth/device/token", server.uri()),
-        client_id: "opencode-cli",
-        code_params: vec![("supports_org_scope", json!(true))],
-    })
+    DeviceFlow::new(
+        DeviceFlowEndpoints {
+            code_url: format!("{}/auth/device/code", server.uri()),
+            token_url: format!("{}/auth/device/token", server.uri()),
+            client_id: "opencode-cli",
+            code_params: vec![("supports_org_scope", json!(true))],
+        },
+        &Default::default(),
+    )
     .unwrap()
     .with_request_timeout(None)
 }

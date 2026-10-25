@@ -11,6 +11,7 @@ use crate::permission_rules::{RuleError, RuleSource, SourcedRule, parse_rule, va
 use crate::providers::{self, Provider};
 use crate::trust::{self, LocalClassification, ProjectDemotion};
 use fontaine_tools::names::{is_builtin, is_mcp};
+use fontaine_tools::tls::{LoadedNetwork, NetworkError, NetworkSettings};
 
 /// Every config problem maps to process exit code 2.
 pub const CONFIG_EXIT_CODE: u8 = 2;
@@ -60,6 +61,11 @@ pub enum ConfigError {
     /// `[telemetry] enabled = true` without an endpoint or an ingestion key.
     Telemetry {
         message: String,
+    },
+    /// A `[network]` or per-account network setting that cannot be loaded.
+    Network {
+        key: String,
+        source: NetworkError,
     },
     /// A model reference or account that cannot be resolved: unknown account or model, no
     /// main model, a missing credential.
@@ -148,6 +154,11 @@ impl fmt::Display for ConfigError {
                 "cannot determine the {what} directory; set {var} to a directory"
             ),
             ConfigError::Telemetry { message } => write!(f, "invalid [telemetry]: {message}"),
+            ConfigError::Network { key, source } => write!(
+                f,
+                "invalid network settings in `{key}`: {}",
+                fontaine_tools::error_chain::chain(source)
+            ),
             ConfigError::Model { message } | ConfigError::Usage { message } => f.write_str(message),
         }
     }
@@ -157,6 +168,7 @@ impl std::error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ConfigError::Read { source, .. } | ConfigError::Write { source, .. } => Some(source),
+            ConfigError::Network { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -320,6 +332,41 @@ pub struct Account {
     pub context_tokens: Option<u32>,
     /// `ollama` only: `false` asks a thinking model to answer without reasoning.
     pub think: Option<bool>,
+    /// Each network key replaces the `[network]` value for this account only. Declared here
+    /// rather than flattened from `NetworkSection`, since `deny_unknown_fields` and `flatten`
+    /// do not combine.
+    pub https_proxy: Option<String>,
+    pub http_proxy: Option<String>,
+    pub no_proxy: Option<String>,
+    pub ca_bundle: Option<PathBuf>,
+    pub client_cert: Option<PathBuf>,
+    pub client_key: Option<PathBuf>,
+}
+
+/// `[network]`: proxy, extra CA roots and a client certificate for the HTTP clients Fontaine
+/// builds. Files are read when the config is loaded at startup, not when it is parsed.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkSection {
+    pub https_proxy: Option<String>,
+    pub http_proxy: Option<String>,
+    pub no_proxy: Option<String>,
+    pub ca_bundle: Option<PathBuf>,
+    pub client_cert: Option<PathBuf>,
+    pub client_key: Option<PathBuf>,
+}
+
+impl NetworkSection {
+    pub fn settings(&self) -> NetworkSettings {
+        NetworkSettings {
+            https_proxy: self.https_proxy.clone(),
+            http_proxy: self.http_proxy.clone(),
+            no_proxy: self.no_proxy.clone(),
+            ca_bundle: self.ca_bundle.clone(),
+            client_cert: self.client_cert.clone(),
+            client_key: self.client_key.clone(),
+        }
+    }
 }
 
 /// The window an `ollama` account requests when it sets no `context_tokens`: Ollama's own
@@ -331,6 +378,18 @@ pub const DEFAULT_OLLAMA_CONTEXT_TOKENS: u32 = 16384;
 const MIN_OLLAMA_CONTEXT_TOKENS: u32 = 2048;
 
 impl Account {
+    /// The network keys this account sets itself.
+    pub fn network(&self) -> NetworkSettings {
+        NetworkSettings {
+            https_proxy: self.https_proxy.clone(),
+            http_proxy: self.http_proxy.clone(),
+            no_proxy: self.no_proxy.clone(),
+            ca_bundle: self.ca_bundle.clone(),
+            client_cert: self.client_cert.clone(),
+            client_key: self.client_key.clone(),
+        }
+    }
+
     /// The context window an `ollama` call requests: the configured value or the default.
     pub fn ollama_context_tokens(&self) -> u32 {
         self.context_tokens.unwrap_or(DEFAULT_OLLAMA_CONTEXT_TOKENS)
@@ -707,6 +766,7 @@ impl<'de> Deserialize<'de> for EnvValue {
 pub struct Settings {
     pub tui: Option<TuiSection>,
     pub accounts: Option<BTreeMap<String, Account>>,
+    pub network: Option<NetworkSection>,
     pub model: Option<ModelSection>,
     pub guardian: Option<GuardianSection>,
     pub permissions: Option<PermissionsSection>,
@@ -818,6 +878,12 @@ fn check_scope(s: &Settings, column: Column) -> Result<(), ScopeFailure> {
         return fail(
             "accounts",
             "endpoint and credential configuration comes only from the user file or --settings",
+        );
+    }
+    if s.network.is_some() {
+        return fail(
+            "network",
+            "proxy and trust-root configuration comes only from the user file or --settings",
         );
     }
     if s.tui.is_some() {
@@ -937,6 +1003,8 @@ pub(crate) fn check_account(name: &str, account: &Account) -> Result<(), (String
             format!("must be at least {MIN_OLLAMA_CONTEXT_TOKENS}"),
         ));
     }
+    check_network_shape(&account.network())
+        .map_err(|(key, message)| (format!("accounts.{name}.{key}"), message))?;
     provider
         .validate(account)
         .map_err(|(key, message)| (format!("accounts.{name}.{key}"), message))
@@ -954,6 +1022,29 @@ fn case_colliding_env_name<'a>(
     names
         .into_iter()
         .find(|n| !seen.insert(n.to_ascii_uppercase()))
+}
+
+/// Value shape only; files and cross-key rules are checked by [`NetworkSettings::load`].
+fn check_network_shape(n: &NetworkSettings) -> Result<(), (String, String)> {
+    for (key, value) in [
+        ("https_proxy", &n.https_proxy),
+        ("http_proxy", &n.http_proxy),
+        ("no_proxy", &n.no_proxy),
+    ] {
+        if value.as_deref().is_some_and(|v| v.trim().is_empty()) {
+            return Err((key.to_string(), "must not be empty".to_string()));
+        }
+    }
+    for (key, value) in [
+        ("ca_bundle", &n.ca_bundle),
+        ("client_cert", &n.client_cert),
+        ("client_key", &n.client_key),
+    ] {
+        if value.as_deref().is_some_and(|v| v.as_os_str().is_empty()) {
+            return Err((key.to_string(), "must not be empty".to_string()));
+        }
+    }
+    Ok(())
 }
 
 fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
@@ -991,6 +1082,11 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         if let Err((key, message)) = check_account(name, account) {
             return bad(&key, &message);
         }
+    }
+    if let Some(network) = &s.network
+        && let Err((key, message)) = check_network_shape(&network.settings())
+    {
+        return bad(&format!("network.{key}"), &message);
     }
     if let Some(model) = s.model.as_ref().and_then(|m| m.model.as_deref())
         && !model_ref_ok(model)
@@ -1348,6 +1444,8 @@ pub struct Config {
     pub accounts: BTreeMap<String, Account>,
     /// Accounts defined by more than one scope, where the higher scope's definition won.
     pub shadowed_accounts: std::collections::BTreeSet<String>,
+    /// The `[network]` section; an account's own keys are laid over it by [`Config::network_for`].
+    pub network: NetworkSettings,
     pub model: Option<String>,
     pub guardian: Guardian,
     pub permissions: Permissions,
@@ -1372,6 +1470,7 @@ impl Config {
             scopes: Vec::new(),
             accounts: BTreeMap::new(),
             shadowed_accounts: Default::default(),
+            network: NetworkSettings::default(),
             model: None,
             guardian: Guardian {
                 model: None,
@@ -1443,6 +1542,9 @@ impl Config {
             {
                 self.shadowed_accounts.insert(name.clone());
             }
+        }
+        if let Some(network) = &s.network {
+            self.network = self.network.overlaid_by(&network.settings());
         }
         if let Some(tui) = &s.tui {
             if let Some(v) = tui.theme {
@@ -1837,10 +1939,42 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
         config.apply(settings, layer.slot, layer.column);
     }
 
+    check_network(&config)?;
     check_scanner(&config.guardian, &user_path)?;
     check_screen(&mut config, &user_path)?;
     resolve_telemetry(&config.telemetry, params)?;
     Ok(config)
+}
+
+/// Loads the network settings of `[network]` and of every account that overrides them, so a bad
+/// file or an inconsistent combination stops startup instead of the first request.
+fn check_network(config: &Config) -> Result<(), ConfigError> {
+    let overriding = config
+        .accounts
+        .iter()
+        .filter(|(_, a)| a.network() != NetworkSettings::default())
+        .map(|(name, _)| (format!("accounts.{name}"), Some(name.as_str())));
+    for (key, account) in std::iter::once(("network".to_string(), None)).chain(overriding) {
+        config
+            .loaded_network(account)
+            .map_err(|source| ConfigError::Network { key, source })?;
+    }
+    Ok(())
+}
+
+impl Config {
+    /// The network settings for one account: `[network]` with the account's own keys laid over
+    /// it. An account not in config (or `None`) gets `[network]` alone.
+    pub fn network_for(&self, account: Option<&str>) -> NetworkSettings {
+        match account.and_then(|name| self.accounts.get(name)) {
+            Some(account) => self.network.overlaid_by(&account.network()),
+            None => self.network.clone(),
+        }
+    }
+
+    pub fn loaded_network(&self, account: Option<&str>) -> Result<LoadedNetwork, NetworkError> {
+        self.network_for(account).load()
+    }
 }
 
 /// Scanner settings come only from the user file, so that is where a bad combination is

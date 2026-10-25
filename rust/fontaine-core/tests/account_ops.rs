@@ -308,8 +308,14 @@ async fn a_kind_without_a_sign_in_refuses_one() {
     let w = World::new();
     w.user_file("[accounts.a]\nkind = \"anthropic\"\n");
     let config = w.load().unwrap();
-    let err = accounts::sign_in("a", &config.accounts["a"], &w.data, &|_| {})
-        .await
-        .unwrap_err();
+    let err = accounts::sign_in(
+        "a",
+        &config.accounts["a"],
+        &w.data,
+        &Default::default(),
+        &|_| {},
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("no sign-in"), "{err}");
 }

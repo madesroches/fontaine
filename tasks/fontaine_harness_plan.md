@@ -498,6 +498,9 @@ scorecard run (see `## Remaining work`).
 - 2026-10-24: A repeated-identical-tool-call reminder like dsh's `repeat-tool-reminder` (#160) may be added although Claude Code has none (measured: nine identical calls, no nudge); it must stay advisory, one user-role notice that never blocks a call or changes a permission decision, because in the #154 study it made the model stop and diagnose after three identical failing calls.
 - 2026-10-25: project scope cannot set `[env]` (Claude Code honors it after trust); it cannot tighten, and a project `PATH` would shadow commands the pre-classifier and guardian reason about.
 - 2026-10-25: `[env]` applies to tool and extension subprocesses only, not Fontaine's own process (Claude Code applies it to both); credential and telemetry lookups keep their explicit keys.
+- 2026-10-25: `[network]` is config keys only, with no equivalent of Claude Code's `NODE_EXTRA_CA_CERTS`, `CLAUDE_CODE_CLIENT_CERT` or `CLAUDE_CODE_CLIENT_KEY` variables, because one place to set it keeps the project-scope tightening rules and the per-account override in force (#6).
+- 2026-10-25: A passphrase-protected `client_key` is refused at config load, where Claude Code accepts one via `CLAUDE_CODE_CLIENT_KEY_PASSPHRASE`, because rustls cannot decrypt a key and a passphrase in config or env would be a secret to store (#6).
+- 2026-10-25: Telemetry exporters are not covered by `[network]` (proxy, CA bundle, client certificate), because they use their own HTTP stack; covering them can come later as its own change (#6).
 
 ## Open Questions
 

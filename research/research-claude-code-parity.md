@@ -279,7 +279,7 @@ only, the file format becomes a second, competing definition path.
 | Enterprise managed settings (system file / MDM, locked keys, `allowManagedPermissionRulesOnly`, managed MCP allowlists) | [managed-settings](https://code.claude.com/docs/en/managed-settings) | missing | backlog | P3 reserves the tier; the deployment mechanics can come later. Issue: "Managed (system) settings tier for organizations". |
 | `/config` interactive settings UI | [settings#use-the-config-menu](https://code.claude.com/docs/en/settings#use-the-config-menu) | missing | backlog | Issue: "Interactive `/config` settings panel". |
 | Environment variables surface (`env` settings key, provider/env overrides) | [env-vars](https://code.claude.com/docs/en/env-vars) | partial | shipped (#5) | `[env]` table of literal pairs set on `shell`, `!` commands, hooks and stdio MCP servers (user-trust scopes only; see the plan's Decisions for the project-scope and own-process deviations). Provider and proxy settings beyond `env` remain separate issues. |
-| Proxy / custom CA / mTLS network configuration | [network-config](https://code.claude.com/docs/en/network-config) | missing | backlog | Issue: "Corporate network support: HTTPS proxy, custom CA bundle, mTLS". |
+| Proxy / custom CA / mTLS network configuration | [network-config](https://code.claude.com/docs/en/network-config) | done | n/a | `[network]` and per-account keys: proxy, `no_proxy`, `ca_bundle` (added to the system roots), `client_cert`/`client_key` (unencrypted PEM only). Environment variables are still honored when no proxy key is set (#6). |
 
 ### Memory & instructions
 

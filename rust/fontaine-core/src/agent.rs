@@ -193,8 +193,17 @@ pub fn build_screen(config: &Config, profile: Profile) -> Result<Option<ScreenSt
             steering_veto: screen.steering_veto,
         }),
     };
+    let network = config.loaded_network(Some(account)).map_err(|e| {
+        format!(
+            "the network settings of account `{account}`: {}",
+            fontaine_tools::error_chain::chain(&e)
+        )
+    })?;
     Ok(Some(ScreenStage {
-        screen: Arc::new(Screen::new(crate::transport::reqwest_client()?, settings)),
+        screen: Arc::new(Screen::new(
+            crate::transport::reqwest_client(&network)?,
+            settings,
+        )),
         label: screen.model.clone(),
         shadow: screen.shadow,
     }))
@@ -283,6 +292,8 @@ pub struct AgentRuntime {
 
 /// The parts of the setup a rebuild needs again.
 pub(crate) struct Setup {
+    /// The global `[network]` settings, loaded once; accounts resolve theirs on demand.
+    network: Arc<fontaine_tools::tls::LoadedNetwork>,
     config_dir: PathBuf,
     data_dir: PathBuf,
     pub(crate) scrub_env: Vec<OsString>,
@@ -521,7 +532,18 @@ impl AgentRuntime {
             listing: setup.models.main_listing.clone(),
         }));
         let tool_server = ToolServer::new().run();
+        let network = setup
+            .config
+            .loaded_network(None)
+            .map(Arc::new)
+            .map_err(|e| {
+                format!(
+                    "invalid [network] settings: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                )
+            })?;
         let setup_rest = Setup {
+            network,
             config_dir: setup.config_dir,
             data_dir: setup.data_dir,
             scrub_env: setup.scrub_env,
@@ -868,6 +890,7 @@ impl AgentRuntime {
                 self.tool_server.clone(),
                 guard.clone(),
                 reveal,
+                &self.setup.network,
                 &move |name| env(name),
             )
             .await
@@ -1387,6 +1410,7 @@ fn build_agent(p: &Parts<'_>) -> Result<(Agent, prompt::PromptPieces), String> {
         git_bash: p.setup.git_bash.clone(),
         results: p.results.clone(),
         hide_mcp_names: !(p.config.telemetry.enabled && p.config.telemetry.log_tool_details),
+        network: p.setup.network.clone(),
         extension: Some(ExtensionTools {
             agent: AgentTool {
                 tree: p.state.agents().clone(),

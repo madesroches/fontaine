@@ -77,7 +77,12 @@ fn sweep_stale(dir: &Path, grace: Duration) {
 /// name only after a complete, successful response; a failed fetch removes its partial file, and
 /// one a killed process left behind is swept by the next download once it is stale.
 /// With every file present, no token is needed and nothing is requested.
-pub async fn ensure(dir: &Path, base_url: &str, token: Option<&str>) -> Result<(), FetchError> {
+pub async fn ensure(
+    dir: &Path,
+    base_url: &str,
+    token: Option<&str>,
+    network: &fontaine_tools::tls::LoadedNetwork,
+) -> Result<(), FetchError> {
     let missing = missing(dir);
     if missing.is_empty() {
         return Ok(());
@@ -89,7 +94,7 @@ pub async fn ensure(dir: &Path, base_url: &str, token: Option<&str>) -> Result<(
         .await
         .map_err(|e| FetchError::Failed(format!("cannot create {}: {e}", dir.display())))?;
     sweep_stale(dir, STALE_AFTER);
-    let client = fontaine_tools::tls::build_client(|| {
+    let client = fontaine_tools::tls::build_client(network, || {
         reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .read_timeout(READ_TIMEOUT)

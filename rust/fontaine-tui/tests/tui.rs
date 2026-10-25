@@ -239,7 +239,7 @@ async fn always_allow_writes_the_rule_to_the_user_file_and_covers_the_next_call(
 async fn interrupting_a_pending_prompt_denies_it_and_keeps_the_session_usable() {
     let w = World::new(vec![
         tool_turn(
-            "c1",
+            "call-interrupted",
             "write",
             json!({"path": "notes.txt", "content": "hello"}),
         ),
@@ -259,7 +259,7 @@ async fn interrupting_a_pending_prompt_denies_it_and_keeps_the_session_usable() 
     assert!(!w.work.join("notes.txt").exists());
     let requests = w.requests();
     assert_eq!(requests.len(), 2);
-    assert!(!requests[1].contains("c1"), "{}", requests[1]);
+    assert!(!requests[1].contains("call-interrupted"), "{}", requests[1]);
     assert!(requests[1].contains("are you there"));
 }
 

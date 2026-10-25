@@ -30,7 +30,9 @@ impl Provider for Anthropic {
         if let Some(url) = ctx.base_url() {
             config = config.with_base_url(url);
         }
-        Ok(Arc::new(Connected(config.connect(caused_client()?))))
+        Ok(Arc::new(Connected(
+            config.connect(caused_client(ctx.network)?),
+        )))
     }
 }
 

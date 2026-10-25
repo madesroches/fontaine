@@ -54,7 +54,7 @@ impl Provider for Ollama {
             config = config.with_api_key(key);
         }
         Ok(Arc::new(Connected {
-            client: config.connect(caused_client()?),
+            client: config.connect(caused_client(ctx.network)?),
             context_tokens: ctx.account.ollama_context_tokens(),
             think: ctx.account.think,
         }))

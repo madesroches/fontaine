@@ -245,6 +245,12 @@ All notable changes are recorded here. The format follows
     tag, each archive carrying the license, readme and changelog; `cargo install --git
     https://github.com/madesroches/fontaine fontaine` from source.
   - Documentation under `docs/`, a README quickstart, contributing guide and security policy.
+- Corporate network support (#6)
+  - A `[network]` section (user file and `--settings` only), repeatable per account, sets an HTTP
+    or HTTPS proxy with a `no_proxy` list, extra CA roots (`ca_bundle`) and a client certificate
+    (`client_cert`, `client_key`) for model accounts, the guardian and its screen, `webfetch`, the
+    scanner-model download, the `opencode-go` sign-in and HTTP MCP servers. An invalid setting is a
+    configuration error (exit code 2), never a fallback to a direct or default-trust connection.
 
 ### Fixed
 

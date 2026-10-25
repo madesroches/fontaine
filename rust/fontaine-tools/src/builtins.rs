@@ -20,6 +20,7 @@ use crate::git_bash::{GitBash, sh_command};
 use crate::guarded::{Guard, GuardedTool};
 use crate::risk::{RiskClass, ToolSource, builtin_risk};
 use crate::scope::{Scope, glob_target};
+use crate::tls::LoadedNetwork;
 use crate::webfetch::{Webfetch, WebfetchConfig};
 
 /// The directory listing tool; the model sees it as `ls`.
@@ -317,6 +318,7 @@ pub struct BuiltinEnv {
     pub guard: Guard,
     pub shell: ShellSettings,
     pub webfetch: WebfetchConfig,
+    pub network: Arc<LoadedNetwork>,
 }
 
 pub struct Registered {
@@ -397,7 +399,7 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, reqwest::Error> {
             |root| shell_for(root, &env.shell),
         )),
         register(GuardedTool::single(
-            Webfetch::new(env.webfetch.clone())?,
+            Webfetch::new(env.webfetch.clone(), &env.network)?,
             risk_of(Webfetch::NAME),
             guard.clone(),
         )),

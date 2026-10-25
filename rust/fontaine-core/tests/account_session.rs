@@ -198,6 +198,12 @@ fn late_account() -> Account {
         wires: None,
         context_tokens: None,
         think: None,
+        https_proxy: None,
+        http_proxy: None,
+        no_proxy: None,
+        ca_bundle: None,
+        client_cert: None,
+        client_key: None,
     }
 }
 

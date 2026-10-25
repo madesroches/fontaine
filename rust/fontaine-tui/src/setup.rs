@@ -565,13 +565,19 @@ impl Setup {
                     .finish(Outcome::Failed(format!("unknown account `{name}`"))),
             ));
         };
+        let network = match fontaine_core::models::account_network(&self.config, name) {
+            Ok(network) => network,
+            Err(reason) => return Ok(After::Ask(self.dialog.finish(Outcome::Failed(reason)))),
+        };
         let (steps_tx, mut steps) = unbounded_channel();
         let progress = move |step| {
             let _ = steps_tx.send(step);
         };
         let data_dir = self.dirs.data.clone();
         let result = {
-            let mut run = Box::pin(accounts::sign_in(name, &account, &data_dir, &progress));
+            let mut run = Box::pin(accounts::sign_in(
+                name, &account, &data_dir, &network, &progress,
+            ));
             loop {
                 self.redraw(io)?;
                 tokio::select! {

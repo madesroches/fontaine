@@ -28,7 +28,7 @@ url = "https://mcp.example.com/docs"
 | `command` | The program of a stdio server. It starts in the primary workspace root. |
 | `args` | Its arguments. Stdio only. |
 | `env_vars` | The names of environment variables to pass through. Stdio only. |
-| `url` | The endpoint of a streamable HTTP server. |
+| `url` | The endpoint of a streamable HTTP server. It is reached through the proxy, extra CA roots and client certificate of [`[network]`](configuration.md#network). |
 
 A server name contains letters, digits, `_` and `-`, and has no `__` and no leading or trailing `_`.
 

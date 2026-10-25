@@ -67,6 +67,9 @@ opentelemetry-proto = { version = "=0.33.1", default-features = false, features 
 tracing-opentelemetry = "=0.34.0"
 jsonschema = "=0.59.0"
 wiremock = "=0.6.5"
+rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws-lc-rs"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["aws-lc-rs", "std"] }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "charset", "http2", "system-proxy"] }
 candle-core = { version = "=0.11.0", default-features = false }
 candle-nn = { version = "=0.11.0", default-features = false }

@@ -1206,13 +1206,19 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let Some(account) = runtime.config.accounts.get(name).cloned() else {
             return self.tell_dialog(Outcome::Failed(format!("unknown account `{name}`")));
         };
+        let network = match fontaine_core::models::account_network(&runtime.config, name) {
+            Ok(network) => network,
+            Err(reason) => return self.tell_dialog(Outcome::Failed(reason)),
+        };
         let (steps_tx, mut steps) = unbounded_channel();
         let progress = move |step| {
             let _ = steps_tx.send(step);
         };
         let data_dir = self.data_dir.clone();
         let result = {
-            let mut run = Box::pin(accounts::sign_in(name, &account, &data_dir, &progress));
+            let mut run = Box::pin(accounts::sign_in(
+                name, &account, &data_dir, &network, &progress,
+            ));
             loop {
                 self.draw(runtime);
                 tokio::select! {

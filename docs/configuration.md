@@ -64,6 +64,8 @@ missing or unreadable `--settings` file is also an error.
 - Named table entries (`[accounts.<name>]`, `[mcp.servers.<name>]`, `[agents.types.<name>]`): the
   highest scope that defines the name replaces the whole entry. Entries are never merged field by
   field.
+- `[network]`: merged per key, with `--settings` over the user file. An account's own network keys
+  are then laid over it key by key for that account (see [`[network]`](#network)).
 - Map-valued keys (`[telemetry] resource_attributes`, `[env]`): merged per key, and the higher scope wins a
   shared key.
 - `[[hooks.*]]` arrays: the union.
@@ -84,7 +86,8 @@ The user file may set every key. For the other scopes:
 
 | Key | Project | Project-local (user trust) | CLI |
 |---|---|---|---|
-| `[accounts.*]` | no | no | yes |
+| `[accounts.*]`, including their network keys | no | no | yes |
+| `[network]` | no | no | yes |
 | `[model] model` | no | yes | yes |
 | `[guardian] model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache` | no | yes | yes |
 | `[guardian] scanner`, `scanner_command`, `scanner_model_path`, `scanner_hf_token_env` | no | no | no |
@@ -139,9 +142,12 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 | `wires` | `opencode-go` only: a table from model id to the wire it is served on (`chat`, `responses`, `messages` or `gemini`), for a model the built-in routing gets wrong. | unset |
 | `context_tokens` | `ollama` only: the context window requested with every call (`options.num_ctx`), at least 2048. | `16384` |
 | `think` | `ollama` only: `false` asks a thinking model to answer without reasoning, which is much faster. `true` and unset leave the model's default. | unset |
+| `https_proxy`, `http_proxy`, `no_proxy`, `ca_bundle`, `client_cert`, `client_key` | Override the same key of [`[network]`](#network) for this account only. | the `[network]` value |
 
 Account names are not empty and contain no `/`. Accounts can be set from the user file or from
-`--settings` only: a project file cannot choose an endpoint or a credential source.
+`--settings` only: a project file cannot choose an endpoint or a credential source. The per-account
+network keys are edited by hand; the account setup flow in the terminal UI writes only `kind` and
+`base_url`.
 
 What each kind talks to:
 
@@ -349,6 +355,56 @@ kind = "opencode-go"
 Go usage is billed against the subscription's allowances, so its models are unpriced: the cost Go
 reports, including Extra usage, is not shown or counted, and `--max-budget-usd` with a Go main
 model is a usage error (exit code 2).
+
+### `[network]`
+
+Proxy, extra CA roots and a client certificate for the HTTP clients Fontaine builds: model
+accounts, the guardian and its screen, `webfetch`, the scanner-model download, the `opencode-go`
+sign-in and HTTP MCP servers. User file and `--settings` only. Stdio MCP servers, shell commands
+and [telemetry](#telemetry) exporters are not covered.
+
+| Key | Meaning | Default |
+|---|---|---|
+| `https_proxy` | The proxy for `https` requests, such as `http://proxy.corp:8080`. It may carry credentials (`http://user:pass@host:port`). | unset |
+| `http_proxy` | The proxy for plain `http` requests. | unset |
+| `no_proxy` | Hosts that bypass the proxies, in `NO_PROXY` syntax (`localhost,.corp.internal`). Needs `https_proxy` or `http_proxy`. | unset |
+| `ca_bundle` | A PEM file of one or more CA certificates, trusted in addition to the system roots. | unset |
+| `client_cert` | A PEM certificate chain presented to servers that ask for a client certificate (mTLS). Needs `client_key`. | unset |
+| `client_key` | The matching unencrypted PEM private key. A passphrase-protected key is an error. Needs `client_cert`. | unset |
+
+With no proxy key set, Fontaine honors the `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY`
+environment variables (and the system proxy settings on macOS and Windows), as before. Setting
+`https_proxy` or `http_proxy` turns all of that off for the clients concerned. With only
+`https_proxy`, plain `http` requests go direct; with only `http_proxy`, `https` requests go direct.
+An `ollama` account on `localhost` therefore goes direct under `https_proxy` alone, but through the
+proxy under `http_proxy` unless `no_proxy` lists it. `SSL_CERT_FILE` and `SSL_CERT_DIR` replace the
+system roots; `ca_bundle` adds to them.
+
+Relative `ca_bundle`, `client_cert` and `client_key` paths resolve against the directory Fontaine
+was launched from, and `~` is not expanded.
+
+Configuration checking is in two tiers. Reading a settings file checks only that the keys are known,
+allowed in that scope and not empty, and never opens the files, so the example paths below pass
+documentation checks. The files are read when the configuration is loaded at startup, where any
+problem (a missing or non-PEM file, a certificate without a key, a `no_proxy` with no proxy, an
+unparseable proxy URL) is a configuration error that names the key and exits with code 2. Nothing
+falls back to a direct or default-trust connection.
+
+Each account may repeat any of these keys to override the `[network]` value for itself. Overrides
+apply per key, so an account that sets only `ca_bundle` keeps the proxy from `[network]`.
+
+```toml
+[network]
+https_proxy = "http://proxy.corp.example:8080"
+no_proxy    = "localhost,.corp.example"
+ca_bundle   = "/etc/corp/ca.pem"
+
+[accounts.work]
+kind        = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+client_cert = "/etc/corp/client.pem"
+client_key  = "/etc/corp/client.key"
+```
 
 ### `[model]`
 
