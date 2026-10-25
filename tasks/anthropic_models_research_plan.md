@@ -18,10 +18,10 @@ reference harness; #154 DeepSeek, #155 Qwen and #156 Kimi are sibling studies.
   (`rig-core =0.45.0`) with an API key and an optional base URL override. It has no `thinking_off`
   override, no beta-header handling and no cloud-host variants.
 - `providers/opencode_go.rs` already serves `claude-*` ids over the Anthropic Messages wire through
-  rig's `Anthropic` client (`wire()`, line ~153). Its `thinking_off` leaves Claude ids alone
-  because Claude thinks only when asked (`opencode_go.rs:172`). This is the one existing precedent
+  rig's `Anthropic` client (`wire()`, line 154). Its `thinking_off` leaves Claude ids alone
+  because Claude thinks only when asked (`opencode_go.rs:180`). This is the one existing precedent
   for Claude behind a non-Anthropic gateway.
-- `AccountClient::thinking_off` (`providers/mod.rs:158`) is how the guardian and scanner force a
+- `AccountClient::thinking_off` (`providers/mod.rs:160`) is how the guardian and scanner force a
   tool call on models that would otherwise think. `models.rs:111-134`, `agent.rs:140`, `scanner_stage.rs:58` (in `fontaine-core/src`) and
   `fontaine-evals/src/live.rs:119` apply it.
 - rig-core 0.45.0 ships `providers/anthropic` (with `cache_control`, thinking, signature and

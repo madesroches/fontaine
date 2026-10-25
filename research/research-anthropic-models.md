@@ -32,13 +32,15 @@ always marked `docs-only`; none is backed by an observed request. All sources we
   route. The Messages route is documented under two different paths on two pages, and its beta
   header, thinking and caching pass-through is undocumented. Chat-route thinking comes back as
   OpenAI-style `reasoning` summaries, not Anthropic thinking blocks.
-- **The one correctness risk found is the guardian.** The guardian, screen and scanner force a tool
-  call. Anthropic documents Opus 5.5, Sonnet 5.5, Fable 5.1 and Mythos 5.1 as rejecting a forced
+- **The one correctness risk found is the guardian.** The guardian and scanner force a tool call
+  (rig's extractor with `ToolChoice::Required`); the local screen does not (a raw Ollama chat
+  request, no tools). Anthropic documents Opus 5.5, Sonnet 5.5, Fable 5.1 and Mythos 5.1 as rejecting a forced
   `tool_choice` with a 400, and rig suppresses the forced choice only when the model id matches its
-  catalog exactly. A Foundry deployment named anything but the model id, or any Databricks
-  `databricks-claude-*` name, would miss that match (source; untested). The failure is fail-closed
-  (every call denied), but the model is unusable as a guardian (#167, #168).
-- **Thinking is always on or adaptive on current models**, so what matters is not disabling it
+  catalog as an exact id or a dated snapshot of it (no aliasing). A Foundry deployment named
+  anything but the model id, or any Databricks `databricks-claude-*` name, would miss that match
+  (source; untested). The failure is fail-closed (every call denied), but the model is unusable as
+  a guardian (#167, #168).
+- **Thinking is on by default or adaptive on most current models; some reject `disabled`**, so what matters is not disabling it
   (guardian) and round-tripping signed blocks (agent). Both hosts list adaptive thinking; the
   signature and binding behaviour on each host is untested.
 - **The optimisations map to existing issues**: effort (#53), cache TTL and prefix stability
@@ -64,8 +66,12 @@ options (section 3.1).
    Messages page (two path forms, below), supported-models page (docs-only). **C.** Azure: n/a.
    Databricks: partial (docs-only; path ambiguity). Issue: #166.
 3. **Host model name to Claude model facts.** rig keys `rejects_forced_tool_choice`, default
-   `max_tokens`, thinking binding and context window on the exact model id; deployment names and
-   `databricks-` prefixes miss it. Claude Code has the same problem and offers `modelOverrides`
+   `max_tokens`, thinking binding and context window on the exact model id or a dated snapshot of
+   it (no aliasing); deployment names and `databricks-` prefixes miss it. An unlisted id (for
+   example `databricks-claude-opus-5-5`) also gets no default `max_tokens` (defaults exist only
+   for the `claude-opus-4`, `claude-sonnet-4` and `claude-haiku-4-5` prefixes), so the request
+   fails locally. `Messages::with_facts(ModelFacts::new(spec))` already lets a caller give a
+   deployment name its facts (source). Claude Code has the same problem and offers `modelOverrides`
    (docs-only). **C.** Azure: deployment name is user-chosen (docs-only). Databricks: fixed
    `databricks-claude-*` names (docs-only). Issue: #167.
 4. **Guardian and scanner: forced tool choice and thinking-off per Claude model.** Evidence:
@@ -93,17 +99,18 @@ options (section 3.1).
    ephemeral documented on text, reasoning, image and tool blocks; TTL and usage fields not
    documented). Issue: #13.
 9. **Cache and usage accounting.** Cache read and write token fields and the 5m/1h split.
-   Claude Code reports them (observed, Appendix A). Azure: yes (docs-only; Foundry says `usage` is
+   Claude Code reports them (observed, Appendix A). **O.** Azure: yes (docs-only; Foundry says `usage` is
    identical across platforms; its rate-limit headers are absent). Databricks: unknown (cache
-   fields undocumented; a community post says `ai_query` hides them). **O.** Issue: #56.
+   fields undocumented; a community post says `ai_query` hides them). Issue: #56.
 10. **Context window and compaction sizing.** Current models are 1M with no beta header; older
     ones 200K. Claude Code assumes 200K for an unrecognised Foundry deployment name. **C** for
     compaction sizing (too small a window compacts early; too large overflows). Azure: yes
     (docs-only). Databricks: unknown (docs say "matches the provider's values", no figures).
     Issue: #167 (and `autocompact_window` already exists as an override).
 11. **Fine-grained tool streaming.** `eager_input_streaming: true` per tool; the old beta header
-    still works. rig sets it per tool on its Anthropic dialect and uses the header for gateway
-    dialects (source). **O.** Azure: yes (docs-only). Databricks: unknown. Issue: #169.
+    still works. rig sets `eager_input_streaming` per tool by default, on gateway dialects too; the
+    beta header is sent only on an explicit `.with_tool_input_streaming(ToolInputStreaming::BetaHeader)`
+    (source). **O.** Azure: yes (docs-only). Databricks: unknown. Issue: #169.
 12. **Tool search and deferred loading.** `tool_search_tool_*_20251119`. **O.** Azure: yes, both
     hosting options (docs-only). Databricks: unknown. Issue: #34.
 13. **Server-side tools (web search, web fetch, code execution).** **O.** Azure: partial: hosted
@@ -120,9 +127,11 @@ options (section 3.1).
     PDFs unknown (docs-only). Issue: #21.
 16. **Sampling parameters.** `temperature`, `top_p`, `top_k` return 400 on Opus 5.5, Opus 5,
     Opus 4.8, Opus 4.7, Sonnet 5.5, Sonnet 5, Fable and Haiku 5.5, thinking or not (Anthropic);
-    Databricks repeats it for Sonnet 5. rig's catalog marks these models `sampling: never`
-    (source). **C** if Fontaine ever sends sampling. Azure: same model rules (docs-only).
-    Databricks: documented for Sonnet 5. Issue: none; verify Fontaine sends none (not checked here).
+    Databricks repeats it for Sonnet 5. rig's catalog marks Opus 5.5, Opus 5, Opus 4.8, Opus 4.7,
+    Sonnet 5.5, Sonnet 5 and Fable `sampling: never` (source; it has no Haiku 5.5 entry). **C** if
+    Fontaine ever sends sampling. Azure: same model rules (docs-only). Databricks: documented for
+    Sonnet 5. Issue: none; checked in code: the guardian, scanner and agent send none, and the
+    Ollama screen sets `temperature` 0 (source).
 17. **Feature verification on the hosts.** Everything marked `untested` or `unknown`. Issue: #170.
 
 ## 3. Hosts and wires
@@ -214,7 +223,7 @@ C correctness, O optimisation. All Az and DB values are docs-only unless stated.
 
 | Row | CC | FT | Az | DB | N/C | Feeds |
 |---|---|---|---|---|---|---|
-| Adaptive thinking | Always adaptive on 4.7+ models; `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` only for Opus/Sonnet 4.6 | rig sends none unless asked; `thinking_off` unset for Claude | yes | partial (reasoning listed for Fable 5.1, Haiku 5.5, Opus/Sonnet 4.x-5.5; Sonnet 5.5 and Sonnet 5 not in the Reasoning list) | C | #53 |
+| Adaptive thinking | Always adaptive on 4.7+ models; `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` only for Opus/Sonnet 4.6 | rig sends none unless asked; `thinking_off` unset for Claude | yes | partial (reasoning listed for Fable 5.1, Haiku 5.5, Opus 4.x-5.5 and Sonnet 4.x; Sonnet 5.5 and Sonnet 5 not in the Reasoning list) | O (the guardian's thinking-off need is the next row) | #53 |
 | Thinking `disabled` | n/a | not sent | partial; table: Haiku 5.5, Sonnet 5.5, Sonnet 5, Opus 4.8 yes; Opus 5.5 and Opus 5 yes only at effort high or below; Fable no | partial; Haiku 5.5 yes; Opus 5.5 and Fable 5.1 "cannot be disabled" | C (guardian) | #168 |
 | Conflict: Opus 5.5 `disabled` | | | Microsoft table says yes (high or below); Anthropic table says 400 | Databricks says cannot disable | | unknown which holds on a host; #170 |
 | `budget_tokens` | Only for older models | not sent | no on Fable, Opus 5.x, Sonnet 5, 4.7, 4.8; yes on Haiku 5.5, Sonnet 5.5, Opus/Sonnet 4.6, Haiku 4.5 per Microsoft; Anthropic says 400 for the 5.5 ones | unknown | O | #53 |
@@ -224,7 +233,7 @@ C correctness, O optimisation. All Az and DB values are docs-only unless stated.
 | `cache_control` 5m | on by default | rig supports; Fontaine does not enable it | yes | partial (Chat-route docs; Messages route unknown) | O | #13 |
 | `cache_control` 1h TTL | opt-in via `ENABLE_PROMPT_CACHING_1H`; observed 1h writes on first-party | rig supports | yes (Anthropic lists Foundry) | unknown | O | #13 |
 | Automatic (top-level) caching | n/a | rig supports | yes | unknown | O | #13 |
-| Cache usage fields | shown in `claude -p --output-format json` | not mapped by name | yes; `usage` identical to Claude API | unknown | O | #56 |
+| Cache usage fields | shown in `claude -p --output-format json` | mapped in telemetry only; not in core usage accounting (source) | yes; `usage` identical to Claude API | unknown | O | #56 |
 | Context window | 1M by default for recognised deployment names on Foundry; 200K otherwise | catalog per model id; `autocompact_window` override | 1M for current models, 200K for 4.5-era and Haiku 4.5; 128K output | unknown | C | #167 |
 | Long-context beta | none needed for 1M (Sonnet 4.5's 1M beta retired 2026-04-30) | none | n/a | unknown | O | none |
 | Parallel tool calls | default | unaffected | yes (Messages API) | unknown | O | none |
@@ -237,7 +246,7 @@ C correctness, O optimisation. All Az and DB values are docs-only unless stated.
 | Images | yes | not wired | yes (base64, URL) | partial (base64 only; model-dependent) | O | #21 |
 | PDFs | yes | not wired | yes (base64, URL) | unknown | O | #21 |
 | Structured outputs | n/a | typed extraction via forced `submit` tool | yes (`output_config.format`) | partial (Messages route, 3 models; Chat `response_format` is a 400 on those) | O | #168 |
-| Forced `tool_choice` | n/a | guardian, screen, scanner force it | no on Opus 5.5, Sonnet 5.5, Fable 5.1, Mythos 5.1 (Anthropic); otherwise yes with adaptive thinking | unknown (Chat route function calling is OpenAI-style) | C | #167, #168 |
+| Forced `tool_choice` | n/a | guardian and scanner force it; the screen does not | no on Opus 5.5, Sonnet 5.5, Fable 5.1, Mythos 5.1 (Anthropic); otherwise yes with adaptive thinking | unknown (Chat route function calling is OpenAI-style) | C | #167, #168 |
 | `temperature`, `top_p`, `top_k` | Not sent on those models | guardian sends none | no on the listed models (400) | no on Sonnet 5 (stated) | C | none |
 | `count_tokens` | optional | not used | yes | unknown | O | #56 |
 | Batch API | n/a | none | no | no (not the same product) | n/a | none |
@@ -248,20 +257,24 @@ C correctness, O optimisation. All Az and DB values are docs-only unless stated.
 Needs from the host: thinking off or a working forced tool call, a structured verdict, bounded
 latency, and fail-closed on error. Findings (docs-only unless stated):
 
+- **The screen is separate.** It is a raw Ollama `api/chat` request with `logprobs`, `num_predict` 1
+  and no tools, so forced tool choice does not apply to it (source). The guardian and scanner use
+  rig's extractor with `ToolChoice::Required`.
 - **Models that cannot be forced**: Opus 5.5, Sonnet 5.5, Fable 5.1, Mythos 5.1 answer a forced
   `tool_choice` with a 400 on every request. rig then does not force its own output tool
   (source), but only for catalog-matched ids. Whether the guardian then still gets a tool call
   back from a non-forced request is untested. As a screen or guardian they are the wrong default.
-- **Models that can think off *and* be forced**: Haiku 5.5 (`disabled` at effort high or below),
+- **Models that can think off *and* be forced**: Haiku 5.5 (`disabled` per the Microsoft table, no effort condition; Opus 5.5 and Opus 5 are
+  `disabled` only at effort high or below),
   Sonnet 5 and Opus 4.8 (`disabled` and forced tool use accepted with adaptive thinking),
   Haiku 4.5 (thinking is off unless requested). On Foundry, Haiku 4.5, Haiku 5.5, Sonnet 5 and
-  Opus 4.8 are available hosted on Azure; Haiku 4.5 is also on Databricks.
+  Opus 4.8 are available hosted on Azure; all four are also listed on Databricks (section 3.2).
 - **Latency**: no latency figures are published for either host; `unknown`. Foundry hosted on
   Azure adds no stated overhead. Not measured; the live eval harness (#163 pattern) is the tool.
 - **Fail-closed**: unchanged. A 400 from the host, a timeout or an unparseable reply is a Deny
   (source: guardian). The risk is usability, not safety.
-- **Thinking blocks as injection surface**: the guardian sends one stateless request with no
-  history, so signatures and binding do not apply to it.
+- **Thinking blocks as injection surface**: the guardian sends stateless requests (one plus up to two
+  retries) with no chat history, so signatures and binding do not apply to it.
 - Output goes to `docs/guardian.md` guidance only after measurement (#168, #170).
 
 ## 6. What breaks, and the recommended behaviour
@@ -273,7 +286,7 @@ Code also disables features per host); no `## Decisions` line added.
 |---|---|
 | Beta header or field rejected by a host (400 naming it) | fall back: retry once without it, remember for the session (Claude Code does this for effort, `context_management`, tool search). #169 |
 | Hosted-on-Azure lacks code execution, newer web tools, skills, Files API | warn once if a user config enables them; Fontaine does not use them by default. #169 |
-| Forced `tool_choice` rejected (Opus 5.5, Sonnet 5.5, Fable 5.1) | refuse as a guardian/scanner model at startup with a clear warning; the guardian still fails closed. #168 |
+| Forced `tool_choice` rejected (Opus 5.5, Sonnet 5.5, Fable 5.1, Mythos 5.1) | refuse as a guardian/scanner model at startup with a clear warning; the guardian still fails closed. #168 |
 | Thinking cannot be disabled and the caller needs it off | refuse for guardian use; fall back to a non-forced request only if measured to work. #168 |
 | Unknown deployment name (no model facts) | warn and ask for a model mapping; assume 200K context like Claude Code. #167 |
 | Prompt caching or cache fields unavailable (Databricks Messages route) | fall back to uncached requests, show unknown cache usage. #13, #56 |
