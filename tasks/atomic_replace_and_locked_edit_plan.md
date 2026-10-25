@@ -86,8 +86,9 @@ pub fn lock(target: &Path) -> io::Result<FileLock>
 
 `lock` takes the exclusive `File::lock` on `target.with_extension("lock")`, opened with
 `owner_only::open_lock`, creating the parent directory first. It blocks until held. The lock path
-is derived from the symlink-resolved target when the target exists, so two paths to one file share
-a lock. `credentials::lock` becomes a thin wrapper over it (keeping its `ConfigError` mapping and
+is derived from the path as given, never symlink-resolved, so a symlinked `credentials.toml` or
+`config.toml` keeps its lock beside the link (not in the link target's directory) and the fixed
+`credentials.lock` is unchanged. `credentials::lock` becomes a thin wrapper over it (keeping its `ConfigError` mapping and
 the `Lock` type that `store_oauth_locked` takes as proof of holding it); the resulting lock file is
 still `credentials.lock`, so a running older build and a new one exclude each other.
 
@@ -151,6 +152,7 @@ Result-returning read helper (today `read_file` discards the parse error).
 - 2026-10-25: the corrupt-trust warning is raised at session start only. The pre-prompt path
   already fails with a `ConfigError::Parse` naming the file if the user answers "trust", and the
   TUI has no `Approver` before the session exists.
+- AFK: 2026-10-25: the lock path is derived from the unresolved path (no canonicalize, so no dangling-symlink fallback), keeping `credentials.lock` at its fixed old-build path and `config.lock` out of dotfiles repos; two different paths to one file do not share a lock.
 - 2026-10-25: `session::copy_tree` stays on `owner_only::write` because it writes only into a
   freshly created directory.
 
