@@ -136,7 +136,7 @@ fn parse_field(text: &str, min: u32, max: u32, name: &str) -> Result<Field, Stri
             }
             (value, value)
         };
-        if low < min || high > max || low > high {
+        if low < min || high > max || low > high || step.is_some_and(|step| step > max) {
             return Err(format!(
                 "`{item}` is outside {min}-{max} in the {name} field"
             ));
@@ -687,8 +687,16 @@ impl Scheduler {
                 return Ok(false);
             };
             let job = state.jobs.remove(index);
+            // A loop whose only wakeup is gone would stay active yet never fire.
+            let ended_loop = match (&job.kind, &state.active) {
+                (Kind::Wakeup { loop_id, .. }, Some(active)) if *loop_id == active.active.id => {
+                    state.active.take()
+                }
+                _ => None,
+            };
             if let Err(e) = self.save(&state.jobs) {
                 state.jobs.insert(index, job);
+                state.active = state.active.take().or(ended_loop);
                 return Err(e);
             }
             job
@@ -1654,6 +1662,24 @@ mod tests {
     }
 
     // ---- the self-paced loop ----
+
+    #[test]
+    fn deleting_the_wakeup_ends_the_loop() {
+        let rig = rig();
+        rig.scheduler.begin_loop("watch").unwrap();
+        let wake = rig.scheduler.wake(120, false).unwrap();
+        assert!(rig.scheduler.delete(&wake.id).unwrap());
+        assert!(rig.scheduler.active_loop().is_none());
+        rig.scheduler.begin_loop("again").unwrap();
+    }
+
+    #[test]
+    fn a_huge_step_is_rejected_not_overflowed() {
+        assert!(matches!(
+            Cron::parse("1-59/4294967295 * * * *"),
+            Err(ScheduleError::BadCron(_))
+        ));
+    }
 
     #[test]
     fn a_wakeup_needs_a_loop_and_rearms_the_loops_own_prompt() {
