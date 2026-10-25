@@ -66,17 +66,26 @@ refresh, `/clear`, compaction. The rule is recorded in
 wire, which puts breakpoints on the last tool, the system prompt and the final message block. The
 static prefix (tools + system) gets a one-hour TTL via `with_static_prefix_cache_ttl(CacheTtl::OneHour)`
 only if the account (`accounts.<name>`) opts in (extended TTL has a higher write price); default is
-the five-minute TTL. A new account key `prompt_caching` (default `true`, user scope only because it
-changes spend and what the provider stores) lets an account turn it off for gateways that reject
-unknown `cache_control` fields. The Go Messages route (`GO_MESSAGES`) default is unresolved pending the Open
-Question below; no default is asserted here.
+the five-minute TTL. A new account key `prompt_caching` (user scope only because it
+changes spend and what the provider stores) has a per-kind default: `true` for `anthropic`, `false`
+for `opencode-go` until a live request shows the gateway's Messages route honors `cache_control`
+(not measured; #154 covered only its Chat route). A Go user can opt in with `prompt_caching = true`;
+on Go the keys affect only models routed to the Messages wire (other wires cache automatically).
+The default lives on the provider (`default_prompt_caching()`), not in the config struct, so the
+account field is `Option<bool>`.
 
 ### Guardian prefix stability
 
 The guardian request already puts rules in the system prompt and call facts in the user message.
 Changes:
-1. Mark the guardian request cacheable through the same wire flag (the guardian model handle is built
-   by the same provider code, so it inherits it).
+1. Mark the guardian's static prefix (forced verdict tool + system prompt) cacheable, prefix only:
+   the guardian handle uses `with_static_prefix_cache_ttl` without `with_prompt_caching()`, so the
+   final user message (per-call facts, never reused) carries no marker and pays no write premium.
+   The prefix TTL follows the account's `cache_ttl` (five minutes by default). The guardian handle is
+   built by the same provider code, so `Connected::completion` takes a "prefix only" parameter that
+   the guardian path sets. Anthropic caches a prefix only above a model-dependent minimum length
+   (about 1024 tokens on Sonnet/Opus, higher on Haiku; check the current docs); below it the marker
+   is a silent no-op.
 2. Pin ordering inside the system prompt: rule lists and environment entries render in configured
    order (already the case); a unit test asserts `system_prompt` is byte-identical for two requests
    that differ only in call-specific fields, so a future edit that leaks per-call text into the
@@ -101,16 +110,23 @@ not extended here. No new metric names.
 
 ## Implementation Steps
 
-1. `config.rs`: add `prompt_caching` (bool, default true) and `cache_ttl` (optional enum
-   `"5m" | "1h"`, default `"5m"`) to `accounts.<name>`. `cache_ttl` is meaningless when
-   `prompt_caching = false`, and both keys are rejected at config validation for non-Messages kinds.
+1. `config.rs`: add `prompt_caching` (optional bool; unset means the provider default) and `cache_ttl`
+   (optional enum `"5m" | "1h"`, default `"5m"`) to `accounts.<name>`. `cache_ttl` is meaningless when
+   caching is off. Add `Provider::accepts_prompt_caching()` and `default_prompt_caching()` next to
+   `accepts_wires()`/`accepts_model_options()` (`providers/mod.rs:79-86`): accepts is true for
+   `anthropic` and `opencode-go`, default is true for `anthropic` and false for `opencode-go`.
+   `check_account` (`config.rs`, beside the `wires` check) rejects both keys for other kinds, naming
+   `accounts.<name>.<key>`. Update the config test in `tests/providers.rs` (the style of
+   `wires_belong_to_opencode_go_only`) to cover accepted and rejected kinds.
    User scope only: `Rule::user_or_cli("accounts", ...)` in `config_scope.rs:135` already covers
    `accounts.*`, so no scope-table edit.
 2. `Provider::connect`: read the settings and store them on `Connected` (`providers/anthropic.rs`) and
    `GoClient` (`providers/opencode_go.rs`, where `GoClient.messages` at line 138 is the Messages client).
 3. `providers/anthropic.rs`: apply `with_prompt_caching()` (and the optional one-hour static TTL) to
-   the wire in `Connected::completion`.
-   `providers/opencode_go.rs`: same for `GoClient.messages`, selected in `GoClient::completion`.
+   the wire in `Connected::completion` for the main agent; for the guardian handle apply only
+   `with_static_prefix_cache_ttl`.
+   `providers/opencode_go.rs`: same for `GoClient.messages`, selected in `GoClient::completion`,
+   only when the account's resolved `prompt_caching` is true (Go default false).
 4. `fontaine-mcp/src/register.rs`: sort each server's tools by name in `GuardedSink::wrap_all`.
 5. `fontaine/src/headless.rs`: add cache read/write to `Totals` (`Totals::add`) and to the JSON
    `usage.*` output; check `GuardianUsage` (`fontaine-core` `gate.rs:170`) for cache fields and note the result.
@@ -119,7 +135,8 @@ not extended here. No new metric names.
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/providers/anthropic.rs`, `providers/opencode_go.rs`
+- `rust/fontaine-core/src/providers/anthropic.rs`, `providers/opencode_go.rs`, `providers/mod.rs`
+- `rust/fontaine-core/tests/account_session.rs`, `tests/providers.rs`
 - `rust/fontaine-core/src/config.rs`
 - `rust/fontaine-mcp/src/register.rs`
 - `rust/fontaine/src/headless.rs`, `docs/schemas/headless-v1.schema.json`
@@ -131,13 +148,19 @@ not extended here. No new metric names.
 
 - **Append-only runtime state vs a "context reminder" message that is rewritten each turn:**
   rewriting would be simpler for the model but costs the cache from that message onward every turn.
-- **Cache the guardian at all:** its prefix is ~4-5k tokens re-sent for every gated call, and
-  providers bill cached reads at a fraction; the verdict cache covers only identical requests.
+- **Cache the guardian at all:** its prefix (profile prompt ~1.2k tokens, plus rules and the verdict
+  tool schema, roughly 1.5-2k) is re-sent for every gated call, and providers bill cached reads at a
+  fraction; the verdict cache covers only identical requests. The prefix sits near the provider
+  minimum cacheable length (about 1024 tokens on Sonnet/Opus, higher on Haiku), so on some guardian
+  models the marker may never take effect; that costs nothing but yields no saving, and the
+  prefix-only choice avoids a write premium on the per-call tail.
 
 ## Decisions
 
 - 2026-10-25: Anything before the latest message is append-only within a session; front edits happen only at explicit boundaries.
 - 2026-10-25: `prompt_caching` defaults on for Anthropic Messages accounts.
+- 2026-10-25: AFK: `prompt_caching` has a per-kind provider default (true for `anthropic`, false for `opencode-go` until its Messages route is measured live); Go users opt in; the keys are accepted only by kinds where `accepts_prompt_caching()` is true.
+- 2026-10-25: AFK: the guardian handle marks only the static prefix (`with_static_prefix_cache_ttl`, no tail marker), since its final user message is per-call; its prefix is ~1.5-2k tokens, near provider minimums, so savings are model-dependent.
 - 2026-10-25: The one-hour cache TTL is opt-in (`cache_ttl = "1h"`); default is five minutes, since extended TTL costs more per write.
 - 2026-10-25: The one lost cache read per compaction is accepted.
 
@@ -150,18 +173,18 @@ not extended here. No new metric names.
 
 ## Testing Strategy
 
-- Unit: wiremock-backed `kind = "anthropic"` test (`fontaine-core/tests/providers.rs`) sends two
-  sequential requests and asserts the second request's prefix (tools + system bytes) is byte-identical
-  to the first. Marker assertions cover only what Fontaine owns: `Connected::completion` sets the
-  flag, and the account key is honored (absent when `prompt_caching = false`; one-hour static TTL only
-  when configured).
+- Unit: one wiremock-backed `kind = "anthropic"` test in `fontaine-core/tests/account_session.rs`
+  (helpers `gateway()`, `received_requests()`) asserts `cache_control` on the last tool and on the
+  system block when `prompt_caching = true`, none when `false`, and a 1h TTL only when
+  `cache_ttl = "1h"`.
+- Unit: Fontaine's own prefix stability, without HTTP: build the agent twice from the same inputs and
+  compare the system prompt and tool order.
 - Unit: permutation test on the MCP sort: any `tools/list` order yields the same definition sequence.
 - Unit: guardian `system_prompt` bytes equal for two requests differing only in call fields; the
   user message carries the call fields.
-- Unit: config parsing for the new keys, including rejection for non-Messages kinds; a cheap
-  confirmation that project scope rejects them.
-- Unit: static 1h + tail 5m marker ordering is accepted by rig (it rejects `CacheRetention::None` when
-  the wire places markers, and requires one-hour markers before five-minute ones).
+- Unit: config parsing for the new keys, including rejection for kinds where
+  `accepts_prompt_caching()` is false and the per-kind defaults; a cheap confirmation that project
+  scope rejects them.
 - Unit: cache read/write tokens survive from `Usage` into headless `Totals` and the JSON `usage.*` output.
 
 ## Manual Verification
@@ -174,6 +197,4 @@ Live providers are needed to see real hit rates, and a live bench is not a CI ga
 
 ## Open Questions
 
-- Does the Go gateway's Messages route honor `cache_control` the way `api.anthropic.com` does? #154
-  measured automatic caching on its Chat route only. If it rejects the field, default
-  `prompt_caching` off for that kind.
+None.
