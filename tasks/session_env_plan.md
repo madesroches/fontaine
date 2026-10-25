@@ -33,7 +33,7 @@ logged, and the guardian sees the keys that were set, never their values.
   (`rust/fontaine/src/lib.rs:461`, `tools::scrubbed_env`) and flows through `SessionPrep`,
   `AgentSetup` (`agent.rs:84`), the runtime setup (`agent.rs:288`, `:477`, `:526`, `:1379`),
   `RegistryParams` (`fontaine-core/src/tools.rs:66`) into `ShellSettings` and `HookProcess`.
-  `fontaine-evals/src/live.rs:103` and several test helpers build these structs too.
+  Several test helpers build these structs too.
 - **Config.** `Settings` (`rust/fontaine-core/src/config.rs:639`) is `deny_unknown_fields`;
   `check_scope` (`config.rs:691`) rejects keys per column; `Config::apply` (`config.rs:1281`)
   merges layers (map-valued keys per key, higher scope wins — e.g.
@@ -93,9 +93,9 @@ One computed list, built once per session next to `scrub_env`:
 pub fn subprocess_env(config: &Config) -> Vec<(OsString, OsString)>
 ```
 
-It flows everywhere `scrub_env` flows, as a sibling field `set_env: Vec<(OsString, OsString)>`
-on `SessionPrep`, `AgentSetup`, the runtime setup, `RegistryParams`, `ShellSettings` and
-`HookProcess`. Order of application at each spawn site — **scrub, then `[env]`, then Fontaine's
+It flows as a sibling field `set_env: Vec<(OsString, OsString)>` on `SessionPrep`, `AgentSetup`,
+the runtime setup, `RegistryParams`, `ShellSettings` and `HookProcess` only — not on
+`ScannerParams` / `CommandScanner`. Order of application at each spawn site — **scrub, then `[env]`, then Fontaine's
 own variables**:
 
 | Site | Change |
@@ -103,11 +103,13 @@ own variables**:
 | `shell_for` | after `.without_env(scrub_env)`, `.with_env(name, value)` for each `set_env` pair; the Git Bash `PATH` is then built from the configured `PATH` when `[env]` sets one, else from `std::env::var_os("PATH")`, so Git for Windows' directories stay in front either way. `ShellTool::prepared` already adds `FONTAINE_SH_COMMAND` last. |
 | `run_user_shell` | passes `self.setup.set_env` into its `ShellSettings`. |
 | `HookProcess::run` | after the `env_remove` loop, `process.env(name, value)` per pair; then `FONTAINE_PROJECT_DIR`, the Git Bash command variable and `PATH` as today (the `PROJECT_DIR_VAR` `.env` call moves below the loop; the `FONTAINE_` rejection makes the order moot but keeps it obviously right). Git Bash `PATH` uses the same "configured `PATH` else process `PATH`" base. |
-| MCP `start` | `Transport::Stdio` gains `env: Vec<(String, OsString)>`; after the `BASE_ENV` + `env_vars` copy, each pair is set (overriding a copied value of the same name). `connect_mcp` fills it from `setup.set_env`. |
+| MCP `start` | `Transport::Stdio` gains `env: Vec<(OsString, OsString)>`; after the `BASE_ENV` + `env_vars` copy, each pair is set (overriding a copied value of the same name). `connect_mcp` fills it from `setup.set_env`. |
 
 A small helper in `fontaine-tools/src/git_bash.rs` — `fn base_path(set_env: &[(OsString,
 OsString)]) -> Option<OsString>` (configured `PATH` if present, else the process `PATH`) — is shared
-by `shell_for` and `HookProcess::run` so the two sites cannot drift.
+by `shell_for` and `HookProcess::run` so the two sites cannot drift. On Windows it matches the
+name with `eq_ignore_ascii_case` (as `scrubbed_env` in `fontaine-core/src/tools.rs` does), so
+`[env] Path = ...` is found; elsewhere the match is exact.
 
 Scrub-then-set means an `[env]` entry may deliberately set a scrubbed name (e.g. a different
 `OTEL_EXPORTER_OTLP_HEADERS` for a tool): the value is the user's own config, not Fontaine's
@@ -134,11 +136,11 @@ Subagents share the parent runtime's setup, so children get the same `set_env` w
 
 1. **Config** (`rust/fontaine-core/src/config.rs`): `EnvValue` newtype with redacting `Debug`;
    `Settings.env`, `Config.env` (+ `defaults`), merge in `apply`, scope rule in `check_scope`,
-   value checks in `validate_values`. Re-export `EnvValue` if `lib.rs` re-exports config types.
+   value checks in `validate_values`.
 2. **Plumbing**: `tools::subprocess_env` (`fontaine-core/src/tools.rs`); `set_env` field on
    `ShellSettings` (+ `Default`), `HookProcess`, `RegistryParams`, `AgentSetup`, runtime setup,
    `SessionPrep` (`rust/fontaine/src/lib.rs`, filled in `prepare_session`). Update every struct
-   literal: `fontaine-evals/src/live.rs`, test helpers in `fontaine-core/tests/common/runtime.rs`,
+   literal: test helpers in `fontaine-core/tests/common/runtime.rs`,
    `choke_point.rs`, `extensions.rs`, `project_origins.rs`, `user_hooks.rs`,
    `fontaine-tools/tests/choke_point.rs`, `fontaine-tui/tests/common/mod.rs`.
 3. **Spawn sites**: `git_bash::base_path`; `shell_for`; `run_user_shell`; `HookProcess::run`;
@@ -146,11 +148,14 @@ Subagents share the parent runtime's setup, so children get the same `set_env` w
    existing `Transport::Stdio` literals in `fontaine-mcp/tests/mcp_registration.rs`.
 4. **Guardian facts**: `ledger.rs` (`SessionStart.env_keys`, `LedgerView.env_keys`), the
    `SessionStart` writers (`agent.rs`, `fontaine-evals/src/none.rs`,
-   `fontaine-core/tests/sessions.rs`, `session.rs:524` if it constructs one), `SessionFacts`
+   `fontaine-core/tests/sessions.rs`), `SessionFacts`
    (`fontaine-guardian/src/request.rs`), `adjudication::facts`, `prompt_builder.rs`; update
    `SessionFacts { .. }` literals in guardian tests/`profile.rs` (`profile.rs` copies selected
    facts for the minimal profile — copy `env_keys` too: a `PATH` override matters to the escape
-   ruleset).
+   ruleset). Add one sentence each to `rust/fontaine-guardian/prompts/guardian_prompt.md` and
+   `guardian_minimal.md`: `subprocess_env_set_by_user` names variables the user's own config sets
+   for every subprocess (values withheld), and a `PATH` override means command names may resolve
+   to other binaries; re-accept any affected prompt snapshot.
 5. **Docs and design** (see `## Documentation`), the master plan Decisions lines, and the parity
    matrix row.
 
@@ -162,7 +167,8 @@ Subagents share the parent runtime's setup, so children get the same `set_env` w
 - `rust/fontaine-mcp/src/servers.rs`
 - `rust/fontaine-guardian/src/request.rs`, `prompt_builder.rs`, `profile.rs`
 - `rust/fontaine/src/lib.rs`
-- `rust/fontaine-evals/src/live.rs`, `none.rs`
+- `rust/fontaine-evals/src/none.rs`
+- `rust/fontaine-guardian/prompts/guardian_prompt.md`, `guardian_minimal.md`
 - Tests: `rust/fontaine-core/tests/{config*,tools,user_hooks,common/runtime,choke_point,extensions,project_origins,sessions}.rs`,
   `rust/fontaine-tools/tests/{choke_point,guarded}.rs`, `rust/fontaine-mcp/tests/mcp_registration.rs`,
   `rust/fontaine-tui/tests/common/mod.rs`, `rust/fontaine/tests/headless_tools.rs`
@@ -190,6 +196,11 @@ Subagents share the parent runtime's setup, so children get the same `set_env` w
 
 ## Decisions
 
+- 2026-10-25: project scope cannot set `[env]` (Claude Code honors it after trust); it cannot
+  tighten, and a project `PATH` would shadow commands the pre-classifier and guardian reason about.
+- 2026-10-25: `[env]` applies to tool and extension subprocesses only, not Fontaine's own process
+  (Claude Code applies it to both); credential and telemetry lookups keep their explicit keys.
+
 ## Documentation
 
 - `docs/configuration.md`: new `### [env]` key-reference section (literal values, no expansion,
@@ -199,10 +210,14 @@ Subagents share the parent runtime's setup, so children get the same `set_env` w
 - `docs/tools.md`: the shell environment = inherited minus scrubbed plus `[env]`.
 - `docs/hooks.md` (line ~66): hooks get `[env]` too.
 - `docs/mcp.md` "Environment" paragraph: stdio servers also get every `[env]` entry.
-- `docs/guardian.md`: the request's session facts include the names of `[env]` overrides.
+- `docs/guardian.md`: the request's session facts include the names of `[env]` overrides; the
+  passage (~lines 264-265) listing what the minimal profile receives (roots, remotes, touched
+  paths) also names env keys.
+- `docs/configuration.md` (~line 414): the `command` scanner's "same scrubbed environment as
+  hooks" becomes "the same scrubbed environment as hooks, without `[env]`".
 - `tasks/design/config.md`: add `[env]` to the example TOML block and the per-key table.
-- `tasks/fontaine_harness_plan.md` `## Decisions`: dated deviation lines — project scope cannot
-  set `[env]`; `[env]` applies to tool/extension subprocesses only, not Fontaine's own process.
+- `tasks/fontaine_harness_plan.md` `## Decisions`: copy the two dated lines from this plan's
+  `## Decisions`.
 - `research/research-claude-code-parity.md:281`: mark the row as covered.
 
 ## Testing Strategy
@@ -218,7 +233,7 @@ All unit/integration, no live APIs.
 - **Shell** (`fontaine-tools` tests, unix): a `ShellTool` from `shell_for` with `set_env` sees
   the value (`printf %s "$X"`); a name both scrubbed and set gets the set value; a value with
   `$HOME` is passed literally. `base_path` unit tests: configured `PATH` wins over the process
-  one; absent ⇒ process `PATH`. Git Bash `PATH` composition is tested through `base_path` +
+  one; absent ⇒ process `PATH`; the `Path` spelling is found on Windows (Windows CI). Git Bash `PATH` composition is tested through `base_path` +
   `path_value` (a Windows-only spawn is not reachable on Linux CI; Windows CI runs the same tests).
 - **Hooks** (`fontaine-core/tests/user_hooks.rs`): next to
   `hook_children_get_the_scrubbed_environment`, a hook sees a `set_env` value and still sees the
@@ -229,11 +244,14 @@ All unit/integration, no live APIs.
 - **Guardian facts**: ledger round-trip of `SessionStart` with and without `env_keys` (an old
   record without the field parses); `adjudication::build` copies the keys;
   `prompt_builder` renders the names and, given a secret-looking value in config, the rendered
-  prompt contains no value (keys are all it is ever given — the test pins the line format and
-  absence of the line when empty).
+  prompt contains no value (the `prompt_builder` test only pins the line format and absence of
+  the line when empty; the no-value assertion is on the serialized `SessionStart` written from a
+  `set_env` with a secret-looking value).
 - **End to end** (`rust/fontaine/tests/headless_tools.rs`): `fontaine -p` with `--settings`
-  carrying `[env] PROBE_ENV = "x"` and a scripted model that calls `shell` with `printf %s "$PROBE_ENV"`; the tool result carries
-  `x`. A second run with `[env]` in `.fontaine/settings.toml` exits 2. This catches a plumbing
+  carrying `[env] PROBE_ENV = "x"` and `[permissions] allow = ["shell(printf *)"]` (the harness
+  runs `--permission-mode manual`, which denies a headless `shell` call otherwise) and a scripted
+  model that calls `shell` with `printf %s "$PROBE_ENV"`; the tool result carries
+  `x`. This catches a plumbing
   break between config and spawn site that unit tests of each piece cannot.
 
 ## Open Questions
