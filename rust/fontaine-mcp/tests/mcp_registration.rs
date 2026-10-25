@@ -5,7 +5,9 @@ mod common;
 
 use std::time::Duration;
 
-use common::server::{Double, echo_tool, lookup_tool};
+use common::server::{
+    Double, echo_tool, grant_access_tool, lookup_tool, marked, unmarked_grant_access_tool,
+};
 use common::{Gate, call, guard, names, tool_server};
 use fontaine_mcp::{ServerSpec, Transport, connect, connect_transport};
 use fontaine_tools::risk::RiskClass;
@@ -103,6 +105,51 @@ async fn a_list_changed_refresh_registers_the_new_tools_wrapped_and_drops_the_ol
     let seen = gate.calls();
     assert_eq!(seen.last().unwrap().tool, "mcp__double__lookup");
     assert_eq!(seen.last().unwrap().risk, RiskClass::Arbitrary);
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_marked_tool_reaches_the_gate_marked_and_an_unmarked_one_does_not() {
+    let gate = Gate::new(true);
+    let handle = tool_server();
+    let double = Double::with_tools(vec![grant_access_tool(), echo_tool()]);
+    let (connection, _task) = serve("double", double, gate.clone(), handle.clone()).await;
+
+    call(&handle, "mcp__double__grant_access", "{}")
+        .await
+        .unwrap();
+    call(&handle, "mcp__double__echo", "{}").await.unwrap();
+    let seen = gate.calls();
+    assert!(seen[0].requires_user_interaction);
+    assert!(!seen[1].requires_user_interaction);
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_marker_added_by_a_refresh_takes_effect_and_a_removed_one_stays() {
+    let gate = Gate::new(true);
+    let handle = tool_server();
+    let double = Double::with_tools(vec![grant_access_tool(), lookup_tool()]);
+    let (connection, _task) = serve("double", double.clone(), gate.clone(), handle.clone()).await;
+
+    double
+        .replace_tools(vec![unmarked_grant_access_tool(), marked(echo_tool())])
+        .await;
+    for _ in 0..200 {
+        if names(&handle).contains(&"mcp__double__echo".to_string()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    for tool in ["mcp__double__grant_access", "mcp__double__echo"] {
+        call(&handle, tool, "{}").await.unwrap();
+    }
+    let seen = gate.calls();
+    assert!(
+        seen[0].requires_user_interaction,
+        "removal waits for a new connection"
+    );
+    assert!(seen[1].requires_user_interaction, "an added marker applies");
     connection.close().await;
 }
 
@@ -297,6 +344,7 @@ impl wiremock::Respond for JsonRpc {
                 "description": "Ping",
                 "inputSchema": {"type": "object"},
                 "annotations": {"readOnlyHint": true},
+                "_meta": {"anthropic/requiresUserInteraction": true},
             }]})),
             Some("tools/call") => reply(json!({"content": [{"type": "text", "text": "pong"}]})),
             // Notifications get an acknowledgement and nothing else.
@@ -336,6 +384,7 @@ async fn a_streamable_http_server_registers_and_runs_behind_the_gate() {
     assert_eq!(names(&handle), ["mcp__web__ping"]);
     assert_eq!(call(&handle, "mcp__web__ping", "{}").await.unwrap(), "pong");
     assert_eq!(gate.calls()[0].risk, RiskClass::Arbitrary);
+    assert!(gate.calls()[0].requires_user_interaction);
     connected.connection.close().await;
 }
 

@@ -866,3 +866,47 @@ async fn the_request_after_a_clear_carries_only_what_the_human_asked_since() {
     assert!(!sent.contains("MESSAGE-BEFORE-THE-CLEAR"), "{sent}");
     assert!(sent.contains("MESSAGE-AFTER-THE-CLEAR"), "{sent}");
 }
+
+#[tokio::test]
+async fn a_server_marked_tool_prompts_in_auto_and_the_guardian_is_never_asked() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig(&fake, "");
+    rig.approver.answer(Answer::AllowOnce);
+    assert!(allowed(
+        &rig.check_marked("mcp__srv__grant", json!({})).await
+    ));
+    assert_eq!(rig.approver.asked(), 1);
+    assert_eq!(fake.calls(), 0);
+    let record = rig.audit()[0].clone();
+    assert_eq!(
+        (record.decision, record.tier),
+        (Decision::Prompt, Tier::AskRule)
+    );
+    assert_eq!(
+        record.rule.as_deref(),
+        Some("anthropic/requiresUserInteraction")
+    );
+    let request = rig.approver.last_request();
+    assert!(!request.offers.session && !request.offers.always);
+}
+
+#[tokio::test]
+async fn a_hook_allow_never_skips_a_server_marker() {
+    use fontaine_core::permissions::HookPermission::Allow;
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig_with_hook(
+        &fake,
+        AutoHook {
+            matcher: Some("mcp__srv__grant"),
+            permission: Some(Allow),
+            note: None,
+        },
+    );
+    rig.approver.answer(Answer::Deny { feedback: None });
+    assert!(!allowed(
+        &rig.check_marked("mcp__srv__grant", json!({})).await
+    ));
+    assert_eq!(rig.approver.asked(), 1);
+    assert_eq!(fake.calls(), 0);
+    assert_eq!(rig.audit()[0].tier, Tier::AskRule);
+}

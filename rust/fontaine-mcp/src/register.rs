@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::interaction::Marked;
 use fontaine_tools::guarded::{Guard, guard_callback};
 use fontaine_tools::risk::RiskClass;
 use rig_core::message::ToolName;
@@ -46,21 +47,30 @@ pub struct GuardedSink<S> {
     pub guard: Guard,
     /// Whether telemetry may carry the server and tool names.
     pub reveal_names: bool,
+    marked: Marked,
 }
 
 impl<S> GuardedSink<S> {
-    pub fn new(inner: S, server: &str, guard: Guard, reveal_names: bool) -> Self {
+    pub(crate) fn new(
+        inner: S,
+        server: &str,
+        guard: Guard,
+        reveal_names: bool,
+        marked: Marked,
+    ) -> Self {
         GuardedSink {
             inner,
             server: server.to_string(),
             guard,
             reveal_names,
+            marked,
         }
     }
 
     fn wrap(&self, tool: DynamicTool) -> Option<DynamicTool> {
         let mut definition = tool.definition();
         let original_name = definition.name.to_string();
+        let requires_user_interaction = self.marked.contains(&original_name);
         let name = match ToolName::new(mcp_tool_name(&self.server, &original_name)) {
             Ok(name) => name,
             Err(e) => {
@@ -87,13 +97,15 @@ impl<S> GuardedSink<S> {
             Box::pin(async move { original.run_with(context, args).await }.instrument(span))
         });
         // Declared hints travel with the definition as text for the guardian; the class is
-        // fixed here, whatever the server says.
+        // fixed here, whatever the server says. The interaction marker is the one declared
+        // value that is more than text, and it can only add a prompt.
         Some(
             guard_callback(
                 definition,
                 callback,
                 RiskClass::Arbitrary,
                 self.guard.clone(),
+                requires_user_interaction,
             )
             .with_liveness(move || probe.is_live()),
         )

@@ -269,7 +269,7 @@ only, the file format becomes a second, competing definition path.
 | PreToolUse hooks as permission extension (allow/deny/ask/defer, updatedInput), precedence vs rules | [permissions#extend-permissions-with-hooks](https://code.claude.com/docs/en/permissions#extend-permissions-with-hooks) | missing | **plan-now** (P5) | See hooks row; covered by P5. |
 | Network-path read prompts / first read outside the working directories | [permission-modes#the-first-read-outside-the-working-directories](https://code.claude.com/docs/en/permission-modes#the-first-read-outside-the-working-directories) | planned | — | Out-of-scope reads adjudicated like writes (hybrid-gate refinement Decision). |
 | `claude auto-mode defaults\|config\|critique` - inspect effective classifier rules | [auto-mode-config](https://code.claude.com/docs/en/auto-mode-config) | missing | backlog | Natural fit: Fontaine's rules are open prose. Issue: "Add `fontaine auto-mode defaults\|config\|critique` to inspect effective guardian rules". |
-| MCP tools marked `requiresUserInteraction` always prompt | [mcp#require-approval-for-a-specific-tool](https://code.claude.com/docs/en/mcp#require-approval-for-a-specific-tool) | missing | backlog | Expressible as an `ask` rule once MCP tool names are matchable (P1). Issue: "Per-MCP-tool 'always ask' marker". |
+| MCP tools marked `requiresUserInteraction` always prompt | [mcp#require-approval-for-a-specific-tool](https://code.claude.com/docs/en/mcp#require-approval-for-a-specific-tool) | done | n/a | Read off `tools/list` by a transport tap and enforced as an implicit `ask` rule at the floor; see `docs/mcp.md` (#2). |
 
 ### Configuration
 

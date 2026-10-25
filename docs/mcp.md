@@ -61,21 +61,51 @@ terminal UI, a line on stderr in a headless run) and left out; the session goes 
 - **Every MCP tool is `arbitrary`.** It is registered behind the same gate as the built-in tools
   and, like `shell` and `webfetch`, never earns the read-only fast path. In `manual` it asks, in
   `auto` the [guardian](guardian.md) judges it, in `dontAsk` and headless runs it is denied unless
-  an allow rule covers it.
-- **What a server declares is only text.** A tool can claim to be read-only, idempotent or
-  non-destructive. Those hints are passed to the guardian as untrusted text inside the `tool_call`
+  an allow rule covers it. The one exception is a tool its server marks as
+  [requiring your approval](#requiring-approval-for-a-tool), which asks in every mode.
+- **What a server declares is only text, with one exception.** A tool can claim to be read-only,
+  idempotent or non-destructive. Those hints are passed to the guardian as untrusted text inside the `tool_call`
   block of its request, labelled as the server's own claim, and never as a fact or a gate:
 
   ```
   server_declared_annotations (the server's own claim, not a fact): {"title":"Lookup","readOnlyHint":true}
   ```
 
-  A `readOnlyHint` never skips the guardian.
+  A `readOnlyHint` never skips the guardian. The exception is the `requiresUserInteraction`
+  marker below, the only declared value that changes a decision, and only toward asking.
 - **Rules are the way to pre-approve.** `mcp__github`, `mcp__github__create_issue` and
   `mcp__github__*` in `allow`, `ask` or `deny` work like any other rule. Allow rules come from
-  user-trust scopes only, so a repository can never allow its own server's tools.
+  user-trust scopes only, so a repository can never allow its own server's tools. No rule
+  pre-approves a tool its server marked as requiring your approval.
 - **Credentials stay out.** Nothing is sent to a streamable HTTP server but the protocol's own
   requests; Fontaine adds no credentials of its own.
+
+### Requiring approval for a tool
+
+A server can mark a tool as needing a person's approval on every call, as Claude Code allows, by
+setting `_meta["anthropic/requiresUserInteraction"]` to the JSON Boolean `true` in that tool's
+`tools/list` entry:
+
+```json
+{
+  "name": "grant_access",
+  "description": "Grant a user access to a project",
+  "inputSchema": {"type": "object"},
+  "_meta": {"anthropic/requiresUserInteraction": true}
+}
+```
+
+Fontaine treats the marker as an implicit `ask` rule on that one tool, at the floor of the
+[permission pipeline](permissions.md#the-pipeline). The tool asks in every mode, `auto` included,
+and the prompt offers no "allow for this session" or "always allow". An allow rule or a hook's
+allow does not skip it, and no guardian verdict approves it. In `dontAsk` and in headless runs the
+call is denied. The audit record carries `tier = ask_rule` and
+`rule = anthropic/requiresUserInteraction`; it never names the server or the tool. Any other value
+(`"true"`, `1`, `false`) is ignored. A `deny` rule still wins.
+
+Once a server has marked a tool, the marker holds until that server's connection ends (the next
+session), even if a later tool list drops it. A marker added by a later tool list takes effect
+when Fontaine refreshes the list.
 
 ## Servers a repository defines
 
@@ -92,8 +122,10 @@ terminal UI:
    servers.
 
 A headless run (`fontaine -p`) starts them without asking, as Claude Code's `-p` does. In both
-surfaces a project server's tools are ordinary `arbitrary` tools: a repository can add a server,
-but it cannot make a call of that server run without the same approval any call needs.
+surfaces a project server's tools are ordinary `arbitrary` tools, except that a tool can mark itself
+as [requiring your approval](#requiring-approval-for-a-tool): a repository can add a server, but it
+cannot make a call of that server run without the same approval any call needs, and it can only
+make that approval stricter.
 
 ```toml trust.toml
 [[trusted]]

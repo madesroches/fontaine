@@ -671,14 +671,33 @@ impl PermissionPipeline {
             .ask
             .iter()
             .find(|r| matches(&r.rule, &ctx, Posture::Ask))
-            .map(|r| (Tier::AskRule, r.label()))
-            .or_else(|| hook.ask.clone().map(|id| (Tier::Hook, id)));
-        if let Some((tier, rule)) = forced_ask {
+            .map(|r| {
+                let rule = r.label();
+                let reason = format!("`{rule}` asks for approval before this runs");
+                (Tier::AskRule, rule, reason)
+            })
+            .or_else(|| {
+                call.requires_user_interaction.then(|| {
+                    (
+                        Tier::AskRule,
+                        fontaine_mcp::REQUIRES_USER_INTERACTION.to_string(),
+                        "the MCP server requires a person's approval for every call of this tool"
+                            .to_string(),
+                    )
+                })
+            })
+            .or_else(|| {
+                hook.ask.clone().map(|id| {
+                    let reason = format!("`{id}` asks for approval before this runs");
+                    (Tier::Hook, id, reason)
+                })
+            });
+        if let Some((tier, rule, reason)) = forced_ask {
             return self.would_prompt(
                 mode,
                 Prompt {
                     tier,
-                    reason: format!("`{rule}` asks for approval before this runs"),
+                    reason,
                     rule: Some(rule),
                     forced: true,
                 },

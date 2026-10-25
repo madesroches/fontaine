@@ -40,6 +40,25 @@ pub fn lookup_tool() -> Tool {
     )
 }
 
+/// A tool whose server asks that a person approve every call.
+pub fn grant_access_tool() -> Tool {
+    marked(unmarked_grant_access_tool())
+}
+
+pub fn unmarked_grant_access_tool() -> Tool {
+    Tool::new("grant_access", "Grant access", schema())
+}
+
+pub fn marked(mut tool: Tool) -> Tool {
+    let mut meta = MetaObject::new();
+    meta.insert(
+        "anthropic/requiresUserInteraction".to_string(),
+        serde_json::json!(true),
+    );
+    tool.meta = Some(meta);
+    tool
+}
+
 impl Double {
     pub fn with_tools(tools: Vec<Tool>) -> Double {
         let double = Double::default();

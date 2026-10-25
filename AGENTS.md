@@ -49,7 +49,7 @@ all tests pass:
 - **A child subagent's effective mode is never looser than its parent's.**
 - **Project-scope config can only tighten** (deny/ask additions); loosening keys are
   user-scope only. Project-defined executables (MCP servers, hooks, skill commands) load as in
-  Claude Code, but can never change a permission decision.
+  Claude Code, but can tighten but never loosen a permission decision.
 - **Every registered tool must have a risk class** — keep the choke-point test green.
 
 ## Project layout

@@ -244,6 +244,21 @@ impl Rig {
 
     /// One call through the pipeline as `agent`, with a fresh call id.
     pub async fn check_as(&self, agent: &str, tool: &str, args: Value) -> GateDecision {
+        self.check_flagged(agent, tool, args, false).await
+    }
+
+    /// One root-agent call to an MCP tool its server marked as needing approval every time.
+    pub async fn check_marked(&self, tool: &str, args: Value) -> GateDecision {
+        self.check_flagged(ROOT_AGENT, tool, args, true).await
+    }
+
+    async fn check_flagged(
+        &self,
+        agent: &str,
+        tool: &str,
+        args: Value,
+        requires_user_interaction: bool,
+    ) -> GateDecision {
         let id = format!("call-{}", self.next.fetch_add(1, Ordering::SeqCst));
         self.state.set_current_call(agent, id);
         self.pipeline
@@ -253,6 +268,7 @@ impl Rig {
                 args: &args,
                 agent,
                 annotations: None,
+                requires_user_interaction,
             })
             .await
     }

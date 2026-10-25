@@ -30,6 +30,9 @@ pub struct CallView<'a> {
     /// What an MCP server declared about the tool, as untrusted text for the guardian. Never
     /// a gate: it changes no decision.
     pub annotations: Option<&'a str>,
+    /// The MCP server marked this tool as needing a person's approval on every call. It can
+    /// only add a prompt; it never allows.
+    pub requires_user_interaction: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

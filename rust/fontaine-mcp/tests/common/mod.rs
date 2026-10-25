@@ -19,6 +19,7 @@ pub struct Seen {
     pub tool: String,
     pub risk: RiskClass,
     pub annotations: Option<String>,
+    pub requires_user_interaction: bool,
     pub args: Value,
 }
 
@@ -47,6 +48,7 @@ impl ToolGate for Gate {
             tool: call.tool.to_string(),
             risk: call.risk,
             annotations: call.annotations.map(str::to_string),
+            requires_user_interaction: call.requires_user_interaction,
             args: call.args.clone(),
         });
         let decision = if self.allow {

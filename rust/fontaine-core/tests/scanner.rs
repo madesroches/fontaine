@@ -70,6 +70,7 @@ async fn through(pipeline: &ResultPipeline, outcome: ToolOutcome) -> (String, Op
         args: &args,
         agent: ROOT_AGENT,
         annotations: None,
+        requires_user_interaction: false,
     };
     let (outcome, record) = pipeline.run(view, outcome).await;
     let text = match outcome {

@@ -20,7 +20,8 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
            2. Deterministic floor — evaluated BEFORE the mode branches, in EVERY mode (no mode,
               flag, or verdict reaches past it; it can only prompt or deny, never allow; order:
               deny → ask → critical-path → protected-path):
-              `[permissions] deny` rule match → Deny; `[permissions] ask` rule match → force the
+              `[permissions] deny` rule match → Deny; `[permissions] ask` rule match, or an MCP tool its server marked
+              `_meta["anthropic/requiresUserInteraction"]: true` → force the
               human prompt (even in `auto`; a match in `dontAsk` denies); rules use the
               `Tool(specifier)` grammar (§Permission rules); critical-path check →
               `rm`/`rmdir` targets that are the filesystem root, a top-level dir, home, or a
