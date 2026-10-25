@@ -8,9 +8,9 @@ Issue #157 asks for a research document, `research/research-anthropic-models.md`
 can get the most out of Claude models when they are reached through Microsoft Foundry on Azure or
 Databricks Model Serving instead of Anthropic's own API. The deliverable is a write-up and
 follow-up GitHub issues, not code. This plan fixes the method, the document's structure and the
-evidence standard so the study can be carried out and reviewed. It follows the same shape as the
-sibling harness studies (#154 DeepSeek, #155 Qwen, #156 Kimi), with Claude Code as the reference
-harness.
+evidence standard so the study can be carried out and reviewed. Its shape is modeled on the
+issue's questions and on `research/research-claude-code-parity.md`, with Claude Code as the
+reference harness; #154 DeepSeek, #155 Qwen and #156 Kimi are sibling studies.
 
 ## Current State
 
@@ -22,7 +22,8 @@ harness.
   because Claude thinks only when asked (`opencode_go.rs:172`). This is the one existing precedent
   for Claude behind a non-Anthropic gateway.
 - `AccountClient::thinking_off` (`providers/mod.rs:158`) is how the guardian and scanner force a
-  tool call on models that would otherwise think. `models.rs:111-134` and `agent.rs:140` apply it.
+  tool call on models that would otherwise think. `models.rs:111-134`, `agent.rs:140`, `scanner_stage.rs:58` (in `fontaine-core/src`) and
+  `fontaine-evals/src/live.rs:119` apply it.
 - rig-core 0.45.0 ships `providers/anthropic` (with `cache_control`, thinking, signature and
   streaming support in `completion.rs`, `options.rs`, `streaming.rs`) and `providers/azure`. It has
   no Databricks provider, so Databricks would go through rig's OpenAI-compatible client or need a
@@ -116,6 +117,7 @@ correctness versus optimisation, Azure support, Databricks support, issue fed or
 ## Files to Modify
 
 - `research/research-anthropic-models.md` (new)
+- `tasks/design/research-findings.md` (one line pointing to the new document)
 - `tasks/fontaine_harness_plan.md` (`## Decisions`, only if a deviation is proposed)
 - `CHANGELOG.md` (one line under Unreleased)
 
@@ -131,7 +133,8 @@ correctness versus optimisation, Azure support, Databricks support, issue fed or
 ## Documentation
 
 `README.md` and `docs/` do not change; research documents live in `research/` and are indexed
-from the master plan's design-doc list only if that list already links the sibling studies.
+by one line pointing to the new document in `tasks/design/research-findings.md` (the master plan's
+design-doc list links only `tasks/design/*.md`).
 
 ## Testing Strategy
 
