@@ -102,7 +102,7 @@ projected onto `tool_decision` as `guardian.dropped_input_tokens`, `guardian.dro
 
 ## Scheduled prompts
 
-`cron_create` is an `arbitrary` tool even though it touches no file: it plants model-written text
+`cron_create` is an `arbitrary` tool, and always a destructive call for the guardian (so a low-confidence allow is denied), even though it touches no file: it plants model-written text
 that will later run as a turn with nobody typing anything. In `auto` the guardian judges the call,
 in `manual` you are asked, and the floor (a `deny` or `ask` rule naming `cron_create`, or a hook)
 runs first as for any tool. `cron_jobs`, `cron_delete` and `schedule_wakeup` are read-only: they

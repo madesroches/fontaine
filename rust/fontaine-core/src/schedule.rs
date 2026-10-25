@@ -408,6 +408,9 @@ pub struct Fired {
     pub last_run: bool,
 }
 
+/// Tells the model it is in a self-paced loop, which only `schedule_wakeup` can keep going.
+pub const SELF_PACED_NOTE: &str = "[Harness note: this is an iteration of a self-paced loop. When it is done, call `schedule_wakeup` with the delay before the next iteration, or with `stop: true` if the work is finished.]";
+
 /// The self-paced loop the user started, which `schedule_wakeup` paces.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActiveLoop {
@@ -445,6 +448,7 @@ pub struct Scheduler {
     // Orders concurrent changes with their saves, so the file never lags a newer list.
     state: Mutex<State>,
     warning: Mutex<Option<String>>,
+    expired: Mutex<Vec<Job>>,
 }
 
 fn validate_prompt(prompt: &str) -> Result<(), ScheduleError> {
@@ -487,12 +491,13 @@ impl Scheduler {
             clock,
             state: Mutex::default(),
             warning: Mutex::new(None),
+            expired: Mutex::new(Vec::new()),
         }
     }
 
     /// The saved tasks that are still worth running. Wakeups of a self-paced loop, recurring
-    /// tasks past their 7 days and one-shots whose time passed are dropped, and the rest are
-    /// re-armed from now, so nothing replays what was missed. An unreadable file leaves an empty
+    /// tasks past their 7 days and one-shots whose time passed are dropped (see
+    /// [`settle_expired`](Self::settle_expired)), and the rest are re-armed from now, so nothing replays what was missed. An unreadable file leaves an empty
     /// scheduler and a warning for [`take_warning`](Self::take_warning).
     pub fn load(session_dir: &Path, ledger: Arc<Ledger>, clock: Arc<dyn Clock>) -> Scheduler {
         let scheduler = Scheduler::new(session_dir, ledger, clock);
@@ -532,20 +537,35 @@ impl Scheduler {
                 dropped.push(job);
             }
         }
-        // The file is rewritten by the next change, not here: a session with scheduling off
-        // leaves what was saved as it was.
+        // Held back until the session knows scheduling is on: a session with it off leaves
+        // what was saved as it was, and says nothing about it.
         lock(&scheduler.state, "schedule").jobs = kept;
-        for job in &dropped {
-            scheduler.record(ScheduleEvent::Expired, job);
-        }
-        if !dropped.is_empty() {
-            let n = dropped.len();
-            scheduler.warn(format!(
-                "{n} scheduled task{} expired while the session was closed",
-                if n == 1 { "" } else { "s" }
-            ));
-        }
+        *lock(&scheduler.expired, "schedule") = dropped;
         scheduler
+    }
+
+    /// Makes the drops of [`load`](Self::load) final: the file is rewritten without them, each is
+    /// recorded, and one warning counts them. A later resume then finds nothing to repeat.
+    pub fn settle_expired(&self) {
+        let dropped = std::mem::take(&mut *lock(&self.expired, "schedule"));
+        if dropped.is_empty() {
+            return;
+        }
+        let saved = {
+            let state = lock(&self.state, "schedule");
+            self.save(&state.jobs)
+        };
+        if let Err(e) = saved {
+            self.warn(chain(&e));
+        }
+        for job in &dropped {
+            self.record(ScheduleEvent::Expired, job);
+        }
+        let n = dropped.len();
+        self.warn(format!(
+            "{n} scheduled task{} expired while the session was closed",
+            if n == 1 { "" } else { "s" }
+        ));
     }
 
     pub fn now_ms(&self) -> i64 {
@@ -799,7 +819,13 @@ impl Scheduler {
             let Some(active) = state.active.take() else {
                 return Ok(false);
             };
-            self.drop_wakeups(&mut state, &active.active.id)?
+            match self.drop_wakeups(&mut state, &active.active.id) {
+                Ok(removed) => removed,
+                Err(e) => {
+                    state.active = Some(active);
+                    return Err(e);
+                }
+            }
         };
         for job in &removed {
             self.record(ScheduleEvent::Deleted, job);
@@ -813,8 +839,11 @@ impl Scheduler {
                 |job| matches!(&job.kind, Kind::Wakeup { loop_id: id, .. } if id == loop_id),
             );
         state.jobs = kept;
-        if !removed.is_empty() {
-            self.save(&state.jobs)?;
+        if !removed.is_empty()
+            && let Err(e) = self.save(&state.jobs)
+        {
+            state.jobs.extend(removed);
+            return Err(e);
         }
         Ok(removed)
     }
@@ -909,8 +938,14 @@ impl Scheduler {
                     .last_was_fallback = true;
                 LoopStep::FallbackArmed
             } else {
-                state.active = None;
-                ended = self.drop_wakeups(&mut state, &id)?;
+                let previous = state.active.take();
+                match self.drop_wakeups(&mut state, &id) {
+                    Ok(removed) => ended = removed,
+                    Err(e) => {
+                        state.active = previous;
+                        return Err(e);
+                    }
+                }
                 LoopStep::Ended
             }
         };
@@ -1473,6 +1508,7 @@ mod tests {
         // Eight minutes later the one-shot has passed and the wakeup is stale.
         rig.clock.advance(MINUTE * 8);
         let reopened = rig.reopen();
+        reopened.settle_expired();
         let ids: Vec<String> = reopened.list().into_iter().map(|j| j.id).collect();
         assert!(ids.contains(&recurring.id) && ids.contains(&far.id));
         assert!(!ids.contains(&soon.id) && !ids.contains(&wakeup.id));
@@ -1485,8 +1521,8 @@ mod tests {
         assert!(reopened.active_loop().is_none(), "a loop is not restored");
         let on_disk = std::fs::read_to_string(rig.dir.path().join(SCHEDULE_FILE)).unwrap();
         assert!(
-            on_disk.contains(&wakeup.id),
-            "loading leaves the file as saved"
+            !on_disk.contains(&wakeup.id) && on_disk.contains(&recurring.id),
+            "settling rewrites the file with the kept jobs"
         );
         assert!(
             rig.events()
@@ -1496,13 +1532,17 @@ mod tests {
         // A week later the recurring job has run out too.
         rig.clock.advance(Duration::from_millis(WEEK_MS as u64));
         let later = rig.reopen();
+        later.settle_expired();
         assert!(later.list().iter().all(|j| j.id != recurring.id));
         assert_eq!(later.list().len(), 1, "only the far one-shot is left");
-        // The saved file was not rewritten, so the earlier drops count again.
+        // The earlier drops were already settled, so only the recurring job counts now.
         assert_eq!(
             later.take_warning().unwrap(),
-            "3 scheduled tasks expired while the session was closed"
+            "1 scheduled task expired while the session was closed"
         );
+
+        let disabled = rig.reopen();
+        assert_eq!(disabled.take_warning(), None, "loading alone says nothing");
     }
 
     #[test]

@@ -108,7 +108,7 @@ failure names the denial. A deny verdict is never softened. The destructive clas
 the call by Fontaine, structurally, never from the label the guardian chose: a call is destructive
 when it removes or overwrites (`rm`, `mv`, `cp`, `dd`, `sed -i`, `find -delete`, `git reset
 --hard`, a redirect to a file, a write over a path that existed), writes outside every workspace
-root, reaches the network (`curl`, `git push`, a package install, `webfetch`), starts a code runner
+root, reaches the network (`curl`, `git push`, a package install, `webfetch`), schedules a prompt to run later (`cron_create`), starts a code runner
 (`sh`, `python` in any version, `pwsh`, `cmd`, `awk`, `make`, `cargo run`, `sudo`, ...; a launcher such as `timeout` is judged by the program it wraps), is an MCP call, or uses any construct the shell
 parser cannot classify. A plain `cargo test 2>&1 | tail` is not destructive.
 

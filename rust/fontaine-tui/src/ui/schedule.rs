@@ -6,7 +6,8 @@ use std::time::Duration;
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::ledger::Record;
 use fontaine_core::schedule::{
-    FALLBACK_SECONDS, Job, JobSpec, Kind, LoopStep, Origin, ScheduleError, Scheduler, local_time,
+    FALLBACK_SECONDS, Job, JobSpec, Kind, LoopStep, Origin, SELF_PACED_NOTE, ScheduleError,
+    Scheduler, local_time,
 };
 use fontaine_tools::error_chain::chain;
 
@@ -120,7 +121,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.app.transcript.notice(
                     "self-paced loop: the model picks the delay between iterations; Esc at the idle prompt or /loop stop ends it",
                 );
-                let flow = self.first_iteration(runtime, typed, prompt).await;
+                let model_prompt = format!("{prompt}\n\n{SELF_PACED_NOTE}");
+                let flow = self.first_iteration(runtime, typed, model_prompt).await;
                 if flow.is_continue() {
                     self.end_of_iteration(runtime);
                 }

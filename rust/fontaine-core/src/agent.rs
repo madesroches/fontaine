@@ -38,7 +38,7 @@ use crate::permissions::{Approver, PermissionPipeline};
 use crate::prompt;
 use crate::runtime_error::RuntimeError;
 use crate::scanner_stage::{Backend, ScannerStart};
-use crate::schedule::{Fired, Kind, Origin};
+use crate::schedule::{Fired, Kind, Origin, SELF_PACED_NOTE};
 use crate::session::{CONVERSATION_LOG, ClearError, Session};
 use crate::skills::SkillRuntime;
 use crate::steering::Steering;
@@ -444,9 +444,8 @@ impl AgentRuntime {
             job.cadence(),
         );
         if matches!(job.kind, Kind::Wakeup { .. }) {
-            prompt.push_str(
-                "\n\n[Harness note: this is an iteration of a self-paced loop. When it is done, call `schedule_wakeup` with the delay before the next iteration, or with `stop: true` if the work is finished.]",
-            );
+            prompt.push_str("\n\n");
+            prompt.push_str(SELF_PACED_NOTE);
         }
         prompt
     }
@@ -644,7 +643,9 @@ impl AgentRuntime {
                 .warn(&format!("the task list was not cleared: {}", chain(&e)));
         }
         // A task the model planted under the intent this clear drops must not outlive it.
-        if let Err(e) = self.session.scheduler().clear() {
+        if self.config.schedule.enabled
+            && let Err(e) = self.session.scheduler().clear()
+        {
             self.approver.warn(&format!(
                 "the scheduled tasks were not cleared: {}",
                 chain(&e)

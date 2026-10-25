@@ -413,7 +413,7 @@ to set it up, and both end up as tasks in the same per-session schedule.
 
 - **`/loop`**, typed by you:
   - `/loop 5m check the build` (or `/loop check the build every 5 minutes`) runs the prompt now,
-    then at a fixed cadence. Units are `s`, `m`, `h` and `d`. Only even cadences are accepted: a
+    then at a fixed cadence. Units are `s`, `m`, `h` and `d`, or spelled out (`5min`, `2hours`). Only even cadences are accepted: a
     minute step that divides an hour (1, 2, 5, 10, 15, 20 or 30), a whole number of hours that
     divides a day (1, 2, 3, 4, 6, 8 or 12), or 1 to 31 days. Seconds round up to a whole minute
     first, and any other interval is rounded to the nearest accepted cadence, the shorter one when
@@ -424,8 +424,8 @@ to set it up, and both end up as tasks in the same per-session schedule.
     model ends each iteration by calling `schedule_wakeup` to say when the next one should run,
     or to stop. If an iteration schedules nothing, the loop tries once more 20 minutes later and
     ends if that one schedules nothing either. Only one self-paced loop runs at a time; Esc at the
-    idle prompt while it waits, or `/loop stop`, ends it. A self-paced
-    loop is not restored when the session is resumed.
+    idle prompt while it waits, or `/loop stop <id>`, ends just the loop; a bare `/loop stop`
+    cancels every task as well. A self-paced loop is not restored when the session is resumed.
   - `/loop list` shows the tasks and `/loop stop <id>` cancels one; `/loop stop` cancels all of
     them. `/loop` alone, or with an interval and no prompt, prints its usage. The text after the
     interval is a plain prompt; a skill name there is not expanded.
@@ -443,8 +443,8 @@ typing stays in the input, and messages you queue while it runs are sent as the 
 
 A session holds at most 50 tasks and a prompt is at most 2,000 characters. A recurring task
 expires 7 days after it was created: it runs one last time and is removed. Tasks are saved with
-the session. Resuming drops tasks that expired or whose time passed while it was closed, tells
-you how many, and re-arms the rest from now without replaying missed runs. `/clear` cancels every
+the session. Resuming drops tasks that expired or whose time passed while it was closed, and a pending
+wakeup of a self-paced loop, tells you how many (a dropped wakeup counts as expired), and re-arms the rest from now without replaying missed runs. `/clear` cancels every
 task, because it drops the intent they were scheduled under. A headless run does not
 have them, and `[schedule] enabled = false` turns them off; see
 [Configuration](configuration.md#schedule). There is no random delay: a task runs at its scheduled

@@ -267,6 +267,12 @@ async fn a_self_paced_iteration_that_schedules_nothing_gets_one_more_try_then_en
     .await;
     let seen = w.requests();
     assert_eq!(seen.len(), 2, "{seen:?}");
+    // The first iteration is told it is in a loop too, or it never paces it.
+    assert!(
+        seen[0].contains("this is an iteration of a self-paced loop"),
+        "{}",
+        seen[0]
+    );
     // The note on a scheduled iteration tells the model to pace the loop.
     assert!(seen[1].contains("schedule_wakeup"), "{}", seen[1]);
 }

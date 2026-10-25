@@ -95,10 +95,11 @@ pub(super) fn build_agent(p: &Parts<'_>) -> Result<(Agent, prompt::PromptPieces)
     if let Some(warning) = p.session.todos().take_warning() {
         p.approver.warn(&warning);
     }
-    if scheduling(p)
-        && let Some(warning) = p.session.scheduler().take_warning()
-    {
-        p.approver.warn(&warning);
+    if scheduling(p) {
+        p.session.scheduler().settle_expired();
+        if let Some(warning) = p.session.scheduler().take_warning() {
+            p.approver.warn(&warning);
+        }
     }
     register_tools(p)?;
     Ok((finish_builder(p, pieces.join()), pieces))

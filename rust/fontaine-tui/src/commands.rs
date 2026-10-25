@@ -397,11 +397,11 @@ fn unit_seconds(unit: &str) -> Option<u64> {
     })
 }
 
-/// `5m`, `2h`, `30s`: digits then a one-letter unit.
+/// `5m`, `2h`, `30s`, `5min`: digits then a unit.
 fn compact_interval(token: &str) -> Option<(u64, u64, String)> {
     let split = token.find(|c: char| !c.is_ascii_digit())?;
     let (digits, unit) = token.split_at(split);
-    if digits.is_empty() || unit.chars().count() != 1 {
+    if digits.is_empty() {
         return None;
     }
     let seconds = unit_seconds(unit)?;
@@ -808,6 +808,16 @@ mod tests {
         assert_eq!(rounded("10h x").cron, "0 */8 * * *");
         assert_eq!(rounded("36h x").cron, "0 0 * * *", "a tie rounds down");
         assert_eq!(rounded("90d x").cron, "0 0 */31 * *");
+    }
+
+    #[test]
+    fn a_spelled_out_leading_unit_is_the_interval() {
+        let i = every(parse_loop("5min check"));
+        assert_eq!(
+            (i.prompt.as_str(), i.cron.as_str()),
+            ("check", "*/5 * * * *")
+        );
+        assert_eq!(every(parse_loop("2hours x")).cron, "0 */2 * * *");
     }
 
     #[test]

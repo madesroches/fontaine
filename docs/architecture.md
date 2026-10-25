@@ -149,7 +149,7 @@ terminal UI renders them and answers approval prompts concurrently with the run.
 
 ## The session ledger
 
-Each session keeps two stores, and a task list file, in `<data dir>/sessions/<session id>/`:
+Each session keeps two stores, a task list file and a schedule file, in `<data dir>/sessions/<session id>/`:
 
 - the **model context**, the conversation the model sees, kept in `logs/` by rig's memory store.
   Compaction rewrites it: when the conversation outgrows the model's context window, or the
@@ -188,7 +188,7 @@ continue the sequence. The session starts in the mode the settings resolve to an
 session directory under a new id and opens the copy, leaving the original as it was; the audit log
 of the copy starts empty. A resumed schedule keeps its tasks that are still worth running and
 re-arms them from now, so nothing replays what came due while the session was closed; the rest
-are reported once at startup (see [Scheduled prompts](tui.md#scheduled-prompts)).
+are dropped from the file and reported once at startup, when scheduling is enabled (see [Scheduled prompts](tui.md#scheduled-prompts)).
 
 ### Subagents in the ledger
 
