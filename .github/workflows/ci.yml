@@ -63,13 +63,13 @@ jobs:
         run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
-        if: needs.changes.outputs.code == 'true'
+        if: false
         with:
           workspaces: rust
           save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == '178-speed-up-ci-iteration-time-especially-the-windows-job' }}
 
       - name: Install mold
-        if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
+        if: needs.changes.outputs.code == 'true' && false && runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq mold
