@@ -41,9 +41,9 @@ next is kept. "Measure" means: push the branch, read per-step durations with
 
 1. **pg2 clippy and test on Linux only; compile check everywhere.** Add `if: runner.os == 'Linux'`
    to `Clippy (pg2)` and `Test (pg2)`, and replace them on Windows/macOS with a single
-   `cargo check --features fontaine/pg2` (no test, no clippy; the check runs on all three OSes, with
-   the Linux leg being the one the clippy/test legs follow). Linux catches lint and test regressions
-   in the platform-independent pg2 code; the cheap check on every OS surfaces an arch/OS-specific
+   `cargo check --features fontaine/pg2` (no test, no clippy; Linux runs pg2 clippy and test, macOS and
+   Windows run the check). Linux catches lint and test regressions
+   in the platform-independent pg2 code; the cheap check on macOS and Windows surfaces an arch/OS-specific
    candle dependency break at PR time instead of at release. Saves most of the ~700 s on Windows
    and ~290 s on macOS.
 2. **Eval runs.** `fixture` (default and `--profile minimal`) are scoring over static data and
@@ -76,8 +76,9 @@ next is kept. "Measure" means: push the branch, read per-step durations with
    need an aggregate required check and a branch-protection change. Recorded as a follow-up only if
    Stage 1-2 and item 10 miss the target and the maintainer approves a protection change.
 10. **Skip the Rust work for non-code PRs, keeping the matrix job names.** Add a `changes` job (plain
-    `git diff --name-only` against the base over `rust/**`, `evals/**`, `.github/workflows/**`,
-    `Cargo.lock`-adjacent files) and make `check` `needs: changes`. The `check` job itself always
+    `git diff --name-only` against the base; `code` is false only when every changed path is under
+    `tasks/` or `research/` or is `AGENTS.md`, since Rust tests also read `docs/`, `analytics/` and
+    the root markdown files) and make `check` `needs: changes`. The `check` job itself always
     runs (so its three expanded names always report), and every step after checkout carries
     `if: needs.changes.outputs.code == 'true'`. A job-level `if` is not used: a skipped matrix job
     reports one check under the unexpanded name and the three required contexts would stay
@@ -116,14 +117,14 @@ nothing to reuse. `cargo test --no-run` reuse is already what `cargo test` does.
 - 2026-10-25 (AFK): Path-filtered skipping uses `git diff` in a `changes` job rather than a
   third-party action, to avoid a new supply-chain dependency in CI.
 - The master plan's decision "every CI step runs on all three OSes" is narrowed: platform-specific
-  compile, lint and test coverage stays on all three, plus a `cargo check --features fontaine/pg2`
-  on all three; only pg2 clippy/test and the fixture-eval steps are Linux-only. A dated line goes in
+  compile, lint and test coverage stays on all three; Linux runs pg2 clippy and test, macOS and
+  Windows run `cargo check --features fontaine/pg2`; the fixture-eval steps are Linux-only. A dated line goes in
   the master plan's `## Decisions` when this ships.
 - AFK: Required check names `ubuntu-latest`/`macos-latest`/`windows-latest` (verified in
   branch protection) must not change, and branch protection is not modified by this work.
 - AFK: Stage 3 item 10 gates steps (not the job) on the `changes` output so the matrix
   names still report; item 9 (lint/test job split) is dropped because it renames checks.
-- AFK: Stage 1 item 1 keeps `cargo check --features fontaine/pg2` on all three OSes
+- AFK: Stage 1 item 1 keeps `cargo check --features fontaine/pg2` on macOS and Windows
   (release ships pg2 on all dist targets; candle deps have arch/OS-specific code); only pg2
   clippy and test are Linux-only.
 
