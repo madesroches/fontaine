@@ -98,7 +98,7 @@ impl ScheduleError {
 pub struct JobInfo {
     pub id: String,
     pub cadence: String,
-    /// `you` for a task the user scheduled, `model` for one the model did.
+    /// "the user" for a task the user scheduled, "the model" for one the model did.
     pub origin: &'static str,
     /// The next run, in the user's local time.
     pub next_run: String,
@@ -411,7 +411,7 @@ impl Tool for ScheduleWakeupTool {
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Why this delay, in a few words.",
+                    "description": "Why this delay, in a few words. Required with `delay_seconds`.",
                 },
                 "stop": {
                     "type": "boolean",
