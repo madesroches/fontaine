@@ -63,7 +63,7 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    rule, a server's approval marker and a critical path still ask you: no verdict approves them.
 3. **Read-only fast path.** A read-only tool (`read`, `ls`, `glob`, `grep`) whose paths all
    resolve inside a workspace root runs. Symlinks are resolved first. The label alone earns
-   nothing: a path outside the roots does not qualify. `skill`, `ask_user_question` and `todo_write` name
+   nothing: a path outside the roots does not qualify. `skill`, `ask_user_question`, `todo_write` and the read-only scheduling tools name
    no path and take this step too. `ask_user_question` only shows you text and collects your choice,
    and no mode, `auto` included, ever answers it: the answer comes from you or, in a headless run,
    from nobody (the model is told to use its best judgment). Your typed "Other" answers count as
@@ -100,6 +100,23 @@ a call while the guardian request that raced it is still pending, the record als
 projected onto `tool_decision` as `guardian.dropped_input_tokens`, `guardian.dropped_provider`,
 `guardian.dropped_model` and `guardian.dropped_priced`; see [Telemetry](telemetry.md#metrics).
 
+## Scheduled prompts
+
+`cron_create` is an `arbitrary` tool, and always a destructive call for the guardian (so a low-confidence allow is denied), even though it touches no file: it plants model-written text
+that will later run as a turn with nobody typing anything. In `auto` the guardian judges the call,
+in `manual` you are asked, and the floor (a `deny` or `ask` rule naming `cron_create`, or a hook)
+runs first as for any tool. `cron_jobs`, `cron_delete` and `schedule_wakeup` are read-only: they
+list or cancel scheduled tasks, or re-time the prompt you gave a self-paced `/loop`, and name no
+path.
+
+A task that comes due runs as a turn the harness starts, framed by a note saying it is a scheduled
+task and not you. It is never recorded as a user message, so it cannot add to what the guardian
+takes as your intent; the intent stays what you typed, including the `/loop` line that started a
+loop. The text of a task the model scheduled also passes through the tool-result scanner before the
+model reads it. Calls the task's turn makes go through the same pipeline as any other. `/clear`
+cancels every scheduled task, because it drops the intent they were scheduled under. See
+[Scheduled prompts](tui.md#scheduled-prompts).
+
 ## Your own shell commands
 
 A command you run in the terminal UI with `!` is your own action, not a tool call: it bypasses the
@@ -120,7 +137,7 @@ grammar: `Tool` or `Tool(specifier)`. A bare tool name matches every call of the
 | `webfetch` | `domain:example.com` or `domain:*.example.com` | the URL's host; `*.` matches subdomains only |
 | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | none | the registered tool name |
 | `agent`, `skill` | the agent type or skill name | exact name |
-| `send_message`, `ask_user_question`, `todo_write` | none | the tool name |
+| `send_message`, `ask_user_question`, `todo_write`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup` | none | the tool name |
 
 Deny and ask rules fail toward matching; allow rules fail toward not matching:
 

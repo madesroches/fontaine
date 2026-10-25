@@ -1,6 +1,7 @@
 mod commands;
 mod mcp;
 mod providers;
+mod schedule;
 #[cfg(test)]
 mod tests;
 mod turn;
@@ -9,6 +10,7 @@ use std::path::Path;
 
 use crate::agents_panel::{AgentsPanel, Detail, PanelRow};
 use crate::denials::{DeniedList, UnavailablePrompt};
+use crate::ui::schedule::IDLE_POLL;
 use crate::ui::turn::TurnEnd;
 use crate::{Action, App, Command, Prompt, Ui, parse_command};
 use crate::{reports, statusbar};
@@ -29,6 +31,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
             self.refresh_panel(runtime, &rows);
         }
         self.app.queued = runtime.steering.queued();
+        let scheduler = runtime.session.scheduler();
+        let scheduling = runtime.config.schedule.enabled;
+        self.app.scheduled = if scheduling { scheduler.count() } else { 0 };
+        self.app.wakeup_pending = scheduling && scheduler.wakeup_pending();
         // The completion index is advisory: a stale list only misses a suggestion.
         let files = read_recovering(&runtime.files).clone();
         self.app.set_files(files);
@@ -171,6 +177,19 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
                 continue;
             }
+            let mut tick = None;
+            if runtime.config.schedule.enabled {
+                let scheduler = runtime.session.scheduler().clone();
+                if let Some(fired) = scheduler.due() {
+                    self.show_scheduler_warning(runtime);
+                    if self.scheduled_turn(runtime, fired).await.is_break() {
+                        return;
+                    }
+                    continue;
+                }
+                self.show_scheduler_warning(runtime);
+                tick = scheduler.until_next_wake().map(|wait| wait.min(IDLE_POLL));
+            }
             self.draw(runtime);
             let action = tokio::select! {
                 input = self.input.recv() => match input {
@@ -182,6 +201,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     Action::None
                 }
                 _ = &mut changed => Action::None,
+                () = async {
+                    match tick {
+                        Some(wait) => tokio::time::sleep(wait).await,
+                        None => std::future::pending().await,
+                    }
+                } => Action::None,
             };
             match action {
                 Action::Quit => return,
@@ -199,6 +224,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     }
                 }
                 Action::EditQueued => self.edit_queued(runtime),
+                Action::CancelWakeup => self.cancel_wakeup(runtime),
                 Action::RetryDenied(index) => self.retry_denied(runtime, index),
                 Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
                 Action::KillAgent(id) => self.kill_agent(runtime, &id),
@@ -257,6 +283,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.app
                     .transcript
                     .notice(reports::skills(&runtime.extensions().skills));
+            }
+            Some(Command::Loop(argument)) => {
+                return self.loop_command(runtime, &text, &argument).await;
             }
             Some(Command::Plan(description)) => {
                 runtime.state.set_mode(PermissionMode::Plan);

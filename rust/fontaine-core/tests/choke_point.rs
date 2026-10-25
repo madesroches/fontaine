@@ -28,6 +28,10 @@ use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::guarded::Guard;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::{RiskClass, registered_risk};
+use fontaine_tools::schedule::{
+    CronCreateTool, CronDeleteTool, CronJobsTool, JobInfo, NewJob, ScheduleError, ScheduleStore,
+    ScheduleWakeupTool, WakeOutcome, WakeRequest,
+};
 use fontaine_tools::skill::{SkillSource, SkillTool};
 use fontaine_tools::todo::{TodoError, TodoItem, TodoStore, TodoTool};
 use futures::future::BoxFuture;
@@ -78,6 +82,26 @@ impl TodoStore for NoTodos {
     }
 }
 
+struct NoSchedule;
+
+impl ScheduleStore for NoSchedule {
+    fn create(&self, _: NewJob) -> Result<JobInfo, ScheduleError> {
+        Err(ScheduleError::TooMany)
+    }
+
+    fn list(&self) -> Vec<JobInfo> {
+        Vec::new()
+    }
+
+    fn delete(&self, _: &str) -> Result<bool, ScheduleError> {
+        Ok(false)
+    }
+
+    fn wake(&self, _: WakeRequest) -> Result<WakeOutcome, ScheduleError> {
+        Err(ScheduleError::NoLoop)
+    }
+}
+
 fn extension() -> ExtensionTools {
     extension_asking(AskUserTool {
         source: Arc::new(NoQuestions),
@@ -103,6 +127,18 @@ fn extension_asking(ask_user: AskUserTool) -> ExtensionTools {
         ExtensionTool::new(ask_user),
         ExtensionTool::new(TodoTool {
             store: Arc::new(NoTodos),
+        }),
+        ExtensionTool::new(CronCreateTool {
+            store: Arc::new(NoSchedule),
+        }),
+        ExtensionTool::new(CronJobsTool {
+            store: Arc::new(NoSchedule),
+        }),
+        ExtensionTool::new(CronDeleteTool {
+            store: Arc::new(NoSchedule),
+        }),
+        ExtensionTool::new(ScheduleWakeupTool {
+            store: Arc::new(NoSchedule),
         }),
     ])
 }
@@ -136,13 +172,17 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
 
     let expected: BTreeSet<&str> = TOOLS.iter().map(|d| d.name).collect();
     assert_eq!(unique, expected);
-    // The five beyond the built-ins are exactly these.
+    // The nine beyond the built-ins are exactly these.
     let extras: BTreeSet<&str> = [
         "agent",
         "skill",
         "send_message",
         "ask_user_question",
         "todo_write",
+        "cron_create",
+        "cron_jobs",
+        "cron_delete",
+        "schedule_wakeup",
     ]
     .into_iter()
     .collect();

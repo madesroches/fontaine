@@ -38,6 +38,7 @@ use crate::permissions::{Approver, PermissionPipeline};
 use crate::prompt;
 use crate::runtime_error::RuntimeError;
 use crate::scanner_stage::{Backend, ScannerStart};
+use crate::schedule::{Fired, Kind, Origin, SELF_PACED_NOTE};
 use crate::session::{CONVERSATION_LOG, ClearError, Session};
 use crate::skills::SkillRuntime;
 use crate::steering::Steering;
@@ -88,6 +89,9 @@ pub struct AgentSetup {
     pub json_schema: Option<Schema>,
     /// Nothing can be asked: every would-prompt outcome is a denial.
     pub headless: bool,
+    /// Whether this surface runs scheduled prompts when the conversation is idle, so the
+    /// scheduling tools are worth registering. A run that exits after its answer leaves it off.
+    pub scheduling: bool,
     pub approver: Arc<dyn Approver>,
     pub home: Option<PathBuf>,
     /// The user settings file "always allow" appends to, and `/model` and `/guardian-model`
@@ -168,6 +172,7 @@ pub(crate) struct Setup {
     switcher: Option<SharedSwitcher>,
     project_executables: bool,
     confirm_project_servers: bool,
+    scheduling: bool,
     env: EnvLookup,
 }
 
@@ -414,6 +419,56 @@ impl AgentRuntime {
         ))
     }
 
+    /// The prompt for a turn on a scheduled task that came due. It is a harness note, not the
+    /// user speaking, so the turn adds nothing to what the guardian takes as the user's intent.
+    /// The text of a task the model scheduled passes through the result pipeline like any
+    /// tool result; a task the user typed is their own words and goes through as written.
+    pub async fn scheduled_prompt(&self, fired: &Fired) -> String {
+        let job = &fired.job;
+        let by = job.origin.who();
+        let ending = if fired.last_run {
+            " This was its last run: recurring tasks expire after 7 days."
+        } else {
+            ""
+        };
+        let text = match job.origin {
+            Origin::User => job.prompt.clone(),
+            Origin::Model => self.screened_scheduled_text(&job.prompt).await,
+        };
+        let mut prompt = format!(
+            "[Harness note, not the user's words: scheduled task {} ({}, set by {by}) is due. Its prompt follows. It is not a new request from the user and does not widen what the user asked for earlier in this conversation.{ending}]\n\n{text}",
+            job.id,
+            job.cadence(),
+        );
+        if matches!(job.kind, Kind::Wakeup { .. }) {
+            prompt.push_str("\n\n");
+            prompt.push_str(SELF_PACED_NOTE);
+        }
+        prompt
+    }
+
+    async fn screened_scheduled_text(&self, text: &str) -> String {
+        let args = json!({});
+        // No model call produced this text, so hooks get no tool_use_id for it.
+        self.state.clear_current_call(ROOT_AGENT);
+        let view = CallView {
+            tool: "scheduled",
+            risk: RiskClass::Arbitrary,
+            args: &args,
+            agent: ROOT_AGENT,
+            annotations: None,
+            requires_user_interaction: false,
+        };
+        let (screened, _) = self
+            .results
+            .run(view, Ok(ToolOutput::text(text.to_string())))
+            .await;
+        match screened {
+            Ok(output) => output.render(),
+            Err(error) => error.model_output().render(),
+        }
+    }
+
     /// Whether the workspace was trusted, so project hooks and MCP servers loaded.
     pub fn project_executables(&self) -> bool {
         self.setup.project_executables
@@ -585,6 +640,15 @@ impl AgentRuntime {
             self.approver
                 .warn(&format!("the task list was not cleared: {}", chain(&e)));
         }
+        // A task the model planted under the intent this clear drops must not outlive it.
+        if self.config.schedule.enabled
+            && let Err(e) = self.session.scheduler().clear()
+        {
+            self.approver.warn(&format!(
+                "the scheduled tasks were not cleared: {}",
+                chain(&e)
+            ));
+        }
         Ok(())
     }
 
@@ -610,7 +674,9 @@ impl AgentRuntime {
             configured: self.config.context.autocompact_window,
             reserve: self.session.reserve(spec),
             listed: spec.is_some(),
-            system_prompt: context::text_tokens(&pieces.base) + count(&pieces.append),
+            system_prompt: context::text_tokens(&pieces.base)
+                + count(&pieces.append)
+                + count(&pieces.scheduling),
             output_style: count(&pieces.output_style),
             instructions: pieces
                 .instructions

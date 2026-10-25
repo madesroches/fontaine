@@ -36,6 +36,7 @@ fn the_assembled_prompt_is_stable() {
         skill_index: Some(
             "Skills you can load with the `skill` tool, each a set of instructions for a kind of task:\n- review: Review a pull request",
         ),
+        scheduling: None,
         output_style: Some(("terse", "Answer in at most two sentences.")),
         append: Some("Keep answers under ten lines."),
     });
@@ -68,6 +69,7 @@ fn the_roots_section_lists_every_root_with_the_primary_first() {
         system_prompt: None,
         instructions: &[],
         skill_index: None,
+        scheduling: None,
         output_style: None,
         append: None,
     });
@@ -86,6 +88,7 @@ fn layers_come_in_order_base_then_instructions_then_append() {
         system_prompt: None,
         instructions: &instructions,
         skill_index: None,
+        scheduling: None,
         output_style: None,
         append: Some("APPENDED"),
     });
@@ -95,12 +98,13 @@ fn layers_come_in_order_base_then_instructions_then_append() {
     let appended = assembled.find("APPENDED").unwrap();
     assert!(base < user && user < project && project < appended);
 
-    // The skill list and the output style sit between the instructions and the appended text.
+    // The skill list, the scheduling note and the output style sit between the instructions and the appended text.
     let layered = prompt::assemble(&PromptParts {
         roots: &roots,
         system_prompt: None,
         instructions: &instructions,
         skill_index: Some("SKILL INDEX"),
+        scheduling: Some("SCHEDULING NOTE"),
         output_style: Some(("terse", "STYLE TEXT")),
         append: Some("APPENDED"),
     });
@@ -108,7 +112,8 @@ fn layers_come_in_order_base_then_instructions_then_append() {
     assert!(
         at("You are Fontaine") < at("Always answer in French")
             && at("Run `cargo test`") < at("SKILL INDEX")
-            && at("SKILL INDEX") < at("STYLE TEXT")
+            && at("SKILL INDEX") < at("SCHEDULING NOTE")
+            && at("SCHEDULING NOTE") < at("STYLE TEXT")
             && at("STYLE TEXT") < at("APPENDED")
     );
 }
@@ -122,6 +127,7 @@ fn a_replacement_system_prompt_replaces_only_the_base() {
         system_prompt: Some("You are a pirate."),
         instructions: &instructions,
         skill_index: None,
+        scheduling: None,
         output_style: None,
         append: Some("APPENDED"),
     });
@@ -151,4 +157,32 @@ fn absent_and_blank_instruction_files_are_skipped() {
     assert!(prompt::load_instructions(&w.config, &w.work).is_empty());
     common::write(&w.work.join("FONTAINE.md"), "  \n\n");
     assert!(prompt::load_instructions(&w.config, &w.work).is_empty());
+}
+
+#[test]
+fn the_scheduling_note_is_a_layer_that_is_present_only_when_given() {
+    let roots = roots();
+    let without = prompt::assemble(&PromptParts {
+        roots: &roots,
+        system_prompt: None,
+        instructions: &[],
+        skill_index: None,
+        scheduling: None,
+        output_style: None,
+        append: None,
+    });
+    assert!(!without.contains("cron_create") && !without.contains("schedule_wakeup"));
+    let with = prompt::assemble(&PromptParts {
+        roots: &roots,
+        system_prompt: None,
+        instructions: &[],
+        skill_index: None,
+        scheduling: Some(prompt::SCHEDULING_PROMPT),
+        output_style: None,
+        append: None,
+    });
+    assert!(with.starts_with(&without));
+    for needle in ["cron_create", "harness note", "schedule_wakeup"] {
+        assert!(with.contains(needle), "the note lacks `{needle}`");
+    }
 }

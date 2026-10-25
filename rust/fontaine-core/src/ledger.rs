@@ -109,6 +109,26 @@ pub enum Record {
     /// The human emptied the model's context with `/clear`. The guardian's view of what the
     /// human asked starts again here.
     ContextCleared {},
+    /// A scheduled task was created, ran, was cancelled or ran out. The prompt it runs is not
+    /// recorded: a task fires as a harness note, never as something the human said, so this
+    /// record is not part of the guardian's view of the user's intent.
+    Scheduled {
+        event: ScheduleEvent,
+        id: String,
+        /// `user` for `/loop`, `model` for `cron_create`.
+        origin: String,
+        cron: String,
+        recurring: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleEvent {
+    Created,
+    Fired,
+    Deleted,
+    Expired,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,7 +264,8 @@ impl LedgerView {
             | Record::Grant { .. }
             | Record::Resumed { .. }
             | Record::Agent { .. }
-            | Record::UserShell { .. } => {}
+            | Record::UserShell { .. }
+            | Record::Scheduled { .. } => {}
         }
     }
 }

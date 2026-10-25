@@ -50,6 +50,12 @@ The budget is checked between model calls. A call that pushes the spend over the
 run before its tool calls execute; an answer that was already complete is kept. The spend includes
 the guardian's calls and the subagents' model calls.
 
+## Scheduled prompts
+
+A headless run exits after its answer, so a scheduled task could never fire: the scheduling tools
+(`cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup`) are not registered and `/loop` does
+not exist. See [Scheduled prompts](tui.md#scheduled-prompts) for the terminal UI.
+
 ## Sessions
 
 Each run is a session, named by a UUID: the one given with `--session-id`, or a fresh one. Its

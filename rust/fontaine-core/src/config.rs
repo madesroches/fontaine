@@ -562,6 +562,12 @@ pub struct ContextSection {
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct ScheduleSection {
+    pub enabled: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ShellPreclassifierSection {
     pub allow_extra: Option<Vec<String>>,
 }
@@ -713,6 +719,7 @@ pub struct Settings {
     pub auto_mode: Option<AutoModeSection>,
     pub agents: Option<AgentsSection>,
     pub context: Option<ContextSection>,
+    pub schedule: Option<ScheduleSection>,
     pub shell_preclassifier: Option<ShellPreclassifierSection>,
     pub telemetry: Option<TelemetrySection>,
     pub env: Option<BTreeMap<String, EnvValue>>,
@@ -1261,6 +1268,13 @@ pub struct Context {
     pub autocompact_window: Option<u64>,
 }
 
+/// The merged `[schedule]` section.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Schedule {
+    /// Whether the scheduling tools and `/loop` are available.
+    pub enabled: bool,
+}
+
 /// The merged `[tui]` section.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tui {
@@ -1288,6 +1302,7 @@ pub struct Config {
     pub auto_mode: AutoMode,
     pub agents: Agents,
     pub context: Context,
+    pub schedule: Schedule,
     pub shell_preclassifier_allow_extra: Vec<String>,
     pub telemetry: Telemetry,
     pub tui: Tui,
@@ -1337,6 +1352,7 @@ impl Config {
                 types: BTreeMap::new(),
             },
             context: Context::default(),
+            schedule: Schedule { enabled: true },
             shell_preclassifier_allow_extra: Vec::new(),
             tui: Tui {
                 theme: ThemeName::default(),
@@ -1521,6 +1537,9 @@ impl Config {
         }
         if let Some(v) = s.context.as_ref().and_then(|c| c.autocompact_window) {
             self.context.autocompact_window = Some(v);
+        }
+        if let Some(v) = s.schedule.as_ref().and_then(|c| c.enabled) {
+            self.schedule.enabled = v;
         }
         if let Some(sp) = &s.shell_preclassifier {
             union(

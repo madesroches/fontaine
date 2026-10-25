@@ -65,6 +65,10 @@ The body is the subagent's instructions.
 | `SendMessage` | `send_message` |
 | `AskUserQuestion` | `ask_user_question` |
 | `TodoWrite` | `todo_write` |
+| `CronCreate` | `cron_create` |
+| `CronList` | `cron_jobs` |
+| `CronDelete` | `cron_delete` |
+| `ScheduleWakeup` | `schedule_wakeup` |
 
 A `(specifier)` is kept as written, so `Bash(git *)` becomes `shell(git *)`, and the result must
 be a valid [permission rule](permissions.md#rules). Fontaine's own names (`shell`,

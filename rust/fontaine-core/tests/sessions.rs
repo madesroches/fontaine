@@ -137,6 +137,34 @@ async fn the_task_list_is_reloaded_on_resume_and_copied_by_a_fork() {
 }
 
 #[tokio::test]
+async fn the_schedule_is_reloaded_on_resume_and_copied_by_a_fork() {
+    use fontaine_core::schedule::{JobSpec, Origin};
+    let w = World::new();
+    let source = Session::create(&w.data, A).unwrap();
+    start(&source, &w.work);
+    let job = source
+        .scheduler()
+        .create(JobSpec {
+            cron: "*/5 * * * *".into(),
+            prompt: "check the build".into(),
+            recurring: true,
+            origin: Origin::User,
+        })
+        .unwrap();
+    assert!(source.dir.join("schedule.json").is_file());
+
+    drop(source);
+    let resumed = Session::open(&w.data, A).unwrap();
+    assert_eq!(resumed.scheduler().take_warning(), None);
+    assert_eq!(resumed.scheduler().list()[0].id, job.id);
+    let fork = Session::fork(&w.data, A, B).unwrap();
+    assert!(fork.dir.join("schedule.json").is_file());
+    assert_eq!(fork.scheduler().list()[0].id, job.id);
+    fork.scheduler().clear().unwrap();
+    assert_eq!(resumed.scheduler().list().len(), 1);
+}
+
+#[tokio::test]
 async fn forking_onto_a_used_id_or_a_missing_source_is_a_usage_error() {
     let w = World::new();
     Session::create(&w.data, A).unwrap();

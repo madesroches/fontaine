@@ -3,6 +3,7 @@ use fontaine_core::RuntimeError;
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::Decision;
 use fontaine_core::ledger::Record;
+use fontaine_core::schedule::{Fired, Kind};
 use fontaine_core::tier::Tier;
 use fontaine_core::turn::{
     DEFAULT_MAX_TURNS, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
@@ -58,6 +59,36 @@ impl<R: FnMut(&mut App)> Ui<R> {
             .transcript
             .notice("a background agent reported back");
         Some(self.turn(runtime, prompt, None).await)
+    }
+
+    /// A turn on a scheduled task that came due. Like a background agent's report it is not
+    /// the user speaking, so it is not recorded as a user message; unlike one, what the human
+    /// queued while it ran is sent as the next turn or handed back to the input.
+    pub(crate) async fn scheduled_turn(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        fired: Fired,
+    ) -> std::ops::ControlFlow<()> {
+        use std::ops::ControlFlow::{Break, Continue};
+        let prompt = runtime.scheduled_prompt(&fired).await;
+        self.app
+            .transcript
+            .notice(format!("scheduled: {}", fired.job.id));
+        let end = self.turn(runtime, prompt, None).await;
+        if matches!(end, TurnEnd::InputClosed) {
+            return Break(());
+        }
+        if matches!(fired.job.kind, Kind::Wakeup { .. }) {
+            self.end_of_iteration(runtime);
+        }
+        match end_of_turn(&end, runtime.steering.retract()) {
+            EndOfTurn::Submit(next) => self.converse(runtime, next, None).await,
+            EndOfTurn::RestoreToInput(back) => {
+                self.app.restore_to_input(&back);
+                Continue(())
+            }
+            EndOfTurn::Nothing => Continue(()),
+        }
     }
 
     /// Drives `fut` to completion while serving keys and prompts. `serve` says which of the
@@ -238,7 +269,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             runtime.steering.queue(text);
                         }
                         Action::EditQueued => self.edit_queued(runtime),
-                        Action::Server(_) | Action::None | Action::Submit(_) | Action::Shell(_) => {}
+                        Action::Server(_)
+                        | Action::None
+                        | Action::Submit(_)
+                        | Action::Shell(_)
+                        | Action::CancelWakeup => {}
                     },
                 },
                 Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),

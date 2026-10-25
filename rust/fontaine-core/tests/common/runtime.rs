@@ -107,6 +107,32 @@ pub fn build_with_approver(
     user_config: Option<std::path::PathBuf>,
     approver: Arc<dyn fontaine_core::permissions::Approver>,
 ) -> AgentRuntime {
+    build_scheduling(
+        world,
+        mode,
+        models,
+        switcher,
+        project_executables,
+        scanner,
+        user_config,
+        approver,
+        false,
+    )
+}
+
+/// Like [`build_with_approver`], with the scheduling tools on when `scheduling` is set.
+#[allow(clippy::too_many_arguments)]
+pub fn build_scheduling(
+    world: &World,
+    mode: PermissionMode,
+    models: Models,
+    switcher: Option<Switcher>,
+    project_executables: bool,
+    scanner: fontaine_core::scanner_stage::ScannerStart,
+    user_config: Option<std::path::PathBuf>,
+    approver: Arc<dyn fontaine_core::permissions::Approver>,
+    scheduling: bool,
+) -> AgentRuntime {
     let config = world.load().unwrap();
     let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
     let loaded = extensions::load(&LoadParams {
@@ -130,6 +156,7 @@ pub fn build_with_approver(
         append_system_prompt: None,
         json_schema: None,
         headless: true,
+        scheduling,
         approver,
         home: None,
         user_config,

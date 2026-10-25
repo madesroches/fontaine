@@ -600,6 +600,7 @@ fn agent_setup(
         extensions: prep.extensions,
         project_executables: prep.project_executables,
         confirm_project_servers: !headless,
+        scheduling: !headless,
         origin: prep.origin,
         env: lookup,
     }

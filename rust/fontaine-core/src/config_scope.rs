@@ -114,6 +114,7 @@ const ENV: &str = "environment overrides come only from user-trust scopes";
 const SCANNER: &str = "scanner settings come only from the user file";
 const SCREEN: &str = "the screen stage is configured only in the user file; other scopes may only set `shadow = true`";
 const DEFAULT_MODE: &str = "only `manual` and `dontAsk` are accepted here";
+const SCHEDULE: &str = "scheduled prompts run without the user typing them, so only the user file or --settings turns them on or off";
 const TELEMETRY: &str = "only `enabled = false` may be set here";
 
 fn is_tightening_mode(v: &toml::Value) -> bool {
@@ -130,6 +131,7 @@ fn is_shadow_true(v: &toml::Value) -> bool {
 
 pub(crate) const RULES: &[Rule] = &[
     Rule::user_or_cli("tui", TUI),
+    Rule::user_or_cli("schedule.enabled", SCHEDULE),
     Rule::user_or_cli("accounts", USER_FILE),
     Rule::user_or_cli("network", NETWORK),
     Rule::user_trust("model", TIGHTEN),
@@ -483,6 +485,7 @@ mod tests {
             None,
         ),
         ("agents", "[agents]\nmax_parallel = 2\n", None),
+        ("schedule.enabled", "[schedule]\nenabled = false\n", None),
         ("context", "[context]\nautocompact_window = 150000\n", None),
         (
             "shell_preclassifier",

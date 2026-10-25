@@ -18,6 +18,7 @@ use fontaine_core::models::{
     GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models, Switcher,
 };
 use fontaine_core::permissions::DenyAll;
+use fontaine_core::schedule::ManualClock;
 use fontaine_core::session::Session;
 use fontaine_tui::linear::Linear;
 use fontaine_tui::screen::Screen;
@@ -77,7 +78,12 @@ pub struct World {
     pub without_user_config: bool,
     /// How many times the interface has been driven.
     runs: Cell<usize>,
+    /// The time the session's scheduler sees, which a test moves itself.
+    pub clock: Arc<ManualClock>,
 }
+
+/// The instant the scheduler's clock starts at in a test world: 2026-01-15 12:00 UTC.
+pub const CLOCK_START_MS: i64 = 1_768_478_400_000;
 
 /// The id of the session the `n`th drive run of a world uses: a session directory cannot be
 /// reused, so each run needs its own.
@@ -129,6 +135,7 @@ impl World {
             routed: false,
             without_user_config: false,
             runs: Cell::new(0),
+            clock: Arc::new(ManualClock::new(CLOCK_START_MS)),
         };
         world.mock = MockCompletionModel::from_stream_turns(turns(&world));
         world
@@ -332,7 +339,9 @@ impl World {
                 },
                 notices: Vec::new(),
             }),
-            session: Session::create(&self.data, &session_id(self.runs.get())).unwrap(),
+            session: Session::create(&self.data, &session_id(self.runs.get()))
+                .unwrap()
+                .with_clock(self.clock.clone()),
             roots: vec![self.work.clone()],
             mode: self.mode,
             scrub_env: vec![],
@@ -341,6 +350,7 @@ impl World {
             append_system_prompt: None,
             json_schema: None,
             headless: false,
+            scheduling: true,
             approver: Arc::new(DenyAll),
             home: Some(self.home.clone()),
             user_config: (!self.without_user_config).then(|| self.user_config.clone()),

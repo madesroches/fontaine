@@ -10,6 +10,9 @@ use fontaine_tools::ask_user::AskUserTool;
 use fontaine_tools::builtins::Seen;
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::result_pipeline::ResultPipeline;
+use fontaine_tools::schedule::{
+    CronCreateTool, CronDeleteTool, CronJobsTool, ScheduleStore, ScheduleWakeupTool,
+};
 use fontaine_tools::skill::SkillTool;
 use fontaine_tools::todo::TodoTool;
 use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext};
@@ -25,6 +28,7 @@ use crate::permissions::{Approver, PermissionPipeline};
 use crate::prompt::{self, PromptParts};
 use crate::questions::HumanQuestions;
 use crate::runtime_error::RuntimeError;
+use crate::schedule::ReportedSchedule;
 use crate::session::{CONVERSATION_LOG, Session};
 use crate::skills::{self, SkillRuntime};
 use crate::steering::{Steering, SteeringHook};
@@ -91,8 +95,19 @@ pub(super) fn build_agent(p: &Parts<'_>) -> Result<(Agent, prompt::PromptPieces)
     if let Some(warning) = p.session.todos().take_warning() {
         p.approver.warn(&warning);
     }
+    if scheduling(p) {
+        p.session.scheduler().settle_expired();
+        if let Some(warning) = p.session.scheduler().take_warning() {
+            p.approver.warn(&warning);
+        }
+    }
     register_tools(p)?;
     Ok((finish_builder(p, pieces.join()), pieces))
+}
+
+/// Whether the scheduling tools exist in this session.
+fn scheduling(p: &Parts<'_>) -> bool {
+    p.setup.scheduling && p.config.schedule.enabled
 }
 
 fn prompt_layers(p: &Parts<'_>) -> prompt::PromptPieces {
@@ -103,6 +118,7 @@ fn prompt_layers(p: &Parts<'_>) -> prompt::PromptPieces {
         system_prompt: p.setup.system_prompt.as_deref(),
         instructions: &instructions,
         skill_index: skill_index.as_deref(),
+        scheduling: scheduling(p).then_some(prompt::SCHEDULING_PROMPT),
         output_style: p
             .output_style
             .as_ref()
@@ -124,30 +140,7 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
         results: p.results.clone(),
         hide_mcp_names: !(p.config.telemetry.enabled && p.config.telemetry.log_tool_details),
         network: p.setup.network.clone(),
-        extension: Some(ExtensionTools(vec![
-            ExtensionTool::new(AgentTool {
-                tree: p.state.agents().clone(),
-                types: p.types.clone(),
-                runner: p.runner.clone(),
-                ledger: ledger_window.clone(),
-            }),
-            ExtensionTool::new(SkillTool {
-                source: p.skills.clone(),
-            }),
-            ExtensionTool::new(SendMessageTool {
-                tree: p.state.agents().clone(),
-                ledger: ledger_window,
-            }),
-            ExtensionTool::new(AskUserTool {
-                source: Arc::new(HumanQuestions::new(p.approver.clone(), p.state.clone())),
-            }),
-            ExtensionTool::new(TodoTool {
-                store: Arc::new(ReportedTodos {
-                    todos: p.session.todos().clone(),
-                    approver: p.approver.clone(),
-                }),
-            }),
-        ])),
+        extension: Some(ExtensionTools(extension_tools(p, ledger_window))),
     })
     .map_err(RuntimeError::new)?;
     for tool in registered {
@@ -157,6 +150,55 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
         p.tool_server.add_dynamic_tool(tool.tool);
     }
     Ok(())
+}
+
+fn extension_tools(
+    p: &Parts<'_>,
+    ledger_window: Arc<dyn fontaine_agents::root_ledger::RootLedger>,
+) -> Vec<ExtensionTool> {
+    let mut tools = vec![
+        ExtensionTool::new(AgentTool {
+            tree: p.state.agents().clone(),
+            types: p.types.clone(),
+            runner: p.runner.clone(),
+            ledger: ledger_window.clone(),
+        }),
+        ExtensionTool::new(SkillTool {
+            source: p.skills.clone(),
+        }),
+        ExtensionTool::new(SendMessageTool {
+            tree: p.state.agents().clone(),
+            ledger: ledger_window,
+        }),
+        ExtensionTool::new(AskUserTool {
+            source: Arc::new(HumanQuestions::new(p.approver.clone(), p.state.clone())),
+        }),
+        ExtensionTool::new(TodoTool {
+            store: Arc::new(ReportedTodos {
+                todos: p.session.todos().clone(),
+                approver: p.approver.clone(),
+            }),
+        }),
+    ];
+    if scheduling(p) {
+        let store: Arc<dyn ScheduleStore> = Arc::new(ReportedSchedule {
+            scheduler: p.session.scheduler().clone(),
+            approver: p.approver.clone(),
+        });
+        tools.extend([
+            ExtensionTool::new(CronCreateTool {
+                store: store.clone(),
+            }),
+            ExtensionTool::new(CronJobsTool {
+                store: store.clone(),
+            }),
+            ExtensionTool::new(CronDeleteTool {
+                store: store.clone(),
+            }),
+            ExtensionTool::new(ScheduleWakeupTool { store }),
+        ]);
+    }
+    tools
 }
 
 fn finish_builder(p: &Parts<'_>, preamble: String) -> Agent {

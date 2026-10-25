@@ -22,6 +22,7 @@ fontaine-agents = { path = "fontaine-agents" }
 fontaine-mcp = { path = "fontaine-mcp" }
 fontaine-tui = { path = "fontaine-tui" }
 
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6.7", features = ["derive"] }
 crossterm = { version = "=0.29.0", features = ["osc52"] }
 dirs = "7.0.0"
