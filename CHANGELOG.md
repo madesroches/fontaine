@@ -265,6 +265,9 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- Each tool's decision inputs (risk class, path containment, destructive policy, rule specifier
+  and Claude Code name) now live in one descriptor table, `fontaine-tools/src/descriptor.rs`, and
+  the unknown-tool error lists Claude Code names in table order (#181).
 - Which scopes may set a settings key is now one declarative table in `fontaine-core`, and a key
   with no entry is refused from project and project-local files instead of accepted. No existing
   scope decision changes; a scope error now names the table entry's key, which can be a section

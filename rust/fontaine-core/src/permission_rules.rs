@@ -7,6 +7,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use fontaine_tools::descriptor::{Specifier, find};
 use fontaine_tools::names::{is_builtin, is_mcp};
 use fontaine_tools::preclassify::{ShellAnalysis, analyze, program_name, raw_mentions_word};
 use fontaine_tools::scope::{Scope, glob_target};
@@ -95,8 +96,6 @@ impl fmt::Display for RuleError {
 
 impl std::error::Error for RuleError {}
 
-const PATH_TOOLS: [&str; 6] = ["read", "edit", "write", "ls", "glob", "grep"];
-
 pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
     let fail = |reason: &str| RuleError {
         rule: text.to_string(),
@@ -151,22 +150,24 @@ pub fn parse_rule(text: &str) -> Result<Rule, RuleError> {
 }
 
 fn validate_specifier(tool: &str, spec: &str) -> Result<(), String> {
-    match tool {
-        "shell" => shell_spec(spec).map(drop),
-        "webfetch" => validate_domain_specifier(spec),
-        "agent" | "skill" => {
+    match specifier_of(tool) {
+        Some(Specifier::Shell) => shell_spec(spec).map(drop),
+        Some(Specifier::Domain) => validate_domain_specifier(spec),
+        Some(Specifier::Name) => {
             if spec.trim() != spec || spec.contains(char::is_whitespace) {
                 Err(format!("`{tool}` rules take one name"))
             } else {
                 Ok(())
             }
         }
-        "send_message" | "ask_user_question" | "todo_write" => {
-            Err(format!("`{tool}` rules take no specifier"))
-        }
-        _ if PATH_TOOLS.contains(&tool) => path_spec(spec).map(drop),
-        _ => Ok(()),
+        Some(Specifier::None) => Err(format!("`{tool}` rules take no specifier")),
+        Some(Specifier::Path) => path_spec(spec).map(drop),
+        None => Ok(()),
     }
+}
+
+fn specifier_of(tool: &str) -> Option<Specifier> {
+    find(tool).map(|d| d.specifier)
 }
 
 pub(crate) fn validate_mcp_name(name: &str) -> Result<(), String> {
@@ -423,13 +424,22 @@ pub fn matches(rule: &Rule, call: &CallContext<'_>, posture: Posture) -> bool {
     let Some(spec) = rule.specifier.as_deref() else {
         return true;
     };
-    match call.tool {
-        "shell" => shell_matches(spec, call, posture),
-        "webfetch" => webfetch_matches(spec, call.args, posture),
-        "agent" => string_arg(call.args, "agent_type").is_some_and(|name| name == spec),
-        "skill" => string_arg(call.args, "name").is_some_and(|name| name == spec),
-        tool if PATH_TOOLS.contains(&tool) => path_matches(spec, call, posture),
-        _ => false,
+    match specifier_of(call.tool) {
+        Some(Specifier::Shell) => shell_matches(spec, call, posture),
+        Some(Specifier::Domain) => webfetch_matches(spec, call.args, posture),
+        Some(Specifier::Name) => {
+            string_arg(call.args, name_arg_key(call.tool)).is_some_and(|name| name == spec)
+        }
+        Some(Specifier::Path) => path_matches(spec, call, posture),
+        Some(Specifier::None) | None => false,
+    }
+}
+
+fn name_arg_key(tool: &str) -> &'static str {
+    if tool == "agent" {
+        "agent_type"
+    } else {
+        "name"
     }
 }
 
@@ -570,8 +580,8 @@ fn path_matches(spec: &str, call: &CallContext<'_>, posture: Posture) -> bool {
 /// The rule that lets this one call run again and nothing wider, or `None` when no rule can
 /// say it (a shell command that is not one literal simple command).
 pub fn propose(call: &CallContext<'_>) -> Option<Rule> {
-    let spec = match call.tool {
-        "shell" => {
+    let spec = match specifier_of(call.tool) {
+        Some(Specifier::Shell) => {
             let argv = analyze(string_arg(call.args, "command")?).simple?;
             Some(
                 argv.iter()
@@ -580,14 +590,13 @@ pub fn propose(call: &CallContext<'_>) -> Option<Rule> {
                     .join(" "),
             )
         }
-        "webfetch" => {
+        Some(Specifier::Domain) => {
             let url = url::Url::parse(string_arg(call.args, "url")?).ok()?;
             Some(format!("domain:{}", url.host_str()?.to_ascii_lowercase()))
         }
-        "agent" => Some(string_arg(call.args, "agent_type")?.to_string()),
-        "skill" => Some(string_arg(call.args, "name")?.to_string()),
-        tool if PATH_TOOLS.contains(&tool) => Some(path_pattern(&path_args(call)?.resolved)),
-        tool if is_mcp(tool) || matches!(tool, "send_message" | "ask_user_question") => None,
+        Some(Specifier::Name) => Some(string_arg(call.args, name_arg_key(call.tool))?.to_string()),
+        Some(Specifier::Path) => Some(path_pattern(&path_args(call)?.resolved)),
+        _ if is_mcp(call.tool) || matches!(call.tool, "send_message" | "ask_user_question") => None,
         _ => return None,
     };
     let rule = Rule {

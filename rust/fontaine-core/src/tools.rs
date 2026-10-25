@@ -3,18 +3,14 @@
 use std::ffi::OsString;
 use std::sync::Arc;
 
-use fontaine_agents::spawn::{AgentTool, SendMessageTool};
-use fontaine_tools::ask_user::AskUserTool;
 use fontaine_tools::builtins::{self, BuiltinEnv, Registered, Seen, ShellSettings};
 use fontaine_tools::gate::ToolGate;
 use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::guarded::{Guard, GuardedTool};
 use fontaine_tools::result_pipeline::ResultPipeline;
-use fontaine_tools::risk::{RiskClass, ToolSource, extension_risk};
+use fontaine_tools::risk::{RiskClass, ToolSource, registered_risk};
 use fontaine_tools::scope::Scope;
-use fontaine_tools::skill::SkillTool;
 use fontaine_tools::tls::LoadedNetwork;
-use fontaine_tools::todo::TodoTool;
 use fontaine_tools::webfetch::WebfetchConfig;
 use rig_core::tool::Tool;
 
@@ -63,15 +59,19 @@ pub fn subprocess_env(config: &Config) -> Vec<(OsString, OsString)> {
         .collect()
 }
 
+/// One tool beyond the built-ins, built by the caller (it needs session state) and registered
+/// under the class its descriptor row gives it.
+pub struct ExtensionTool(Box<dyn FnOnce(&Guard) -> Registered>);
+
+impl ExtensionTool {
+    pub fn new<T: Tool + 'static>(tool: T) -> Self {
+        Self(Box::new(move |guard| register_extension(tool, guard)))
+    }
+}
+
 /// The tools beyond the built-ins: the subagent tools, the skill loader, the question dialog and
 /// the task list.
-pub struct ExtensionTools {
-    pub agent: AgentTool,
-    pub send_message: SendMessageTool,
-    pub skill: SkillTool,
-    pub ask_user: AskUserTool,
-    pub todo: TodoTool,
-}
+pub struct ExtensionTools(pub Vec<ExtensionTool>);
 
 pub struct RegistryParams {
     pub gate: Arc<dyn ToolGate>,
@@ -91,9 +91,9 @@ pub struct RegistryParams {
 }
 
 fn register_extension<T: Tool + 'static>(tool: T, guard: &Guard) -> Registered {
-    // A tool missing from the table is the riskiest class, so a forgotten entry only makes it
+    // A tool without a descriptor row is the riskiest class, so a forgotten row only makes it
     // stricter.
-    let risk = extension_risk(T::NAME).unwrap_or(RiskClass::Arbitrary);
+    let risk = registered_risk(T::NAME).unwrap_or(RiskClass::Arbitrary);
     let guarded = GuardedTool::single(tool, risk, guard.clone());
     Registered {
         name: T::NAME,
@@ -131,11 +131,7 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
         )
     })?;
     if let Some(extension) = params.extension {
-        tools.push(register_extension(extension.agent, &guard));
-        tools.push(register_extension(extension.skill, &guard));
-        tools.push(register_extension(extension.send_message, &guard));
-        tools.push(register_extension(extension.ask_user, &guard));
-        tools.push(register_extension(extension.todo, &guard));
+        tools.extend(extension.0.into_iter().map(|register| (register.0)(&guard)));
     }
     Ok(tools)
 }

@@ -20,14 +20,14 @@ use fontaine_agents::tree::{AgentTree, Limits};
 use fontaine_core::config::PermissionMode::{self, Manual};
 use fontaine_core::questions::HumanQuestions;
 use fontaine_core::tier::Tier;
-use fontaine_core::tools::{ExtensionTools, RegistryParams, registry};
+use fontaine_core::tools::{ExtensionTool, ExtensionTools, RegistryParams, registry};
 use fontaine_mcp::connect_transport;
 use fontaine_tools::ask_user::{AskUserTool, Question, QuestionReply, QuestionSource};
+use fontaine_tools::descriptor::{TOOLS, find};
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::guarded::Guard;
-use fontaine_tools::names::BUILTIN_TOOL_NAMES;
 use fontaine_tools::result_pipeline::ResultPipeline;
-use fontaine_tools::risk::{BUILTIN_RISK, EXTENSION_RISK, RiskClass, registered_risk};
+use fontaine_tools::risk::{RiskClass, registered_risk};
 use fontaine_tools::skill::{SkillSource, SkillTool};
 use fontaine_tools::todo::{TodoError, TodoItem, TodoStore, TodoTool};
 use futures::future::BoxFuture;
@@ -79,28 +79,32 @@ impl TodoStore for NoTodos {
 }
 
 fn extension() -> ExtensionTools {
+    extension_asking(AskUserTool {
+        source: Arc::new(NoQuestions),
+    })
+}
+
+fn extension_asking(ask_user: AskUserTool) -> ExtensionTools {
     let tree = Arc::new(AgentTree::new(Limits::default()));
-    ExtensionTools {
-        agent: AgentTool {
+    ExtensionTools(vec![
+        ExtensionTool::new(AgentTool {
             tree: tree.clone(),
             types: Arc::new(AgentTypes::builtin()),
             runner: Arc::new(NoRunner),
             ledger: Arc::new(NoLedger),
-        },
-        send_message: SendMessageTool {
+        }),
+        ExtensionTool::new(SendMessageTool {
             tree,
             ledger: Arc::new(NoLedger),
-        },
-        skill: SkillTool {
+        }),
+        ExtensionTool::new(SkillTool {
             source: Arc::new(NoSkills),
-        },
-        ask_user: AskUserTool {
-            source: Arc::new(NoQuestions),
-        },
-        todo: TodoTool {
+        }),
+        ExtensionTool::new(ask_user),
+        ExtensionTool::new(TodoTool {
             store: Arc::new(NoTodos),
-        },
-    }
+        }),
+    ])
 }
 
 fn params(rig: &Rig) -> RegistryParams {
@@ -130,26 +134,24 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         "duplicate registrations: {names:?}"
     );
 
-    let expected: BTreeSet<&str> = BUILTIN_RISK
-        .iter()
-        .chain(EXTENSION_RISK.iter())
-        .map(|(name, _)| *name)
-        .collect();
+    let expected: BTreeSet<&str> = TOOLS.iter().map(|d| d.name).collect();
     assert_eq!(unique, expected);
     // The five beyond the built-ins are exactly these.
-    assert_eq!(
-        EXTENSION_RISK,
-        [
-            ("agent", RiskClass::Arbitrary),
-            ("skill", RiskClass::ReadOnly),
-            ("send_message", RiskClass::Arbitrary),
-            ("ask_user_question", RiskClass::ReadOnly),
-            ("todo_write", RiskClass::ReadOnly),
-        ]
-    );
-    // The non-MCP names are the names rules can use.
-    let known: BTreeSet<&str> = BUILTIN_TOOL_NAMES.iter().copied().collect();
-    assert_eq!(unique, known);
+    let extras: BTreeSet<&str> = [
+        "agent",
+        "skill",
+        "send_message",
+        "ask_user_question",
+        "todo_write",
+    ]
+    .into_iter()
+    .collect();
+    let built_ins: BTreeSet<&str> = [
+        "read", "ls", "glob", "grep", "write", "edit", "shell", "webfetch",
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(&expected - &built_ins, extras);
     // Nothing for the model to list, inspect or kill agents with.
     for name in &names {
         for word in name.split('_') {
@@ -162,12 +164,13 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
 }
 
 #[test]
-fn every_registered_tool_has_its_risk_class_from_the_tables() {
+fn every_registered_tool_has_a_descriptor_row_and_its_class() {
     let rig = Rig::new(Manual);
     for tool in registry(params(&rig)).unwrap() {
-        let class = registered_risk(tool.name);
-        assert!(class.is_some(), "{} has no risk class", tool.name);
-        assert_eq!(Some(tool.risk), class, "{}", tool.name);
+        let row = find(tool.name);
+        assert!(row.is_some(), "{} has no descriptor row", tool.name);
+        assert_eq!(Some(tool.risk), row.map(|d| d.risk), "{}", tool.name);
+        assert_eq!(Some(tool.risk), registered_risk(tool.name), "{}", tool.name);
     }
 }
 
@@ -176,7 +179,7 @@ fn without_the_extension_the_registry_is_the_eight_built_ins() {
     let rig = Rig::new(Manual);
     let mut p = params(&rig);
     p.extension = None;
-    assert_eq!(registry(p).unwrap().len(), BUILTIN_RISK.len());
+    assert_eq!(registry(p).unwrap().len(), 8);
 }
 
 async fn serve(
@@ -299,12 +302,9 @@ fn one_question() -> serde_json::Value {
 
 async fn run_ask(rig: &Rig, context: &mut ToolContext) -> Result<String, String> {
     let mut p = params(rig);
-    p.extension = Some(ExtensionTools {
-        ask_user: AskUserTool {
-            source: Arc::new(HumanQuestions::new(rig.approver.clone(), rig.state.clone())),
-        },
-        ..extension()
-    });
+    p.extension = Some(extension_asking(AskUserTool {
+        source: Arc::new(HumanQuestions::new(rig.approver.clone(), rig.state.clone())),
+    }));
     let tools = registry(p).unwrap();
     let tool = tools
         .iter()

@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use fontaine_tools::descriptor::{Destructive, find};
 use fontaine_tools::names::is_mcp;
 use fontaine_tools::preclassify::{SimpleCommand, analyze, program_name};
 use fontaine_tools::scope::Scope;
@@ -58,13 +59,12 @@ pub fn derive(tool: &str, args: &Value, facts: &Facts<'_>) -> bool {
     if is_mcp(tool) {
         return true;
     }
-    match tool {
-        "read" | "ls" | "glob" | "grep" | "skill" | "ask_user_question" | "todo_write" => false,
-        "webfetch" => true,
-        "write" | "edit" => file_write(args, facts),
-        "shell" => shell(args, facts),
-        // Any other tool that runs at all can do anything: a spawned agent, a message.
-        _ => true,
+    match find(tool).map(|d| d.destructive) {
+        Some(Destructive::Never) => false,
+        Some(Destructive::FileWrite) => file_write(args, facts),
+        Some(Destructive::Shell) => shell(args, facts),
+        // A tool that runs at all can do anything: a spawned agent, a message, the network.
+        Some(Destructive::Always) | None => true,
     }
 }
 

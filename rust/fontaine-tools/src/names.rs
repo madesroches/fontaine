@@ -1,25 +1,8 @@
-/// Built-in tool names, as they appear in permission rules and agent type toolsets.
-pub const BUILTIN_TOOL_NAMES: [&str; 13] = [
-    "shell",
-    "read",
-    "edit",
-    "write",
-    "ls",
-    "glob",
-    "grep",
-    "webfetch",
-    "agent",
-    "skill",
-    "send_message",
-    "ask_user_question",
-    "todo_write",
-];
-
 /// MCP tools are namespaced `mcp__<server>__<tool>` and are not enumerable at config time.
 pub const MCP_TOOL_PREFIX: &str = "mcp__";
 
 pub fn is_builtin(name: &str) -> bool {
-    BUILTIN_TOOL_NAMES.contains(&name)
+    crate::descriptor::find(name).is_some()
 }
 
 pub fn is_mcp(name: &str) -> bool {

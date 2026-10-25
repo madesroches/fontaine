@@ -6,9 +6,10 @@ use std::sync::Arc;
 
 use common::{AllowAll, Dirs, env_with, registry, scope};
 use fontaine_tools::builtins::{self, ShellSettings};
+use fontaine_tools::descriptor::{TOOLS, find};
 use fontaine_tools::git_bash::GitBash;
-use fontaine_tools::names::{BUILTIN_TOOL_NAMES, is_builtin};
-use fontaine_tools::risk::{BUILTIN_RISK, RiskClass, builtin_risk};
+use fontaine_tools::names::is_builtin;
+use fontaine_tools::risk::RiskClass;
 use rig_core::tool::{Tool, ToolContext};
 use rig_tools::{OutputLimit, Seen, WriteArgs};
 
@@ -52,24 +53,15 @@ fn the_registered_set_is_exactly_the_documented_one() {
 #[test]
 fn registered_names_are_known_built_in_names() {
     for tool in registered() {
-        assert!(
-            is_builtin(tool.name),
-            "{} is not in BUILTIN_TOOL_NAMES",
-            tool.name
-        );
-        assert!(BUILTIN_TOOL_NAMES.contains(&tool.name));
+        assert!(is_builtin(tool.name), "{} has no descriptor row", tool.name);
     }
 }
 
 #[test]
 fn every_registered_built_in_has_its_risk_class() {
     for tool in registered() {
-        let table = builtin_risk(tool.name);
-        assert!(
-            table.is_some(),
-            "{} has no entry in the risk table",
-            tool.name
-        );
+        let table = find(tool.name).map(|d| d.risk);
+        assert!(table.is_some(), "{} has no descriptor row", tool.name);
         assert_eq!(Some(tool.risk), table, "{}", tool.name);
         let expected = EXPECTED
             .iter()
@@ -78,9 +70,13 @@ fn every_registered_built_in_has_its_risk_class() {
             .1;
         assert_eq!(tool.risk, expected, "{}", tool.name);
     }
-    let table: BTreeSet<&str> = BUILTIN_RISK.iter().map(|(name, _)| *name).collect();
     let tools = registered();
     let registered_names: BTreeSet<&str> = tools.iter().map(|t| t.name).collect();
+    let table: BTreeSet<&str> = TOOLS
+        .iter()
+        .map(|d| d.name)
+        .filter(|name| EXPECTED.iter().any(|(built_in, _)| built_in == name))
+        .collect();
     assert_eq!(table, registered_names);
 }
 
