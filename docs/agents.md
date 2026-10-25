@@ -93,6 +93,11 @@ instruction from you. The sender gets `{"status": "queued"}`, or the error `agen
 target that has finished or was killed. `send_message` is `arbitrary` like `agent`, so it is gated
 the same way.
 
+Only the main conversation can use `ask_user_question`. The built-in types do not have it, and a
+type that names it (or that names no tools, and so inherits every tool of its parent) is accepted
+but refused when called, with the "unavailable" result, so a background agent can never put a
+dialog in front of you.
+
 ## Limits and budgets
 
 | Key | Meaning | Default |

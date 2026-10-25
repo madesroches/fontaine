@@ -14,6 +14,7 @@ use fontaine_guardian::{
     AllowSettings, Guardian, Profile, Screen, ScreenSettings, Settings as GuardianSettings,
 };
 use fontaine_mcp::{Connected, ServerSpec, Transport, connect as connect_server};
+use fontaine_tools::ask_user::AskUserTool;
 use fontaine_tools::builtins::Seen;
 use fontaine_tools::gate::{AgentId, CallView, ROOT_AGENT};
 use fontaine_tools::git_bash::GitBash;
@@ -47,6 +48,7 @@ use crate::models::{
 };
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
+use crate::questions::HumanQuestions;
 use crate::scanner_stage::{Backend, ScannerStage, ScannerStart, llm_backend};
 use crate::session::{CONVERSATION_LOG, ClearError, Session};
 use crate::skills::{self, SkillRuntime};
@@ -617,6 +619,7 @@ impl AgentRuntime {
             tool_server: &tool_server,
             results: &results,
             skills: &skills,
+            approver: &setup.approver,
             types: &agent_types,
             runner: &runner,
             output_style: None,
@@ -670,6 +673,7 @@ impl AgentRuntime {
             tool_server: &self.tool_server,
             results: &self.results,
             skills: &self.skills,
+            approver: &self.approver,
             types: &self.agent_types,
             runner: &self.runner,
             output_style: self.output_style_text(),
@@ -1377,6 +1381,7 @@ struct Parts<'a> {
     tool_server: &'a ToolServerHandle,
     results: &'a Arc<ResultPipeline>,
     skills: &'a Arc<SkillRuntime>,
+    approver: &'a Arc<dyn Approver>,
     types: &'a Arc<AgentTypes>,
     runner: &'a Arc<CoreChildRunner>,
     output_style: Option<(String, String)>,
@@ -1424,6 +1429,9 @@ fn build_agent(p: &Parts<'_>) -> Result<(Agent, prompt::PromptPieces), String> {
             },
             skill: SkillTool {
                 source: p.skills.clone(),
+            },
+            ask_user: AskUserTool {
+                source: Arc::new(HumanQuestions::new(p.approver.clone(), p.state.clone())),
             },
         }),
     })?;

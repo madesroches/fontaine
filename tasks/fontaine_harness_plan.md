@@ -501,6 +501,10 @@ scorecard run (see `## Remaining work`).
 - 2026-10-25: `[network]` is config keys only, with no equivalent of Claude Code's `NODE_EXTRA_CA_CERTS`, `CLAUDE_CODE_CLIENT_CERT` or `CLAUDE_CODE_CLIENT_KEY` variables, because one place to set it keeps the project-scope tightening rules and the per-account override in force (#6).
 - 2026-10-25: A passphrase-protected `client_key` is refused at config load, where Claude Code accepts one via `CLAUDE_CODE_CLIENT_KEY_PASSPHRASE`, because rustls cannot decrypt a key and a passphrase in config or env would be a secret to store (#6).
 - 2026-10-25: Telemetry exporters are not covered by `[network]` (proxy, CA bundle, client certificate), because they use their own HTTP stack; covering them can come later as its own change (#6).
+- 2026-10-25: `ask_user_question` is root-agent only, refused at call time for children (including custom types that inherit it), because background subagents must not put a dialog in front of the human (#23).
+- 2026-10-25: `ask_user_question` is `ReadOnly` and takes the fast path through a pathless-tool carve-out (with `skill`), because it only shows the human text and collects a choice; the floor still precedes it and no mode answers it (#23).
+- 2026-10-25: Esc in the `ask_user_question` dialog gives a "declined" result rather than an error or the unavailable text, so the model can tell a refusal from a headless session (#23).
+- 2026-10-25: Only the human's typed "Other" text from `ask_user_question` is appended to the ledger as a `UserMessage` (`Other: "<text>"`); selected labels, question text and descriptions reach the model through the tool result only, because option labels are model-authored and "only messages you typed count as intent" must hold (#23).
 
 ## Open Questions
 

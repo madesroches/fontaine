@@ -18,6 +18,7 @@ result passes one post-call step before the model sees it.
 | `webfetch` | arbitrary | Fetches one web page. |
 | `agent` | arbitrary | Starts a [subagent](agents.md) and returns its report, or an id when it runs in the background. |
 | `skill` | read-only | Loads a [skill](extensions.md#skills) by name into the conversation. |
+| `ask_user_question` | read-only | Asks you 1 to 4 multiple-choice questions and returns your answers; see [Questions](tui.md#questions-from-the-model). Only the main conversation can ask. |
 | `send_message` | arbitrary | Sends a queued message to another agent or to the main conversation; see [Subagents](agents.md#messages-between-agents). |
 
 `read`, `write`, `edit` and `shell` are the file and process tools of the rig runtime, configured
@@ -53,9 +54,12 @@ outside every root, is outside the fast path.
 File-tool calls on such a path are denied with a hint to add the directory with `/add-dir` or
 `--add-dir`; they are never offered for approval.
 
-The `skill` tool is the one read-only tool that names no path. Its only argument is a skill name,
-resolved against the skills loaded at startup, so all it can do is put that skill's text in the
-conversation; it needs no scope check. An MCP tool that declares itself read-only does not get the
+The `skill` and `ask_user_question` tools are the read-only tools that name no path. `skill` takes
+only a skill name, resolved against the skills loaded at startup, so all it can do is put that
+skill's text in the conversation. `ask_user_question` can only show you text and collect your
+choice, and its answer comes from you alone, never from a permission mode. Neither needs a scope
+check. The deterministic floor still runs first, so a deny or ask rule or a `pre_tool_use` hook can
+block either one. An MCP tool that declares itself read-only does not get the
 same treatment: such tools are registered as arbitrary whatever the server says.
 
 ## Workspace roots

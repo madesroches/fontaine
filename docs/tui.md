@@ -162,6 +162,30 @@ critical path, a protected path) and shell calls that are not one literal simple
 only allow once and deny. Enter and the letter keys are ignored for the first 400 ms after a prompt
 opens, and key repeats never answer, so text typed ahead during a turn cannot approve a call. See [Permissions](permissions.md) for what each answer does.
 
+## Questions from the model
+
+The model can stop and ask you 1 to 4 multiple-choice questions with `ask_user_question`. A dialog
+shows one question at a time: a header chip, the question and numbered options with their
+descriptions, then an "Other" row for your own words.
+
+| Key | Action |
+|---|---|
+| Up, Down, Tab, `j`, `k` | Move the highlight. |
+| `1`-`9` | Jump to that row. |
+| Space | Toggle the highlighted option, when the question allows several. On "Other" it opens the field for your text. |
+| Enter | Choose the option (several: confirm the toggled ones) and go to the next question. On "Other", opens a field for your text. |
+| Esc | Decline the whole call and discard the answers already given. Inside the "Other" field it only leaves the field. |
+
+With several selections allowed, "Other" text is added to the toggled options. An answer needs at
+least one selection or some text. Enter, Esc and the letter and number keys are ignored for the
+first 400 ms after a dialog opens, and key repeats never answer, so text typed ahead during a turn
+cannot answer for you. Esc here declines the question rather than interrupting the turn; Ctrl-C
+still interrupts, and answers the question as declined. Only the main conversation asks: questions
+queue behind each other, and behind an open approval prompt, which takes the keys first. Declining
+tells the model so, and it carries on with its best judgment or asks in plain text. The words you
+type under "Other" are recorded as your message, so the [guardian](guardian.md#what-the-guardian-sees) reads
+them as intent; the options you pick are not.
+
 ## When the guardian asks
 
 An `escalate` verdict opens the usual approval prompt with the guardian's `[Rule] explanation`

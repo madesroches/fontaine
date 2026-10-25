@@ -63,6 +63,7 @@ The body is the subagent's instructions.
 | `Task`, `Agent` | `agent` |
 | `Skill` | `skill` |
 | `SendMessage` | `send_message` |
+| `AskUserQuestion` | `ask_user_question` |
 
 A `(specifier)` is kept as written, so `Bash(git *)` becomes `shell(git *)`, and the result must
 be a valid [permission rule](permissions.md#rules). Fontaine's own names (`shell`,

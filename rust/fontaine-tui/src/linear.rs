@@ -21,7 +21,7 @@ const PROMPT: &str = "> ";
 const WIDTH: usize = 1000;
 
 /// Dialogs that wait for an answer, which ring the bell when they open.
-const NEEDS_ANSWER: &[&str] = &["approval", "MCP server", "guardian unavailable"];
+const NEEDS_ANSWER: &[&str] = &["approval", "question", "MCP server", "guardian unavailable"];
 
 /// One line as plain text. A selected row, which the dialogs mark by reversing it (and the `@`
 /// list by a bold `> ` row), becomes `selected: <text>`.

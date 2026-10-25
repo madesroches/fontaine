@@ -161,7 +161,7 @@ fn validate_specifier(tool: &str, spec: &str) -> Result<(), String> {
                 Ok(())
             }
         }
-        "send_message" => Err("`send_message` rules take no specifier".to_string()),
+        "send_message" | "ask_user_question" => Err(format!("`{tool}` rules take no specifier")),
         _ if PATH_TOOLS.contains(&tool) => path_spec(spec).map(drop),
         _ => Ok(()),
     }
@@ -585,7 +585,7 @@ pub fn propose(call: &CallContext<'_>) -> Option<Rule> {
         "agent" => Some(string_arg(call.args, "agent_type")?.to_string()),
         "skill" => Some(string_arg(call.args, "name")?.to_string()),
         tool if PATH_TOOLS.contains(&tool) => Some(path_pattern(&path_args(call)?.resolved)),
-        tool if is_mcp(tool) || tool == "send_message" => None,
+        tool if is_mcp(tool) || matches!(tool, "send_message" | "ask_user_question") => None,
         _ => return None,
     };
     let rule = Rule {

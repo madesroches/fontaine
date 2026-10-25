@@ -19,6 +19,7 @@ use fontaine_core::session::Session;
 use fontaine_guardian::{Guardian, Settings};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 
+use fontaine_tools::ask_user::{Question, QuestionReply};
 use fontaine_tools::gate::{CallView, GateDecision, ROOT_AGENT, ToolGate};
 use fontaine_tools::risk::{RiskClass, registered_risk};
 use fontaine_tools::scope::Scope;
@@ -36,11 +37,18 @@ pub struct Scripted {
     pub notices: Mutex<Vec<String>>,
     pub warnings: Mutex<Vec<String>>,
     pub unavailable_asked: Mutex<Vec<GuardianUnavailable>>,
+    replies: Mutex<VecDeque<QuestionReply>>,
+    pub questions: Mutex<Vec<Vec<Question>>>,
 }
 
 impl Scripted {
     pub fn answer(&self, answer: Answer) {
         self.answers.lock().unwrap().push_back(answer);
+    }
+
+    /// The next reply to the model's questions; an empty queue reports nobody can answer.
+    pub fn reply(&self, reply: QuestionReply) {
+        self.replies.lock().unwrap().push_back(reply);
     }
 
     pub fn asked(&self) -> usize {
@@ -71,6 +79,21 @@ impl Approver for Scripted {
                 .unwrap()
                 .pop_front()
                 .unwrap_or(Answer::Deny { feedback: None })
+        })
+    }
+
+    fn ask_user<'a>(
+        &'a self,
+        _agent: &'a str,
+        questions: Vec<Question>,
+    ) -> BoxFuture<'a, QuestionReply> {
+        Box::pin(async move {
+            self.questions.lock().unwrap().push(questions);
+            self.replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(QuestionReply::Unavailable)
         })
     }
 

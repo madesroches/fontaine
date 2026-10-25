@@ -75,6 +75,11 @@ All notable changes are recorded here. The format follows
     cascade summary replaces `mean_latency_ms` with `allowed_latency_ms` and adds
     `should_allow_stopped`, `screen_allowed` and `must_not_clear_screen_allowed`.
 - Tools
+  - `ask_user_question` tool: the model can ask you 1 to 4 multiple-choice questions, each with an
+    "Other" row for your own words. The terminal UI shows a dialog; a headless run returns "user
+    input is unavailable, proceed with your best judgment". Only the main conversation can ask, no
+    permission mode answers for you, and the text you type under "Other" counts as guardian intent
+    while the options you pick do not (#23).
   - The built-in tools `read`, `ls`, `glob`, `grep`, `write`, `edit`, `shell` and `webfetch`. Every
     tool has a risk class and sits behind one gate, and each call emits a `fontaine.tool` span and
     a `tool_result` telemetry event.

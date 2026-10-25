@@ -105,7 +105,7 @@ pipeline before the model sees it:
    +----------------------------------------------+
         |
         v
-   ls  read  glob  grep  write  edit  shell  webfetch  agent  skill  send_message  mcp__*
+   ls  read  glob  grep  write  edit  shell  webfetch  agent  skill  send_message  ask_user_question  mcp__*
 ```
 
 A deny goes back to the model as the tool result and the run goes on. The registry is built at

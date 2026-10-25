@@ -21,6 +21,7 @@ pub mod permission_rules;
 pub mod permissions;
 pub mod prompt;
 pub mod providers;
+pub mod questions;
 #[cfg(feature = "pg2")]
 pub mod scanner_model;
 pub mod scanner_stage;

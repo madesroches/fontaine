@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::sync::Arc;
 
 use fontaine_agents::spawn::{AgentTool, SendMessageTool};
+use fontaine_tools::ask_user::AskUserTool;
 use fontaine_tools::builtins::{self, BuiltinEnv, Registered, Seen, ShellSettings};
 use fontaine_tools::gate::ToolGate;
 use fontaine_tools::git_bash::GitBash;
@@ -61,11 +62,12 @@ pub fn subprocess_env(config: &Config) -> Vec<(OsString, OsString)> {
         .collect()
 }
 
-/// The tools beyond the built-ins: the subagent tools and the skill loader.
+/// The tools beyond the built-ins: the subagent tools, the skill loader and the question dialog.
 pub struct ExtensionTools {
     pub agent: AgentTool,
     pub send_message: SendMessageTool,
     pub skill: SkillTool,
+    pub ask_user: AskUserTool,
 }
 
 pub struct RegistryParams {
@@ -129,6 +131,7 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
         tools.push(register_extension(extension.agent, &guard));
         tools.push(register_extension(extension.skill, &guard));
         tools.push(register_extension(extension.send_message, &guard));
+        tools.push(register_extension(extension.ask_user, &guard));
     }
     Ok(tools)
 }
