@@ -24,7 +24,7 @@ actually said. The tools are registered with descriptor rows like every other to
 - Session-scoped, restorable state has a precedent in `SessionTodos` (`fontaine-core/src/todos.rs`):
   an `Arc` on `Session` (`session.rs:172, 208, 242`), written through atomically and owner-only to
   `<session dir>/todos.json`, loaded on `open`, with an unparseable file surfacing once through
-  `take_warning` -> `Approver::warn` in `build_agent` (`agent/build.rs:78`). `Session::fork` copies
+  `take_warning` -> `Approver::warn` in `build_agent` (`agent/build.rs:91`). `Session::fork` copies
   the directory.
 - Extension tools are `ExtensionTool::new(...)` entries in `register_tools`
   (`agent/build.rs:104`), each with one row in `fontaine-tools/src/descriptor.rs` (`TOOLS`); a tool
@@ -54,7 +54,7 @@ pub struct Scheduler { jobs: Mutex<Vec<Job>>, dir: PathBuf, warning: Mutex<Optio
 ```
 
 `Clock` is a one-method trait (`now_ms() -> i64`); production uses the wall clock, tests a manually
-advanced fake. Every method that took `now` reads the clock instead.
+advanced fake. Every method reads the clock instead of taking a `now` argument.
 
 - `Scheduler` is an `Arc` on `Session` beside `todos`, persisted to `<session dir>/schedule.json`
   (owner-only, `owner_only::write_atomic`, write inside the mutex, never across an await, as
@@ -65,9 +65,9 @@ advanced fake. Every method that took `now` reads the clock instead.
   next matching minute (searching at most 5 years; none = `Err`). Evaluated in the local timezone
   with `chrono::Local`; a local time that does not exist (DST gap) is skipped. Generic over the
   timezone so tests use `FixedOffset`.
-- API: `create(job_spec, now) -> Result<Job, ScheduleError>`, `list()`, `delete(id) -> bool`,
-  `due(now) -> Option<Fired>` (the earliest due job; recurring jobs get `next_ms` recomputed from
-  `now`, so a job that fell due while the model was busy fires **once**, with no catch-up; a
+- API: `create(job_spec) -> Result<Job, ScheduleError>`, `list()`, `delete(id) -> bool`,
+  `due() -> Option<Fired>` (the earliest due job; recurring jobs get `next_ms` recomputed from
+  the clock, so a job that fell due while the model was busy fires **once**, with no catch-up; a
   one-shot is removed), `next_wake() -> Option<i64>`, `take_warning()`.
 - Lock policy: the `jobs` mutex feeds what runs, so it uses `fontaine_tools::lock::lock` (panics on
   poison); the advisory `warning` may use `lock_recovering`, with a one-line reason at the call site.
@@ -96,7 +96,7 @@ the user asked for earlier in this conversation.]
 ```
 
 The prompt text of a model-created job is model-authored, so it passes through `state.results`
-(the result pipeline, with the scanner) exactly as `notification_prompt` does; its `CallView` carries a distinct tool name (`scheduled`), not
+(the result pipeline, with the scanner) exactly as `notification_prompt` does (including `clear_current_call(ROOT_AGENT)` afterwards); its `CallView` carries a distinct tool name (`scheduled`), not
 `"agent"`. A user-created job's
 prompt is the human's own typed text and is passed verbatim.
 
@@ -191,7 +191,7 @@ only when the scheduling tools are registered (the prompt layers already vary on
 
 1. `fontaine-core/src/schedule.rs`: `Cron` parser and `next_after`, `Job`, `Clock`, `Scheduler` (create,
    list, delete, due, next_wake, persistence, restore, expiry, warning). Add `chrono` to
-   `rust/Cargo.toml` `[workspace.dependencies]` (`default-features = false`, `clock`) and use it as
+   `rust/Cargo.toml` `[workspace.dependencies]` (`version = "0.4.45"`, `default-features = false`, `clock`; the version string is explicit because wildcards are denied) and use it as
    `chrono.workspace = true` in `fontaine-core/Cargo.toml`; `cargo deny check` must stay
    green. Unit tests.
 2. `Session` holds `Arc<Scheduler>` (`session.rs` create/open/accessor); a test pins that `fork`
@@ -202,14 +202,16 @@ only when the scheduling tools are registered (the prompt layers already vary on
    falls out of the table. `fontaine-core/tests/choke_point.rs` hard-codes the extras set: its
    `extension_asking` helper registers the four tools and the expected set grows.
 4. `fontaine-core`: implement `ScheduleStore` for `Scheduler` behind an approver-reporting adapter
-   (as `ReportedTodos`); register the tools in `register_tools` (`agent/build.rs`, which reads `p.setup.scheduling` from
-   `AgentSetup` via `Parts`) when `setup.scheduling && config.schedule.enabled`; drain `take_warning` beside the todos warning; `AgentRuntime::scheduled_prompt`.
-5. Config: `[schedule]` struct following the three-place pattern in `config.rs`, a user-only row in
-   `config_scope.rs`,
-   a test that a project file setting it is refused.
+   (as `ReportedTodos`); register the tools in `register_tools` (`agent/build.rs`, which reads `p.setup.scheduling`; `scheduling` is added to both the public `AgentSetup` and the retained `Setup` that `Parts.setup` holds) when `setup.scheduling && config.schedule.enabled`; drain `take_warning` beside the todos warning; `AgentRuntime::scheduled_prompt`.
+5. Config: following the pieces in `config.rs` (TOML section struct, `Settings` field, merged struct
+   plus `Config` field and default, merge and validation), a `schedule.enabled` user-only entry in the
+   `config_scope.rs` cases table, a test that a project file setting it is refused.
 6. TUI: `Command::Loop` and interval parsing in `commands.rs`; `scheduled_turn` and the idle-wait
-   arm in `ui/mod.rs`/`ui/turn.rs`; `/loop list|stop`; `Esc` handling; status-bar indicator;
-   `KEYS`/help text. `AgentSetup.scheduling` set by the TUI entry point.
+   arm in `ui/mod.rs`/`ui/turn.rs`, sharing the existing `end_of_turn` tail that `converse` (which
+   appends a `UserMessage`) also uses; the `Action::CancelWakeup` arm in `ui/mod.rs`; the command
+   dispatch arm; `/loop list|stop`; `Esc` handling; status-bar indicator; the `KEYS` const in
+   `reports.rs` (the Esc line `help` appends; the command rows come from `BUILTINS`); parse tests in
+   `commands.rs`. `AgentSetup.scheduling` set by the TUI entry point.
 7. System-prompt paragraph; docs (below); `research/research-claude-code-parity.md` row 311 to
    `done`; master plan `## Decisions` lines (see Decisions).
 8. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and the Windows
@@ -222,7 +224,7 @@ only when the scheduling tools are registered (the prompt layers already vary on
 - `rust/fontaine-tui/src/{commands.rs, statusbar.rs, reports.rs, lib.rs, ui/mod.rs, ui/turn.rs, ui/commands/*}`
 - `rust/fontaine/src/` (the TUI entry sets `scheduling`)
 - tests: `rust/fontaine-core/tests/{choke_point.rs, docs.rs, ledger.rs, sessions.rs}`, `rust/fontaine-tui/tests/tui.rs`
-- docs: `docs/architecture.md`, `tasks/design/sessions.md`, `docs/tools.md`, `docs/tui.md`, `docs/configuration.md`, `docs/permissions.md`, `docs/headless.md`
+- docs: `docs/architecture.md`, `tasks/design/sessions.md`, `docs/tools.md`, `docs/tui.md` (Esc row and commands table), `docs/index.md` (the tui.md summary line), `docs/configuration.md`, `docs/permissions.md`, `docs/headless.md`
 - `research/research-claude-code-parity.md`, `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Trade-offs
