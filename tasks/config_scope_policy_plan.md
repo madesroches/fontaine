@@ -99,8 +99,6 @@ after the typed parse and passes it in:
 4. Row found → evaluate the cell for the column; `No` → `Err((path, row.reason))`; `If(p)` → `p`
    on the leaf value.
 
-The walk order is unspecified, not today's tier order.
-
 The tier shape of today's code (screen/scanner checked before the CLI early-return) falls out of the
 table: those rows have `cli: No`.
 
@@ -113,7 +111,7 @@ into `$defs`, `properties` for objects, a schema-valued `additionalProperties` f
 `GuardianProfile`, `Scanner`, `TelemetryBackend`, `ThemeName`, `AccountKind`, `EnvValue`, `Wire` (`config.rs:282`, value type of `accounts.*.wires.*`),
 `fontaine_guardian::Question`, the agent-mode type) derive `JsonSchema`, except `AccountKind` and
 `EnvValue`, which need `#[schemars(with = "String")]`. `fontaine_guardian::Question` (`screen.rs:30`)
-derives only `Deserialize`, so it gets the derive (or the same attribute). `Hook.origin` is
+derives only `Deserialize`, so it gets the `JsonSchema` derive. `Hook.origin` is
 `serde(skip)` and gets `#[schemars(skip)]` (`Origin` needs no `JsonSchema`). `schemars.workspace = true` is added to
 `fontaine-core`'s `Cargo.toml` (already in the workspace lockfile via `fontaine-guardian`, so no new crate);
 `cargo deny check` must stay green. The schema walker unwraps `anyOf` with a null branch and type arrays containing `null` (Option fields).
@@ -148,7 +146,7 @@ actually carries the values, which the table test does not.
 
 1. Add `schemars` to `rust/fontaine-core/Cargo.toml`; derive/annotate `JsonSchema` on `Settings`,
    every section/entry struct and every leaf type reachable from them (`config.rs`,
-   plus `fontaine_guardian::Question` if it does not derive it yet).
+   plus `fontaine_guardian::Question`, `screen.rs:30`).
 2. Create `rust/fontaine-core/src/config_scope.rs` with `Cell`, `Rule`, the `RULES` table covering
    every current leaf, the predicate fns, and the walker returning `Result<(), (String, String)>`.
 3. Replace `check_scope` and delete `scanner_keys_set`, `other_keys_set` and `keys_other_than_enabled` in
@@ -156,7 +154,7 @@ actually carries the values, which the table test does not.
 4. Add `#[cfg(test)]` unit tests inside `config_scope.rs` (completeness, no-dead-rows, no-overlap,
    predicate tests, the `parse_settings`-driven per-column test, and "a key with no row is rejected from project and project-local" using a
    synthetic table via an inner function that takes `&[Rule]`). Delete `NO_FOR_PROJECT`, `NO_FOR_LOCAL`, `USER_FILE_ONLY` and the loop
-   tests from `tests/config.rs` other than `cli_scope_rejects_user_file_only_keys`, which is replaced by two small loader tests there: a user-file-only key sent via `w.cli_file` + `load_with_settings` expecting `Scope`, and a local-rejected key (`[tui]` or `[accounts.x]`) sent via a trusted `w.local_file` expecting `Scope`; keep `assert_scope_error` (`tests/config.rs:1381` uses it); keep the specific screen/env/telemetry tests that assert messages.
+   tests from `tests/config.rs` other than `cli_scope_rejects_user_file_only_keys`, which is replaced by the two loader tests described under Table-driven column tests; keep `assert_scope_error` (`tests/config.rs:1381` uses it); keep the specific screen/env/telemetry tests that assert messages.
 5. Docs and design: update `docs/configuration.md` (scope-table intro and a one-line note that
    every key has a declared policy and an undeclared key is refused from project scopes) and
    `tasks/design/config.md` (name the table as the single source). Add a `CHANGELOG.md` entry under `### Changed` in `[Unreleased]`.
@@ -169,7 +167,7 @@ actually carries the values, which the table test does not.
 - `rust/fontaine-core/src/config.rs` (derives, remove helpers, call the table)
 - `rust/fontaine-core/src/config_scope.rs` (new)
 - `rust/fontaine-core/src/lib.rs` (`pub(crate) mod config_scope;`)
-- `rust/fontaine-guardian/src/*` only if `Question` lacks `JsonSchema`
+- `rust/fontaine-guardian/src/screen.rs` (`JsonSchema` on `Question`)
 - `rust/fontaine-core/tests/config.rs`
 - `docs/configuration.md`, `tasks/design/config.md`, `CHANGELOG.md`
 
@@ -203,7 +201,7 @@ All unit-level and reachable by constructed inputs, so no live or manual tier:
   deny-by-default for `Project`/`ProjectLocal` (the real table cannot be used because the
   completeness test forbids an unlisted key);
 - unit tests in `config_scope.rs`: table-driven per-column accept/reject through `parse_settings` for every row;
-- loader tests in `tests/config.rs`: `--settings` (CLI) and trusted project-local slots each reject a key their column denies with `Scope`;
+- loader tests in `tests/config.rs`: CLI and trusted project-local mapping;
 - the existing `tests/config.rs` scope tests that remain (screen shadow, env, telemetry, accounts
   network keys) pass unchanged, pinning the decisions and the error text.
 
