@@ -26,7 +26,7 @@ The change stays inside `fontaine-tui`.
   then the `@` completion list (`completion_key`), then `message_key`. `covered()` (`app.rs:402`)
   lists the overlays that own the keyboard. `close_palette` closes search/completion on Esc and
   Ctrl-C.
-- `App::enter` (`app.rs:~620`) submits the input; while a turn runs, a recognised command gets a
+- `App::enter` (`app.rs:644`) submits the input; while a turn runs, a recognised command gets a
   "a turn is running" notice instead of being queued.
 - `docs/tui.md` documents keys and `@` mentions but not the `/` menu.
 - Existing integration test: `tests/extensions.rs` `the_slash_menu_lists_commands_…`.
@@ -70,6 +70,10 @@ their keys first:
 | Esc | Handled only in `close_palette` (which `handle_key` calls before the running-turn Interrupt branch), not in `slash_key`: it returns true only when the menu is actually open and dismisses it until the text changes, so a running turn is interrupted only when no menu is open. Ctrl-C also dismisses the menu through `close_palette`. |
 | anything else | Falls through to the input as today. |
 
+"Cursor is within the name" is tested on single-line input as `cursor() <= chars().count()`,
+i.e. `cursor_position().0 == 0`. Tab or Enter on an alias match substitutes the canonical name
+(`/reset` becomes `/clear`; history records `/clear`).
+
 After Tab the cursor sits at the end; with a trailing space the menu closes (whitespace in the
 name region), with none it stays open on the exact match, and a further Tab is a no-op.
 
@@ -95,8 +99,9 @@ footer is suppressed and the selected row is not re-echoed on every selection mo
 2. `app.rs`: add `slash_selected`, `slash_dismissed`, `slash_matches`, `slash_key`; wire into
    `handle_key` and `close_palette`.
 3. `view.rs`: render selection, alias hint, row window and footer from `slash_matches`.
-4. Update the existing `tests/extensions.rs` assertions if the new footer or marker changes
-   what they match; add the integration test below.
+4. Rewrite the existing `tests/extensions.rs` test `the_slash_menu_lists_commands_…` (`:32-52`)
+   to filter (type `/rev`, `/out`, `/mod`) instead of asserting on the bare `/` list, since the
+   8-row window shows only the first 8 rows (add-dir…exit); add the integration test below.
 5. `docs/tui.md`: add a "Slash-command menu" section and add the menu to the key-table rows that
    describe only the `@` list (Enter, Up/Down, Tab, Esc/Ctrl-C); `CHANGELOG.md`
    entry.
@@ -116,10 +121,10 @@ footer is suppressed and the selected row is not re-echoed on every selection mo
 - Derive matches from the input on each call rather than caching a list: the menu is small
   (tens of rows) and this removes any chance of a stale list. Only selection and dismissal are
   stored.
-- Enter on a required-argument command completes instead of running: running `/add-dir` bare
-  only yields an error, and completing is what the user wants next.
 
 ## Decisions
+
+- Enter on a required-argument command completes instead of running; running it bare only yields a usage error.
 
 ## Documentation
 
@@ -143,8 +148,3 @@ describe only the `@` list: Enter (`:55`), Up/Down (`:56`), Tab (`:58`), Esc/Ctr
 - `view.rs` assertions on `overlay()`/`menu_lines` output (as `linear.rs:634` does): open menu shows the `>` marker on the selected row, the
   alias annotation, the footer, and windows to 8 rows with the selection visible.
 - Integration (`tests/extensions.rs`): type `/mod` Enter and assert the model picker opens.
-
-## Open Questions
-
-- Should Enter on a required-argument command complete (as planned) or run and show the usage
-  error? Defaulted to complete.
