@@ -130,7 +130,7 @@ Result-returning read helper (today `read_file` discards the parse error).
   `trust.rs`, `user_config.rs`, `todos.rs`, `agent.rs` (the interrupted-write test lives in a new
   `#[cfg(test)] mod tests` in `owner_only.rs`)
 - `rust/fontaine-tui/src/history.rs`
-- `rust/fontaine-core/tests/owner_only.rs`, `tests/trust.rs`, new `tests/persisted_files.rs`
+- `rust/fontaine-core/tests/owner_only.rs`, `tests/trust.rs`, `tests/ledger.rs`
 - `docs/configuration.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -157,7 +157,7 @@ Result-returning read helper (today `read_file` discards the parse error).
 ## Documentation
 
 `docs/configuration.md`: in Workspace trust, say that an unparseable `trust.toml` is reported once
-at session start; note the sibling `.lock` files (`trust.lock`, next to the settings file
+at session start; list the new lock files in the "Files in these directories" table; note the sibling `.lock` files (`trust.lock`, next to the settings file
 `config.lock`, `credentials.lock`) that serialize edits between sessions. `CHANGELOG.md`
 Unreleased: atomic, locked trust and settings writes; corrupt-trust warning.
 
@@ -175,9 +175,9 @@ Unit and integration tests, no live APIs:
 - `trust`: two threads calling `record` for different roots each through
   its own lock handle both land; same for `approve_server`; `unreadable` returns `None` for
   missing and valid files and a message containing `trust.toml` for a corrupt one.
-- `user_config`: two threads calling `append_allow_rule` with different rules both land; existing
+- `user_config` (unit `mod tests` in `src/user_config.rs`): two threads calling `append_allow_rule` with different rules both land; existing
   symlink and comment-preservation tests keep passing.
-- `agent`: a session started over a corrupt `trust.toml` calls `Approver::warn` exactly once
+- `tests/ledger.rs`: `record_session_start` over a corrupt `trust.toml` calls `Approver::warn` exactly once
   (recording approver), naming the file.
 - `history`: existing rewrite test; the residue assertion scans the directory and requires that
   only `history.jsonl` remains.
