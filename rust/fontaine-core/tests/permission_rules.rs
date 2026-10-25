@@ -69,6 +69,7 @@ fn the_grammar_is_checked_per_tool_kind() {
         "agent(worker)",
         "skill(review)",
         "send_message",
+        "ask_user_question",
     ] {
         parse_rule(good).unwrap_or_else(|e| panic!("{good}: {e}"));
     }
@@ -82,6 +83,7 @@ fn the_grammar_is_checked_per_tool_kind() {
         "read(!x)",
         "webfetch(example.com)",
         "send_message(x)",
+        "ask_user_question(x)",
         "mcp__github(x)",
         "agent(a b)",
         "unknown_tool",

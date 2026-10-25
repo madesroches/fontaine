@@ -8,6 +8,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `ask_user_question` tool: the model can ask you 1 to 4 multiple-choice questions, each with an
+  "Other" row for your own words. The terminal UI shows a dialog; a headless run returns "user
+  input is unavailable, proceed with your best judgment". Only the main conversation can ask, no
+  permission mode answers for you, and the text you type under "Other" counts as guardian intent
+  while the options you pick do not (#23).
 - Agent and models
   - The agent loop runs over rig. Models come from `[accounts.<name>]` entries mapped to provider
     clients (Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible endpoints) and are named

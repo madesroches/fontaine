@@ -59,7 +59,11 @@ A call goes through these steps in order and the first one that decides wins.
    rule and a critical path still ask you: no verdict approves them.
 3. **Read-only fast path.** A read-only tool (`read`, `ls`, `glob`, `grep`) whose paths all
    resolve inside a workspace root runs. Symlinks are resolved first. The label alone earns
-   nothing: a path outside the roots does not qualify.
+   nothing: a path outside the roots does not qualify. `skill` and `ask_user_question` name no
+   path and take this step too. `ask_user_question` only shows you text and collects your choice,
+   and no mode, `auto` included, ever answers it: the answer comes from you or, in a headless run,
+   from nobody (the model is told to use its best judgment). Your typed "Other" answers count as
+   intent for the guardian; the options you pick do not.
    A file-tool call (`read`, `ls`, `glob`, `grep`, `write`, `edit`) that names a path outside
    every root is denied, with a hint to add the directory with `/add-dir`: the file tools are
    confined to the roots, so an approval could never make the call run.
@@ -112,7 +116,7 @@ grammar: `Tool` or `Tool(specifier)`. A bare tool name matches every call of the
 | `webfetch` | `domain:example.com` or `domain:*.example.com` | the URL's host; `*.` matches subdomains only |
 | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | none | the registered tool name |
 | `agent`, `skill` | the agent type or skill name | exact name |
-| `send_message` | none | the tool name |
+| `send_message`, `ask_user_question` | none | the tool name |
 
 Deny and ask rules fail toward matching; allow rules fail toward not matching:
 

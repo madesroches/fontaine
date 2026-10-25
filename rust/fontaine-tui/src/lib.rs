@@ -15,6 +15,7 @@ pub mod input;
 pub mod linear;
 pub mod model_picker;
 pub mod provider_dialog;
+pub mod question;
 pub mod recent;
 pub mod reports;
 pub mod screen;
@@ -47,6 +48,7 @@ use fontaine_core::turn::{
     DEFAULT_MAX_TURNS, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
 };
 use fontaine_core::user_config;
+use fontaine_tools::ask_user::{Question, QuestionReply};
 use fontaine_tools::gate::ROOT_AGENT;
 use futures::future::BoxFuture;
 use ratatui::backend::CrosstermBackend;
@@ -80,6 +82,9 @@ enum Prompt {
     Ask(Box<ApprovalRequest>, oneshot::Sender<Answer>),
     /// The pinned guardian cannot be used and the human has to decide what to do.
     Unavailable(Box<GuardianUnavailable>, oneshot::Sender<UnavailableChoice>),
+    /// The model's questions for the human, with the agent that asks. A dropped sender means
+    /// nobody could answer.
+    Question(String, Vec<Question>, oneshot::Sender<QuestionReply>),
     Notice(String),
 }
 
@@ -98,6 +103,24 @@ impl Approver for ChannelApprover {
                 return deny;
             }
             answer.await.unwrap_or(deny)
+        })
+    }
+
+    fn ask_user<'a>(
+        &'a self,
+        agent: &'a str,
+        questions: Vec<Question>,
+    ) -> BoxFuture<'a, QuestionReply> {
+        Box::pin(async move {
+            let (reply, answer) = oneshot::channel();
+            if self
+                .tx
+                .send(Prompt::Question(agent.to_string(), questions, reply))
+                .is_err()
+            {
+                return QuestionReply::Unavailable;
+            }
+            answer.await.unwrap_or(QuestionReply::Unavailable)
         })
     }
 
@@ -277,6 +300,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
             // The call's turn was cut short while the prompt sat in the queue.
             Prompt::Ask(_, reply) if reply.is_closed() => {}
             Prompt::Unavailable(_, reply) if reply.is_closed() => {}
+            Prompt::Question(_, _, reply) if reply.is_closed() => {}
+            Prompt::Question(agent, questions, reply) => {
+                self.app.begin_question(agent, questions, reply);
+            }
             Prompt::Ask(request, reply) => self.app.begin_approval(*request, reply),
             Prompt::Unavailable(info, reply) => {
                 let candidates = runtime.map_or_else(Vec::new, AgentRuntime::guardian_candidates);
@@ -299,7 +326,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 {
                     self.app.begin_approval(*request, reply);
                 }
-                Prompt::Ask(..) | Prompt::Unavailable(..) => {}
+                Prompt::Ask(..) | Prompt::Unavailable(..) | Prompt::Question(..) => {}
             }
         }
     }

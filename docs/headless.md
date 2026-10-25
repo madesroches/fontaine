@@ -90,6 +90,12 @@ their reports.
 | 1 | A run error: a provider or model failure, or a stop from `--max-turns` or `--max-budget-usd`. |
 | 2 | A configuration or usage error. |
 
+## Questions
+
+`ask_user_question` stays in the tool list, but nobody can answer in a headless run: the call
+returns "User input is unavailable in this session; proceed with your best judgment and state your
+assumptions." and the run continues.
+
 ## Denials
 
 Nothing prompts in a headless run. Every outcome that would ask a human, such as an `ask` rule, a

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use fontaine_core::config::PermissionMode;
 use fontaine_core::permissions::{Answer, ApprovalRequest, UnavailableChoice};
 use fontaine_core::turn::SessionEvent;
+use fontaine_tools::ask_user::{Question, QuestionReply};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::oneshot;
 
@@ -21,6 +22,7 @@ use crate::history::History;
 use crate::input::InputBuffer;
 use crate::model_picker::{ModelPicker, PickerKey, PickerPurpose};
 use crate::provider_dialog::{DialogKey, ProviderDialog};
+use crate::question::QuestionPanel;
 use crate::server_prompt::ServerPrompt;
 use crate::theme::Theme;
 use crate::transcript::Transcript;
@@ -87,6 +89,9 @@ pub struct App {
     pub approval: Option<Approval>,
     /// Approvals waiting behind the open one: several agents can ask at once.
     pub queued_approvals: VecDeque<Approval>,
+    /// The model's questions for the human, the one being answered first. They wait behind an
+    /// open approval, which can come from a background agent while the root asks.
+    pub questions: VecDeque<QuestionPanel>,
     /// The `/agents` panel while it is open.
     pub agents: Option<AgentsPanel>,
     /// A repository's MCP server waiting for the human's say-so.
@@ -126,6 +131,7 @@ pub struct App {
     pub theme: Theme,
     approvals_opened: u64,
     servers_opened: u64,
+    questions_opened: u64,
 }
 
 /// The `/` menu while it is open.
@@ -150,6 +156,7 @@ impl App {
             running: false,
             approval: None,
             queued_approvals: VecDeque::new(),
+            questions: VecDeque::new(),
             agents: None,
             server: None,
             models: None,
@@ -172,6 +179,7 @@ impl App {
             theme: Theme::default(),
             approvals_opened: 0,
             servers_opened: 0,
+            questions_opened: 0,
         }
     }
 
@@ -316,6 +324,19 @@ impl App {
         }
     }
 
+    /// Shows the questions, or queues them behind the ones the human is answering.
+    pub fn begin_question(
+        &mut self,
+        agent: String,
+        questions: Vec<Question>,
+        reply: oneshot::Sender<QuestionReply>,
+    ) {
+        let mut panel = QuestionPanel::new(agent, questions, reply);
+        self.questions_opened += 1;
+        panel.id = self.questions_opened;
+        self.questions.push_back(panel);
+    }
+
     /// Drops the approvals whose call is gone, such as those of an agent that was killed, and
     /// opens the next one when the open one went away.
     pub fn prune_closed(&mut self) {
@@ -327,6 +348,7 @@ impl App {
         if self.approval.is_none() {
             self.approval = self.queued_approvals.pop_front();
         }
+        self.questions.retain(|panel| !panel.is_closed());
     }
 
     /// The calls `agent` is waiting for the human to decide, as the call text.
@@ -374,6 +396,14 @@ impl App {
         if let Some(mut prompt) = self.unavailable.take() {
             prompt.reply(UnavailableChoice::Deny);
         }
+        let (root, background): (VecDeque<_>, VecDeque<_>) =
+            self.questions.drain(..).partition(|panel| {
+                panel.agent.is_empty() || panel.agent == fontaine_tools::gate::ROOT_AGENT
+            });
+        for mut panel in root {
+            panel.reply(QuestionReply::Declined);
+        }
+        self.questions = background;
     }
 
     /// Tells the waiting pipeline what the human chose about the unavailable guardian.
@@ -397,6 +427,7 @@ impl App {
                 // A pasted key lands in the dialog's masked field, never in the message box.
                 // Overlays that take keys before the dialog also own the paste.
                 let above_dialog = self.approval.is_some()
+                    || !self.questions.is_empty()
                     || self.denied.is_some()
                     || self.unavailable.is_some()
                     || self.server.is_some()
@@ -423,6 +454,7 @@ impl App {
     /// Whether an overlay has the keyboard.
     pub fn covered(&self) -> bool {
         self.approval.is_some()
+            || !self.questions.is_empty()
             || self.denied.is_some()
             || self.unavailable.is_some()
             || self.server.is_some()
@@ -514,6 +546,10 @@ impl App {
                 }
                 PanelKey::Kill(id) => Action::KillAgent(id),
             };
+        }
+        if self.approval.is_none() && !self.questions.is_empty() {
+            self.question_key(key);
+            return Action::None;
         }
         if control && key.code == KeyCode::Char('t') && !typing_reason {
             self.agents = Some(AgentsPanel::new());
@@ -669,6 +705,21 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    fn question_key(&mut self, key: KeyEvent) {
+        let Some(panel) = self.questions.front_mut() else {
+            return;
+        };
+        let Some(reply) = panel.handle_key(key) else {
+            return;
+        };
+        let declined = reply == QuestionReply::Declined;
+        panel.reply(reply);
+        self.questions.pop_front();
+        if declined {
+            self.transcript.notice("question declined".to_string());
+        }
     }
 
     fn approval_key(&mut self, key: KeyEvent) {
@@ -925,6 +976,130 @@ mod tests {
         Approval::new(request, reply)
     }
 
+    fn ask(multi: bool) -> Question {
+        use fontaine_tools::ask_user::QuestionOption;
+        let option = |label: &str| QuestionOption {
+            label: label.into(),
+            description: "d".into(),
+        };
+        Question {
+            question: "Which?".into(),
+            header: "Pick".into(),
+            options: vec![option("a"), option("b")],
+            multi_select: multi,
+        }
+    }
+
+    /// A question dialog past its grace period, and the receiver of its reply.
+    fn open_question(app: &mut App, agent: &str, multi: bool) -> oneshot::Receiver<QuestionReply> {
+        let (tx, rx) = oneshot::channel();
+        app.begin_question(agent.into(), vec![ask(multi)], tx);
+        app.questions.back_mut().unwrap().settle();
+        rx
+    }
+
+    #[test]
+    fn a_second_question_waits_behind_the_first_and_neither_is_dropped() {
+        let mut app = app();
+        let mut first = open_question(&mut app, "root", false);
+        let mut second = open_question(&mut app, "root", false);
+        assert_eq!(app.questions.len(), 2);
+        assert!(first.try_recv().is_err());
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            first.try_recv(),
+            Ok(QuestionReply::Answered(answers)) if answers[0].selected == ["a"]
+        ));
+        assert!(second.try_recv().is_err());
+        assert_eq!(app.questions.len(), 1);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            second.try_recv(),
+            Ok(QuestionReply::Answered(answers)) if answers[0].selected == ["b"]
+        ));
+        assert!(app.questions.is_empty());
+    }
+
+    #[test]
+    fn esc_with_a_question_open_while_running_declines_instead_of_interrupting() {
+        let mut app = app();
+        app.running = true;
+        let mut rx = open_question(&mut app, "root", false);
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+        assert_eq!(rx.try_recv().unwrap(), QuestionReply::Declined);
+        assert!(app.questions.is_empty());
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::Interrupt);
+    }
+
+    #[test]
+    fn esc_while_typing_other_only_leaves_the_field() {
+        let mut app = app();
+        app.running = true;
+        let mut rx = open_question(&mut app, "root", false);
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Enter);
+        assert!(app.questions[0].is_typing());
+        type_text(&mut app, "mine");
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+        assert!(!app.questions[0].is_typing());
+        assert!(rx.try_recv().is_err());
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(rx.try_recv().unwrap(), QuestionReply::Declined);
+    }
+
+    #[test]
+    fn an_interrupt_declines_the_root_questions_and_keeps_a_background_one() {
+        let mut app = app();
+        let mut root = open_question(&mut app, "root", false);
+        let mut other = open_question(&mut app, "worker", false);
+        app.deny_pending();
+        assert_eq!(root.try_recv().unwrap(), QuestionReply::Declined);
+        assert!(other.try_recv().is_err());
+        assert_eq!(app.questions.len(), 1);
+    }
+
+    #[test]
+    fn an_open_approval_takes_the_keys_before_a_waiting_question() {
+        let mut app = app();
+        let mut rx = open_question(&mut app, "root", false);
+        app.approval = Some(approval());
+        let before = app.approval.as_ref().unwrap().selected();
+        press(&mut app, KeyCode::Down);
+        assert_ne!(app.approval.as_ref().unwrap().selected(), before);
+        std::thread::sleep(crate::server_prompt::ANSWER_GRACE);
+        press(&mut app, KeyCode::Enter);
+        assert!(rx.try_recv().is_err(), "the question is still waiting");
+        assert_eq!(app.questions.len(), 1);
+        let overlay = crate::view::overlay(&app, 60, 30, false);
+        assert_eq!(overlay.title, "approval");
+        app.approval = None;
+        assert_eq!(crate::view::overlay(&app, 60, 30, false).title, "question");
+    }
+
+    #[test]
+    fn a_closed_question_is_pruned() {
+        let mut app = app();
+        let rx = open_question(&mut app, "root", false);
+        drop(rx);
+        app.prune_closed();
+        assert!(app.questions.is_empty());
+    }
+
+    #[test]
+    fn a_short_terminal_keeps_the_selected_option_in_view() {
+        let mut app = app();
+        let _rx = open_question(&mut app, "root", false);
+        press(&mut app, KeyCode::Down);
+        let overlay = crate::view::overlay(&app, 40, 14, false);
+        let shown: Vec<String> = overlay
+            .body
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(shown.iter().any(|row| row.starts_with("2. b")), "{shown:?}");
+    }
+
     #[test]
     fn a_message_during_a_turn_is_queued_and_a_command_is_refused() {
         let mut app = app();
@@ -1131,13 +1306,16 @@ mod tests {
 
     #[test]
     fn an_open_prompt_keeps_its_keys_from_the_completion_list() {
-        for open in ["approval", "denied", "unavailable"] {
+        for open in ["approval", "denied", "unavailable", "question"] {
             let mut app = app_with_files();
             type_text(&mut app, "@ma");
             assert!(app.completion.is_some());
             match open {
                 "approval" => app.approval = Some(approval()),
                 "denied" => app.denied = Some(DeniedList::new(Vec::new())),
+                "question" => {
+                    app.begin_question("root".into(), vec![ask(false)], oneshot::channel().0);
+                }
                 _ => app.unavailable = Some(unavailable()),
             }
             for code in [
@@ -1348,6 +1526,7 @@ mod tests {
             |a| a.providers = Some(dialog_on_key_screen()),
             |a| a.server = Some(ServerPrompt::new("s".into(), "d".into())),
             |a| a.denied = Some(DeniedList::new(Vec::new())),
+            |a| a.begin_question("root".into(), vec![ask(false)], oneshot::channel().0),
         ];
         for open in panels {
             let mut app = app();

@@ -53,7 +53,9 @@ The request is built from the ledger and the call itself:
 The `task_intent` and `recent_user_messages` messages start after your last `/clear`: what you
 asked before it is not shown to the guardian, while the session facts are kept.
 
-Only messages you typed count as user intent. A message you queue while the agent works counts from
+Only messages you typed count as user intent. The text you type under "Other" when the model asks
+you a question with `ask_user_question` counts, recorded as `Other: "<text>"`; the options you pick
+do not, because the model wrote them and a bare label carries no context. A message you queue while the agent works counts from
 the moment the agent receives it, with its next tool result, not from when you typed it: until then
 the model has not read it, and a call judged earlier must not rest on words the model never saw.
 Commands you run with `!` and their output never count, and neither does anything a tool or the

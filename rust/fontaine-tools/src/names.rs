@@ -1,5 +1,5 @@
 /// Built-in tool names, as they appear in permission rules and agent type toolsets.
-pub const BUILTIN_TOOL_NAMES: [&str; 11] = [
+pub const BUILTIN_TOOL_NAMES: [&str; 12] = [
     "shell",
     "read",
     "edit",
@@ -11,6 +11,7 @@ pub const BUILTIN_TOOL_NAMES: [&str; 11] = [
     "agent",
     "skill",
     "send_message",
+    "ask_user_question",
 ];
 
 /// MCP tools are namespaced `mcp__<server>__<tool>` and are not enumerable at config time.

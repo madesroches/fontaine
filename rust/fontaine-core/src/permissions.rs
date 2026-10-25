@@ -12,6 +12,7 @@ use fontaine_guardian::cascade::{Decided, ScreenInput};
 use fontaine_guardian::{
     Adjudication, Decision as GuardianDecision, FailClosed, ScreenOutcome, ScreenScores, WireIds,
 };
+use fontaine_tools::ask_user::{Question, QuestionReply};
 use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
 use fontaine_tools::preclassify::{Environment, Preclassifier, analyze};
 use fontaine_tools::risk::RiskClass;
@@ -93,6 +94,16 @@ pub trait Approver: Send + Sync {
         _info: GuardianUnavailable,
     ) -> BoxFuture<'a, UnavailableChoice> {
         Box::pin(async { UnavailableChoice::Deny })
+    }
+
+    /// The model's multiple-choice questions for the human. Only a frontend with a dialog
+    /// answers; every other approver reports that nobody can.
+    fn ask_user<'a>(
+        &'a self,
+        _agent: &'a str,
+        _questions: Vec<Question>,
+    ) -> BoxFuture<'a, QuestionReply> {
+        Box::pin(async { QuestionReply::Unavailable })
     }
 }
 
@@ -644,7 +655,7 @@ impl PermissionPipeline {
         }
 
         let located = scope.locate(tool, args);
-        if call.risk == RiskClass::ReadOnly && (located.is_ok() || tool == "skill") {
+        if call.risk == RiskClass::ReadOnly && (located.is_ok() || names_no_path(tool)) {
             return Verdict::Allow {
                 tier: Tier::ReadOnlyFastPath,
                 rule: None,
@@ -1555,6 +1566,12 @@ pub(crate) fn record_decision(state: &SessionState, record: &DecisionRecord) {
     );
 }
 
+/// Read-only tools that take no path, so there is nothing for containment to check: the skill
+/// loader and the question dialog.
+fn names_no_path(tool: &str) -> bool {
+    matches!(tool, "skill" | "ask_user_question")
+}
+
 /// The call as the human is shown it: the whole command, path or URL, never cut short.
 pub fn summarize(tool: &str, args: &Value) -> String {
     let text = |key: &str| args.get(key).and_then(Value::as_str);
@@ -1565,6 +1582,19 @@ pub fn summarize(tool: &str, args: &Value) -> String {
         "glob" => text("pattern").map(str::to_string),
         "grep" => text("pattern").map(str::to_string),
         "ls" => Some(text("path").unwrap_or(".").to_string()),
+        "ask_user_question" => {
+            let headers: Vec<&str> = args
+                .get("questions")
+                .and_then(Value::as_array)
+                .map(|questions| {
+                    questions
+                        .iter()
+                        .filter_map(|q| q.get("header").and_then(Value::as_str))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (!headers.is_empty()).then(|| headers.join(", "))
+        }
         _ => None,
     };
     line.unwrap_or_else(|| args.to_string())

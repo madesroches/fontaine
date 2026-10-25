@@ -113,6 +113,7 @@ fn claude_tool(name: &str) -> Option<&'static str> {
         "Task" | "Agent" => "agent",
         "Skill" => "skill",
         "SendMessage" => "send_message",
+        "AskUserQuestion" => "ask_user_question",
         _ => return None,
     })
 }
@@ -130,7 +131,7 @@ pub fn map_tool_entry(entry: &str) -> Result<String, String> {
         None if is_builtin(name) || is_mcp(name) => name.to_string(),
         None => {
             return Err(format!(
-                "`{name}` is not a tool Fontaine has; the Claude Code names it knows are Read, Edit, MultiEdit, Write, Glob, Grep, LS, Bash, WebFetch, Task, Agent, Skill and SendMessage"
+                "`{name}` is not a tool Fontaine has; the Claude Code names it knows are Read, Edit, MultiEdit, Write, Glob, Grep, LS, Bash, WebFetch, Task, Agent, Skill, SendMessage and AskUserQuestion"
             ));
         }
     };

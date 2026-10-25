@@ -17,10 +17,12 @@ use fontaine_agents::root_ledger::{AgentEvent, RootLedger};
 use fontaine_agents::runner::{ChildHandle, ChildRunner, SpawnRequest};
 use fontaine_agents::spawn::{AgentTool, SendMessageTool};
 use fontaine_agents::tree::{AgentTree, Limits};
-use fontaine_core::config::PermissionMode::Manual;
+use fontaine_core::config::PermissionMode::{self, Manual};
+use fontaine_core::questions::HumanQuestions;
 use fontaine_core::tier::Tier;
 use fontaine_core::tools::{ExtensionTools, RegistryParams, registry};
 use fontaine_mcp::connect_transport;
+use fontaine_tools::ask_user::{AskUserTool, Question, QuestionReply, QuestionSource};
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::guarded::Guard;
 use fontaine_tools::names::BUILTIN_TOOL_NAMES;
@@ -59,6 +61,14 @@ impl SkillSource for NoSkills {
     }
 }
 
+struct NoQuestions;
+
+impl QuestionSource for NoQuestions {
+    fn ask<'a>(&'a self, _: &'a str, _: Vec<Question>) -> BoxFuture<'a, QuestionReply> {
+        Box::pin(async { QuestionReply::Unavailable })
+    }
+}
+
 fn extension() -> ExtensionTools {
     let tree = Arc::new(AgentTree::new(Limits::default()));
     ExtensionTools {
@@ -74,6 +84,9 @@ fn extension() -> ExtensionTools {
         },
         skill: SkillTool {
             source: Arc::new(NoSkills),
+        },
+        ask_user: AskUserTool {
+            source: Arc::new(NoQuestions),
         },
     }
 }
@@ -111,13 +124,14 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         .map(|(name, _)| *name)
         .collect();
     assert_eq!(unique, expected);
-    // The three beyond the built-ins are exactly these.
+    // The four beyond the built-ins are exactly these.
     assert_eq!(
         EXTENSION_RISK,
         [
             ("agent", RiskClass::Arbitrary),
             ("skill", RiskClass::ReadOnly),
             ("send_message", RiskClass::Arbitrary),
+            ("ask_user_question", RiskClass::ReadOnly),
         ]
     );
     // The non-MCP names are the names rules can use.
@@ -257,4 +271,102 @@ fn as_root() -> ToolContext {
         .insert(AgentId(ROOT_AGENT.to_string()))
         .expect("the agent id serializes");
     context
+}
+
+fn one_question() -> serde_json::Value {
+    serde_json::json!({ "questions": [{
+        "question": "Which?",
+        "header": "Pick",
+        "options": [
+            { "label": "a", "description": "first" },
+            { "label": "b", "description": "second" },
+        ],
+    }] })
+}
+
+async fn run_ask(rig: &Rig, context: &mut ToolContext) -> Result<String, String> {
+    let mut p = params(rig);
+    p.extension = Some(ExtensionTools {
+        ask_user: AskUserTool {
+            source: Arc::new(HumanQuestions::new(rig.approver.clone(), rig.state.clone())),
+        },
+        ..extension()
+    });
+    let tools = registry(p).unwrap();
+    let tool = tools
+        .iter()
+        .find(|t| t.name == "ask_user_question")
+        .expect("registered");
+    assert_eq!(tool.risk, RiskClass::ReadOnly);
+    match tool.tool.run_with(context, one_question()).await {
+        Ok(output) => Ok(output.render()),
+        Err(e) => Err(e.model_output().render()),
+    }
+}
+
+#[tokio::test]
+async fn no_mode_answers_the_question_for_the_human() {
+    for mode in [
+        PermissionMode::Manual,
+        PermissionMode::AcceptEdits,
+        PermissionMode::Plan,
+        PermissionMode::DontAsk,
+        PermissionMode::Auto,
+    ] {
+        let rig = Rig::new(mode);
+        rig.approver.reply(QuestionReply::Answered(vec![
+            fontaine_tools::ask_user::QuestionAnswer {
+                question: "Which?".into(),
+                selected: vec!["b".into()],
+                other: None,
+            },
+        ]));
+        let out = run_ask(&rig, &mut as_root()).await.unwrap();
+        assert_eq!(out, "\"Which?\" = \"b\"", "{mode:?}");
+        assert_eq!(rig.approver.questions.lock().unwrap().len(), 1, "{mode:?}");
+        // The call needed no approval and no guardian verdict.
+        assert_eq!(rig.approver.asked(), 0, "{mode:?}");
+        let record = rig
+            .audit()
+            .into_iter()
+            .find(|r| r.tool == "ask_user_question")
+            .unwrap();
+        assert_eq!(record.tier, Tier::ReadOnlyFastPath, "{mode:?}");
+        assert!(rig.state.ledger.view().user_messages.is_empty(), "{mode:?}");
+    }
+}
+
+#[tokio::test]
+async fn an_approver_that_cannot_ask_gives_the_unavailable_result() {
+    let rig = Rig::new(Manual);
+    let out = run_ask(&rig, &mut as_root()).await.unwrap();
+    assert_eq!(out, fontaine_tools::ask_user::UNAVAILABLE_TEXT);
+    assert!(rig.state.ledger.view().user_messages.is_empty());
+}
+
+#[tokio::test]
+async fn a_deny_rule_blocks_the_question_before_any_dialog() {
+    let settings = "[permissions]\ndeny = [\"ask_user_question\"]\n";
+    let rig = Rig::with(common::pipeline::Options::new(Manual).settings(settings));
+    rig.approver.reply(QuestionReply::Declined);
+    let denied = run_ask(&rig, &mut as_root()).await.unwrap_err();
+    assert!(
+        denied.contains("denied") || denied.contains("deny"),
+        "{denied}"
+    );
+    assert!(rig.approver.questions.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_child_that_inherits_the_tool_is_refused_at_call_time() {
+    let rig = Rig::new(Manual);
+    rig.approver.reply(QuestionReply::Declined);
+    let mut context = ToolContext::new();
+    context.insert(AgentId("worker-1".into())).unwrap();
+    let out = run_ask(&rig, &mut context).await;
+    assert_eq!(
+        out.as_deref(),
+        Ok(fontaine_tools::ask_user::UNAVAILABLE_TEXT)
+    );
+    assert!(rig.approver.questions.lock().unwrap().is_empty());
 }

@@ -165,8 +165,8 @@ impl Overlay {
 }
 
 /// What sits above the message box, if anything: the denied list, the unavailable-guardian
-/// prompt, the MCP server prompt, the model picker, the provider dialog, the agents panel, the approval prompt, the
-/// history search or the file completion list, then the `/` menu (at most `MAX_MENU_ROWS` rows
+/// prompt, the MCP server prompt, the model picker, the provider dialog, the agents panel, the approval prompt, the model's
+/// questions, the history search or the file completion list, then the `/` menu (at most `MAX_MENU_ROWS` rows
 /// and a key-help footer), in that order of precedence, which is the order `App::handle_key`
 /// routes keys in.
 pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Overlay {
@@ -220,6 +220,15 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
                 approval.body(width, theme),
                 approval.footer(width),
             )
+        };
+    }
+    if let Some(panel) = app.questions.front() {
+        let footer = panel.footer();
+        let rows = body_rows(app, width, height, footer.len());
+        return Overlay {
+            instance: Some(panel.id),
+            field: panel.field(),
+            ..Overlay::new("question", panel.body(width, rows, theme), footer)
         };
     }
     if let Some(search) = &app.search {

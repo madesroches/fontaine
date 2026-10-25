@@ -234,6 +234,19 @@ mod tests {
     }
 
     #[test]
+    fn the_built_in_types_do_not_get_the_question_tool() {
+        let parent = names(&["read", "shell", "ask_user_question"]);
+        for ty in AgentTypes::builtin().iter() {
+            assert!(
+                !ty.toolset(&parent)
+                    .contains(&"ask_user_question".to_string()),
+                "{}",
+                ty.name
+            );
+        }
+    }
+
+    #[test]
     fn disallowed_tools_are_subtracted_and_a_specifier_keeps_the_tool() {
         let mut ty = AgentTypes::builtin().get("worker").unwrap().clone();
         ty.disallowed = names(&["shell", "edit(src/**)"]);
