@@ -430,6 +430,7 @@ mod tests {
             name: "review".into(),
             hint: Some("[pr]".into()),
             description: "Review a pull request".into(),
+            aliases: vec![],
         };
         let text = help(&[skill]);
         for builtin in BUILTINS {

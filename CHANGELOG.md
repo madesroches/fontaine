@@ -155,6 +155,10 @@ All notable changes are recorded here. The format follows
     mode carry on, and `/context [all]` shows estimated token use by source. `[context]
     autocompact_window` sets how many tokens of messages trigger automatic compaction, in the
     terminal UI and headless runs (#11).
+  - The `/` menu is interactive: Up/Down select, Tab completes the name, Enter runs the selection
+    (or completes a command that needs an argument) and Esc closes it. Matching covers names and
+    aliases, prefix matches first and then substrings, and the list shows at most eight rows
+    (#71).
   - Terminal polish (#50): six colour themes (`dark-ansi` by default, `light-ansi`, `dark`,
     `light`, `dark-daltonized`, `light-daltonized`) chosen with `/theme` or `[tui] theme`; a
     screen-reader mode (`--ax-screen-reader`, `FONTAINE_AX_SCREEN_READER`, `[tui] screen_reader`)

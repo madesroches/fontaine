@@ -29,24 +29,52 @@ fn world() -> World {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_slash_menu_lists_commands_and_user_invocable_skills_with_their_hints() {
+async fn the_slash_menu_filters_commands_and_user_invocable_skills_with_their_hints() {
     let w = world();
     w.run(|ui| async move {
         idle(&ui).await;
-        ui.type_text("/");
+        // The bare list is windowed to its first rows, so each entry is found by filtering.
+        ui.type_text("/rev");
         ui.wait_for("/review [pr-number]").await;
         let screen = ui.screen();
         assert!(screen.contains("Review a pull request"), "{screen}");
-        assert!(screen.contains("/output-style"), "{screen}");
-        assert!(screen.contains("/model"), "{screen}");
+        assert!(screen.contains("Tab complete"), "{screen}");
+        assert!(!screen.contains("/output-style"), "{screen}");
+        ui.press(KeyCode::Esc);
+        ui.press(KeyCode::Backspace);
+        ui.press(KeyCode::Backspace);
+        ui.press(KeyCode::Backspace);
+        ui.type_text("out");
+        ui.wait_for("/output-style").await;
+        ui.press(KeyCode::Backspace);
+        ui.press(KeyCode::Backspace);
+        ui.press(KeyCode::Backspace);
+        ui.type_text("mod");
+        ui.wait_for("/model").await;
         // A skill the user cannot invoke is not offered.
+        ui.press(KeyCode::Backspace);
+        ui.press(KeyCode::Backspace);
+        ui.press(KeyCode::Backspace);
+        ui.type_text("intern");
+        ui.wait_until("nothing matches", |s| !s.contains("Tab complete"))
+            .await;
+        let screen = ui.screen();
         assert!(!screen.contains("/internal"), "{screen}");
-        // The menu narrows as the name is typed.
-        ui.type_text("rev");
-        ui.wait_until("only the matching entry", |s| {
-            s.contains("/review [pr-number]") && !s.contains("/output-style")
-        })
-        .await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn enter_on_a_menu_entry_runs_the_command() {
+    let w = world();
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.type_text("/mod");
+        ui.wait_for("Tab complete").await;
+        ui.press(KeyCode::Enter);
+        ui.wait_until("the model picker", |_| ui.live().contains("type to filter"))
+            .await;
+        ui.press(KeyCode::Esc);
     })
     .await;
 }

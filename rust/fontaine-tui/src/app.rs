@@ -14,7 +14,7 @@ use tokio::sync::oneshot;
 
 use crate::agents_panel::{AgentsPanel, PanelKey};
 use crate::approval::Approval;
-use crate::commands::{MenuEntry, builtin_menu, parse_command};
+use crate::commands::{MenuEntry, builtin_menu, match_menu, parse_command};
 use crate::complete::{self, Mention};
 use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt};
 use crate::history::History;
@@ -115,12 +115,24 @@ pub struct App {
     pub completion: Option<CompletionList>,
     /// The mention whose list the human closed, which stays closed until the token changes.
     dismissed: Option<(usize, String)>,
+    /// The name typed after the `/` that the menu selection applies to, and the selected row.
+    /// A different name reads as row 0, so typing needs no reset.
+    slash_selected: (String, usize),
+    /// The input text the human closed the `/` menu on, which keeps it closed until it changes.
+    slash_dismissed: Option<String>,
     /// The workspace files `@` completes, as paths under the roots.
     files: Arc<Vec<String>>,
     pub primary_root: PathBuf,
     pub theme: Theme,
     approvals_opened: u64,
     servers_opened: u64,
+}
+
+/// The `/` menu while it is open.
+pub struct SlashMenu<'a> {
+    pub typed: String,
+    pub matches: Vec<&'a MenuEntry>,
+    pub selected: usize,
 }
 
 fn is_cycle_key(key: &KeyEvent) -> bool {
@@ -153,6 +165,8 @@ impl App {
             search: None,
             completion: None,
             dismissed: None,
+            slash_selected: (String::new(), 0),
+            slash_dismissed: None,
             files: Arc::default(),
             primary_root: PathBuf::new(),
             theme: Theme::default(),
@@ -170,6 +184,7 @@ impl App {
             self.input.set_text(&format!("{text}\n\n{current}"));
         }
         self.history.reset();
+        self.refresh_slash();
     }
 
     /// Whether the input is a `!` shell command.
@@ -369,6 +384,13 @@ impl App {
     }
 
     pub fn handle_input(&mut self, input: Input) -> Action {
+        let action = self.dispatch_input(input);
+        // Paste and history-search accept change the text outside handle_key's tails.
+        self.refresh_slash();
+        action
+    }
+
+    fn dispatch_input(&mut self, input: Input) -> Action {
         match input {
             Input::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
             Input::Paste(text) => {
@@ -514,6 +536,10 @@ impl App {
         if self.completion.is_some() && self.completion_key(key) {
             return Action::None;
         }
+        if let Some(action) = self.slash_key(key) {
+            self.refresh_slash();
+            return action;
+        }
         if control && key.code == KeyCode::Char('d') {
             return if !self.running && self.input.is_empty() {
                 Action::Quit
@@ -523,10 +549,23 @@ impl App {
         }
         let action = self.message_key(key);
         self.refresh_completion();
+        self.refresh_slash();
         action
     }
 
-    /// Closes an open history search or completion list; false when neither was open.
+    /// Forgets the menu's dismissal and selection once the text they were made for is gone,
+    /// so neither resurfaces when the same text is typed again.
+    fn refresh_slash(&mut self) {
+        let text = self.input.text();
+        if self.slash_dismissed.as_deref() != Some(&text) {
+            self.slash_dismissed = None;
+        }
+        if text.strip_prefix('/') != Some(self.slash_selected.0.as_str()) {
+            self.slash_selected = (String::new(), 0);
+        }
+    }
+
+    /// Closes an open history search, completion list or slash menu; false when none was open.
     fn close_palette(&mut self) -> bool {
         if self.search.take().is_some() {
             self.refresh_completion();
@@ -536,7 +575,79 @@ impl App {
             self.dismiss_completion();
             return true;
         }
+        if self.slash_menu().is_some() {
+            self.slash_dismissed = Some(self.input.text());
+            return true;
+        }
         false
+    }
+
+    /// The `/` menu, when the input is a bare `/name` and nothing else wants the keys.
+    pub fn slash_menu(&self) -> Option<SlashMenu<'_>> {
+        if self.covered()
+            || self.search.is_some()
+            || self.completion.is_some()
+            || self.history.navigating()
+        {
+            return None;
+        }
+        let text = self.input.text();
+        let typed = text.strip_prefix('/')?;
+        if typed.contains(char::is_whitespace) || self.slash_dismissed.as_deref() == Some(&text) {
+            return None;
+        }
+        let matches = match_menu(&self.menu, typed);
+        if matches.is_empty() {
+            return None;
+        }
+        let selected = if self.slash_selected.0 == typed {
+            self.slash_selected.1.min(matches.len() - 1)
+        } else {
+            0
+        };
+        Some(SlashMenu {
+            typed: typed.to_string(),
+            matches,
+            selected,
+        })
+    }
+
+    /// Keys the `/` menu takes; `None` when the key is for the input.
+    fn slash_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let menu = self.slash_menu()?;
+        let (typed, count, selected) = (menu.typed.clone(), menu.matches.len(), menu.selected);
+        let entry = menu.matches[selected];
+        let name = entry.name.clone();
+        let argument = entry.hint.is_some();
+        let required = entry.requires_argument();
+        let plain = !key
+            .modifiers
+            .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Up if plain => {
+                self.slash_selected = (typed, selected.saturating_sub(1));
+            }
+            KeyCode::Down if plain => {
+                self.slash_selected = (typed, (selected + 1).min(count - 1));
+            }
+            KeyCode::Tab if plain => self.complete_slash(&name, argument),
+            KeyCode::Enter if plain => {
+                if required {
+                    self.complete_slash(&name, argument);
+                } else {
+                    self.complete_slash(&name, false);
+                    return Some(self.enter(false));
+                }
+            }
+            _ => return None,
+        }
+        Some(Action::None)
+    }
+
+    fn complete_slash(&mut self, name: &str, space: bool) {
+        let space = if space { " " } else { "" };
+        self.input.set_text(&format!("/{name}{space}"));
+        self.history.reset();
     }
 
     /// Keys the completion list takes; false when the key is for the input.
@@ -1074,5 +1185,219 @@ mod tests {
         app.running = true;
         app.approval = Some(approval());
         assert_eq!(press(&mut app, KeyCode::Esc), Action::Interrupt);
+    }
+
+    fn menu_names(app: &App) -> Vec<String> {
+        app.slash_menu()
+            .map(|m| m.matches.iter().map(|e| e.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    fn selected_name(app: &App) -> String {
+        let menu = app.slash_menu().expect("menu is open");
+        menu.matches[menu.selected].name.clone()
+    }
+
+    #[test]
+    fn the_slash_menu_opens_only_for_a_bare_name() {
+        let mut app = app();
+        assert!(app.slash_menu().is_none());
+        type_text(&mut app, "/");
+        assert!(app.slash_menu().is_some());
+        type_text(&mut app, "mod");
+        assert_eq!(menu_names(&app), ["model", "guardian-model"]);
+        type_text(&mut app, " x");
+        assert!(app.slash_menu().is_none());
+        app.input.set_text("/zzz");
+        assert!(app.slash_menu().is_none());
+        app.input.set_text("hello /mod");
+        assert!(app.slash_menu().is_none());
+    }
+
+    #[test]
+    fn up_and_down_move_the_selection_and_clamp() {
+        let mut app = app();
+        type_text(&mut app, "/mod");
+        assert_eq!(selected_name(&app), "model");
+        press(&mut app, KeyCode::Up);
+        assert_eq!(selected_name(&app), "model");
+        press(&mut app, KeyCode::Down);
+        assert_eq!(selected_name(&app), "guardian-model");
+        press(&mut app, KeyCode::Down);
+        assert_eq!(selected_name(&app), "guardian-model");
+        // Typing another character starts over at the top.
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(selected_name(&app), "model");
+    }
+
+    #[test]
+    fn tab_completes_with_a_space_only_when_there_is_an_argument() {
+        let mut app = app();
+        type_text(&mut app, "/add");
+        assert_eq!(press(&mut app, KeyCode::Tab), Action::None);
+        assert_eq!(app.input.text(), "/add-dir ");
+        assert!(app.slash_menu().is_none());
+
+        app.input.take();
+        type_text(&mut app, "/cle");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input.text(), "/clear");
+        assert!(app.slash_menu().is_some());
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input.text(), "/clear");
+    }
+
+    #[test]
+    fn tab_on_an_alias_match_substitutes_the_canonical_name() {
+        let mut app = app();
+        type_text(&mut app, "/reset");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input.text(), "/clear");
+    }
+
+    #[test]
+    fn enter_runs_a_command_without_a_required_argument_and_completes_one_with() {
+        let mut app = app();
+        type_text(&mut app, "/rese");
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            Action::Submit("/clear".into())
+        );
+        assert!(app.input.is_empty());
+
+        type_text(&mut app, "/plan");
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            Action::Submit("/plan".into())
+        );
+
+        type_text(&mut app, "/add");
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        assert_eq!(app.input.text(), "/add-dir ");
+    }
+
+    #[test]
+    fn enter_on_a_command_while_a_turn_runs_is_refused_as_before() {
+        let mut app = app();
+        app.running = true;
+        type_text(&mut app, "/clear");
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        assert!(last_notice(&app).is_some_and(|n| n.contains("a turn is running")));
+    }
+
+    #[test]
+    fn esc_dismisses_the_menu_until_the_text_changes_and_does_not_interrupt() {
+        let mut app = app();
+        app.running = true;
+        type_text(&mut app, "/mod");
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+        assert!(app.slash_menu().is_none());
+        type_text(&mut app, "e");
+        assert!(app.slash_menu().is_some());
+        // With the menu closed, the next Esc interrupts the turn.
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::Interrupt);
+    }
+
+    #[test]
+    fn a_paste_clears_the_menu_dismissal() {
+        let mut app = app();
+        type_text(&mut app, "/mod");
+        press(&mut app, KeyCode::Esc);
+        app.handle_input(Input::Paste("e".into()));
+        press(&mut app, KeyCode::Backspace);
+        assert!(app.slash_menu().is_some());
+    }
+
+    #[test]
+    fn a_dismissed_menu_reopens_for_the_same_text_in_a_later_message() {
+        let mut app = app();
+        type_text(&mut app, "/");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.slash_menu().is_none());
+        press(&mut app, KeyCode::Backspace);
+        type_text(&mut app, "/");
+        assert!(app.slash_menu().is_some());
+    }
+
+    #[test]
+    fn the_menu_selection_does_not_return_with_the_same_typed_name() {
+        let mut app = app();
+        type_text(&mut app, "/mod");
+        press(&mut app, KeyCode::Down);
+        let moved = selected_name(&app);
+        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Backspace);
+        assert_ne!(selected_name(&app), moved);
+    }
+
+    #[test]
+    fn ctrl_c_closes_the_menu_before_it_quits() {
+        let mut app = app();
+        type_text(&mut app, "/mod");
+        assert_eq!(ctrl(&mut app, 'c'), Action::None);
+        assert!(app.slash_menu().is_none());
+        assert_eq!(ctrl(&mut app, 'c'), Action::Quit);
+    }
+
+    #[test]
+    fn the_menu_stays_shut_and_keyless_under_every_panel() {
+        let panels: Vec<fn(&mut App)> = vec![
+            |a| a.approval = Some(approval()),
+            |a| a.agents = Some(AgentsPanel::new()),
+            |a| a.providers = Some(dialog_on_key_screen()),
+            |a| a.server = Some(ServerPrompt::new("s".into(), "d".into())),
+            |a| a.denied = Some(DeniedList::new(Vec::new())),
+        ];
+        for open in panels {
+            let mut app = app();
+            type_text(&mut app, "/add");
+            open(&mut app);
+            assert!(app.covered());
+            assert!(app.slash_menu().is_none());
+            press(&mut app, KeyCode::Tab);
+            assert_eq!(app.input.text(), "/add");
+        }
+    }
+
+    #[test]
+    fn the_menu_yields_to_history_search_and_the_file_list() {
+        let mut app = app_with_files();
+        type_text(&mut app, "/mod");
+        ctrl(&mut app, 'r');
+        assert!(app.slash_menu().is_none());
+        press(&mut app, KeyCode::Esc);
+        assert!(app.slash_menu().is_some());
+
+        app.input.set_text("/mod @ma");
+        app.refresh_completion();
+        assert!(app.completion.is_some());
+        assert!(app.slash_menu().is_none());
+    }
+
+    #[test]
+    fn with_the_menu_closed_the_keys_behave_as_before() {
+        let mut app = app();
+        app.history.push("older");
+        assert_eq!(press(&mut app, KeyCode::Up), Action::None);
+        assert_eq!(app.input.text(), "older");
+        app.input.take();
+        type_text(&mut app, "hello");
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            Action::Submit("hello".into())
+        );
+    }
+
+    #[test]
+    fn recalling_a_slash_entry_does_not_hand_the_next_up_to_the_menu() {
+        let mut app = app();
+        app.history.push("older");
+        app.history.push("/mod");
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.input.text(), "/mod");
+        assert!(app.slash_menu().is_none());
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.input.text(), "older");
     }
 }

@@ -223,6 +223,8 @@ pub struct MenuEntry {
     pub name: String,
     pub hint: Option<String>,
     pub description: String,
+    /// Other names the command answers to; always empty for skills.
+    pub aliases: Vec<String>,
 }
 
 /// The built-in commands, as the `/` menu lists them. Aliases get no row of their own.
@@ -233,8 +235,72 @@ pub fn builtin_menu() -> Vec<MenuEntry> {
             name: b.name.to_string(),
             hint: b.hint.map(str::to_string),
             description: b.description.to_string(),
+            aliases: b.aliases.iter().map(|a| a.to_string()).collect(),
         })
         .collect()
+}
+
+impl MenuEntry {
+    /// Whether the command cannot run bare: its hint opens with `<`, as skills' verbatim
+    /// argument hints do too.
+    pub fn requires_argument(&self) -> bool {
+        self.hint.as_deref().is_some_and(|h| h.starts_with('<'))
+    }
+
+    /// The names the entry answers to, lowercased.
+    fn names(&self) -> impl Iterator<Item = String> + '_ {
+        std::iter::once(&self.name)
+            .chain(&self.aliases)
+            .map(|n| n.to_lowercase())
+    }
+
+    /// The alias that made the entry match `typed`, when its own name did not.
+    pub fn matched_alias(&self, typed: &str) -> Option<&str> {
+        let typed = typed.to_lowercase();
+        let name = self.name.to_lowercase();
+        if name.starts_with(&typed) {
+            return None;
+        }
+        // A name that merely contains the text loses to an alias that starts with it, as in
+        // match_menu's ranking.
+        let alias_prefix = self
+            .aliases
+            .iter()
+            .any(|a| a.to_lowercase().starts_with(&typed));
+        if name.contains(&typed) && !alias_prefix {
+            return None;
+        }
+        let by = |hit: fn(&str, &str) -> bool| {
+            self.aliases
+                .iter()
+                .find(|a| hit(&a.to_lowercase(), &typed))
+                .map(String::as_str)
+        };
+        by(|a, t| a.starts_with(t)).or_else(|| by(|a, t| a.contains(t)))
+    }
+}
+
+/// The entries `typed` (the text after the `/`) could be: names or aliases starting with it,
+/// an exact one first, then those merely containing it. Case-insensitive; the menu's order
+/// otherwise.
+pub fn match_menu<'a>(menu: &'a [MenuEntry], typed: &str) -> Vec<&'a MenuEntry> {
+    let typed = typed.to_lowercase();
+    let mut exact = Vec::new();
+    let mut prefix = Vec::new();
+    let mut contains = Vec::new();
+    for entry in menu {
+        let names: Vec<String> = entry.names().collect();
+        if names.contains(&typed) {
+            exact.push(entry);
+        } else if names.iter().any(|n| n.starts_with(&typed)) {
+            prefix.push(entry);
+        } else if names.iter().any(|n| n.contains(&typed)) {
+            contains.push(entry);
+        }
+    }
+    exact.extend(prefix);
+    exact.extend(contains);
+    exact
 }
 
 /// Which reply `/copy` is asked for: 1 is the latest.
@@ -274,6 +340,7 @@ pub fn skill_menu(skills: Vec<(String, Option<String>, String)>) -> (Vec<MenuEnt
                 name,
                 hint,
                 description,
+                aliases: Vec::new(),
             });
         }
     }
@@ -414,5 +481,81 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "review");
         assert_eq!(parse_command("/status"), Some(Command::Status));
+    }
+
+    fn entry(name: &str, aliases: &[&str], hint: Option<&str>) -> MenuEntry {
+        MenuEntry {
+            name: name.into(),
+            hint: hint.map(str::to_string),
+            description: "d".into(),
+            aliases: aliases.iter().map(|a| a.to_string()).collect(),
+        }
+    }
+
+    fn names<'a>(found: &[&'a MenuEntry]) -> Vec<&'a str> {
+        found.iter().map(|e| e.name.as_str()).collect()
+    }
+
+    #[test]
+    fn prefix_matches_come_before_substring_matches() {
+        let menu = vec![
+            entry("add-dir", &[], None),
+            entry("model", &[], None),
+            entry("guardian-model", &[], None),
+            entry("mcp", &[], None),
+        ];
+        assert_eq!(names(&match_menu(&menu, "mo")), ["model", "guardian-model"]);
+    }
+
+    #[test]
+    fn aliases_match_and_the_matched_one_is_reported() {
+        let menu = builtin_menu();
+        let found = match_menu(&menu, "res");
+        assert_eq!(names(&found), ["clear"]);
+        assert_eq!(found[0].matched_alias("res"), Some("reset"));
+        assert_eq!(found[0].matched_alias("cle"), None);
+        assert_eq!(names(&match_menu(&menu, "tas")), ["agents"]);
+        let agents = match_menu(&menu, "t");
+        let agents = agents
+            .iter()
+            .find(|e| e.name == "agents")
+            .expect("agents matches t");
+        assert_eq!(agents.matched_alias("t"), Some("tasks"));
+    }
+
+    #[test]
+    fn matching_ignores_case_and_an_empty_query_matches_everything() {
+        let menu = builtin_menu();
+        assert_eq!(names(&match_menu(&menu, "MODEL"))[0], "model");
+        assert_eq!(match_menu(&menu, "").len(), menu.len());
+    }
+
+    #[test]
+    fn an_exact_name_or_alias_ranks_first_in_the_prefix_group() {
+        let menu = vec![
+            entry("context", &[], None),
+            entry("copy", &[], None),
+            entry("co", &[], None),
+            entry("zed", &["cop"], None),
+        ];
+        assert_eq!(
+            names(&match_menu(&menu, "co")),
+            ["co", "context", "copy", "zed"]
+        );
+        assert_eq!(names(&match_menu(&menu, "cop"))[0], "zed");
+    }
+
+    #[test]
+    fn an_entry_matching_by_name_and_alias_appears_once_and_skills_match_by_name() {
+        let menu = vec![entry("clear", &["clean"], None), entry("review", &[], None)];
+        assert_eq!(names(&match_menu(&menu, "cle")), ["clear"]);
+        assert_eq!(names(&match_menu(&menu, "view")), ["review"]);
+    }
+
+    #[test]
+    fn a_hint_opening_with_an_angle_bracket_requires_an_argument() {
+        assert!(entry("add-dir", &[], Some("<path>")).requires_argument());
+        assert!(!entry("plan", &[], Some("[description]")).requires_argument());
+        assert!(!entry("help", &[], None).requires_argument());
     }
 }
