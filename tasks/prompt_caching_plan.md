@@ -14,19 +14,23 @@ guardian is not weakened: its prompt content, fail-closed handling and verdict c
 
 ## Current State
 
-- `fontaine-core/src/providers/anthropic.rs:33` builds the Messages client and returns
+- `fontaine-core/src/providers/anthropic.rs:46-48` (`Connected::completion`) returns
   `self.0.completion(model).erase()`. rig's `Messages::with_prompt_caching()`
   (`rig-core-0.45.0/src/providers/anthropic/wire.rs:451`) and `with_static_prefix_cache_ttl` are never
   called, so Anthropic requests carry no `cache_control` at all. The same holds for the Anthropic
-  Messages route in `opencode_go.rs` (`GO_MESSAGES`, line 50).
+  Messages route in `opencode_go.rs` (`GO_MESSAGES`, line 50; route selection in
+  `GoClient::completion`, line 203; the Messages client is `GoClient.messages`, line 138).
 - Chat/Responses wires (OpenAI, DeepSeek, gateways) cache automatically by prefix; nothing to enable,
   but nothing protects the prefix either.
 - Main prompt: `prompt.rs` `layers`/`assemble` join base (with `{{workspace_roots}}` spliced in),
   `FONTAINE.md` files, skill index, scheduling note, output style, append. It is built once per
   `build_agent` (`agent/build.rs:77`) and set as the rig preamble (`finish_builder`).
-- `Agent::rebuild` (`agent.rs:264`) rebuilds the prompt and re-registers tools on `/add-dir` and on
-  output-style change (`set_output_style`, `agent.rs:328`). Both edit the system prompt, which sits
-  at the very front, so they invalidate the whole cached prefix. Conversation history lives in the
+- `Agent::rebuild` (`agent.rs:264`) rebuilds the prompt and re-registers tools on `/add-dir`
+  (`agent.rs:542`), on output-style change (`agent.rs:348`) and on model switch
+  (`agent/models.rs:111`). These edit the system prompt or tool array, which sit at the very front, so
+  they invalidate the whole cached prefix. MCP servers connect after the agent is built
+  (`Agent::connect_mcp`, `agent/mcp.rs`), including on-demand approval and `tools/list_changed`
+  refresh, so a late connect also changes the tool array mid-session. Conversation history lives in the
   session store and is appended, not rewritten.
 - Tools are registered in `tools::registry` order (builtins, then extension tools, `tools.rs:108`),
   then MCP tools; rig's definitions follow registration order
@@ -52,7 +56,8 @@ Nothing before the latest message changes between requests of a session. Runtime
 schedule notes, task list, denial notices) reaches the model as appended messages or tool results,
 which is already how `steering.rs` and the scheduler work. A change that must edit the front
 (system prompt, tool set) is allowed only at an explicit boundary and is accepted as one lost cache
-read: `/add-dir`, `/output-style`, MCP reconnect, `/clear`, compaction. The rule is recorded in
+read: `/add-dir`, `/output-style`, model switch, MCP connect, on-demand approval and `tools/list_changed`
+refresh, `/clear`, compaction. The rule is recorded in
 `docs/architecture.md` and as a Decisions line.
 
 ### Explicit caching on the Messages wire
@@ -81,7 +86,8 @@ Changes:
 ### Tool order stability
 
 Builtin and extension tool order and MCP server order (BTreeMap config, sequential connect) are already
-deterministic. Only within-server MCP tool order, which follows each server's `tools/list`, is new:
+deterministic. Only within-server MCP tool order, which follows each server's `tools/list`, is new (the sort
+stabilizes order within one server's list only; a late connect or refresh remains a boundary):
 `GuardedSink::wrap_all` in `fontaine-mcp/src/register.rs` sorts a server's tools by name. MCP tools are
 added after `register_tools` and refreshed later, so the sort lives at that seam, not in a static
 registry.
@@ -90,7 +96,7 @@ registry.
 
 Add cache read and cache write token counts to headless `Totals` and to the `usage.*` fields of the
 headless JSON output. No TUI usage line and no `/cost` summary (new design surface, out of scope).
-`GuardianUsage` (`gate.rs:170`) is checked for cache fields; if it lacks them, that is noted in the PR,
+`GuardianUsage` (`fontaine-core` `gate.rs:170`) is checked for cache fields; if it lacks them, that is noted in the PR,
 not extended here. No new metric names.
 
 ## Implementation Steps
@@ -101,13 +107,13 @@ not extended here. No new metric names.
    User scope only: `Rule::user_or_cli("accounts", ...)` in `config_scope.rs:135` already covers
    `accounts.*`, so no scope-table edit.
 2. `Provider::connect`: read the settings and store them on `Connected` (`providers/anthropic.rs`) and
-   `GoClient` (`providers/opencode_go.rs`).
+   `GoClient` (`providers/opencode_go.rs`, where `GoClient.messages` at line 138 is the Messages client).
 3. `providers/anthropic.rs`: apply `with_prompt_caching()` (and the optional one-hour static TTL) to
    the wire in `Connected::completion`.
-   `providers/opencode_go.rs`: same for the Messages route.
+   `providers/opencode_go.rs`: same for `GoClient.messages`, selected in `GoClient::completion`.
 4. `fontaine-mcp/src/register.rs`: sort each server's tools by name in `GuardedSink::wrap_all`.
 5. `fontaine/src/headless.rs`: add cache read/write to `Totals` (`Totals::add`) and to the JSON
-   `usage.*` output; check `GuardianUsage` (`gate.rs:170`) for cache fields and note the result.
+   `usage.*` output; check `GuardianUsage` (`fontaine-core` `gate.rs:170`) for cache fields and note the result.
 6. `fontaine-guardian`: add the prefix-stability tests; no behavior change.
 7. Docs and `tasks/fontaine_harness_plan.md` Decisions line.
 
@@ -116,9 +122,9 @@ not extended here. No new metric names.
 - `rust/fontaine-core/src/providers/anthropic.rs`, `providers/opencode_go.rs`
 - `rust/fontaine-core/src/config.rs`
 - `rust/fontaine-mcp/src/register.rs`
-- `rust/fontaine/src/headless.rs`
+- `rust/fontaine/src/headless.rs`, `docs/schemas/headless-v1.schema.json`
 - `rust/fontaine-guardian/src/prompt_builder.rs` (tests only)
-- `docs/architecture.md`, `docs/configuration.md`, `docs/guardian.md`
+- `docs/architecture.md`, `docs/configuration.md`, `docs/guardian.md`, `docs/headless.md`
 - `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
 
 ## Trade-offs
@@ -140,6 +146,7 @@ not extended here. No new metric names.
 - `docs/architecture.md`: the prefix rule and which actions are cache boundaries.
 - `docs/configuration.md`: `prompt_caching`, `cache_ttl` account keys, with scope.
 - `docs/guardian.md`: the guardian request is cacheable and its system prompt holds no per-call text.
+- `docs/headless.md`: the `usage` JSON (main/guardian/subagents) gains cache read/write token fields; update `docs/schemas/headless-v1.schema.json` to match.
 
 ## Testing Strategy
 
