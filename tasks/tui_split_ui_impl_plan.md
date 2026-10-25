@@ -48,8 +48,12 @@ Layout and method assignment (approximate sizes, all under the ~600-line cap):
 `lib.rs` keeps the `pub mod` list, re-exports, `Prompt`, `ChannelApprover`, `ClipboardSink`, the
 `Ui` struct, `drive`, `run`, `TerminalGuard` — about 400 lines.
 
-Visibility: a method called from a different file (or from `lib.rs`: `Ui::run` from `drive`)
-becomes `pub(crate)`; a method used only inside its own file stays private. `Ui` itself stays
+Visibility: any item (method, fn, type) used from a different file (including `ui/tests.rs`, or
+from `lib.rs`: `Ui::run` from `drive`) becomes `pub(crate)`; an item used only inside its own file
+stays private. Examples: `settle_turn`, `end_of_turn`, `queue_provider_request`, `TurnEnd`,
+`EndOfTurn` and `Serve` (used by `ui/tests.rs`; `ui/mod.rs` also uses `TurnEnd`). `ui/tests.rs`
+imports `turn::*`, `providers::queue_provider_request` and the crate-root items explicitly, since
+its `use super::*` now resolves to `ui/mod.rs`, not the crate root. `Ui` itself stays
 private, so no rustdoc surface changes. Each new file carries only the `use` lines it needs
 (clippy `-D warnings` rejects unused imports); the `lib.rs` import block shrinks to what remains.
 
@@ -60,9 +64,11 @@ table); the handlers keep calling the table through `crate::commands`.
 
 1. Create `ui/` and move methods file by file (one commit-sized step each: `turn`, `providers`,
    `mcp`, the `commands/*` files, then the remainder into `ui/mod.rs`), copying bodies and their
-   doc comments verbatim and widening visibility only where a cross-file caller exists.
+   doc comments verbatim and widening visibility (methods, fns, types) only where a cross-file
+   caller exists, `ui/tests.rs` included.
 2. Move `TurnEnd`, `Serve`, `EndOfTurn`, `end_of_turn` into `ui/turn.rs` and
-   `queue_provider_request` into `ui/providers.rs`; move the test module to `ui/tests.rs`.
+   `queue_provider_request` into `ui/providers.rs`; move the test module to `ui/tests.rs`, widening the moved items it uses to `pub(crate)` and
+   importing them explicitly.
 3. Prune `lib.rs` imports; add `mod ui;`.
 4. Check sizes: `wc -l rust/fontaine-tui/src/lib.rs rust/fontaine-tui/src/ui/*.rs
    rust/fontaine-tui/src/ui/commands/*.rs` — `lib.rs` under ~500, no new file over ~600.
@@ -95,9 +101,7 @@ No new tests: the change is a pure move. The existing coverage must pass unchang
 `rust/fontaine-tui/tests/tui.rs`, the linear-mode tests, and the unit tests in the moved
 `ui/tests.rs` (only their `use` paths may change). To confirm bodies were not altered, review the
 diff with `git diff --color-moved=dimmed-zebra` (moved blocks should show as moved, with changes
-only to visibility keywords and imports). To confirm the rustdoc surface is unchanged, compare
-`cargo doc -p fontaine-tui --no-deps` item lists (or `cargo public-api` if available) before and
-after.
+only to visibility keywords and imports).
 
 ## Open Questions
 
