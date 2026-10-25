@@ -4,8 +4,10 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::config_scope::check_scope;
 use crate::credentials;
 use crate::permission_rules::{RuleError, RuleSource, SourcedRule, parse_rule, validate_mcp_name};
 use crate::providers::{self, Provider};
@@ -198,7 +200,7 @@ impl Column {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
 pub enum PermissionMode {
     #[serde(rename = "manual")]
     Manual,
@@ -226,7 +228,8 @@ impl PermissionMode {
 }
 
 /// The provider an account talks to: a handle on one entry of the provider registry.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, JsonSchema)]
+#[schemars(with = "String")]
 pub struct AccountKind(&'static dyn Provider);
 
 impl AccountKind {
@@ -277,7 +280,7 @@ impl<'de> Deserialize<'de> for AccountKind {
 }
 
 /// One of the wire formats a gateway can serve a model on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Wire {
     Chat,
@@ -286,14 +289,14 @@ pub enum Wire {
     Gemini,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum GuardianProfile {
     Full,
     Minimal,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Scanner {
     Off,
@@ -302,7 +305,7 @@ pub enum Scanner {
     Command,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
 pub enum AgentMode {
     #[serde(rename = "inherit")]
     Inherit,
@@ -312,14 +315,14 @@ pub enum AgentMode {
     DontAsk,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TelemetryBackend {
     Micromegas,
     Otlp,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Account {
     pub kind: AccountKind,
@@ -345,7 +348,7 @@ pub struct Account {
 
 /// `[network]`: proxy, extra CA roots and a client certificate for the HTTP clients Fontaine
 /// builds. Files are read when the config is loaded at startup, not when it is parsed.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkSection {
     pub https_proxy: Option<String>,
@@ -396,13 +399,13 @@ impl Account {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSection {
     pub model: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GuardianSection {
     pub model: Option<String>,
@@ -418,7 +421,7 @@ pub struct GuardianSection {
 }
 
 /// `[guardian.screen]`: the fast typed-decision stage in front of the guardian.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GuardianScreenSection {
     /// `<account>/<model>`, an account of kind `ollama`.
@@ -444,46 +447,7 @@ impl GuardianScreenSection {
     }
 }
 
-impl GuardianSection {
-    fn scanner_keys_set(&self) -> Vec<&'static str> {
-        let mut keys = Vec::new();
-        if self.scanner.is_some() {
-            keys.push("scanner");
-        }
-        if self.scanner_command.is_some() {
-            keys.push("scanner_command");
-        }
-        if self.scanner_model_path.is_some() {
-            keys.push("scanner_model_path");
-        }
-        if self.scanner_hf_token_env.is_some() {
-            keys.push("scanner_hf_token_env");
-        }
-        keys
-    }
-
-    fn other_keys_set(&self) -> Vec<&'static str> {
-        let mut keys = Vec::new();
-        if self.model.is_some() {
-            keys.push("model");
-        }
-        if self.profile.is_some() {
-            keys.push("profile");
-        }
-        if self.timeout_secs.is_some() {
-            keys.push("timeout_secs");
-        }
-        if self.confidence_threshold.is_some() {
-            keys.push("confidence_threshold");
-        }
-        if self.cache.is_some() {
-            keys.push("cache");
-        }
-        keys
-    }
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionsSection {
     pub default_mode: Option<PermissionMode>,
@@ -519,7 +483,7 @@ impl Default for Origin {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Hook {
     /// In the permission-rule grammar. A hook without one runs for every call and counts as
@@ -539,7 +503,7 @@ impl PartialEq for Hook {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HooksSection {
     pub pre_tool_use: Option<Vec<Hook>>,
@@ -547,7 +511,7 @@ pub struct HooksSection {
     pub permission_denied: Option<Vec<Hook>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpServer {
     pub command: Option<String>,
@@ -556,13 +520,13 @@ pub struct McpServer {
     pub url: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpSection {
     pub servers: Option<BTreeMap<String, McpServer>>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AutoModeSection {
     pub environment: Option<Vec<String>>,
@@ -571,7 +535,7 @@ pub struct AutoModeSection {
     pub hard_deny: Option<Vec<String>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentType {
     pub model: Option<String>,
@@ -579,7 +543,7 @@ pub struct AgentType {
     pub mode: Option<AgentMode>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentsSection {
     pub max_parallel: Option<u32>,
@@ -590,19 +554,19 @@ pub struct AgentsSection {
     pub types: Option<BTreeMap<String, AgentType>>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContextSection {
     pub autocompact_window: Option<u64>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ShellPreclassifierSection {
     pub allow_extra: Option<Vec<String>>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TelemetrySection {
     pub enabled: Option<bool>,
@@ -618,35 +582,8 @@ pub struct TelemetrySection {
     pub resource_attributes: Option<BTreeMap<String, String>>,
 }
 
-impl TelemetrySection {
-    fn keys_other_than_enabled(&self) -> Vec<&'static str> {
-        let mut keys = Vec::new();
-        let flags: [(&'static str, bool); 10] = [
-            ("backend", self.backend.is_some()),
-            ("endpoint", self.endpoint.is_some()),
-            ("api_key_env", self.api_key_env.is_some()),
-            ("traces", self.traces.is_some()),
-            ("log_user_prompts", self.log_user_prompts.is_some()),
-            (
-                "log_assistant_responses",
-                self.log_assistant_responses.is_some(),
-            ),
-            ("log_tool_details", self.log_tool_details.is_some()),
-            ("log_tool_content", self.log_tool_content.is_some()),
-            ("content_max_bytes", self.content_max_bytes.is_some()),
-            ("resource_attributes", self.resource_attributes.is_some()),
-        ];
-        for (name, set) in flags {
-            if set {
-                keys.push(name);
-            }
-        }
-        keys
-    }
-}
-
 /// A terminal colour theme, by name.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemeName {
     Dark,
@@ -685,7 +622,7 @@ impl ThemeName {
 }
 
 /// `[tui]`: terminal preferences.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TuiSection {
     pub theme: Option<ThemeName>,
@@ -695,7 +632,8 @@ pub struct TuiSection {
 /// One `[env]` value. Its `Debug` is redacted so a stray `{config:?}` cannot put a proxy password
 /// in a log or panic message, and its `Deserialize` accepts only strings with a fixed error text
 /// because toml would otherwise quote the offending value (`invalid type: integer `12345``).
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, JsonSchema)]
+#[schemars(with = "String")]
 pub struct EnvValue(String);
 
 impl EnvValue {
@@ -761,7 +699,7 @@ impl<'de> Deserialize<'de> for EnvValue {
 }
 
 /// One settings file, exactly as written.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub tui: Option<TuiSection>,
@@ -804,7 +742,8 @@ fn parse_settings_with_hint(
         path: path.to_path_buf(),
         message: bare_toml_message(text, e.span(), e.message()),
     })?;
-    if let Err((key, reason)) = check_scope(&settings, column) {
+    let table: toml::Table = toml::from_str(text).expect("typed parse already accepted this text");
+    if let Err((key, reason)) = check_scope(&table, column) {
         return Err(ConfigError::Scope {
             path: path.to_path_buf(),
             column,
@@ -842,124 +781,6 @@ fn line_col(text: &str, offset: usize) -> (usize, usize) {
             .map_or(0, |i| i + 1)
         + 1;
     (line, column)
-}
-
-type ScopeFailure = (String, String);
-
-fn check_scope(s: &Settings, column: Column) -> Result<(), ScopeFailure> {
-    if column == Column::User {
-        return Ok(());
-    }
-    let fail = |key: &str, reason: &str| -> Result<(), ScopeFailure> {
-        Err((key.to_string(), reason.to_string()))
-    };
-
-    if let Some(g) = &s.guardian
-        && let Some(key) = g.scanner_keys_set().first()
-    {
-        return fail(
-            &format!("guardian.{key}"),
-            "scanner settings come only from the user file",
-        );
-    }
-    if let Some(screen) = s.guardian.as_ref().and_then(|g| g.screen.as_ref())
-        && screen.loosens()
-    {
-        return fail(
-            "guardian.screen",
-            "the screen stage is configured only in the user file; other scopes may only set `shadow = true`",
-        );
-    }
-    if column == Column::Cli {
-        return Ok(());
-    }
-
-    if s.accounts.is_some() {
-        return fail(
-            "accounts",
-            "endpoint and credential configuration comes only from the user file or --settings",
-        );
-    }
-    if s.network.is_some() {
-        return fail(
-            "network",
-            "proxy and trust-root configuration comes only from the user file or --settings",
-        );
-    }
-    if s.tui.is_some() {
-        return fail(
-            "tui",
-            "terminal preferences come only from the user file or --settings",
-        );
-    }
-    if let Some(p) = &s.permissions
-        && let Some(mode) = p.default_mode
-        && !matches!(mode, PermissionMode::Manual | PermissionMode::DontAsk)
-    {
-        return fail(
-            "permissions.default_mode",
-            "only `manual` and `dontAsk` are accepted here",
-        );
-    }
-    if let Some(t) = &s.telemetry {
-        if let Some(key) = t.keys_other_than_enabled().first() {
-            return fail(
-                &format!("telemetry.{key}"),
-                "only `enabled = false` may be set here",
-            );
-        }
-        if t.enabled == Some(true) {
-            return fail(
-                "telemetry.enabled",
-                "only `enabled = false` may be set here",
-            );
-        }
-    }
-    if column == Column::ProjectLocal {
-        return Ok(());
-    }
-
-    let tighten = "shared project settings may only tighten";
-    if s.env.is_some() {
-        return fail(
-            "env",
-            "environment overrides come only from user-trust scopes",
-        );
-    }
-    if s.model.is_some() {
-        return fail("model", tighten);
-    }
-    if let Some(g) = &s.guardian
-        && let Some(key) = g.other_keys_set().first()
-    {
-        return fail(&format!("guardian.{key}"), tighten);
-    }
-    if let Some(p) = &s.permissions {
-        if p.allow.is_some() {
-            return fail("permissions.allow", tighten);
-        }
-        if p.additional_directories.is_some() {
-            return fail("permissions.additional_directories", tighten);
-        }
-    }
-    if let Some(a) = &s.auto_mode {
-        if a.environment.is_some() {
-            return fail("auto_mode.environment", tighten);
-        }
-        if a.allow.is_some() {
-            return fail("auto_mode.allow", tighten);
-        }
-    }
-    if s.agents.is_some() {
-        return fail("agents", tighten);
-    }
-    if s.context.is_some() {
-        return fail("context", tighten);
-    }
-    if s.shell_preclassifier.is_some() {
-        return fail("shell_preclassifier", tighten);
-    }
-    Ok(())
 }
 
 fn model_ref_ok(value: &str) -> bool {

@@ -83,7 +83,8 @@ All configuration errors exit with code 2.
 
 ## Per-key scope table
 
-The user file may set every key. For the other scopes:
+The user file may set every key. Every key has a declared policy for the other scopes, and a key
+without one is refused from project and project-local files. For those scopes:
 
 | Key | Project | Project-local (user trust) | CLI |
 |---|---|---|---|

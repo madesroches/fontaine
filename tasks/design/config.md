@@ -168,7 +168,7 @@ file or the CLI, and every `<account>/<model>` reference is rejected from shared
 project file must not be able to point the guardian (or the session) at another endpoint; a missing or invalid credential for the guardian's account makes the
 guardian unavailable, which fails closed. **Trust asymmetry**: the per-key scope table below is the rule (shared project settings may only tighten); the Decisions entries on trust asymmetry and `default_mode` record the deviations from Claude Code.
 
-Per-key scope (the user file may set every key; a key a scope may not set is rejected at load):
+Per-key scope (the user file may set every key; a key a scope may not set is rejected at load). The single source is the `RULES` table in `fontaine-core/src/config_scope.rs`, one row per key; a key with no row is refused from project scopes, and a test fails until every `Settings` key has a row:
 
 | Key | Project | Project-local (untracked) | CLI |
 |-----|---------|---------------------------|-----|

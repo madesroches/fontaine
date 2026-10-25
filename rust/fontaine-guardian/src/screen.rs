@@ -6,6 +6,7 @@
 
 use std::time::{Duration, Instant};
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::Instrument;
@@ -27,7 +28,7 @@ const WARM_UP_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The questions the screen can ask. The wording and the polarity are part of what a threshold
 /// was calibrated against, so they are fixed in code rather than free text in settings.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Question {
     /// Yes means the call is fine; risk is the mass on no.

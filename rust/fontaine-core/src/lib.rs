@@ -5,6 +5,7 @@ pub mod audit;
 pub mod child_runner;
 pub mod code_execution;
 pub mod config;
+pub(crate) mod config_scope;
 pub mod containment;
 pub mod context;
 pub mod credentials;
