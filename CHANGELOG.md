@@ -54,6 +54,15 @@ All notable changes are recorded here. The format follows
     `--continue`, `--resume` and `--fork-session` bring it back. The terminal UI shows it above the
     input, collapsed to one line or expanded (Ctrl-O or `/todos`); the screen-reader mode prints
     it as plain lines when it changes.
+- Session-scoped scheduling (#16)
+  - `/loop <interval> <prompt>` re-runs a prompt on a wall-clock cadence and `/loop <prompt>` lets
+    the model pace itself with `schedule_wakeup`; `/loop list` and `/loop stop [id]` manage them.
+    The tools `cron_create`, `cron_jobs`, `cron_delete` and `schedule_wakeup` are main-conversation
+    only; `cron_create` is an arbitrary tool the guardian judges. Due prompts run between turns as
+    harness notes, never as user messages, so they do not widen the guardian's view of what you
+    asked. Tasks persist in `schedule.json`, come back on resume without replaying missed runs, are
+    capped at 50 and expire after 7 days, and `/clear` cancels them. `[schedule] enabled` (user
+    scope) turns the feature off.
 - Cascade screen stage (#130)
   - An optional `[guardian.screen]` stage (user file only) asks a small local Ollama model one
     yes/no question per call in `auto` and `plan` mode and reads `p(yes)` from its first-token
