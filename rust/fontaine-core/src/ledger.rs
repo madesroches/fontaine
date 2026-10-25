@@ -30,6 +30,9 @@ pub enum Record {
         workspace_roots: Vec<String>,
         workspace_trust: String,
         git_remotes: Vec<String>,
+        /// Names of the `[env]` overrides every subprocess gets; never their values.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        env_keys: Vec<String>,
     },
     FileIndex {
         paths: Vec<String>,
@@ -142,6 +145,7 @@ pub struct LedgerView {
     pub workspace_roots: Vec<String>,
     pub workspace_trust: String,
     pub git_remotes: Vec<String>,
+    pub env_keys: Vec<String>,
     index: HashSet<String>,
     pub index_truncated: bool,
     /// Every human message, verbatim, oldest first.
@@ -194,11 +198,13 @@ impl LedgerView {
                 workspace_roots,
                 workspace_trust,
                 git_remotes,
+                env_keys,
                 ..
             } => {
                 self.workspace_roots = workspace_roots.clone();
                 self.workspace_trust = workspace_trust.clone();
                 self.git_remotes = git_remotes.clone();
+                self.env_keys = env_keys.clone();
             }
             Record::FileIndex { paths, truncated } => {
                 self.index = paths.iter().map(|p| path_key(p)).collect();

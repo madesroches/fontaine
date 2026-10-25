@@ -17,6 +17,7 @@ const SERVER: &str = "[mcp.servers.srv]\ncommand = \"srv\"\n";
 fn process() -> Arc<HookProcess> {
     Arc::new(HookProcess {
         scrub_env: Vec::new(),
+        set_env: Vec::new(),
         git_bash: None,
         project_dir: std::env::temp_dir(),
     })

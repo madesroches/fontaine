@@ -475,6 +475,7 @@ impl AgentRuntime {
 
         let hook_process = Arc::new(HookProcess {
             scrub_env: setup.scrub_env.clone(),
+            set_env: tools::subprocess_env(&setup.config),
             git_bash: setup.git_bash.clone(),
             project_dir: setup.roots[0].clone(),
         });
@@ -854,6 +855,7 @@ impl AgentRuntime {
                         command: command.clone(),
                         args: server.args.clone().unwrap_or_default(),
                         env_vars: server.env_vars.clone().unwrap_or_default(),
+                        env: tools::subprocess_env(&self.config),
                         cwd: self.roots[0].clone(),
                     },
                     (None, Some(url)) => Transport::Http { url: url.clone() },
@@ -1218,8 +1220,8 @@ impl AgentRuntime {
         )
     }
 
-    /// The facts the ledger opens with: the roots, trust, git remotes and the pre-session file
-    /// index.
+    /// The facts the ledger opens with: the roots, trust, git remotes, the names of the `[env]`
+    /// overrides and the pre-session file index.
     pub async fn record_session_start(&self) {
         // A continued session keeps the file index it opened with: what it created since is
         // known to the ledger, and a fresh index would call those files pre-existing.
@@ -1247,6 +1249,10 @@ impl AgentRuntime {
                 .collect(),
             workspace_trust: if trusted { "trusted" } else { "untrusted" }.to_string(),
             git_remotes,
+            env_keys: tools::subprocess_env(&self.config)
+                .into_iter()
+                .map(|(name, _)| name.to_string_lossy().into_owned())
+                .collect(),
         });
         if let SessionOrigin::Continued { source, how } = &self.origin {
             self.append(Record::Resumed {
@@ -1377,6 +1383,7 @@ fn build_agent(p: &Parts<'_>) -> Result<(Agent, prompt::PromptPieces), String> {
         scope: p.state.scope(),
         seen: p.seen.clone(),
         scrub_env: p.setup.scrub_env.clone(),
+        set_env: tools::subprocess_env(p.config),
         git_bash: p.setup.git_bash.clone(),
         results: p.results.clone(),
         hide_mcp_names: !(p.config.telemetry.enabled && p.config.telemetry.log_tool_details),

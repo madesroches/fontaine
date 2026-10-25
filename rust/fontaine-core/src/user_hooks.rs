@@ -36,11 +36,13 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Set in a hook's environment so a script can find the project it runs for.
 pub const PROJECT_DIR_VAR: &str = "FONTAINE_PROJECT_DIR";
 
-/// How a hook's command is run: the same scrubbed environment as the `shell` tool, through the
+/// How a hook's command is run: the same environment as the `shell` tool (scrubbed, plus `[env]`), through the
 /// same shell (Git Bash on Windows).
 #[derive(Clone)]
 pub struct HookProcess {
     pub scrub_env: Vec<OsString>,
+    /// The user's `[env]`, set after the scrub.
+    pub set_env: Vec<(OsString, OsString)>,
     pub git_bash: Option<GitBash>,
     pub project_dir: PathBuf,
 }
@@ -61,7 +63,6 @@ impl HookProcess {
             .arg("-c")
             .arg(sh.script)
             .current_dir(&self.project_dir)
-            .env(PROJECT_DIR_VAR, &self.project_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -69,11 +70,18 @@ impl HookProcess {
         for name in &self.scrub_env {
             process.env_remove(name);
         }
+        for (name, value) in &self.set_env {
+            process.env(name, value);
+        }
+        process.env(PROJECT_DIR_VAR, &self.project_dir);
         if let Some((name, value)) = sh.env {
             process.env(name, value);
         }
         if let Some(git_bash) = &self.git_bash {
-            process.env("PATH", git_bash.path_value(std::env::var_os("PATH")));
+            process.env(
+                "PATH",
+                git_bash.path_value(fontaine_tools::git_bash::base_path(&self.set_env)),
+            );
         }
         let mut child = process
             .spawn()

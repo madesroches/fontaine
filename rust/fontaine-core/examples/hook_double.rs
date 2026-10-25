@@ -1,7 +1,7 @@
 //! A hook command for tests, portable because it is a program rather than a shell script:
-//! `hook_double [--record FILE] [--report FILE NAME...] [--reply JSON] [--stderr TEXT]
+//! `hook_double [--record FILE] [--report FILE NAME...] [--values FILE NAME...] [--reply JSON] [--stderr TEXT]
 //! [--exit CODE] [--sleep SECS]`. It copies its stdin to `--record`, writes whether each
-//! `--report` variable is set, then answers as told.
+//! `--report` variable is set and the value of each `--values` variable, then answers as told.
 
 use std::io::{Read, Write};
 
@@ -34,6 +34,16 @@ fn main() {
                     at += 1;
                 }
                 std::fs::write(&value, report).expect("write the report");
+            }
+            "--values" => {
+                let mut report = String::new();
+                at += 2;
+                while at < args.len() && !args[at].starts_with("--") {
+                    let value = std::env::var(&args[at]).unwrap_or_default();
+                    report.push_str(&format!("{}={value}\n", args[at]));
+                    at += 1;
+                }
+                std::fs::write(&value, report).expect("write the values");
             }
             "--reply" => {
                 reply = Some(value);

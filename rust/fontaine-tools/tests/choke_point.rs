@@ -132,6 +132,7 @@ fn the_shell_is_confined_clamped_and_cut() {
     let settings = ShellSettings {
         max_timeout_secs: 7,
         scrub_env: vec![OsString::from("SECRET_ONE"), OsString::from("SECRET_TWO")],
+        set_env: Vec::new(),
         git_bash: None,
     };
     let tool = builtins::shell_for(&root, &settings);

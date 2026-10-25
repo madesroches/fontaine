@@ -14,6 +14,17 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+// toml_edit's `Display` quotes the offending source line, which could echo an `[env]` value.
+fn parse_document(text: &str, path: &Path) -> io::Result<DocumentMut> {
+    text.parse().map_err(|e: toml_edit::TomlError| {
+        invalid(format!(
+            "{} is not valid TOML: {}",
+            path.display(),
+            crate::config::bare_toml_message(text, e.span(), e.message())
+        ))
+    })
+}
+
 /// Appends `rule` to `[permissions] allow` in the settings file at `path`, creating the file,
 /// the table and the array as needed. A rule already listed is left alone. The file keeps its
 /// comments, ordering and layout.
@@ -24,9 +35,7 @@ pub fn append_allow_rule(path: &Path, rule: &str) -> io::Result<()> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
-    let mut doc: DocumentMut = text
-        .parse()
-        .map_err(|e| invalid(format!("{} is not valid TOML: {e}", path.display())))?;
+    let mut doc = parse_document(&text, path)?;
 
     if doc.get("permissions").is_none() {
         doc.insert("permissions", Item::Table(Table::new()));
@@ -75,9 +84,7 @@ fn set_string(path: &Path, table: &str, key: &str, value: &str) -> io::Result<()
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
-    let mut doc: DocumentMut = text
-        .parse()
-        .map_err(|e| invalid(format!("{} is not valid TOML: {e}", path.display())))?;
+    let mut doc = parse_document(&text, path)?;
     if doc.get(table).is_none() {
         doc.insert(table, Item::Table(Table::new()));
     }
@@ -176,8 +183,7 @@ fn read_document(path: &Path) -> io::Result<DocumentMut> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
-    text.parse()
-        .map_err(|e| invalid(format!("{} is not valid TOML: {e}", path.display())))
+    parse_document(&text, path)
 }
 
 fn write_document(path: &Path, doc: &DocumentMut) -> io::Result<()> {

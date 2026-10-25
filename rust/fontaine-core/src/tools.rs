@@ -51,6 +51,15 @@ pub fn scrubbed_env(
     names
 }
 
+/// The `[env]` overrides every tool and extension subprocess gets, in name order.
+pub fn subprocess_env(config: &Config) -> Vec<(OsString, OsString)> {
+    config
+        .env
+        .iter()
+        .map(|(name, value)| (OsString::from(name), OsString::from(value.as_str())))
+        .collect()
+}
+
 /// The tools beyond the built-ins: the subagent tools and the skill loader.
 pub struct ExtensionTools {
     pub agent: AgentTool,
@@ -64,6 +73,7 @@ pub struct RegistryParams {
     /// Read-before-edit tracking, kept across registry rebuilds.
     pub seen: Seen,
     pub scrub_env: Vec<OsString>,
+    pub set_env: Vec<(OsString, OsString)>,
     pub git_bash: Option<GitBash>,
     /// The post-call stages every result passes.
     pub results: Arc<ResultPipeline>,
@@ -99,6 +109,7 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
         guard: guard.clone(),
         shell: ShellSettings {
             scrub_env: params.scrub_env,
+            set_env: params.set_env,
             git_bash: params.git_bash,
             ..ShellSettings::default()
         },

@@ -24,6 +24,7 @@ fn start(session: &Session, root: &std::path::Path) {
             workspace_roots: vec![root.display().to_string()],
             workspace_trust: "trusted".into(),
             git_remotes: Vec::new(),
+            env_keys: Vec::new(),
         })
         .unwrap();
 }

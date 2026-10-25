@@ -633,6 +633,74 @@ pub struct TuiSection {
     pub screen_reader: Option<bool>,
 }
 
+/// One `[env]` value. Its `Debug` is redacted so a stray `{config:?}` cannot put a proxy password
+/// in a log or panic message, and its `Deserialize` accepts only strings with a fixed error text
+/// because toml would otherwise quote the offending value (`invalid type: integer `12345``).
+#[derive(Clone, PartialEq, Eq)]
+pub struct EnvValue(String);
+
+impl EnvValue {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for EnvValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("EnvValue(<redacted>)")
+    }
+}
+
+const ENV_VALUE_NOT_STRING: &str = "environment values must be strings";
+
+impl<'de> Deserialize<'de> for EnvValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = EnvValue;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(ENV_VALUE_NOT_STRING)
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<EnvValue, E> {
+                Ok(EnvValue(v.to_string()))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<EnvValue, E> {
+                Ok(EnvValue(v))
+            }
+
+            // Every non-string visit falls back to the default impl, which formats the value
+            // into the message; override the ones TOML can produce.
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<EnvValue, E> {
+                Err(E::custom(ENV_VALUE_NOT_STRING))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<EnvValue, E> {
+                Err(E::custom(ENV_VALUE_NOT_STRING))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<EnvValue, E> {
+                Err(E::custom(ENV_VALUE_NOT_STRING))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<EnvValue, E> {
+                Err(E::custom(ENV_VALUE_NOT_STRING))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, _: A) -> Result<EnvValue, A::Error> {
+                Err(serde::de::Error::custom(ENV_VALUE_NOT_STRING))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, _: A) -> Result<EnvValue, A::Error> {
+                Err(serde::de::Error::custom(ENV_VALUE_NOT_STRING))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
 /// One settings file, exactly as written.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -649,6 +717,7 @@ pub struct Settings {
     pub context: Option<ContextSection>,
     pub shell_preclassifier: Option<ShellPreclassifierSection>,
     pub telemetry: Option<TelemetrySection>,
+    pub env: Option<BTreeMap<String, EnvValue>>,
 }
 
 /// Parses one settings file and runs every check that does not depend on the rest of the
@@ -669,9 +738,11 @@ fn parse_settings_with_hint(
     column: Column,
     hint: Option<&str>,
 ) -> Result<Settings, ConfigError> {
+    // toml's `Display` quotes the offending source line, which for an `[env]` entry would echo
+    // a secret; report the position and toml's bare message instead.
     let settings: Settings = toml::from_str(text).map_err(|e| ConfigError::Parse {
         path: path.to_path_buf(),
-        message: e.to_string(),
+        message: bare_toml_message(text, e.span(), e.message()),
     })?;
     if let Err((key, reason)) = check_scope(&settings, column) {
         return Err(ConfigError::Scope {
@@ -684,6 +755,33 @@ fn parse_settings_with_hint(
     }
     validate_values(&settings, path)?;
     Ok(settings)
+}
+
+pub(crate) fn bare_toml_message(
+    text: &str,
+    span: Option<std::ops::Range<usize>>,
+    message: &str,
+) -> String {
+    match span {
+        Some(span) => {
+            let (line, column) = line_col(text, span.start);
+            format!("{line}:{column}: {message}")
+        }
+        None => message.to_string(),
+    }
+}
+
+/// 1-based line and column of a byte offset.
+fn line_col(text: &str, offset: usize) -> (usize, usize) {
+    let before = &text.as_bytes()[..offset.min(text.len())];
+    let line = before.iter().filter(|&&b| b == b'\n').count() + 1;
+    let column = before.len()
+        - before
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |i| i + 1)
+        + 1;
+    (line, column)
 }
 
 type ScopeFailure = (String, String);
@@ -756,6 +854,12 @@ fn check_scope(s: &Settings, column: Column) -> Result<(), ScopeFailure> {
     }
 
     let tighten = "shared project settings may only tighten";
+    if s.env.is_some() {
+        return fail(
+            "env",
+            "environment overrides come only from user-trust scopes",
+        );
+    }
     if s.model.is_some() {
         return fail("model", tighten);
     }
@@ -838,8 +942,50 @@ pub(crate) fn check_account(name: &str, account: &Account) -> Result<(), (String
         .map_err(|(key, message)| (format!("accounts.{name}.{key}"), message))
 }
 
+/// The first name that differs only by ASCII case from an earlier one, when `fold` is set.
+fn case_colliding_env_name<'a>(
+    names: impl Iterator<Item = &'a str>,
+    fold: bool,
+) -> Option<&'a str> {
+    if !fold {
+        return None;
+    }
+    let mut seen = std::collections::HashSet::new();
+    names
+        .into_iter()
+        .find(|n| !seen.insert(n.to_ascii_uppercase()))
+}
+
 fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
     let bad = |key: &str, msg: &str| Err(ConfigError::invalid(path, key, msg));
+
+    for (name, value) in s.env.iter().flatten() {
+        let key = format!("env.{name}");
+        if name.is_empty() || name.contains('=') || name.contains('\0') {
+            return bad(
+                &key,
+                "names are non-empty and contain no `=` and no NUL character",
+            );
+        }
+        if name
+            .get(..ENV_RESERVED_PREFIX.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(ENV_RESERVED_PREFIX))
+        {
+            return bad(&key, "names starting with `FONTAINE_` are reserved");
+        }
+        if value.as_str().contains('\0') {
+            return bad(&key, "values contain no NUL character");
+        }
+    }
+
+    if let Some(env) = &s.env
+        && let Some(name) = case_colliding_env_name(env.keys().map(String::as_str), cfg!(windows))
+    {
+        return bad(
+            &format!("env.{name}"),
+            "names differ only by case, which Windows treats as the same variable",
+        );
+    }
 
     for (name, account) in s.accounts.iter().flatten() {
         if let Err((key, message)) = check_account(name, account) {
@@ -1130,6 +1276,9 @@ pub struct Telemetry {
     pub resource_attributes: BTreeMap<String, String>,
 }
 
+/// Fontaine's own variable namespace (`FONTAINE_SH_COMMAND`, `FONTAINE_PROJECT_DIR`).
+const ENV_RESERVED_PREFIX: &str = "FONTAINE_";
+
 /// Where a layer sits in the precedence order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slot {
@@ -1212,6 +1361,8 @@ pub struct Config {
     pub shell_preclassifier_allow_extra: Vec<String>,
     pub telemetry: Telemetry,
     pub tui: Tui,
+    /// `[env]`: variables set on every tool and extension subprocess.
+    pub env: BTreeMap<String, EnvValue>,
 }
 
 impl Config {
@@ -1273,6 +1424,7 @@ impl Config {
                 content_max_bytes: 61_440,
                 resource_attributes: BTreeMap::new(),
             },
+            env: BTreeMap::new(),
         }
     }
 
@@ -1477,6 +1629,14 @@ impl Config {
             for (k, v) in tel.resource_attributes.iter().flatten() {
                 t.resource_attributes.insert(k.clone(), v.clone());
             }
+        }
+        for (k, v) in s.env.iter().flatten() {
+            // Windows names are case-insensitive: `Path` from a higher scope replaces `PATH`.
+            if cfg!(windows) {
+                self.env
+                    .retain(|existing, _| !existing.eq_ignore_ascii_case(k));
+            }
+            self.env.insert(k.clone(), v.clone());
         }
     }
 }
@@ -1819,5 +1979,21 @@ fn read_optional(path: &Path) -> Result<Option<String>, ConfigError> {
             path: path.to_path_buf(),
             source,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::case_colliding_env_name;
+
+    #[test]
+    fn case_collisions_are_found_only_when_folding() {
+        let names = ["PATH", "HOME", "Path"];
+        assert_eq!(
+            case_colliding_env_name(names.into_iter(), true),
+            Some("Path")
+        );
+        assert_eq!(case_colliding_env_name(names.into_iter(), false), None);
+        assert_eq!(case_colliding_env_name(["A", "B"].into_iter(), true), None);
     }
 }

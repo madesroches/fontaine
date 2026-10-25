@@ -50,8 +50,16 @@ fn command(args: &[&str]) -> String {
 }
 
 fn process(scrub: Vec<std::ffi::OsString>) -> Arc<HookProcess> {
+    process_with_env(scrub, Vec::new())
+}
+
+fn process_with_env(
+    scrub: Vec<std::ffi::OsString>,
+    set_env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+) -> Arc<HookProcess> {
     Arc::new(HookProcess {
         scrub_env: scrub,
+        set_env,
         git_bash: common::git_bash(),
         project_dir: std::env::temp_dir(),
     })
@@ -430,6 +438,42 @@ async fn hook_children_get_the_scrubbed_environment() {
         assert!(text.contains(&format!("{gone}=absent")), "{text}");
     }
     assert!(text.contains("FONTAINE_TEST_KEPT=present"), "{text}");
+}
+
+#[tokio::test]
+async fn hooks_get_the_configured_env_and_the_real_project_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let values = dir.path().join("values.txt");
+    let h = hook(
+        None,
+        command(&[
+            "--values",
+            values.to_str().unwrap(),
+            "HOOK_TEST_SET",
+            "FONTAINE_PROJECT_DIR",
+        ]),
+        user(),
+    );
+    let rig = Rig::with({
+        let mut options = Options::new(Manual);
+        options.hooks = vec![Arc::new(CommandHook::new(
+            "pre_tool_use",
+            &h,
+            process_with_env(
+                Vec::new(),
+                vec![("HOOK_TEST_SET".into(), "$HOME/literal".into())],
+            ),
+        ))];
+        options
+    });
+    rig.check("shell", shell("cargo test")).await;
+    let text = std::fs::read_to_string(&values).unwrap();
+    assert!(text.contains("HOOK_TEST_SET=$HOME/literal"), "{text}");
+    let project = std::env::temp_dir();
+    assert!(
+        text.contains(&format!("FONTAINE_PROJECT_DIR={}", project.display())),
+        "{text}"
+    );
 }
 
 #[tokio::test]

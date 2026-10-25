@@ -99,10 +99,12 @@ are resolved.
 - **Environment.** The child process does not inherit the telemetry credentials (every
   `MICROMEGAS_*` variable, `OTEL_EXPORTER_OTLP_HEADERS` and `[telemetry] api_key_env`), the API key
   variable of any configured account (`[accounts.*] api_key_env`) or the guardian scanner's token
-  variable (`[guardian] scanner_hf_token_env`).
+  variable (`[guardian] scanner_hf_token_env`). What it does get is Fontaine's environment minus
+  those variables, plus every entry of [`[env]`](configuration.md#env), which is applied after the
+  scrub.
 - **Windows.** The shell runs through Git Bash, so Git for Windows must be installed. Fontaine
   finds `git.exe` on `PATH`, then in the standard install locations, and puts Git's `usr\bin` and
-  `bin` directories first on the shell's `PATH`. `FONTAINE_GIT_BASH_PATH` names a `bash.exe` and
+  `bin` directories first on the shell's `PATH`, in front of the `PATH` from `[env]` when it sets one. `FONTAINE_GIT_BASH_PATH` names a `bash.exe` and
   overrides the search. When Git for Windows cannot be found, Fontaine exits with code 2 and a
   message naming Git for Windows and the variable. The command reaches Git Bash as written,
   including every `\\`; a syntax error names `eval` rather than `-c`.

@@ -44,6 +44,10 @@ All notable changes are recorded here. The format follows
   - `[permissions] default_mode` is optional: the terminal UI starts in `auto` and a headless run
     in `manual`. `auto` is accepted from the user file, `--settings` and `--permission-mode`;
     both project scopes (shared and project-local) accept only `manual` and `dontAsk`.
+  - An `[env]` table of literal variables is set on every `shell` call, `!` command, hook and
+    stdio MCP server, after the credential scrub. It loads only from the user-trust scopes,
+    rejects `FONTAINE_*` names, never shows a value in a configuration error, and the guardian
+    sees the variable names, not their values (#5).
 - Cascade screen stage (#130)
   - An optional `[guardian.screen]` stage (user file only) asks a small local Ollama model one
     yes/no question per call in `auto` and `plan` mode and reads `p(yes)` from its first-token

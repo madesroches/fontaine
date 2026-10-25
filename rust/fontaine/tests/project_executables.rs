@@ -108,6 +108,42 @@ async fn only_a_user_rule_lets_a_project_mcp_tool_run() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn config_env_reaches_an_mcp_server_process() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool("c1", "mcp__repo__env", json!({"name": "PROBE"})),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let path = s.config.join("config.toml");
+    let base = std::fs::read_to_string(&path).unwrap();
+    s.user_config(&format!(
+        "{base}\n[env]\nPROBE = \"probe-value-xyz\"\n\n[mcp.servers.repo]\ncommand = '{}'\n",
+        example("repo_mcp_server")
+    ));
+    let out = s
+        .headless(&[
+            "--output-format",
+            "stream-json",
+            "--allowed-tools",
+            "mcp__repo__env",
+            "go",
+        ])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let result = of_type(&lines, "tool_result")[0];
+    assert_eq!(result["success"], json!(true), "{result}");
+    assert!(
+        result["text"].as_str().unwrap().contains("probe-value-xyz"),
+        "{result}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_project_hook_runs_without_a_prompt_but_its_allow_decides_nothing() {
     let endpoint = Endpoint::start(
         Wire::Chat,

@@ -576,6 +576,7 @@ fn absent_files_load_as_empty() {
 /// Each row is a snippet one scope column must reject. The three columns are checked
 /// separately because the table differs per column.
 const NO_FOR_PROJECT: &[(&str, &str)] = &[
+    ("env", "[env]\nHTTPS_PROXY = \"http://p\"\n"),
     ("accounts", "[accounts.x]\nkind = \"ollama\"\n"),
     ("tui.theme", "[tui]\ntheme = \"dark\"\n"),
     ("tui.screen_reader", "[tui]\nscreen_reader = true\n"),
@@ -1289,4 +1290,155 @@ fn the_autocompact_window_is_refused_from_shared_project_scope_only() {
     let ok = "[context]\nautocompact_window = 150000\n";
     parse_settings(ok, Path::new("p.toml"), Column::ProjectLocal).unwrap();
     user_ok(ok);
+}
+
+// --- [env] ---
+
+const SECRET: &str = "s3cr3t-pa55w0rd";
+
+#[test]
+fn env_merges_per_key_with_the_higher_scope_winning() {
+    let w = World::new();
+    w.trusted_repo();
+    w.user_file("[env]\nA = \"user\"\nB = \"user\"\n");
+    w.local_file("[env]\nB = \"local\"\nC = \"local\"\n");
+    let cli = w.cli_file("[env]\nC = \"cli\"\nD = \"cli\"\n");
+    let c = w.load_with_settings(&cli).unwrap();
+    let got: Vec<(&str, &str)> = c
+        .env
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [("A", "user"), ("B", "local"), ("C", "cli"), ("D", "cli")]
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn env_names_merge_case_insensitively_on_windows() {
+    let w = World::new();
+    w.user_file("[env]\nPATH = \"user\"\n");
+    let cli = w.cli_file("[env]\nPath = \"cli\"\n");
+    let c = w.load_with_settings(&cli).unwrap();
+    assert_eq!(c.env.len(), 1);
+    assert_eq!(c.env["Path"].as_str(), "cli");
+}
+
+#[cfg(windows)]
+#[test]
+fn env_names_differing_only_by_case_in_one_file_are_rejected_on_windows() {
+    let text = format!("[env]\nPATH = \"{SECRET}\"\nPath = \"{SECRET}\"\n");
+    let err = parse_settings(&text, Path::new("u.toml"), Column::User).unwrap_err();
+    assert!(matches!(err, ConfigError::Invalid { .. }), "{err:?}");
+    let shown = err.to_string();
+    assert!(shown.contains("env.Path"), "{shown}");
+    assert!(!shown.contains(SECRET), "{shown}");
+}
+
+#[test]
+fn env_is_accepted_from_user_cli_and_trusted_local_scopes() {
+    let text = "[env]\nX = \"1\"\n";
+    for column in [Column::User, Column::Cli, Column::ProjectLocal] {
+        parse_settings(text, Path::new("s.toml"), column)
+            .unwrap_or_else(|e| panic!("{column:?}: {e}"));
+    }
+    let w = World::new();
+    w.trusted_repo();
+    w.local_file(text);
+    assert_eq!(w.load().unwrap().env["X"].as_str(), "1");
+}
+
+#[test]
+fn env_from_the_project_column_is_a_scope_error_naming_the_key() {
+    let w = World::new();
+    w.project_file(&format!("[env]\nTOKEN = \"{SECRET}\"\n"));
+    let err = w.load().unwrap_err();
+    assert!(
+        matches!(&err, ConfigError::Scope { key, .. } if key == "env"),
+        "{err:?}"
+    );
+    assert_eq!(err.exit_code(), 2);
+    assert!(!err.to_string().contains(SECRET));
+}
+
+#[test]
+fn env_in_an_untrusted_local_file_is_rejected_because_it_loads_as_project() {
+    let w = World::new();
+    common::git_init(&w.work);
+    w.local_file("[env]\nX = \"1\"\n");
+    assert_scope_error(w.load(), "untrusted local");
+}
+
+#[test]
+fn env_rejects_bad_names_and_values_without_echoing_the_value() {
+    for (text, key) in [
+        (format!("[env]\n\"\" = \"{SECRET}\"\n"), "env."),
+        (format!("[env]\n\"A=B\" = \"{SECRET}\"\n"), "env.A=B"),
+        (format!("[env]\n\"A\\u0000B\" = \"{SECRET}\"\n"), "env.A"),
+        (format!("[env]\nA = \"{SECRET}\\u0000\"\n"), "env.A"),
+        (
+            format!("[env]\nFONTAINE_SH_COMMAND = \"{SECRET}\"\n"),
+            "env.FONTAINE_SH_COMMAND",
+        ),
+        (
+            format!("[env]\nfontaine_x = \"{SECRET}\"\n"),
+            "env.fontaine_x",
+        ),
+    ] {
+        let err = parse_settings(&text, Path::new("u.toml"), Column::User).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Invalid { .. }),
+            "{text}: {err:?}"
+        );
+        assert_eq!(err.exit_code(), 2);
+        let shown = err.to_string();
+        assert!(shown.contains(key), "{key} in {shown}");
+        assert!(!shown.contains(SECRET), "{shown}");
+    }
+}
+
+#[test]
+fn env_debug_output_redacts_values() {
+    let w = World::new();
+    w.user_file(&format!("[env]\nTOKEN = \"{SECRET}\"\n"));
+    let c = w.load().unwrap();
+    let shown = format!("{c:?}");
+    assert!(shown.contains("TOKEN"));
+    assert!(!shown.contains(SECRET), "{shown}");
+    let settings = parse_settings(
+        &format!("[env]\nTOKEN = \"{SECRET}\"\n"),
+        Path::new("u.toml"),
+        Column::User,
+    )
+    .unwrap();
+    assert!(!format!("{settings:?}").contains(SECRET));
+}
+
+#[test]
+fn a_malformed_env_entry_is_a_parse_error_that_does_not_quote_the_value() {
+    for text in [
+        format!("[env]\nTOKEN = \"{SECRET}\n"),
+        "[env]\nPIN = 12345\n".to_string(),
+        "[env]\nFLAG = true\n".to_string(),
+        "[env]\nPIN = 1.5\n".to_string(),
+        "[env]\nLIST = [\"a\"]\n".to_string(),
+        "[env]\nSUB = { a = \"b\" }\n".to_string(),
+    ] {
+        let err = parse_settings(&text, Path::new("u.toml"), Column::User).unwrap_err();
+        assert!(matches!(err, ConfigError::Parse { .. }), "{text}: {err:?}");
+        let shown = err.to_string();
+        for leaked in [SECRET, "12345", "1.5", "true"] {
+            assert!(!shown.contains(leaked), "{shown}");
+        }
+        assert!(shown.contains("u.toml"), "{shown}");
+        if text.contains("12345") {
+            assert!(
+                shown.contains("environment values must be strings"),
+                "{shown}"
+            );
+            assert!(shown.contains("2:"), "{shown}");
+        }
+    }
 }

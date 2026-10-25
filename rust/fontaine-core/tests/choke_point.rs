@@ -84,6 +84,7 @@ fn params(rig: &Rig) -> RegistryParams {
         scope: rig.state.scope(),
         seen: Default::default(),
         scrub_env: Vec::new(),
+        set_env: Vec::new(),
         git_bash: None,
         results: Arc::new(ResultPipeline::new()),
         hide_mcp_names: false,

@@ -64,7 +64,7 @@ missing or unreadable `--settings` file is also an error.
 - Named table entries (`[accounts.<name>]`, `[mcp.servers.<name>]`, `[agents.types.<name>]`): the
   highest scope that defines the name replaces the whole entry. Entries are never merged field by
   field.
-- Map-valued keys (`[telemetry] resource_attributes`): merged per key, and the higher scope wins a
+- Map-valued keys (`[telemetry] resource_attributes`, `[env]`): merged per key, and the higher scope wins a
   shared key.
 - `[[hooks.*]]` arrays: the union.
 
@@ -103,6 +103,7 @@ The user file may set every key. For the other scopes:
 | `[mcp.servers.*]` | yes, after workspace trust and your approval of each server | yes, after workspace trust | yes |
 | `[telemetry]` | `enabled = false` only | `enabled = false` only | yes |
 | `[tui]` | no | no | yes |
+| `[env]` | no | yes | yes |
 
 A project-local file that has not earned user trust is validated against the project column.
 
@@ -113,6 +114,10 @@ Shared project settings can add `deny` and `ask` rules and `[auto_mode]` `soft_d
 choose a model or an endpoint, widen the workspace, or change anything that loosens a decision.
 Project hooks and MCP servers may be declared, but a project-declared executable can never change a
 permission decision.
+
+`[env]` can put a different `PATH` in front of the system's or point tools at a proxy, so it comes
+only from user-trust scopes: your user file, `--settings` and a project-local file that has earned
+user trust. A shared project file with an `[env]` table is an error.
 
 `[guardian] profile` is a loosening knob, so it is settable from user-trust scopes only. No key in
 any scope turns the guardian off.
@@ -411,7 +416,7 @@ and one question, and a wrong value lets the screen allow calls the guardian wou
 #### Bring your own scanner
 
 `scanner = "command"` runs the program at `scanner_command` once per tool result, with no arguments
-and no shell, and the same scrubbed environment as hooks. It receives one JSON object on standard
+and no shell, and the same scrubbed environment as hooks, without `[env]`. It receives one JSON object on standard
 input and answers with one on standard output:
 
 ```json
@@ -636,6 +641,36 @@ endpoint = "https://telemetry.example.com"
 api_key_env = "MICROMEGAS_INGESTION_API_KEY"
 resource_attributes = { "team.id" = "platform" }
 ```
+
+### `[env]`
+
+Environment variables set on every process a tool or extension starts: the `shell` tool, `!`
+commands, [hooks](hooks.md) and stdio [MCP servers](mcp.md). Each key is a variable name and each
+value a string.
+
+```toml
+[env]
+HTTPS_PROXY = "http://proxy.internal:3128"
+PATH = "/home/me/.local/bin:/usr/local/bin:/usr/bin:/bin"
+RUST_LOG = "warn"
+```
+
+- Values are literal: `$VAR` and `~` are not expanded, so `PATH = "/opt/bin:$PATH"` sets `PATH` to
+  exactly that text. Write the whole value out.
+- The entries are applied after the scrub of credential variables (see [Tools](tools.md#shell)),
+  so an entry may deliberately set a scrubbed name. They are applied before the variables Fontaine
+  sets itself.
+- Names starting with `FONTAINE_` (in any case) are reserved and are an error. A name may not be
+  empty or contain `=`, and neither names nor values may contain a NUL character. Values must be
+  strings; a number or a boolean is an error.
+- Scopes merge per key and the higher scope wins; on Windows names are compared without regard to
+  case, so `Path` in `--settings` replaces `PATH` in the user file. There is no way to unset a
+  variable.
+- Values are never logged and never appear in a configuration error, and the settings debug output
+  hides them. The [guardian](guardian.md) is told the names that are set, never the values.
+- Fontaine's own process is not affected: provider, telemetry and scanner-command lookups keep
+  using the variables they name, and the `scanner = "command"` program does not get `[env]`.
+- User-trust scopes only (see [Trust asymmetry](#trust-asymmetry)).
 
 ### `[tui]`
 

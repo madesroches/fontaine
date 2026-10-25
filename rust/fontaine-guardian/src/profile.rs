@@ -57,6 +57,7 @@ impl Profile {
                         workspace_roots: request.session_facts.workspace_roots.clone(),
                         workspace_trust: String::new(),
                         git_remotes: request.session_facts.git_remotes.clone(),
+                        env_keys: request.session_facts.env_keys.clone(),
                         touched_paths: request.session_facts.touched_paths.clone(),
                         actions_taken: Vec::new(),
                     },
