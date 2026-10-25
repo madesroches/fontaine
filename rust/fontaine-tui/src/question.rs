@@ -266,7 +266,11 @@ impl QuestionPanel {
                 Style::default()
             };
             let text = format!("{}. {mark}{label}", row + 1);
-            for (i, piece) in wrap(&text, width).into_iter().enumerate() {
+            // The continuation prefix is 3 columns, and the overlay clips rather than wraps.
+            for (i, piece) in wrap(&text, width.saturating_sub(3).max(1))
+                .into_iter()
+                .enumerate()
+            {
                 rows.push(Line::styled(
                     if i == 0 { piece } else { format!("   {piece}") },
                     style,
@@ -549,6 +553,17 @@ mod tests {
                 shown.iter().any(|row| row.starts_with(&format!("{}. ", target + 1)) && row.contains(label)),
                 "option {target} is visible in {shown:?}"
             );
+        }
+    }
+
+    #[test]
+    fn wrapped_labels_fit_the_width() {
+        let mut q = question("Q?", true);
+        q.options[0].label = "a very long option label that has to wrap over several rows".into();
+        let (panel, _rx) = panel(vec![q]);
+        for line in panel.body(30, 40, &Theme::default()) {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(text.chars().count() <= 30, "{text:?} is too wide");
         }
     }
 

@@ -172,7 +172,7 @@ descriptions, then an "Other" row for your own words.
 |---|---|
 | Up, Down, Tab, `j`, `k` | Move the highlight. |
 | `1`-`9` | Jump to that row. |
-| Space | Toggle the highlighted option, when the question allows several. |
+| Space | Toggle the highlighted option, when the question allows several. On "Other" it opens the field for your text. |
 | Enter | Choose the option (several: confirm the toggled ones) and go to the next question. On "Other", opens a field for your text. |
 | Esc | Decline the whole call and discard the answers already given. Inside the "Other" field it only leaves the field. |
 
