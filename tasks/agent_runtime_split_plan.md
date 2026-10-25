@@ -29,8 +29,9 @@ headless contract schema.
 - Root agent: `build_agent` (~83 lines, `agent.rs:~1410`) ends in a builder chain with
   `record_content_telemetry`, `CurrentCall`, `SteeringHook`. Child agent:
   `child_runner.rs:~276` has its own chain with `record_content_telemetry` and `CurrentCall`.
-  Both compute the "record content" flag from `config.telemetry` separately (`agent.rs:568`
-  and `~1472`).
+  The "record content" flag is computed from `config.telemetry` twice, both in `agent.rs`
+  (`:568-572`, passed at `:597`, and `:1473-1477`); `child_runner.rs` only declares and reads
+  `ChildContext::record_content`.
 - Other concerns in the same impl: MCP planning/connecting (`mcp_plan`, `connect_mcp`,
   `approve_mcp_server`, `server_digest`, `server_description`, `McpServerPlan`, `McpOutcome`),
   model and guardian switching and listings (`switch_main_model`, `install_main`,
@@ -53,7 +54,10 @@ headless contract schema.
   `primary_root()` helper (first root) replaces the `self.roots[0]` uses. `add_dir` loses its
   `self.roots.push`/`pop`; its rollback is only `set_scope(previous_scope)`.
 - `rebuild` takes the roots from the scope in `state` (`Parts.roots` becomes the scope's roots
-  slice, obtained once per rebuild).
+  slice, obtained once per rebuild). `SessionState::scope()` returns an owned `Arc<Scope>`
+  (`gate.rs:541-544`) while `Parts.roots` is `&[PathBuf]`, so `rebuild` holds the `Arc<Scope>` (or a
+  cloned `Vec`) in a local that outlives `Parts`. The `contains` check inside `add_dir`
+  (`agent.rs:~958`) moves to `self.roots()`.
 - Consumers: `headless.rs` `init_event` reports `start_mode()` for `permission_mode` and uses
   `start_mode()` for the suspended-rules and notice-gating checks (headless never changes the
   mode, so output is unchanged); `reports.rs` uses `runtime.roots()`.
@@ -101,7 +105,7 @@ to child modules of `agent`.
 ```text
 pub(crate) fn apply_common(b: AgentBuilder, state: &Arc<SessionState>,
                            record_content: bool) -> AgentBuilder
-    = b.record_content_telemetry(record_content).add_hook(CurrentCall { state })
+    = b.record_content_telemetry(record_content).add_hook(CurrentCall { state: state.clone() })
 ```
 
 Lives in `agent/build.rs`. `build_agent` calls it and then adds root-only configuration
@@ -115,7 +119,8 @@ The "record content" flag becomes one method, `Telemetry::records_content()` (in
 ## Implementation Steps
 
 1. Add `Telemetry::records_content()` in `fontaine-core/src/config.rs` and use it in
-   `new`/`build_agent` and `child_runner`'s `ChildContext::record_content` initialization.
+   the two copies in `agent.rs` (`new`, `build_agent`); `child_runner.rs` just reads the
+   `ChildContext::record_content` field.
 2. Replace `mode`/`roots` fields with `start_mode` (private) plus `mode()`, `start_mode()`,
    `roots()`, `primary_root()`; update every in-crate reader, `add_dir`, `rebuild`,
    `record_session_start`, `refresh_files`; update `headless.rs` and `fontaine-tui` `reports.rs`.
@@ -125,7 +130,8 @@ The "record content" flag becomes one method, `Telemetry::records_content()` (in
 4. Move `Parts`/`build_agent` to `agent/build.rs`, split it into named steps, add
    `apply_common`, and use it from `child_runner.rs`.
 5. Split `AgentRuntime::new` into `agent/setup.rs` steps.
-6. Make fields private where no outside reader exists; add the small accessors.
+6. Make fields private where no outside reader exists; add the small accessors. Check test
+   readers of every field that goes private (e.g. `rust/fontaine-core/tests/scanner.rs:241`).
 7. Add `too-many-lines-threshold = 80` to the workspace `clippy.toml` (create if absent) and
    `#![deny(clippy::too_many_lines)]` at the top of `agent.rs` (the inner attribute covers all child
    modules), so the size criterion is enforced by
@@ -141,6 +147,7 @@ The "record content" flag becomes one method, `Telemetry::records_content()` (in
 - `rust/fontaine/src/headless.rs` (`start_mode()`, `roots()`)
 - `rust/fontaine-tui/src/ui/commands/reports.rs`, `rust/fontaine-tui/src/lib.rs` (`notices()`/
   `scanner_notices()`/`origin()` accessors)
+- `rust/fontaine-core/tests/scanner.rs` (`scanner_notices()` instead of the field)
 - `rust/clippy.toml` (line-count threshold)
 - `CHANGELOG.md`
 
