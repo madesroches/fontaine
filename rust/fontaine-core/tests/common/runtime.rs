@@ -83,6 +83,30 @@ pub fn build_with_models(
     scanner: fontaine_core::scanner_stage::ScannerStart,
     user_config: Option<std::path::PathBuf>,
 ) -> AgentRuntime {
+    build_with_approver(
+        world,
+        mode,
+        models,
+        switcher,
+        project_executables,
+        scanner,
+        user_config,
+        Arc::new(DenyAll),
+    )
+}
+
+/// `build_with_models`, with the session's approver.
+#[allow(clippy::too_many_arguments)]
+pub fn build_with_approver(
+    world: &World,
+    mode: PermissionMode,
+    models: Models,
+    switcher: Option<Switcher>,
+    project_executables: bool,
+    scanner: fontaine_core::scanner_stage::ScannerStart,
+    user_config: Option<std::path::PathBuf>,
+    approver: Arc<dyn fontaine_core::permissions::Approver>,
+) -> AgentRuntime {
     let config = world.load().unwrap();
     let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
     let loaded = extensions::load(&LoadParams {
@@ -106,7 +130,7 @@ pub fn build_with_models(
         append_system_prompt: None,
         json_schema: None,
         headless: true,
-        approver: Arc::new(DenyAll),
+        approver,
         home: None,
         user_config,
         guardian_profile: fontaine_guardian::Profile::Full,

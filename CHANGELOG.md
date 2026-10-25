@@ -278,6 +278,9 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- `trust.toml` and the user settings file are replaced atomically and edited under a lock, so a
+  crash cannot truncate them and concurrent sessions no longer drop each other's changes. An
+  unparseable `trust.toml` is reported once at session start instead of silently trusting nothing (#183).
 - A host with no system CA bundle no longer stops startup: `webfetch` and the scanner-model
   download fall back to the bundled Mozilla roots, as the model transport does, and a client that
   still cannot be built reports its cause (#112).

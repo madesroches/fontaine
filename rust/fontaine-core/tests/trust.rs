@@ -193,3 +193,45 @@ fn a_directory_in_place_of_trust_toml_trusts_nothing() {
     std::fs::create_dir_all(w.data.join("trust.toml")).unwrap();
     assert!(!trust::is_trusted(&w.data, &w.work));
 }
+
+#[test]
+fn concurrent_records_and_approvals_all_land() {
+    let w = World::new();
+    let roots: Vec<_> = (0..6)
+        .map(|i| {
+            let root = w.root.join(format!("proj{i}"));
+            std::fs::create_dir_all(&root).unwrap();
+            root
+        })
+        .collect();
+    std::thread::scope(|scope| {
+        for (i, root) in roots.iter().enumerate() {
+            let data = &w.data;
+            scope.spawn(move || {
+                trust::record(data, root).unwrap();
+                trust::approve_server(data, root, "srv", &format!("digest{i}")).unwrap();
+            });
+        }
+    });
+    for (i, root) in roots.iter().enumerate() {
+        assert!(trust::is_trusted(&w.data, root), "{root:?}");
+        assert!(trust::server_approved(
+            &w.data,
+            root,
+            "srv",
+            &format!("digest{i}")
+        ));
+    }
+}
+
+#[test]
+fn unreadable_reports_only_a_corrupt_store() {
+    let w = World::new();
+    assert!(trust::unreadable(&w.data).is_none());
+    trust::record(&w.data, &w.work).unwrap();
+    assert!(trust::unreadable(&w.data).is_none());
+    std::fs::write(trust::trust_path(&w.data), "trusted = [[[").unwrap();
+    let message = trust::unreadable(&w.data).unwrap();
+    assert!(message.contains("trust.toml"), "{message}");
+    assert!(!message.contains('\n'), "{message}");
+}

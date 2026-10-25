@@ -688,3 +688,42 @@ async fn the_guardian_is_told_the_env_names_and_never_the_values() {
         assert!(!sent.contains("s3cr3t-pa55"), "{sent}");
     }
 }
+
+#[tokio::test]
+async fn a_corrupt_trust_store_is_reported_once_at_session_start() {
+    use common::runtime::build_with_approver;
+    use fontaine_core::config::PermissionMode::Manual;
+
+    let w = World::new();
+    std::fs::write(w.data.join("trust.toml"), "trusted = [[[").unwrap();
+    let approver = std::sync::Arc::new(Collect(Default::default()));
+    let handle = fontaine_core::models::ModelHandle::new(
+        fontaine_core::models::ModelRef::parse("test/mock").unwrap(),
+        fontaine_core::config::AccountKind::named("openai-compatible"),
+        rig_core::test_utils::MockCompletionModel::from_stream_turns(Vec::<
+            Vec<rig_core::test_utils::MockStreamEvent>,
+        >::new())
+        .into(),
+    );
+    let models = fontaine_core::models::Models {
+        main: handle,
+        main_listing: Vec::new(),
+        guardian: None,
+        guardian_choice: fontaine_core::models::GuardianChoice::MainFallback,
+        notices: Vec::new(),
+    };
+    let runtime = build_with_approver(
+        &w,
+        Manual,
+        models,
+        None,
+        true,
+        Default::default(),
+        None,
+        approver.clone(),
+    );
+    runtime.record_session_start().await;
+    let warnings = approver.0.lock().unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("trust.toml"), "{warnings:?}");
+}

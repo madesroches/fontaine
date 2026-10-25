@@ -11,6 +11,7 @@ pub mod credentials;
 pub mod destructive;
 pub mod dirs;
 pub mod extensions;
+pub mod file_lock;
 pub mod floor;
 pub mod frontmatter;
 pub mod gate;

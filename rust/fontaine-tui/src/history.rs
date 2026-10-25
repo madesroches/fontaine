@@ -175,13 +175,9 @@ fn unusable(path: &Path, error: &io::Error) -> String {
 /// Replaces `path` with `lines` through an owner-only temp file in the same directory, so a
 /// crash cannot leave a truncated history.
 fn rewrite(path: &Path, lines: &[&str]) -> io::Result<()> {
-    let tmp = path.with_extension(format!("jsonl.{}.tmp", std::process::id()));
     let mut body = lines.join("\n");
     body.push('\n');
-    owner_only::write(&tmp, body.as_bytes())?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })
+    owner_only::write_atomic(path, body.as_bytes())
 }
 
 #[cfg(test)]
@@ -243,11 +239,11 @@ mod tests {
         assert!(rewritten.starts_with(&format!(
             "{{\"ts_ms\":0,\"project\":\"p\",\"text\":\"m{dropped}\"}}"
         )));
-        assert!(
-            !path
-                .with_extension(format!("jsonl.{}.tmp", std::process::id()))
-                .exists()
-        );
+        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [std::ffi::OsString::from("history.jsonl")]);
     }
 
     #[test]

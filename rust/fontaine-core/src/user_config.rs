@@ -30,6 +30,7 @@ fn parse_document(text: &str, path: &Path) -> io::Result<DocumentMut> {
 /// comments, ordering and layout.
 pub fn append_allow_rule(path: &Path, rule: &str) -> io::Result<()> {
     parse_rule(rule).map_err(|e| invalid(e.to_string()))?;
+    let _lock = locked(path)?;
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
@@ -55,10 +56,7 @@ pub fn append_allow_rule(path: &Path, rule: &str) -> io::Result<()> {
     }
     allow.push(rule);
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    write_atomically(path, doc.to_string().as_bytes())
+    crate::owner_only::write_atomic_keeping_mode(path, doc.to_string().as_bytes())
 }
 
 /// Sets `[model] model` in the settings file at `path` to `reference` (`<account>/<model>`).
@@ -79,6 +77,7 @@ pub fn set_theme(path: &Path, name: ThemeName) -> io::Result<()> {
 /// Sets `table.key` to a string, creating the file and the table as needed and touching nothing
 /// else in the file.
 fn set_string(path: &Path, table: &str, key: &str, value: &str) -> io::Result<()> {
+    let _lock = locked(path)?;
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
@@ -92,16 +91,14 @@ fn set_string(path: &Path, table: &str, key: &str, value: &str) -> io::Result<()
         .as_table_like_mut()
         .ok_or_else(|| invalid(format!("`{table}` in the settings file is not a table")))?;
     section.insert(key, toml_edit::value(value));
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    write_atomically(path, doc.to_string().as_bytes())
+    crate::owner_only::write_atomic_keeping_mode(path, doc.to_string().as_bytes())
 }
 
 /// Adds `[accounts.<name>]` with the account's `kind` and, when set, `base_url` to the settings
 /// file at `path`, creating the file as needed. An existing table of that name is never
 /// overwritten: it is an `AlreadyExists` error.
 pub fn add_account(path: &Path, name: &str, account: &Account) -> io::Result<()> {
+    let _lock = locked(path)?;
     let mut doc = read_document(path)?;
     if doc.get("accounts").is_none() {
         let mut accounts = Table::new();
@@ -129,6 +126,7 @@ pub fn add_account(path: &Path, name: &str, account: &Account) -> io::Result<()>
 /// Removes `[accounts.<name>]` from the settings file at `path`. `false` when the file has no
 /// such table, in which case it is not written.
 pub fn remove_account(path: &Path, name: &str) -> io::Result<bool> {
+    let _lock = locked(path)?;
     let mut doc = read_document(path)?;
     let Some(accounts) = doc.get_mut("accounts").and_then(Item::as_table_like_mut) else {
         return Ok(false);
@@ -177,6 +175,12 @@ pub fn model_key_naming(path: &Path, name: &str) -> io::Result<Option<&'static s
         .map(|(k, _)| k))
 }
 
+/// Serializes read-modify-write of the settings file across sessions; held until the edit is
+/// written.
+fn locked(path: &Path) -> io::Result<crate::file_lock::FileLock> {
+    crate::file_lock::lock(path)
+}
+
 fn read_document(path: &Path) -> io::Result<DocumentMut> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -187,31 +191,7 @@ fn read_document(path: &Path) -> io::Result<DocumentMut> {
 }
 
 fn write_document(path: &Path, doc: &DocumentMut) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    write_atomically(path, doc.to_string().as_bytes())
-}
-
-/// Replaces `path` through a same-directory rename so a crash or full disk cannot leave the
-/// settings file truncated, which would parse as valid TOML and silently drop its deny rules.
-fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write;
-    // Rename onto the link's target, or the link itself would be replaced by a regular file.
-    let resolved = std::fs::canonicalize(path).ok();
-    let path = resolved.as_deref().unwrap_or(path);
-    let dir = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-    tmp.write_all(bytes)?;
-    tmp.as_file().sync_all()?;
-    if let Ok(meta) = std::fs::metadata(path) {
-        std::fs::set_permissions(tmp.path(), meta.permissions())?;
-    }
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
+    crate::owner_only::write_atomic_keeping_mode(path, doc.to_string().as_bytes())
 }
 
 #[cfg(test)]
@@ -289,7 +269,31 @@ mod tests {
         assert!(
             text.contains("deny = [\"shell(rm)\"]") && text.contains("allow = [\"shell(ls)\"]")
         );
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        let mut names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["config.lock", "config.toml"]);
+    }
+
+    #[test]
+    fn concurrent_edits_of_one_file_all_land() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[permissions]\ndeny = [\"shell(rm)\"]\n").unwrap();
+        let rules: Vec<String> = (0..8).map(|i| format!("shell(cmd{i})")).collect();
+        std::thread::scope(|scope| {
+            for rule in &rules {
+                let path = &path;
+                scope.spawn(move || append_allow_rule(path, rule).unwrap());
+            }
+        });
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("deny = [\"shell(rm)\"]"), "{text}");
+        for rule in &rules {
+            assert!(text.contains(rule.as_str()), "{rule} missing from {text}");
+        }
     }
 
     #[test]
