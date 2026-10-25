@@ -110,7 +110,15 @@ fn concurrent_atomic_writes_to_one_path_leave_one_complete_file() {
             let path = &path;
             scope.spawn(move || {
                 for _ in 0..20 {
-                    owner_only::write_atomic(path, format!("writer {i}").as_bytes()).unwrap();
+                    let written = owner_only::write_atomic(path, format!("writer {i}").as_bytes());
+                    // Windows refuses a rename onto a file a racing replacer is mid-rename on;
+                    // the loser must fail cleanly, which the checks below verify.
+                    if let Err(e) = written {
+                        assert!(
+                            cfg!(windows) && e.kind() == std::io::ErrorKind::PermissionDenied,
+                            "{e}"
+                        );
+                    }
                 }
             });
         }
