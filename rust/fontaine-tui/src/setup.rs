@@ -22,17 +22,20 @@ use ratatui::crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, KeyCode, KeyEventKind, KeyModifiers,
 };
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
+use crate::accessibility::Source;
 use crate::app::Input;
+use crate::linear::{OverlayEcho, crlf, echo_diff_after, flatten_all, is_field_line};
 use crate::model_picker::{Group, ModelPicker, PickerKey, PickerPurpose};
 use crate::provider_dialog::{
     DialogKey, Outcome, ProviderDialog, Secret, log_out_summary, sign_in_failure,
     stored_key_summary,
 };
+use crate::theme::Theme;
 use crate::view::draw_overlay;
 
 /// A terminal backend whose errors can become `io::Error`s.
@@ -51,6 +54,8 @@ pub struct SetupParams {
     pub session_id: String,
     /// The user settings file accounts and the model choice are written to.
     pub user_file: PathBuf,
+    /// Print the setup as plain labelled lines instead of drawing it.
+    pub screen_reader: Option<Source>,
 }
 
 /// Where the setup went.
@@ -60,9 +65,94 @@ enum Step {
     Start(Box<(Models, Config)>),
 }
 
-struct Io<B: SetupBackend> {
-    terminal: Terminal<B>,
+/// Where the setup is shown: drawn on a terminal, or printed as lines.
+trait Surface {
+    fn show(&mut self, setup: &Setup) -> io::Result<()>;
+}
+
+struct Drawn<B: SetupBackend>(Terminal<B>);
+
+impl<B: SetupBackend> Surface for Drawn<B> {
+    fn show(&mut self, setup: &Setup) -> io::Result<()> {
+        self.0
+            .draw(|frame| setup.draw(frame))
+            .map_err(io::Error::other)?;
+        Ok(())
+    }
+}
+
+/// Prints the banner and the dialog, each only where it changed since it was last printed.
+struct Printed<W: io::Write> {
+    out: W,
+    banner: OverlayEcho,
+    dialog: OverlayEcho,
+    /// The text shown after the field's prompt, when a field prompt is the open line.
+    echoed: Option<String>,
+}
+
+impl<W: io::Write> Surface for Printed<W> {
+    fn show(&mut self, setup: &Setup) -> io::Result<()> {
+        // Wide and tall enough that nothing is wrapped or cut: the terminal wraps for itself.
+        let view = setup.view(1000, 1000);
+        let mut lines = self
+            .banner
+            .update("setup", None, flatten_all(&view.banner))
+            .lines;
+        let mut body = view.body;
+        body.extend(view.footer);
+        let mut shown = flatten_all(&body);
+        if let Some((prefix, _)) = &view.field {
+            shown.retain(|line| !is_field_line(line, prefix.trim_end()));
+        }
+        lines.extend(self.dialog.update(view.title, None, shown).lines);
+
+        let mut out = String::new();
+        if !lines.is_empty()
+            && let Some(echoed) = self.echoed.take()
+        {
+            // A bare prompt is overwritten; typed text is left and the output starts below.
+            out.push_str(if echoed.is_empty() {
+                "\r\x1b[2K"
+            } else {
+                "\r\n"
+            });
+        }
+        for line in lines {
+            out.push_str(&line);
+            out.push_str("\r\n");
+        }
+        match (view.field, self.echoed.take()) {
+            (Some((prefix, text)), Some(old)) => {
+                out.push_str(&echo_diff_after(prefix, &old, &text));
+                self.echoed = Some(text);
+            }
+            (Some((prefix, text)), None) => {
+                out.push_str(prefix);
+                let text = crate::linear::echo_text(&text);
+                out.push_str(&crlf(&text));
+                self.echoed = Some(text);
+            }
+            (None, Some(_)) => out.push_str("\r\n"),
+            (None, None) => {}
+        }
+        self.out.write_all(out.as_bytes())?;
+        self.out.flush()
+    }
+}
+
+struct Io<S: Surface> {
+    surface: S,
     input: UnboundedReceiver<Input>,
+}
+
+/// What the setup shows: the banner above the dialog, and the dialog's parts.
+struct View {
+    banner: Vec<Line<'static>>,
+    title: &'static str,
+    body: Vec<Line<'static>>,
+    footer: Vec<Line<'static>>,
+    /// The text field the dialog has open: its prompt and what is typed.
+    field: Option<(&'static str, String)>,
 }
 
 struct Setup {
@@ -84,7 +174,13 @@ struct Setup {
 /// Runs the setup on the real terminal. `None` is the human leaving it, in which case the caller
 /// reports the original error. The returned configuration has the accounts that were added.
 pub async fn run(params: SetupParams) -> io::Result<Option<(Models, Config)>> {
-    let terminal = ratatui::try_init()?;
+    let linear = params.screen_reader.is_some();
+    let terminal = if linear {
+        ratatui::crossterm::terminal::enable_raw_mode()?;
+        None
+    } else {
+        Some(ratatui::try_init()?)
+    };
     let _ = ratatui::crossterm::execute!(io::stdout(), EnableBracketedPaste);
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -98,12 +194,19 @@ pub async fn run(params: SetupParams) -> io::Result<Option<(Models, Config)>> {
         tokio::task::spawn_blocking(move || crate::read_terminal(&tx, &stop))
     };
 
-    let result = drive(params, terminal, input).await;
+    let result = match terminal {
+        Some(terminal) => drive(params, terminal, input).await,
+        None => drive_linear(params, io::stdout(), input).await,
+    };
 
     stop.store(true, Ordering::Relaxed);
     let _ = reader.await;
     let _ = ratatui::crossterm::execute!(io::stdout(), DisableBracketedPaste);
-    ratatui::restore();
+    if linear {
+        let _ = ratatui::crossterm::terminal::disable_raw_mode();
+    } else {
+        ratatui::restore();
+    }
     result
 }
 
@@ -111,6 +214,30 @@ pub async fn run(params: SetupParams) -> io::Result<Option<(Models, Config)>> {
 pub async fn drive<B: SetupBackend>(
     params: SetupParams,
     terminal: Terminal<B>,
+    input: UnboundedReceiver<Input>,
+) -> io::Result<Option<(Models, Config)>> {
+    run_setup(params, Drawn(terminal), input).await
+}
+
+/// The setup printed as plain lines to `out`, for a screen reader. Line endings are `\r\n`
+/// because the terminal is in raw mode.
+pub async fn drive_linear<W: io::Write>(
+    params: SetupParams,
+    out: W,
+    input: UnboundedReceiver<Input>,
+) -> io::Result<Option<(Models, Config)>> {
+    let surface = Printed {
+        out,
+        banner: OverlayEcho::default(),
+        dialog: OverlayEcho::default(),
+        echoed: None,
+    };
+    run_setup(params, surface, input).await
+}
+
+async fn run_setup<S: Surface>(
+    params: SetupParams,
+    surface: S,
     input: UnboundedReceiver<Input>,
 ) -> io::Result<Option<(Models, Config)>> {
     let rows = accounts::rows(&params.config, &params.dirs.data, &*params.env)
@@ -129,7 +256,7 @@ pub async fn drive<B: SetupBackend>(
         status: None,
         warnings: Vec::new(),
     };
-    let step = setup.drive(&mut Io { terminal, input }).await?;
+    let step = setup.drive(&mut Io { surface, input }).await?;
     Ok(match step {
         Step::Start(started) => Some(*started),
         Step::Stay | Step::Quit => None,
@@ -148,21 +275,16 @@ impl Setup {
         }
     }
 
-    fn redraw<B: SetupBackend>(&self, io: &mut Io<B>) -> io::Result<()> {
-        io.terminal
-            .draw(|frame| self.draw(frame))
-            .map_err(io::Error::other)?;
-        Ok(())
+    fn redraw<S: Surface>(&self, io: &mut Io<S>) -> io::Result<()> {
+        io.surface.show(self)
     }
 
-    fn draw(&self, frame: &mut Frame) {
-        let area = frame.area();
-        let width = usize::from(area.width.saturating_sub(2)).max(1);
+    fn banner(&self, theme: &Theme) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let dim = Style::default().add_modifier(Modifier::DIM);
         let mut banner = vec![Line::styled(
             "No model is ready yet",
-            bold.fg(Color::Yellow),
+            bold.fg(theme.heading),
         )];
         banner.extend(self.error.lines().map(|l| Line::raw(l.to_string())));
         banner.push(Line::styled(
@@ -172,6 +294,46 @@ impl Setup {
         if let Some(status) = &self.status {
             banner.push(Line::styled(status.clone(), dim));
         }
+        banner
+    }
+
+    /// `rows` is how many rows the dialog body may use.
+    fn dialog(
+        &self,
+        width: usize,
+        rows: usize,
+        theme: &Theme,
+    ) -> (&'static str, Vec<Line<'static>>, Vec<Line<'static>>) {
+        match &self.picker {
+            Some(picker) => ("model", picker.body(width, rows, theme), picker.footer()),
+            None => (
+                "providers",
+                self.dialog.body(width, rows, theme),
+                self.dialog.footer(),
+            ),
+        }
+    }
+
+    fn view(&self, width: usize, rows: usize) -> View {
+        let theme = Theme::preset(self.config.tui.theme);
+        let (title, body, footer) = self.dialog(width, rows, &theme);
+        View {
+            banner: self.banner(&theme),
+            title,
+            body,
+            footer,
+            field: match &self.picker {
+                Some(picker) => Some(picker.field()),
+                None => self.dialog.field(),
+            },
+        }
+    }
+
+    fn draw(&self, frame: &mut Frame) {
+        let area = frame.area();
+        let width = usize::from(area.width.saturating_sub(2)).max(1);
+        let theme = Theme::preset(self.config.tui.theme);
+        let banner = self.banner(&theme);
         let wrapped: usize = banner
             .iter()
             .map(|l| l.width().div_ceil(usize::from(area.width).max(1)).max(1))
@@ -184,14 +346,7 @@ impl Setup {
         frame.render_widget(Paragraph::new(banner).wrap(Wrap { trim: false }), top);
 
         let rows = usize::from(rest.height).saturating_sub(4).max(1);
-        let (title, body, footer) = match &self.picker {
-            Some(picker) => ("model", picker.body(width, rows), picker.footer()),
-            None => (
-                "providers",
-                self.dialog.body(width, rows),
-                self.dialog.footer(),
-            ),
-        };
+        let (title, body, footer) = self.dialog(width, rows, &theme);
         let height = u16::try_from(body.len() + footer.len() + 2)
             .unwrap_or(u16::MAX)
             .min(rest.height);
@@ -200,7 +355,7 @@ impl Setup {
         draw_overlay(frame, dialog, title, body, footer);
     }
 
-    async fn drive<B: SetupBackend>(&mut self, io: &mut Io<B>) -> io::Result<Step> {
+    async fn drive<S: Surface>(&mut self, io: &mut Io<S>) -> io::Result<Step> {
         loop {
             self.redraw(io)?;
             let Some(event) = io.input.recv().await else {
@@ -248,9 +403,9 @@ impl Setup {
     }
 
     /// Resolves the model again. A success is the end of the setup; a failure shows its error.
-    async fn retry<B: SetupBackend>(
+    async fn retry<S: Surface>(
         &mut self,
-        io: &mut Io<B>,
+        io: &mut Io<S>,
     ) -> io::Result<Option<Box<(Models, Config)>>> {
         self.status = Some("checking the model…".to_string());
         self.redraw(io)?;
@@ -275,11 +430,7 @@ impl Setup {
         })
     }
 
-    async fn pick<B: SetupBackend>(
-        &mut self,
-        io: &mut Io<B>,
-        reference: String,
-    ) -> io::Result<Step> {
+    async fn pick<S: Surface>(&mut self, io: &mut Io<S>, reference: String) -> io::Result<Step> {
         if let Err(e) = user_config::set_model(&self.user_file, &reference) {
             self.warnings.push(format!(
                 "could not save {reference} as your model in {}: {e}",
@@ -295,9 +446,9 @@ impl Setup {
     }
 
     /// Carries out what the dialog asked for, and what its answer asks for in turn.
-    async fn request<B: SetupBackend>(
+    async fn request<S: Surface>(
         &mut self,
-        io: &mut Io<B>,
+        io: &mut Io<S>,
         mut request: DialogKey,
     ) -> io::Result<Step> {
         loop {
@@ -369,9 +520,9 @@ impl Setup {
         }
     }
 
-    async fn store_key<B: SetupBackend>(
+    async fn store_key<S: Surface>(
         &mut self,
-        io: &mut Io<B>,
+        io: &mut Io<S>,
         account: &str,
         key: Secret,
     ) -> io::Result<After> {
@@ -391,9 +542,9 @@ impl Setup {
 
     /// A key stored or a sign-in done: the model is resolved again, and the dialog told. The
     /// session starts here when it resolves and the human has no model to choose.
-    async fn logged_in<B: SetupBackend>(
+    async fn logged_in<S: Surface>(
         &mut self,
-        io: &mut Io<B>,
+        io: &mut Io<S>,
         account: &str,
         summary: String,
     ) -> io::Result<After> {
@@ -407,7 +558,7 @@ impl Setup {
         })))
     }
 
-    async fn sign_in<B: SetupBackend>(&mut self, io: &mut Io<B>, name: &str) -> io::Result<After> {
+    async fn sign_in<S: Surface>(&mut self, io: &mut Io<S>, name: &str) -> io::Result<After> {
         let Some(account) = self.config.accounts.get(name).cloned() else {
             return Ok(After::Ask(
                 self.dialog
@@ -461,11 +612,7 @@ impl Setup {
         }
     }
 
-    async fn open_picker<B: SetupBackend>(
-        &mut self,
-        io: &mut Io<B>,
-        account: &str,
-    ) -> io::Result<()> {
+    async fn open_picker<S: Surface>(&mut self, io: &mut Io<S>, account: &str) -> io::Result<()> {
         self.status = Some(format!("listing the models of {account}…"));
         self.redraw(io)?;
         let switcher = Switcher::new(

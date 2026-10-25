@@ -5,7 +5,7 @@ use std::path::Path;
 
 use common::{World, write};
 use fontaine_core::config::{
-    AccountKind, Column, ConfigError, GuardianProfile, PermissionMode, parse_settings,
+    AccountKind, Column, ConfigError, GuardianProfile, PermissionMode, ThemeName, parse_settings,
 };
 use fontaine_core::permission_rules::SourcedRule;
 
@@ -95,6 +95,41 @@ fn scalar_precedence_is_cli_then_project_local_then_project_then_user() {
         w.load().unwrap().permissions.default_mode,
         Some(PermissionMode::AcceptEdits)
     );
+}
+
+#[test]
+fn tui_defaults_parse_and_merge_cli_over_user() {
+    let w = World::new();
+    let c = w.load().unwrap();
+    assert_eq!(c.tui.theme, ThemeName::DarkAnsi);
+    assert_eq!(c.tui.screen_reader, None);
+
+    w.user_file("[tui]\ntheme = \"light-daltonized\"\nscreen_reader = false\n");
+    let c = w.load().unwrap();
+    assert_eq!(c.tui.theme, ThemeName::LightDaltonized);
+    assert_eq!(c.tui.screen_reader, Some(false));
+
+    let cli = w.cli_file("[tui]\ntheme = \"dark\"\n");
+    let c = w.load_with_settings(&cli).unwrap();
+    assert_eq!(c.tui.theme, ThemeName::Dark);
+    assert_eq!(c.tui.screen_reader, Some(false));
+}
+
+#[test]
+fn an_unknown_theme_name_is_rejected() {
+    assert!(
+        parse_settings(
+            "[tui]\ntheme = \"solarized\"\n",
+            Path::new("u.toml"),
+            Column::User
+        )
+        .is_err()
+    );
+    assert_eq!(ThemeName::parse("dark-ansi"), Some(ThemeName::DarkAnsi));
+    assert_eq!(ThemeName::parse("nope"), None);
+    for name in ThemeName::ALL {
+        assert_eq!(ThemeName::parse(name.as_str()), Some(name));
+    }
 }
 
 #[test]
@@ -542,6 +577,8 @@ fn absent_files_load_as_empty() {
 /// separately because the table differs per column.
 const NO_FOR_PROJECT: &[(&str, &str)] = &[
     ("accounts", "[accounts.x]\nkind = \"ollama\"\n"),
+    ("tui.theme", "[tui]\ntheme = \"dark\"\n"),
+    ("tui.screen_reader", "[tui]\nscreen_reader = true\n"),
     ("model.model", "[model]\nmodel = \"a/b\"\n"),
     ("guardian.model", "[guardian]\nmodel = \"a/b\"\n"),
     ("guardian.profile", "[guardian]\nprofile = \"minimal\"\n"),
@@ -607,6 +644,8 @@ const NO_FOR_PROJECT: &[(&str, &str)] = &[
 /// Rejected from project-local (untracked) too, a subset of the project column.
 const NO_FOR_LOCAL: &[(&str, &str)] = &[
     ("accounts", "[accounts.x]\nkind = \"ollama\"\n"),
+    ("tui.theme", "[tui]\ntheme = \"dark\"\n"),
+    ("tui.screen_reader", "[tui]\nscreen_reader = true\n"),
     (
         "default_mode plan",
         "[permissions]\ndefault_mode = \"plan\"\n",
@@ -809,9 +848,14 @@ max_parallel = 3
 
 [shell_preclassifier]
 allow_extra = ["tree"]
+
+[tui]
+theme = "light"
+screen_reader = true
 "#,
     );
     let c = w.load_with_settings(&cli).unwrap();
+    assert_eq!(c.tui.theme, ThemeName::Light);
     assert_eq!(c.permissions.default_mode, Some(PermissionMode::Plan));
     assert_eq!(c.guardian.model.as_deref(), Some("a/g"));
 }

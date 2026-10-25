@@ -21,6 +21,8 @@ use fontaine_core::tools;
 use fontaine_core::trust;
 use fontaine_core::workspace::{self, RootSource};
 use fontaine_tools::git_bash::GitBash;
+use fontaine_tui::accessibility;
+use fontaine_tui::theme::Theme;
 use rig_core::schemars::Schema;
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -140,6 +142,29 @@ fn trust_summary(config: &Config) -> fontaine_tui::trust_prompt::Summary {
     }
 }
 
+/// Whether screen-reader mode is on, from the flag, the environment and the settings. The
+/// confirmation is printed here, before the terminal changes mode.
+fn screen_reader_mode(cli: &Cli, config: &Config, host: &Host) -> Option<accessibility::Source> {
+    let env = (host.env)(accessibility::ENV_VAR).map(|v| v.to_string_lossy().into_owned());
+    if let Some(value) = env.as_deref()
+        && !accessibility::env_is_valid(value)
+    {
+        eprintln!(
+            "fontaine: warning: {}={value} is ignored; use 1 to turn screen-reader mode on or 0 to keep it off",
+            accessibility::ENV_VAR
+        );
+    }
+    let source = accessibility::resolve(
+        cli.ax_screen_reader,
+        env.as_deref(),
+        config.tui.screen_reader,
+    );
+    if let Some(source) = source {
+        println!("{}", source.announcement());
+    }
+    source
+}
+
 pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
@@ -174,11 +199,21 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     if !cli.print && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         return usage("the interactive UI needs a terminal; use `fontaine -p` for scripted runs");
     }
+    let screen_reader = if cli.print {
+        None
+    } else {
+        screen_reader_mode(&cli, &config, &host)
+    };
     // The interactive UI asks before anything the repository defines may run. A headless run
     // loads it without asking, as Claude Code's `-p` does.
     let mut project_executables = true;
     if !cli.print && !trust::is_trusted(&dirs.data, &config.workspace) {
-        match fontaine_tui::trust_prompt::ask(&config.workspace, &trust_summary(&config)) {
+        match fontaine_tui::trust_prompt::ask(
+            &config.workspace,
+            &trust_summary(&config),
+            Theme::preset(config.tui.theme),
+            screen_reader,
+        ) {
             Ok(fontaine_tui::trust_prompt::Choice::Trust) => {
                 if let Err(e) = trust::record(&dirs.data, &config.workspace) {
                     eprintln!("fontaine: could not save the trust decision: {e}");
@@ -233,7 +268,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
         Ok(runtime) => runtime.block_on(async {
             match headless {
                 Some(options) => run_headless(&cli, options, prep, &config, &dirs, &host).await,
-                None => run_interactive(&cli, prep, &config, &dirs, &host).await,
+                None => run_interactive(&cli, prep, &config, &dirs, &host, screen_reader).await,
             }
         }),
         Err(e) => {
@@ -630,6 +665,7 @@ async fn run_interactive(
     config: &Config,
     dirs: &Dirs,
     host: &Host,
+    screen_reader: Option<accessibility::Source>,
 ) -> u8 {
     let resolved = models::resolve(&ResolveParams {
         config,
@@ -651,6 +687,7 @@ async fn run_interactive(
                 model_override: cli.model.clone(),
                 session_id: prep.session.id.clone(),
                 user_file: dirs.config.join(config::USER_FILE),
+                screen_reader,
             };
             match fontaine_tui::setup::run(params).await {
                 Ok(Some((models, config))) => (models, Some(config)),
@@ -682,7 +719,7 @@ async fn run_interactive(
     };
     let scanner = start_scanner(&launch, &prep, &models).await;
     let setup = agent_setup(&launch, prep, models, scanner, false, None);
-    match fontaine_tui::run(setup, host.cwd.clone()).await {
+    match fontaine_tui::run(setup, host.cwd.clone(), screen_reader).await {
         Ok(()) => 0,
         Err(message) => {
             eprintln!("fontaine: {message}");

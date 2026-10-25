@@ -1349,3 +1349,148 @@ async fn clear_with_a_name_and_context_with_a_bad_argument_are_errors() {
     .await;
     assert!(!w.ledger_text().contains("context_cleared"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn theme_lists_the_themes_and_marks_the_current_one() {
+    let w = World::new(vec![]);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/theme");
+        ui.wait_for("dark-ansi (current)").await;
+        let screen = ui.screen();
+        for name in [
+            "light-ansi",
+            "dark-daltonized",
+            "light-daltonized",
+            "dark,",
+            "light,",
+        ] {
+            assert!(screen.contains(name), "{name} missing from\n{screen}");
+        }
+        assert!(
+            screen.contains("config.toml"),
+            "the file is named:\n{screen}"
+        );
+    })
+    .await;
+    assert!(
+        !w.user_config.exists()
+            || !std::fs::read_to_string(&w.user_config)
+                .unwrap()
+                .contains("[tui]")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn theme_switches_and_saves_the_choice() {
+    let w = World::new(vec![]).with_config("# mine\n[model]\nmodel = \"a/b\"\n");
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/theme light-daltonized");
+        ui.wait_for("theme is now light-daltonized (saved to your settings)")
+            .await;
+        ui.send("/theme");
+        ui.wait_for("light-daltonized (current)").await;
+        assert!(!ui.screen().contains("dark-ansi (current)"));
+    })
+    .await;
+    let saved = std::fs::read_to_string(&w.user_config).unwrap();
+    assert!(saved.contains("# mine"), "{saved}");
+    assert!(
+        saved.contains("[tui]\ntheme = \"light-daltonized\""),
+        "{saved}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_theme_is_an_error_and_changes_nothing() {
+    let w = World::new(vec![]);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/theme solarized");
+        ui.wait_for("unknown theme `solarized`").await;
+        assert!(ui.screen().contains("light-daltonized"));
+        ui.send("/theme");
+        ui.wait_for("dark-ansi (current)").await;
+    })
+    .await;
+    assert!(!w.user_config.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_user_file_the_theme_applies_for_this_session_only() {
+    let mut w = World::new(vec![]);
+    w.without_user_config = true;
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/theme");
+        ui.wait_for("not saved").await;
+        ui.send("/theme dark");
+        ui.wait_for("theme is now dark for this session only").await;
+        ui.send("/theme");
+        ui.wait_for("dark (current)").await;
+    })
+    .await;
+    assert!(!w.user_config.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_configured_theme_is_the_one_in_force() {
+    let w = World::new(vec![]).with_config("[tui]\ntheme = \"light\"\n");
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/theme");
+        ui.wait_for("light (current)").await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_with_an_approval_reads_as_labelled_lines_in_screen_reader_mode() {
+    let w = World::new(vec![
+        tool_turn(
+            "c1",
+            "write",
+            json!({"path": "notes.txt", "content": "hello"}),
+        ),
+        text_turn("all done"),
+    ]);
+    let bytes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    w.run_linear(bytes.clone(), |ui| async move {
+        ui.send("make a note");
+        ui.wait_for_prompt("Permission Required:").await;
+        ui.press(KeyCode::Char('y'));
+        ui.wait_for("assistant: all done").await;
+        // The turn is over once the bell has sounded for it.
+        ui.wait_until("the second bell", |s| s.matches('\x07').count() >= 2)
+            .await;
+    })
+    .await;
+    let out = String::from_utf8(bytes.borrow().clone()).unwrap();
+    for needle in [
+        "you: make a note",
+        "Permission Required:",
+        "selected: [y] allow once",
+        "— done",
+        "assistant: all done",
+    ] {
+        assert!(out.contains(needle), "{needle} missing from\n{out:?}");
+    }
+    assert!(out.contains("tool: write"), "{out:?}");
+    assert!(out.contains('\x07'), "{out:?}");
+    assert!(
+        out.chars().all(|c| !('\u{2500}'..='\u{257f}').contains(&c)),
+        "box drawing in {out:?}"
+    );
+    let bytes = out.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        assert!(
+            *b != b'\n' || (i > 0 && bytes[i - 1] == b'\r'),
+            "bare \\n in {out:?}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(w.work.join("notes.txt")).unwrap(),
+        "hello"
+    );
+}

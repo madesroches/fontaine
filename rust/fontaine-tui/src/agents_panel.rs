@@ -5,10 +5,11 @@
 
 use fontaine_agents::runner::ChildStatus;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 
 use crate::input::wrap;
+use crate::theme::Theme;
 
 /// One row, as the driver reads it from the agent tree.
 #[derive(Clone, Debug, PartialEq)]
@@ -140,7 +141,7 @@ impl AgentsPanel {
         PanelKey::None
     }
 
-    pub fn body(&self, width: usize) -> Vec<Line<'static>> {
+    pub fn body(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let dim = Style::default().add_modifier(Modifier::DIM);
         if self.rows.is_empty() {
@@ -149,9 +150,9 @@ impl AgentsPanel {
         if self.open
             && let Some(detail) = &self.detail
         {
-            return self.detail_lines(detail, width);
+            return self.detail_lines(detail, width, theme);
         }
-        let mut out = vec![Line::styled("Subagents", bold.fg(Color::Yellow))];
+        let mut out = vec![Line::styled("Subagents", bold.fg(theme.heading))];
         for (i, row) in self.rows.iter().enumerate() {
             let marker = if i == self.selected { ">" } else { " " };
             let indent = "  ".repeat(row.depth.saturating_sub(1));
@@ -182,12 +183,12 @@ impl AgentsPanel {
         out
     }
 
-    fn detail_lines(&self, detail: &Detail, width: usize) -> Vec<Line<'static>> {
+    fn detail_lines(&self, detail: &Detail, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let dim = Style::default().add_modifier(Modifier::DIM);
         let mut out = vec![Line::styled(
             format!("{} in detail", detail.id),
-            bold.fg(Color::Yellow),
+            bold.fg(theme.heading),
         )];
         let mut section = |title: &str, items: &[String], empty: &str| {
             out.push(Line::styled(title.to_string(), bold));
@@ -247,7 +248,7 @@ mod tests {
         let mut panel = AgentsPanel::new();
         panel.set_rows(vec![row("agent-1", ChildStatus::Killed)]);
         let text: String = panel
-            .body(80)
+            .body(80, &Theme::default())
             .iter()
             .map(|l| l.to_string())
             .collect::<Vec<_>>()

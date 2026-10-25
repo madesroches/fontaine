@@ -6,11 +6,12 @@ use std::time::{Duration, Instant};
 
 use fontaine_core::permissions::{Answer, ApprovalRequest, Offers};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use tokio::sync::oneshot;
 
 use crate::input::{InputBuffer, wrap};
+use crate::theme::Theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
@@ -53,10 +54,12 @@ pub fn choices(offers: Offers) -> Vec<Choice> {
     out
 }
 
-const FEEDBACK_PREFIX: &str = "Reason (optional, Enter to deny, Esc to go back): ";
+pub(crate) const FEEDBACK_PREFIX: &str = "Reason (optional, Enter to deny, Esc to go back): ";
 
 pub struct Approval {
     pub request: ApprovalRequest,
+    /// Tells this prompt from any other, even one for an identical call. The app assigns it.
+    pub id: u64,
     reply: Option<oneshot::Sender<Answer>>,
     choices: Vec<Choice>,
     selected: usize,
@@ -79,6 +82,7 @@ impl Approval {
         Approval {
             choices: choices(request.offers),
             request,
+            id: 0,
             reply: Some(reply),
             selected: 0,
             feedback: None,
@@ -110,6 +114,11 @@ impl Approval {
         self.feedback
             .as_ref()
             .map(|f| FEEDBACK_PREFIX.chars().count() + f.text().chars().count())
+    }
+
+    /// The deny-reason field while it is open: its prompt and what is typed.
+    pub fn field(&self) -> Option<(&'static str, String)> {
+        self.feedback.as_ref().map(|f| (FEEDBACK_PREFIX, f.text()))
     }
 
     pub fn selected(&self) -> Choice {
@@ -210,7 +219,7 @@ impl Approval {
     }
 
     /// The question and the whole call, wrapped; the part that scrolls.
-    pub fn body(&self, width: usize) -> Vec<Line<'static>> {
+    pub fn body(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let who = match self.request.agent.as_str() {
             "" | fontaine_tools::gate::ROOT_AGENT => String::new(),
@@ -218,7 +227,7 @@ impl Approval {
         };
         let mut out = vec![Line::styled(
             format!("Allow {}{who}?", self.request.tool),
-            bold.fg(Color::Yellow),
+            bold.fg(theme.heading),
         )];
         for text in [&self.request.summary, &self.request.reason] {
             for line in text.lines() {

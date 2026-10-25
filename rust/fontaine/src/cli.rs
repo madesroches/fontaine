@@ -101,6 +101,11 @@ pub struct Cli {
     #[arg(long, value_name = "TEXT")]
     pub append_system_prompt: Option<String>,
 
+    /// Describe the interface as plain labelled lines for a screen reader, instead of drawing
+    /// it. Ignored by a headless run
+    #[arg(long)]
+    pub ax_screen_reader: bool,
+
     /// The task for a headless run
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
