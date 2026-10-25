@@ -15,8 +15,9 @@ pub(crate) enum Cell {
     If(fn(&toml::Value) -> bool),
 }
 
-/// A row matches the node at `path` exactly and covers everything beneath it. Map keys and array
-/// elements add no segment, so `env` covers every environment variable.
+/// A row matching a node stops the descent, so it covers the whole subtree (`env` covers every
+/// environment variable). Map keys add a segment, so a row cannot name a node below a map; array
+/// elements add none.
 pub(crate) struct Rule {
     pub path: &'static str,
     pub project: Cell,
