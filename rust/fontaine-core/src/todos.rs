@@ -16,8 +16,7 @@ pub const TODOS_FILE: &str = "todos.json";
 
 pub struct SessionTodos {
     path: PathBuf,
-    // The file is written under this lock: write_atomic's temp name is per process, so two
-    // concurrent writers would race on it.
+    // Orders concurrent in-memory updates with their saves, so the file never lags a newer list.
     state: Mutex<State>,
 }
 

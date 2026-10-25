@@ -1277,6 +1277,9 @@ impl AgentRuntime {
         .await
         .unwrap_or_default();
         self.set_files(index.paths.clone());
+        if let Some(message) = trust::unreadable(&self.setup.data_dir) {
+            self.approver.warn(&message);
+        }
         let trusted = trust::is_trusted(&self.setup.data_dir, &self.config.workspace);
         self.append(Record::SessionStart {
             session_id: self.session.id.clone(),

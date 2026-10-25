@@ -100,3 +100,66 @@ fn an_atomic_write_replaces_the_content_and_stays_owner_only() {
         .count();
     assert_eq!(leftovers, 0);
 }
+
+#[test]
+fn concurrent_atomic_writes_to_one_path_leave_one_complete_file() {
+    let w = World::new();
+    let path = w.root.join("shared.txt");
+    std::thread::scope(|scope| {
+        for i in 0..8 {
+            let path = &path;
+            scope.spawn(move || {
+                for _ in 0..20 {
+                    owner_only::write_atomic(path, format!("writer {i}").as_bytes()).unwrap();
+                }
+            });
+        }
+    });
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.starts_with("writer "), "{text}");
+    let leftovers: Vec<_> = std::fs::read_dir(&w.root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_atomic_write_through_a_symlink_replaces_the_target_and_keeps_the_link() {
+    let w = World::new();
+    let target = w.root.join("target.txt");
+    let link = w.root.join("link.txt");
+    std::fs::write(&target, b"old").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    owner_only::write_atomic(&link, b"new").unwrap();
+    assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+    assert_eq!(std::fs::read(&target).unwrap(), b"new");
+}
+
+#[cfg(unix)]
+#[test]
+fn keeping_the_mode_preserves_it_while_write_atomic_tightens_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = World::new();
+    let path = w.root.join("doc.toml");
+    std::fs::write(&path, b"old").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    owner_only::write_atomic_keeping_mode(&path, b"kept").unwrap();
+    assert_eq!(mode(&path), 0o644);
+    assert_eq!(std::fs::read(&path).unwrap(), b"kept");
+    owner_only::write_atomic(&path, b"tight").unwrap();
+    assert_eq!(mode(&path), 0o600);
+}
+
+#[test]
+fn the_atomic_write_is_owner_only_from_the_start() {
+    let w = World::new();
+    let path = w.root.join("atomic.txt");
+    owner_only::write_atomic(&path, b"x").unwrap();
+    #[cfg(unix)]
+    assert_eq!(mode(&path), 0o600);
+    #[cfg(windows)]
+    common::assert_current_user_only(&path);
+}

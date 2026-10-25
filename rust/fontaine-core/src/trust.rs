@@ -60,14 +60,31 @@ pub fn toml_literal(value: &str) -> String {
     }
 }
 
-/// `None` when the file is unreadable or unparseable; a missing file is an empty record.
-fn read_file(data_dir: &Path) -> Option<TrustFile> {
+/// The error is one line: toml's own rendering quotes the source line.
+fn load(data_dir: &Path) -> Result<TrustFile, String> {
     let text = match std::fs::read_to_string(trust_path(data_dir)) {
         Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Some(TrustFile::default()),
-        Err(_) => return None,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(TrustFile::default()),
+        Err(e) => return Err(fontaine_tools::error_chain::chain(&e)),
     };
-    toml::from_str(&text).ok()
+    toml::from_str(&text).map_err(|e: toml::de::Error| {
+        crate::config::bare_toml_message(&text, e.span(), e.message())
+    })
+}
+
+/// `None` when the file is unreadable or unparseable; a missing file is an empty record.
+fn read_file(data_dir: &Path) -> Option<TrustFile> {
+    load(data_dir).ok()
+}
+
+/// A one-line report when `trust.toml` exists but cannot be read or parsed, which leaves every
+/// workspace untrusted and every MCP server unapproved. `None` for a missing or valid file.
+pub fn unreadable(data_dir: &Path) -> Option<String> {
+    let cause = load(data_dir).err()?;
+    Some(format!(
+        "{} cannot be used ({cause}): no workspace is trusted and no MCP server approved until it is fixed or removed",
+        trust_path(data_dir).display(),
+    ))
 }
 
 fn read_entries(data_dir: &Path) -> Option<Vec<String>> {
@@ -87,6 +104,13 @@ fn canonical_root(root: &Path) -> Option<String> {
             .to_string_lossy()
             .into_owned(),
     )
+}
+
+fn lock(path: &Path) -> Result<crate::file_lock::FileLock, ConfigError> {
+    crate::file_lock::lock(path).map_err(|source| ConfigError::Write {
+        path: path.with_extension("lock"),
+        source,
+    })
 }
 
 /// Whether the user approved the repository-defined MCP server `name` with this definition
@@ -121,6 +145,7 @@ pub fn approve_server(
         path: root.to_path_buf(),
         source: io::Error::other("the root cannot be resolved"),
     })?;
+    let _lock = lock(&path)?;
     if server_approved(data_dir, Path::new(&root), name, digest) {
         return Ok(());
     }
@@ -142,8 +167,7 @@ pub fn approve_server(
         toml_literal(name),
         toml_literal(digest)
     ));
-    std::fs::create_dir_all(data_dir).map_err(write_err)?;
-    owner_only::write(&path, text.as_bytes()).map_err(write_err)
+    owner_only::write_atomic(&path, text.as_bytes()).map_err(write_err)
 }
 
 /// Records `root` (canonicalized) as trusted. Nothing but "trust" is persisted.
@@ -163,6 +187,7 @@ pub fn record(data_dir: &Path, root: &Path) -> Result<(), ConfigError> {
     })?;
     let root = root.to_string_lossy().into_owned();
 
+    let _lock = lock(&path)?;
     let existing = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
@@ -182,8 +207,7 @@ pub fn record(data_dir: &Path, root: &Path) -> Result<(), ConfigError> {
     }
     text.push_str(&format!("[[trusted]]\nroot = {}\n", toml_literal(&root)));
 
-    std::fs::create_dir_all(data_dir).map_err(write_err)?;
-    owner_only::write(&path, text.as_bytes()).map_err(write_err)
+    owner_only::write_atomic(&path, text.as_bytes()).map_err(write_err)
 }
 
 enum Boundary {

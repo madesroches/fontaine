@@ -157,25 +157,17 @@ fn parse(text: &str, path: PathBuf) -> Result<File, ConfigError> {
 /// Holds the exclusive lock on `<data_dir>/credentials.lock` until dropped. Every writer of
 /// `credentials.toml` takes it, so a rotated refresh token is never overwritten by a stale
 /// read-modify-write.
-pub struct Lock(std::fs::File);
-
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _ = self.0.unlock();
-    }
-}
+pub struct Lock(#[allow(dead_code)] crate::file_lock::FileLock);
 
 /// Blocks until the lock is held.
 pub fn lock(data_dir: &Path) -> Result<Lock, ConfigError> {
-    let path = data_dir.join("credentials.lock");
-    let write_err = |source| ConfigError::Write {
-        path: path.clone(),
-        source,
-    };
-    std::fs::create_dir_all(data_dir).map_err(write_err)?;
-    let file = crate::owner_only::open_lock(&path).map_err(write_err)?;
-    file.lock().map_err(write_err)?;
-    Ok(Lock(file))
+    let path = data_dir.join(CREDENTIALS_FILE);
+    crate::file_lock::lock(&path)
+        .map(Lock)
+        .map_err(|source| ConfigError::Write {
+            path: path.with_extension("lock"),
+            source,
+        })
 }
 
 /// Stores `secret` as the API key of account `name`, keeping every other entry. Read-modify-write

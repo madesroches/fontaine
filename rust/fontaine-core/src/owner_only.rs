@@ -37,26 +37,100 @@ pub fn write(path: &Path, contents: &[u8]) -> io::Result<()> {
 }
 
 /// Replaces the content of `path` all at once: a reader sees the old or the new content, and a
-/// failed write leaves the old file in place.
+/// failed write leaves the old file in place. The result is owner-only.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
-    let name = path
-        .file_name()
-        .map_or_else(Default::default, |n| n.to_owned());
-    let mut tmp_name = std::ffi::OsString::from(".");
-    tmp_name.push(name);
-    tmp_name.push(format!(".{}.tmp", std::process::id()));
-    let tmp = path.with_file_name(tmp_name);
-    let result = (|| {
-        let mut file = open(&tmp, false)?;
-        file.write_all(contents)?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    replace(path, Access::OwnerOnly, |file| file.write_all(contents))
+}
+
+/// [`write_atomic`] for a file that is the user's own document: an existing file keeps its
+/// permissions instead of being tightened to owner-only.
+pub fn write_atomic_keeping_mode(path: &Path, contents: &[u8]) -> io::Result<()> {
+    replace(path, Access::KeepExisting, |file| file.write_all(contents))
+}
+
+enum Access {
+    OwnerOnly,
+    KeepExisting,
+}
+
+// The writer closure is the injection point for the interrupted-write test.
+fn replace(
+    path: &Path,
+    access: Access,
+    write: impl FnOnce(&mut File) -> io::Result<()>,
+) -> io::Result<()> {
+    // Replace the link's target, or the link itself would become a regular file.
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let dir = match target.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let mut prefix = std::ffi::OsString::from(".");
+    prefix.push(target.file_name().unwrap_or_default());
+    prefix.push(".");
+    // A unique name per call lets concurrent replacers of one file coexist; the TempPath
+    // deletes the file on any early return.
+    let tmp = tempfile::Builder::new()
+        .prefix(&prefix)
+        .suffix(".tmp")
+        .tempfile_in(dir)?
+        .into_temp_path();
+
+    let mut file = match access {
+        Access::OwnerOnly => open(&tmp, false)?,
+        Access::KeepExisting => {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&tmp)?;
+            if let Ok(meta) = std::fs::metadata(&target) {
+                file.set_permissions(meta.permissions())?;
+            }
+            file
+        }
+    };
+    write(&mut file)?;
+    file.flush()?;
+    file.sync_all()?;
+    drop(file);
+
+    let mut tmp = tmp;
+    // Windows refuses a rename onto a file another handle (a reader, a scanner) holds open.
+    let attempts = if cfg!(windows) { 5 } else { 1 };
+    for attempt in 1..=attempts {
+        match tmp.persist(&target) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt < attempts && e.error.kind() == io::ErrorKind::PermissionDenied => {
+                tmp = e.path;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(e) => return Err(e.error),
+        }
     }
-    result
+    unreachable!("the last attempt returns")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_interrupted_write_keeps_the_old_content_and_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.txt");
+        write_atomic(&path, b"old").unwrap();
+        let result = replace(&path, Access::OwnerOnly, |file| {
+            file.write_all(b"ha")?;
+            Err(io::Error::other("disk full"))
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"old");
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("data.txt")]);
+    }
 }
 
 #[cfg(unix)]
