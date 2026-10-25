@@ -158,6 +158,23 @@ fn an_atomic_write_through_a_symlink_replaces_the_target_and_keeps_the_link() {
 
 #[cfg(unix)]
 #[test]
+fn an_atomic_write_through_a_relative_symlink_chain_replaces_the_final_target() {
+    let w = World::new();
+    std::fs::create_dir(w.root.join("sub")).unwrap();
+    let target = w.root.join("sub").join("target.txt");
+    let inner = w.root.join("sub").join("inner.txt");
+    let outer = w.root.join("outer.txt");
+    std::fs::write(&target, b"old").unwrap();
+    std::os::unix::fs::symlink("target.txt", &inner).unwrap();
+    std::os::unix::fs::symlink("sub/inner.txt", &outer).unwrap();
+    owner_only::write_atomic(&outer, b"new").unwrap();
+    assert!(std::fs::symlink_metadata(&outer).unwrap().is_symlink());
+    assert!(std::fs::symlink_metadata(&inner).unwrap().is_symlink());
+    assert_eq!(std::fs::read(&target).unwrap(), b"new");
+}
+
+#[cfg(unix)]
+#[test]
 fn keeping_the_mode_preserves_it_while_write_atomic_tightens_it() {
     use std::os::unix::fs::PermissionsExt;
     let w = World::new();

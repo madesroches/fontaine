@@ -59,8 +59,7 @@ fn replace(
     access: Access,
     write: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<()> {
-    // Replace the link's target, or the link itself would become a regular file.
-    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let target = link_target(path)?;
     let dir = match target.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
@@ -115,6 +114,32 @@ fn replace(
         }
     }
     unreachable!("the last attempt returns")
+}
+
+/// Follows `path` through symlinks to the file a replace must land on, or the link itself would
+/// become a regular file. Only the links are read: `canonicalize` opens the file, and on Windows a
+/// handle to a file that a concurrent replace has just superseded resolves into
+/// `$Extend\$Deleted`.
+fn link_target(path: &Path) -> io::Result<std::path::PathBuf> {
+    // The usual ELOOP limit.
+    const MAX_LINKS: usize = 40;
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_LINKS {
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let next = std::fs::read_link(&current)?;
+                current = match current.parent() {
+                    Some(parent) if next.is_relative() => parent.join(next),
+                    _ => next,
+                };
+            }
+            _ => return Ok(current),
+        }
+    }
+    Err(io::Error::other(format!(
+        "{} goes through more than {MAX_LINKS} symlinks",
+        path.display()
+    )))
 }
 
 #[cfg(test)]
