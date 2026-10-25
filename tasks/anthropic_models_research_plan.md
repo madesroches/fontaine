@@ -130,6 +130,8 @@ correctness versus optimisation, Azure support, Databricks support, issue fed or
 
 ## Decisions
 
+- AFK: 2026-10-24: Assume no Azure Foundry or Databricks account is available for live requests (none in the environment; real accounts and spend are the user's call), so the study is docs-based and live-request rows are marked `untested` and listed in the untried section.
+
 ## Documentation
 
 `README.md` and `docs/` do not change; research documents live in `research/` and are indexed
@@ -141,8 +143,3 @@ design-doc list links only `tasks/design/*.md`).
 None: the deliverable is a document and filed issues. Reviewability comes from the evidence
 standard: every central-list entry cites a source, and every `yes`/`no` in the matrix is backed by
 docs or an observed request.
-
-## Open Questions
-
-- Is there an Azure Foundry or Databricks account the study may use for live requests? If not, the
-  document is docs-only for those rows, as the evidence standard allows.
