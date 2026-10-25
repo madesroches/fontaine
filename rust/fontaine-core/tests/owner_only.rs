@@ -105,22 +105,32 @@ fn an_atomic_write_replaces_the_content_and_stays_owner_only() {
 fn concurrent_atomic_writes_to_one_path_leave_one_complete_file() {
     let w = World::new();
     let path = w.root.join("shared.txt");
+    owner_only::write_atomic(&path, b"writer start").unwrap();
+    let writing = std::sync::atomic::AtomicBool::new(true);
     std::thread::scope(|scope| {
-        for i in 0..8 {
-            let path = &path;
-            scope.spawn(move || {
-                for _ in 0..20 {
-                    let written = owner_only::write_atomic(path, format!("writer {i}").as_bytes());
-                    // Windows refuses a rename onto a file a racing replacer is mid-rename on;
-                    // the loser must fail cleanly, which the checks below verify.
-                    if let Err(e) = written {
-                        assert!(
-                            cfg!(windows) && e.kind() == std::io::ErrorKind::PermissionDenied,
-                            "{e}"
-                        );
+        // An open reader handle is what a plain rename onto the target cannot replace.
+        let reader = scope.spawn(|| {
+            while writing.load(std::sync::atomic::Ordering::Relaxed) {
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert!(text.starts_with("writer "), "{text}");
+            }
+        });
+        let writers: Vec<_> = (0..8)
+            .map(|i| {
+                let path = &path;
+                scope.spawn(move || {
+                    for _ in 0..20 {
+                        owner_only::write_atomic(path, format!("writer {i}").as_bytes()).unwrap();
                     }
-                }
-            });
+                })
+            })
+            .collect();
+        // Stop the reader before surfacing a writer's panic, or the scope would wait on it.
+        let results: Vec<_> = writers.into_iter().map(|w| w.join()).collect();
+        writing.store(false, std::sync::atomic::Ordering::Relaxed);
+        reader.join().unwrap();
+        for result in results {
+            result.unwrap();
         }
     });
     let text = std::fs::read_to_string(&path).unwrap();

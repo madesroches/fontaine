@@ -95,16 +95,23 @@ fn replace(
     drop(file);
 
     let mut tmp = tmp;
-    // Windows refuses a rename onto a file another handle (a reader, a scanner) holds open.
+    // tempfile marks the file temporary on Windows; a persisted file must not keep that mark.
+    imp::clear_temporary(&tmp)?;
+    // std's rename, unlike `TempPath::persist`, falls back on Windows to a POSIX-semantics rename,
+    // which replaces a target other handles hold open (a reader, a racing replacer's
+    // canonicalize); a plain MoveFileExW refuses that with access denied. The retry covers a
+    // handle that denies delete sharing (a scanner), which no rename can replace.
     let attempts = if cfg!(windows) { 5 } else { 1 };
     for attempt in 1..=attempts {
-        match tmp.persist(&target) {
-            Ok(()) => return Ok(()),
-            Err(e) if attempt < attempts && e.error.kind() == io::ErrorKind::PermissionDenied => {
-                tmp = e.path;
+        match std::fs::rename(&tmp, &target) {
+            Ok(()) => {
+                tmp.disable_cleanup(true);
+                return Ok(());
+            }
+            Err(e) if attempt < attempts && e.kind() == io::ErrorKind::PermissionDenied => {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
-            Err(e) => return Err(e.error),
+            Err(e) => return Err(e),
         }
     }
     unreachable!("the last attempt returns")
@@ -149,6 +156,10 @@ mod imp {
         open(path, true)
     }
 
+    pub fn clear_temporary(_: &Path) -> io::Result<()> {
+        Ok(())
+    }
+
     pub fn open(path: &Path, append: bool) -> io::Result<File> {
         let mut options = OpenOptions::new();
         options.write(true).create(true).mode(0o600);
@@ -190,7 +201,7 @@ mod imp {
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        OPEN_ALWAYS,
+        OPEN_ALWAYS, SetFileAttributesW,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -265,6 +276,14 @@ mod imp {
 
     pub fn open_lock(path: &Path) -> io::Result<File> {
         open_shared(path, true, FILE_SHARE_READ | FILE_SHARE_WRITE)
+    }
+
+    pub fn clear_temporary(path: &Path) -> io::Result<()> {
+        let wide_path = wide(path);
+        if unsafe { SetFileAttributesW(wide_path.as_ptr(), FILE_ATTRIBUTE_NORMAL) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     fn open_shared(path: &Path, append: bool, share: u32) -> io::Result<File> {
