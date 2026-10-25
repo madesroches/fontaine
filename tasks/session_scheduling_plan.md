@@ -50,8 +50,11 @@ struct Job {
     created_ms: i64,         // epoch ms
     next_ms: i64,
 }
-pub struct Scheduler { jobs: Mutex<Vec<Job>>, dir: PathBuf, warning: Mutex<Option<String>>, wake: Notify }
+pub struct Scheduler { jobs: Mutex<Vec<Job>>, dir: PathBuf, warning: Mutex<Option<String>>, clock: Arc<dyn Clock> }
 ```
+
+`Clock` is a one-method trait (`now_ms() -> i64`); production uses the wall clock, tests a manually
+advanced fake. Every method that took `now` reads the clock instead.
 
 - `Scheduler` is an `Arc` on `Session` beside `todos`, persisted to `<session dir>/schedule.json`
   (owner-only, `owner_only::write_atomic`, write inside the mutex, never across an await, as
@@ -66,6 +69,8 @@ pub struct Scheduler { jobs: Mutex<Vec<Job>>, dir: PathBuf, warning: Mutex<Optio
   `due(now) -> Option<Fired>` (the earliest due job; recurring jobs get `next_ms` recomputed from
   `now`, so a job that fell due while the model was busy fires **once**, with no catch-up; a
   one-shot is removed), `next_wake() -> Option<i64>`, `take_warning()`.
+- Lock policy: the `jobs` mutex feeds what runs, so it uses `fontaine_tools::lock::lock` (panics on
+  poison); the advisory `warning` may use `lock_recovering`, with a one-line reason at the call site.
 - Limits: 50 jobs per session; prompt non-empty and at most 2,000 characters; a recurring job
   expires 7 days after creation (it fires one final time, then is removed). A one-shot whose time
   has passed, or an expression that never matches, is rejected at creation.
@@ -80,7 +85,7 @@ pub struct Scheduler { jobs: Mutex<Vec<Job>>, dir: PathBuf, warning: Mutex<Optio
 
 ### Firing: a scheduled turn, not a user message
 
-`AgentRuntime::scheduled_prompt(&Fired) -> String` builds, in the style of `notification_prompt`:
+`AgentRuntime::scheduled_prompt(&Fired) -> String` (`async`: it awaits `state.results.run`) builds, in the style of `notification_prompt`:
 
 ```text
 [Harness note, not the user's words: scheduled task <id> (<cron or "every ...">, set by <you|the
@@ -91,14 +96,19 @@ the user asked for earlier in this conversation.]
 ```
 
 The prompt text of a model-created job is model-authored, so it passes through `state.results`
-(the result pipeline, with the scanner) exactly as `notification_prompt` does. A user-created job's
+(the result pipeline, with the scanner) exactly as `notification_prompt` does; its `CallView` carries a distinct tool name (`scheduled`), not
+`"agent"`. A user-created job's
 prompt is the human's own typed text and is passed verbatim.
 
 The TUI idle loop (`fontaine-tui/src/ui/mod.rs`, where the main prompt awaits input) gains one
-`select!` arm: `sleep_until(scheduler.next_wake())` (re-armed through `Scheduler::wake` when a job
-is created or deleted). A due job runs `Ui::scheduled_turn`, a sibling of `notification_turn`:
-`turn(runtime, prompt, None)`, so no `UserMessage` is appended, plus a transcript notice
-(`scheduled: <id>`). Background-agent notifications are drained first. Because the arm sits in the
+`select!` arm: a sleep of `next_wake() - clock.now_ms()` (none = pending forever). `next_wake()` is
+re-read on every loop pass and the `changed` arm already wakes the loop, so no `Notify` is needed.
+A due job runs `Ui::scheduled_turn`, a sibling of `notification_turn`: `turn(runtime, prompt,
+None)`, so no `UserMessage` is appended, plus a transcript notice (`scheduled: <id>`). Unlike
+`notification_turn`, it then reuses the `converse` tail (`end_of_turn(&end, runtime.steering
+.retract())`), so text the user queued during the scheduled turn is sent as the next turn or
+restored to the input, and the draft is kept while it runs. A running TUI never swaps sessions, so
+the arm needs no re-binding. Background-agent notifications are drained first. Because the arm sits in the
 idle wait, a task that comes due mid-turn waits and fires once afterwards.
 
 Ledger: a new `Record::Scheduled { event, id, origin, cron, recurring }` where `event` is
@@ -109,8 +119,9 @@ construction; a regression test pins that (see Testing).
 
 ### Tools (`fontaine-tools/src/schedule.rs`, new; store seam implemented in core)
 
-All four are root-agent-only: the tool reads `AgentId` from the context (as `SkillTool` does) and a
-subagent call returns an error result. Registered only when the session has a scheduler consumer
+All four are root-agent-only: the tool reads `context.require::<AgentId>()` (fail closed when absent,
+unlike `SkillTool`'s default-to-root) and compares it with `ROOT_AGENT`; any other caller gets an
+error result. Registered only when the session has a scheduler consumer
 (`AgentSetup.scheduling`, set by the TUI; headless leaves it off, see Decisions).
 
 | Tool | Arguments | Result |
@@ -156,7 +167,9 @@ runs first, so `deny`/`ask` rules naming any of these tools apply.
   arms one fallback wakeup 20 minutes out (`fallback: true`); an iteration that ends without
   rescheduling after a fallback ends the loop.
 - `/loop list`: the jobs. `/loop stop [id]`: cancel one, or all when no id is given. `Esc` while the
-  idle prompt shows a pending self-paced wakeup cancels it.
+  idle prompt shows a pending self-paced wakeup cancels it: `App` keeps a `wakeup_pending` flag
+  (set from the scheduler each pass) and, after menu handling, Esc at idle returns
+  `Action::CancelWakeup`.
 - `/loop` with no prompt is a usage error (see Decisions).
 
 The status bar shows `⏱ N` when jobs exist (`statusbar.rs`).
@@ -176,19 +189,23 @@ only when the scheduling tools are registered (the prompt layers already vary on
 
 ## Implementation Steps
 
-1. `fontaine-core/src/schedule.rs`: `Cron` parser and `next_after`, `Job`, `Scheduler` (create,
+1. `fontaine-core/src/schedule.rs`: `Cron` parser and `next_after`, `Job`, `Clock`, `Scheduler` (create,
    list, delete, due, next_wake, persistence, restore, expiry, warning). Add `chrono` to
-   `fontaine-core/Cargo.toml` (`default-features = false`, `clock`); `cargo deny check` must stay
+   `rust/Cargo.toml` `[workspace.dependencies]` (`default-features = false`, `clock`) and use it as
+   `chrono.workspace = true` in `fontaine-core/Cargo.toml`; `cargo deny check` must stay
    green. Unit tests.
 2. `Session` holds `Arc<Scheduler>` (`session.rs` create/open/accessor); a test pins that `fork`
    copies `schedule.json`. `ledger.rs`: `Record::Scheduled`; `LedgerView::apply` ignores it.
 3. `fontaine-tools/src/schedule.rs`: the four tools over a `ScheduleStore` trait (`create`, `list`,
    `delete`, `wake`), the root-only check, argument validation (`deny_unknown_fields`);
-   `descriptor.rs` rows; `names`/docs wiring falls out of the table.
+   `descriptor.rs` rows (`rows_are_pinned` hard-codes `[Pinned; 13]`: now 17); `names`/docs wiring
+   falls out of the table. `fontaine-core/tests/choke_point.rs` hard-codes the extras set: its
+   `extension_asking` helper registers the four tools and the expected set grows.
 4. `fontaine-core`: implement `ScheduleStore` for `Scheduler` behind an approver-reporting adapter
-   (as `ReportedTodos`); register the tools in `agent/build.rs` when `setup.scheduling && config
-   .schedule.enabled`; drain `take_warning` beside the todos warning; `AgentRuntime::scheduled_prompt`.
-5. Config: `[schedule]` struct, defaults, JSON schema/docs entry, `config_scope.rs` row (user-only),
+   (as `ReportedTodos`); register the tools in `register_tools` (`agent/build.rs`, which reads `p.setup.scheduling` from
+   `AgentSetup` via `Parts`) when `setup.scheduling && config.schedule.enabled`; drain `take_warning` beside the todos warning; `AgentRuntime::scheduled_prompt`.
+5. Config: `[schedule]` struct following the three-place pattern in `config.rs`, a user-only row in
+   `config_scope.rs`,
    a test that a project file setting it is refused.
 6. TUI: `Command::Loop` and interval parsing in `commands.rs`; `scheduled_turn` and the idle-wait
    arm in `ui/mod.rs`/`ui/turn.rs`; `/loop list|stop`; `Esc` handling; status-bar indicator;
@@ -200,12 +217,12 @@ only when the scheduling tools are registered (the prompt layers already vary on
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/{schedule.rs (new), lib.rs, session.rs, ledger.rs, agent.rs, agent/build.rs, agent/setup.rs, config.rs, config_scope.rs}`, `rust/fontaine-core/prompts/system_prompt.md`, `rust/fontaine-core/Cargo.toml`
+- `rust/fontaine-core/src/{schedule.rs (new), lib.rs, session.rs, ledger.rs, agent.rs, agent/build.rs, config.rs, config_scope.rs}`, `rust/fontaine-core/prompts/system_prompt.md`, `rust/Cargo.toml`, `rust/fontaine-core/Cargo.toml`
 - `rust/fontaine-tools/src/{schedule.rs (new), lib.rs, descriptor.rs}`
 - `rust/fontaine-tui/src/{commands.rs, statusbar.rs, reports.rs, lib.rs, ui/mod.rs, ui/turn.rs, ui/commands/*}`
 - `rust/fontaine/src/` (the TUI entry sets `scheduling`)
 - tests: `rust/fontaine-core/tests/{choke_point.rs, docs.rs, ledger.rs, sessions.rs}`, `rust/fontaine-tui/tests/tui.rs`
-- docs: `docs/tools.md`, `docs/tui.md`, `docs/configuration.md`, `docs/permissions.md`, `docs/headless.md`
+- docs: `docs/architecture.md`, `tasks/design/sessions.md`, `docs/tools.md`, `docs/tui.md`, `docs/configuration.md`, `docs/permissions.md`, `docs/headless.md`
 - `research/research-claude-code-parity.md`, `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Trade-offs
@@ -242,11 +259,13 @@ only when the scheduling tools are registered (the prompt layers already vary on
   firing only when idle, resume behavior, 50-job and 7-day limits, the status-bar indicator).
 - `docs/configuration.md`: `[schedule] enabled`. `docs/permissions.md`: why `cron_create` is
   arbitrary and a scheduled turn is not user intent. `docs/headless.md`: not available.
+- `docs/architecture.md`: the `scheduled` ledger record and `schedule.json` beside `todos.json`;
+  `tasks/design/sessions.md`: `schedule.json` in the session directory layout.
 - `CHANGELOG.md` is handled by the PR step.
 
 ## Testing Strategy
 
-Unit (constructed inputs, fake clock via an injected `now`):
+Unit (constructed inputs, fake `Clock`):
 - `Cron`: every field form, ranges/steps/lists, Sunday as 0 and 7, the dom/dow OR rule, month/year
   rollover, Feb 29, rejected syntax (`L`, `MON`, 6 fields, out-of-range), never-matching expression,
   DST gap skipped (with a `chrono-tz`-free `FixedOffset` plus a hand-built gap check).
@@ -260,13 +279,15 @@ Unit (constructed inputs, fake clock via an injected `now`):
 - Descriptor rows and the choke-point tests (`fontaine-tools` and `fontaine-core`) cover the four
   names; `tests/docs.rs` requires the docs rows.
 
-Integration (fixture models, paused tokio time, no live APIs):
+Integration (fixture models, no live APIs; the TUI schedule tests drive the injected fake clock plus
+the harness's real short `wait_until` sleeps, since tokio paused time cannot make a wall-clock job due):
 - **Intent isolation** (silent permission failure, so automated): a scheduled turn runs, the ledger
   holds a `Scheduled { fired }` record and no `UserMessage` for it, and the guardian request built
   during that turn has `recent_user_messages` unchanged from before the fire.
 - TUI: a due job starts a turn only when idle; a job due mid-turn fires once after it; `/loop 1m x`
-  runs one immediate iteration then a scheduled one after a paused-clock advance; `/loop stop`;
-  resume restores a recurring job but not a wakeup; fork copies the file.
+  runs one immediate iteration then a scheduled one after a fake-clock advance; `/loop stop`; Esc
+  cancels a pending wakeup; the self-paced fallback wakeup and loop end after an unrescheduled
+  iteration.
 - Config: `[schedule] enabled = false` registers no tools; project-scope setting refused.
 
 ## Open Questions
