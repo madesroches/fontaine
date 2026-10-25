@@ -127,6 +127,8 @@ Guards are the same types as before; only the poisoned branch differs.
 - 2026-10-25: Locks guarding permission, guardian, spend, model-selection or durable-record state panic on poison; display and advisory state recovers through `lock_recovering` with a reason comment, because a corrupted permission state must end the session rather than keep deciding, and recovery is only harmless where a half-updated value cannot reach a decision (#186).
 - 2026-10-25: `fontaine-guardian` spells the strict policy locally with `expect`, because it must not depend on `fontaine-tools` (#186).
 - 2026-10-25: `steering.rs` stays recovering: its lock guards two `Vec<String>` buffers touched only by `mem::take`/`extend`, which cannot be left half-updated, and the durable `Record::UserMessage` is written under the separate strict ledger lock (#186).
+- 2026-10-25: AFK: Drop-path lock sites (`WaitGuard::drop` on `waiting`, `EndTurnOnDrop` -> `end_turn` on `skill_grants`, `KillOnDrop`/`ReleaseOnDrop` -> `tree.kill`/`tree.release` on the tree lock) stay strict, with no named exception: a poisoned lock means an earlier panic already corrupted permission or tree state, a panic in `drop` while unwinding aborts the process, and an abort is fail-closed, whereas recovering there would mutate state the policy declares untrustworthy; one rule with no Drop carve-out keeps the policy auditable. Declined the fix; revisit if an interrupt after a caught panic proves to crash sessions in practice (#186).
+- 2026-10-25: AFK: `skills.rs`'s shell handle (`Mutex<Option<DynamicTool>>`, set once at startup, cloned per skill command) stays strict, because it decides what executes and strict is the conservative reading of the issue; unchanged in the classification table (#186).
 
 ## Documentation
 
@@ -142,8 +144,3 @@ AGENTS.md Error handling: one bullet stating the poisoning policy and naming the
   `SessionState`'s `breaker` lock and assert `guardian_denied()` or `auto_paused()` panics rather than deciding — pins the headline behaviour change.
 - Existing suites stay green unchanged (no non-panicking behaviour change). The `rg` acceptance
   check is run by hand in step 9 and is not a test.
-
-## Open Questions
-
-- Should `skills.rs`'s shell handle (set once at startup, read per skill command) be recovering?
-  Plan says strict because it decides what executes; revisit only if a reviewer disagrees.
