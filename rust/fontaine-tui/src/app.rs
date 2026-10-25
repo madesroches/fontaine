@@ -529,6 +529,7 @@ impl App {
             return Action::None;
         }
         if let Some(action) = self.slash_key(key) {
+            self.refresh_slash();
             return action;
         }
         if control && key.code == KeyCode::Char('d') {
@@ -540,7 +541,20 @@ impl App {
         }
         let action = self.message_key(key);
         self.refresh_completion();
+        self.refresh_slash();
         action
+    }
+
+    /// Forgets the menu's dismissal and selection once the text they were made for is gone,
+    /// so neither resurfaces when the same text is typed again.
+    fn refresh_slash(&mut self) {
+        let text = self.input.text();
+        if self.slash_dismissed.as_deref() != Some(&text) {
+            self.slash_dismissed = None;
+        }
+        if text.strip_prefix('/') != Some(self.slash_selected.0.as_str()) {
+            self.slash_selected = (String::new(), 0);
+        }
     }
 
     /// Closes an open history search or completion list; false when neither was open.
@@ -1275,6 +1289,28 @@ mod tests {
         // With the menu closed, the next Esc interrupts the turn.
         press(&mut app, KeyCode::Esc);
         assert_eq!(press(&mut app, KeyCode::Esc), Action::Interrupt);
+    }
+
+    #[test]
+    fn a_dismissed_menu_reopens_for_the_same_text_in_a_later_message() {
+        let mut app = app();
+        type_text(&mut app, "/");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.slash_menu().is_none());
+        press(&mut app, KeyCode::Backspace);
+        type_text(&mut app, "/");
+        assert!(app.slash_menu().is_some());
+    }
+
+    #[test]
+    fn the_menu_selection_does_not_return_with_the_same_typed_name() {
+        let mut app = app();
+        type_text(&mut app, "/mod");
+        press(&mut app, KeyCode::Down);
+        let moved = selected_name(&app);
+        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Backspace);
+        assert_ne!(selected_name(&app), moved);
     }
 
     #[test]
