@@ -4,7 +4,7 @@
 
 ## Overview
 
-"Project scope can only tighten" is enforced by `check_scope`'s hand-written `if` chain plus four
+"Project scope can only tighten" is enforced by `check_scope`'s hand-written `if` chain plus
 per-section helpers that list the keys to refuse. A key nobody lists is accepted from a checked-in
 `.fontaine/settings.toml`, so the enforcement fails open. This plan replaces those lists with one
 declarative policy table keyed by dotted path, makes the default deny, and adds a completeness test
@@ -67,27 +67,35 @@ value-dependent cells: `default_mode ∈ {manual, dontAsk}` (project, local), `e
 (project, local), `shadow == true` (project, local, cli), set on the `guardian.screen.shadow` leaf; every other `guardian.screen.*` leaf is `No` for project, local and cli. Each predicate is a named `fn`, unit-tested.
 The user column is never consulted (user may set everything).
 
-Paths use dotted segments; `*` matches exactly one segment (a map key such as an account name, or a
-hook event). Arrays of tables (`[[hooks.pre_tool_use]]`) are traversed without an index segment, so
-`hooks.*.command` names the field of every element. Rows are leaf-level; a row for an interior node
-(for example `accounts.*`, `agents.types.*`) covers the whole subtree and is used only where the
-subtree is a user-defined entry that is wholly one policy (accounts, MCP servers, agent types,
-`env.*`, `telemetry.resource_attributes`). Section-level rows (`accounts`, `network`, `tui`, `env`,
-`model`, `agents`, `context`, `shell_preclassifier`) match on the interior node itself, so
-a present-but-empty table is still refused as it is today. The reported key is the matched row's
-path.
+Paths use dotted segments; `*` matches exactly one segment and appears only for `BTreeMap` keys
+(`accounts`, `accounts.*.wires`, `mcp.servers`, `agents.types`, `env`, `telemetry.resource_attributes`).
+Arrays of tables (`[[hooks.pre_tool_use]]`) are traversed without an index segment. `HooksSection`
+has fixed fields, so hooks get one row per event (`hooks.pre_tool_use`, `hooks.post_tool_use`,
+`hooks.permission_denied`), each covering its elements.
+
+Row semantics: a row's path matches a node exactly and covers its descendants. The walker takes the
+first row matching a node and stops there. Interior nodes with no row are descended into, never
+denied (a bare `[guardian]`, `[permissions]`, `[telemetry]`, `[auto_mode]`, `[hooks]` is accepted
+today); only leaves and nodes matching a row are decision points. One row per subtree: `env` (not
+`env` + `env.*`), `accounts` (not also `accounts.*`), `mcp.servers`, `agents`, and so on, used where
+the subtree is wholly one policy. Section-level rows (`accounts`, `network`, `tui`, `env`, `model`,
+`agents`, `context`, `shell_preclassifier`) match the interior node itself, so a present-but-empty
+table is still refused as it is today; `model` is such a row (`Settings.model` is
+`Option<ModelSection>`, the real leaf is `model.model`). The reported key is the matched row's path.
 
 Reasons are carried per row, reusing today's strings verbatim so error text is unchanged apart from
 the key (`tests/config.rs` asserts key text only at the `env` case, which keeps its section-level row); several keys share a reason through shared `const &str`s (`TIGHTEN`, `USER_FILE`, ...).
 
 ### Deny by default
 
-`check_scope(s, column)` becomes `check_scope(text_table: &toml::Table, column)`:
+`check_scope(s, column)` becomes `check_scope(table: &toml::Table, column)` (it drops `&Settings`).
+`parse_settings_with_hint` calls `toml::from_str::<toml::Table>(text).expect("typed parse already accepted this text")`
+after the typed parse and passes it in:
 
 1. `Column::User` → Ok.
-2. Walk the raw `toml::Table` (the same text, parsed once more as `toml::Table` after the typed
-   parse has already validated the schema, so unknown keys keep their current `Parse` error). For
-   each leaf (or each node that matches a subtree row), find the first row whose path matches.
+2. Walk the table (the typed parse has already validated the schema, so unknown keys keep their
+   current `Parse` error). For each node, find the first row whose path matches; a match decides,
+   otherwise descend.
 3. No row → `Err` for `Project` and `ProjectLocal`; `Cli` accepts.
 4. Row found → evaluate the cell for the column; `No` → `Err((path, row.reason))`; `If(p)` → `p`
    on the leaf value.
@@ -101,9 +109,9 @@ table: those rows have `cli: No`.
 
 Enumerating `Settings` leaf paths needs the struct shape. Chosen approach: derive `schemars::JsonSchema`
 on `Settings` and the section types, then walk `schemars::schema_for!(Settings)`, following `$ref`s
-into `$defs`, `properties` for objects, `additionalProperties` for maps (as `*`) and `items` for
-arrays, collecting leaf paths. Leaf types that are enums or newtypes (`PermissionMode`,
-`GuardianProfile`, `Scanner`, `TelemetryBackend`, `ThemeName`, `AccountKind`, `EnvValue`,
+into `$defs`, `properties` for objects, a schema-valued `additionalProperties` for maps (as `*`; not
+`additionalProperties: false`) and `items` for arrays, collecting leaf paths. String enums are leaves. Leaf types that are enums or newtypes (`PermissionMode`,
+`GuardianProfile`, `Scanner`, `TelemetryBackend`, `ThemeName`, `AccountKind`, `EnvValue`, `Wire` (`config.rs:282`, value type of `accounts.*.wires.*`),
 `fontaine_guardian::Question`, the agent-mode type) derive `JsonSchema`, except `AccountKind` and
 `EnvValue`, which need `#[schemars(with = "String")]`. `fontaine_guardian::Question` (`screen.rs:30`)
 derives only `Deserialize`, so it gets the derive (or the same attribute). `Hook.origin` is
@@ -113,10 +121,10 @@ derives only `Deserialize`, so it gets the derive (or the same attribute). `Hook
 
 Test assertions:
 
-- every schema leaf path has a covering row (exact or wildcard) — the "adding a field without a row
+- every schema leaf path has a covering row (a row covers a schema node if its path is a prefix of it) — the "adding a field without a row
   fails" acceptance criterion;
-- every row matches at least one schema path (no dead rows left behind after a rename);
-- no two rows overlap (first-match would otherwise hide one).
+- every row matches at least one schema node, interior or leaf (no dead rows left behind after a rename);
+- no two rows overlap (one row's path a prefix of another's; first-match would otherwise hide one).
 
 ### Table-driven column tests
 
@@ -133,8 +141,8 @@ actually carries the values, which the table test does not.
 
 ### Removed code
 
-`GuardianSection::scanner_keys_set`, `other_keys_set`, `GuardianScreenSection::loosens`,
-`TelemetrySection::keys_other_than_enabled` and the body of `check_scope` are deleted, not reduced.
+`GuardianSection::scanner_keys_set`, `other_keys_set`,
+`TelemetrySection::keys_other_than_enabled` and the body of `check_scope` are deleted, not reduced. `GuardianScreenSection::loosens` stays: the settings merge (`config.rs:~1604`) also calls it.
 
 ## Implementation Steps
 
@@ -143,15 +151,15 @@ actually carries the values, which the table test does not.
    plus `fontaine_guardian::Question` if it does not derive it yet).
 2. Create `rust/fontaine-core/src/config_scope.rs` with `Cell`, `Rule`, the `RULES` table covering
    every current leaf, the predicate fns, and the walker returning `Result<(), (String, String)>`.
-3. Replace `check_scope` and the four helpers in `config.rs`; thread the `toml::Table` from
-   `parse_settings_with_hint`.
+3. Replace `check_scope` and delete `scanner_keys_set`, `other_keys_set` and `keys_other_than_enabled` in
+   `config.rs` (keep `loosens`); pass the `toml::Table` parsed in `parse_settings_with_hint`.
 4. Add `#[cfg(test)]` unit tests inside `config_scope.rs` (completeness, no-dead-rows, no-overlap,
    predicate tests, the `parse_settings`-driven per-column test, and "a key with no row is rejected from project and project-local" using a
    synthetic table via an inner function that takes `&[Rule]`). Delete `NO_FOR_PROJECT`, `NO_FOR_LOCAL`, `USER_FILE_ONLY` and the three loop
-   tests from `tests/config.rs`; keep the specific screen/env/telemetry tests that assert messages.
+   tests from `tests/config.rs`; delete the `assert_scope_error` helper (`tests/config.rs:704`) if no remaining test uses it (`:1381` does today); keep the specific screen/env/telemetry tests that assert messages.
 5. Docs and design: update `docs/configuration.md` (scope-table intro and a one-line note that
    every key has a declared policy and an undeclared key is refused from project scopes) and
-   `tasks/design/config.md` (name the table as the single source). Add a `CHANGELOG.md` entry.
+   `tasks/design/config.md` (name the table as the single source). Add a `CHANGELOG.md` entry under `### Changed` in `[Unreleased]`.
 6. Run from `rust/`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`,
    `cargo deny check`, the two `fixture` evals.
 
