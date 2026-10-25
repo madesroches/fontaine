@@ -8,7 +8,7 @@ Study DeepSeek's own agent harness, DeepSeek Harness (`dsh`), and produce a list
 features for Fontaine. The list is led by the features that let the model iterate on a solution,
 which dsh is reportedly good at. The work covers how it frames prompts, tool calls and reasoning for DeepSeek
 models, how it manages context, its safety model, tasks, session log and the feedback it gives the
-model. Running DeepSeek models as the main agent through Fontaine's rig provider path is in scope too. Its fit as a
+model. It also lists what Fontaine should support for the DeepSeek models themselves. Running DeepSeek models as the main agent through Fontaine's rig provider path is in scope too. Its fit as a
 guardian or screen is assessed from source and the thinking-off history only. This is a research spike. The deliverables are
 `research/research-deepseek-harness.md`, the experiment scripts and captured data under
 `research/deepseek-harness/`, GitHub issues for anything worth adopting, and dated `## Decisions`
@@ -84,6 +84,28 @@ every source citation in the doc is `path@22ddee37`. Known shape, from a first r
   deepseek.com base URL, a dialect quirk, or an opencode-go/moonshot/openrouter catalog row. None
   matches `go/deepseek-v4.1-flash`. Whether the gateway or DeepSeek returns 400 for that turn is
   untested. This is the most direct Fontaine risk the study can find.
+- DeepSeek model support, seed candidates for the research doc's second list:
+  1. Reasoning passback: with `tools` present, DeepSeek requires `reasoning_content` from all
+     previous assistant turns, including turns without a tool call, or it returns 400
+     (thinking-mode guide, https://api-docs.deepseek.com/guides/thinking_mode/). Fontaine always
+     sends tools. Ties to the E8 empty-reasoning check.
+  2. Reasoning effort `off|low|high|max`: Chat `reasoning_effort` (+ `thinking` in body), Messages
+     `output_config.effort`, Responses `reasoning.effort`; dsh `reasoningEffort`
+     (`packages/llm/llm-deepseek/README.md:45,58-59,103`). Feeds #53.
+  3. KV-cache prefix stability: caching is automatic and needs a full match of a persisted prefix
+     unit (https://api-docs.deepseek.com/guides/kv_cache). dsh's `systemPromptUpdate: in-history`
+     appends a changed system prompt after the cached history. `toolUpdate: addition-only` sends
+     `tool_addition`/`tool_removal` blocks with `defer_loading` under the
+     `mid-conversation-tool-changes-2026-07-01` beta (`llm-deepseek/README.md:53,85,181`;
+     `src/messages-api.ts`). Feeds #13 and #34.
+  4. Cache accounting: `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`. Feeds #56.
+  5. 1,048,576-token context window (`llm-deepseek/src/models.ts`) and compaction sizing. Ties to
+     `autocompact_window` (#152).
+  6. Sampling parameters ignored in thinking mode (`temperature`, presence/frequency penalties;
+     `top_p` clamped per model), per the thinking-mode guide.
+  7. Images via the Files API, sized to the vision token grid (14px patches, at most 1024
+     tokens per image; `llm-deepseek/README.md:95-97`). Feeds #21.
+  8. Malformed historical tool arguments replayed as `{}` (`llm-deepseek/README.md:173`).
 - An account's `base_url` can be overridden (`providers/mod.rs:183`), so Fontaine's traffic can be
   routed through a recording proxy without code changes.
 - Precedent: `research/research-llamafirewall.md` (format of a deep-dive) and the #98 spike
@@ -175,6 +197,13 @@ the request path passed through unchanged:
   (`Account.wires`, `rust/fontaine-core/src/config.rs:317-318`; `opencode_go.rs:84-86,154-157`).
   The Messages client goes to `{base}/anthropic` (`opencode_go.rs:135`), which the
   path-passthrough proxy forwards.
+  Guardian exchanges go through the proxy too. The validated guardian table is empty
+  (`rust/fontaine-guardian/data/guardian_models.toml`) and the config sets no `[guardian] model`,
+  so the guardian falls back to the main model (`rust/fontaine-core/src/models.rs`, MainFallback)
+  on the same account. Its requests carry `thinking: disabled` and the guardian's system prompt,
+  which tells them apart from main-agent requests. They are filtered out before the E8
+  round-trip check and the framing comparison, and may be kept separately as the guardian's own
+  wire record.
 
 The model-URL proxy cannot show what else dsh sends. The base bundle
 mounts `session-telemetry-otel`, exporting to `https://dsh-otel-collector.deepseeksvc.com/v1/logs`
@@ -206,13 +235,13 @@ and a results section in the doc.
 | # | Experiment | Answers |
 |---|---|---|
 | E1 | Build, boot `headless`, run `--dump-config`, and record the default plugin tree and the container's egress endpoints | architecture; which defaults are on (telemetry, `dsh_session_log`); every endpoint dsh contacts |
-| E2 | One read-only question with the wire captured, once with default `session-log-deepseek` and once with `enabled: false` | system-prompt sections, tool schemas, tool-call and result format, headers, `dsh_*` fields; what `dsh_session_log` puts on the wire |
+| E2 | One read-only question with the wire captured, once with default `session-log-deepseek` and once with `enabled: false` | system-prompt sections, tool schemas, tool-call and result format, headers, `dsh_*` fields; what `dsh_session_log` puts on the wire. The capture also checks DeepSeek model-support items 1-4 where the gateway allows: reasoning passback on every assistant turn, the effort field sent, and whether a system-prompt or tool change keeps the earlier prefix hit, as reported by cache-hit tokens |
 | E3 | Fix a failing test in a fixture repo (edit → run tests → iterate). Each mechanism gets a trigger: a `web_fetch` against a local endpoint that stalls, served from the host or inside the container (timeout-policy; the E3 patch sets `tool-web` `fetchTimeoutMs` well below 30 s, e.g. 5000, so timeout-policy's result fires before web-fetch-http's own 30 s deadline); a test command that hangs past bash-local's 120 s foreground default (cap 600 s, `packages/shell/bash-local/src/index.ts:102-103`), or a task that passes a smaller `timeoutMs` (bash promote-to-background, recorded as its own mechanism); a check that keeps failing identically, to invite 3 identical consecutive calls (repeat-tool-reminder, `cordis.patch.yml:444-448`); task wording that asks the model to call `create_goal` (goal; headless sends a plain user message and has no `/goal`), plus `goal-round-driver`, which the base bundle mounts by default (`packages/bundle/base/cordis.patch.yml:326-327`). Two recorded unknowns: whether a headless task message counts as the direct human message `create_goal` requires (`packages/goal/tool-goal/README.md:55`), and whether rounds run before headless exits when idle. A mechanism that does not fire is recorded as "did not fire" with the trigger used, distinct from "source-only". | the iteration loop: tool errors, the test-output feedback, repeat-tool-reminder, timeout-policy, bash promote-to-background, goal rounds, multi-turn reasoning round-trip |
 | E4 | Risky actions in the fixture (write outside the workspace, `rm -rf` of a parent, `curl … \| sh`, reading `~/.ssh` in the container), run under the default and under `--approval-policy never` (accepted values `ask`, `never`; `--permission-mode` takes a configured preset name), recording what the model gets back in each. Headless has no live approval-response channel (`packages/bundle/headless/README.md:98`). The default policy is `ask`: an unanswered request resolves `unavailable` and fails closed, while `never` resolves `rejected` with different text. The default sandbox is `workspace-write` (`packages/bundle/headless/cordis.patch.yml:29-33`), so some actions stop before approval. E4 compares the `unavailable` and `rejected` denial outcomes plus sandbox blocks. | sandbox and approval policy, defaults, what a denial says to the model; compared with Fontaine's floor and guardian |
 | E5 | A long session that crosses the compaction threshold plus a large tool result. Compaction triggers at floor(min(W×thresholdRatio, W−O−65536)) (`packages/compaction/compaction-basic/README.md:64-80`), about 840k tokens with the copied 1,048,576 `contextWindow`. The E5 overlay sets a small `thresholdRatio` through `compaction-basic` `modelPolicies` for `deepseek-v4.1-flash` (README:46-56,68), or lowers `contextWindow` while staying above O+65536. Record the computed trigger. | compaction trigger, summary prompt, tool-result pruning and spill, cache-hit accounting across compaction |
 | E6 | A multi-step task in plan mode (through the Web UI: exit needs a review, `cordis.patch.yml:346`, and `/plan` is not available in headless), then with the todo tool, then with one subagent (both in headless) | task representation, todo state, plan handoff, subagent context |
 | E7 | Resume the E3 session with `--session-id <id>` (`packages/bundle/headless/src/startup.ts:59`; `--add-dir` and the policy flags must be repeated, `headless/README.md:90`), then inspect the on-disk log and `session-query` | session log format, durability, resume and review. Session-query search is off by default (`session-query-sqlite` with `path: ':memory:'`, `openAt: never`, `cordis.patch.yml:150-161`, giving `SESSION_QUERY_SEARCH_DISABLED`; `tool-session-query` is experimental and unmounted). E7 may enable it with a patch (`openAt: first-search`) to observe search. |
-| E8 | Run E2 and E3 through `fontaine -p` on the same model, through the proxy. It relies on the model's default thinking: Fontaine's main agent sends no thinking parameter (`thinking_off` applies only to guardian and scanner; #53 is open). Check the capture shows a `reasoning_content` response before judging the round-trip. Also provoke a tool-call turn with no reasoning: build a session with tool calls on any Go model other than `deepseek-v4.1-flash` (rig turns foreign reasoning into plain text on resume), then `fontaine -p --resume <id> --model go/deepseek-v4.1-flash` through the proxy (`rust/fontaine/src/cli.rs:83-89`; `--model` overrides on resume, `rust/fontaine/src/lib.rs:347-372,464`), and record whether the request gets a 400. | whether reasoning-bearing turns are round-tripped as `reasoning_content` on the Chat wire (source says yes); whether a tool-call turn with no reasoning gets a 400; a side-by-side diff of framing against dsh |
+| E8 | Run E2 and E3 through `fontaine -p` on the same model, through the proxy. It relies on the model's default thinking: Fontaine's main agent sends no thinking parameter (`thinking_off` applies only to guardian and scanner; #53 is open). Check the capture shows a `reasoning_content` response before judging the round-trip. Filter out guardian requests first (`thinking: disabled`, guardian system prompt); they carry no reasoning by design. The captures also check DeepSeek model-support items 1-4 where the gateway allows: reasoning passback on every assistant turn, the effort field sent, and whether a system-prompt or tool change keeps the earlier prefix hit, as reported by cache-hit tokens. Also provoke a tool-call turn with no reasoning: build a session with tool calls on any Go model other than `deepseek-v4.1-flash` (rig turns foreign reasoning into plain text on resume), then `fontaine -p --resume <id> --model go/deepseek-v4.1-flash` through the proxy (`rust/fontaine/src/cli.rs:83-89`; `--model` overrides on resume, `rust/fontaine/src/lib.rs:347-372,464`), and record whether the request gets a 400. | whether reasoning-bearing turns are round-tripped as `reasoning_content` on the Chat wire (source says yes); whether a tool-call turn with no reasoning gets a 400; a side-by-side diff of framing against dsh |
 | E9 | Where dsh's behaviour differs from what Fontaine copies, capture the Claude Code baseline with `claude -p` on the same fixture task | the "different from Claude Code" column |
 
 Anything that cannot be run goes into a "Not tried" list with the reason (for example, no direct
@@ -236,15 +265,22 @@ gateway, or the build fails). The user can then supply what is missing.
    solution. Each entry gives: what dsh does; the evidence (source citation and/or observed
    run); how Fontaine would get it (an existing issue it feeds, a new issue, or skip with the
    reason); and whether Claude Code does it (if not, adopting needs a Decisions line).
-7. Experiment log (E1–E9), with commands, results and failures.
-8. Not tried, and why.
+7. **DeepSeek model support**, the second centrepiece: what Fontaine should support to get the
+   most out of the DeepSeek models, seeded from the Current State candidates. Each entry gives:
+   what it is; the evidence (DeepSeek API docs, dsh adapter source, or a wire capture); which
+   Fontaine wire(s), code path and existing issue it affects; and whether it is needed for
+   correctness or is an optimisation.
+8. Experiment log (E1–E9), with commands, results and failures.
+9. Not tried, and why.
 
 ### Follow-ups and decisions
 
 - For each desirable feature to adopt, file an issue (`gh issue create`, with labels matching the
   area) or comment on the existing issue it feeds, linking the doc section. A bug found in
   Fontaine (E8 is the likely candidate) is filed as a `bug` with its reproduction. File one more
-  issue for a measured guardian scorecard of DeepSeek on the live eval harness.
+  issue for a measured guardian scorecard of DeepSeek on the live eval harness. Each
+  DeepSeek model-support correctness item becomes a `bug` issue. Each optimisation feeds its
+  existing issue or a new one.
 - A finding that argues for departing from Claude Code semantics gets a dated line in the master
   plan's `## Decisions`. Adopting something Claude Code also does needs no Decisions line.
 - The doc and the PR body both carry the full findings list, including the negative ones.
@@ -266,7 +302,8 @@ gateway, or the build fails). The user can then supply what is missing.
    `run_fontaine.sh` (`fontaine -p --settings <proxy.toml> --model go/deepseek-v4.1-flash`).
 4. **E1–E7** on dsh, in order. Record each result in the doc as it lands. E4 runs only inside the
    container.
-5. **E8** through Fontaine. Confirm reasoning-bearing turns are round-tripped, and test a tool-call
+5. **E8** through Fontaine. Separate guardian exchanges from main-agent requests in the capture
+   before checking anything. Confirm reasoning-bearing turns are round-tripped, and test a tool-call
    turn with no reasoning by resuming a session built on another Go model with
    `--resume <id> --model go/deepseek-v4.1-flash`. If the 400 reproduces, reproduce it minimally and file a bug about the
    missing empty-reasoning fallback for the Go DeepSeek route. Note whether the Messages wire
@@ -304,6 +341,7 @@ gateway, or the build fails). The user can then supply what is missing.
 ## Decisions
 
 - 2026-10-24: The deliverable is a list of desirable features, led by those that let the model iterate; no benchmark or live scorecard in this study (user direction).
+- 2026-10-24: The research doc also lists DeepSeek-model-specific support Fontaine should add, marked correctness or optimisation (user direction).
 
 ## Documentation
 
