@@ -75,6 +75,13 @@ jobs:
           sudo apt-get install -y -qq mold
           echo "RUSTFLAGS=-C link-arg=-fuse-ld=mold" >> "$GITHUB_ENV"
 
+      - name: Windows link and target dir experiment
+        if: needs.changes.outputs.code == 'true' && runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "RUSTFLAGS=-C linker=lld-link" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=D:\\t" >> "$GITHUB_ENV"
+
       - name: Install cargo-deny
         if: needs.changes.outputs.code == 'true'
         uses: taiki-e/install-action@v2
