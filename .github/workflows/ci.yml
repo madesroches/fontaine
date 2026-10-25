@@ -8,9 +8,45 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect code changes
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -o pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(git diff --no-renames --name-only "origin/$BASE_REF...HEAD") || {
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          if grep -qvE '^(tasks/|AGENTS\.md$)' <<<"$files"; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   check:
     name: ${{ matrix.os }}
+    needs: changes
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -23,42 +59,61 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install the pinned toolchain
+        if: needs.changes.outputs.code == 'true'
         run: rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-
-      - name: Install cargo-deny
+      - name: Install cargo-deny and cargo-nextest
+        if: needs.changes.outputs.code == 'true'
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny@0.20.2
+          tool: cargo-deny@0.20.2,cargo-nextest@0.9.149
 
       - name: Format
+        if: needs.changes.outputs.code == 'true'
         run: cargo fmt --check
 
       - name: Clippy
+        if: needs.changes.outputs.code == 'true'
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Clippy (pg2)
+        if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
         run: cargo clippy --all-targets --features fontaine/pg2 -- -D warnings
 
+      - name: Build tests
+        if: needs.changes.outputs.code == 'true'
+        run: cargo test --no-run
+
       - name: Test
-        run: cargo test
+        if: needs.changes.outputs.code == 'true'
+        run: cargo nextest run
+
+      - name: Doctests
+        if: needs.changes.outputs.code == 'true'
+        run: cargo test --doc
 
       - name: Test (pg2)
+        if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
         run: cargo test --features fontaine/pg2
 
+      - name: Check (pg2)
+        if: needs.changes.outputs.code == 'true' && runner.os != 'Linux'
+        run: cargo check --features fontaine/pg2
+
       - name: Dependency policy
+        if: needs.changes.outputs.code == 'true'
         run: cargo deny check
 
       - name: Eval fixture run (default profile)
+        if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
         run: cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture
 
       - name: Eval fixture run (minimal profile)
+        if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
         run: cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture --profile minimal
 
       - name: Eval pipeline run (no guardian)
+        if: needs.changes.outputs.code == 'true'
         run: cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none
 
   release-plan:

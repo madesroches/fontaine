@@ -11,6 +11,9 @@ version = "0.1.0"
 publish = false
 repository = "https://github.com/madesroches/fontaine"
 
+[profile.dev]
+debug = "line-tables-only"
+
 [workspace.dependencies]
 fontaine-core = { path = "fontaine-core" }
 fontaine-tools = { path = "fontaine-tools" }
