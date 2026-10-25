@@ -1,0 +1,4 @@
+# Fontaine settings layer: Go account via the recording proxy, default (Chat) wire for the DeepSeek model.
+[accounts.go]
+kind = "opencode-go"
+base_url = "http://172.17.0.1:18081"

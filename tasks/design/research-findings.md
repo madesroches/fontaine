@@ -155,6 +155,25 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   dependency on the `llamafirewall` Python package; depend on its models and numbers, not its
   framework.
 
+### DeepSeek Harness (dsh) — DeepSeek's own agent harness (full study: `research-deepseek-harness.md`)
+
+- **What it is**: TypeScript, MIT, developer preview, pinned at `22ddee37`. A Cordis plugin tree
+  (agent loop, tools, session log, model adapter are all plugins) that speaks DeepSeek's
+  Anthropic-compatible Messages endpoint. It was built, run in Docker against the opencode Go
+  gateway, and captured on the wire; Fontaine ran the same tasks on its Chat wire.
+- **What lets the model iterate** (the centrepiece): durable goals continued in rounds by a driver
+  (`create_goal`, 256-round cap, `blocked` gated behind three consecutive rounds); a repeated-
+  identical-call reminder (Claude Code has none, measured); bash results that end in `[exit code: N]`
+  with non-zero exits not treated as tool errors; promote-on-timeout to a background job (Claude
+  Code does the same, measured); read-before-edit with a version check and remedy text in errors;
+  spill of oversized results to a file the model can read back.
+- **Not copied**: the default upload of the whole session log (`dsh_session_log`) to the model
+  endpoint, a sandbox that labels any "permission denied" as a policy denial, and prompt-only plan
+  mode.
+- **DeepSeek model support**: the documented 400 for a missing `reasoning_content` did not
+  reproduce through the Go gateway on either wire; cache behaviour and the usage fields were
+  measured; the rest needs a direct key (#164).
+
 ### Ecosystem / dependencies — reuse-first (user requirement)
 
 - **rig** (MIT, v0.45.0, Oct 2026, 0xPlaygrounds) — the Rust LLM framework, now split into exactly

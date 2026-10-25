@@ -1,0 +1,5 @@
+# E5: compact early. Trigger = floor(min(W*0.05, W-O-65536)) with W=1048576 -> 52428 tokens.
+- id: compaction-basic
+  config:
+    thresholdRatio: 0.05
+    retainRatio: 0.02

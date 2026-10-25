@@ -1,0 +1,3 @@
+dsh /anthropic/v1/messages 200 dsh_fields=['dsh_session_log', 'dsh_plugin_packages'] bytes=109410 msgs=29 tools=29 thinking={"type": "enabled"} input=['11870'] cache_read=['4096']
+dsh /anthropic/v1/messages 200 dsh_fields=['dsh_session_log', 'dsh_plugin_packages'] bytes=85119 msgs=31 tools=29 thinking={"type": "enabled"} input=['584'] cache_read=['15872']
+dsh /anthropic/v1/messages 200 dsh_fields=['dsh_session_log', 'dsh_plugin_packages'] bytes=94079 msgs=33 tools=29 thinking={"type": "enabled"} input=['1657'] cache_read=['16384']

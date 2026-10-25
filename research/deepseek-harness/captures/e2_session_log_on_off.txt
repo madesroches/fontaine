@@ -1,0 +1,10 @@
+## e2-default
+dsh /anthropic/v1/messages 200 dsh_fields=['dsh_session_log', 'dsh_plugin_packages'] bytes=34895 msgs=1 tools=0 thinking={"type": "disabled"} input=['40'] cache_read=['128']
+dsh /anthropic/v1/messages 200 dsh_fields=['dsh_session_log', 'dsh_plugin_packages'] bytes=57568 msgs=1 tools=24 thinking={"type": "enabled"} input=['236'] cache_read=['5376']
+dsh /anthropic/v1/messages 200 dsh_fields=['dsh_session_log', 'dsh_plugin_packages'] bytes=39785 msgs=3 tools=24 thinking={"type": "enabled"} input=['537'] cache_read=['5504']
+
+## e2-nolog
+dsh /anthropic/v1/messages 200 dsh_fields=['dsh_plugin_packages'] bytes=7166 msgs=1 tools=0 thinking={"type": "disabled"} input=['40'] cache_read=['128']
+dsh /anthropic/v1/messages 200 dsh_fields=['dsh_plugin_packages'] bytes=29839 msgs=1 tools=24 thinking={"type": "enabled"} input=['108'] cache_read=['5504']
+dsh /anthropic/v1/messages 200 dsh_fields=['dsh_plugin_packages'] bytes=31555 msgs=3 tools=24 thinking={"type": "enabled"} input=['538'] cache_read=['5504']
+dsh /anthropic/v1/messages 200 dsh_fields=['dsh_plugin_packages'] bytes=34776 msgs=5 tools=24 thinking={"type": "enabled"} input=['937'] cache_read=['6016']

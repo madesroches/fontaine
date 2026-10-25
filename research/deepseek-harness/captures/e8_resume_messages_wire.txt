@@ -1,0 +1,2 @@
+same resume on the Messages wire (proxy_messages.toml): status 502
+assistant block types per turn: [['text', 'tool_use', 'tool_use'], ['text', 'tool_use'], ['text', 'text'], ['tool_use'], ['text', 'text']]

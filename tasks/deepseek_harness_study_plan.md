@@ -403,6 +403,7 @@ gateway, or the build fails). The user can then supply what is missing.
 - 2026-10-24: AFK: Fontaine uses two settings files, `proxy.toml` (no `wires`, Chat) for E8 and `proxy_messages.toml` (Messages override) for the probe and comparison, because `--settings` takes one path and a `wires` override would put every E8 leg on Messages.
 - 2026-10-24: AFK: E3 treats `create_goal` authority as settled by source and goal rounds in headless as "source says headless exits first; confirm by run", with rounds observed in the Web UI during E6, because the headless and goal-round-driver source answer both unknowns.
 - 2026-10-24: AFK: E7 applies the shipped `packages/experimental/session-search/cordis.patch.yml` overlay in headless rather than using Web UI search, because only the unmounted `tool-session-query` calls search and the overlay keeps E7 scripted.
+- 2026-10-24: Study outcome: the E8 hypothesis (a 400 for an empty-reasoning tool-call turn on the Go route) did not reproduce, so no `bug` issue was filed and the direct-API cases went to #164; E5's trigger is min(0.8 W, W - O - 65,536) = 727,040 tokens with O = 256,000, not about 840k, so the overlay lowers `thresholdRatio` to 0.015; the Web UI legs of E6 (plan mode, goal rounds) were not driven for lack of a browser session; E9 covered two rows. Findings in `research/research-deepseek-harness.md`.
 
 ## Documentation
 

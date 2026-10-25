@@ -1,0 +1,29 @@
+CALL {"command": "./check.sh", "description": "run-check"}
+RESULT "Exit code 1\ncheck: upstream registry not ready (E_NOT_READY)"
+SYSTEM {"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 50, "estimated_tokens_delta": 50, "session_id": "abc8bf97-42f4-46ec-9b0b-2ed77e24acd7", "uuid": "b44784e9-f588-4ae4-ae3e-057de8ae6ccc"}
+SYSTEM {"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 177, "estimated_tokens_delta": 127, "session_id": "abc8bf97-42f4-46ec-9b0b-2ed77e24acd7", "uuid": "22614572-a244-4d95-a5e1-96e54cb71ade"}
+TEXT Call 1 of 9 exited with code 1 and printed `check: upstream registry not ready (E_NOT_READY)`. Making call 2.
+CALL {"command": "./check.sh", "description": "run-check"}
+RESULT "Exit code 1\ncheck: upstream registry not ready (E_NOT_READY)"
+TEXT Call 2 of 9 is the same: exit code 1, `check: upstream registry not ready (E_NOT_READY)`. Making call 3.
+CALL {"command": "./check.sh", "description": "run-check"}
+RESULT "Exit code 1\ncheck: upstream registry not ready (E_NOT_READY)"
+TEXT Call 3 of 9 is the same again: exit code 1, `check: upstream registry not ready (E_NOT_READY)`. Making call 4.
+CALL {"command": "./check.sh", "description": "run-check"}
+RESULT "Exit code 1\ncheck: upstream registry not ready (E_NOT_READY)"
+TEXT Call 4 of 9 is the same: exit code 1, `check: upstream registry not ready (E_NOT_READY)`. Making call 5.
+CALL {"command": "./check.sh", "description": "run-check"}
+RESULT "Exit code 1\ncheck: upstream registry not ready (E_NOT_READY)"
+TEXT Call 5 of 9 is the same: exit code 1, `check: upstream registry not ready (E_NOT_READY)`. Making call 6.
+CALL {"command": "./check.sh", "description": "run-check"}
+RESULT "Exit code 1\ncheck: upstream registry not ready (E_NOT_READY)"
+TEXT Call 6 of 9 is the same: exit code 1, `check: upstream registry not ready (E_NOT_READY)`. Making call 7.
+CALL {"command": "./check.sh", "description": "run-check"}
+RESULT "Exit code 1\ncheck: upstream registry not ready (E_NOT_READY)"
+TEXT Call 7 of 9 is the same: exit code 1, `check: upstream registry not ready (E_NOT_READY)`. Making call 8.
+CALL {"command": "./check.sh", "description": "run-check"}
+RESULT "Exit code 1\ncheck: upstream registry not ready (E_NOT_READY)"
+TEXT Call 8 of 9 is the same: exit code 1, `check: upstream registry not ready (E_NOT_READY)`. Making call 9.
+CALL {"command": "./check.sh", "description": "run-check"}
+RESULT "Exit code 1\ncheck: upstream registry not ready (E_NOT_READY)"
+TEXT I ran `./check.sh` nine times, one call per turn, with nothing changed between calls. Every call failed the same way:  - Exit code 1, with `check: upstream registry not ready (E_NOT_READY)` on stderr. - The system showed no extra message beyond that output.  The failure is consistent across all nine

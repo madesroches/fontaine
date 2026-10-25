@@ -1,0 +1,10 @@
+## Fontaine (Chat wire) e8-read
+fontaine GET /v1/models 200
+fontaine /openai/v1/chat/completions 200 dsh_fields=[] bytes=13313 msgs=2 tools=11 thinking=null input=['3386'] cache_read=[]
+fontaine /openai/v1/chat/completions 200 dsh_fields=[] bytes=14596 msgs=5 tools=11 thinking=null input=['3692'] cache_read=[]
+fontaine /openai/v1/chat/completions 200 dsh_fields=[] bytes=16208 msgs=7 tools=11 thinking=null input=['4126'] cache_read=[]
+
+## dsh (Messages wire) e2-default
+dsh /anthropic/v1/messages 200 dsh_fields=['dsh_session_log', 'dsh_plugin_packages'] bytes=34895 msgs=1 tools=0 thinking={"type": "disabled"} input=['40'] cache_read=['128']
+dsh /anthropic/v1/messages 200 dsh_fields=['dsh_session_log', 'dsh_plugin_packages'] bytes=57568 msgs=1 tools=24 thinking={"type": "enabled"} input=['236'] cache_read=['5376']
+dsh /anthropic/v1/messages 200 dsh_fields=['dsh_session_log', 'dsh_plugin_packages'] bytes=39785 msgs=3 tools=24 thinking={"type": "enabled"} input=['537'] cache_read=['5504']

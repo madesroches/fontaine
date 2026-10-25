@@ -1,0 +1,4 @@
+[accounts.go]
+kind = "opencode-go"
+base_url = "http://172.17.0.1:18081"
+wires = { "deepseek-v4.1-flash" = "messages" }
