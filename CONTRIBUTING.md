@@ -15,8 +15,11 @@ cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none
 cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 ```
 
-CI runs the first seven on Linux, macOS and Windows. The last one is a local check that the Windows
-code compiles. Tests never call live model APIs.
+CI runs `cargo fmt --check`, clippy, `cargo test`, `cargo deny check` and the `--guardian none` eval
+on Linux, macOS and Windows; the two `fixture` eval runs, plus clippy and tests with
+`--features fontaine/pg2`, run on Linux only (macOS and Windows get a `cargo check --features
+fontaine/pg2`). Pull requests that touch nothing under `rust/`, `evals/` or `.github/workflows/`
+skip the Rust steps. The last command above is a local check that the Windows code compiles. Tests never call live model APIs.
 
 ## Branches and commits
 
