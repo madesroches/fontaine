@@ -85,6 +85,11 @@ advanced fake. Every method reads the clock instead of taking a `now` argument.
 
 ### Firing: a scheduled turn, not a user message
 
+`AgentRuntime::clear_conversation` (`agent.rs`), beside `session.todos().clear()`, also clears the
+scheduler: it appends a `Scheduled { deleted }` record per job and empties `schedule.json`, warning
+through `Approver::warn` on failure, because `ContextCleared` resets the guardian's intent and a
+job planted under that intent must not outlive it.
+
 `AgentRuntime::scheduled_prompt(&Fired) -> String` (`async`: it awaits `state.results.run`) builds, in the style of `notification_prompt`:
 
 ```text
@@ -127,7 +132,7 @@ error result. Registered only when the session has a scheduler consumer
 | Tool | Arguments | Result |
 |---|---|---|
 | `cron_create` | `cron` (5-field), `prompt`, `recurring` (default true) | id, plain-language cadence, next run in local time |
-| `cron_list` | none | one line per job: id, cadence, origin, next run, prompt (truncated) |
+| `cron_jobs` | none | one line per job: id, cadence, origin, next run, prompt (truncated) |
 | `cron_delete` | `id` | confirmation, or an error naming the unknown id |
 | `schedule_wakeup` | `delay_seconds` (60-3600), `reason`, or `stop: true` | confirms the pending wakeup |
 
@@ -140,7 +145,7 @@ Descriptor rows (`fontaine-tools/src/descriptor.rs`):
 | name | risk | path_free | destructive | specifier | claude |
 |---|---|---|---|---|---|
 | `cron_create` | Arbitrary | yes | Always | None | `CronCreate` |
-| `cron_list` | ReadOnly | yes | Never | None | `CronList` |
+| `cron_jobs` | ReadOnly | yes | Never | None | `CronList` |
 | `cron_delete` | ReadOnly | yes | Never | None | `CronDelete` |
 | `schedule_wakeup` | ReadOnly | yes | Never | None | `ScheduleWakeup` |
 
@@ -155,17 +160,28 @@ runs first, so `deny`/`ask` rules naming any of these tools apply.
 `Command::Loop(String)` plus a `BUILTINS` entry (sorted position). Forms:
 
 - `/loop 5m <prompt>` (also a trailing `every 2 hours`): interval units `s m h d`; seconds round up
-  to a minute; an interval that is not a clean cron step is rounded to the nearest that is (`7m` ->
-  `*/7`-style if it divides the hour, else the nearest divisor; hours/days map to `0 */n`/`0 0 */n`),
-  and the transcript states the cadence chosen. Creates a recurring `Origin::User` job **directly**
+  to a whole minute first. Only evenly dividing intervals are accepted: minutes dividing 60 (`*/n * * * *`),
+  whole hours dividing 24 (`0 */n * * *`), days 1-31 (`0 0 */n * *`; day-of-month steps restart each
+  month, so a multi-day cadence is approximate at month ends). Any other interval, including `7m` and
+  anything of 60 minutes or more that is not a whole number of hours, is rounded to the nearest accepted
+  value, ties rounding down (`7m` -> `5m`, `90m` -> `1h`), and the transcript states the cadence chosen.
+  Cadence is wall-clock aligned (`*/5` fires at :00, :05, ...), not offset from when `/loop` ran. Creates a recurring `Origin::User` job **directly**
   (no model round trip) and runs the first iteration immediately as a turn recorded as the typed
   message (`converse`), so the human's `/loop ...` line is in `user_messages` and is the intent the
   later iterations inherit.
-- `/loop <prompt>` (no interval): a self-paced loop. The first iteration runs now; the scheduled
-  prompt for later iterations carries a short instruction to call `schedule_wakeup` at the end of
-  each iteration (or `stop` when done). If an iteration ends with no pending wakeup, the scheduler
-  arms one fallback wakeup 20 minutes out (`fallback: true`); an iteration that ends without
-  rescheduling after a fallback ends the loop.
+- `/loop <prompt>` (no interval): a self-paced loop. The TUI keeps an in-memory per-session
+  active-loop record (`loop_id`, `prompt`, `last_was_fallback`), created at `/loop` time and not
+  persisted. The first iteration runs now as the typed text verbatim (a recorded user message); it
+  learns about `schedule_wakeup` from the system-prompt scheduling paragraph. Later iterations are
+  scheduled turns, and the TUI appends a harness note telling the model to call `schedule_wakeup`
+  (or `stop`) at the end of the iteration, to scheduled iterations only. After every iteration
+  returns (`converse` for the first, `scheduled_turn` for later ones) an end-of-iteration hook in
+  the TUI checks the scheduler: if a wakeup for this `loop_id` is pending, `last_was_fallback` is
+  cleared; if not, and the last iteration was not a fallback, it arms one fallback wakeup 20
+  minutes out (`fallback: true`) and sets `last_was_fallback`; if not and the last iteration was a
+  fallback, the loop ends and the record is dropped. A `schedule_wakeup` with `stop: true` ends it
+  too. A Wakeup job's `cron` is the pinned minute of its fire time and `recurring = false`. A
+  second `/loop <prompt>` while a loop is active is refused with a message to `/loop stop` first.
 - `/loop list`: the jobs. `/loop stop [id]`: cancel one, or all when no id is given. `Esc` while the
   idle prompt shows a pending self-paced wakeup cancels it: `App` keeps a `wakeup_pending` flag
   (set from the scheduler each pass) and, after menu handling, Esc at idle returns
@@ -182,10 +198,12 @@ off, and a restored `schedule.json` is left untouched on disk but never fires.
 
 ### System prompt
 
-One short paragraph in `fontaine-core/prompts/system_prompt.md`: prefer `cron_create` only when
+One short paragraph in a new text constant beside `BASE_PROMPT` in `fontaine-core/src/prompt.rs`,
+added as a new optional prompt layer (`PromptParts.scheduling: Option<&str>`) that `build_agent` sets
+only when the scheduling tools are registered; `system_prompt.md` itself is included whole and is
+not changed. The paragraph says: prefer `cron_create` only when
 the user asks for something to happen later or repeatedly; scheduled prompts are harness notes and
-not the user speaking; end a self-paced iteration with `schedule_wakeup`. The paragraph is included
-only when the scheduling tools are registered (the prompt layers already vary on session state).
+not the user speaking; end a self-paced iteration with `schedule_wakeup`.
 
 ## Implementation Steps
 
@@ -202,7 +220,7 @@ only when the scheduling tools are registered (the prompt layers already vary on
    falls out of the table. `fontaine-core/tests/choke_point.rs` hard-codes the extras set: its
    `extension_asking` helper registers the four tools and the expected set grows.
 4. `fontaine-core`: implement `ScheduleStore` for `Scheduler` behind an approver-reporting adapter
-   (as `ReportedTodos`); register the tools in `register_tools` (`agent/build.rs`, which reads `p.setup.scheduling`; `scheduling` is added to both the public `AgentSetup` and the retained `Setup` that `Parts.setup` holds) when `setup.scheduling && config.schedule.enabled`; drain `take_warning` beside the todos warning; `AgentRuntime::scheduled_prompt`.
+   (as `ReportedTodos`); register the tools in `register_tools` (`agent/build.rs`, which reads `p.setup.scheduling`; `scheduling` is added to both the public `AgentSetup` and the retained `Setup` that `Parts.setup` holds) when `setup.scheduling && config.schedule.enabled`; drain `take_warning` beside the todos warning; `AgentRuntime::scheduled_prompt`; `clear_conversation` clears the scheduler (`Scheduler::clear`).
 5. Config: following the pieces in `config.rs` (TOML section struct, `Settings` field, merged struct
    plus `Config` field and default, merge and validation), a `schedule.enabled` user-only entry in the
    `config_scope.rs` cases table, a test that a project file setting it is refused.
@@ -212,14 +230,14 @@ only when the scheduling tools are registered (the prompt layers already vary on
    dispatch arm; `/loop list|stop`; `Esc` handling; status-bar indicator; the `KEYS` const in
    `reports.rs` (the Esc line `help` appends; the command rows come from `BUILTINS`); parse tests in
    `commands.rs`. `AgentSetup.scheduling` set by the TUI entry point.
-7. System-prompt paragraph; docs (below); `research/research-claude-code-parity.md` row 311 to
+7. System-prompt scheduling layer (`PromptParts.scheduling` in `prompt.rs`, set in `build_agent`); docs (below); `research/research-claude-code-parity.md` row 311 to
    `done`; master plan `## Decisions` lines (see Decisions).
 8. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and the Windows
    clippy target (`chrono` local time and paths are cross-platform).
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/{schedule.rs (new), lib.rs, session.rs, ledger.rs, agent.rs, agent/build.rs, config.rs, config_scope.rs}`, `rust/fontaine-core/prompts/system_prompt.md`, `rust/Cargo.toml`, `rust/fontaine-core/Cargo.toml`
+- `rust/fontaine-core/src/{schedule.rs (new), lib.rs, session.rs, ledger.rs, agent.rs, agent/build.rs, config.rs, config_scope.rs}`, `rust/fontaine-core/src/prompt.rs`, `rust/Cargo.toml`, `rust/fontaine-core/Cargo.toml`
 - `rust/fontaine-tools/src/{schedule.rs (new), lib.rs, descriptor.rs}`
 - `rust/fontaine-tui/src/{commands.rs, statusbar.rs, reports.rs, lib.rs, ui/mod.rs, ui/turn.rs, ui/commands/*}`
 - `rust/fontaine/src/` (the TUI entry sets `scheduling`)
@@ -251,6 +269,11 @@ only when the scheduling tools are registered (the prompt layers already vary on
   scheduling tools, so a scheduled job could never fire there.
 - Deferred: bare `/loop` (maintenance prompt, `loop.md`) and `/loop 20m /skill` expansion at fire
   time. A loop's prompt is plain text in this plan. File a follow-up issue when the PR opens.
+- AFK: the list tool is named `cron_jobs`, not `cron_list`: `choke_point.rs` bans tool names containing the word list/status/kill/interrupt/stop, and the test is kept as is; the Claude alias stays `CronList`.
+- AFK: `/loop` accepts only evenly dividing intervals (minutes dividing 60, whole hours dividing 24, days 1-31 via `*/n` day-of-month, approximate at month ends), rounds anything else to the nearest accepted value with ties down, states the cadence chosen, and is wall-clock aligned.
+- AFK: a self-paced loop is an in-memory per-session record with a TUI end-of-iteration hook arming the fallback or ending the loop; a second `/loop <prompt>` while one is active is refused; a Wakeup job's `cron` is its pinned fire minute with `recurring = false`.
+- AFK: the scheduling prompt paragraph is a new optional layer `PromptParts.scheduling` set only when the tools are registered, since `system_prompt.md` is included whole.
+- AFK: `/clear` also clears the scheduler (a `Scheduled { deleted }` record per job) so a model-authored job cannot outlive the intent that justified it; deviates from the earlier "jobs belong to the session" default.
 - A model-created job's first user-visible trace is the transcript notice `scheduled: <id>` when it
   fires and the `Scheduled { created }` ledger record when it is created.
 
@@ -274,8 +297,9 @@ Unit (constructed inputs, fake `Clock`):
 - `Scheduler`: create/list/delete, 50-job cap, prompt length, one-shot removal after firing, recurring
   re-arm from `now` (no catch-up after a long busy period), 7-day final fire then removal, persistence
   round trip, restore dropping expired/past/wakeup jobs with the warning text, unparseable file.
-- Interval parsing for `/loop`: units, seconds rounding up, non-clean steps rounding, trailing
-  `every N units`; `parse_command` tests; `the_table_is_sorted_by_name` stays green.
+- Interval parsing for `/loop`: units, seconds rounding up, accepted divisors, nearest-value rounding
+  with ties down (`7m` -> `5m`, `90m` -> `1h`), day steps, trailing `every N units`; `parse_command` tests; `the_table_is_sorted_by_name` stays green.
+- `/clear` clears the scheduler: every job gets a `Scheduled { deleted }` record and `schedule.json` is emptied.
 - Tools: argument validation, subagent call refused, `schedule_wakeup` with no active loop, error
   chain for `Persist`.
 - Descriptor rows and the choke-point tests (`fontaine-tools` and `fontaine-core`) cover the four
@@ -288,11 +312,6 @@ the harness's real short `wait_until` sleeps, since tokio paused time cannot mak
   during that turn has `recent_user_messages` unchanged from before the fire.
 - TUI: a due job starts a turn only when idle; a job due mid-turn fires once after it; `/loop 1m x`
   runs one immediate iteration then a scheduled one after a fake-clock advance; `/loop stop`; Esc
-  cancels a pending wakeup; the self-paced fallback wakeup and loop end after an unrescheduled
+  cancels a pending wakeup; a second `/loop <prompt>` while one is active is refused; the self-paced fallback wakeup and loop end after an unrescheduled
   iteration.
 - Config: `[schedule] enabled = false` registers no tools; project-scope setting refused.
-
-## Open Questions
-
-- Should `/clear` also cancel scheduled jobs? Default taken: no, jobs belong to the session, not
-  the conversation context (Claude Code is silent).
