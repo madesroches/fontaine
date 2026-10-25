@@ -233,6 +233,9 @@ All notable changes are recorded here. The format follows
     small chat models read through logprobs, and a held-out screen-then-guardian cascade. With
     `qwen3-4b-instruct-2507` as a stop-only screen, the cascade caught 96.7% of attacks (91.7%
     for the guardian alone) with 41% of the guardian calls. Follow-ups #123–#130 and #132 (#98).
+- Research
+  - A docs-based study of Claude on Microsoft Foundry and Databricks Model Serving, with a
+    central list of model-specific support and follow-ups #165–#170 (#157).
 - Distribution
   - Release binaries for Linux, macOS and Windows built with `pg2` by cargo-dist on a `vX.Y.Z`
     tag, each archive carrying the license, readme and changelog; `cargo install --git
