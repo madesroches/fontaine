@@ -206,3 +206,5 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
     `MICROMEGAS_ENABLE_CPU_TRACING` environment variable), reqwest 0.13 and `tracing` span capture
     with parentage in `TracingCaptureLayer`. The bridge's span half stays until that capture has a
     field hook and a location switch (madesroches/micromegas#1725).
+
+Claude on third-party hosts (Microsoft Foundry, Databricks): `research/research-anthropic-models.md` (#157).
