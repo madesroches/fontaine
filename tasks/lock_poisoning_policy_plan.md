@@ -15,7 +15,7 @@ named helper with a stated reason. The `into_inner()` pattern then appears in ex
 
 ## Current State
 
-`rg 'into_inner\(\)'` over `rust/` lists 78 sites. Split by file:
+`rg 'into_inner\(\)'` over `rust/` lists 74 sites. Split by file:
 
 - Permission and guardian state: `fontaine-core/src/gate.rs` (40, the `SessionState` fields and
   the `Inner` rules lock behind its private `read()`/`write()`), `fontaine-agents/src/tree.rs`
@@ -30,7 +30,7 @@ named helper with a stated reason. The `into_inner()` pattern then appears in ex
 
 `fontaine-guardian` has no `fontaine-*` dependencies and is meant to stay lift-out-able, so it
 cannot use a helper from `fontaine-tools`. `fontaine-tools` is a dependency of `fontaine-agents`,
-`fontaine-core`, `fontaine-tui` and `fontaine`.
+`fontaine-core`, `fontaine-tui`, `fontaine-mcp`, `fontaine-evals` and `fontaine`.
 
 ## Design
 
@@ -50,7 +50,7 @@ Classification of every site:
 | File | Policy |
 |---|---|
 | `gate.rs`, `tree.rs`, `guardian.rs`, `scanner_stage.rs`, `ledger.rs`, `audit.rs` | strict |
-| `agent.rs` model slots (`main`, switcher slots), `child_runner.rs` model reads and `status`, `skills.rs` shell handle | strict |
+| `agent.rs` model slots (`main` slot `:1042`; `llm_scanner` slot `:982`; switcher read `:991`; switcher `config.accounts` writes `:1127`, `:1140`), `child_runner.rs` model reads and `status`, `skills.rs` shell handle | strict |
 | `agent.rs` `files` index slots (`:1301`, `:1311`), `ui/mod.rs` files read, `steering.rs`, `micromegas.rs` (2), `child_runner.rs` `last_text`/`seen` partial text (`:360`, `:410`), `telemetry_micromegas.rs` test mutex | recovering |
 | `token_source.rs` | strict (already; moved onto the helper) |
 
@@ -96,7 +96,7 @@ Guards are the same types as before; only the poisoned branch differs.
    `fontaine/src/telemetry/micromegas.rs`, `fontaine/tests/telemetry_micromegas.rs`: recovering
    helpers with reason comments.
 6. `fontaine-core/src/providers/token_source.rs`: move the ten `expect` sites to the strict
-   helpers (same message text).
+   helpers (same message text): `what` is "warning sink" at `:128` and `:290`, "registry" at `:167`, and "token" for the other seven.
 7. `fontaine-guardian/src/guardian.rs`: four local `expect`s.
 8. Record the policy in `tasks/fontaine_harness_plan.md` `## Decisions`; add the poisoning rule to
    AGENTS.md's Error handling bullets; CHANGELOG entry.
@@ -126,6 +126,7 @@ Guards are the same types as before; only the poisoned branch differs.
 
 - 2026-10-25: Locks guarding permission, guardian, spend, model-selection or durable-record state panic on poison; display and advisory state recovers through `lock_recovering` with a reason comment, because a corrupted permission state must end the session rather than keep deciding, and recovery is only harmless where a half-updated value cannot reach a decision (#186).
 - 2026-10-25: `fontaine-guardian` spells the strict policy locally with `expect`, because it must not depend on `fontaine-tools` (#186).
+- 2026-10-25: `steering.rs` stays recovering: its lock guards two `Vec<String>` buffers touched only by `mem::take`/`extend`, which cannot be left half-updated, and the durable `Record::UserMessage` is written under the separate strict ledger lock (#186).
 
 ## Documentation
 
@@ -137,8 +138,8 @@ AGENTS.md Error handling: one bullet stating the poisoning policy and naming the
 - `lock.rs` unit tests: poison a `Mutex` and an `RwLock` by panicking a thread that holds the
   guard; assert the strict helpers panic with the lock's name (`#[should_panic(expected = …)]`)
   and the recovering helpers return the stored value.
-- `gate.rs` test: poison `SessionState`'s breaker (or denied-calls) lock and assert the next
-  decision panics rather than deciding — pins the headline behaviour change.
+- `gate.rs` test: add a new child `mod tests` in `gate.rs` (it can reach private fields); poison
+  `SessionState`'s `breaker` lock and assert `guardian_denied()` or `auto_paused()` panics rather than deciding — pins the headline behaviour change.
 - Existing suites stay green unchanged (no non-panicking behaviour change). The `rg` acceptance
   check is run by hand in step 9 and is not a test.
 
