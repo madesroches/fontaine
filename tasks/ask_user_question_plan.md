@@ -48,17 +48,17 @@ pub struct QuestionOption { pub label: String, pub description: String }
 
 pub trait QuestionSource: Send + Sync {
     fn ask<'a>(&'a self, agent: &'a str, questions: Vec<Question>)
-        -> BoxFuture<'a, Reply>;
+        -> BoxFuture<'a, QuestionReply>;
 }
-pub enum Reply { Answered(Vec<Answer>), Declined, Unavailable }
-pub struct Answer { pub question: String, pub selected: Vec<String>, pub other: Option<String> }
+pub enum QuestionReply { Answered(Vec<QuestionAnswer>), Declined, Unavailable }
+pub struct QuestionAnswer { pub question: String, pub selected: Vec<String>, pub other: Option<String> }
 ```
 
 The tool validates the shape (counts, non-empty labels, unique option labels per question;
 `deny_unknown_fields`) and returns `invalid_args` errors the model can correct. "Other"
 free-text is always available in the dialog and is not listed among the options, as in Claude
 Code. A result is text: one `"<question>" = "<answer>"` line per question, where `<answer>` is the
-selected labels joined with `", "` with the typed "Other" text appended last; `Unavailable`
+selected labels joined with `", "` with the typed "Other" text appended last (a single-select answer sets exactly one of `selected` / `other`; multi-select may set both); `Unavailable`
 returns `User input is unavailable in this session; proceed with your best judgment and state
 your assumptions.`
 
@@ -90,18 +90,19 @@ precedes it, so a deny or ask rule or a `pre_tool_use` hook can block it. No mod
 `Approver` gains a defaulted method:
 
 ```rust
-fn ask_user<'a>(&'a self, agent: &'a str, questions: Vec<Question>) -> BoxFuture<'a, Reply> {
-    Box::pin(async { Reply::Unavailable })
+fn ask_user<'a>(&'a self, agent: &'a str, questions: Vec<Question>) -> BoxFuture<'a, QuestionReply> {
+    Box::pin(async { QuestionReply::Unavailable })
 }
 ```
 
 so `DenyAll`, test approvers and headless are unavailable by default with no change. Core's
 `QuestionSource` implementation (next to the `SkillRuntime` wiring in `agent.rs`) calls
-`approver.ask_user`, and on `Answered` appends one `Record::UserMessage` containing only
-human-supplied content: the selected option labels and typed "Other" text. The model-authored
-question text and option descriptions are not appended, so model text never becomes guardian
-intent. Esc yields `Reply::Declined`, rendered as "The user declined to answer; proceed with your
-best judgment or ask in plain text", and appends nothing; `Reply::Unavailable` renders the
+`approver.ask_user`, and on `Answered` appends one `Record::UserMessage` per call
+only if some question has typed "Other" text, in the fixed format `Other: "<text>"`, one line per
+such question in question order. Selected labels, question text and option descriptions are not
+appended (they are model-authored, so they never become guardian intent); selections reach the
+model only through the tool result. Esc yields `QuestionReply::Declined`, rendered as "The user declined to answer; proceed with your
+best judgment or ask in plain text", and appends nothing; `QuestionReply::Unavailable` renders the
 unavailable text above.
 
 ### TUI
@@ -122,7 +123,7 @@ root asks), in `handle_key`, `overlay()` (which ranks approval below the server/
 prompts, `view.rs:213`), `covered()` (~:424), the paste `above_dialog` list (~:393) and the
 Ctrl-C/Esc lines. With no approval open, `handle_key` routes to the question panel before the
 `running` Esc-interrupt at `app.rs:525` (as for the server/unavailable/denied prompts,
-~:454-470), since a question is open only while a turn runs, so Esc yields `Reply::Declined`
+~:454-470), since a question is open only while a turn runs, so Esc yields `QuestionReply::Declined`
 rather than interrupting. Esc while typing in the "Other" `InputBuffer` only leaves the field
 (as the approval panel's `typing_reason` exception, ~:436, :524); Esc elsewhere declines the whole
 call. The body is windowed around the selected option as the model picker does with `body_rows`
@@ -138,7 +139,8 @@ linearly in `linear.rs` (`accessibility.rs` only resolves the screen-reader flag
 
 Nothing to add beyond the default: `fontaine -p` returns the unavailable result. The base
 system prompt is static and `PromptParts` has no surface field, so the guidance line is the same
-on all surfaces and headless relies on the unavailable result.
+on all surfaces and headless relies on the unavailable result; the wasted turn per headless use is
+accepted because omitting the tool would change the advertised tool list the issue requires to return "unavailable".
 
 ### Security
 
@@ -147,9 +149,9 @@ it, the answer is never model- or mode-supplied, and children cannot reach the h
 trust edge is human answer text becoming guardian intent; `docs/guardian.md` counts only
 human-typed messages as intent, and `adjudication.rs:109-123` builds `task_intent` /
 `recent_user_messages` verbatim from `UserMessage` records. Recording the question text would
-launder model-authored text into intent, so only selected labels and typed "Other" text are
-appended. A selected label is still chosen from model-written options; the human's selection, not
-the label's wording, is what counts as intent.
+launder model-authored text into intent, so only typed "Other" text is
+appended. A selected label comes from model-written options and a bare label carries no context,
+so selections are returned to the model through the tool result only.
 
 ## Implementation Steps
 
@@ -200,14 +202,17 @@ the label's wording, is what counts as intent.
 - 2026-10-25: `ask_user_question` is root-agent only, refused at call time for children (including custom types that inherit it), because background subagents must not put a dialog in front of the human (#23).
 - 2026-10-25: `ask_user_question` is `ReadOnly` and takes the fast path through a pathless-tool carve-out (with `skill`), because it only shows the human text and collects a choice (#23).
 - 2026-10-25: Esc gives a "declined" result rather than an error or the unavailable text, so the model can tell a refusal from a headless session (#23).
-- 2026-10-25: Only human-supplied content (selected labels, typed "Other" text) is appended as a `UserMessage`, never question text or option descriptions, because model text must not become guardian intent (#23).
+- 2026-10-25: AFK: Only typed "Other" text is appended as a `UserMessage` (format `Other: "<text>"`, one line per question, one message per call, none if no Other text); selected labels, question text and descriptions are returned to the model via the tool result only, because option labels are model-authored and a bare label carries no context, so "only messages you typed count as intent" holds (#23).
+- 2026-10-25: AFK: The tool and its guidance line are kept in headless (accepting one wasted turn per use) rather than adding a prompt surface flag, because the issue requires headless to return "unavailable" and omitting the tool would change the advertised tool list (#23).
+- 2026-10-25: AFK: The new types are named `QuestionAnswer` / `QuestionReply`, because `Answer` collides with `fontaine_core::permissions::Answer` (Allow/Deny) (#23).
+- 2026-10-25: AFK: Result rendering is one `"<question>" = "<answer>"` line per question (single-select sets exactly one of selected/other; multi-select joins labels with ", " then the Other text), and the UserMessage format is separate and Other-only, because fixed formats make both testable (#23).
 
 ## Documentation
 
 `docs/tools.md` (table row, fast-path note; ~:33, and :46-60 "skill is the one read-only tool that names no path"), `docs/tui.md` (dialog keys),
 `docs/headless.md` (unavailable result), `docs/permissions.md` (never auto-answered; answers
 become intent; ~:60 and ~:108-115), `docs/configuration.md` (~:457-458), `docs/guardian.md`
-(~:56-60 intent rule, ~:130), `docs/agents.md` (~:38-39, ~:93), `docs/architecture.md` (~:108, :131),
+(~:56-60 intent rule, ~:130; the "only typed" rule gains: typed "Other" answers to `ask_user_question` count as intent, selected option labels do not), `docs/agents.md` (~:38-39, ~:93), `docs/architecture.md` (~:108, :131),
 `docs/extensions.md` (~:65), `CHANGELOG.md`.
 
 ## Testing Strategy
@@ -216,14 +221,15 @@ become intent; ~:60 and ~:108-115), `docs/configuration.md` (~:457-458), `docs/g
   unknown field, over-long header), result rendering for single/multi-select/other, root-only
   refusal, unavailable and declined texts.
 - TUI (`app.rs`): a second question does not drop the first (queued, shown in order);
-  Esc while `running` with a question open yields `Reply::Declined`, not `Action::Interrupt`;
+  Esc while `running` with a question open yields `QuestionReply::Declined`, not `Action::Interrupt`;
   interrupt declines pending root questions; with an approval open and a question waiting,
   Down/Enter go to the approval; Esc while typing in "Other" leaves the field without declining,
   Esc elsewhere declines the call; a short terminal keeps the selected option visible.
 - Unit (`question.rs`): key handling — navigation, toggle, Other entry, advance, Esc cancel,
   ahead-typed keys ignored within the grace period, dropped sender → closed.
-- Core: with a scripted `Approver`, `Answered` appends a `UserMessage` that appears in the
-  adjudication request's `recent_user_messages`; `DenyAll`/default yields the unavailable result
+- Core: with a scripted `Approver`, an `Answered` with Other text appends exactly one `UserMessage`
+  in the `Other: "<text>"` format that appears in the adjudication request's
+  `recent_user_messages`, while an `Answered` with only selected labels appends nothing; `DenyAll`/default yields the unavailable result
   and appends nothing; every permission mode (including `auto`) still reaches the approver and
   never answers itself (one parametrised choke-point assertion over all modes); a deny rule blocks the call before any dialog.
 - Choke-point tests: the tool is registered wrapped with `ReadOnly` risk (update the table-size
