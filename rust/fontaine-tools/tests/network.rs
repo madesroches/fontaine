@@ -1,6 +1,10 @@
 //! The `[network]` settings against real sockets: a proxy that sees the request, and a local
 //! rustls server that checks the handshake used the configured roots and client identity.
 
+// The Windows platform verifier rejects the signature of the generated test certificates, so the
+// handshake tests run off Windows and the helpers they alone use are unused there.
+#![cfg_attr(windows, allow(dead_code, unused_imports))]
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -133,6 +137,7 @@ async fn get_text(client: &reqwest::Client, url: &str) -> Result<String, reqwest
     client.get(url).send().await?.text().await
 }
 
+#[cfg(not(windows))]
 #[tokio::test]
 async fn a_client_without_the_ca_fails_the_handshake_and_one_with_it_succeeds() {
     let pki = pki();
@@ -154,6 +159,7 @@ async fn a_client_without_the_ca_fails_the_handshake_and_one_with_it_succeeds() 
     assert_eq!(get_text(&trusting, &url).await.unwrap(), "ok");
 }
 
+#[cfg(not(windows))]
 #[tokio::test]
 async fn a_server_requiring_a_client_certificate_needs_the_identity() {
     let pki = pki();
@@ -221,6 +227,7 @@ async fn no_proxy_sends_the_listed_host_straight_to_its_origin() {
     assert!(proxy.received_requests().await.unwrap().is_empty());
 }
 
+#[cfg(not(windows))]
 #[tokio::test]
 async fn an_https_proxy_alone_leaves_http_direct_and_an_http_proxy_alone_leaves_https_direct() {
     let proxy = proxy_mock("from the proxy").await;
@@ -248,6 +255,7 @@ async fn an_https_proxy_alone_leaves_http_direct_and_an_http_proxy_alone_leaves_
     assert!(proxy.received_requests().await.unwrap().is_empty());
 }
 
+#[cfg(not(windows))]
 #[tokio::test]
 async fn an_https_request_tunnels_through_connect_with_the_proxy_credentials() {
     let pki = pki();
