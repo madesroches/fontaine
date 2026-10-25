@@ -30,7 +30,7 @@ therefore holds in every mode, nothing can approve past it, and it only ever tig
   message, including the `ListToolsResult` responses of the initial fetch and of each
   list-changed refresh, before rig-rmcp turns them into tools.
 - **The gate's view of a call** — `rust/fontaine-tools/src/gate.rs:25` `CallView { tool, risk,
-  args, agent, annotations }`, built in `guarded.rs::gated` and in 7 other places (agent.rs, the
+  args, agent, annotations }`, built in `guarded.rs::gated` and in 6 other places (agent.rs, the
   none-guardian eval, core test helpers).
 - **The floor** — `rust/fontaine-core/src/permissions.rs:613` `evaluate`. The order is: hook deny
   → deny rules → child restriction → plan block → **forced ask** (`rules.ask` match, else a hook
@@ -104,38 +104,19 @@ rule, then the server marker, then a hook `ask`:
 ```rust
 let forced_ask = rules.ask.iter().find(..).map(|r| (Tier::AskRule, r.label()))
     .or_else(|| call.requires_user_interaction
-        .then(|| (Tier::AskRule, REQUIRES_USER_INTERACTION_RULE.to_string())))
+        .then(|| (Tier::AskRule, REQUIRES_USER_INTERACTION.to_string())))
     .or_else(|| hook.ask.clone().map(|id| (Tier::Hook, id)));
 ```
 
 - The marker has the same tier and the same path as an ask rule: `Tier::AskRule`, `forced:
   true`, through `would_prompt`. No new `Tier` variant is needed, so the audit log, telemetry,
   the headless `gate_decision` event and eval `expected_tier` all stay unchanged. The audit
-  `rule` is the fixed text `anthropic/requiresUserInteraction` (named once as a constant in
-  `permissions.rs`). It never contains the server or tool name, so `hide_mcp_names` telemetry
+  `rule` is the fixed text `anthropic/requiresUserInteraction` (the `fontaine_mcp::REQUIRES_USER_INTERACTION`
+  constant). It never contains the server or tool name, so `hide_mcp_names` telemetry
   stays clean.
 - Prompt reason: "the MCP server requires a person's approval for every call of this tool". The
   existing ask-rule wording ("`{rule}` asks for approval before this runs") would read oddly
   with a `_meta` key as the rule, so the marker gets its own wording.
-- What follows from the floor (no new code, only tests):
-  - Deny rules and a hook deny still win, since they come earlier in the floor.
-  - Manual, acceptEdits, plan and auto all prompt. In `auto` neither the guardian nor the screen
-    is consulted.
-  - `dontAsk` denies, and so does a headless `-p` run. That matches Claude Code's `dontAsk` and
-    its "the prompt has to reach a person" rule. Fontaine has no `--permission-prompt-tool`.
-  - Allow rules, session grants, skill grants and a PreToolUse hook `allow` never skip it.
-  - The prompt offers only allow-once or deny (`forced`), which is Claude Code's "no don't ask
-    again".
-  - A subagent's calls go through the same pipeline and get the same treatment.
-
-### Security invariants
-
-- The marker can only add a prompt or a Deny. It never sets `Verdict::Allow`, never changes a
-  risk class, and never reaches past the floor. A server omitting it gets exactly today's
-  behavior.
-- No regex: the check is an exact key lookup on a typed `_meta` map plus a `bool` on `CallView`.
-- `readOnlyHint` and the other hints stay text-only. Only this marker, and only in the tightening
-  direction, becomes structured.
 
 ## Implementation Steps
 
@@ -144,51 +125,38 @@ let forced_ask = rules.ask.iter().find(..).map(|r| (Tier::AskRule, r.label()))
    from `GuardedTool::call`. Update the other `CallView` sites to `false`:
    `fontaine-core/src/agent.rs`, `fontaine-evals/src/none.rs`,
    `fontaine-core/tests/common/pipeline.rs` (let the helper take the flag, or add a sibling
-   helper for the marked call), `fontaine-core/tests/{scanner,scanner_model,user_hooks}.rs`.
+   helper for the marked call), `fontaine-core/tests/{scanner,scanner_model,user_hooks}.rs`, `fontaine-tools/tests/guarded.rs:235` (pass `false` to `guard_callback`).
 2. **fontaine-mcp** — add `interaction.rs` (`Marked`, `marks`, `InteractionTap`, the constant)
    with unit tests. Wire the tap and `Marked` into `start` and `connect_transport` in
-   `servers.rs`, and add `marked` to `GuardedSink` in `register.rs` (its `new` takes it). Export
-   the constant from `lib.rs` if core uses it. Otherwise core defines its own audit-rule constant,
-   so it doesn't take a dependency on `fontaine-mcp`.
+   `servers.rs`, and add `marked` to `GuardedSink` in `register.rs` (its `new` takes it). Re-export
+   `REQUIRES_USER_INTERACTION` from `lib.rs`; core uses it as the audit rule. Update the stale
+   comments to say the marker is the one declared value that can force a prompt: the module doc
+   at `lib.rs:1-3` ("what a server declares ... reaches the guardian as untrusted text") and the
+   comment at `register.rs:89-90` ("Declared hints travel with the definition as text ...
+   whatever the server says").
 3. **fontaine-core** — extend the forced-ask chain in `permissions.rs::evaluate` as above, with
-   the audit-rule constant and the prompt reason.
+   `fontaine_mcp::REQUIRES_USER_INTERACTION` as the audit rule and the prompt reason.
 4. **Tests** — see Testing Strategy.
 5. **Docs** — see Documentation.
 
 ## Files to Modify
 
-- `rust/fontaine-tools/src/gate.rs`, `rust/fontaine-tools/src/guarded.rs`
+- `rust/fontaine-tools/src/gate.rs`, `rust/fontaine-tools/src/guarded.rs`,
+  `rust/fontaine-tools/tests/guarded.rs`
 - `rust/fontaine-mcp/src/interaction.rs` (new), `rust/fontaine-mcp/src/servers.rs`,
   `rust/fontaine-mcp/src/register.rs`, `rust/fontaine-mcp/src/lib.rs`
 - `rust/fontaine-core/src/permissions.rs`, `rust/fontaine-core/src/agent.rs`
 - `rust/fontaine-evals/src/none.rs`
 - `rust/fontaine-mcp/tests/common/{mod.rs,server.rs}`, `rust/fontaine-mcp/tests/mcp_registration.rs`
-- `rust/fontaine-core/tests/common/pipeline.rs`, `rust/fontaine-core/tests/permission_rules.rs`
-  (or `permissions_auto.rs` for the auto case), `rust/fontaine-core/tests/{scanner,scanner_model,user_hooks}.rs`
+- `rust/fontaine-core/tests/common/pipeline.rs`, `rust/fontaine-core/tests/permission_rules.rs`,
+  `rust/fontaine-core/tests/permissions_auto.rs`, `rust/fontaine-core/tests/permissions_screen.rs`, `rust/fontaine-core/tests/{scanner,scanner_model,user_hooks}.rs`
 - `docs/mcp.md`, `docs/permissions.md`, `tasks/design/permissions.md`,
   `research/research-claude-code-parity.md`
 
-## Trade-offs
-
-- **Transport tap vs. an upstream rig-rmcp change.** The clean fix is for rig-rmcp to carry
-  `_meta` (or the marker) onto the `DynamicTool`. rig is a third-party crate pinned to an exact
-  version, so that means waiting on an upstream release. The tap is roughly 60 lines inside
-  `fontaine-mcp`, observes the same typed `rmcp::model::Tool` rig-rmcp parses, and changes no
-  message. If upstream later carries `_meta`, the tap collapses into a lookup in `wrap`.
-- **Tap vs. a second `tools/list` call from Fontaine.** A separate listing could race a
-  list-changed refresh and disagree with what rig-rmcp registered. The tap reads the exact
-  responses rig-rmcp builds from.
-- **Fixed at wrap time vs. looked up per call.** Wrap time matches how the risk class is fixed,
-  and refresh re-wraps anyway. A per-call lookup would add a lock read to every MCP call for no
-  behavioral gain.
-- **Reuse `Tier::AskRule` vs. a new tier.** The issue asks for an implicit ask rule, and the tier
-  enum is a shared contract (audit, telemetry, evals). The `rule` field already says which rule
-  fired.
-- **A structured `bool` on `CallView` vs. parsing `annotations` text in core.** `annotations` is
-  documented as never being a gate. A typed field keeps the "server text never decides" property
-  intact.
-
 ## Decisions
+
+- 2026-10-25: Read the marker with a transport tap rather than waiting for an upstream rig-rmcp change, because rig-rmcp 0.45 drops `_meta` and is pinned to an exact version.
+- 2026-10-25: Use the tap rather than a second `tools/list` call, because a separate listing could race a list-changed refresh and disagree with what rig-rmcp registered.
 
 ## Documentation
 
@@ -216,7 +184,7 @@ All automated, none live:
   - a later page listing a marked tool without the key unmarks it, while tools not listed keep
     their state;
   - non-list messages (notifications, other results) pass through unchanged and touch nothing;
-  - every message is returned byte-for-byte the same.
+  - every message is returned unchanged (equal to the input).
 - **Integration — `fontaine-mcp/tests/mcp_registration.rs`.** Extend the test `Gate` double's
   `Seen` with the flag, and add a `grant_access_tool()` with the marker to `tests/common/server.rs`.
   - Over the in-process transport, `grant_access` reaches the gate with
@@ -226,13 +194,17 @@ All automated, none live:
   - The streamable-HTTP test's scripted `tools/list` includes a marked tool, and the gate sees it
     marked. This pins the claim that `start`'s HTTP branch is tapped too, not just
     `connect_transport`.
-- **Pipeline — `fontaine-core/tests/permission_rules.rs`** (plus `permissions_auto.rs` for auto),
-  for a marked `mcp__srv__grant` call:
+- **Pipeline — `fontaine-core/tests/permission_rules.rs`** (with the auto cases in
+  `permissions_auto.rs` and the screen case in `permissions_screen.rs`), for a marked
+  `mcp__srv__grant` call:
   - manual and acceptEdits prompt with `tier = ask_rule`, the marker rule, and `Offers` with
     neither session nor always;
-  - auto prompts, and the scripted guardian and screen are never called (no guardian request
-    recorded);
-  - an `allow` rule `mcp__srv__grant` and a PreToolUse hook `allow` still prompt;
+  - auto prompts, and the scripted guardian is never called (`permissions_auto.rs`); in
+    `permissions_screen.rs` the screen is never called either;
+  - an `allow` rule `mcp__srv__grant` still prompts (`permission_rules.rs`), and so does a
+    PreToolUse hook `allow` (`permissions_auto.rs`, which has the allow-capable hook double);
+  - a session grant or skill grant covering the tool still prompts;
+  - a subagent's marked call gets the same forced prompt;
   - `dontAsk` and headless deny with `tier = ask_rule`;
   - a `deny` rule on the tool still wins with `tier = deny_rule`;
   - the same call unmarked keeps today's behavior (an allow rule allows it).
