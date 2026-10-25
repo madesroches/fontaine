@@ -1,0 +1,5 @@
+tool/result seq 29 of e5-compact, 49931 chars; last lines:
+
+[output truncated; full output: /tmp/dsh-subprocess-CLf2mk/dsh-subprocess-8-1-d2af79ee2919-stdout.log]
+
+(Omitted 14371 bytes. Full formatted result stored at: /tmp/dsh-spill-R5jLLK/session-bfb2c613ff92/c742b473689d-bash.txt. Use read with offset/limit, or grep this path to search within it.)

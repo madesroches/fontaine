@@ -66,7 +66,7 @@ calls observed (that is an observation, not a scorecard; #163 files the measurem
 
 - 99 plugin rows compose the headless tree (`captures/e1_plugin_ids.txt`, from `--dump-config`). The model
   patch (catalog entry copied from `deepseek-flash` onto the gateway id, default model set) landed
-  (`runs/e1-dump/config.yml`, lines for `agent-default-model` and `llm-deepseek`).
+  (`captures/e1_config_rows.txt`, the `agent-default-model` and `llm-deepseek` rows).
 - Turn flow (`docs/tool-execution-pipeline.md`): `tool/call` logged; `tools/pre-execute` waterfall (hooks,
   permission, sandbox); approval if `ask`; monotonic guards (repeat-tool-reminder, timeout-policy);
   `tools/execute` waterfall; tool body; `tools/post-execute`; `tool/result` logged. Every step is a plugin.
@@ -90,7 +90,7 @@ list_agents, read, read_image, send_message, skill, subagent, subagent_fork, tod
 web_fetch, web_search, workflow, working_directory, write). The first request of a session carries no
 tools: it is the title generator, `thinking: disabled`, `max_tokens 4096` (`captures/e1_request_title.json`).
 Tool schemas are terse; parameter descriptions fix the argument order ("provide `description` before
-`command`"). The first captured main request: 5,094 input tokens (512 cached) at 24 tools.
+`command`"). The first captured main request: 5,094 uncached + 512 cached input tokens (e1-bash; `captures/e1_request_main.json`, `response_usage`) at 24 tools.
 
 **Claude Code.** Not measured here.
 **Fontaine today.** One narrative prompt ("You are Fontaine, a terminal coding agent ...") and 11 tools
@@ -109,7 +109,7 @@ the model matches; otherwise signatures are dropped and text, thinking and tool 
 `dsh: reasoning:`; `--json` projects it as `thinking` events.
 **Fontaine today.** Chat wire, no thinking parameter on the main agent, so the model thinks by default
 (P8 below: yes, on both models). Reasoning comes back as `reasoning_content` and rig replays it under the
-same field. Measured round-trip (E8, `captures/e8_roundtrip.txt`): in the 15-request fix run, 12 of 12
+same field. Measured round-trip (E8, `captures/e8_roundtrip.txt`): in the 16-request fix run, 12 of 12
 reasoning-bearing turns were sent back with `reasoning_content`; 0 dropped. Verdict: correct as is.
 
 ### 4.3 Context management
@@ -118,8 +118,7 @@ reasoning-bearing turns were sent back with `reasoning_content`; 0 dropped. Verd
 
 - **Spill at result time.** A result over 12,500 estimated tokens is stored whole in a spill file; the model
   sees head and tail and "(Omitted N bytes. Full formatted result stored at: <path>. Use read with
-  offset/limit, or grep this path to search within it.)" (`captures` do not hold it; the footer is in
-  `runs/e5-compact/session.jsonl` seq 29). The `read` tool is exempt. bash additionally keeps a 64 KB tail
+  offset/limit, or grep this path to search within it.)" (`captures/e5_spill_footer.txt`). The `read` tool is exempt. bash additionally keeps a 64 KB tail
   and a separate full-output file: "[output truncated; full output: <path>]".
 - **Prune at pressure.** Over the threshold, every tool result over 8,192 chars loses its middle (head 4,096,
   tail 1,024) before any model call; each prune is a logged `compaction/prune` that shadows the original.
@@ -245,7 +244,7 @@ Observed in E1 (`captures/e1_endpoints.txt`, `captures/e1_request_main.json`) wi
 
 - **Every model request carries**: `user-agent: deepseek-harness/0.2.1-rc.3 (+url)`, `x-deepseek-harness-user-id`
   (a random UUID kept in `$DSH_HOME/.anonymous-user-id`), `x-deepseek-harness-session-id`, and the body fields
-  `dsh_plugin_packages` (88 packages with versions) and `dsh_session_log`.
+  `dsh_plugin_packages` (89 packages with versions; 88 when `DSH_TELEMETRY_DISABLED=1` unmounts the telemetry package) and `dsh_session_log`.
 - **`dsh_session_log` is on by default and uploads the session.** It is incremental (`afterSeq`/`throughSeq`,
   at most 8 MiB per request), mounted in the base bundle, and the endpoint is whatever base URL is configured,
   so the Go gateway received it too. What was on the wire (E2, `captures/e2_session_log_event_types.txt`): the
@@ -363,12 +362,12 @@ All probes: `scripts/probe_chat.py`, results `captures/probe_results.json` (flas
    round-trips all 12 reasoning turns (4.2); a session built on `go/glm-5.1` and resumed on
    `go/deepseek-v4.1-flash` replayed three tool/assistant turns with no `reasoning_content` and got 200
    (`captures/e8_resume_foreign_model.txt`); the same resume on the Messages wire (assistant blocks `text`,
-   `tool_use` only) also 200 (`captures/e8_resume_messages_wire.txt`). dsh's own natural tool-call turns without
+   `tool_use` only) also 200 (`captures/e8_resume_messages_wire.txt`). Fontaine's own natural tool-call turns without
    reasoning (e8-fix requests 12 and 14) were accepted. So **no bug is filed**: the gateway tolerates
    or fills it. Path: `opencode_go.rs`, rig `chat.rs reasoning_field`. What remains is the direct API: **#164**.
 2. **Reasoning effort (O).** Chat `reasoning_effort` (+ `thinking`), Messages `output_config.effort`; dsh sends
    `high` by default and offers `off|low|high|max` (`packages/llm/llm-deepseek/src/serialize.ts`). The gateway
-   accepted `low`, `medium`, `high`, `max`, `xhigh` and `none` on both wires (and `high` without a `thinking`
+   accepted `low`, `medium`, `high`, `max`, `xhigh` and `none` on Chat (`low`, `high`, `max`, `xhigh` on Messages) (and `high` without a `thinking`
    field), i.e. it does not validate, and a one-line question gave no usable difference in reasoning tokens
    (16-51). Without a thinking parameter the model thinks (P8). Fontaine sends nothing on the main agent. Feeds
    **#53**: expose `off|low|high|max`, and do not rely on the gateway to reject a wrong value.

@@ -1,0 +1,18 @@
+rows of runs/e1-dump/config.yml (dsh --dump-config, with the study model patch):
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: deepseek-official
+    model: deepseek-v4.1-flash
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek-api-key'
+  config:
+    models:
+      - id: deepseek-v4.1-flash
+        name: DeepSeek-V4.1-Flash (Go gateway)
+        contextWindow: 1048576
+        inputModalities:
+          - text
+          - image
+        systemPromptUpdate: in-history
+        toolUpdate: addition-only

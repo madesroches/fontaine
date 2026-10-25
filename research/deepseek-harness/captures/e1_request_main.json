@@ -121,6 +121,26 @@
   }
  ],
  "dsh_plugin_packages_count": 89,
+ "response_usage": {
+  "input_tokens": 5094,
+  "output_tokens": 96,
+  "cache_creation_input_tokens": 0,
+  "cache_read_input_tokens": 512,
+  "cost": 0,
+  "opencode": {
+   "billing_source": "go",
+   "list_cost": 0.00082324,
+   "allowance": 0.00061743,
+   "tokens": {
+    "input": 5094,
+    "output": 96,
+    "reasoning": 0,
+    "cache_read": 512,
+    "cache_write_5m": 0,
+    "cache_write_1h": 0
+   }
+  }
+ },
  "dsh_session_log_keys": [
   "version",
   "sessionFormatVersion",

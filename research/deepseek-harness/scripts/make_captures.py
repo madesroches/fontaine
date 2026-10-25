@@ -18,6 +18,9 @@ def run_py(script, *args):
 w("e1_endpoints.txt", run_py("pcap_endpoints.py", os.path.join(R, "e1-bash", "egress.pcap")))
 ids = re.findall(r"^- id: (\S+)", open(os.path.join(R, "e1-dump", "config.yml")).read(), re.M)
 w("e1_plugin_ids.txt", "composed headless tree, %d rows (dsh --profile headless --dump-config, with the study model patch):\n" % len(ids) + "\n".join(ids))
+cfg = open(os.path.join(R, "e1-dump", "config.yml")).read()
+rows = [m.group(0) for m in re.finditer(r"^- id: (?:agent-default-model|llm-deepseek)\n(?:(?!^# |^- id:).*\n)*", cfg, re.M)]
+w("e1_config_rows.txt", "rows of runs/e1-dump/config.yml (dsh --dump-config, with the study model patch):\n" + "".join(rows))
 # E1/E2: one main request, structure only
 e = ex("e1-bash")
 main = e[1]["req_body"]
@@ -29,6 +32,7 @@ w("e1_request_main.json", json.dumps({
     "system_prompt": main["system"][0]["text"] if isinstance(main["system"], list) else main["system"],
     "messages_first_request": main["messages"],
     "dsh_plugin_packages_count": len(main["dsh_plugin_packages"]["packages"]),
+    "response_usage": json.loads(re.findall(r'^data: (\{"type":"message_delta".*)$', e[1]["resp_body"], re.M)[-1])["usage"],
     "dsh_session_log_keys": list(main["dsh_session_log"].keys()),
 }, indent=1))
 t = e[0]["req_body"]
@@ -54,12 +58,27 @@ w("e7_usage.txt", run_py("summarize_run.py", os.path.join(R, "e7-resume", "excha
 for l in open(os.path.join(R, "e5-compact2", "session.jsonl")):
     r = json.loads(l)
     if r["type"] == "compaction/summary": w("e5_compaction_summary.txt", "".join(c.get("text", "") for c in r["data"]["summary"]))
+for l in open(os.path.join(R, "e5-compact", "session.jsonl")):
+    r = json.loads(l)
+    if r["type"] == "tool/result" and r["seq"] == 29:
+        txt = r["data"]["message"]["content"][0]["text"]
+        w("e5_spill_footer.txt", "tool/result seq 29 of e5-compact, %d chars; last lines:\n" % len(txt) + "\n".join(txt.splitlines()[-4:]))
 # E8
 parts = []
 for r in ("e8-read", "e8-fix"):
     parts.append("## " + r); parts.append(run_py("check_roundtrip.py", os.path.join(R, r, "exchanges.jsonl")))
 w("e8_roundtrip.txt", "\n".join(parts))
 w("e8_framing_compare.txt", "## Fontaine (Chat wire) e8-read\n" + run_py("summarize_run.py", os.path.join(R, "e8-read", "exchanges.jsonl")) + "\n## dsh (Messages wire) e2-default\n" + run_py("summarize_run.py", os.path.join(R, "e2-default", "exchanges.jsonl")))
+g = [r for r in ex("e8-fix") if isinstance(r["req_body"], dict) and r["req_body"].get("thinking") == {"type": "disabled"}]
+gl = ["guardian (main-model fallback) exchanges in the e8-fix run: %d" % len(g)]
+parsed = 0
+for r in g:
+    u = r["resp_body"]["usage"]
+    v = json.loads(r["resp_body"]["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    parsed += 1
+    gl.append("%s %s %s %s cached %s elapsed %s" % (r["status"], v["decision"], v["confidence"], u["prompt_tokens"], u["prompt_tokens_details"]["cached_tokens"], r["elapsed"]))
+gl.append("parseable verdicts: %d of %d" % (parsed, len(g)))
+w("e8_guardian_calls.txt", "\n".join(gl))
 fe = ex("e8-read")[1]["req_body"]
 w("e8_fontaine_request.json", json.dumps({"keys": list(fe.keys()), "stream_options": fe.get("stream_options"), "tool_names": [x["function"]["name"] for x in fe["tools"]], "system_prompt": fe["messages"][0]["content"] if isinstance(fe["messages"][0]["content"], str) else fe["messages"][0]["content"]}, indent=1))
 rc = ex("e8-resume-chat")
