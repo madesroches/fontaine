@@ -153,6 +153,7 @@ async fn a_stdio_server_gets_only_the_variables_it_is_given_by_name() {
             command: binary.to_string_lossy().into_owned(),
             args: Vec::new(),
             env_vars: vec!["GRANTED_VAR".to_string()],
+            env: Vec::new(),
             cwd: std::env::temp_dir(),
         },
     };
@@ -190,6 +191,49 @@ async fn a_stdio_server_gets_only_the_variables_it_is_given_by_name() {
 }
 
 #[tokio::test]
+async fn configured_env_reaches_a_stdio_server_and_overrides_a_copied_value() {
+    let binary = double_binary();
+    assert!(binary.exists(), "{} is not built", binary.display());
+    let gate = Gate::new(true);
+    let handle = tool_server();
+    let spec = ServerSpec {
+        name: "stdio".to_string(),
+        transport: Transport::Stdio {
+            command: binary.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            env_vars: vec!["GRANTED_VAR".to_string()],
+            env: vec![
+                ("CONFIGURED_VAR".into(), "from-env-table".into()),
+                ("GRANTED_VAR".into(), "overridden".into()),
+            ],
+            cwd: std::env::temp_dir(),
+        },
+    };
+    let env = |name: &str| match name {
+        "GRANTED_VAR" => Some("granted".into()),
+        "PATH" => std::env::var_os("PATH"),
+        _ => None,
+    };
+    let connected = connect(&spec, handle.clone(), guard(gate.clone()), true, &env)
+        .await
+        .expect("the stdio server starts");
+    for (name, expected) in [
+        ("CONFIGURED_VAR", "from-env-table"),
+        ("GRANTED_VAR", "overridden"),
+    ] {
+        let seen = call(
+            &handle,
+            "mcp__stdio__env",
+            &json!({"name": name}).to_string(),
+        )
+        .await
+        .unwrap();
+        assert!(seen.contains(expected), "{name}: {seen}");
+    }
+    connected.connection.close().await;
+}
+
+#[tokio::test]
 async fn a_server_that_cannot_start_is_an_error_naming_it() {
     let gate = Gate::new(true);
     let spec = ServerSpec {
@@ -198,6 +242,7 @@ async fn a_server_that_cannot_start_is_an_error_naming_it() {
             command: "fontaine-no-such-program".to_string(),
             args: Vec::new(),
             env_vars: Vec::new(),
+            env: Vec::new(),
             cwd: std::env::temp_dir(),
         },
     };

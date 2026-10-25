@@ -340,3 +340,48 @@ async fn the_ledger_records_the_session_the_messages_and_the_decisions() {
     assert_eq!(records[3]["tool"], "read");
     assert_eq!(records[4]["tool"], "shell");
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn configured_env_reaches_the_shell_tool_and_only_its_names_reach_the_ledger() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool("c1", "shell", json!({"command": "printenv PROBE_ENV"})),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let settings = s.work.parent().unwrap().join("env-settings.toml");
+    common::write(
+        &settings,
+        "[env]\nPROBE_ENV = \"probe-value-7431\"\n[permissions]\nallow = [\"shell(printenv *)\"]\n",
+    );
+    let out = s
+        .headless(&[
+            "--settings",
+            settings.to_str().unwrap(),
+            "--output-format",
+            "stream-json",
+            "print it",
+        ])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let results = tool_results(&lines);
+    assert_eq!(results[0]["success"], json!(true), "{}", results[0]);
+    assert!(
+        results[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("probe-value-7431"),
+        "{}",
+        results[0]
+    );
+    let session = lines[0]["session_id"].as_str().unwrap().to_string();
+    let records = ledger(&s, &session);
+    assert_eq!(records[0]["env_keys"], json!(["PROBE_ENV"]));
+    let raw = serde_json::to_string(&records).unwrap();
+    assert!(!raw.contains("probe-value-7431"), "{raw}");
+}

@@ -225,6 +225,8 @@ pub struct ShellSettings {
     pub max_timeout_secs: u64,
     /// Variables the shell's child processes never inherit.
     pub scrub_env: Vec<OsString>,
+    /// Variables set after the scrub, from the user's `[env]`.
+    pub set_env: Vec<(OsString, OsString)>,
     pub git_bash: Option<GitBash>,
 }
 
@@ -233,6 +235,7 @@ impl Default for ShellSettings {
         ShellSettings {
             max_timeout_secs: 600,
             scrub_env: Vec::new(),
+            set_env: Vec::new(),
             git_bash: None,
         }
     }
@@ -285,8 +288,14 @@ pub fn shell_for(root: &Path, settings: &ShellSettings) -> ShellTool {
     let mut launcher = Launcher::default()
         .in_dir(root)
         .without_env(settings.scrub_env.iter().cloned());
+    for (name, value) in &settings.set_env {
+        launcher = launcher.with_env(name, value);
+    }
     if let Some(git_bash) = &settings.git_bash {
-        launcher = launcher.with_env("PATH", git_bash.path_value(std::env::var_os("PATH")));
+        launcher = launcher.with_env(
+            "PATH",
+            git_bash.path_value(crate::git_bash::base_path(&settings.set_env)),
+        );
     }
     ShellTool {
         shell: Shell {

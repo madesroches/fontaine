@@ -554,3 +554,68 @@ async fn a_clear_empties_the_context_and_drops_the_old_summary_but_the_log_keeps
     assert!(!sent.contains("OLD-CONVERSATION-SUMMARY"), "{sent}");
     assert!(!sent.contains("question number"), "{sent}");
 }
+
+#[test]
+fn session_start_round_trips_with_and_without_env_keys() {
+    let record = |env_keys: Vec<String>| Record::SessionStart {
+        session_id: "s".into(),
+        permission_mode: "manual".into(),
+        workspace_roots: vec!["/w".into()],
+        workspace_trust: "trusted".into(),
+        git_remotes: Vec::new(),
+        env_keys,
+    };
+    for keys in [vec![], vec!["HTTPS_PROXY".to_string(), "PATH".to_string()]] {
+        let text = serde_json::to_string(&record(keys.clone())).unwrap();
+        assert_eq!(text.contains("env_keys"), !keys.is_empty(), "{text}");
+        assert_eq!(serde_json::from_str::<Record>(&text).unwrap(), record(keys));
+    }
+    let old = r#"{"kind":"session_start","session_id":"s","permission_mode":"manual","workspace_roots":["/w"],"workspace_trust":"trusted","git_remotes":[]}"#;
+    assert_eq!(serde_json::from_str::<Record>(old).unwrap(), record(vec![]));
+}
+
+#[tokio::test]
+async fn the_guardian_is_told_the_env_names_and_never_the_values() {
+    use common::runtime::build;
+    use fontaine_core::adjudication;
+    use fontaine_core::config::PermissionMode::Manual;
+    use fontaine_guardian::Profile;
+    use fontaine_guardian::prompt_builder::{system_prompt, user_message};
+
+    let w = World::new();
+    w.user_file(
+        "[env]\nRUST_LOG = \"warn\"\nHTTPS_PROXY = \"http://user:s3cr3t-pa55@proxy:3128\"\n",
+    );
+    let built = build(&w, Manual, Vec::new(), true);
+    built.runtime.record_session_start().await;
+    let request = adjudication::build(
+        &built.runtime.state,
+        "shell",
+        &serde_json::json!({"command": "ls"}),
+        Vec::new(),
+        None,
+    );
+    assert_eq!(request.session_facts.env_keys, ["HTTPS_PROXY", "RUST_LOG"]);
+    let message = user_message(&request);
+    assert!(
+        message.contains("subprocess_env_set_by_user: HTTPS_PROXY, RUST_LOG"),
+        "{message}"
+    );
+    let ledger = std::fs::read_to_string(
+        w.data
+            .join("sessions")
+            .join(&built.runtime.session.id)
+            .join("ledger")
+            .join("ledger.jsonl"),
+    )
+    .unwrap();
+    assert!(ledger.contains("HTTPS_PROXY"));
+    for sent in [
+        ledger,
+        message,
+        system_prompt(Profile::Full, &request),
+        serde_json::to_string(&request).unwrap(),
+    ] {
+        assert!(!sent.contains("s3cr3t-pa55"), "{sent}");
+    }
+}

@@ -155,6 +155,13 @@ pub(crate) fn blocks(request: &AdjudicationRequest, with_digest: bool) -> String
     for remote in &facts.git_remotes {
         text.push_str(&format!("- {}\n", one_line(remote)));
     }
+    if !facts.env_keys.is_empty() {
+        let names: Vec<String> = facts.env_keys.iter().map(|k| one_line(k)).collect();
+        text.push_str(&format!(
+            "subprocess_env_set_by_user: {}\n",
+            names.join(", ")
+        ));
+    }
     text.push_str("paths_this_call_touches:\n");
     if facts.touched_paths.is_empty() {
         text.push_str("- (none)\n");
@@ -246,6 +253,7 @@ mod tests {
                 workspace_roots: vec!["/work/proj".into()],
                 workspace_trust: "trusted".into(),
                 git_remotes: vec!["https://github.com/acme/proj.git".into()],
+                env_keys: Vec::new(),
                 touched_paths: vec![TouchedPath {
                     path: "/work/proj/src/lib.rs".into(),
                     status: PreExistence::PreExisting,
@@ -281,6 +289,18 @@ mod tests {
             facts.contains(
                 "x/?- /x [created_this_session]?- /y [created_this_session] [pre_existing]"
             )
+        );
+    }
+
+    #[test]
+    fn env_names_are_one_line_and_absent_when_there_are_none() {
+        let mut req = request();
+        assert!(!user_message(&req).contains("subprocess_env_set_by_user"));
+        req.session_facts.env_keys = vec!["HTTPS_PROXY".into(), "PATH".into(), "A\nB".into()];
+        let msg = user_message(&req);
+        assert!(
+            msg.contains("subprocess_env_set_by_user: HTTPS_PROXY, PATH, A?B\n"),
+            "{msg}"
         );
     }
 

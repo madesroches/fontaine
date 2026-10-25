@@ -22,6 +22,9 @@ pub enum Transport {
         /// Names of environment variables passed through. Nothing else of the parent's
         /// environment but a short base set reaches the server.
         env_vars: Vec<String>,
+        /// Variables set on the server after the base set and `env_vars`, overriding a copied
+        /// value of the same name.
+        env: Vec<(OsString, OsString)>,
         cwd: PathBuf,
     },
     Http {
@@ -190,6 +193,7 @@ where
             command,
             args,
             env_vars,
+            env: set_env,
             cwd,
         } => {
             let mut process = tokio::process::Command::new(command);
@@ -202,6 +206,9 @@ where
                 if let Some(value) = env(name) {
                     process.env(name, value);
                 }
+            }
+            for (name, value) in set_env {
+                process.env(name, value);
             }
             let (transport, stderr) = TokioChildProcess::builder(process)
                 .stderr(Stdio::piped())

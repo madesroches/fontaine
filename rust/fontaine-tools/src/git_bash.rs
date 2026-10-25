@@ -82,6 +82,23 @@ impl GitBash {
     }
 }
 
+/// The `PATH` Git Bash's directories go in front of: the one `[env]` sets when it sets one,
+/// otherwise the process's own.
+pub fn base_path(set_env: &[(OsString, OsString)]) -> Option<OsString> {
+    set_env
+        .iter()
+        .rev()
+        .find(|(name, _)| {
+            if cfg!(windows) {
+                name.to_string_lossy().eq_ignore_ascii_case("PATH")
+            } else {
+                name == "PATH"
+            }
+        })
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var_os("PATH"))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum GitBashError {
     /// `FONTAINE_GIT_BASH_PATH` names something that is not a Git Bash installation.
@@ -151,6 +168,51 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    #[test]
+    fn a_configured_path_is_the_base_for_git_bashs_directories() {
+        let configured = [(OsString::from("PATH"), OsString::from("/configured/bin"))];
+        let base = base_path(&configured);
+        assert_eq!(base, Some(OsString::from("/configured/bin")));
+        let git = GitBash {
+            bin: PathBuf::from("/git/bin"),
+            usr_bin: PathBuf::from("/git/usr/bin"),
+        };
+        let joined = git.path_value(base);
+        let entries: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+        assert_eq!(
+            entries,
+            [
+                PathBuf::from("/git/usr/bin"),
+                PathBuf::from("/git/bin"),
+                PathBuf::from("/configured/bin"),
+            ]
+        );
+    }
+
+    #[test]
+    fn without_a_configured_path_the_process_path_is_the_base() {
+        let other = [(OsString::from("RUST_LOG"), OsString::from("warn"))];
+        assert_eq!(base_path(&other), std::env::var_os("PATH"));
+        assert_eq!(base_path(&[]), std::env::var_os("PATH"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_path_name_is_matched_case_insensitively_on_windows() {
+        let configured = [(OsString::from("Path"), OsString::from("C:\\configured"))];
+        assert_eq!(
+            base_path(&configured),
+            Some(OsString::from("C:\\configured"))
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_path_name_is_matched_exactly_elsewhere() {
+        let configured = [(OsString::from("Path"), OsString::from("/not/path"))];
+        assert_eq!(base_path(&configured), std::env::var_os("PATH"));
+    }
 
     #[test]
     fn the_command_goes_on_the_command_line_unless_it_goes_through_the_environment() {

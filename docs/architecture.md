@@ -160,7 +160,7 @@ Each session keeps two stores in `<data dir>/sessions/<session id>/`:
   recorded when the agent receives it with a tool result, not when it is typed), mode changes, approvals and grants,
   denials, actions taken, `!` commands you ran in the terminal UI (`user_shell`, the command and its
   exit code), the workspace roots, the trust state, the repository's git remotes
-  (read from the repository's own config, without credentials) and an index of the files present
+  (read from the repository's own config, without credentials), the names of the `[env]` variables (never their values) and an index of the files present
   when the session started. The index respects `.gitignore` and holds at most 50,000 paths, after
   which it records that it was cut short.
 

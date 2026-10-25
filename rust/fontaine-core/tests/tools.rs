@@ -67,3 +67,20 @@ fn the_otlp_header_variable_is_always_dropped_even_when_unset() {
     let scrubbed = names(&scrubbed_env(&config, Vec::<OsString>::new()));
     assert!(scrubbed.contains(&"OTEL_EXPORTER_OTLP_HEADERS".to_string()));
 }
+
+#[test]
+fn subprocess_env_lists_the_configured_pairs_in_name_order() {
+    let w = World::new();
+    w.user_file("[env]\nZED = \"last\"\nALPHA = \"$HOME/first\"\n");
+    let config = w.load().unwrap();
+    let pairs = fontaine_core::tools::subprocess_env(&config);
+    assert_eq!(
+        pairs,
+        [
+            (OsString::from("ALPHA"), OsString::from("$HOME/first")),
+            (OsString::from("ZED"), OsString::from("last")),
+        ]
+    );
+    let none = World::new().load().unwrap();
+    assert!(fontaine_core::tools::subprocess_env(&none).is_empty());
+}

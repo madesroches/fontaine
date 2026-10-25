@@ -300,10 +300,43 @@ mod shell_env {
     use std::ffi::OsString;
     use std::sync::Arc;
 
+    use fontaine_tools::builtins;
+
     use super::common::{AllowAll, Dirs, call, env_with, registry, scope, text};
     use serde_json::json;
 
     const CHILD_MARKER: &str = "FONTAINE_TEST_SHELL_ENV_CHILD";
+
+    async fn shell_output(env: &builtins::BuiltinEnv, command: &str) -> String {
+        let tools = registry(env);
+        let out = call(&tools, "shell", json!({ "command": command }))
+            .await
+            .unwrap();
+        text(&out)
+    }
+
+    #[tokio::test]
+    async fn configured_env_reaches_the_shell_literally_and_wins_over_the_scrub() {
+        let d = Dirs::new();
+        let mut env = env_with(scope(&d.dir("work"), &[]), Arc::new(AllowAll::default()));
+        env.shell.scrub_env = vec![OsString::from("FONTAINE_TEST_BOTH")];
+        env.shell.set_env = vec![
+            (
+                OsString::from("FONTAINE_TEST_SET"),
+                OsString::from("$HOME/x"),
+            ),
+            (
+                OsString::from("FONTAINE_TEST_BOTH"),
+                OsString::from("set-value"),
+            ),
+        ];
+        let shown = shell_output(
+            &env,
+            "printf '%s|%s' \"$FONTAINE_TEST_SET\" \"$FONTAINE_TEST_BOTH\"",
+        )
+        .await;
+        assert!(shown.contains("$HOME/x|set-value"), "{shown}");
+    }
 
     /// The `shell` child's environment holds none of the scrubbed names. The variables must exist
     /// in this process to be inherited, and setting them here would race other threads, so the

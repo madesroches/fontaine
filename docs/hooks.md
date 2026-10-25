@@ -65,7 +65,8 @@ There is no `transcript_path`: Fontaine keeps no transcript file. The environmen
 
 The hook runs with the same scrubbed environment as the `shell` tool: the variables named by
 `api_key_env` of any account, `[telemetry] api_key_env`, `[guardian] scanner_hf_token_env`, the
-`MICROMEGAS_*` family and the OTLP header variables are not passed.
+`MICROMEGAS_*` family and the OTLP header variables are not passed. The entries of
+[`[env]`](configuration.md#env) are set on it, after that scrub and before `FONTAINE_PROJECT_DIR`.
 
 ## What the hook answers
 

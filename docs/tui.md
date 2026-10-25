@@ -89,8 +89,8 @@ coloured; Enter runs the command instead of sending a message, and the `!` is no
 
 - It runs as you, in the primary workspace root, with no approval prompt: it is your own action, so
   the [permission pipeline](permissions.md) and the [guardian](guardian.md) do not see it.
-- It runs with the same scrubbed environment and the same output cut as the agent's `shell` tool,
-  because the output goes to the agent. It is killed after 120 seconds, or after 60 seconds without
+- It runs with the same environment (scrubbed, plus [`[env]`](configuration.md#env)) and the same
+  output cut as the agent's `shell` tool, because the output goes to the agent. It is killed after 120 seconds, or after 60 seconds without
   output, and has no standard input.
 - It runs only between turns. While a turn runs, Enter on a `!` input says so and keeps the text.
   While a command runs nothing else can be sent or queued; Esc or Ctrl-C interrupts it and kills

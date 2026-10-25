@@ -12,6 +12,7 @@ use crate::audit::{Decision, DecisionRecord, args_digest, now_rfc3339};
 use crate::ledger::Record;
 use crate::permissions::record_decision;
 use crate::tier::Tier;
+use crate::tools;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserShellRun {
@@ -39,6 +40,7 @@ impl AgentRuntime {
             &self.roots[0],
             &ShellSettings {
                 scrub_env: self.setup.scrub_env.clone(),
+                set_env: tools::subprocess_env(&self.config),
                 git_bash: self.setup.git_bash.clone(),
                 ..ShellSettings::default()
             },

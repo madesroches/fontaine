@@ -68,6 +68,9 @@ pub struct SessionFacts {
     pub workspace_trust: String,
     /// Fetch URLs of the repositories around the roots, read when the session started.
     pub git_remotes: Vec<String>,
+    /// Names of the variables the user's config sets on every subprocess; values are never
+    /// carried.
+    pub env_keys: Vec<String>,
     /// Only the paths this call touches; the file index itself is never shown.
     pub touched_paths: Vec<TouchedPath>,
     /// The last [`ACTIONS_TAKEN`] actions, oldest first.

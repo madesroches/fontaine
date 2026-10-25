@@ -146,6 +146,9 @@ log_tool_content = false           #   shell commands, paths, MCP server/tool na
                                    #   rule names + explanations; tool_content = tool outputs
 content_max_bytes = 61440
 resource_attributes = {}           # static tags, e.g. { "team.id" = "platform" }
+
+[env]                              # user-trust scopes only; literal NAME = "value" pairs set on every
+HTTPS_PROXY = "http://proxy.internal:3128"   # tool and extension subprocess (shell, `!`, hooks, stdio MCP)
 ```
 
 Extension files (Claude Code-compatible frontmatter; built in Phase 5) live beside the settings
@@ -187,3 +190,4 @@ Per-key scope (the user file may set every key; a key a scope may not set is rej
 | `[mcp.servers.*]` | after workspace trust + per-server approval | yes, after workspace trust | `--settings` |
 | `[telemetry]` | `enabled = false` only | `enabled = false` only | `--settings` |
 | `[tui]` `theme`, `screen_reader` | no | no | `--settings` |
+| `[env]` | no (scope error) | yes | `--settings` |

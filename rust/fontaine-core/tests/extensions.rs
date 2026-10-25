@@ -317,6 +317,7 @@ fn skills(w_setup: impl FnOnce(&World)) -> Skills {
         scope: rig.state.scope(),
         seen: Default::default(),
         scrub_env: Vec::new(),
+        set_env: Vec::new(),
         git_bash: common::git_bash(),
         results: Arc::new(fontaine_tools::result_pipeline::ResultPipeline::new()),
         hide_mcp_names: false,

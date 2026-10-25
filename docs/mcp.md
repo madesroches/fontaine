@@ -36,7 +36,8 @@ A server name contains letters, digits, `_` and `-`, and has no `__` and no lead
 (`PATH`, `HOME`, `USER`, `LANG`, the temporary-directory variables and, on Windows, the system
 variables it needs to find programs) and the variables named in `env_vars`. Values never appear in
 configuration, and the API keys of your model accounts and the telemetry credentials are not
-passed unless you name them. The server's standard error is not shown in the terminal UI; it goes to
+passed unless you name them. Every entry of [`[env]`](configuration.md#env) is set on the server as
+well, replacing a copied variable of the same name. The server's standard error is not shown in the terminal UI; it goes to
 the debug file (`--debug-file`).
 
 **Where they are declared.** The user file, `--settings` and an untracked `settings.local.toml` of

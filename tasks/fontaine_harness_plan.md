@@ -496,6 +496,8 @@ scorecard run (see `## Remaining work`).
 - 2026-10-24: AFK: `/clear` is refused while any subagent is running, because a running subagent's guardian requests read the root's live human messages, so clearing them under it would judge its later calls with an empty task intent; refusing is the fail-closed choice over a warning or a documented gap (#11).
 - 2026-10-24: AFK: `[context] autocompact_window` enables threshold compaction only for catalog-listed models; a model the catalog does not list gets no fallback `ModelSpec`, is never compacted automatically (nor by `/compact`), and `/context` says so, because rig reports no spec for unlisted models on purpose and a guessed spec's request options and limits could be wrong for the real model; a fallback can come later as its own change (#11).
 - 2026-10-24: A repeated-identical-tool-call reminder like dsh's `repeat-tool-reminder` (#160) may be added although Claude Code has none (measured: nine identical calls, no nudge); it must stay advisory, one user-role notice that never blocks a call or changes a permission decision, because in the #154 study it made the model stop and diagnose after three identical failing calls.
+- 2026-10-25: project scope cannot set `[env]` (Claude Code honors it after trust); it cannot tighten, and a project `PATH` would shadow commands the pre-classifier and guardian reason about.
+- 2026-10-25: `[env]` applies to tool and extension subprocesses only, not Fontaine's own process (Claude Code applies it to both); credential and telemetry lookups keep their explicit keys.
 
 ## Open Questions
 

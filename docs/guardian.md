@@ -46,7 +46,7 @@ The request is built from the ledger and the call itself:
 | `project_instructions` | The `FONTAINE.md` files the agent reads: yours, then the primary root's. |
 | `environment`, `rules` | The `[auto_mode]` prose lists, with the shipped defaults spliced in. |
 | `tool_call` | The tool, its full arguments, a digest of them, and `destructive`, derived by Fontaine from the call itself (below). |
-| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the status of only the paths this call touches (`pre_existing`, `created_this_session` or `unindexed`; never the file index), and the last 20 actions of the session. |
+| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status of only the paths this call touches (`pre_existing`, `created_this_session` or `unindexed`; never the file index), and the last 20 actions of the session. |
 | `hook_context` | Notes from `pre_tool_use` hooks, in an untrusted block. |
 | `prior_denials` | Reason-coded denials earlier in the session, for loop detection. |
 
@@ -262,7 +262,7 @@ control files, privileged namespace operations, raw devices, symlink traversal t
 paths, network paths around the sandbox proxy), denying them as `Container Escape` with the escape
 class in the explanation as `class=<name>`, and still denies exfiltration to destinations that are
 not the repository's own remotes. It receives a smaller request: the call, your last 500
-characters and 3 messages, the workspace roots, the remotes and the touched paths' status, without
+characters and 3 messages, the workspace roots, the remotes, the `[env]` names and the touched paths' status, without
 project instructions, hook notes or earlier denials. The deterministic floor still runs.
 
 It is a narrowing, never "off", and it only loads when containment is verified. **Both** must hold:

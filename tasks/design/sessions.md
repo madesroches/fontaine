@@ -7,7 +7,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 Two stores per session. rig-memory holds the model context, which compaction may rewrite. The
 **session ledger** (`fontaine-core::ledger`) is Fontaine-owned and append-only: user messages
 verbatim, mode changes, approvals and session grants, denial records, actions taken, the workspace
-roots, trust state, and the git remotes (read with `gix` from the repo config without following `include`/`includeIf`; none when there is no `.git` or `gix` errors — Fontaine never spawns `git`) and pre-session file index captured at start (the index
+roots, trust state, the names of the `[env]` overrides (never their values), and the git remotes (read with `gix` from the repo config without following `include`/`includeIf`; none when there is no `.git` or `gix` errors — Fontaine never spawns `git`) and pre-session file index captured at start (the index
 respects `.gitignore` and is capped at 50,000 paths — overflow is recorded as truncated; paths
 the index does not hold are reported to the guardian as `unindexed`). The guardian's
 `AdjudicationRequest` is built only from the ledger — never from a compaction summary or other
