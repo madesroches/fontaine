@@ -1,0 +1,174 @@
+//! Building the root agent: its prompt, its wrapped tools and the builder configuration it
+//! shares with subagents.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use fontaine_agents::registry::AgentTypes;
+use fontaine_agents::spawn::{AgentTool, SendMessageTool};
+use fontaine_tools::ask_user::AskUserTool;
+use fontaine_tools::builtins::Seen;
+use fontaine_tools::gate::{AgentId, ROOT_AGENT};
+use fontaine_tools::result_pipeline::ResultPipeline;
+use fontaine_tools::skill::SkillTool;
+use fontaine_tools::todo::TodoTool;
+use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext};
+use rig_agent::prelude::*;
+use rig_agent::tool::server::ToolServerHandle;
+
+use super::Setup;
+use crate::child_runner::{CoreChildRunner, LedgerWindow};
+use crate::config::Config;
+use crate::gate::SessionState;
+use crate::models::Models;
+use crate::permissions::{Approver, PermissionPipeline};
+use crate::prompt::{self, PromptParts};
+use crate::questions::HumanQuestions;
+use crate::runtime_error::RuntimeError;
+use crate::session::{CONVERSATION_LOG, Session};
+use crate::skills::{self, SkillRuntime};
+use crate::steering::{Steering, SteeringHook};
+use crate::todos::ReportedTodos;
+use crate::tools::{self, ExtensionTools, RegistryParams};
+
+/// Tells the permission state which model tool call a tool is serving.
+pub(crate) struct CurrentCall {
+    pub(crate) state: Arc<SessionState>,
+}
+
+impl AgentHook for CurrentCall {
+    async fn on_dispatch(&self, _ctx: &HookContext, event: DispatchEvent<'_>) -> DispatchAction {
+        if event.tool_name().is_some()
+            && let Some(call) = event.call_id
+        {
+            let agent = event
+                .tool_context()
+                .and_then(|context| context.get::<AgentId>().ok().flatten())
+                .map_or_else(|| ROOT_AGENT.to_string(), |id| id.0);
+            self.state.set_current_call(&agent, call.to_string());
+        }
+        DispatchAction::Proceed
+    }
+}
+
+/// What the root agent and every subagent are built with: the telemetry setting and the hook
+/// that tells the permission state which model tool call a tool is serving. Applied before any
+/// other hook so `CurrentCall` runs first.
+pub(crate) fn apply_common(
+    builder: AgentBuilder,
+    state: &Arc<SessionState>,
+    record_content: bool,
+) -> AgentBuilder {
+    builder
+        .record_content_telemetry(record_content)
+        .add_hook(CurrentCall {
+            state: state.clone(),
+        })
+}
+
+pub(super) struct Parts<'a> {
+    pub(super) setup: &'a Setup,
+    pub(super) roots: &'a [PathBuf],
+    pub(super) pipeline: &'a Arc<PermissionPipeline>,
+    pub(super) state: &'a Arc<SessionState>,
+    pub(super) seen: &'a Seen,
+    pub(super) models: &'a Models,
+    pub(super) config: &'a Config,
+    pub(super) session: &'a Session,
+    pub(super) tool_server: &'a ToolServerHandle,
+    pub(super) results: &'a Arc<ResultPipeline>,
+    pub(super) skills: &'a Arc<SkillRuntime>,
+    pub(super) approver: &'a Arc<dyn Approver>,
+    pub(super) types: &'a Arc<AgentTypes>,
+    pub(super) runner: &'a Arc<CoreChildRunner>,
+    pub(super) output_style: Option<(String, String)>,
+    pub(super) steering: &'a Steering,
+}
+
+/// The agent, with its wrapped tools registered in the session's tool server.
+pub(super) fn build_agent(p: &Parts<'_>) -> Result<(Agent, prompt::PromptPieces), RuntimeError> {
+    let pieces = prompt_layers(p);
+    if let Some(warning) = p.session.todos().take_warning() {
+        p.approver.warn(&warning);
+    }
+    register_tools(p)?;
+    Ok((finish_builder(p, pieces.join()), pieces))
+}
+
+fn prompt_layers(p: &Parts<'_>) -> prompt::PromptPieces {
+    let instructions = prompt::load_instructions(&p.setup.config_dir, &p.roots[0]);
+    let skill_index = skills::index(p.skills.extensions());
+    prompt::layers(&PromptParts {
+        roots: p.roots,
+        system_prompt: p.setup.system_prompt.as_deref(),
+        instructions: &instructions,
+        skill_index: skill_index.as_deref(),
+        output_style: p
+            .output_style
+            .as_ref()
+            .map(|(name, text)| (name.as_str(), text.as_str())),
+        append: p.setup.append_system_prompt.as_deref(),
+    })
+}
+
+fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
+    let ledger_window: Arc<dyn fontaine_agents::root_ledger::RootLedger> =
+        Arc::new(LedgerWindow(p.state.clone()));
+    let registered = tools::registry(RegistryParams {
+        gate: p.pipeline.clone(),
+        scope: p.state.scope(),
+        seen: p.seen.clone(),
+        scrub_env: p.setup.scrub_env.clone(),
+        set_env: tools::subprocess_env(p.config),
+        git_bash: p.setup.git_bash.clone(),
+        results: p.results.clone(),
+        hide_mcp_names: !(p.config.telemetry.enabled && p.config.telemetry.log_tool_details),
+        network: p.setup.network.clone(),
+        extension: Some(ExtensionTools {
+            agent: AgentTool {
+                tree: p.state.agents().clone(),
+                types: p.types.clone(),
+                runner: p.runner.clone(),
+                ledger: ledger_window.clone(),
+            },
+            send_message: SendMessageTool {
+                tree: p.state.agents().clone(),
+                ledger: ledger_window,
+            },
+            skill: SkillTool {
+                source: p.skills.clone(),
+            },
+            ask_user: AskUserTool {
+                source: Arc::new(HumanQuestions::new(p.approver.clone(), p.state.clone())),
+            },
+            todo: TodoTool {
+                store: Arc::new(ReportedTodos {
+                    todos: p.session.todos().clone(),
+                    approver: p.approver.clone(),
+                }),
+            },
+        }),
+    })
+    .map_err(RuntimeError::new)?;
+    for tool in registered {
+        if tool.name == "shell" {
+            p.skills.set_shell(tool.tool.clone());
+        }
+        p.tool_server.add_dynamic_tool(tool.tool);
+    }
+    Ok(())
+}
+
+fn finish_builder(p: &Parts<'_>, preamble: String) -> Agent {
+    let builder = AgentBuilder::new(p.models.main.completion.clone())
+        .preamble(preamble)
+        .memory(p.session.store())
+        .conversation(CONVERSATION_LOG);
+    let mut builder = apply_common(builder, p.state, p.config.telemetry.records_content())
+        .add_hook(SteeringHook::new(p.steering.clone(), p.state.clone()))
+        .tool_server_handle(p.tool_server.clone());
+    if let Some(schema) = &p.setup.json_schema {
+        builder = builder.output_schema_raw(schema.clone());
+    }
+    builder.build()
+}

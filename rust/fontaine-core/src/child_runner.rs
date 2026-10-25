@@ -20,7 +20,7 @@ use rig_memory::MemoryStore;
 use tokio::sync::watch;
 use tracing::Instrument;
 
-use crate::agent::CurrentCall;
+use crate::agent::apply_common;
 use crate::gate::{ChildRestrictions, SessionState, spend_of};
 use crate::ledger::Record;
 use crate::models::{ModelHandle, SharedSwitcher};
@@ -274,14 +274,11 @@ impl ChildRunner for CoreChildRunner {
             } = model.wire_ids();
             let state = context.state.clone();
             let tools = fork_tools(&context.tool_server, &request.tools);
-            let agent = AgentBuilder::new(model.completion.clone())
+            let builder = AgentBuilder::new(model.completion.clone())
                 .preamble((context.preamble)(&request.agent_type))
-                .record_content_telemetry(context.record_content)
                 .memory(MemoryStore::default())
-                .conversation("main")
-                .add_hook(CurrentCall {
-                    state: state.clone(),
-                })
+                .conversation("main");
+            let agent = apply_common(builder, &state, context.record_content)
                 .tool_server_handle(tools)
                 .build();
             state.set_child_restrictions(&request.id, restrictions(&request.agent_type));

@@ -1372,6 +1372,17 @@ pub struct Telemetry {
     pub resource_attributes: BTreeMap<String, String>,
 }
 
+impl Telemetry {
+    /// Whether any prompt, response or tool content may be recorded on spans.
+    pub fn records_content(&self) -> bool {
+        self.enabled
+            && (self.log_user_prompts
+                || self.log_assistant_responses
+                || self.log_tool_details
+                || self.log_tool_content)
+    }
+}
+
 /// Fontaine's own variable namespace (`FONTAINE_SH_COMMAND`, `FONTAINE_PROJECT_DIR`).
 const ENV_RESERVED_PREFIX: &str = "FONTAINE_";
 

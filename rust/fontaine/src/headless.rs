@@ -316,7 +316,7 @@ fn init_event(runtime: &AgentRuntime, data_dir: &Path) -> Value {
         )
     };
     let roots: Vec<String> = runtime
-        .roots
+        .roots()
         .iter()
         .map(|root| root.display().to_string())
         .collect();
@@ -339,12 +339,12 @@ fn init_event(runtime: &AgentRuntime, data_dir: &Path) -> Value {
             "model": runtime.models.main.reference.to_string(),
             "guardian_model": guardian_model,
             "guardian_available": guardian_available,
-            "guardian_profile": runtime.guardian_profile.as_str(),
-            "permission_mode": runtime.mode.as_str(),
+            "guardian_profile": runtime.guardian_profile().as_str(),
+            "permission_mode": runtime.start_mode().as_str(),
             "workspace_roots": roots,
             "config_sources": sources,
             "workspace_trust": if trusted { "trusted" } else { "untrusted" },
-            "suspended_allow_rules": if runtime.mode == PermissionMode::Auto {
+            "suspended_allow_rules": if runtime.start_mode() == PermissionMode::Auto {
                 runtime.state.suspended_allow_rules()
             } else {
                 Vec::new()
@@ -495,13 +495,16 @@ async fn run_one(
 /// reach the guardian: one stderr line each, and one more when the guardian cannot be asked at
 /// all, since every adjudication then fails closed.
 fn announce(runtime: &AgentRuntime) {
-    for notice in &runtime.scanner_notices {
+    for notice in runtime.scanner_notices() {
         eprintln!("fontaine: {notice}");
     }
-    if !matches!(runtime.mode, PermissionMode::Auto | PermissionMode::Plan) {
+    if !matches!(
+        runtime.start_mode(),
+        PermissionMode::Auto | PermissionMode::Plan
+    ) {
         return;
     }
-    for notice in &runtime.notices {
+    for notice in runtime.notices() {
         eprintln!("fontaine: {notice}");
     }
     let guardian = runtime.state.guardian();

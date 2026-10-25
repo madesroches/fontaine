@@ -206,14 +206,14 @@ pub async fn drive(
         ui.app.transcript.notice(error);
     }
     for notice in runtime
-        .notices
+        .notices()
         .iter()
-        .chain(&runtime.scanner_notices)
+        .chain(runtime.scanner_notices())
         .cloned()
     {
         ui.app.transcript.notice(notice);
     }
-    if let fontaine_core::agent::SessionOrigin::Continued { source, how } = &runtime.origin {
+    if let fontaine_core::agent::SessionOrigin::Continued { source, how } = runtime.origin() {
         ui.app.transcript.notice(format!(
             "continuing session {source} ({how}) in {mode} mode, with no grants carried over",
             mode = mode.as_str()
