@@ -49,9 +49,9 @@ Classification of every site:
 
 | File | Policy |
 |---|---|
-| `gate.rs`, `tree.rs`, `guardian.rs`, `scanner_stage.rs`, `ledger.rs`, `audit.rs` | strict |
+| `gate.rs` (except `agent_logs`, `decisions_by_agent`), `tree.rs`, `guardian.rs`, `scanner_stage.rs`, `ledger.rs`, `audit.rs` | strict |
 | `agent.rs` model slots (`main` slot `:1042`; `llm_scanner` slot `:982`; switcher read `:991`; switcher `config.accounts` writes `:1127`, `:1140`), `child_runner.rs` model reads and `status`, `skills.rs` shell handle | strict |
-| `agent.rs` `files` index slots (`:1301`, `:1311`), `ui/mod.rs` files read, `steering.rs`, `micromegas.rs` (2), `child_runner.rs` `last_text`/`seen` partial text (`:360`, `:410`), `telemetry_micromegas.rs` test mutex | recovering |
+| `agent.rs` `files` index slots (`:1301`, `:1311`), `ui/mod.rs` files read, `steering.rs`, `micromegas.rs` (2), `gate.rs` `agent_logs` and `decisions_by_agent` panel copies, `child_runner.rs` `last_text`/`seen` partial text (`:360`, `:410`), `telemetry_micromegas.rs` test mutex | recovering |
 | `token_source.rs` | strict (already; moved onto the helper) |
 
 ### Helpers

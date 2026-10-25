@@ -11,7 +11,7 @@ use fontaine_agents::budget::Spend;
 use fontaine_agents::mode::{Ladder, RootMode};
 use fontaine_agents::tree::AgentTree;
 use fontaine_guardian::{EnvironmentConfig, Guardian, LoopBreaker, RuleConfig, Screen, Settings};
-use fontaine_tools::lock::{lock, read, write};
+use fontaine_tools::lock::{lock, lock_recovering, read, write};
 use fontaine_tools::scope::Scope;
 use rig_core::completion::Usage;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -266,7 +266,7 @@ impl SessionState {
             let cell = mode.clone();
             params
                 .agents
-                .set_root_mode(move || root_mode(*read(&cell, "permission mode")));
+                .set_root_mode(move || root_mode(*read(&cell, "mode")));
         }
         SessionState {
             session_id: params.session_id,
@@ -611,7 +611,8 @@ impl SessionState {
 
     pub fn publish(&self, record: DecisionRecord) {
         {
-            let mut by_agent = lock(&self.decisions_by_agent, "decisions by agent");
+            // Panel display copy; the audit log holds the record.
+            let mut by_agent = lock_recovering(&self.decisions_by_agent);
             let list = by_agent.entry(record.agent_id.clone()).or_default();
             if list.len() == DECISIONS_PER_AGENT {
                 list.pop_front();
@@ -624,7 +625,8 @@ impl SessionState {
 
     /// The decisions made for `agent`, oldest first, for the agents panel.
     pub fn decisions_of(&self, agent: &str) -> Vec<DecisionRecord> {
-        lock(&self.decisions_by_agent, "decisions by agent")
+        // Panel display copy; the audit log holds the record.
+        lock_recovering(&self.decisions_by_agent)
             .get(agent)
             .map(|list| list.iter().cloned().collect())
             .unwrap_or_default()
@@ -645,7 +647,8 @@ impl SessionState {
 
     /// Adds a line to what `agent` has been doing, for the agents panel.
     pub fn log_agent_line(&self, agent: &str, line: String) {
-        let mut logs = lock(&self.agent_logs, "agent logs");
+        // Panel display copy; the audit log holds the record.
+        let mut logs = lock_recovering(&self.agent_logs);
         let list = logs.entry(agent.to_string()).or_default();
         if list.len() == AGENT_LOG_LINES {
             list.remove(0);
@@ -654,7 +657,8 @@ impl SessionState {
     }
 
     pub fn agent_log(&self, agent: &str) -> Vec<String> {
-        lock(&self.agent_logs, "agent logs")
+        // Panel display copy; the audit log holds the record.
+        lock_recovering(&self.agent_logs)
             .get(agent)
             .cloned()
             .unwrap_or_default()
