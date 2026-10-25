@@ -127,8 +127,8 @@ The "record content" flag becomes one method, `Telemetry::records_content()` (in
 5. Split `AgentRuntime::new` into `agent/setup.rs` steps.
 6. Make fields private where no outside reader exists; add the small accessors.
 7. Add `too-many-lines-threshold = 80` to the workspace `clippy.toml` (create if absent) and
-   `#![deny(clippy::too_many_lines)]` at the top of each `agent` submodule file and `agent.rs`
-   (inner attribute on the module file), so the size criterion is enforced by
+   `#![deny(clippy::too_many_lines)]` at the top of `agent.rs` (the inner attribute covers all child
+   modules), so the size criterion is enforced by
    `cargo clippy -D warnings`. Split anything it flags that was missed.
 8. Docs and CHANGELOG (below); run the full command set from `AGENTS.md`.
 
@@ -146,12 +146,7 @@ The "record content" flag becomes one method, `Telemetry::records_content()` (in
 
 ## Trade-offs
 
-- **Keep `mode` as a field named `start_mode`, versus deriving the start mode from the ledger or
-  an `Option` in `SessionState`.** A private field set once at construction is the smallest
-  change and cannot drift into a "current" reading because the only public name says "start".
-- **Generic `apply_common` versus a shared builder factory.** A factory returning a fully
-  configured `AgentBuilder` would have to take the memory/conversation differences as
-  parameters and is a bigger interface; a function that applies just the common hooks keeps root
+- `apply_common` applies only the common hooks rather than a full builder factory, keeping root
   and child differences visible at their own call sites.
 
 ## Documentation
@@ -167,10 +162,7 @@ The "record content" flag becomes one method, `Telemetry::records_content()` (in
 - New unit/integration tests in `fontaine-core/tests` using the existing `built.runtime` rig:
   - `mode()` follows `state.set_mode` while `start_mode()` keeps
     the opening value (pins the stale-field bug class).
-  - `add_dir` makes `roots()` include the new root, and when `rebuild` fails the scope and
-    `roots()` both return to the previous list (single source rolls back with the scope).
-  - `apply_common` hooks: a root agent and a child agent both install `CurrentCall`, observable
-    by a dispatch recording the current call id in `state` for a root and a child call.
+  - After a successful `add_dir`, `roots()` includes the new root.
 - `cargo clippy --all-targets -- -D warnings` enforces the ~80-line limit through the lint above.
 - Headless contract: the existing init-event schema test confirms `permission_mode` and
   `workspace_roots` are unchanged.
