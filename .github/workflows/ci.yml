@@ -34,8 +34,11 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          files=$(git diff --no-renames --name-only "origin/$BASE_REF...HEAD")
-          if printf '%s\n' "$files" | grep -qvE '^(tasks/|research/|AGENTS\.md$)'; then
+          files=$(git diff --no-renames --name-only "origin/$BASE_REF...HEAD") || {
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          if grep -qvE '^(tasks/|AGENTS\.md$)' <<<"$files"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"

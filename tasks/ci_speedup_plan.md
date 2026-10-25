@@ -78,7 +78,7 @@ next is kept. "Measure" means: push the branch, read per-step durations with
    Stage 1-2 and item 10 miss the target and the maintainer approves a protection change.
 10. **Skip the Rust work for non-code PRs, keeping the matrix job names.** Add a `changes` job (plain
     `git diff --name-only` against the base; `code` is false only when every changed path is under
-    `tasks/` or `research/` or is `AGENTS.md`, since Rust tests also read `docs/`, `analytics/` and
+    `tasks/` or is `AGENTS.md`, since Rust tests also read `docs/` (which links into `research/`), `analytics/` and
     the root markdown files) and make `check` `needs: changes`. The `check` job itself always
     runs (so its three expanded names always report), and every step after checkout carries
     `if: needs.changes.outputs.code == 'true'`. A job-level `if` is not used: a skipped matrix job
@@ -151,6 +151,6 @@ CI configuration has no unit-testable logic. Verification is the CI run itself:
 1. Open the PR; read `gh run view <id> --json jobs` for the final run and compare Windows total with
    the 32 min baseline (target < 16 min). Not automated: wall time depends on runner variance and
    must be judged over a couple of runs.
-2. Push a docs-only commit to a throwaway branch/PR and confirm the matrix is skipped but the PR
+2. Push a commit touching only `tasks/` (or `AGENTS.md`) to a throwaway branch/PR and confirm the matrix is skipped but the PR
    shows as mergeable (item 10 shipped), with `ubuntu-latest`, `macos-latest` and `windows-latest` all
    reporting green.
