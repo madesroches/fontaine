@@ -89,7 +89,9 @@ for a missing row.
   `validate_specifier` matches the `Specifier` enum; the `None` arm yields the existing
   "`{tool}` rules take no specifier" error and `Name` the existing "take one name" check. The
   matcher and pattern `match call.tool` arms (`:425`, `:583`) switch to `Specifier` too, so the
-  string literals `shell`, `webfetch`, `agent`, `skill` leave that file's tool dispatch.
+  string literals `shell` and `webfetch` leave that file's tool dispatch. The `agent` and `skill`
+  arms keep their per-tool argument key (`agent_type`, `name`), since `Specifier::Name` does not
+  say which argument is matched.
 - `extensions::claude_tool` looks the name up across `claude` aliases; the "not a tool Fontaine
   has" message is built from the table's aliases.
 
@@ -149,6 +151,7 @@ choke-point test fails on it. `ExtensionTool` erases `T`, so the test runs `regi
 
 ## Decisions
 
+- 2026-10-25: AFK: `Specifier::Name` stays payload-free and the `agent` (`agent_type`) and `skill` (`name`) arms in `permission_rules.rs` keep their per-tool argument key, so those two string literals stay in the matcher and pattern builder; this leaves permission-rule behavior untouched.
 - 2026-10-25: `fontaine-evals/src/baseline.rs`'s partial `TOOL_NAMES` stays separate: it is the
   set of tools the Claude Code baseline can drive, not a list of every tool, and merging would
   change eval behavior.
