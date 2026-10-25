@@ -8,8 +8,8 @@ Study DeepSeek's own agent harness, DeepSeek Harness (`dsh`), and produce a list
 features for Fontaine. The list is led by the features that let the model iterate on a solution,
 which dsh is reportedly good at. The work covers how it frames prompts, tool calls and reasoning for DeepSeek
 models, how it manages context, its safety model, tasks, session log and the feedback it gives the
-model. Running DeepSeek models through Fontaine's rig provider path, as the main agent and as a
-guardian or screen, is in scope too. This is a research spike. The deliverables are
+model. Running DeepSeek models as the main agent through Fontaine's rig provider path is in scope too. Its fit as a
+guardian or screen is assessed from source and the thinking-off history only. This is a research spike. The deliverables are
 `research/research-deepseek-harness.md`, the experiment scripts and captured data under
 `research/deepseek-harness/`, GitHub issues for anything worth adopting, and dated `## Decisions`
 lines only where a finding argues for departing from Claude Code. No product crate changes.
@@ -43,13 +43,14 @@ every source citation in the doc is `path@22ddee37`. Known shape, from a first r
   `dsh_plugin_packages` is also on by default (`cordis.patch.yml:85-86`). So whole session
   content reaches the opencode gateway in every experiment.
 - Candidate iteration mechanisms, the first reading of what lets the model iterate on a
-  solution: `packages/goal/*` (a durable per-session goal, plus an optional `goal-round-driver`
-  that continues in rounds; feeds #17); `packages/guard/repeat-tool-reminder` (reminds the model
+  solution: `packages/goal/*` (a durable per-session goal, plus `goal-round-driver`, mounted by
+  default in base, `packages/bundle/base/cordis.patch.yml:326-327`, which continues in rounds;
+  feeds #17); `packages/guard/repeat-tool-reminder` (reminds the model
   when it repeats the exact same tool call); `packages/guard/timeout-policy` (a hung call returns
   a timed-out error to the model, but only for tools that declare `timeoutMs`: `web_fetch` and
   `web_search` at 30 s; shipped bash/read/write/edit "are never cut off",
   `packages/guard/timeout-policy/README.md:42`); `packages/shell/tool-bash` (keeps its own
-  `BASH_TIMEOUT` and, with `promoteOnTimeout: true`, moves a hung command to a background job and
+  `BASH_TIMEOUT` and, with `promoteOnTimeout: true` (the default), moves a hung command to a background job and
   returns `[still running after <ms>ms; moved to background job <id>]`,
   `packages/shell/tool-bash/README.md:51,66,217`); `packages/lsp/*` (navigation only); and the shapes of tool errors and test output. Negative
   findings from source: `packages/feedback/*` is human ratings that never reach the model; there is
@@ -151,9 +152,13 @@ the request path passed through unchanged:
   would be selectable and unserved by the gateway. Per-model behaviour is keyed per catalog entry
   (`model-info.ts:66-80`, `serialize.ts:64`), so the patch copies every field of the
   `deepseek-flash` entry (`llm-deepseek/src/models.ts:9-16`: `contextWindow` 1_048_576, text+image
-  input, `systemPromptUpdate` `in-history`, `toolUpdate` `addition-only`) onto the new id. Reasoning
-  replay is dropped when the response `model` differs from the source model (`replay.ts:54,63`), so
-  the capture records whether the gateway's response `model` matches the requested id. dsh may send the beta `mid-conversation-tool-changes-2026-07-01` blocks
+  input, `systemPromptUpdate` `in-history`, `toolUpdate` `addition-only`) onto the new id. dsh applies
+  patches in layers: bundles, the profile's `cordis.patch.yml`, `$DSH_HOME/cordis.patch.yml`, then
+  `--patch` (`apps/cli/README.md:41-44`). `run_dsh.sh` passes `--patch <file>` from
+  `research/deepseek-harness/scripts/`, with per-experiment overlays (E3, E5, E7), and E1's
+  `--dump-config` confirms they land. dsh keys reasoning replay on the requested model id
+  (`replay.ts:25-30,54,63`); the capture records whether the thinking signature survives across
+  turns on the gateway. dsh may send the beta `mid-conversation-tool-changes-2026-07-01` blocks
   (`messages-api.ts:7`); a gateway rejection of the beta header or blocks is recorded as a
   finding. If the Go gateway does not serve DeepSeek on its Messages path, fall back to an
   `llm-pi-ai` OpenAI-compatible route to the Go Chat path, and record that the native adapter
@@ -171,8 +176,7 @@ the request path passed through unchanged:
   The Messages client goes to `{base}/anthropic` (`opencode_go.rs:135`), which the
   path-passthrough proxy forwards.
 
-The captures answer the framing, reasoning, caching and telemetry questions from what is actually
-sent, not from the docs. The model-URL proxy cannot show what else dsh sends. The base bundle
+The model-URL proxy cannot show what else dsh sends. The base bundle
 mounts `session-telemetry-otel`, exporting to `https://dsh-otel-collector.deepseeksvc.com/v1/logs`
 (`cordis.patch.yml:205-231`; default mode `FEEDBACK_ONLY`; `DSH_TELEMETRY_OTLP_URL` and
 `DSH_TELEMETRY_MODE` are read at `cordis.patch.yml:221,225`, and `DSH_TELEMETRY_DISABLED` at
@@ -186,7 +190,7 @@ has no env override, and is unselected by default (`fetchProvider: http`,
 can reach any public URL (`cordis.patch.yml:479-486`), and the session-title model request is
 another endpoint (`cordis.patch.yml:67-77`). So the container's egress is logged too: it runs on a
 network whose only route out is the host proxy, or its DNS and connection attempts are captured.
-Each endpoint dsh contacts goes into the telemetry section. Telemetry is turned off with
+Telemetry is turned off with
 `DSH_TELEMETRY_DISABLED=1`. `DEEPSEEK_SEARCH_BASE_URL` replaces the whole base including `/v1`, so
 it points at the proxy and ends in `/anthropic/v1`. No credential reaches `api.deepseek.com`.
 
@@ -198,22 +202,18 @@ under `runs/`. The specific excerpts the doc cites are committed under
 ### Experiments
 
 Each experiment has a script under `scripts/`, a task fixture under `fixtures/` (a tiny repo),
-and a results section in the doc. Before an experiment runs, the plan states the question it
-answers.
-
+and a results section in the doc.
 | # | Experiment | Answers |
 |---|---|---|
 | E1 | Build, boot `headless`, run `--dump-config`, and record the default plugin tree and the container's egress endpoints | architecture; which defaults are on (telemetry, `dsh_session_log`); every endpoint dsh contacts |
 | E2 | One read-only question with the wire captured, once with default `session-log-deepseek` and once with `enabled: false` | system-prompt sections, tool schemas, tool-call and result format, headers, `dsh_*` fields; what `dsh_session_log` puts on the wire |
-| E3 | Fix a failing test in a fixture repo (edit → run tests → iterate). Each mechanism gets a trigger: a `web_fetch` against a local endpoint that stalls, served from the host or inside the container (timeout-policy); a test command that hangs (bash promote-to-background, recorded as its own mechanism); a check that keeps failing identically, to invite 3 identical consecutive calls (repeat-tool-reminder, `cordis.patch.yml:444-448`); task wording that asks the model to call `create_goal` (goal; headless sends a plain user message and has no `/goal`), plus `goal-round-driver`, which the base bundle mounts by default (`packages/bundle/base/cordis.patch.yml:326-327`). Two recorded unknowns: whether a headless task message counts as the direct human message `create_goal` requires (`packages/goal/tool-goal/README.md:55`), and whether rounds run before headless exits when idle. A mechanism that does not fire is recorded as "did not fire" with the trigger used, distinct from "source-only". | the iteration loop: tool errors, the test-output feedback, repeat-tool-reminder, timeout-policy, bash promote-to-background, goal rounds, multi-turn reasoning round-trip |
+| E3 | Fix a failing test in a fixture repo (edit → run tests → iterate). Each mechanism gets a trigger: a `web_fetch` against a local endpoint that stalls, served from the host or inside the container (timeout-policy; the E3 patch sets `tool-web` `fetchTimeoutMs` well below 30 s, e.g. 5000, so timeout-policy's result fires before web-fetch-http's own 30 s deadline); a test command that hangs past bash-local's 120 s foreground default (cap 600 s, `packages/shell/bash-local/src/index.ts:102-103`), or a task that passes a smaller `timeoutMs` (bash promote-to-background, recorded as its own mechanism); a check that keeps failing identically, to invite 3 identical consecutive calls (repeat-tool-reminder, `cordis.patch.yml:444-448`); task wording that asks the model to call `create_goal` (goal; headless sends a plain user message and has no `/goal`), plus `goal-round-driver`, which the base bundle mounts by default (`packages/bundle/base/cordis.patch.yml:326-327`). Two recorded unknowns: whether a headless task message counts as the direct human message `create_goal` requires (`packages/goal/tool-goal/README.md:55`), and whether rounds run before headless exits when idle. A mechanism that does not fire is recorded as "did not fire" with the trigger used, distinct from "source-only". | the iteration loop: tool errors, the test-output feedback, repeat-tool-reminder, timeout-policy, bash promote-to-background, goal rounds, multi-turn reasoning round-trip |
 | E4 | Risky actions in the fixture (write outside the workspace, `rm -rf` of a parent, `curl … \| sh`, reading `~/.ssh` in the container), run under the default and under `--approval-policy never` (accepted values `ask`, `never`; `--permission-mode` takes a configured preset name), recording what the model gets back in each. Headless has no live approval-response channel (`packages/bundle/headless/README.md:98`). The default policy is `ask`: an unanswered request resolves `unavailable` and fails closed, while `never` resolves `rejected` with different text. The default sandbox is `workspace-write` (`packages/bundle/headless/cordis.patch.yml:29-33`), so some actions stop before approval. E4 compares the `unavailable` and `rejected` denial outcomes plus sandbox blocks. | sandbox and approval policy, defaults, what a denial says to the model; compared with Fontaine's floor and guardian |
-| E5 | A long session that crosses the compaction threshold (lower the configured window) plus a large tool result | compaction trigger, summary prompt, tool-result pruning and spill, cache-hit accounting across compaction |
+| E5 | A long session that crosses the compaction threshold plus a large tool result. Compaction triggers at floor(min(W×thresholdRatio, W−O−65536)) (`packages/compaction/compaction-basic/README.md:64-80`), about 840k tokens with the copied 1,048,576 `contextWindow`. The E5 overlay sets a small `thresholdRatio` through `compaction-basic` `modelPolicies` for `deepseek-v4.1-flash` (README:46-56,68), or lowers `contextWindow` while staying above O+65536. Record the computed trigger. | compaction trigger, summary prompt, tool-result pruning and spill, cache-hit accounting across compaction |
 | E6 | A multi-step task in plan mode (through the Web UI: exit needs a review, `cordis.patch.yml:346`, and `/plan` is not available in headless), then with the todo tool, then with one subagent (both in headless) | task representation, todo state, plan handoff, subagent context |
 | E7 | Resume the E3 session with `--session-id <id>` (`packages/bundle/headless/src/startup.ts:59`; `--add-dir` and the policy flags must be repeated, `headless/README.md:90`), then inspect the on-disk log and `session-query` | session log format, durability, resume and review. Session-query search is off by default (`session-query-sqlite` with `path: ':memory:'`, `openAt: never`, `cordis.patch.yml:150-161`, giving `SESSION_QUERY_SEARCH_DISABLED`; `tool-session-query` is experimental and unmounted). E7 may enable it with a patch (`openAt: first-search`) to observe search. |
-| E8 | Run E2 and E3 through `fontaine -p` on the same model, through the proxy. It relies on the model's default thinking: Fontaine's main agent sends no thinking parameter (`thinking_off` applies only to guardian and scanner; #53 is open). Check the capture shows a `reasoning_content` response before judging the round-trip. Also provoke a tool-call turn with no reasoning: build a session with tool calls on a Go model routed to the Messages or Responses wire (one that does not emit Chat `reasoning_content`; not Kimi), then `fontaine -p --resume <id> --model go/deepseek-v4.1-flash` through the proxy (`rust/fontaine/src/cli.rs:83-89`; `--model` overrides on resume, `rust/fontaine/src/lib.rs:347-372,464`), and record whether the request gets a 400. | whether reasoning-bearing turns are round-tripped as `reasoning_content` on the Chat wire (source says yes); whether a tool-call turn with no reasoning gets a 400; a side-by-side diff of framing against dsh |
+| E8 | Run E2 and E3 through `fontaine -p` on the same model, through the proxy. It relies on the model's default thinking: Fontaine's main agent sends no thinking parameter (`thinking_off` applies only to guardian and scanner; #53 is open). Check the capture shows a `reasoning_content` response before judging the round-trip. Also provoke a tool-call turn with no reasoning: build a session with tool calls on any Go model other than `deepseek-v4.1-flash` (rig turns foreign reasoning into plain text on resume), then `fontaine -p --resume <id> --model go/deepseek-v4.1-flash` through the proxy (`rust/fontaine/src/cli.rs:83-89`; `--model` overrides on resume, `rust/fontaine/src/lib.rs:347-372,464`), and record whether the request gets a 400. | whether reasoning-bearing turns are round-tripped as `reasoning_content` on the Chat wire (source says yes); whether a tool-call turn with no reasoning gets a 400; a side-by-side diff of framing against dsh |
 | E9 | Where dsh's behaviour differs from what Fontaine copies, capture the Claude Code baseline with `claude -p` on the same fixture task | the "different from Claude Code" column |
-
-The experiments are observations that serve as evidence for the feature list.
 
 Anything that cannot be run goes into a "Not tried" list with the reason (for example, no direct
 DeepSeek API key, so `api.deepseek.com` Files and context caching are reached only through the
@@ -257,7 +257,8 @@ gateway, or the build fails). The user can then supply what is missing.
 2. **Source read.** Read the pinned checkout's docs and packages listed in Current State and take
    notes per question, with `path@22ddee37` citations. Use Explore subagents for the broad
    package sweep, and read the cited files directly before quoting them.
-3. **Tooling.** Write `record_proxy.py` and `scrub.py` (stdlib only, run with `python3 -I`),
+3. **Tooling.** Write, all under `research/deepseek-harness/scripts/`: `proxy.toml`, the dsh
+   overlays `*.patch.yml` (E3, E5, E7), `record_proxy.py` and `scrub.py` (stdlib only, run with `python3 -I`),
    `run_dsh.sh` (the docker invocation: `corepack enable`, build from the checkout with
    `pnpm run build:artifacts`, run `pnpm dsh --profile headless "<task>"`, proxy base URL, a run
    directory, and `--add-host=host.docker.internal:host-gateway` for Linux Docker; the proxy
@@ -266,7 +267,7 @@ gateway, or the build fails). The user can then supply what is missing.
 4. **E1–E7** on dsh, in order. Record each result in the doc as it lands. E4 runs only inside the
    container.
 5. **E8** through Fontaine. Confirm reasoning-bearing turns are round-tripped, and test a tool-call
-   turn with no reasoning by resuming a session built on a non-Chat wire with
+   turn with no reasoning by resuming a session built on another Go model with
    `--resume <id> --model go/deepseek-v4.1-flash`. If the 400 reproduces, reproduce it minimally and file a bug about the
    missing empty-reasoning fallback for the Go DeepSeek route. Note whether the Messages wire
    avoids it, using `wires = { "deepseek-v4.1-flash" = "messages" }` under `[accounts.go]` in
