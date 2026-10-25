@@ -172,7 +172,7 @@ bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom
   OTLP exporters are not covered by `[network]`.
 
 ## Documentation
-- `docs/configuration.md`: `[network]` reference, account keys (add to the `### [accounts.<name>]` Key reference section), a note that relative `ca_bundle`/`client_cert`/`client_key` paths resolve against the process cwd and that telemetry is not covered by `[network]`, scope-table row, worked example
+- `docs/configuration.md`: `[network]` reference, account keys (add to the `### [accounts.<name>]` Key reference section; one sentence that per-account network keys are hand-edited and not written by the account setup flow, since `user_config::add_account` writes only `kind` and `base_url`), a note that relative `ca_bundle`/`client_cert`/`client_key` paths resolve against the process cwd and that telemetry is not covered by `[network]`, scope-table row, worked example
   (corporate proxy + internal CA + mTLS). With only `https_proxy` set, plain-http local accounts
   (e.g. ollama on localhost) go direct; with `http_proxy` set they go through the proxy unless
   `no_proxy` lists them.
@@ -203,7 +203,7 @@ Unit tests (no live network):
   client cert rejects a client without identity and accepts one with it. The test server builds its config with
   `rustls::ServerConfig::builder_with_provider(aws_lc_rs::default_provider())` (reqwest's rustls
   feature uses aws-lc-rs; Cargo.lock also has ring). This catches what a fake
-  cannot: the handshake actually using the configured roots and identity. `rcgen` is the only new crate (rustls/tokio-rustls are already locked); check `cargo tree -i ring`
+  cannot: the handshake actually using the configured roots and identity. `rcgen` is the only new direct dependency (it adds transitive `yasna` and `pem`; rustls/tokio-rustls are already locked). Declare it `default-features = false, features = ["crypto","pem","aws_lc_rs"]` so its default features do not pull in `ring`; run `cargo deny check` and `cargo tree -i ring`
   after adding it. Dev-dependencies are exact pins (workspace convention) in `[workspace.dependencies]` and dev-dependencies of
   `fontaine-tools`: `rcgen =0.14.10`, `tokio-rustls =0.26.6`, `rustls =0.23.46`.
 - MCP redirect policy: same-origin 307 followed; 302 and cross-origin redirect responses are
