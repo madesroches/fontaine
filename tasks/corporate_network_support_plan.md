@@ -47,10 +47,14 @@ client_key  = "/etc/corp/client.key"     # unencrypted PEM key
 https_proxy = "..."            # also http_proxy, no_proxy, ca_bundle, client_cert, client_key
 ```
 - With no proxy key set, reqwest's environment/system handling is untouched, so existing
-  `HTTPS_PROXY` users see no change. Any configured proxy key (`https_proxy`, `http_proxy`,
-  `no_proxy`) turns off environment and system proxy handling for that client (reqwest's
-  `ClientBuilder::proxy()` disables it: `HTTP_PROXY`, `ALL_PROXY`, env `NO_PROXY`, macOS/Windows
-  system proxy); `no_proxy` is an exception list in `HTTPS_PROXY`'s own syntax. Proxy URLs may carry
+  `HTTPS_PROXY` users see no change. Setting `https_proxy` and/or `http_proxy` turns off environment
+  and system proxy handling for that client (reqwest's `ClientBuilder::proxy()` disables it:
+  `HTTP_PROXY`, `ALL_PROXY`, env `NO_PROXY`, macOS/Windows system proxy). `https_proxy` alone builds
+  `Proxy::https` (http requests go direct); `http_proxy` alone builds `Proxy::http` (https requests go
+  direct); both build both. `no_proxy` (an exception list in `NO_PROXY` syntax) is attached to every
+  Proxy built from the URL keys, since reqwest's `Proxy::no_proxy` is per-Proxy. `no_proxy` without an
+  effective `https_proxy` or `http_proxy` (after the account overlay) is a load error
+  (`NetworkError::NoProxyWithoutProxy`), never silently ignored. Proxy URLs may carry
   credentials (`http://user:pass@host`), as in Claude Code.
 - `client_cert` and `client_key` must be set together. Encrypted private keys are not supported
   (reqwest's rustls identity takes an unencrypted PEM key); a pre-check for an `ENCRYPTED PRIVATE KEY`
@@ -80,7 +84,7 @@ reading `client_cert` and `client_key`, joining them with a newline and calling
 `&LoadedNetwork` parameter and applies it inside `make`'s builder on both the first attempt and the
 bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom roots too); the bundled-roots fallback still applies only to a missing system store.
 `NetworkError` is a typed enum (`Read{path,source}`, `NoCertificates{path}`, `Pem{path,source}`,
-`Proxy{source}`, `HalfIdentity`) because callers surface it at config load with exit code 2.
+`Proxy{source}`, `HalfIdentity`, `NoProxyWithoutProxy`) because callers surface it at config load with exit code 2.
 
 ### Wiring
 - `NetworkSettings` has no serde and `Account` is `deny_unknown_fields` (incompatible with
@@ -88,7 +92,13 @@ bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom
   `NetworkSection` (`Deserialize`, `deny_unknown_fields`) for `[network]`; both convert to
   `NetworkSettings` via a method. `Config` gains the `[network]` section, merged per key via
   `overlaid_by` (user scope, with `--settings` overriding user scope).
-- Validation at config load: `LoadedNetwork` is built for `[network]` and for each account that
+- Two validation tiers. `validate_settings`/`parse_settings` (what `docs.rs::every_toml_block_validates`
+  runs on every docs toml block) checks only schema, scope and value shape and never reads files
+  or applies cross-key rules, so doc examples with paths like `/etc/corp/ca.pem` validate. Everything
+  needing files or the overlaid effective settings (file reads, PEM parsing, `client_cert`/`client_key`
+  together, `no_proxy` needing a proxy URL, proxy URL parsing) is `NetworkSettings::load`, which runs
+  when the config is loaded at startup (`fontaine/src/lib.rs:224` path), after the overlay:
+  `LoadedNetwork` is built for `[network]` and for each account that
   overrides it; any `NetworkError` is a config error (exit 2) naming the key and file. Relative
   paths resolve against the process cwd, like `scanner_model_path`; `~` is not expanded.
 - `Config` holds only the plain `NetworkSettings` for `[network]` (it derives `Clone, Debug,
@@ -168,6 +178,8 @@ bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom
   PEM key); a passphrase key is a clear load error.
 - 2026-10-25 `ca_bundle` is a single PEM file; directories are unsupported (`SSL_CERT_DIR` still works).
 - 2026-10-25 No new environment variables; config keys only. `HTTPS_PROXY` & co. keep working through reqwest.
+- 2026-10-25 AFK: `no_proxy` is attached to every Proxy built from `https_proxy`/`http_proxy`; `https_proxy` alone leaves http direct, `http_proxy` alone leaves https direct; `no_proxy` without either URL is a load error (`NetworkError::NoProxyWithoutProxy`), never ignored.
+- 2026-10-25 AFK: `validate_settings` (and so the docs toml check) is shape/scope-only and reads no files; file reads and cross-key rules (`client_cert`+`client_key`, `no_proxy` needing a proxy) run in `NetworkSettings::load` at startup config load (exit 2).
 - 2026-10-25 The eval harness (`fontaine-evals/src/screen.rs:93`, manual, not a CI gate) and telemetry
   OTLP exporters are not covered by `[network]`.
 
@@ -176,6 +188,7 @@ bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom
   (corporate proxy + internal CA + mTLS). With only `https_proxy` set, plain-http local accounts
   (e.g. ollama on localhost) go direct; with `http_proxy` set they go through the proxy unless
   `no_proxy` lists them.
+- The worked example's paths need not exist: docs validation is shape-only; files are read at startup load. State this tier split in the `[network]` reference.
 - `docs/configuration.md` merge rules (lines 61-67 say named table entries are "never merged field
   by field"): amend for the `[network]` per-key overlay.
 - `docs/tools.md`: webfetch honors `[network]`; amend the `SSL_CERT_FILE` sentence (replace vs add).
@@ -188,7 +201,10 @@ bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom
 ## Testing Strategy
 Unit tests (no live network):
 - `NetworkSettings::overlaid_by` per-key override; `load` errors: missing file, non-PEM file,
-  empty bundle, cert without key and key without cert, encrypted key, unparseable proxy URL.
+  empty bundle, cert without key and key without cert, encrypted key, unparseable proxy URL,
+  `no_proxy` with no proxy URL (including after account overlay); proxy-combination routing
+  (`https_proxy` only leaves http direct, `http_proxy` only leaves https direct). `validate_settings`
+  accepts nonexistent file paths.
 - Config: `[network]` accepted in user and `--settings` scope, rejected in project scope; account
   keys parsed; load errors exit 2 and name the key.
 - `build_client` with a custom root retried through the bundled-roots path keeps the custom root and
