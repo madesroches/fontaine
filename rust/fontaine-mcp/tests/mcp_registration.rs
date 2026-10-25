@@ -221,9 +221,16 @@ async fn configured_env_reaches_a_stdio_server_and_overrides_a_copied_value() {
         "PATH" => std::env::var_os("PATH"),
         _ => None,
     };
-    let connected = connect(&spec, handle.clone(), guard(gate.clone()), true, &env)
-        .await
-        .expect("the stdio server starts");
+    let connected = connect(
+        &spec,
+        handle.clone(),
+        guard(gate.clone()),
+        true,
+        &fontaine_tools::tls::LoadedNetwork::default(),
+        &env,
+    )
+    .await
+    .expect("the stdio server starts");
     for (name, expected) in [
         ("CONFIGURED_VAR", "from-env-table"),
         ("GRANTED_VAR", "overridden"),
