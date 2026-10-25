@@ -1663,7 +1663,7 @@ pub(crate) fn record_decision(state: &SessionState, record: &DecisionRecord) {
 /// Read-only tools that take no path, so there is nothing for containment to check: the skill
 /// loader, the question dialog and the task list.
 fn names_no_path(tool: &str) -> bool {
-    matches!(tool, "skill" | "ask_user_question" | "todo_write")
+    fontaine_tools::descriptor::find(tool).is_some_and(|d| d.path_free)
 }
 
 /// The call as the human is shown it: the whole command, path or URL, never cut short.

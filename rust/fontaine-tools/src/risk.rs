@@ -37,44 +37,7 @@ impl ToolSource {
     }
 }
 
-/// The risk class of every built-in tool this build registers.
-pub const BUILTIN_RISK: [(&str, RiskClass); 8] = [
-    ("read", RiskClass::ReadOnly),
-    ("ls", RiskClass::ReadOnly),
-    ("glob", RiskClass::ReadOnly),
-    ("grep", RiskClass::ReadOnly),
-    ("write", RiskClass::WorkspaceWrite),
-    ("edit", RiskClass::WorkspaceWrite),
-    ("shell", RiskClass::Arbitrary),
-    ("webfetch", RiskClass::Arbitrary),
-];
-
-pub fn builtin_risk(name: &str) -> Option<RiskClass> {
-    BUILTIN_RISK
-        .iter()
-        .find(|(tool, _)| *tool == name)
-        .map(|(_, risk)| *risk)
-}
-
-/// The risk class of the tools Fontaine registers beyond the built-ins: the subagent and
-/// messaging tools, the skill loader, the question dialog and the task list. They are assembled by
-/// `fontaine-core`, not by `builtins::build`, so they have a table of their own.
-pub const EXTENSION_RISK: [(&str, RiskClass); 5] = [
-    ("agent", RiskClass::Arbitrary),
-    ("skill", RiskClass::ReadOnly),
-    ("send_message", RiskClass::Arbitrary),
-    ("ask_user_question", RiskClass::ReadOnly),
-    ("todo_write", RiskClass::ReadOnly),
-];
-
-pub fn extension_risk(name: &str) -> Option<RiskClass> {
-    EXTENSION_RISK
-        .iter()
-        .find(|(tool, _)| *tool == name)
-        .map(|(_, risk)| *risk)
-}
-
-/// The class of any tool this build registers by name, from either table.
+/// The class of any tool this build registers by name.
 pub fn registered_risk(name: &str) -> Option<RiskClass> {
-    builtin_risk(name).or_else(|| extension_risk(name))
+    crate::descriptor::find(name).map(|d| d.risk)
 }

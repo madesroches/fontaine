@@ -29,7 +29,7 @@ use crate::session::{CONVERSATION_LOG, Session};
 use crate::skills::{self, SkillRuntime};
 use crate::steering::{Steering, SteeringHook};
 use crate::todos::ReportedTodos;
-use crate::tools::{self, ExtensionTools, RegistryParams};
+use crate::tools::{self, ExtensionTool, ExtensionTools, RegistryParams};
 
 /// Tells the permission state which model tool call a tool is serving.
 pub(crate) struct CurrentCall {
@@ -124,30 +124,30 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
         results: p.results.clone(),
         hide_mcp_names: !(p.config.telemetry.enabled && p.config.telemetry.log_tool_details),
         network: p.setup.network.clone(),
-        extension: Some(ExtensionTools {
-            agent: AgentTool {
+        extension: Some(ExtensionTools(vec![
+            ExtensionTool::new(AgentTool {
                 tree: p.state.agents().clone(),
                 types: p.types.clone(),
                 runner: p.runner.clone(),
                 ledger: ledger_window.clone(),
-            },
-            send_message: SendMessageTool {
+            }),
+            ExtensionTool::new(SkillTool {
+                source: p.skills.clone(),
+            }),
+            ExtensionTool::new(SendMessageTool {
                 tree: p.state.agents().clone(),
                 ledger: ledger_window,
-            },
-            skill: SkillTool {
-                source: p.skills.clone(),
-            },
-            ask_user: AskUserTool {
+            }),
+            ExtensionTool::new(AskUserTool {
                 source: Arc::new(HumanQuestions::new(p.approver.clone(), p.state.clone())),
-            },
-            todo: TodoTool {
+            }),
+            ExtensionTool::new(TodoTool {
                 store: Arc::new(ReportedTodos {
                     todos: p.session.todos().clone(),
                     approver: p.approver.clone(),
                 }),
-            },
-        }),
+            }),
+        ])),
     })
     .map_err(RuntimeError::new)?;
     for tool in registered {

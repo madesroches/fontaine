@@ -101,22 +101,7 @@ pub struct LoadParams<'a> {
 
 /// The Fontaine tool a Claude Code tool name stands for.
 fn claude_tool(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "Read" => "read",
-        "Edit" | "MultiEdit" => "edit",
-        "Write" => "write",
-        "Glob" => "glob",
-        "Grep" => "grep",
-        "LS" => "ls",
-        "Bash" => "shell",
-        "WebFetch" => "webfetch",
-        "Task" | "Agent" => "agent",
-        "Skill" => "skill",
-        "SendMessage" => "send_message",
-        "AskUserQuestion" => "ask_user_question",
-        "TodoWrite" => "todo_write",
-        _ => return None,
-    })
+    fontaine_tools::descriptor::find_claude(name).map(|d| d.name)
 }
 
 /// One entry of `tools`, `disallowedTools` or `allowed-tools` in Fontaine's names, with its
@@ -131,8 +116,11 @@ pub fn map_tool_entry(entry: &str) -> Result<String, String> {
         Some(mapped) => mapped.to_string(),
         None if is_builtin(name) || is_mcp(name) => name.to_string(),
         None => {
+            let known: Vec<&str> = fontaine_tools::descriptor::claude_names().collect();
+            let (last, rest) = known.split_last().expect("the table has Claude names");
             return Err(format!(
-                "`{name}` is not a tool Fontaine has; the Claude Code names it knows are Read, Edit, MultiEdit, Write, Glob, Grep, LS, Bash, WebFetch, Task, Agent, Skill, SendMessage, AskUserQuestion and TodoWrite"
+                "`{name}` is not a tool Fontaine has; the Claude Code names it knows are {} and {last}",
+                rest.join(", ")
             ));
         }
     };
@@ -443,6 +431,14 @@ pub fn load(params: &LoadParams<'_>) -> Result<Extensions, ExtensionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unknown_tool_error_names_every_claude_code_alias() {
+        let message = map_tool_entry("Nope").unwrap_err();
+        for name in fontaine_tools::descriptor::claude_names() {
+            assert!(message.contains(name), "{message} omits {name}");
+        }
+    }
 
     #[test]
     fn claude_names_map_and_specifiers_survive() {

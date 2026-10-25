@@ -18,7 +18,7 @@ use serde_json::json;
 
 use crate::git_bash::{GitBash, sh_command};
 use crate::guarded::{Guard, GuardedTool};
-use crate::risk::{RiskClass, ToolSource, builtin_risk};
+use crate::risk::{RiskClass, ToolSource, registered_risk};
 use crate::scope::{Scope, glob_target};
 use crate::tls::LoadedNetwork;
 use crate::webfetch::{Webfetch, WebfetchConfig};
@@ -331,7 +331,7 @@ pub struct Registered {
 /// The risk class a built-in is registered with. A built-in missing from the table is the
 /// riskiest class, so a forgotten entry can only make a tool stricter.
 fn risk_of(name: &str) -> RiskClass {
-    builtin_risk(name).unwrap_or(RiskClass::Arbitrary)
+    registered_risk(name).unwrap_or(RiskClass::Arbitrary)
 }
 
 fn register<T: Tool + 'static>(guarded: GuardedTool<T>) -> Registered {

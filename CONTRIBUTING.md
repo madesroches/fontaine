@@ -31,6 +31,16 @@ live model APIs.
 - Update the documentation under `docs/` in the same change as the behavior it describes, and add
   an entry under `## [Unreleased]` in `CHANGELOG.md`.
 
+## Adding a tool
+
+- Add one row to `TOOLS` in `rust/fontaine-tools/src/descriptor.rs`: risk class, whether it names a
+  path, how destructiveness is derived, what a rule specifier means, and the Claude Code names.
+  The risk class lives only in that table, never on the tool.
+- Write the tool's module and construct it: in `fontaine-tools/src/builtins.rs` for a built-in, or
+  as an `ExtensionTool::new(...)` in `fontaine-core/src/agent/build.rs` when it needs session state.
+- Add its inventory row to `docs/tools.md`. The choke-point and docs tests fail on a tool without a
+  row or a docs entry.
+
 ## Releasing
 
 Cutting a release is the maintainer's job, and pushing the tag is never done on someone else's

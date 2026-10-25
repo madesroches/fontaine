@@ -1,5 +1,6 @@
 pub mod ask_user;
 pub mod builtins;
+pub mod descriptor;
 pub mod error_chain;
 pub mod gate;
 pub mod git_bash;
