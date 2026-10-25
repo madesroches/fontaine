@@ -457,6 +457,7 @@ impl AgentRuntime {
             args: &args,
             agent: ROOT_AGENT,
             annotations: None,
+            requires_user_interaction: false,
         };
         let (screened, _) = self
             .results
