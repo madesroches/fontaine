@@ -4,8 +4,8 @@
 
 ## Overview
 Claude Code works behind a corporate network: it honors `HTTPS_PROXY`/`NO_PROXY`, trusts extra CA
-certificates, and presents a client certificate (mTLS). Fontaine builds its HTTP clients in four
-places with no way to configure any of this beyond what reqwest reads from the environment. Add a
+certificates, and presents a client certificate (mTLS). Fontaine builds its HTTP clients at the
+call sites below with no way to configure any of this beyond what reqwest reads from the environment. Add a
 `[network]` section (plus per-account overrides) that feeds proxy, extra CA roots and a client
 identity into the clients Fontaine builds for: model accounts, the guardian screen, webfetch, the
 scanner-model download, the opencode-go sign-in and HTTP MCP servers. An invalid setting fails
@@ -96,17 +96,19 @@ bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom
   never a `Config` field). Accounts are added and removed at runtime (`agent.rs:1090-1105`,
   `setup.rs`), so an account's network is resolved by lookup when needed: the global settings
   overlaid by the account's own keys (global alone if the account is absent), then `load()`ed on
-  demand. `Models` (which holds `self.config`) does this at connect time and passes the
-  `&LoadedNetwork` as a new parameter of `client_for` (`models.rs:264`, whose `Sources` holds no
-  `Config`); `client_for` stores it in `ConnectContext` (borrow-only, built at `models.rs:289`) as
+  demand. Each `client_for` caller (`models.rs:264`) does this from the `&Config` it has in scope:
+  the free functions `resolve_main_model` (`:382`) and `build_guardian` (`:514`) and
+  `Switcher::listings` (`:736`; `Models` and `Sources` hold no config). It passes the
+  `&LoadedNetwork` as a new parameter of `client_for`, which stores it in `ConnectContext` (borrow-only, built at `models.rs:289`) as
   `network: &LoadedNetwork`. The opencode-go sign-in (`opencode_go.rs:327`, which has no
   `ConnectContext`) takes the account's `&LoadedNetwork` as an explicit parameter. The global
-  `LoadedNetwork` is loaded once at startup in `agent.rs` and held as an `Arc<LoadedNetwork>` by
+  `LoadedNetwork` is loaded once at startup in `agent.rs` and held as an `Arc<LoadedNetwork>` (loaded after the config reload at `fontaine/src/lib.rs:224`;
+  load-time validation is what produces exit 2) by
   the consumers that outlive a call (`BuiltinEnv`, the MCP connect path).
 - `transport::caused_client(network: &LoadedNetwork)` and `reqwest_client(network)` take the
-  effective settings. Each provider `connect` passes `ctx.network`. The guardian screen passes the
-  settings of the `ollama` account it targets (if that account is absent from config, the global
-  `[network]`); the device flow and opencode-go use the account's.
+  effective settings. Each provider `connect` passes `ctx.network`. The guardian screen (`build_screen`, signature unchanged) resolves
+  the network from its `&Config` argument: the `ollama` account it targets (if that account is absent
+  from config, the global `[network]`); the device flow and opencode-go use the account's.
 - `Webfetch::new` and `scanner_model::ensure` use the global `[network]` settings (no account).
 - HTTP MCP: build the client with `tls::build_client` (global `[network]`), keeping
   `pool_max_idle_per_host(0)` and a copy of rmcp's same-origin 307/308 redirect policy, and pass it
@@ -156,7 +158,7 @@ bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom
 - `rust/fontaine-core/src/providers/{mod.rs,anthropic.rs,openai.rs,gemini.rs,ollama.rs,openai_compatible.rs,opencode_go.rs,device_flow.rs}`
 - `rust/fontaine-core/src/scanner_stage.rs`
 - `rust/fontaine-tui/src/{lib.rs,setup.rs}`
-- `rust/fontaine-core/tests/{account_session,token_source,device_flow,account_ops,scanner_model,extensions,choke_point}.rs`
+- `rust/fontaine-core/tests/{config,account_session,token_source,device_flow,account_ops,scanner_model,extensions,choke_point}.rs`
 - `rust/fontaine-tools/tests/{webfetch.rs,result_pipeline.rs,common/mod.rs}`, `rust/fontaine-mcp/tests/mcp_registration.rs`
 - `rust/fontaine-mcp/src/servers.rs`, `rust/fontaine-mcp/Cargo.toml`
 - `docs/configuration.md`, `docs/tools.md`, `docs/mcp.md`, `docs/guardian.md` (one line), `CHANGELOG.md`, `research/research-claude-code-parity.md`
@@ -170,7 +172,7 @@ bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom
   OTLP exporters are not covered by `[network]`.
 
 ## Documentation
-- `docs/configuration.md`: `[network]` reference, account keys, scope-table row, worked example
+- `docs/configuration.md`: `[network]` reference, account keys (add to the `### [accounts.<name>]` Key reference section), a note that relative `ca_bundle`/`client_cert`/`client_key` paths resolve against the process cwd and that telemetry is not covered by `[network]`, scope-table row, worked example
   (corporate proxy + internal CA + mTLS). With only `https_proxy` set, plain-http local accounts
   (e.g. ollama on localhost) go direct; with `http_proxy` set they go through the proxy unless
   `no_proxy` lists them.
@@ -198,12 +200,18 @@ Unit tests (no live network):
   `Proxy-Authorization` header derived from credentials in the proxy URL and a tunnelled https request.
 - CA and mTLS against a local rustls test server (generated with `rcgen` as a dev-dependency):
   a client without the CA fails the handshake; with `ca_bundle` it succeeds; a server requiring a
-  client cert rejects a client without identity and accepts one with it. This catches what a fake
-  cannot: the handshake actually using the configured roots and identity. New dev-dependencies are
-  exact pins (workspace convention) in `[workspace.dependencies]` and dev-dependencies of
+  client cert rejects a client without identity and accepts one with it. The test server builds its config with
+  `rustls::ServerConfig::builder_with_provider(aws_lc_rs::default_provider())` (reqwest's rustls
+  feature uses aws-lc-rs; Cargo.lock also has ring). This catches what a fake
+  cannot: the handshake actually using the configured roots and identity. `rcgen` is the only new crate (rustls/tokio-rustls are already locked); check `cargo tree -i ring`
+  after adding it. Dev-dependencies are exact pins (workspace convention) in `[workspace.dependencies]` and dev-dependencies of
   `fontaine-tools`: `rcgen =0.14.10`, `tokio-rustls =0.26.6`, `rustls =0.23.46`.
 - MCP redirect policy: same-origin 307 followed; 302 and cross-origin redirect responses are
   returned unfollowed (rmcp's policy calls `attempt.stop()`).
+- Wiring (a call site passing a default `LoadedNetwork` must fail these): a wiremock proxy test each
+  through `Webfetch::new`, the MCP HTTP connect path, and `transport::reqwest_client` or a provider `connect`.
+- `tests/config.rs`: add `network` and the account network keys to the `NO_FOR_PROJECT` /
+  `NO_FOR_LOCAL` rejected-key tables. The docs worked example is gated by `tests/docs.rs`.
 - Fail-closed: a bad `[network]` never yields a client.
 
 ## Manual Verification
