@@ -46,7 +46,7 @@ the marker from the wire to the gate.
 
 ```
  server ──tools/list──▶ InteractionTap (Transport wrapper) ──▶ rig-rmcp handler ──▶ GuardedSink::wrap
-                         │ upserts marked names                                     │ looks the tool up
+                         │ inserts marked names                                     │ looks the tool up
                          ▼                                                          ▼
                     Marked (Arc<RwLock<HashSet<String>>>) ◀───── read ───── guard_callback(.., requires_user_interaction)
                                                                                      │
@@ -61,7 +61,8 @@ New module `rust/fontaine-mcp/src/interaction.rs`:
 
 - `pub const REQUIRES_USER_INTERACTION: &str = "anthropic/requiresUserInteraction";`
 - `pub(crate) struct Marked(Arc<RwLock<HashSet<String>>>)`, cloneable. It holds the server's
-  original (un-renamed) tool names whose last `tools/list` entry carried the marker. It feeds a
+  original (un-renamed) tool names that any `tools/list` entry on this connection carried the
+  marker for. It only grows; a new connection starts with an empty one. It feeds a
   permission decision, so it is read and written with `fontaine_tools::lock::{read, write}`,
   which panic on poison.
 - `fn marks(tool: &rmcp::model::Tool) -> bool`: true only when
@@ -69,14 +70,20 @@ New module `rust/fontaine-mcp/src/interaction.rs`:
 - `pub(crate) struct InteractionTap<T> { inner: T, marked: Marked }`, implementing
   `rmcp::transport::Transport<RoleClient>`. `send` and `close` delegate. `receive` awaits the
   inner message, and when it is a `ServerJsonRpcMessage::Response` carrying
-  `ServerResult::ListToolsResult(page)`, it **upserts** each listed tool: insert if `marks`, else
-  remove. Then it returns the message unchanged. Upserting per name is right under pagination
-  (rig-rmcp's `list_tools` fetches page by page) and on refresh: a tool's marker is always the
-  one in the latest entry that lists it. A name left over from a tool that went away is harmless,
-  because no registered tool carries it, and the next listing of that name overwrites it.
-- Ordering guarantee: `receive` updates `Marked` before rig-rmcp gets the page. rig-rmcp builds
-  and sinks the tools only after the last page, so `GuardedSink::wrap` always reads the current
-  marker.
+  `ServerResult::ListToolsResult(page)`, it **inserts** each listed tool for which `marks` is
+  true and never removes a name. Then it returns the message unchanged. Inserting per name is
+  right under pagination (rig-rmcp's `list_tools` fetches page by page). A name left over from a
+  tool that went away is harmless, because no registered tool carries it.
+- Why the marker is sticky: rmcp runs each list-changed handler as its own task, rig-rmcp 0.45
+  allows two refreshes in flight and drops the older one's commit, and a late response to a
+  timed-out `tools/list` still passes through `receive`. Responses can therefore arrive in a
+  different order than the refreshes rig-rmcp commits, so a "latest entry wins" upsert could let
+  a stale unmarked page clear a marker that the committed listing carries. Insert-only can't
+  loosen under any interleaving: `receive` updates `Marked` before rig-rmcp gets the page, and
+  rig-rmcp sinks tools only after their last page, so `GuardedSink::wrap` sees every marker any
+  response on this connection has carried. The cost is that a server dropping the marker takes
+  effect only on a new connection (Fontaine has no reconnect, so the next session), where
+  Claude Code follows the latest listing. That deviation only ever asks more.
 
 `servers.rs`: `start` and `connect_transport` both build one `Marked` per server and pass it to
 `GuardedSink::new`. `start` wraps the stdio and HTTP transports directly
@@ -97,7 +104,8 @@ The tap sits on the path every server takes, so a new transport can't silently s
   becomes `pub(crate)`, because a `pub` signature naming the `pub(crate)` `Marked` would trip
   `private_interfaces` under `-D warnings`; its only callers are in `servers.rs`. `wrap` reads `marked.contains(&original_name)`
   once, before renaming, and passes the result to `guard_callback`. Each refresh re-wraps every
-  tool, so a marker a server adds or removes takes effect on the next list-changed refresh. This
+  tool, so a marker a server adds takes effect on the next list-changed refresh; one it removes
+  stays in force until a new connection (see §1). This
   matches how the risk class is fixed at wrap time.
 
 ### 3. Enforcing it at the floor (`fontaine-core`)
@@ -136,7 +144,8 @@ let forced_ask = rules.ask.iter().find(..)
 2. **fontaine-mcp** — add `interaction.rs` (`Marked`, `marks`, `InteractionTap`, the constant)
    with unit tests. Wire the tap and `Marked` into `start` and `connect_transport` in
    `servers.rs`, and add `marked` to `GuardedSink` in `register.rs` (its `new` takes it and becomes `pub(crate)`). Re-export
-   `REQUIRES_USER_INTERACTION` from `lib.rs`; core uses it as the audit rule. Update the stale
+   `REQUIRES_USER_INTERACTION` from `lib.rs`; core uses it as the audit rule. The tap only
+   inserts into `Marked` (sticky for the connection, see Design §1). Update the stale
    comments to say the marker is the one declared value that can force a prompt: the module doc
    at `lib.rs:1-3` ("what a server declares ... reaches the guardian as untrusted text") and the
    comment at `register.rs:89-90` ("Declared hints travel with the definition as text ...
@@ -145,6 +154,11 @@ let forced_ask = rules.ask.iter().find(..)
    `fontaine_mcp::REQUIRES_USER_INTERACTION` as the audit rule and the prompt reason.
 4. **Tests** — see Testing Strategy.
 5. **Docs** — see Documentation.
+6. **Master plan** — add a dated line to `tasks/fontaine_harness_plan.md` `## Decisions` recording
+   the deviation from Claude Code: a server's `requiresUserInteraction` marker stays in force for
+   the life of the connection once any `tools/list` response carried it (Claude Code follows the
+   latest listing), because overlapping refreshes and late responses could otherwise let a stale
+   page loosen it.
 
 ## Files to Modify
 
@@ -157,13 +171,17 @@ let forced_ask = rules.ask.iter().find(..)
 - `rust/fontaine-mcp/tests/common/{mod.rs,server.rs}`, `rust/fontaine-mcp/tests/mcp_registration.rs`
 - `rust/fontaine-core/tests/common/pipeline.rs`, `rust/fontaine-core/tests/permission_rules.rs`,
   `rust/fontaine-core/tests/permissions_auto.rs`, `rust/fontaine-core/tests/permissions_screen.rs`, `rust/fontaine-core/tests/{scanner,scanner_model,user_hooks}.rs`
-- `docs/mcp.md`, `docs/permissions.md`, `tasks/design/permissions.md`,
+- `docs/mcp.md`, `docs/permissions.md`, `docs/configuration.md`, `tasks/design/permissions.md`,
   `research/research-claude-code-parity.md`
+- `AGENTS.md`, `tasks/fontaine_harness_plan.md` (the workspace-trust Decision wording and the new
+  sticky-marker deviation line)
 
 ## Decisions
 
 - 2026-10-25: Read the marker with a transport tap rather than waiting for an upstream rig-rmcp change, because rig-rmcp 0.45 drops `_meta` and is pinned to an exact version.
-- 2026-10-25: Use the tap rather than a second `tools/list` call, because a separate listing could race a list-changed refresh and disagree with what rig-rmcp registered.
+- 2026-10-25: Use the tap rather than a second `tools/list` call, because a separate listing is a different response from the ones rig-rmcp registers from and can disagree with them; the tap sees exactly those responses (their ordering is handled by the sticky marker, not by the tap).
+- 2026-10-25: AFK: Make `Marked` sticky for the life of the connection (insert on `true`, never remove; a new connection starts empty), recorded as a Claude Code deviation in the master plan — overlapping refreshes and late `tools/list` responses can reach the tap out of commit order, and insert-only is the one option that can never loosen the marker.
+- 2026-10-25: AFK: Reword the governing "a project-declared executable can never change a permission decision" statements (`docs/configuration.md`, `AGENTS.md` security invariants, the master plan's workspace-trust Decision) to "can tighten but never loosen a permission decision" — the marker makes the old text literally false, project hook deny/ask already tighten today, and the qualified wording keeps the invariant's intent without weakening it.
 
 ## Documentation
 
@@ -176,7 +194,17 @@ let forced_ask = rules.ask.iter().find(..)
   statements the marker makes false: auto routes to the guardian and dontAsk/headless deny
   unless an allow rule covers it (lines 61-64), "what a server declares is only text ... never
   as a fact or a gate" (65-67), "rules are the way to pre-approve" (74-76), and project servers'
-  tools being "ordinary `arbitrary` tools" (96-98) must each carve out the marker.
+  tools being "ordinary `arbitrary` tools" (96-98) must each carve out the marker. State that
+  once a server marks a tool, the marker holds until the server's connection ends (the next
+  session), even if a later listing drops it.
+- `docs/configuration.md` § Trust asymmetry (lines 120-121): "a project-declared executable can
+  never change a permission decision" becomes "can tighten a permission decision (a hook's deny or
+  ask, an MCP tool's `requiresUserInteraction` marker) but never loosen one".
+- `AGENTS.md` § Security invariants, the "Project-scope config can only tighten" bullet: qualify
+  "can never change a permission decision" to "can tighten but never loosen a permission
+  decision". Wording only; the invariant keeps its intent.
+- `tasks/fontaine_harness_plan.md`, the 2026-10-21 workspace-trust Decision: qualify "they never
+  change a permission decision" the same way.
 - `docs/permissions.md` § The pipeline: name the marker alongside ask rules in the floor's ask
   step.
 - `tasks/design/permissions.md` § Core data flow step 2: add the marker to the `ask` floor check.
@@ -192,8 +220,8 @@ All automated, none live:
   transport):
   - a `ListToolsResult` marks exactly the tools whose `_meta` key is JSON `true`;
   - `"true"` (string), `1`, `false` and a missing `_meta` don't mark;
-  - a later page listing a marked tool without the key unmarks it, while tools not listed keep
-    their state;
+  - a later page listing a marked tool without the key (or with `false`) leaves it marked;
+  - a stale unmarked response arriving after a marked one for the same tool leaves it marked;
   - non-list messages (notifications, other results) pass through unchanged and touch nothing;
   - every message is returned unchanged (equal to the input).
 - **Integration — `fontaine-mcp/tests/mcp_registration.rs`.** Extend the test `Gate` double's
@@ -201,7 +229,8 @@ All automated, none live:
   - Over the in-process transport, `grant_access` reaches the gate with
     `requires_user_interaction = true` and `echo` with `false`.
   - After `replace_tools` drops the marker from `grant_access` and adds it to `echo`, the
-    refreshed registrations flip both.
+    refreshed registrations show both marked (adding takes effect; removing waits for a new
+    connection).
   - The streamable-HTTP test's scripted `tools/list` includes a marked tool, and the gate sees it
     marked. This pins the claim that `start`'s HTTP branch is tapped too, not just
     `connect_transport`.
