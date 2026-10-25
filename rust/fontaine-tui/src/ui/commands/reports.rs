@@ -15,12 +15,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let text = reports::status(&reports::StatusInfo {
             version: env!("CARGO_PKG_VERSION"),
             session_id: &runtime.session.id,
-            roots: &runtime.roots,
+            roots: &runtime.roots(),
             mode: runtime.state.mode(),
             model: &runtime.models.main.reference.to_string(),
             guardian_label: guardian.label(),
             guardian_unavailable: guardian.unavailable_reason(),
-            guardian_profile: runtime.guardian_profile.as_str(),
+            guardian_profile: runtime.guardian_profile().as_str(),
             output_style: runtime.output_style(),
             mcp_connected,
             mcp_configured: runtime.config.mcp_servers.len(),
@@ -33,7 +33,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             runtime.state.mode(),
             &runtime.state.rules(),
             &runtime.state.suspended_allow_rules(),
-            &runtime.roots,
+            &runtime.roots(),
             self.user_config.as_deref(),
         );
         self.app.transcript.notice(text);

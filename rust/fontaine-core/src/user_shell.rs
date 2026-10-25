@@ -37,7 +37,7 @@ impl AgentRuntime {
     /// record: the caller does, so an interrupted command is recorded too.
     pub async fn run_user_shell(&self, command: &str) -> Result<UserShellRun, String> {
         let shell = shell_for(
-            &self.roots[0],
+            &self.primary_root(),
             &ShellSettings {
                 scrub_env: self.setup.scrub_env.clone(),
                 set_env: tools::subprocess_env(&self.config),

@@ -238,7 +238,7 @@ async fn with_the_scanner_off_a_report_is_delivered_as_it_was() {
     let prompt = built.runtime.notification_prompt().await.unwrap();
     assert!(prompt.contains(REPORT), "{prompt}");
     assert!(!prompt.contains("Fontaine scanner"), "{prompt}");
-    assert!(built.runtime.scanner_notices.is_empty());
+    assert!(built.runtime.scanner_notices().is_empty());
 }
 
 #[tokio::test]

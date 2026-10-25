@@ -275,6 +275,11 @@ All notable changes are recorded here. The format follows
   `cargo nextest`, pull-request runs cancel when superseded, debug info in the dev and test
   profiles is reduced to line tables, and a PR touching only `tasks/` or `AGENTS.md`
   skips the Rust steps (#178).
+- `AgentRuntime` no longer keeps a second copy of the permission mode and workspace roots:
+  `mode()` and `roots()` read the live session state, `start_mode()` is the mode the session
+  opened in, and `agent.rs` is split into `setup`, `build`, `models` and `mcp` submodules with a
+  clippy line-count limit and one builder configuration shared by the root agent and subagents
+  (#187).
 
 ### Fixed
 

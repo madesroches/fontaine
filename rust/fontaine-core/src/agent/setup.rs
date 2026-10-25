@@ -1,0 +1,434 @@
+//! The steps that assemble a session's shared parts, in the order a new runtime runs them.
+
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+
+use fontaine_agents::mode::ModeSetting;
+use fontaine_agents::registry::{AgentType, AgentTypes, ModelSpec, TypeOrigin};
+use fontaine_agents::tree::{AgentTree, Limits};
+use fontaine_guardian::{
+    AllowSettings, Guardian, Profile, Screen, ScreenSettings, Settings as GuardianSettings,
+};
+use fontaine_tools::error_chain::chain;
+use fontaine_tools::result_pipeline::{ResultPipeline, StageKind};
+use fontaine_tools::scope::Scope;
+use rig_agent::tool::server::{ToolServer, ToolServerHandle};
+
+use super::{AgentSetup, Setup};
+use crate::adjudication::project_instructions;
+use crate::child_runner::{ChildContext, CoreChildRunner, MainModel, NotificationStage};
+use crate::config::{Account, AgentMode, Config};
+use crate::extensions::Extensions;
+use crate::gate::{AutoContext, ScreenStage, SessionState, StateParams, no_guardian};
+use crate::models::{GuardianModel, Models};
+use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
+use crate::prompt::{self, PromptParts};
+use crate::runtime_error::RuntimeError;
+use crate::scanner_stage::{Backend, ScannerStage};
+use crate::skills::SkillRuntime;
+use crate::tools;
+use crate::user_hooks::{self, CommandHook, HookProcess, PostHookStage};
+
+/// The guardian a session runs with, from the model that was resolved for it.
+pub fn build_guardian(
+    model: Option<&GuardianModel>,
+    config: &Config,
+    profile: Profile,
+) -> Guardian {
+    let settings = GuardianSettings {
+        timeout: std::time::Duration::from_secs(config.guardian.timeout_secs),
+        confidence_threshold: config.guardian.confidence_threshold,
+        cache: config.guardian.cache,
+        profile,
+        priced: match model {
+            Some(GuardianModel::Ready(handle)) => handle.catalog_billed(),
+            _ => true,
+        },
+    };
+    match model {
+        Some(GuardianModel::Ready(handle)) => Guardian::new(
+            handle.completion.clone(),
+            handle.reference.to_string(),
+            settings,
+        )
+        .with_additional_params(handle.thinking_off.clone()),
+        Some(GuardianModel::Unavailable { reference, reason }) => {
+            Guardian::unavailable(reference.to_string(), reason, settings)
+        }
+        None => {
+            let guardian = no_guardian();
+            Guardian::unavailable(
+                guardian.label().to_string(),
+                guardian
+                    .unavailable_reason()
+                    .unwrap_or_default()
+                    .to_string(),
+                settings,
+            )
+        }
+    }
+}
+
+/// The default address of a local Ollama daemon.
+const OLLAMA_URL: &str = "http://localhost:11434";
+
+/// The screen stage `[guardian.screen]` configures, or `None` when it is not configured. The
+/// model names an account of kind `ollama`, whose `base_url` is the daemon to ask.
+pub fn build_screen(
+    config: &Config,
+    profile: Profile,
+) -> Result<Option<ScreenStage>, RuntimeError> {
+    let Some(screen) = &config.guardian.screen else {
+        return Ok(None);
+    };
+    let (account, model) = screen.model.split_once('/').ok_or_else(|| {
+        RuntimeError::new(format!("`{}` is not `<account>/<model>`", screen.model))
+    })?;
+    let account_config = config.accounts.get(account);
+    let context_tokens = account_config.map_or(
+        crate::config::DEFAULT_OLLAMA_CONTEXT_TOKENS,
+        Account::ollama_context_tokens,
+    );
+    let base = account_config
+        .and_then(|a| a.base_url.as_deref())
+        .filter(|url| !url.is_empty())
+        .unwrap_or(OLLAMA_URL);
+    // `join` replaces the last path segment unless the base ends in a slash.
+    let endpoint = url::Url::parse(&format!("{}/", base.trim_end_matches('/'))).map_err(|e| {
+        RuntimeError::caused(
+            format!("the base_url of account `{account}` is not a URL"),
+            e,
+        )
+    })?;
+    let settings = ScreenSettings {
+        endpoint,
+        model: model.to_string(),
+        context_tokens,
+        question: screen.question,
+        t_stop: screen.stop_threshold,
+        timeout: std::time::Duration::from_millis(screen.timeout_ms),
+        profile,
+        allow: (screen.allow_threshold.is_some() || screen.shadow).then_some(AllowSettings {
+            t_allow: screen.allow_threshold,
+            steering_veto: screen.steering_veto,
+        }),
+    };
+    let network = config.loaded_network(Some(account)).map_err(|e| {
+        RuntimeError::caused(format!("the network settings of account `{account}`"), e)
+    })?;
+    Ok(Some(ScreenStage {
+        screen: Arc::new(Screen::new(
+            crate::transport::reqwest_client(&network)?,
+            settings,
+        )),
+        label: screen.model.clone(),
+        shadow: screen.shadow,
+    }))
+}
+
+/// Every agent type a session has: the built-in ones, user agent files, `[agents.types]`
+/// entries, and a repository's agent files last. Later definitions of a name replace earlier
+/// ones, and a repository's can only have narrowed.
+pub fn build_agent_types(config: &Config, extensions: &Extensions) -> AgentTypes {
+    let mut types = AgentTypes::builtin();
+    for agent in extensions
+        .agent_types
+        .iter()
+        .filter(|t| matches!(t.origin, TypeOrigin::UserFile(_)))
+    {
+        types.insert(agent.clone());
+    }
+    for (name, ty) in &config.agents.types {
+        types.insert(AgentType {
+            name: name.clone(),
+            description: format!("{name} (configured)"),
+            prompt: None,
+            tools: ty.tools.clone(),
+            disallowed: Vec::new(),
+            model: ty.model.as_deref().and_then(|m| ModelSpec::parse(m).ok()),
+            mode: match ty.mode {
+                None | Some(AgentMode::Inherit) => ModeSetting::Inherit,
+                Some(AgentMode::Manual) => ModeSetting::Manual,
+                Some(AgentMode::DontAsk) => ModeSetting::DontAsk,
+            },
+            origin: TypeOrigin::Config,
+        });
+    }
+    for agent in extensions
+        .agent_types
+        .iter()
+        .filter(|t| matches!(t.origin, TypeOrigin::ProjectFile(_)))
+    {
+        types.insert(agent.clone());
+    }
+    types
+}
+
+pub(super) fn agent_limits(config: &Config) -> Limits {
+    use fontaine_agents::budget::Budget;
+    Limits {
+        max_parallel: config.agents.max_parallel,
+        subagent: Budget {
+            tokens: Some(config.agents.subagent_token_budget),
+            cost_usd: Some(config.agents.subagent_cost_budget_usd),
+        },
+        session: Budget {
+            tokens: config.agents.session_token_budget,
+            cost_usd: config.agents.session_cost_budget_usd,
+        },
+        ..Limits::default()
+    }
+}
+
+/// The permission state of a new session: its scope, rules, guardian and the agent tree.
+pub(super) fn session_state(setup: &AgentSetup, tree: &Arc<AgentTree>) -> Arc<SessionState> {
+    let scope = Arc::new(Scope::new(
+        setup.roots[0].clone(),
+        setup.roots[1..].iter().cloned(),
+    ));
+    let permissions = &setup.config.permissions;
+    let auto_mode = &setup.config.auto_mode;
+    let instructions = prompt::load_instructions(&setup.config_dir, &setup.roots[0]);
+    let telemetry = &setup.config.telemetry;
+    Arc::new(SessionState::new(StateParams {
+        session_id: setup.session.id.clone(),
+        mode: setup.mode,
+        scope,
+        deny: permissions.deny.clone(),
+        ask: permissions.ask.clone(),
+        allow: permissions.allow.clone(),
+        ledger: setup.session.ledger.clone(),
+        audit: setup.session.audit.clone(),
+        approver: setup.approver.clone(),
+        home: setup.home.clone(),
+        protected_dirs: [&setup.config_dir, &setup.data_dir]
+            .into_iter()
+            .map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.clone()))
+            .collect(),
+        guardian: Arc::new(build_guardian(
+            setup.models.guardian.as_ref(),
+            &setup.config,
+            setup.guardian_profile,
+        )),
+        auto: AutoContext {
+            environment: fontaine_guardian::EnvironmentConfig::expand(&auto_mode.environment),
+            rules: fontaine_guardian::RuleConfig::expand(
+                &auto_mode.hard_deny,
+                &auto_mode.soft_deny,
+                &auto_mode.allow,
+            ),
+            project_instructions: project_instructions(&instructions),
+        },
+        agents: tree.clone(),
+        reveal_mcp_names: telemetry.enabled && telemetry.log_tool_details,
+    }))
+}
+
+/// Puts the configured screen stage on the state. A screen that cannot be built is reported and
+/// left off.
+pub(super) fn attach_screen(state: &SessionState, setup: &AgentSetup) {
+    match build_screen(&setup.config, setup.guardian_profile) {
+        Ok(stage) => {
+            // Best-effort: a screen that never loads already reaches the user as an
+            // unavailable-screen warning on its first call.
+            if let (Some(stage), Ok(runtime)) = (&stage, tokio::runtime::Handle::try_current()) {
+                let screen = stage.screen.clone();
+                runtime.spawn(async move {
+                    let _ = screen.warm_up().await;
+                });
+            }
+            state.set_screen(stage)
+        }
+        Err(e) => setup
+            .approver
+            .warn(&format!("the guardian screen stage is off: {}", chain(&e))),
+    }
+}
+
+/// The pre-tool pipeline, and the post-tool hooks the result pipeline runs.
+pub(super) fn permission_pipeline(
+    setup: &AgentSetup,
+    state: &Arc<SessionState>,
+) -> (Arc<PermissionPipeline>, Vec<CommandHook>) {
+    let hook_process = Arc::new(HookProcess {
+        scrub_env: setup.scrub_env.clone(),
+        set_env: tools::subprocess_env(&setup.config),
+        git_bash: setup.git_bash.clone(),
+        project_dir: setup.roots[0].clone(),
+    });
+    let hooks = user_hooks::build(&setup.config, setup.project_executables, hook_process);
+    let pipeline = Arc::new(PermissionPipeline::new(PipelineParams {
+        state: state.clone(),
+        approver: setup.approver.clone(),
+        headless: setup.headless,
+        hooks: hooks.pre,
+        denied_hooks: hooks.denied,
+        allow_extra: setup.config.shell_preclassifier_allow_extra.clone(),
+        user_config: setup.user_config.clone(),
+    }));
+    (pipeline, hooks.post)
+}
+
+/// The stages every tool result passes through, and the `llm` scanner's slot when that is the
+/// scanner in use.
+pub(super) fn result_pipeline(
+    backend: Option<Backend>,
+    config: &Config,
+    tree: &Arc<AgentTree>,
+    state: &Arc<SessionState>,
+    post_hooks: Vec<CommandHook>,
+) -> (Arc<ResultPipeline>, Option<Arc<RwLock<Backend>>>) {
+    let mut results = ResultPipeline::new().with_stage(
+        StageKind::Notifications,
+        Arc::new(NotificationStage { tree: tree.clone() }),
+    );
+    let mut llm_scanner = None;
+    if let Some(backend) = backend {
+        let stage = ScannerStage::new(backend);
+        if config.guardian.scanner == crate::config::Scanner::Llm {
+            llm_scanner = Some(stage.handle());
+        }
+        results = results.with_stage(StageKind::Scanner, Arc::new(stage));
+    }
+    if !post_hooks.is_empty() {
+        results = results.with_stage(
+            StageKind::PostToolUse,
+            Arc::new(PostHookStage::new(post_hooks, state.clone())),
+        );
+    }
+    (Arc::new(results), llm_scanner)
+}
+
+/// The parts of the setup a rebuild needs again.
+pub(super) fn retained(setup: &AgentSetup) -> Result<Setup, RuntimeError> {
+    let network = setup
+        .config
+        .loaded_network(None)
+        .map(Arc::new)
+        .map_err(|e| RuntimeError::caused("invalid [network] settings", e))?;
+    Ok(Setup {
+        network,
+        config_dir: setup.config_dir.clone(),
+        data_dir: setup.data_dir.clone(),
+        scrub_env: setup.scrub_env.clone(),
+        git_bash: setup.git_bash.clone(),
+        system_prompt: setup.system_prompt.clone(),
+        append_system_prompt: setup.append_system_prompt.clone(),
+        json_schema: setup.json_schema.clone(),
+        user_config: setup.user_config.clone(),
+        switcher: setup
+            .switcher
+            .clone()
+            .map(|switcher| Arc::new(RwLock::new(switcher))),
+        project_executables: setup.project_executables,
+        confirm_project_servers: setup.confirm_project_servers,
+        env: setup.env.clone(),
+    })
+}
+
+/// The main model slot and the tool server the root agent and its subagents share, the runner
+/// that starts the subagents, and the tree wired to both.
+pub(super) fn subagent_support(
+    retained: &Setup,
+    tree: &AgentTree,
+    state: &Arc<SessionState>,
+    models: &Models,
+    config: &Config,
+    approver: &Arc<dyn Approver>,
+) -> (
+    Arc<RwLock<MainModel>>,
+    ToolServerHandle,
+    Arc<CoreChildRunner>,
+) {
+    let main = Arc::new(RwLock::new(MainModel {
+        handle: models.main.clone(),
+        listing: models.main_listing.clone(),
+    }));
+    let tool_server = ToolServer::new().run();
+    let runner = child_runner(
+        retained,
+        state,
+        &tool_server,
+        &main,
+        approver,
+        config.telemetry.records_content(),
+    );
+    wire_root_tree(tree, models, &tool_server);
+    (main, tool_server, runner)
+}
+
+/// The runner that starts subagents on the session's tools and models.
+fn child_runner(
+    retained: &Setup,
+    state: &Arc<SessionState>,
+    tool_server: &ToolServerHandle,
+    main: &Arc<RwLock<MainModel>>,
+    approver: &Arc<dyn Approver>,
+    record_content: bool,
+) -> Arc<CoreChildRunner> {
+    let preamble_state = state.clone();
+    let preamble_config_dir = retained.config_dir.clone();
+    let preamble_system = retained.system_prompt.clone();
+    Arc::new(CoreChildRunner {
+        context: Arc::new(ChildContext {
+            state: state.clone(),
+            tool_server: tool_server.clone(),
+            main: main.clone(),
+            switcher: retained.switcher.clone(),
+            preamble: Arc::new(move |agent_type: &AgentType| {
+                let roots: Vec<PathBuf> = preamble_state.scope().roots().to_vec();
+                let instructions = prompt::load_instructions(&preamble_config_dir, &roots[0]);
+                let layer = prompt::subagent_layer(&agent_type.name, agent_type.prompt.as_deref());
+                prompt::assemble(&PromptParts {
+                    roots: &roots,
+                    system_prompt: preamble_system.as_deref(),
+                    instructions: &instructions,
+                    skill_index: None,
+                    output_style: None,
+                    append: Some(&layer),
+                })
+            }),
+            approver: approver.clone(),
+            record_content,
+        }),
+    })
+}
+
+/// The session-wide settings that apply before anything is built.
+pub(super) fn prepare(setup: &mut AgentSetup) {
+    setup
+        .session
+        .set_autocompact_window(setup.config.context.autocompact_window);
+    let approver = setup.approver.clone();
+    crate::providers::token_source::set_warn_sink(move |message| approver.warn(message));
+}
+
+/// The loaded extensions with what is derived from them: the agent types and the skills.
+pub(super) fn extension_runtimes(
+    extensions: Extensions,
+    config: &Config,
+    state: &Arc<SessionState>,
+    project_executables: bool,
+) -> (Arc<Extensions>, Arc<AgentTypes>, Arc<SkillRuntime>) {
+    let extensions = Arc::new(extensions);
+    let agent_types = Arc::new(build_agent_types(config, &extensions));
+    let skills = Arc::new(SkillRuntime::new(
+        extensions.clone(),
+        state.clone(),
+        project_executables,
+    ));
+    (extensions, agent_types, skills)
+}
+
+/// Tells the agent tree which model and tools the root agent has.
+fn wire_root_tree(tree: &AgentTree, models: &Models, tool_server: &ToolServerHandle) {
+    tree.set_root_model(models.main.reference.to_string());
+    let handle = tool_server.clone();
+    tree.set_root_tools(move || {
+        handle
+            .toolset()
+            .names()
+            .map(str::to_owned)
+            .collect::<Vec<String>>()
+    });
+}
