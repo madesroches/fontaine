@@ -198,6 +198,8 @@ All notable changes are recorded here. The format follows
   - MCP servers over stdio and streamable HTTP from `[mcp.servers.*]`, registered as wrapped
     tools named `mcp__<server>__<tool>`. Server annotations reach the guardian only as untrusted
     text, and a repository's servers need workspace trust and the user's approval of each.
+    A tool a server marks with `_meta["anthropic/requiresUserInteraction"]: true` asks on every
+    call, whatever the mode or allow rules, and is denied in `dontAsk` and headless runs (#2).
   - User hooks: `pre_tool_use`, `post_tool_use` and `permission_denied` command hooks with Claude
     Code's JSON input, output and exit codes; a repository's hook can tighten but never allow.
   - Skills, agent files and output styles with Claude Code's frontmatter, the `skill` tool, skills
