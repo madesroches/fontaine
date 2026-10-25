@@ -91,12 +91,12 @@ that does not repeat the cause (`chain` also de-duplicates a source already cont
 ### Rendering at the human edges
 
 Replace `{e}` with `fontaine_tools::error_chain::chain(&e)` at: `session.rs` (five compaction
-warnings; the `model.call` error must be rendered with its full chain, which is the acceptance
+warnings; `:421` and `:437` have no source, so only `:407`, `:428`, `:448` change output, but all five
+use `chain` for consistency; the `model.call` error must be rendered with its full chain, which is the acceptance
 test), `agent.rs:488`, `permissions.rs:1478` (and make the `:1470` mapping keep the `io::Error`
 as a typed value rather than formatting `path: e` early — the rule-save error becomes
-`RuntimeError::caused("could not write <path>", io_err)`, its `None` arm (today a `String`)
-`RuntimeError::new("no user settings file")`, rendered once with `chain` at the notice so the
-settings-file path is kept), the TUI
+`RuntimeError::caused("could not write <path>", io_err)`, rendered once with `chain` at the notice so
+the settings-file path is kept; the `None` arm is left as-is), the TUI
 slash-command handlers (`ui/commands/model.rs`, `workspace.rs`, `appearance.rs`, `ui/mod.rs:288-291` (the consumer of `expand_serving`, chain at the print site),
 `ui/mcp.rs:43`, `lib.rs` sites) and `fontaine/src/lib.rs:642`. Sites that wrap a third-party error
 without a `source()` keep `{e}` with a one-line comment saying so (acceptance criterion 3).
@@ -153,7 +153,9 @@ and `FetchError::Failed` keeps a source: change it to
 8. TUI: `expand_serving` (`ui/turn.rs:106-112`, inner `Result<String, String>` → `RuntimeError`) and its
    consumer `ui/mod.rs:288-291`; update every slash handler (`model.rs` `finish_switch` takes `Option<RuntimeError>`,
    `appearance.rs`), `lib.rs`, `mcp.rs`, `turn.rs`, `provider_dialog.rs`; headless `fontaine/src/lib.rs`.
-9. Sweep: `rg 'format!\("[^"]*\{e\}' rust/fontaine-core/src rust/fontaine-tui/src` — fix or comment each remaining site.
+9. Sweep: `rg -U 'format!\("[^"]*\{e\}' rust/fontaine-core/src rust/fontaine-tui/src` plus
+   `rg -n -e '\{e\}'` on the same dirs, then a manual pass: the single-line form misses multi-line
+   `format!(` calls (`session.rs:446-448`, `mcp.rs:42-45`). Fix or comment each remaining site.
 10. Docs and CHANGELOG entry; `cargo fmt`, clippy (`-D warnings`, also the Windows target), tests.
 
 ## Files to Modify
@@ -163,6 +165,15 @@ permissions.rs, user_hooks.rs, scanner_stage.rs, scanner_model.rs, providers/*}`
 `fontaine-guardian/src/{scanner.rs, scanner/pg2.rs}`, `fontaine-tui/src/{lib.rs, provider_dialog.rs,
 ui/mod.rs, ui/mcp.rs, ui/turn.rs, ui/commands/*}`, `fontaine/src/lib.rs`, `fontaine-evals/src/live.rs`,
 plus the affected tests under `fontaine-core/tests/` and `CHANGELOG.md`.
+
+`RuntimeError` implements `Debug` (derive), so tests that call changed functions and only `unwrap`/
+`expect`/`assert!(.is_err())` compile unchanged (`account_ops.rs`, `network.rs`, `config.rs:1200`,
+`account_session.rs:219`, `extensions.rs:545`, `output_styles.rs`, `common/runtime.rs:122`); only
+tests that compare the error to a `String`/`&str` need edits.
+
+`agent.rs:253` `main_error: Option<String>` and `:332` `error: Option<String>` are in scope only as
+rendered text: convert them only if they originate from a `RuntimeError`, rendering with `chain` at
+the assignment.
 
 ## Trade-offs
 
@@ -197,6 +208,9 @@ show their full cause). Check `docs/` for any page quoting a changed message (`r
   `CompletionModel` whose error wraps a source) asserts the compaction warning contains the inner cause.
 - A test of `caused_client`/`reqwest_client` directly with a crafted `LoadedNetwork` (as
   `tests/network.rs` does) asserting the TLS cause is in the `chain`.
-- A test that the rule-save failure notice (`permissions.rs`) contains the `io::Error` cause.
+- A test that the rule-save failure notice (`permissions.rs`) contains the `io::Error` cause; it must
+  force an io error, e.g. the `always_allow_file` rig in `tests/common/pipeline.rs` with a settings
+  path under a regular file.
 - Existing permission tests stay green unchanged, proving no decision changed; the choke-point test stays green.
-- Acceptance sweep: `rg 'Result<[^>]*, String>' fontaine-core/src/agent.rs` has no hit in public methods.
+- Acceptance sweep: `rg -n ', String>' rust/fontaine-core/src/agent.rs` has no `Result` hit (the
+  `Result<[^>]*, String>` form misses `build_screen` and `model_listings`, whose types nest `>`).
