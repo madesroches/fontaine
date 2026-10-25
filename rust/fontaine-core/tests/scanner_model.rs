@@ -174,7 +174,7 @@ async fn an_interrupted_response_leaves_no_final_file_and_no_temp_file() {
     });
     let w = World::new();
     let dir = scanner_model::default_dir(&w.data);
-    let err = scanner_model::ensure(&dir, &url, Some("tok"))
+    let err = scanner_model::ensure(&dir, &url, Some("tok"), &Default::default())
         .await
         .unwrap_err();
     assert!(matches!(err, FetchError::Failed(_)), "{err}");
@@ -203,7 +203,7 @@ async fn a_stale_partial_download_is_swept_and_a_fresh_one_kept() {
         .unwrap()
         .set_modified(old)
         .unwrap();
-    scanner_model::ensure(&dir, &server.uri(), Some("tok"))
+    scanner_model::ensure(&dir, &server.uri(), Some("tok"), &Default::default())
         .await
         .unwrap();
     assert!(!stale.exists());
@@ -222,7 +222,7 @@ async fn a_server_that_never_answers_cannot_hold_startup_forever() {
     });
     let w = World::new();
     let dir = scanner_model::default_dir(&w.data);
-    let err = scanner_model::ensure(&dir, &url, Some("tok"))
+    let err = scanner_model::ensure(&dir, &url, Some("tok"), &Default::default())
         .await
         .unwrap_err();
     assert!(matches!(err, FetchError::Failed(_)), "{err}");
@@ -332,9 +332,10 @@ async fn two_sessions_downloading_at_once_both_succeed_and_leave_complete_files(
     let dir = scanner_model::default_dir(&w.data);
     let url = server.uri();
 
+    let network = Default::default();
     let (a, b) = tokio::join!(
-        scanner_model::ensure(&dir, &url, Some("tok")),
-        scanner_model::ensure(&dir, &url, Some("tok")),
+        scanner_model::ensure(&dir, &url, Some("tok"), &network),
+        scanner_model::ensure(&dir, &url, Some("tok"), &network),
     );
     a.unwrap();
     b.unwrap();

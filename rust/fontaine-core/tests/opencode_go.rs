@@ -328,9 +328,16 @@ async fn sign_in_stores_the_tokens_and_names_the_account() {
     let w = World::new();
     let steps = std::sync::Mutex::new(Vec::new());
     let progress = |step: SignInStep| steps.lock().unwrap().push(step);
-    let summary = sign_in_at(&console.uri(), "go", &w.data, None, &progress)
-        .await
-        .unwrap();
+    let summary = sign_in_at(
+        &console.uri(),
+        "go",
+        &w.data,
+        &Default::default(),
+        None,
+        &progress,
+    )
+    .await
+    .unwrap();
     assert_eq!(summary, "signed in to OpenCode Go as me@example.com");
     let code = SignInStep::Code {
         verification_url: format!(
@@ -377,9 +384,16 @@ async fn a_refused_sign_in_stores_nothing() {
         .mount(&console)
         .await;
     let w = World::new();
-    let err = sign_in_at(&console.uri(), "go", &w.data, None, &|_| {})
-        .await
-        .unwrap_err();
+    let err = sign_in_at(
+        &console.uri(),
+        "go",
+        &w.data,
+        &Default::default(),
+        None,
+        &|_| {},
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("access_denied"), "{err}");
     assert_eq!(Credentials::load(&w.data).unwrap().account("go"), None);
 }

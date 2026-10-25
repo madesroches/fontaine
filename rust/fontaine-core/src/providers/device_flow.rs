@@ -12,6 +12,7 @@ use url::Url;
 
 use super::token_source::now_unix;
 use crate::credentials::OAuthTokens;
+use fontaine_tools::tls::LoadedNetwork;
 
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
@@ -130,10 +131,10 @@ pub struct DeviceFlow {
 impl DeviceFlow {
     /// The HTTP client is built here, per flow, so nothing pooled outlives the runtime that ran
     /// it.
-    pub fn new(endpoints: DeviceFlowEndpoints) -> Result<Self, String> {
+    pub fn new(endpoints: DeviceFlowEndpoints, network: &LoadedNetwork) -> Result<Self, String> {
         Ok(DeviceFlow {
             endpoints,
-            http: crate::transport::reqwest_client()?,
+            http: crate::transport::reqwest_client(network)?,
             request_timeout: Some(REQUEST_TIMEOUT),
         })
     }

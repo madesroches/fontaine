@@ -321,6 +321,7 @@ fn skills(w_setup: impl FnOnce(&World)) -> Skills {
         git_bash: common::git_bash(),
         results: Arc::new(fontaine_tools::result_pipeline::ResultPipeline::new()),
         hide_mcp_names: false,
+        network: Default::default(),
         extension: None,
     })
     .unwrap();

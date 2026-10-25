@@ -21,12 +21,15 @@ impl Refresher for AgainstServer {
         current: &'a OAuthTokens,
     ) -> BoxFuture<'a, Result<OAuthTokens, RefreshError>> {
         Box::pin(async move {
-            DeviceFlow::new(DeviceFlowEndpoints {
-                code_url: format!("{}/auth/device/code", self.0),
-                token_url: format!("{}/auth/device/token", self.0),
-                client_id: "opencode-cli",
-                code_params: vec![],
-            })
+            DeviceFlow::new(
+                DeviceFlowEndpoints {
+                    code_url: format!("{}/auth/device/code", self.0),
+                    token_url: format!("{}/auth/device/token", self.0),
+                    client_id: "opencode-cli",
+                    code_params: vec![],
+                },
+                &Default::default(),
+            )
             .unwrap()
             .refresh(&current.refresh)
             .await

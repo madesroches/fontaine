@@ -231,7 +231,12 @@ async fn start_pg2(params: &StartParams<'_>, timeout: Duration) -> ScannerStart 
                     dir.display()
                 );
             }
-            if let Err(e) = scanner_model::ensure(&dir, base_url, token.as_deref()).await {
+            let network = match params.config.loaded_network(None) {
+                Ok(network) => network,
+                Err(e) => return fail(notices, fontaine_tools::error_chain::chain(&e)),
+            };
+            if let Err(e) = scanner_model::ensure(&dir, base_url, token.as_deref(), &network).await
+            {
                 return fail(notices, e.to_string());
             }
             dir

@@ -164,9 +164,16 @@ async fn a_stdio_server_gets_only_the_variables_it_is_given_by_name() {
         "PATH" => std::env::var_os("PATH"),
         _ => None,
     };
-    let connected = connect(&spec, handle.clone(), guard(gate.clone()), true, &env)
-        .await
-        .expect("the stdio server starts");
+    let connected = connect(
+        &spec,
+        handle.clone(),
+        guard(gate.clone()),
+        true,
+        &Default::default(),
+        &env,
+    )
+    .await
+    .expect("the stdio server starts");
     assert_eq!(
         names(&handle),
         ["mcp__stdio__echo", "mcp__stdio__env", "mcp__stdio__lookup"]
@@ -246,10 +253,17 @@ async fn a_server_that_cannot_start_is_an_error_naming_it() {
             cwd: std::env::temp_dir(),
         },
     };
-    let error = connect(&spec, tool_server(), guard(gate), true, &|_| None)
-        .await
-        .err()
-        .expect("it cannot start");
+    let error = connect(
+        &spec,
+        tool_server(),
+        guard(gate),
+        true,
+        &Default::default(),
+        &|_| None,
+    )
+    .await
+    .err()
+    .expect("it cannot start");
     assert!(error.to_string().contains("ghost"), "{error}");
 }
 
@@ -302,11 +316,48 @@ async fn a_streamable_http_server_registers_and_runs_behind_the_gate() {
             url: format!("{}/mcp", server.uri()),
         },
     };
-    let connected = connect(&spec, handle.clone(), guard(gate.clone()), true, &|_| None)
-        .await
-        .expect("the endpoint answers");
+    let connected = connect(
+        &spec,
+        handle.clone(),
+        guard(gate.clone()),
+        true,
+        &Default::default(),
+        &|_| None,
+    )
+    .await
+    .expect("the endpoint answers");
     assert_eq!(names(&handle), ["mcp__web__ping"]);
     assert_eq!(call(&handle, "mcp__web__ping", "{}").await.unwrap(), "pong");
     assert_eq!(gate.calls()[0].risk, RiskClass::Arbitrary);
     connected.connection.close().await;
+}
+
+#[tokio::test]
+async fn an_http_server_is_reached_through_the_configured_proxy() {
+    use wiremock::matchers::any;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let proxy = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&proxy)
+        .await;
+    let network = fontaine_tools::tls::NetworkSettings {
+        http_proxy: Some(proxy.uri()),
+        ..Default::default()
+    }
+    .load()
+    .unwrap();
+    let spec = ServerSpec {
+        name: "remote".to_string(),
+        transport: Transport::Http {
+            url: "http://mcp.test/mcp".to_string(),
+        },
+    };
+    let gate = Gate::new(true);
+    let result = connect(&spec, tool_server(), guard(gate), true, &network, &|_| None).await;
+    assert!(result.is_err());
+    let seen = proxy.received_requests().await.unwrap();
+    assert!(!seen.is_empty());
+    assert_eq!(seen[0].url.host_str(), Some("mcp.test"));
 }

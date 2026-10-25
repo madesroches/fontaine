@@ -4,10 +4,13 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Stdio;
 
+use fontaine_tools::error_chain::chain;
 use fontaine_tools::guarded::Guard;
+use fontaine_tools::tls::{LoadedNetwork, build_client};
 use rig_core::tool::ManagedToolSink;
 use rig_rmcp::{McpClientHandler, McpConnection};
 use rmcp::model::{ClientCapabilities, ClientConfig, Implementation};
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 
 use crate::register::GuardedSink;
@@ -106,6 +109,40 @@ fn client_config() -> ClientConfig {
     )
 }
 
+/// The client rmcp builds for `from_uri` (no idle pooling, same-origin 307/308 redirects only),
+/// with `network` applied; rmcp's own cannot take a proxy or extra roots.
+fn http_client(network: &LoadedNetwork) -> reqwest::Result<reqwest::Client> {
+    build_client(network, || {
+        reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
+            .redirect(same_origin_redirect_policy())
+    })
+}
+
+/// Only same-origin 307 and 308 redirects are followed: those keep the method and body, and a
+/// cross-origin hop would replay the session id and custom headers to another host.
+fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let preserves_body = matches!(
+            attempt.status(),
+            reqwest::StatusCode::TEMPORARY_REDIRECT | reqwest::StatusCode::PERMANENT_REDIRECT
+        );
+        let same_origin = attempt
+            .previous()
+            .first()
+            .is_some_and(|original| original.origin() == attempt.url().origin());
+        if !preserves_body || !same_origin {
+            attempt.stop()
+        } else if attempt.previous().len() > MAX_REDIRECTS {
+            attempt.error(format!("exceeded {MAX_REDIRECTS} redirects"))
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
+const MAX_REDIRECTS: usize = 10;
+
 fn fail(spec: &ServerSpec, message: impl std::fmt::Display) -> McpError {
     McpError {
         server: spec.name.clone(),
@@ -120,12 +157,13 @@ pub async fn connect<S>(
     sink: S,
     guard: Guard,
     reveal_names: bool,
+    network: &LoadedNetwork,
     env: &(dyn Fn(&str) -> Option<OsString> + Sync),
 ) -> Result<Connected, McpError>
 where
     S: ManagedToolSink + Send + Sync + 'static,
 {
-    let result = start(spec, sink, guard, reveal_names, env).await;
+    let result = start(spec, sink, guard, reveal_names, network, env).await;
     let shown = if reveal_names {
         spec.name.as_str()
     } else {
@@ -179,6 +217,7 @@ async fn start<S>(
     sink: S,
     guard: Guard,
     reveal_names: bool,
+    network: &LoadedNetwork,
     env: &(dyn Fn(&str) -> Option<OsString> + Sync),
 ) -> Result<Connected, McpError>
 where
@@ -230,7 +269,19 @@ where
                 .map_err(|e| fail(spec, e))?
         }
         Transport::Http { url } => {
-            let transport = StreamableHttpClientTransport::from_uri(url.as_str());
+            let client = http_client(network).map_err(|e| {
+                fail(
+                    spec,
+                    format!(
+                        "could not build the HTTP client: {}",
+                        chain(&e.without_url())
+                    ),
+                )
+            })?;
+            let transport = StreamableHttpClientTransport::with_client(
+                client,
+                StreamableHttpClientTransportConfig::with_uri(url.as_str()),
+            );
             handler
                 .connect(transport)
                 .await
@@ -242,4 +293,61 @@ where
         connection,
         kind: spec.kind(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn status_of(client: &reqwest::Client, url: String) -> u16 {
+        client.post(url).send().await.unwrap().status().as_u16()
+    }
+
+    #[tokio::test]
+    async fn a_same_origin_307_is_followed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/a"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/b"))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/b"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let client = http_client(&LoadedNetwork::default()).unwrap();
+        assert_eq!(status_of(&client, format!("{}/a", server.uri())).await, 200);
+    }
+
+    #[tokio::test]
+    async fn a_302_is_returned_unfollowed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/a"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", "/b"))
+            .mount(&server)
+            .await;
+        let client = http_client(&LoadedNetwork::default()).unwrap();
+        assert_eq!(status_of(&client, format!("{}/a", server.uri())).await, 302);
+    }
+
+    #[tokio::test]
+    async fn a_cross_origin_307_is_returned_unfollowed() {
+        let target = MockServer::start().await;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/a"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/b", target.uri()).as_str()),
+            )
+            .mount(&server)
+            .await;
+        let client = http_client(&LoadedNetwork::default()).unwrap();
+        assert_eq!(status_of(&client, format!("{}/a", server.uri())).await, 307);
+        assert!(target.received_requests().await.unwrap().is_empty());
+    }
 }

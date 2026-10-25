@@ -124,7 +124,10 @@ are resolved.
 - It has no `prompt` argument and does no summarizing.
 - It trusts the system CA store. When that cannot be loaded (a bare container with no
   `ca-certificates`), it falls back to the bundled Mozilla roots and records that in the debug log
-  (`--debug-file`), not on screen. Set `SSL_CERT_FILE` or `SSL_CERT_DIR` to trust other roots.
+  (`--debug-file`), not on screen. Set `SSL_CERT_FILE` or `SSL_CERT_DIR` to trust other roots
+  instead of the system's, or `[network] ca_bundle` to trust extra ones as well.
+- It honors [`[network]`](configuration.md#network): the proxy, extra CA roots and client
+  certificate. Without a proxy key it still follows `HTTPS_PROXY` and `NO_PROXY`.
 
 ## Permissions
 

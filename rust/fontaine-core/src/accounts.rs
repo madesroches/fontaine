@@ -10,6 +10,7 @@ use crate::credentials::{self, Credentials, StoredCredential};
 use crate::models::{Credential, credential};
 use crate::providers::{self, CredentialPolicy, SignInError, SignInProgress};
 use crate::user_config;
+use fontaine_tools::tls::LoadedNetwork;
 
 pub use crate::providers::{BaseUrlPolicy, SignInStep};
 
@@ -222,6 +223,12 @@ pub fn build(new: &NewAccount, config: &Config) -> Result<Account, String> {
         wires: None,
         context_tokens: None,
         think: None,
+        https_proxy: None,
+        http_proxy: None,
+        no_proxy: None,
+        ca_bundle: None,
+        client_cert: None,
+        client_key: None,
     };
     check_account(&new.name, &account).map_err(|(key, message)| format!("{key}: {message}"))?;
     Ok(account)
@@ -262,6 +269,7 @@ pub async fn sign_in(
     name: &str,
     account: &Account,
     data_dir: &Path,
+    network: &LoadedNetwork,
     progress: SignInProgress<'_>,
 ) -> Result<String, SignInError> {
     let Some(sign_in) = account.kind.provider().sign_in() else {
@@ -270,7 +278,9 @@ pub async fn sign_in(
             account.kind.as_str()
         )))));
     };
-    sign_in.sign_in(name, account, data_dir, progress).await
+    sign_in
+        .sign_in(name, account, data_dir, network, progress)
+        .await
 }
 
 /// Removes the account's stored credential. The provider-side token is not revoked. `false` when

@@ -11,6 +11,7 @@ use rig_core::operation::Completion;
 
 use crate::config::Account;
 use crate::credentials::StoredCredential;
+use fontaine_tools::tls::LoadedNetwork;
 
 pub mod anthropic;
 pub mod device_flow;
@@ -122,6 +123,7 @@ pub trait SignIn: Send + Sync {
         account_name: &'a str,
         account: &'a Account,
         data_dir: &'a Path,
+        network: &'a LoadedNetwork,
         progress: SignInProgress<'a>,
     ) -> BoxFuture<'a, Result<String, SignInError>>;
 }
@@ -169,6 +171,7 @@ pub struct ConnectContext<'a> {
     pub credential: Option<StoredCredential>,
     pub data_dir: &'a Path,
     pub session_id: Option<&'a str>,
+    pub network: &'a LoadedNetwork,
 }
 
 impl ConnectContext<'_> {

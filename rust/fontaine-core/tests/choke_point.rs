@@ -88,6 +88,7 @@ fn params(rig: &Rig) -> RegistryParams {
         git_bash: None,
         results: Arc::new(ResultPipeline::new()),
         hide_mcp_names: false,
+        network: Default::default(),
         extension: Some(extension()),
     }
 }

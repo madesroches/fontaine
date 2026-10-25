@@ -33,6 +33,7 @@ use super::{
 use crate::config::{Account, Wire};
 use crate::credentials::{self, OAuthTokens, StoredCredential};
 use crate::transport::{AuthPlacement, Decorated, Decoration, caused_client, reqwest_client};
+use fontaine_tools::tls::LoadedNetwork;
 
 pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/inference/go";
 pub const CONSOLE_URL: &str = "https://opencode.ai/console";
@@ -101,7 +102,9 @@ impl Provider for OpencodeGo {
             ctx.data_dir,
             ctx.account_name,
             tokens,
-            Arc::new(GoRefresher),
+            Arc::new(GoRefresher {
+                network: ctx.network.clone(),
+            }),
         );
         let mut headers = Vec::new();
         if let Some(id) = ctx.session_id {
@@ -109,7 +112,7 @@ impl Provider for OpencodeGo {
                 .map_err(|_| "the session id cannot be sent as an HTTP header".to_string())?;
             headers.push((HeaderName::from_static("x-opencode-session"), value));
         }
-        let base_client = caused_client()?;
+        let base_client = caused_client(ctx.network)?;
         let http = |placement: AuthPlacement| {
             Ok::<_, String>(Decorated::new(
                 base_client.clone(),
@@ -225,7 +228,9 @@ fn endpoints(server: &str) -> DeviceFlowEndpoints {
 }
 
 /// Refreshes against the Console the tokens were issued by.
-struct GoRefresher;
+struct GoRefresher {
+    network: LoadedNetwork,
+}
 
 impl Refresher for GoRefresher {
     fn refresh<'a>(
@@ -237,7 +242,7 @@ impl Refresher for GoRefresher {
                 .extra
                 .get("server")
                 .map_or(CONSOLE_URL, String::as_str);
-            let flow = DeviceFlow::new(endpoints(server))
+            let flow = DeviceFlow::new(endpoints(server), &self.network)
                 .map_err(|e| RefreshError::Failed(FlowError::Invalid(e)))?;
             let mut refreshed = flow.refresh(&current.refresh).await?;
             let mut extra = current.extra.clone();
@@ -255,12 +260,14 @@ impl SignIn for OpencodeGo {
         account_name: &'a str,
         _account: &'a Account,
         data_dir: &'a Path,
+        network: &'a LoadedNetwork,
         progress: SignInProgress<'a>,
     ) -> BoxFuture<'a, Result<String, SignInError>> {
         sign_in_at(
             CONSOLE_URL,
             account_name,
             data_dir,
+            network,
             Some(REQUEST_TIMEOUT),
             progress,
         )
@@ -279,12 +286,13 @@ pub async fn sign_in_at(
     console: &str,
     account_name: &str,
     data_dir: &Path,
+    network: &LoadedNetwork,
     request_timeout: Option<Duration>,
     progress: SignInProgress<'_>,
 ) -> Result<String, SignInError> {
     let failed = |e: FlowError| SignInError(Box::new(e));
     let console = console.trim_end_matches('/');
-    let flow = DeviceFlow::new(endpoints(console))
+    let flow = DeviceFlow::new(endpoints(console), network)
         .map_err(|e| failed(FlowError::Invalid(e)))?
         .with_request_timeout(request_timeout);
     let code = flow.start().await.map_err(failed)?;
@@ -298,7 +306,7 @@ pub async fn sign_in_at(
         .extra
         .insert("server".to_string(), console.to_string());
 
-    let email = match user_email(console, &tokens.access, request_timeout).await {
+    let email = match user_email(console, &tokens.access, network, request_timeout).await {
         Ok(email) => email,
         Err(e) => {
             progress(SignInStep::Warning(format!(
@@ -322,9 +330,10 @@ pub async fn sign_in_at(
 async fn user_email(
     console: &str,
     access: &str,
+    network: &LoadedNetwork,
     request_timeout: Option<Duration>,
 ) -> Result<Option<String>, FlowError> {
-    let http = reqwest_client().map_err(FlowError::Invalid)?;
+    let http = reqwest_client(network).map_err(FlowError::Invalid)?;
     let mut request = http.get(format!("{console}/api/user"));
     if let Some(timeout) = request_timeout {
         request = request.timeout(timeout);

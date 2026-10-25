@@ -578,6 +578,11 @@ fn absent_files_load_as_empty() {
 const NO_FOR_PROJECT: &[(&str, &str)] = &[
     ("env", "[env]\nHTTPS_PROXY = \"http://p\"\n"),
     ("accounts", "[accounts.x]\nkind = \"ollama\"\n"),
+    ("network", "[network]\nhttps_proxy = \"http://p:1\"\n"),
+    (
+        "accounts.x network keys",
+        "[accounts.x]\nkind = \"ollama\"\nca_bundle = \"/ca.pem\"\n",
+    ),
     ("tui.theme", "[tui]\ntheme = \"dark\"\n"),
     ("tui.screen_reader", "[tui]\nscreen_reader = true\n"),
     ("model.model", "[model]\nmodel = \"a/b\"\n"),
@@ -645,6 +650,11 @@ const NO_FOR_PROJECT: &[(&str, &str)] = &[
 /// Rejected from project-local (untracked) too, a subset of the project column.
 const NO_FOR_LOCAL: &[(&str, &str)] = &[
     ("accounts", "[accounts.x]\nkind = \"ollama\"\n"),
+    ("network", "[network]\nhttps_proxy = \"http://p:1\"\n"),
+    (
+        "accounts.x network keys",
+        "[accounts.x]\nkind = \"ollama\"\nca_bundle = \"/ca.pem\"\n",
+    ),
     ("tui.theme", "[tui]\ntheme = \"dark\"\n"),
     ("tui.screen_reader", "[tui]\nscreen_reader = true\n"),
     (
@@ -1441,4 +1451,88 @@ fn a_malformed_env_entry_is_a_parse_error_that_does_not_quote_the_value() {
             assert!(shown.contains("2:"), "{shown}");
         }
     }
+}
+
+#[test]
+fn network_is_accepted_in_user_and_settings_scope_and_validates_without_reading_files() {
+    let text = "[network]\nhttps_proxy = \"http://proxy.corp:8080\"\nno_proxy = \"localhost\"\nca_bundle = \"/nonexistent/ca.pem\"\nclient_cert = \"/nonexistent/c.pem\"\nclient_key = \"/nonexistent/k.pem\"\n";
+    user_ok(text);
+    parse_settings(text, Path::new("cli.toml"), Column::Cli).unwrap();
+    user_ok(
+        "[accounts.w]\nkind = \"ollama\"\nhttps_proxy = \"http://p:1\"\nca_bundle = \"/nonexistent/ca.pem\"\n",
+    );
+}
+
+#[test]
+fn network_keys_merge_per_key_with_settings_over_user_and_accounts_over_both() {
+    let w = World::new();
+    w.user_file(
+        "[network]\nhttps_proxy = \"http://user:1\"\nno_proxy = \"a\"\n\n[accounts.w]\nkind = \"ollama\"\nhttps_proxy = \"http://acct:2\"\n",
+    );
+    let cli = w.cli_file("[network]\nhttps_proxy = \"http://cli:3\"\n");
+    let c = w.load_with_settings(&cli).unwrap();
+    assert_eq!(c.network.https_proxy.as_deref(), Some("http://cli:3"));
+    assert_eq!(c.network.no_proxy.as_deref(), Some("a"));
+    let acct = c.network_for(Some("w"));
+    assert_eq!(acct.https_proxy.as_deref(), Some("http://acct:2"));
+    assert_eq!(acct.no_proxy.as_deref(), Some("a"));
+    assert_eq!(c.network_for(Some("absent")), c.network);
+}
+
+#[test]
+fn empty_network_values_are_rejected() {
+    for text in [
+        "[network]\nhttps_proxy = \"\"\n",
+        "[network]\nca_bundle = \"\"\n",
+        "[accounts.x]\nkind = \"ollama\"\nno_proxy = \" \"\n",
+    ] {
+        assert!(
+            parse_settings(text, Path::new("u.toml"), Column::User).is_err(),
+            "{text}"
+        );
+    }
+}
+
+fn network_error(w: &World) -> String {
+    match w.load() {
+        Err(e @ ConfigError::Network { .. }) => {
+            assert_eq!(e.exit_code(), 2);
+            e.to_string()
+        }
+        other => panic!("expected a network error, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_network_setting_that_cannot_load_stops_the_config_load() {
+    let w = World::new();
+    w.user_file("[network]\nca_bundle = \"/nonexistent/ca.pem\"\n");
+    let text = network_error(&w);
+    assert!(
+        text.contains("ca_bundle") && text.contains("/nonexistent/ca.pem"),
+        "{text}"
+    );
+
+    let w = World::new();
+    w.user_file("[network]\nno_proxy = \"x\"\n");
+    assert!(network_error(&w).contains("no_proxy"));
+
+    let w = World::new();
+    w.user_file("[network]\nclient_cert = \"/c.pem\"\n");
+    assert!(network_error(&w).contains("client_cert and client_key"));
+}
+
+#[test]
+fn an_account_that_breaks_the_network_rules_names_itself() {
+    let w = World::new();
+    w.user_file("[accounts.w]\nkind = \"ollama\"\nno_proxy = \"x\"\n");
+    assert!(network_error(&w).contains("accounts.w"));
+
+    // A proxy on the account does not rescue a `no_proxy` in `[network]`, which stays unmatched
+    // for every other account.
+    let w = World::new();
+    w.user_file(
+        "[network]\nno_proxy = \"x\"\n\n[accounts.w]\nkind = \"ollama\"\nhttps_proxy = \"http://p:1\"\n",
+    );
+    assert!(network_error(&w).contains("`network`"));
 }

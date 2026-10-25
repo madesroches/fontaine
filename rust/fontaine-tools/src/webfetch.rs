@@ -46,13 +46,16 @@ pub struct Webfetch {
 }
 
 impl Webfetch {
-    pub fn new(config: WebfetchConfig) -> Result<Self, reqwest::Error> {
+    pub fn new(
+        config: WebfetchConfig,
+        network: &crate::tls::LoadedNetwork,
+    ) -> Result<Self, reqwest::Error> {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::ACCEPT,
             reqwest::header::HeaderValue::from_static(ACCEPT),
         );
-        let client = crate::tls::build_client(|| {
+        let client = crate::tls::build_client(network, || {
             reqwest::Client::builder()
                 .user_agent(crate::FONTAINE_USER_AGENT)
                 .default_headers(headers.clone())

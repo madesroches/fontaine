@@ -12,6 +12,7 @@ use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::{RiskClass, ToolSource, extension_risk};
 use fontaine_tools::scope::Scope;
 use fontaine_tools::skill::SkillTool;
+use fontaine_tools::tls::LoadedNetwork;
 use fontaine_tools::webfetch::WebfetchConfig;
 use rig_core::tool::Tool;
 
@@ -79,6 +80,8 @@ pub struct RegistryParams {
     pub results: Arc<ResultPipeline>,
     /// Telemetry names MCP tools `third-party`.
     pub hide_mcp_names: bool,
+    /// The `[network]` settings webfetch is built with.
+    pub network: Arc<LoadedNetwork>,
     pub extension: Option<ExtensionTools>,
 }
 
@@ -114,6 +117,7 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
             ..ShellSettings::default()
         },
         webfetch: WebfetchConfig::default(),
+        network: params.network,
     })
     .map_err(|e| {
         format!(
