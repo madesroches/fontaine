@@ -57,9 +57,14 @@ pub struct Answer { pub question: String, pub selected: Vec<String>, pub other: 
 The tool validates the shape (counts, non-empty labels, unique option labels per question;
 `deny_unknown_fields`) and returns `invalid_args` errors the model can correct. "Other"
 free-text is always available in the dialog and is not listed among the options, as in Claude
-Code. A result is text: one `"<question>" = "<answer>"` line per question; `Unavailable`
+Code. A result is text: one `"<question>" = "<answer>"` line per question, where `<answer>` is the
+selected labels joined with `", "` with the typed "Other" text appended last; `Unavailable`
 returns `User input is unavailable in this session; proceed with your best judgment and state
 your assumptions.`
+
+An answer is valid with at least one selected label or a non-empty "Other"; "Other" combines with
+selections only when `multi_select` is set. Esc on any question declines the whole call and
+discards answers already given.
 
 The tool is **root-agent only**: if the calling `AgentId` is not `ROOT_AGENT` it returns the
 same unavailable result without asking. Built-in child toolsets do not include it. Loaders accept
@@ -156,7 +161,10 @@ the label's wording, is what counts as intent.
    derivation (:586-588) get a no-specifier arm like `send_message`; `destructive.rs:62` lists
    the tool beside `skill` as non-destructive (else `_ => true`).
 3. `fontaine-core/src/tools.rs`, `agent.rs`, `extensions.rs`: add to `ExtensionTools`, build the
-   `QuestionSource` over the approver and ledger, rule-name mapping beside `extensions.rs:115`,
+   `QuestionSource` over the approver and ledger (`Parts` has no approver: add it, taken from
+   `Setup.approver`, so both `build_agent` call sites, the initial build and `rebuild`, get it; the
+   tool reads the calling agent id from `ToolContext` like `skill.rs`, defaulting to `ROOT_AGENT`,
+   not through a `require` that does not default), rule-name mapping beside `extensions.rs:115`,
    and add `AskUserQuestion` to the known-Claude-tool-names error string (`extensions.rs:133`).
    `registry()` in `tools.rs` pushes each extension separately, so add
    `tools.push(register_extension(extension.ask_user, &guard))` beside :125-127. `summarize`
@@ -164,8 +172,9 @@ the label's wording, is what counts as intent.
 4. `fontaine-tui`: `question.rs` panel, `Prompt::Question`, `App` hosting/queueing/pruning, view
    (overlay-title branch), `lib.rs` `on_prompt` / `drain_prompts` arms, key routing, `linear.rs`
    (`NEEDS_ANSWER`).
-5. One system prompt guidance line for the tool, on all surfaces (`fontaine-core/src/prompt.rs`);
-   update the insta snapshot in `fontaine-core/tests/system_prompt.rs`.
+5. One system prompt guidance line for the tool, on all surfaces (the static text in
+   `fontaine-core/prompts/system_prompt.md`; `prompt.rs` only assembles it); update the insta
+   snapshot `fontaine-core/tests/snapshots/system_prompt__the_assembled_prompt_is_stable.snap`.
 6. Docs: the files listed under Documentation; flip the
    parity row in `research/research-claude-code-parity.md`; `CHANGELOG.md`.
 7. Add dated `## Decisions` lines to `tasks/fontaine_harness_plan.md` for the deviations
@@ -175,9 +184,9 @@ the label's wording, is what counts as intent.
 ## Files to Modify
 
 - `rust/fontaine-tools/src/{ask_user.rs (new), lib.rs, names.rs, risk.rs}`
-- `rust/fontaine-core/src/{permissions.rs, permission_rules.rs, destructive.rs, tools.rs, agent.rs, extensions.rs, prompt.rs}`
+- `rust/fontaine-core/src/{permissions.rs, permission_rules.rs, destructive.rs, tools.rs, agent.rs, extensions.rs}`, `rust/fontaine-core/prompts/system_prompt.md`
 - `rust/fontaine-tui/src/{question.rs (new), lib.rs, app.rs, view.rs, linear.rs}`
-- `rust/fontaine-core/tests/{choke_point.rs (ExtensionTools literal at :71), permission_rules.rs (tool-name lists at :71, :84), system_prompt.rs (snapshot, :29-42), docs.rs (:205, needs a `| ask_user_question |` row in `docs/tools.md`), common/pipeline.rs (:65, `Scripted` overrides `ask_user`)}`,
+- `rust/fontaine-core/tests/{choke_point.rs (ExtensionTools literal at :71), permission_rules.rs (tool-name lists at :71, :84), snapshots/system_prompt__the_assembled_prompt_is_stable.snap (:29-42 of system_prompt.rs), docs.rs (:205, needs a `| ask_user_question |` row in `docs/tools.md`), common/pipeline.rs (:65, `Scripted` overrides `ask_user`)}`,
   the `app.rs` overlay-name test (~:1134, add the question overlay),
   `rust/fontaine-tools/tests/choke_point.rs`, `rust/fontaine/tests/headless_smoke.rs` (hard-coded
   tool names)
