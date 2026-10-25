@@ -7,6 +7,8 @@ pub enum Command {
     AddDir(String),
     Denied,
     Agents,
+    /// `/todos`: shows or hides the expanded task list.
+    Todos,
     /// `/clear` (`/reset`, `/new`); a name for the old conversation is refused.
     Clear(String),
     /// `/compact [focus]`.
@@ -195,6 +197,13 @@ pub const BUILTINS: &[Builtin] = &[
         description: "choose the colour theme",
         command: Command::Theme,
     },
+    Builtin {
+        name: "todos",
+        aliases: &[],
+        hint: None,
+        description: "expand or collapse the task list",
+        command: |_| Command::Todos,
+    },
 ];
 
 /// Whether a built-in command answers to `name`.
@@ -369,6 +378,7 @@ mod tests {
         );
         assert_eq!(parse_command("/agents"), Some(Command::Agents));
         assert_eq!(parse_command("/tasks"), Some(Command::Agents));
+        assert_eq!(parse_command("/todos"), Some(Command::Todos));
         assert_eq!(
             parse_command("/output-style terse"),
             Some(Command::OutputStyle("terse".into()))

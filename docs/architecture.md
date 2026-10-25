@@ -149,7 +149,7 @@ terminal UI renders them and answers approval prompts concurrently with the run.
 
 ## The session ledger
 
-Each session keeps two stores in `<data dir>/sessions/<session id>/`:
+Each session keeps two stores, and a task list file, in `<data dir>/sessions/<session id>/`:
 
 - the **model context**, the conversation the model sees, kept in `logs/` by rig's memory store.
   Compaction rewrites it: when the conversation outgrows the model's context window, or the
@@ -164,6 +164,9 @@ Each session keeps two stores in `<data dir>/sessions/<session id>/`:
   when the session started. The index respects `.gitignore` and holds at most 50,000 paths, after
   which it records that it was cut short.
 
+- the **task list**, `todos.json`: the root agent's list from the `todo_write` tool, written on every
+  change. Subagents keep their own lists in memory only, so a resumed session has the root's.
+
 Compaction changes the first store only, and so does `/clear`, which empties the model context in
 the same session and adds a `context_cleared` record to the ledger. The ledger keeps everything it
 held; only the guardian's view of what you asked restarts after the record. A summary is model-written text and is never an input to a
@@ -172,10 +175,10 @@ own subdirectory because the memory store refuses a directory that holds a top-l
 
 ### Resuming and forking
 
-`--continue` and `--resume` reopen both stores of an earlier session: the conversation log and the
+`--continue` and `--resume` reopen the stores of an earlier session: the conversation log, the task list and the
 ledger, whose records rebuild the view the guardian's requests are built from, and new records
 continue the sequence. The session starts in the mode the settings resolve to and with no
-"allow session" grants, which were never persisted. `--fork-session` copies both stores into a
+"allow session" grants, which were never persisted. `--fork-session` copies the session directory, `todos.json` included, into a
 session directory under a new id and opens the copy, leaving the original as it was; the audit log
 of the copy starts empty.
 

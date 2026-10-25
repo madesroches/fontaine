@@ -40,6 +40,7 @@ async fn the_registered_tools_are_advertised_to_the_model() {
         "skill",
         "send_message",
         "ask_user_question",
+        "todo_write",
     ];
     assert_eq!(out.lines()[0]["tools"], json!(names));
 
@@ -110,6 +111,62 @@ async fn a_tool_call_round_trips_through_the_wrapped_read_tool() {
     assert!(
         requests[1].to_string().contains("ping"),
         "the tool result reaches the model"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_list_call_succeeds_is_saved_in_the_session_and_survives_a_resume() {
+    let list = json!({"todos": [
+        {"content": "write the fix", "status": "in_progress"},
+        {"content": "run the tests", "status": "pending"},
+    ]});
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool("call_1", "todo_write", list.clone()),
+            Turn::text("planned"),
+            Turn::text("carrying on"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let out = s
+        .headless(&["--output-format", "stream-json", "plan it"])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    assert_eq!(
+        kinds(&lines),
+        [
+            "init",
+            "tool_call",
+            "gate_decision",
+            "tool_result",
+            "assistant",
+            "result"
+        ]
+    );
+    assert_eq!(lines[2]["tier"], "read_only_fast_path");
+    assert_eq!(lines[3]["success"], json!(true));
+    assert_eq!(
+        lines[3]["text"],
+        "Updated todo list: 2 items (1 pending, 1 in progress, 0 completed)"
+    );
+    let id = lines[0]["session_id"].as_str().unwrap().to_string();
+    let file = s.data.join("sessions").join(&id).join("todos.json");
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(saved, list["todos"]);
+
+    let again = s
+        .headless(&["--output-format", "stream-json", "--resume", &id, "go on"])
+        .await;
+    assert_eq!(again.code, Some(0), "{}", again.stderr);
+    let after: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(after, saved);
+    assert!(
+        !again.stderr.contains("task list"),
+        "no load warning: {}",
+        again.stderr
     );
 }
 

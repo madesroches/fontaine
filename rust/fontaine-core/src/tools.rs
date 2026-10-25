@@ -14,6 +14,7 @@ use fontaine_tools::risk::{RiskClass, ToolSource, extension_risk};
 use fontaine_tools::scope::Scope;
 use fontaine_tools::skill::SkillTool;
 use fontaine_tools::tls::LoadedNetwork;
+use fontaine_tools::todo::TodoTool;
 use fontaine_tools::webfetch::WebfetchConfig;
 use rig_core::tool::Tool;
 
@@ -62,12 +63,14 @@ pub fn subprocess_env(config: &Config) -> Vec<(OsString, OsString)> {
         .collect()
 }
 
-/// The tools beyond the built-ins: the subagent tools, the skill loader and the question dialog.
+/// The tools beyond the built-ins: the subagent tools, the skill loader, the question dialog and
+/// the task list.
 pub struct ExtensionTools {
     pub agent: AgentTool,
     pub send_message: SendMessageTool,
     pub skill: SkillTool,
     pub ask_user: AskUserTool,
+    pub todo: TodoTool,
 }
 
 pub struct RegistryParams {
@@ -132,6 +135,7 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
         tools.push(register_extension(extension.skill, &guard));
         tools.push(register_extension(extension.send_message, &guard));
         tools.push(register_extension(extension.ask_user, &guard));
+        tools.push(register_extension(extension.todo, &guard));
     }
     Ok(tools)
 }

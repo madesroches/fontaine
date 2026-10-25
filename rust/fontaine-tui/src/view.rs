@@ -54,6 +54,15 @@ pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
     };
     let overlay_rows = overlay_rows + queued_lines(app, inner_width).len();
     let input_rows = input_view(&app.input, inner_width).rows.len() + 2;
+    let overlay_rows = overlay_rows
+        + todo_lines(
+            app,
+            usize::from(width).max(1),
+            max_height,
+            input_rows,
+            queued_lines(app, inner_width).len(),
+        )
+        .len();
     let live = app
         .transcript
         .live_lines(usize::from(width).max(1), &app.theme)
@@ -75,18 +84,26 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let view = input_view(&app.input, inner_width);
     let input_height = view.rows.len() as u16 + 2;
     let queued = queued_lines(app, inner_width);
+    let todos = todo_lines(
+        app,
+        usize::from(area.width).max(1),
+        area.height,
+        usize::from(input_height),
+        queued.len(),
+    );
     let approval_height = if body.is_empty() {
         0
     } else {
         ((body.len() + footer.len()) as u16 + 2).min(
             area.height
-                .saturating_sub(input_height + queued.len() as u16 + 1),
+                .saturating_sub(input_height + queued.len() as u16 + todos.len() as u16 + 1),
         )
     };
-    let [transcript, approval, queued_area, input, status] = Layout::vertical([
+    let [transcript, approval, queued_area, todo_area, input, status] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(approval_height),
         Constraint::Length(queued.len() as u16),
+        Constraint::Length(todos.len() as u16),
         Constraint::Length(input_height),
         Constraint::Length(1),
     ])
@@ -101,6 +118,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
     }
     frame.render_widget(Paragraph::new(queued), queued_area);
+    frame.render_widget(Paragraph::new(todos), todo_area);
     draw_input(frame, input, app, &view);
     statusbar::render(frame, status, app);
 }
@@ -124,11 +142,29 @@ fn queued_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
+/// The task list's rows. An expanded list gets what the screen leaves after the message box,
+/// the status row and the queued messages, and at least one row; the approval prompt shrinks
+/// before it does.
+fn todo_lines(
+    app: &App,
+    width: usize,
+    height: u16,
+    input_rows: usize,
+    queued_rows: usize,
+) -> Vec<Line<'static>> {
+    let cap = usize::from(height)
+        .saturating_sub(input_rows + queued_rows + 1)
+        .max(1);
+    app.todos.lines(width, cap)
+}
+
 /// Rows a dialog body may use so its header and the selection stay inside what `draw` allows.
 fn body_rows(app: &App, width: usize, height: u16, footer_len: usize) -> usize {
-    let reserved = input_view(&app.input, width).rows.len()
-        + 2
-        + queued_lines(app, width).len()
+    let input_rows = input_view(&app.input, width).rows.len() + 2;
+    let queued_rows = queued_lines(app, width).len();
+    let reserved = input_rows
+        + queued_rows
+        + todo_lines(app, width + 2, height, input_rows, queued_rows).len()
         + 1
         + 2
         + footer_len

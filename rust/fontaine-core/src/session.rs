@@ -1,4 +1,4 @@
-//! A session's two stores. rig-memory holds the model context, which compaction may rewrite;
+//! A session's two stores, plus its task list file. rig-memory holds the model context, which compaction may rewrite;
 //! the ledger beside it is append-only. Both live in `<data dir>/sessions/<session id>/`.
 
 use std::fmt;
@@ -21,6 +21,7 @@ use crate::audit::AuditLog;
 use crate::ledger::Ledger;
 use crate::owner_only;
 use crate::permissions::Approver;
+use crate::todos::SessionTodos;
 
 pub const SESSIONS_DIR: &str = "sessions";
 
@@ -167,6 +168,7 @@ pub struct Session {
     pub dir: PathBuf,
     pub ledger: Arc<Ledger>,
     pub audit: Arc<AuditLog>,
+    todos: Arc<SessionTodos>,
     store: DirStore,
     policy: CompactionPolicy,
     autocompact_window: Option<u64>,
@@ -200,9 +202,10 @@ impl Session {
         let store = DirStore::open(&dir).map_err(|e| SessionError::Store(e.to_string()))?;
         Ok(Session {
             id: id.to_string(),
-            dir,
             ledger: Arc::new(ledger),
             audit: Arc::new(audit),
+            todos: Arc::new(SessionTodos::new(&dir)),
+            dir,
             store,
             policy: CompactionPolicy::default(),
             autocompact_window: None,
@@ -233,9 +236,10 @@ impl Session {
         let store = DirStore::open(&dir).map_err(|e| SessionError::Store(e.to_string()))?;
         Ok(Session {
             id: id.to_string(),
-            dir,
             ledger: Arc::new(ledger),
             audit: Arc::new(audit),
+            todos: Arc::new(SessionTodos::load(&dir)),
+            dir,
             store,
             policy: CompactionPolicy::default(),
             autocompact_window: None,
@@ -273,6 +277,11 @@ impl Session {
             source,
         })?;
         Session::open(data_dir, id)
+    }
+
+    /// The task lists of this session, shared by every clone of it.
+    pub fn todos(&self) -> &Arc<SessionTodos> {
+        &self.todos
     }
 
     pub fn store(&self) -> DirStore {

@@ -23,6 +23,7 @@ use fontaine_tools::result_pipeline::{ResultPipeline, StageKind};
 use fontaine_tools::risk::RiskClass;
 use fontaine_tools::scope::Scope;
 use fontaine_tools::skill::SkillTool;
+use fontaine_tools::todo::TodoTool;
 use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext};
 use rig_agent::prelude::*;
 use rig_agent::tool::server::{ToolServer, ToolServerHandle};
@@ -53,6 +54,7 @@ use crate::scanner_stage::{Backend, ScannerStage, ScannerStart, llm_backend};
 use crate::session::{CONVERSATION_LOG, ClearError, Session};
 use crate::skills::{self, SkillRuntime};
 use crate::steering::{Steering, SteeringHook};
+use crate::todos::ReportedTodos;
 use crate::tools::{self, ExtensionTools, RegistryParams};
 use crate::trust;
 use crate::user_config;
@@ -1329,6 +1331,12 @@ impl AgentRuntime {
         }
         self.session.clear().await?;
         self.state.append(Record::ContextCleared {});
+        if let Err(e) = self.session.todos().clear() {
+            self.approver.warn(&format!(
+                "the task list was not cleared: {}",
+                fontaine_tools::error_chain::chain(&e)
+            ));
+        }
         Ok(())
     }
 
@@ -1404,6 +1412,9 @@ fn build_agent(p: &Parts<'_>) -> Result<(Agent, prompt::PromptPieces), String> {
         append: p.setup.append_system_prompt.as_deref(),
     });
     let preamble = pieces.join();
+    if let Some(warning) = p.session.todos().take_warning() {
+        p.approver.warn(&warning);
+    }
     let ledger_window: Arc<dyn fontaine_agents::root_ledger::RootLedger> =
         Arc::new(LedgerWindow(p.state.clone()));
     let registered = tools::registry(RegistryParams {
@@ -1432,6 +1443,12 @@ fn build_agent(p: &Parts<'_>) -> Result<(Agent, prompt::PromptPieces), String> {
             },
             ask_user: AskUserTool {
                 source: Arc::new(HumanQuestions::new(p.approver.clone(), p.state.clone())),
+            },
+            todo: TodoTool {
+                store: Arc::new(ReportedTodos {
+                    todos: p.session.todos().clone(),
+                    approver: p.approver.clone(),
+                }),
             },
         }),
     })?;

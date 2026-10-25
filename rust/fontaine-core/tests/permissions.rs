@@ -41,6 +41,11 @@ async fn the_mode_and_risk_class_matrix() {
             [(Allow, ReadOnlyFastPath); 4],
         ),
         (
+            "todo_write",
+            json!({"todos": [{"content": "a", "status": "pending"}]}),
+            [(Allow, ReadOnlyFastPath); 4],
+        ),
+        (
             "read",
             json!({"path": "../outside.txt"}),
             [(Deny, Mode), (Deny, Mode), (Deny, Mode), (Deny, Dont)],
@@ -268,6 +273,15 @@ async fn a_deny_rule_holds_in_every_mode() {
             assert_eq!(rig.approver.asked(), 0);
         }
     }
+}
+
+#[tokio::test]
+async fn a_deny_rule_on_the_task_list_beats_its_fast_path() {
+    let rig = Rig::with(Options::new(Manual).settings("[permissions]\ndeny = [\"todo_write\"]\n"));
+    let args = json!({"todos": []});
+    let d = rig.check("todo_write", args).await;
+    assert!(!allowed(&d));
+    assert_eq!(rig.audit().last().unwrap().tier, Tier::DenyRule);
 }
 
 #[tokio::test]

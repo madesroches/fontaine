@@ -25,8 +25,7 @@ pub enum McpState {
     NotTrusted,
 }
 
-const KEYS: &str =
-    "shift+tab mode · ctrl+t agents · ctrl+r history · ! shell · @ file · esc interrupt";
+const KEYS: &str = "shift+tab mode · ctrl+t agents · ctrl+o todos · ctrl+r history · ! shell · @ file · esc interrupt";
 
 fn command_line(names: &str, hint: Option<&str>, description: &str) -> String {
     match hint {

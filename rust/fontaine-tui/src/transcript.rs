@@ -53,7 +53,16 @@ pub struct Transcript {
 
 const SUMMARY_KEYS: &[&str] = &["command", "path", "file_path", "url", "pattern", "query"];
 
-fn summarize(args: &Value) -> String {
+fn summarize(tool: &str, args: &Value) -> String {
+    if tool == "todo_write"
+        && let Some(items) = args.get("todos").and_then(Value::as_array)
+    {
+        let done = items
+            .iter()
+            .filter(|item| item.get("status").and_then(Value::as_str) == Some("completed"))
+            .count();
+        return format!("{} tasks, {done} done", items.len());
+    }
     let named = SUMMARY_KEYS
         .iter()
         .find_map(|key| args.get(*key).and_then(Value::as_str));
@@ -161,8 +170,8 @@ impl Transcript {
                 self.finish_streaming();
                 self.entries.push(Entry::Tool {
                     id,
+                    summary: summarize(&tool, &args),
                     tool,
-                    summary: summarize(&args),
                     status: ToolStatus::Pending,
                 });
             }
@@ -503,6 +512,16 @@ mod tests {
 
     fn delta(t: &mut Transcript, s: &str) {
         t.on_event(SessionEvent::AssistantDelta(s.into()));
+    }
+
+    #[test]
+    fn a_task_list_call_is_summarized_by_its_counts() {
+        let args = serde_json::json!({"todos": [
+            {"content": "a", "status": "completed"},
+            {"content": "b", "status": "pending"},
+        ]});
+        assert_eq!(summarize("todo_write", &args), "2 tasks, 1 done");
+        assert_eq!(summarize("read", &serde_json::json!({"path": "x"})), "x");
     }
 
     #[test]

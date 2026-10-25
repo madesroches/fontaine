@@ -161,7 +161,9 @@ fn validate_specifier(tool: &str, spec: &str) -> Result<(), String> {
                 Ok(())
             }
         }
-        "send_message" | "ask_user_question" => Err(format!("`{tool}` rules take no specifier")),
+        "send_message" | "ask_user_question" | "todo_write" => {
+            Err(format!("`{tool}` rules take no specifier"))
+        }
         _ if PATH_TOOLS.contains(&tool) => path_spec(spec).map(drop),
         _ => Ok(()),
     }

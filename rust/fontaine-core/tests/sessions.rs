@@ -113,6 +113,27 @@ async fn a_fork_is_a_copy_under_a_new_id_and_the_original_is_untouched() {
 }
 
 #[tokio::test]
+async fn the_task_list_is_reloaded_on_resume_and_copied_by_a_fork() {
+    use fontaine_tools::gate::ROOT_AGENT;
+    use fontaine_tools::todo::{TodoItem, TodoStatus, TodoStore};
+    let w = World::new();
+    let source = Session::create(&w.data, A).unwrap();
+    start(&source, &w.work);
+    let list = vec![TodoItem {
+        content: "ship it".to_string(),
+        status: TodoStatus::InProgress,
+    }];
+    source.todos().replace(ROOT_AGENT, list.clone()).unwrap();
+
+    assert_eq!(Session::open(&w.data, A).unwrap().todos().root(), list);
+    let fork = Session::fork(&w.data, A, B).unwrap();
+    assert!(fork.dir.join("todos.json").is_file());
+    assert_eq!(fork.todos().root(), list);
+    fork.todos().clear().unwrap();
+    assert_eq!(source.todos().root(), list);
+}
+
+#[tokio::test]
 async fn forking_onto_a_used_id_or_a_missing_source_is_a_usage_error() {
     let w = World::new();
     Session::create(&w.data, A).unwrap();
