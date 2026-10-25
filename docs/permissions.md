@@ -31,6 +31,9 @@ would ask is denied instead; see [Headless runs](headless.md#denials).
 
 A call goes through these steps in order and the first one that decides wins.
 
+A call from an agent the session no longer knows (its id was never registered, or it or an
+ancestor has been released) is denied in every mode before step 1: no hook or guardian sees it.
+
 1. **Hooks.** Pre-tool-use hooks may deny, ask, allow or rewrite the call's arguments; every later
    step judges the rewritten call. Deny beats ask beats allow. A hook that fails, times out or
    answers something unreadable decides nothing. Hooks are configured under `[[hooks.*]]`; see

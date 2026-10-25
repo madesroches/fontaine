@@ -374,8 +374,19 @@ async fn a_deny_rule_blocks_the_question_before_any_dialog() {
 async fn a_child_that_inherits_the_tool_is_refused_at_call_time() {
     let rig = Rig::new(Manual);
     rig.approver.reply(QuestionReply::Declined);
+    let id = rig
+        .agents
+        .reserve(
+            fontaine_tools::gate::ROOT_AGENT,
+            "worker",
+            "m",
+            Vec::new(),
+            fontaine_agents::mode::Ladder::Manual,
+            false,
+        )
+        .unwrap();
     let mut context = ToolContext::new();
-    context.insert(AgentId("worker-1".into())).unwrap();
+    context.insert(AgentId(id)).unwrap();
     let out = run_ask(&rig, &mut context).await;
     assert_eq!(
         out.as_deref(),

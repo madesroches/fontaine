@@ -27,7 +27,9 @@ use crate::audit::{Decision, DecisionRecord, args_digest, now_rfc3339};
 use crate::config::PermissionMode;
 use crate::destructive::touched_paths;
 use crate::floor::{self, CriticalEnv};
-use crate::gate::{DeniedCall, RetrySource, ScreenStage, SessionState, permission_mode};
+use crate::gate::{
+    DeniedCall, RetrySource, ScreenStage, SessionState, UNREGISTERED_AGENT, permission_mode,
+};
 use crate::ledger::Record;
 use crate::permission_rules::{
     CallContext, Posture, RuleSource, SourcedRule, is_broad_code_execution, matches, parse_rule,
@@ -488,13 +490,17 @@ impl PermissionPipeline {
     /// The mode this agent's calls are judged under right now, and whether edits are blocked
     /// for it. The root's is the session mode; a child's is the tighter of its own and its
     /// parent's, so a child is never looser than its parent and follows it on every call.
-    fn posture_of(&self, agent: &str) -> (PermissionMode, bool) {
+    /// `None` for an agent the tree no longer knows, which has no posture to judge it by.
+    fn posture_of(&self, agent: &str) -> Option<(PermissionMode, bool)> {
+        if agent == fontaine_tools::gate::ROOT_AGENT {
+            return Some((self.state.mode(), false));
+        }
         let tree = self.state.agents();
-        if agent == fontaine_tools::gate::ROOT_AGENT || !tree.is_child(agent) {
-            return (self.state.mode(), false);
+        if !tree.lineage_intact(agent) {
+            return None;
         }
         let posture = tree.posture(agent);
-        (permission_mode(posture.mode), posture.plan_block)
+        Some((permission_mode(posture.mode), posture.plan_block))
     }
 
     fn workspace_view(&self) -> (PathBuf, Vec<String>) {
@@ -1054,7 +1060,26 @@ impl PermissionPipeline {
     async fn adjudicate(&self, call: CallView<'_>) -> GateDecision {
         let started = Instant::now();
         let tool_use_id = self.state.current_call(call.agent);
-        let (mode, plan_block) = self.posture_of(call.agent);
+        let Some((mode, plan_block)) = self.posture_of(call.agent) else {
+            // Hooks and the guardian never see a caller nobody can identify.
+            let cx = CallCtx {
+                call: &call,
+                digest: args_digest(call.args),
+                original_digest: None,
+                args: call.args.clone(),
+                tool_use_id,
+                mode: PermissionMode::DontAsk,
+                started,
+            };
+            return self
+                .deny(
+                    &cx,
+                    Tier::DenyRule,
+                    Some("agent registry".to_string()),
+                    denied(call.tool, UNREGISTERED_AGENT),
+                )
+                .await;
+        };
         let hook = self.run_hooks(&call, tool_use_id.as_deref(), mode).await;
         let args = hook
             .updated_input
@@ -1675,7 +1700,10 @@ impl ToolGate for PermissionPipeline {
             target: TARGET,
             "fontaine.permission",
             tool_name = self.state.telemetry_tool_name(call.tool),
-            permission_mode = self.posture_of(call.agent).0.as_str(),
+            permission_mode = self
+                .posture_of(call.agent)
+                .map_or(PermissionMode::DontAsk, |(mode, _)| mode)
+                .as_str(),
             tier = tracing::field::Empty,
             decision = tracing::field::Empty,
         );

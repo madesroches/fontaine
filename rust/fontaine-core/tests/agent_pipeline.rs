@@ -329,3 +329,59 @@ async fn an_ancestors_specifiers_bind_the_subagents_it_spawns() {
         Some("agent tools")
     );
 }
+
+fn unregistered_ids(rig: &Rig) -> Vec<String> {
+    let released = child(rig, Ladder::Auto);
+    rig.agents.release(&released);
+    let parent = child(rig, Ladder::Auto);
+    let orphan = rig
+        .agents
+        .reserve(&parent, "worker", "m", Vec::new(), Ladder::Auto, false)
+        .unwrap();
+    rig.agents.release(&parent);
+    vec!["never-reserved".to_string(), released, orphan]
+}
+
+#[tokio::test]
+async fn a_caller_the_tree_does_not_hold_is_denied_in_every_mode() {
+    for mode in [
+        Manual,
+        PermissionMode::AcceptEdits,
+        Plan,
+        PermissionMode::DontAsk,
+        Auto,
+    ] {
+        let fake = fake_guardian(allow_verdict());
+        let rig = auto_rig(&fake, mode);
+        for id in unregistered_ids(&rig) {
+            let before = rig.audit().len();
+            let out = rig.check_as(&id, "shell", shell("python a.py")).await;
+            assert!(!allowed(&out), "{mode:?}: {id} was let through");
+            let record = rig.audit()[before].clone();
+            assert_eq!(record.decision, Decision::Deny, "{mode:?}: {id}");
+            assert_eq!(record.tier, Tier::DenyRule);
+            assert_eq!(record.rule.as_deref(), Some("agent registry"));
+            assert!(record.tool_use_id.is_some());
+        }
+        assert_eq!(fake.calls(), 0, "{mode:?}: the guardian was consulted");
+        assert_eq!(rig.approver.asked(), 0, "{mode:?}: the human was asked");
+    }
+}
+
+#[tokio::test]
+async fn child_restriction_refuses_an_unregistered_caller_only() {
+    use fontaine_core::permission_rules::CallContext;
+    let rig = Rig::new(Manual);
+    let live = child(&rig, Ladder::Manual);
+    let scope = rig.state.scope();
+    let args = json!({"command": "ls"});
+    let call = CallContext {
+        tool: "shell",
+        args: &args,
+        scope: &scope,
+        home: None,
+    };
+    assert!(rig.state.child_restriction("ghost", &call).is_some());
+    assert!(rig.state.child_restriction(ROOT_AGENT, &call).is_none());
+    assert!(rig.state.child_restriction(&live, &call).is_none());
+}

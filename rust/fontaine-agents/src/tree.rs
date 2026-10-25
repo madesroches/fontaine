@@ -404,6 +404,28 @@ impl AgentTree {
         self.changed.notify_waiters();
     }
 
+    /// Whether `id` is the root or every node up its parent chain to the root still exists. An
+    /// id that was never reserved, was released, or sits under a released ancestor is not.
+    pub fn lineage_intact(&self, id: &str) -> bool {
+        if id == ROOT_AGENT {
+            return true;
+        }
+        let inner = self.lock();
+        let mut at = id;
+        // Same bound as `posture`: a corrupt parent link counts as broken.
+        for _ in 0..64 {
+            let Some(node) = inner.nodes.get(at) else {
+                return false;
+            };
+            match &node.info.parent {
+                Some(parent) if parent == ROOT_AGENT => return true,
+                Some(parent) => at = parent,
+                None => return false,
+            }
+        }
+        false
+    }
+
     /// Whether `id` is a subagent of this tree.
     pub fn is_child(&self, id: &str) -> bool {
         self.lock()
@@ -782,6 +804,23 @@ mod tests {
         assert!(in_plan.plan_block);
         *mode.lock().unwrap() = RootMode::Ladder(Ladder::Auto);
         assert_eq!(tree.posture(&child).mode, Ladder::Auto);
+    }
+
+    #[test]
+    fn lineage_is_intact_only_through_live_nodes() {
+        let tree = tree(8);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        let a1 = reserve(&tree, &a).unwrap();
+        let b = reserve(&tree, ROOT_AGENT).unwrap();
+        assert!(tree.lineage_intact(ROOT_AGENT));
+        assert!(tree.lineage_intact(&a));
+        assert!(tree.lineage_intact(&a1));
+        assert!(!tree.lineage_intact("never-reserved"));
+        tree.release(&b);
+        assert!(!tree.lineage_intact(&b));
+        tree.release(&a);
+        assert!(!tree.lineage_intact(&a));
+        assert!(!tree.lineage_intact(&a1));
     }
 
     #[test]
