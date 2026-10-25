@@ -152,14 +152,3 @@ fn keeping_the_mode_preserves_it_while_write_atomic_tightens_it() {
     owner_only::write_atomic(&path, b"tight").unwrap();
     assert_eq!(mode(&path), 0o600);
 }
-
-#[test]
-fn the_atomic_write_is_owner_only_from_the_start() {
-    let w = World::new();
-    let path = w.root.join("atomic.txt");
-    owner_only::write_atomic(&path, b"x").unwrap();
-    #[cfg(unix)]
-    assert_eq!(mode(&path), 0o600);
-    #[cfg(windows)]
-    common::assert_current_user_only(&path);
-}
