@@ -265,6 +265,10 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- Which scopes may set a settings key is now one declarative table in `fontaine-core`, and a key
+  with no entry is refused from project and project-local files instead of accepted. No existing
+  scope decision changes; a scope error now names the table entry's key, which can be a section
+  such as `guardian.screen.model` or `telemetry.endpoint`.
 - A poisoned lock now ends the session wherever its contents feed a permission or guardian decision,
   a spend tally, the model in use or a durable record, instead of being silently recovered; only
   display and advisory state (the `@`-file index, steering buffers, telemetry tallies, a child's

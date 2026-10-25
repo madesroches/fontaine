@@ -1649,6 +1649,7 @@ dependencies = [
  "rig-reqwest",
  "rig-tools",
  "rmcp",
+ "schemars",
  "serde",
  "serde_jcs",
  "serde_json",

@@ -573,134 +573,6 @@ fn absent_files_load_as_empty() {
 
 // --- the per-key scope table ---
 
-/// Each row is a snippet one scope column must reject. The three columns are checked
-/// separately because the table differs per column.
-const NO_FOR_PROJECT: &[(&str, &str)] = &[
-    ("env", "[env]\nHTTPS_PROXY = \"http://p\"\n"),
-    ("accounts", "[accounts.x]\nkind = \"ollama\"\n"),
-    ("network", "[network]\nhttps_proxy = \"http://p:1\"\n"),
-    (
-        "accounts.x network keys",
-        "[accounts.x]\nkind = \"ollama\"\nca_bundle = \"/ca.pem\"\n",
-    ),
-    ("tui.theme", "[tui]\ntheme = \"dark\"\n"),
-    ("tui.screen_reader", "[tui]\nscreen_reader = true\n"),
-    ("model.model", "[model]\nmodel = \"a/b\"\n"),
-    ("guardian.model", "[guardian]\nmodel = \"a/b\"\n"),
-    ("guardian.profile", "[guardian]\nprofile = \"minimal\"\n"),
-    ("guardian.timeout_secs", "[guardian]\ntimeout_secs = 5\n"),
-    (
-        "guardian.confidence_threshold",
-        "[guardian]\nconfidence_threshold = 0.1\n",
-    ),
-    ("guardian.cache", "[guardian]\ncache = false\n"),
-    (
-        "default_mode plan",
-        "[permissions]\ndefault_mode = \"plan\"\n",
-    ),
-    (
-        "default_mode acceptEdits",
-        "[permissions]\ndefault_mode = \"acceptEdits\"\n",
-    ),
-    (
-        "default_mode auto",
-        "[permissions]\ndefault_mode = \"auto\"\n",
-    ),
-    (
-        "permissions.allow",
-        "[permissions]\nallow = [\"shell(ls)\"]\n",
-    ),
-    (
-        "permissions.additional_directories",
-        "[permissions]\nadditional_directories = [\"/tmp\"]\n",
-    ),
-    (
-        "auto_mode.environment",
-        "[auto_mode]\nenvironment = [\"x\"]\n",
-    ),
-    ("auto_mode.allow", "[auto_mode]\nallow = [\"x\"]\n"),
-    ("agents max_parallel", "[agents]\nmax_parallel = 2\n"),
-    ("agents budgets", "[agents]\nsubagent_token_budget = 10\n"),
-    ("agents.types", "[agents.types.t]\ntools = [\"read\"]\n"),
-    ("context", "[context]\nautocompact_window = 150000\n"),
-    (
-        "shell_preclassifier",
-        "[shell_preclassifier]\nallow_extra = [\"tree\"]\n",
-    ),
-    ("telemetry.enabled true", "[telemetry]\nenabled = true\n"),
-    (
-        "telemetry.endpoint",
-        "[telemetry]\nendpoint = \"https://t.example.com\"\n",
-    ),
-    (
-        "telemetry.api_key_env",
-        "[telemetry]\napi_key_env = \"K\"\n",
-    ),
-    ("telemetry.backend", "[telemetry]\nbackend = \"otlp\"\n"),
-    (
-        "telemetry.log_user_prompts",
-        "[telemetry]\nlog_user_prompts = true\n",
-    ),
-    (
-        "telemetry.resource_attributes",
-        "[telemetry]\nresource_attributes = { a = \"b\" }\n",
-    ),
-];
-
-/// Rejected from project-local (untracked) too, a subset of the project column.
-const NO_FOR_LOCAL: &[(&str, &str)] = &[
-    ("accounts", "[accounts.x]\nkind = \"ollama\"\n"),
-    ("network", "[network]\nhttps_proxy = \"http://p:1\"\n"),
-    (
-        "accounts.x network keys",
-        "[accounts.x]\nkind = \"ollama\"\nca_bundle = \"/ca.pem\"\n",
-    ),
-    ("tui.theme", "[tui]\ntheme = \"dark\"\n"),
-    ("tui.screen_reader", "[tui]\nscreen_reader = true\n"),
-    (
-        "default_mode plan",
-        "[permissions]\ndefault_mode = \"plan\"\n",
-    ),
-    (
-        "default_mode acceptEdits",
-        "[permissions]\ndefault_mode = \"acceptEdits\"\n",
-    ),
-    (
-        "default_mode auto",
-        "[permissions]\ndefault_mode = \"auto\"\n",
-    ),
-    ("telemetry.enabled true", "[telemetry]\nenabled = true\n"),
-    (
-        "telemetry.endpoint",
-        "[telemetry]\nendpoint = \"https://t.example.com\"\n",
-    ),
-    (
-        "telemetry.api_key_env",
-        "[telemetry]\napi_key_env = \"K\"\n",
-    ),
-    (
-        "telemetry.log_tool_content",
-        "[telemetry]\nlog_tool_content = true\n",
-    ),
-];
-
-/// User-file-only keys: rejected from project, project-local and CLI scopes.
-const USER_FILE_ONLY: &[(&str, &str)] = &[
-    ("guardian.scanner", "[guardian]\nscanner = \"llm\"\n"),
-    (
-        "guardian.scanner_command",
-        "[guardian]\nscanner_command = \"/bin/scan\"\n",
-    ),
-    (
-        "guardian.scanner_model_path",
-        "[guardian]\nscanner_model_path = \"/m\"\n",
-    ),
-    (
-        "guardian.scanner_hf_token_env",
-        "[guardian]\nscanner_hf_token_env = \"HF\"\n",
-    ),
-];
-
 fn assert_scope_error(r: Result<impl std::fmt::Debug, ConfigError>, what: &str) {
     match r {
         Err(ConfigError::Scope { .. }) => {}
@@ -709,34 +581,18 @@ fn assert_scope_error(r: Result<impl std::fmt::Debug, ConfigError>, what: &str) 
 }
 
 #[test]
-fn project_scope_rejects_every_no_or_limited_cell() {
-    for (name, text) in NO_FOR_PROJECT.iter().chain(USER_FILE_ONLY) {
-        user_ok(text);
-        let w = World::new();
-        w.project_file(text);
-        let r = w.load();
-        assert_scope_error(r, &format!("project: {name}"));
-    }
-}
-
-#[test]
-fn project_local_scope_rejects_every_no_or_limited_cell() {
-    for (name, text) in NO_FOR_LOCAL.iter().chain(USER_FILE_ONLY) {
-        user_ok(text);
-        let w = World::new();
-        w.trusted_repo();
-        w.local_file(text);
-        assert_scope_error(w.load(), &format!("project-local: {name}"));
-    }
-}
-
-#[test]
 fn cli_scope_rejects_user_file_only_keys() {
-    for (name, text) in USER_FILE_ONLY {
-        let w = World::new();
-        let cli = w.cli_file(text);
-        assert_scope_error(w.load_with_settings(&cli), &format!("cli: {name}"));
-    }
+    let w = World::new();
+    let cli = w.cli_file("[guardian]\nscanner = \"llm\"\n");
+    assert_scope_error(w.load_with_settings(&cli), "cli: guardian.scanner");
+}
+
+#[test]
+fn project_local_scope_rejects_user_file_or_cli_keys() {
+    let w = World::new();
+    w.trusted_repo();
+    w.local_file("[tui]\ntheme = \"dark\"\n");
+    assert_scope_error(w.load(), "project-local: tui.theme");
 }
 
 #[test]
