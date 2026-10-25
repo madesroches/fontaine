@@ -66,13 +66,20 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         with:
           workspaces: rust
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == '178-speed-up-ci-iteration-time-especially-the-windows-job' }}
+
+      - name: Install mold
+        if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mold
+          echo "RUSTFLAGS=-C link-arg=-fuse-ld=mold" >> "$GITHUB_ENV"
 
       - name: Install cargo-deny
         if: needs.changes.outputs.code == 'true'
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny@0.20.2
+          tool: cargo-deny@0.20.2,cargo-nextest
 
       - name: Format
         if: needs.changes.outputs.code == 'true'
@@ -86,9 +93,17 @@ jobs:
         if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
         run: cargo clippy --all-targets --features fontaine/pg2 -- -D warnings
 
+      - name: Build tests
+        if: needs.changes.outputs.code == 'true'
+        run: cargo test --no-run
+
       - name: Test
         if: needs.changes.outputs.code == 'true'
-        run: cargo test
+        run: cargo nextest run
+
+      - name: Doctests
+        if: needs.changes.outputs.code == 'true'
+        run: cargo test --doc
 
       - name: Test (pg2)
         if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
