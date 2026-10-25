@@ -6,6 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use fontaine_tools::gate::AgentId;
+use fontaine_tools::lock::lock;
 use fontaine_tools::skill::SkillSource;
 use futures::future::BoxFuture;
 use rig_core::tool::{DynamicTool, ToolContext};
@@ -161,7 +162,7 @@ impl SkillRuntime {
     }
 
     pub fn set_shell(&self, shell: DynamicTool) {
-        *self.shell.lock().unwrap_or_else(|e| e.into_inner()) = Some(shell);
+        *lock(&self.shell, "skill shell") = Some(shell);
     }
 
     pub fn extensions(&self) -> &Arc<Extensions> {
@@ -182,7 +183,7 @@ impl SkillRuntime {
         {
             return "[command not run: this agent has no shell tool]".to_string();
         }
-        let shell = self.shell.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let shell = lock(&self.shell, "skill shell").clone();
         let Some(shell) = shell else {
             return "[command not run: the shell tool is not available]".to_string();
         };

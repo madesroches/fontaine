@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use fontaine_tools::gate::ROOT_AGENT;
+use fontaine_tools::lock::{lock, read, write};
 use tokio::sync::Notify;
 
 use crate::budget::{Budget, Exhausted, Spend};
@@ -205,7 +206,7 @@ impl AgentTree {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+        lock(&self.inner, "agent tree")
     }
 
     pub fn limits(&self) -> &Limits {
@@ -215,22 +216,18 @@ impl AgentTree {
     /// Where the tree reads the root session's current mode, so a child's posture follows
     /// the parent on every call.
     pub fn set_root_mode(&self, source: impl Fn() -> RootMode + Send + Sync + 'static) {
-        *self.root_mode.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(source);
+        *write(&self.root_mode, "root mode") = Arc::new(source);
     }
 
     fn root_posture(&self) -> Posture {
-        let source = self
-            .root_mode
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let source = read(&self.root_mode, "root mode").clone();
         Posture::of_root(source())
     }
 
     /// Where the tree reads the tools the root session's registry holds now, which bound every
     /// toolset below it. Read on each use: an MCP server can add tools while a session runs.
     pub fn set_root_tools(&self, source: impl Fn() -> Vec<String> + Send + Sync + 'static) {
-        *self.root_tools.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(source));
+        *write(&self.root_tools, "root tools") = Some(Arc::new(source));
     }
 
     pub fn set_root_model(&self, model: String) {
@@ -248,11 +245,7 @@ impl AgentTree {
 
     pub fn tools_of(&self, agent: &str) -> Vec<String> {
         if agent == ROOT_AGENT
-            && let Some(source) = self
-                .root_tools
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone()
+            && let Some(source) = read(&self.root_tools, "root tools").clone()
         {
             return source();
         }

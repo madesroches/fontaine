@@ -3,6 +3,7 @@
 //! through `credentials.lock`, because refresh tokens rotate: two unsynchronized refreshes would
 //! leave one of them holding a dead token.
 
+use fontaine_tools::lock::lock;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -123,9 +124,7 @@ fn warn_sink() -> &'static Mutex<Option<WarnSink>> {
 /// Where a failure to save a rotated sign-in is reported. Sources are shared process-wide and
 /// outlive any one session, so the sink is process-wide too and the latest session wins.
 pub fn set_warn_sink(sink: impl Fn(&str) + Send + Sync + 'static) {
-    *warn_sink()
-        .lock()
-        .expect("the warning sink lock is not poisoned") = Some(Arc::new(sink));
+    *lock(warn_sink(), "warning sink") = Some(Arc::new(sink));
 }
 
 type Registry = Mutex<HashMap<(PathBuf, String), Arc<TokenSource>>>;
@@ -162,9 +161,7 @@ impl TokenSource {
         tokens: OAuthTokens,
         refresher: Arc<dyn Refresher>,
     ) -> Arc<TokenSource> {
-        let mut sources = registry()
-            .lock()
-            .expect("the registry lock is not poisoned");
+        let mut sources = lock(registry(), "registry");
         let key = (data_dir.to_path_buf(), account.to_string());
         if let Some(existing) = sources.get(&key) {
             existing.offer(tokens);
@@ -176,7 +173,7 @@ impl TokenSource {
     }
 
     fn offer(&self, tokens: OAuthTokens) {
-        let mut cached = self.cached.lock().expect("the token lock is not poisoned");
+        let mut cached = lock(&self.cached, "token");
         if tokens.refresh != cached.refresh && tokens.expires_at >= cached.expires_at {
             *cached = tokens;
         }
@@ -194,12 +191,12 @@ impl TokenSource {
         if now >= self.retry_after.load(Ordering::Relaxed) {
             return None;
         }
-        let cached = self.cached.lock().expect("the token lock is not poisoned");
+        let cached = lock(&self.cached, "token");
         (cached.expires_at > now).then(|| cached.access.clone())
     }
 
     fn fresh(&self) -> Option<String> {
-        let cached = self.cached.lock().expect("the token lock is not poisoned");
+        let cached = lock(&self.cached, "token");
         (cached.expires_at > now_unix() + REFRESH_MARGIN_SECS).then(|| cached.access.clone())
     }
 
@@ -226,7 +223,7 @@ impl TokenSource {
         }
         let account = self.account.clone();
         let data_dir = self.data_dir.clone();
-        let lock = tokio::task::spawn_blocking(move || credentials::lock(&data_dir))
+        let file_lock = tokio::task::spawn_blocking(move || credentials::lock(&data_dir))
             .await
             .map_err(|e| TokenError::new(&account, TokenErrorKind::Task(e)))?
             .map_err(|e| TokenError::new(&account, TokenErrorKind::Lock(Box::new(e))))?;
@@ -234,11 +231,7 @@ impl TokenSource {
         // Another process may have rotated the pair since this one read it, so the disk can be
         // newer; but after a failed save it is older than the pair held in memory, whose refresh
         // token is the only live one.
-        let held = self
-            .cached
-            .lock()
-            .expect("the token lock is not poisoned")
-            .clone();
+        let held = lock(&self.cached, "token").clone();
         let current = match Credentials::load(&self.data_dir) {
             Ok(stored) => match stored.account(&self.account) {
                 Some(StoredCredential::OAuth(disk)) if disk.expires_at > held.expires_at => disk,
@@ -249,7 +242,7 @@ impl TokenSource {
         };
         if current.expires_at > now_unix() + REFRESH_MARGIN_SECS {
             let access = current.access.clone();
-            *self.cached.lock().expect("the token lock is not poisoned") = current;
+            *lock(&self.cached, "token") = current;
             return Ok(access);
         }
 
@@ -265,7 +258,7 @@ impl TokenSource {
                     .min(current.expires_at);
                 self.retry_after.store(retry, Ordering::Relaxed);
                 let access = current.access.clone();
-                *self.cached.lock().expect("the token lock is not poisoned") = current;
+                *lock(&self.cached, "token") = current;
                 return Ok(access);
             }
             Err(RefreshError::Failed(e)) => {
@@ -277,19 +270,15 @@ impl TokenSource {
         self.retry_after.store(0, Ordering::Relaxed);
         let access = refreshed.access.clone();
         let stored =
-            credentials::store_oauth_locked(&self.data_dir, &self.account, &refreshed, &lock);
-        *self.cached.lock().expect("the token lock is not poisoned") = refreshed;
+            credentials::store_oauth_locked(&self.data_dir, &self.account, &refreshed, &file_lock);
+        *lock(&self.cached, "token") = refreshed;
         if let Err(e) = stored {
             let message = format!(
                 "could not save the refreshed sign-in for account `{}`; it is kept in memory for this session only: {}",
                 self.account,
                 fontaine_tools::error_chain::chain(&e)
             );
-            match warn_sink()
-                .lock()
-                .expect("the warning sink lock is not poisoned")
-                .clone()
-            {
+            match lock(warn_sink(), "warning sink").clone() {
                 Some(sink) => sink(&message),
                 None => tracing::warn!("{message}"),
             }

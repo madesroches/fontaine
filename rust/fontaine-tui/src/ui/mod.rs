@@ -16,6 +16,7 @@ use fontaine_core::agent::AgentRuntime;
 use fontaine_core::config::PermissionMode;
 use fontaine_core::ledger::Record;
 use fontaine_tools::gate::ROOT_AGENT;
+use fontaine_tools::lock::read_recovering;
 
 impl<R: FnMut(&mut App)> Ui<R> {
     fn draw(&mut self, runtime: &AgentRuntime) {
@@ -28,11 +29,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             self.refresh_panel(runtime, &rows);
         }
         self.app.queued = runtime.steering.queued();
-        let files = runtime
-            .files
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        // The completion index is advisory: a stale list only misses a suggestion.
+        let files = read_recovering(&runtime.files).clone();
         self.app.set_files(files);
         (self.render)(&mut self.app);
     }

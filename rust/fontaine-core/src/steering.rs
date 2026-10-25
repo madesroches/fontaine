@@ -5,6 +5,7 @@
 use std::sync::{Arc, Mutex};
 
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
+use fontaine_tools::lock::lock_recovering;
 use rig_agent::agent::{AgentHook, HookContext, OutcomeAction, OutcomeEvent};
 use rig_core::effect::Answered;
 use rig_core::error::ErrorReport;
@@ -26,7 +27,8 @@ struct SteeringState {
 
 impl Steering {
     fn state(&self) -> std::sync::MutexGuard<'_, SteeringState> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+        // Both buffers change only by `mem::take` and `extend`, so a panic cannot leave one half-updated.
+        lock_recovering(&self.inner)
     }
 
     pub fn queue(&self, text: String) {

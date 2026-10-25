@@ -14,6 +14,7 @@ use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 
 use crate::owner_only;
+use fontaine_tools::lock::lock;
 
 pub const LEDGER_DIR: &str = "ledger";
 pub const LEDGER_FILE: &str = "ledger.jsonl";
@@ -317,7 +318,7 @@ impl Ledger {
     }
 
     pub fn append(&self, record: Record) -> io::Result<()> {
-        let mut tail = self.tail.lock().unwrap_or_else(|e| e.into_inner());
+        let mut tail = lock(&self.tail, "ledger tail");
         let entry = Entry {
             seq: tail.next_seq,
             ts_ms: SystemTime::now()
@@ -330,16 +331,13 @@ impl Ledger {
         tail.file.write_all(&line)?;
         tail.file.flush()?;
         tail.next_seq += 1;
-        self.view
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .apply(&entry.record);
+        lock(&self.view, "ledger view").apply(&entry.record);
         Ok(())
     }
 
     /// What the records so far add up to.
     pub fn view(&self) -> std::sync::MutexGuard<'_, LedgerView> {
-        self.view.lock().unwrap_or_else(|e| e.into_inner())
+        lock(&self.view, "ledger view")
     }
 
     /// Every record written so far, in order.

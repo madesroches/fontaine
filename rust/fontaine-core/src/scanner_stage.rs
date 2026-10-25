@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use fontaine_guardian::{CommandScanner, LlmScanner, Scan, Scanner};
 use fontaine_tools::gate::CallView;
+use fontaine_tools::lock::read;
 use fontaine_tools::result_pipeline::{
     ResultStage, ScanRecord, ScanVerdict, ToolOutcome, append_note,
 };
@@ -99,11 +100,7 @@ impl ResultStage for ScannerStage {
     ) -> BoxFuture<'a, (ToolOutcome, Option<ScanRecord>)> {
         Box::pin(async move {
             let started = Instant::now();
-            let backend = self
-                .backend
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
+            let backend = read(&self.backend, "scanner backend").clone();
             let scan = match &backend {
                 Backend::Unavailable(reason) => Scan::Failed {
                     reason: reason.clone(),

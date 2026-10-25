@@ -4,6 +4,7 @@ pub mod error_chain;
 pub mod gate;
 pub mod git_bash;
 pub mod guarded;
+pub mod lock;
 pub mod names;
 pub mod preclassify;
 pub mod result_pipeline;

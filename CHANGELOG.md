@@ -265,6 +265,10 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- A poisoned lock now ends the session wherever its contents feed a permission or guardian decision,
+  a spend tally, the model in use or a durable record, instead of being silently recovered; only
+  display and advisory state (the `@`-file index, steering buffers, telemetry tallies, a child's
+  partial text) still recovers. One helper module, `fontaine_tools::lock`, holds the policy (#186).
 - CI runs faster: the pg2 clippy and test legs and the fixture eval runs are Linux-only (macOS and
   Windows still run `cargo check --features fontaine/pg2` and the `--guardian none` eval), the
   Rust cache is dropped (measured slower than a cold build on every OS), tests run under

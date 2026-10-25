@@ -65,7 +65,7 @@ struct UsageTally(Arc<Mutex<Usage>>);
 impl AgentHook for UsageTally {
     async fn on_outcome(&self, _ctx: &HookContext, event: OutcomeEvent<'_>) -> OutcomeAction {
         if let Some(response) = event.completion() {
-            *self.0.lock().unwrap_or_else(|e| e.into_inner()) += response.usage;
+            *self.0.lock().expect("the usage tally lock is not poisoned") += response.usage;
         }
         OutcomeAction::Proceed
     }
@@ -234,7 +234,7 @@ impl Guardian {
             && let Some(verdict) = self
                 .cache
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .expect("the verdict cache lock is not poisoned")
                 .get(&key, tokio::time::Instant::now())
         {
             return finish(Outcome::Verdict {
@@ -245,7 +245,7 @@ impl Guardian {
         }
 
         let spent = Arc::new(Mutex::new(Usage::default()));
-        let tally = || *spent.lock().unwrap_or_else(|e| e.into_inner());
+        let tally = || *spent.lock().expect("the usage tally lock is not poisoned");
         let mut builder = ExtractorBuilder::<Verdict>::new(model.as_ref().clone())
             .add_hook(UsageTally(spent.clone()))
             .append_preamble(&rendered.system)
@@ -287,11 +287,10 @@ impl Guardian {
             }
             Ok(Ok(response)) => {
                 if self.settings.cache {
-                    self.cache.lock().unwrap_or_else(|e| e.into_inner()).insert(
-                        key,
-                        response.output.clone(),
-                        tokio::time::Instant::now(),
-                    );
+                    self.cache
+                        .lock()
+                        .expect("the verdict cache lock is not poisoned")
+                        .insert(key, response.output.clone(), tokio::time::Instant::now());
                 }
                 finish(Outcome::Verdict {
                     verdict: response.output,

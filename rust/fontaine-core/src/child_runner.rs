@@ -11,6 +11,7 @@ use fontaine_agents::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus
 use fontaine_agents::tree::AgentTree;
 use fontaine_guardian::WireIds;
 use fontaine_tools::gate::CallView;
+use fontaine_tools::lock::{lock, lock_recovering, read};
 use fontaine_tools::result_pipeline::{ResultStage, ToolOutcome, append_note};
 use futures::future::BoxFuture;
 use rig_agent::prelude::*;
@@ -164,12 +165,12 @@ fn restrictions(agent_type: &AgentType) -> ChildRestrictions {
 
 impl ChildContext {
     async fn model_for(&self, spec: &ModelSpec) -> Result<ModelHandle, String> {
-        let main = self.main.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let main = read(&self.main, "main model").clone();
         // Cloned out of the lock: resolving a model awaits.
         let switcher = self
             .switcher
             .as_ref()
-            .map(|s| s.read().unwrap_or_else(|e| e.into_inner()).clone());
+            .map(|s| read(s, "model switcher").clone());
         match spec {
             ModelSpec::Main => Ok(main.handle),
             ModelSpec::GuardianDefault => Ok(switcher
@@ -200,7 +201,7 @@ struct ChildRun {
 
 impl ChildHandle for ChildRun {
     fn status(&self) -> ChildStatus {
-        let status = *self.status.lock().unwrap_or_else(|e| e.into_inner());
+        let status = *lock(&self.status, "child status");
         if status == ChildStatus::Running && self.state.is_waiting(&self.id) {
             ChildStatus::WaitingOnPermission
         } else {
@@ -321,7 +322,7 @@ impl ChildRunner for CoreChildRunner {
                         kill_rx,
                     )
                     .await;
-                    *status.lock().unwrap_or_else(|e| e.into_inner()) = report.status;
+                    *lock(&status, "child status") = report.status;
                     report_tx.send_replace(Some(report));
                 }
                 .instrument(span.clone()),
@@ -357,7 +358,8 @@ async fn run_child(
     let mut on_event = move |event: SessionEvent| -> Flow {
         match &event {
             SessionEvent::Assistant(text) => {
-                *seen.lock().unwrap_or_else(|e| e.into_inner()) = text.clone();
+                // Partial text only labels an interrupted child's report; a stale value is harmless.
+                *lock_recovering(&seen) = text.clone();
                 log_state.log_agent_line(&log_id, short(text));
             }
             SessionEvent::ToolCall { tool, args, .. } => {
@@ -407,7 +409,8 @@ async fn run_child(
         _ = kill.wait_for(|killed| *killed) => None,
         outcome = run => Some(outcome),
     };
-    let partial = last_text.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    // Partial text only labels an interrupted child's report; a stale value is harmless.
+    let partial = lock_recovering(&last_text).clone();
     match outcome {
         None => ChildReport {
             status: ChildStatus::Killed,

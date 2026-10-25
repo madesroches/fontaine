@@ -11,6 +11,7 @@ use fontaine_agents::budget::Spend;
 use fontaine_agents::mode::{Ladder, RootMode};
 use fontaine_agents::tree::AgentTree;
 use fontaine_guardian::{EnvironmentConfig, Guardian, LoopBreaker, RuleConfig, Screen, Settings};
+use fontaine_tools::lock::{lock, read, write};
 use fontaine_tools::scope::Scope;
 use rig_core::completion::Usage;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -38,13 +39,7 @@ pub struct WaitGuard {
 
 impl Drop for WaitGuard {
     fn drop(&mut self) {
-        if let Some(n) = self
-            .state
-            .waiting
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get_mut(&self.agent)
-        {
+        if let Some(n) = lock(&self.state.waiting, "waiting").get_mut(&self.agent) {
             *n = n.saturating_sub(1);
         }
         self.state.agents.poke();
@@ -271,7 +266,7 @@ impl SessionState {
             let cell = mode.clone();
             params
                 .agents
-                .set_root_mode(move || root_mode(*cell.read().unwrap_or_else(|e| e.into_inner())));
+                .set_root_mode(move || root_mode(*read(&cell, "permission mode")));
         }
         SessionState {
             session_id: params.session_id,
@@ -312,15 +307,15 @@ impl SessionState {
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, Inner> {
-        self.inner.read().unwrap_or_else(|e| e.into_inner())
+        read(&self.inner, "session rules")
     }
 
     fn write(&self) -> std::sync::RwLockWriteGuard<'_, Inner> {
-        self.inner.write().unwrap_or_else(|e| e.into_inner())
+        write(&self.inner, "session rules")
     }
 
     pub fn mode(&self) -> PermissionMode {
-        *self.mode.read().unwrap_or_else(|e| e.into_inner())
+        *read(&self.mode, "mode")
     }
 
     /// The session's agents.
@@ -331,10 +326,7 @@ impl SessionState {
     /// Switches the mode for the next call. The change is recorded in the ledger and reported
     /// as a `permission_mode_changed` event; setting the mode it already has does neither.
     pub fn set_mode(&self, to: PermissionMode) {
-        let from = std::mem::replace(
-            &mut *self.mode.write().unwrap_or_else(|e| e.into_inner()),
-            to,
-        );
+        let from = std::mem::replace(&mut *write(&self.mode, "mode"), to);
         if from == to {
             return;
         }
@@ -351,22 +343,16 @@ impl SessionState {
     }
 
     pub fn guardian(&self) -> Arc<Guardian> {
-        self.guardian
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        read(&self.guardian, "guardian").clone()
     }
 
     /// The screen stage in front of the guardian, when one is configured.
     pub fn screen(&self) -> Option<ScreenStage> {
-        self.screen
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        read(&self.screen, "screen").clone()
     }
 
     pub fn set_screen(&self, stage: Option<ScreenStage>) {
-        *self.screen.write().unwrap_or_else(|e| e.into_inner()) = stage;
+        *write(&self.screen, "screen") = stage;
     }
 
     /// True the first time it is asked, so a broken screen is reported once per session.
@@ -376,54 +362,36 @@ impl SessionState {
 
     /// Replaces the guardian for the next adjudication; its verdict cache starts empty.
     pub fn set_guardian(&self, guardian: Arc<Guardian>) {
-        *self.guardian.write().unwrap_or_else(|e| e.into_inner()) = guardian;
+        *write(&self.guardian, "guardian") = guardian;
     }
 
     /// Notes one guardian denial. Returns whether it paused `auto`.
     pub fn guardian_denied(&self) -> bool {
-        self.breaker
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .denied()
+        lock(&self.breaker, "loop breaker").denied()
     }
 
     /// The guardian allowed a call, or the human did: a run of denials is over.
     pub fn guardian_allowed(&self) {
-        self.breaker
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .allowed();
+        lock(&self.breaker, "loop breaker").allowed();
     }
 
     /// Whether repeated denials have handed the session back to the human.
     pub fn auto_paused(&self) -> bool {
-        self.breaker
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .paused()
+        lock(&self.breaker, "loop breaker").paused()
     }
 
     /// The human approved a call: `auto` resumes.
     pub fn resume_auto(&self) {
-        self.breaker
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .resume();
+        lock(&self.breaker, "loop breaker").resume();
     }
 
     pub fn record_denied(&self, call: DeniedCall) {
-        self.denied
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(call);
+        lock(&self.denied, "denied").push(call);
     }
 
     /// Every call the guardian denied, oldest first.
     pub fn denied_calls(&self) -> Vec<DeniedCall> {
-        self.denied
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        lock(&self.denied, "denied").clone()
     }
 
     /// Records the human's one-shot approval of denied call `index` (as `/denied` lists it): the
@@ -431,7 +399,7 @@ impl SessionState {
     /// The deterministic floor still runs first. Returns the call, or `None` for a bad index or a
     /// call already approved, so one entry queues one approval.
     pub fn approve_retry(&self, index: usize) -> Option<DeniedCall> {
-        let mut denied = self.denied.lock().unwrap_or_else(|e| e.into_inner());
+        let mut denied = lock(&self.denied, "denied");
         let call = denied.get_mut(index)?;
         if call.retried {
             return None;
@@ -445,30 +413,24 @@ impl SessionState {
         };
         let call = call.clone();
         drop(denied);
-        self.retries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(approval);
+        lock(&self.retries, "retries").push(approval);
         Some(call)
     }
 
     /// Queues a one-shot retry approval for a call by `agent` with this tool and arguments digest,
     /// the same grant `/denied` then `r` makes, without a list entry to point at.
     pub fn grant_retry(&self, source: RetrySource, agent: &str, tool: &str, args_digest: &str) {
-        self.retries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(RetryApproval {
-                source,
-                agent: agent.to_string(),
-                tool: tool.to_string(),
-                args_digest: args_digest.to_string(),
-            });
+        lock(&self.retries, "retries").push(RetryApproval {
+            source,
+            agent: agent.to_string(),
+            tool: tool.to_string(),
+            args_digest: args_digest.to_string(),
+        });
     }
 
     /// Consumes the retry approval matching this call, if there is one.
     pub fn take_retry(&self, agent: &str, tool: &str, args_digest: &str) -> Option<RetrySource> {
-        let mut retries = self.retries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut retries = lock(&self.retries, "retries");
         retries
             .iter()
             .position(|r| r.agent == agent && r.tool == tool && r.args_digest == args_digest)
@@ -485,14 +447,8 @@ impl SessionState {
                 *total.cost_usd.get_or_insert(0.0) += cost.total;
             }
         };
-        add(&mut self
-            .guardian_usage
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()));
-        add(self
-            .guardian_usage_by
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        add(&mut lock(&self.guardian_usage, "guardian usage"));
+        add(lock(&self.guardian_usage_by, "guardian usage by")
             .entry(agent.to_string())
             .or_default());
         self.agents.debit(agent, &spend_of(usage));
@@ -500,17 +456,12 @@ impl SessionState {
 
     /// What the guardian has cost across the whole tree.
     pub fn guardian_usage(&self) -> GuardianUsage {
-        *self
-            .guardian_usage
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        *lock(&self.guardian_usage, "guardian usage")
     }
 
     /// What the guardian has cost for `agent` alone.
     pub fn guardian_usage_of(&self, agent: &str) -> GuardianUsage {
-        self.guardian_usage_by
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        lock(&self.guardian_usage_by, "guardian usage by")
             .get(agent)
             .copied()
             .unwrap_or_default()
@@ -519,10 +470,7 @@ impl SessionState {
     /// Counts a subagent's model call. The agent's own tally is the tree's; this is the
     /// session-wide total the headless result reports.
     pub fn add_subagent_usage(&self, usage: &Usage) {
-        let mut total = self
-            .subagent_usage
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut total = lock(&self.subagent_usage, "subagent usage");
         total.input_tokens += usage.input_tokens.unwrap_or(0);
         total.output_tokens += usage.output_tokens.unwrap_or(0);
         if let Some(cost) = usage.cost {
@@ -531,16 +479,13 @@ impl SessionState {
     }
 
     pub fn subagent_usage(&self) -> GuardianUsage {
-        *self
-            .subagent_usage
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        *lock(&self.subagent_usage, "subagent usage")
     }
 
     /// Lets `agent` use the rules a skill carries until the end of the user turn. The invoking
     /// agent only: a subagent it spawns holds none of them.
     pub fn grant_skill_rules(&self, agent: &str, rules: Vec<Rule>) {
-        let mut grants = self.skill_grants.lock().unwrap_or_else(|e| e.into_inner());
+        let mut grants = lock(&self.skill_grants, "skill grants");
         let held = grants.entry(agent.to_string()).or_default();
         for rule in rules {
             let rule = SourcedRule::new(rule, RuleSource::Skill);
@@ -551,9 +496,7 @@ impl SessionState {
     }
 
     pub fn skill_grants(&self, agent: &str) -> Vec<SourcedRule> {
-        self.skill_grants
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        lock(&self.skill_grants, "skill grants")
             .get(agent)
             .cloned()
             .unwrap_or_default()
@@ -561,26 +504,18 @@ impl SessionState {
 
     /// A user turn ended: the rules skills lent for it end too.
     pub fn end_turn(&self) {
-        self.skill_grants
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        lock(&self.skill_grants, "skill grants").clear();
     }
 
     pub fn set_child_restrictions(&self, agent: &str, restrictions: ChildRestrictions) {
-        self.child_restrictions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        lock(&self.child_restrictions, "child restrictions")
             .insert(agent.to_string(), restrictions);
     }
 
     /// Why `agent`'s agent file, or any ancestor's, forbids this call: a subagent never holds
     /// more authority than the agent that spawned it.
     pub fn child_restriction(&self, agent: &str, call: &CallContext<'_>) -> Option<String> {
-        let held = self
-            .child_restrictions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let held = lock(&self.child_restrictions, "child restrictions");
         let mut at = Some(agent.to_string());
         // A tree is a few layers deep; the bound keeps a corrupt parent link finite.
         for _ in 0..64 {
@@ -659,35 +594,24 @@ impl SessionState {
     /// Notes which model tool call `agent` is executing, for the audit record. Tool calls run
     /// one at a time, so one slot per agent is enough.
     pub fn set_current_call(&self, agent: &str, call_id: String) {
-        self.current_calls
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(agent.to_string(), call_id);
+        lock(&self.current_calls, "current calls").insert(agent.to_string(), call_id);
     }
 
     /// Forgets the call, so work the harness starts on its own is not attributed to the last
     /// real one.
     pub fn clear_current_call(&self, agent: &str) {
-        self.current_calls
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(agent);
+        lock(&self.current_calls, "current calls").remove(agent);
     }
 
     pub fn current_call(&self, agent: &str) -> Option<String> {
-        self.current_calls
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        lock(&self.current_calls, "current calls")
             .get(agent)
             .cloned()
     }
 
     pub fn publish(&self, record: DecisionRecord) {
         {
-            let mut by_agent = self
-                .decisions_by_agent
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut by_agent = lock(&self.decisions_by_agent, "decisions by agent");
             let list = by_agent.entry(record.agent_id.clone()).or_default();
             if list.len() == DECISIONS_PER_AGENT {
                 list.pop_front();
@@ -700,9 +624,7 @@ impl SessionState {
 
     /// The decisions made for `agent`, oldest first, for the agents panel.
     pub fn decisions_of(&self, agent: &str) -> Vec<DecisionRecord> {
-        self.decisions_by_agent
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        lock(&self.decisions_by_agent, "decisions by agent")
             .get(agent)
             .map(|list| list.iter().cloned().collect())
             .unwrap_or_default()
@@ -711,10 +633,7 @@ impl SessionState {
     /// `agent` is waiting on a human. The guard ends the wait however the call ends, a cancelled
     /// one included.
     pub fn wait_on_human(self: &Arc<Self>, agent: &str) -> WaitGuard {
-        *self
-            .waiting
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        *lock(&self.waiting, "waiting")
             .entry(agent.to_string())
             .or_default() += 1;
         self.agents.poke();
@@ -726,7 +645,7 @@ impl SessionState {
 
     /// Adds a line to what `agent` has been doing, for the agents panel.
     pub fn log_agent_line(&self, agent: &str, line: String) {
-        let mut logs = self.agent_logs.lock().unwrap_or_else(|e| e.into_inner());
+        let mut logs = lock(&self.agent_logs, "agent logs");
         let list = logs.entry(agent.to_string()).or_default();
         if list.len() == AGENT_LOG_LINES {
             list.remove(0);
@@ -735,18 +654,14 @@ impl SessionState {
     }
 
     pub fn agent_log(&self, agent: &str) -> Vec<String> {
-        self.agent_logs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        lock(&self.agent_logs, "agent logs")
             .get(agent)
             .cloned()
             .unwrap_or_default()
     }
 
     pub fn is_waiting(&self, agent: &str) -> bool {
-        self.waiting
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        lock(&self.waiting, "waiting")
             .get(agent)
             .is_some_and(|n| *n > 0)
     }
@@ -805,4 +720,41 @@ fn restriction_on(restrictions: &ChildRestrictions, call: &CallContext<'_>) -> O
         ));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::permissions::DenyAll;
+    use fontaine_agents::tree::Limits;
+
+    #[test]
+    #[should_panic(expected = "the loop breaker lock is not poisoned")]
+    fn a_poisoned_breaker_panics_instead_of_deciding() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(SessionState::new(StateParams {
+            session_id: "poison-test".into(),
+            mode: PermissionMode::Auto,
+            scope: Arc::new(Scope::new(dir.path().to_path_buf(), [])),
+            deny: Vec::new(),
+            ask: Vec::new(),
+            allow: Vec::new(),
+            ledger: Arc::new(Ledger::create(dir.path()).unwrap()),
+            audit: Arc::new(AuditLog::create(dir.path(), "poison-test").unwrap()),
+            approver: Arc::new(DenyAll),
+            home: None,
+            protected_dirs: Vec::new(),
+            guardian: no_guardian(),
+            auto: AutoContext::default(),
+            agents: Arc::new(AgentTree::new(Limits::default())),
+            reveal_mcp_names: false,
+        }));
+        let holder = state.clone();
+        let _ = std::thread::spawn(move || {
+            let _held = holder.breaker.lock().unwrap();
+            panic!("poison the breaker");
+        })
+        .join();
+        state.auto_paused();
+    }
 }

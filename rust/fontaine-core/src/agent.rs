@@ -19,6 +19,7 @@ use fontaine_tools::builtins::Seen;
 use fontaine_tools::gate::{AgentId, CallView, ROOT_AGENT};
 use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::guarded::Guard;
+use fontaine_tools::lock::{read, write, write_recovering};
 use fontaine_tools::result_pipeline::{ResultPipeline, StageKind};
 use fontaine_tools::risk::RiskClass;
 use fontaine_tools::scope::Scope;
@@ -979,7 +980,7 @@ impl AgentRuntime {
         )));
         if let Some(slot) = &self.llm_scanner {
             let timeout = std::time::Duration::from_secs(self.config.guardian.timeout_secs);
-            *slot.write().unwrap_or_else(|e| e.into_inner()) = llm_backend(Some(model), timeout);
+            *write(slot, "scanner model") = llm_backend(Some(model), timeout);
         }
     }
 
@@ -988,7 +989,7 @@ impl AgentRuntime {
         self.setup
             .switcher
             .as_ref()
-            .map(|switcher| switcher.read().unwrap_or_else(|e| e.into_inner()).clone())
+            .map(|switcher| read(switcher, "model switcher").clone())
             .ok_or_else(|| "models cannot be switched in this session".to_string())
     }
 
@@ -1039,7 +1040,7 @@ impl AgentRuntime {
             self.models.main_listing = previous_listing;
             return Err(e);
         }
-        *self.main.write().unwrap_or_else(|e| e.into_inner()) = MainModel {
+        *write(&self.main, "main model") = MainModel {
             handle: self.models.main.clone(),
             listing: self.models.main_listing.clone(),
         };
@@ -1122,9 +1123,7 @@ impl AgentRuntime {
             .accounts
             .insert(name.to_string(), account.clone());
         if let Some(switcher) = &self.setup.switcher {
-            switcher
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
+            write(switcher, "model switcher")
                 .config
                 .accounts
                 .insert(name.to_string(), account);
@@ -1135,9 +1134,7 @@ impl AgentRuntime {
     pub fn account_removed(&mut self, name: &str) {
         self.config.accounts.remove(name);
         if let Some(switcher) = &self.setup.switcher {
-            switcher
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
+            write(switcher, "model switcher")
                 .config
                 .accounts
                 .remove(name);
@@ -1298,7 +1295,8 @@ impl AgentRuntime {
     }
 
     fn set_files(&self, paths: Vec<String>) {
-        *self.files.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(paths);
+        // The completion index is advisory: a stale list only misses a suggestion.
+        *write_recovering(&self.files) = Arc::new(paths);
     }
 
     /// Rebuilds the completion file list in the background, so files the agent created and
@@ -1308,7 +1306,8 @@ impl AgentRuntime {
         let slot = self.files.clone();
         tokio::task::spawn_blocking(move || {
             let index = FileIndex::build(&roots, FILE_INDEX_CAP);
-            *slot.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(index.paths);
+            // The completion index is advisory: a stale list only misses a suggestion.
+            *write_recovering(&slot) = Arc::new(index.paths);
         });
     }
 
