@@ -125,12 +125,15 @@ async fn the_task_list_is_reloaded_on_resume_and_copied_by_a_fork() {
     }];
     source.todos().replace(ROOT_AGENT, list.clone()).unwrap();
 
-    assert_eq!(Session::open(&w.data, A).unwrap().todos().root(), list);
+    // A session is held by one owner at a time; resume only after the first lets go.
+    drop(source);
+    let resumed = Session::open(&w.data, A).unwrap();
+    assert_eq!(resumed.todos().root(), list);
     let fork = Session::fork(&w.data, A, B).unwrap();
     assert!(fork.dir.join("todos.json").is_file());
     assert_eq!(fork.todos().root(), list);
     fork.todos().clear().unwrap();
-    assert_eq!(source.todos().root(), list);
+    assert_eq!(resumed.todos().root(), list);
 }
 
 #[tokio::test]
