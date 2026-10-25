@@ -19,6 +19,7 @@ use rig_core::http_client::{
 use rig_reqwest::ReqwestClient;
 
 use crate::providers::token_source::TokenSource;
+use crate::runtime_error::RuntimeError;
 
 type Cause = Box<dyn StdError + Send + Sync + 'static>;
 
@@ -122,20 +123,21 @@ fn named_body<U: Send + 'static>(response: Response<LazyBody<U>>) -> Response<La
 /// connection outlives the runtime that made it. Mirrors rig's default build, including its
 /// fallback to the bundled roots on a host with no system CA certificates
 /// ([`fontaine_tools::tls::build_client`]).
-pub fn caused_client(network: &LoadedNetwork) -> std::result::Result<CausedClient, String> {
+pub fn caused_client(network: &LoadedNetwork) -> std::result::Result<CausedClient, RuntimeError> {
     Ok(CausedClient::new(ReqwestClient::from(reqwest_client(
         network,
     )?)))
 }
 
 /// The plain client behind [`caused_client`], for requests that do not go through rig.
-pub fn reqwest_client(network: &LoadedNetwork) -> std::result::Result<reqwest::Client, String> {
-    fontaine_tools::tls::build_client(network, reqwest::Client::builder).map_err(|e| {
-        format!(
-            "could not build the HTTP client: {}",
-            chain(&e.without_url())
-        )
-    })
+pub fn reqwest_client(
+    network: &LoadedNetwork,
+) -> std::result::Result<reqwest::Client, RuntimeError> {
+    fontaine_tools::tls::build_client(network, reqwest::Client::builder).map_err(client_error)
+}
+
+fn client_error(error: reqwest::Error) -> RuntimeError {
+    RuntimeError::caused("could not build the HTTP client", error.without_url())
 }
 
 /// How an access token is put on a request, replacing the placeholder key rig put there.

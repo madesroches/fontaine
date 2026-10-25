@@ -14,6 +14,7 @@ use rig_core::{DynModel, Model};
 
 use super::{AccountClient, ConnectContext, CredentialPolicy, Provider};
 use crate::transport::caused_client;
+use fontaine_tools::error_chain::chain;
 
 pub struct Ollama;
 
@@ -54,7 +55,7 @@ impl Provider for Ollama {
             config = config.with_api_key(key);
         }
         Ok(Arc::new(Connected {
-            client: config.connect(caused_client(ctx.network)?),
+            client: config.connect(caused_client(ctx.network).map_err(|e| chain(&e))?),
             context_tokens: ctx.account.ollama_context_tokens(),
             think: ctx.account.think,
         }))

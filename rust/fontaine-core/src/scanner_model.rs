@@ -27,7 +27,40 @@ pub enum FetchError {
     MissingToken,
     /// 401 or 403: the token is wrong or the license was not accepted.
     Denied(u16),
-    Failed(String),
+    Failed {
+        context: String,
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+}
+
+impl FetchError {
+    fn failed(context: impl Into<String>) -> Self {
+        FetchError::Failed {
+            context: context.into(),
+            source: None,
+        }
+    }
+
+    fn failed_by(
+        context: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        FetchError::Failed {
+            context: context.into(),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
+impl std::error::Error for FetchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            FetchError::Failed { source, .. } => source
+                .as_deref()
+                .map(|e| e as &(dyn std::error::Error + 'static)),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for FetchError {
@@ -37,7 +70,7 @@ impl std::fmt::Display for FetchError {
             FetchError::Denied(status) => {
                 write!(f, "Hugging Face refused the download (HTTP {status})")
             }
-            FetchError::Failed(message) => write!(f, "the model download failed: {message}"),
+            FetchError::Failed { context, .. } => write!(f, "the model download failed: {context}"),
         }
     }
 }
@@ -92,14 +125,14 @@ pub async fn ensure(
         .ok_or(FetchError::MissingToken)?;
     tokio::fs::create_dir_all(dir)
         .await
-        .map_err(|e| FetchError::Failed(format!("cannot create {}: {e}", dir.display())))?;
+        .map_err(|e| FetchError::failed_by(format!("cannot create {}", dir.display()), e))?;
     sweep_stale(dir, STALE_AFTER);
     let client = fontaine_tools::tls::build_client(network, || {
         reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .read_timeout(READ_TIMEOUT)
     })
-    .map_err(|e| FetchError::Failed(fontaine_tools::error_chain::chain(&e.without_url())))?;
+    .map_err(|e| FetchError::failed_by("could not build the HTTP client", e.without_url()))?;
     for name in missing {
         let target = dir.join(name);
         // A temp file of its own, so a second session fetching the same files never writes
@@ -109,11 +142,10 @@ pub async fn ensure(
         if let Err(e) = part.persist_noclobber(&target)
             && !target.is_file()
         {
-            return Err(FetchError::Failed(format!(
-                "cannot place {}: {}",
-                target.display(),
-                e.error
-            )));
+            return Err(FetchError::failed_by(
+                format!("cannot place {}", target.display()),
+                e.error,
+            ));
         }
     }
     Ok(())
@@ -129,7 +161,7 @@ async fn fetch_one(
     use tokio::io::AsyncWriteExt;
 
     // The error text of a failed request can echo the URL; the token is in a header, never in it.
-    let failed = |e: reqwest::Error| FetchError::Failed(e.without_url().to_string());
+    let failed = |e: reqwest::Error| FetchError::failed_by("the request failed", e.without_url());
     let mut response = client
         .get(url)
         .bearer_auth(token)
@@ -141,11 +173,11 @@ async fn fetch_one(
         return Err(FetchError::Denied(status.as_u16()));
     }
     if !status.is_success() {
-        return Err(FetchError::Failed(format!("HTTP {}", status.as_u16())));
+        return Err(FetchError::failed(format!("HTTP {}", status.as_u16())));
     }
     let expected = response.content_length();
     let cannot_write =
-        |e: std::io::Error| FetchError::Failed(format!("cannot write in {}: {e}", dir.display()));
+        |e: std::io::Error| FetchError::failed_by(format!("cannot write in {}", dir.display()), e);
     let (file, part) = tempfile::Builder::new()
         .prefix(&format!("{PART_PREFIX}{name}-"))
         .tempfile_in(dir)
@@ -159,7 +191,7 @@ async fn fetch_one(
     }
     file.flush().await.map_err(cannot_write)?;
     if expected.is_some_and(|expected| expected != written) {
-        return Err(FetchError::Failed("the response ended early".into()));
+        return Err(FetchError::failed("the response ended early"));
     }
     Ok(part)
 }

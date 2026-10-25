@@ -496,6 +496,26 @@ async fn an_unwritable_settings_file_falls_back_to_a_session_grant_with_a_notice
 }
 
 #[tokio::test]
+async fn a_rule_that_cannot_be_saved_names_the_file_and_the_io_cause_in_its_notice() {
+    let rig = Rig::new(Manual);
+    // A directory where the settings file belongs: reading it is an I/O error.
+    let _ = std::fs::remove_file(&rig.user_config);
+    std::fs::create_dir(&rig.user_config).unwrap();
+    let cause = std::fs::read_to_string(&rig.user_config)
+        .unwrap_err()
+        .to_string();
+    rig.approver.answer(Answer::AllowAlways);
+    assert!(allowed(&rig.check("shell", shell("touch x")).await));
+    let notices = rig.approver.notices.lock().unwrap();
+    assert_eq!(notices.len(), 1);
+    assert!(
+        notices[0].contains(&rig.user_config.display().to_string()),
+        "{notices:?}"
+    );
+    assert!(notices[0].contains(&cause), "{notices:?}");
+}
+
+#[tokio::test]
 async fn floor_forced_and_non_simple_prompts_offer_no_grants() {
     let settings = "[permissions]\nask = [\"read(.env)\"]\n";
     let rig = Rig::with(Options::new(Manual).settings(settings));

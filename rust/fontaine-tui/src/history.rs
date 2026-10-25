@@ -166,8 +166,9 @@ impl History {
 
 fn unusable(path: &Path, error: &io::Error) -> String {
     format!(
-        "prompt history in {} cannot be used ({error}); it is kept for this session only",
-        path.display()
+        "prompt history in {} cannot be used ({}); it is kept for this session only",
+        path.display(),
+        fontaine_tools::error_chain::chain(error)
     )
 }
 

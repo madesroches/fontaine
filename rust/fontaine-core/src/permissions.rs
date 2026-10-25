@@ -13,6 +13,7 @@ use fontaine_guardian::{
     Adjudication, Decision as GuardianDecision, FailClosed, ScreenOutcome, ScreenScores, WireIds,
 };
 use fontaine_tools::ask_user::{Question, QuestionReply};
+use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
 use fontaine_tools::preclassify::{Environment, Preclassifier, analyze};
 use fontaine_tools::risk::RiskClass;
@@ -32,6 +33,7 @@ use crate::permission_rules::{
     CallContext, Posture, RuleSource, SourcedRule, is_broad_code_execution, matches, parse_rule,
     propose,
 };
+use crate::runtime_error::RuntimeError;
 use crate::tier::Tier;
 use crate::user_config;
 
@@ -161,8 +163,70 @@ pub struct HookDecision {
 
 #[derive(Debug)]
 pub enum HookError {
-    Failed(String),
-    Malformed(String),
+    Failed {
+        context: String,
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+    Malformed {
+        context: String,
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+}
+
+impl HookError {
+    pub fn failed(context: impl Into<String>) -> Self {
+        HookError::Failed {
+            context: context.into(),
+            source: None,
+        }
+    }
+
+    pub fn failed_by(
+        context: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        HookError::Failed {
+            context: context.into(),
+            source: Some(Box::new(source)),
+        }
+    }
+
+    pub fn malformed(context: impl Into<String>) -> Self {
+        HookError::Malformed {
+            context: context.into(),
+            source: None,
+        }
+    }
+
+    pub fn malformed_by(
+        context: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        HookError::Malformed {
+            context: context.into(),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
+impl std::fmt::Display for HookError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HookError::Failed { context, .. } | HookError::Malformed { context, .. } => {
+                f.write_str(context)
+            }
+        }
+    }
+}
+
+impl std::error::Error for HookError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            HookError::Failed { source, .. } | HookError::Malformed { source, .. } => source
+                .as_deref()
+                .map(|e| e as &(dyn std::error::Error + 'static)),
+        }
+    }
 }
 
 pub struct PreToolUseEvent<'a> {
@@ -724,6 +788,7 @@ impl PermissionPipeline {
         }
 
         let outside = match &located {
+            // Model-facing text; the scope error has no source.
             Err(e) if call.risk != RiskClass::Arbitrary => Some(format!(
                 "{e}; file tools work inside the workspace roots only (add one with /add-dir)"
             )),
@@ -1466,16 +1531,20 @@ impl PermissionPipeline {
             Answer::AllowAlways if offers.always => {
                 let rule = proposed.expect("offered with a proposal");
                 let written = match &self.user_config {
-                    Some(path) => user_config::append_allow_rule(path, &rule.to_string())
-                        .map_err(|e| format!("{}: {e}", path.display())),
-                    None => Err("no user settings file".to_string()),
+                    Some(path) => {
+                        user_config::append_allow_rule(path, &rule.to_string()).map_err(|e| {
+                            RuntimeError::caused(format!("could not write {}", path.display()), e)
+                        })
+                    }
+                    None => Err(RuntimeError::new("no user settings file")),
                 };
                 let saved = written.is_ok();
                 let source = match written {
                     Ok(()) => SessionState::ALWAYS,
                     Err(e) => {
                         self.approver.notice(&format!(
-                            "could not save `{rule}` to the settings file ({e}); it holds for this session only"
+                            "could not save `{rule}` to the settings file ({}); it holds for this session only",
+                            chain(&e)
                         ));
                         RuleSource::Session
                     }

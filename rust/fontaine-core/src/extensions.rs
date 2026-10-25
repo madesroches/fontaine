@@ -162,6 +162,7 @@ fn model_of(doc: &Document) -> Result<Option<ModelSpec>, String> {
     match doc.text("model").as_deref().map(str::trim) {
         None | Some("inherit") | Some("") => Ok(None),
         Some(text) => ModelSpec::parse(text).map(Some).map_err(|e| {
+            // The parse error is a message with no source.
             format!("`model`: {e} (Claude Code model aliases such as `sonnet` are not models here)")
         }),
     }
@@ -201,7 +202,12 @@ fn read_document(path: &Path) -> Result<Document, ExtensionError> {
         file: path.to_path_buf(),
         message,
     };
-    let text = std::fs::read_to_string(path).map_err(|e| fail(format!("cannot read it: {e}")))?;
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        fail(format!(
+            "cannot read it: {}",
+            fontaine_tools::error_chain::chain(&e)
+        ))
+    })?;
     frontmatter::parse(&text).map_err(fail)
 }
 

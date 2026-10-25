@@ -9,6 +9,7 @@ use rig_core::providers::openai::{OpenAI as Client, OpenAIConfig};
 
 use super::{AccountClient, ConnectContext, CredentialPolicy, Provider};
 use crate::transport::caused_client;
+use fontaine_tools::error_chain::chain;
 
 pub struct OpenAi;
 
@@ -30,9 +31,9 @@ impl Provider for OpenAi {
         if let Some(url) = ctx.base_url() {
             config = config.with_base_url(url);
         }
-        Ok(Arc::new(Connected(
-            config.connect(caused_client(ctx.network)?),
-        )))
+        Ok(Arc::new(Connected(config.connect(
+            caused_client(ctx.network).map_err(|e| chain(&e))?,
+        ))))
     }
 }
 

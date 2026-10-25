@@ -177,7 +177,7 @@ async fn an_interrupted_response_leaves_no_final_file_and_no_temp_file() {
     let err = scanner_model::ensure(&dir, &url, Some("tok"), &Default::default())
         .await
         .unwrap_err();
-    assert!(matches!(err, FetchError::Failed(_)), "{err}");
+    assert!(matches!(err, FetchError::Failed { .. }), "{err}");
     for name in FILES {
         assert!(!dir.join(name).exists(), "{name} must not exist");
     }
@@ -225,7 +225,7 @@ async fn a_server_that_never_answers_cannot_hold_startup_forever() {
     let err = scanner_model::ensure(&dir, &url, Some("tok"), &Default::default())
         .await
         .unwrap_err();
-    assert!(matches!(err, FetchError::Failed(_)), "{err}");
+    assert!(matches!(err, FetchError::Failed { .. }), "{err}");
     assert!(parts_in(&dir).is_empty());
 }
 
@@ -346,4 +346,23 @@ async fn two_sessions_downloading_at_once_both_succeed_and_leave_complete_files(
         );
     }
     assert!(parts_in(&dir).is_empty(), "{:?}", parts_in(&dir));
+}
+
+#[tokio::test]
+async fn a_failed_download_keeps_its_cause_as_the_source() {
+    let w = World::new();
+    let dir = scanner_model::default_dir(&w.data);
+    // Nothing listens on port 1.
+    let err = scanner_model::ensure(&dir, "http://127.0.0.1:1", Some("tok"), &Default::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FetchError::Failed { .. }), "{err}");
+    let source = std::error::Error::source(&err).expect("the transport error is kept");
+    assert!(
+        source.downcast_ref::<reqwest::Error>().is_some(),
+        "{source}"
+    );
+    let text = fontaine_tools::error_chain::chain(&err);
+    assert!(text.starts_with("the model download failed"), "{text}");
+    assert!(text.len() > err.to_string().len(), "{text}");
 }

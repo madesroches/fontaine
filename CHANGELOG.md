@@ -284,3 +284,7 @@ All notable changes are recorded here. The format follows
 - The guardian and the `llm` scanner no longer fail closed on every call with a model that thinks
   by default: on an `opencode-go` account their requests turn thinking off for Chat-wire models
   and non-Claude Messages-wire models, which refuse a forced tool call while thinking (#144).
+- A failed compaction, a settings file that cannot be written (the rule-save notice) and a
+  PromptGuard download that fails now name the underlying reason (TLS, proxy, DNS, I/O) instead of
+  only the outer message. Structurally, runtime errors keep their cause as `source()` rather than
+  flattening it into text, and hook and download errors keep theirs for the logs (#185).

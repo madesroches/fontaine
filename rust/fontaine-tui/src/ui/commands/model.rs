@@ -20,7 +20,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.remember_model(PickerPurpose::Main, &switched.reference);
                 self.finish_switch(message, switched.persist_error);
             }
-            Err(e) => self.app.transcript.error(format!("/model: {e}")),
+            Err(e) => self.app.transcript.error(format!(
+                "/model: {}",
+                fontaine_tools::error_chain::chain(&e)
+            )),
         }
     }
 
@@ -36,7 +39,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let groups: Vec<Group> = match runtime.model_listings(account).await {
             Ok(listings) => listings.iter().map(Group::from).collect(),
             Err(e) => {
-                self.app.transcript.error(format!("/model: {e}"));
+                self.app.transcript.error(format!(
+                    "/model: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                ));
                 return;
             }
         };
@@ -78,7 +84,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     }
                 }
             }
-            Err(e) => self.app.transcript.error(format!("/guardian-model: {e}")),
+            Err(e) => self.app.transcript.error(format!(
+                "/guardian-model: {}",
+                fontaine_tools::error_chain::chain(&e)
+            )),
         }
     }
 
@@ -185,7 +194,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     UnavailableChoice::Deny
                 }
                 Err(e) => {
-                    self.app.transcript.error(e);
+                    self.app
+                        .transcript
+                        .error(fontaine_tools::error_chain::chain(&e));
                     UnavailableChoice::Deny
                 }
             },
@@ -205,7 +216,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     UnavailableChoice::Deny
                 }
                 Err(e) => {
-                    self.app.transcript.error(e);
+                    self.app
+                        .transcript
+                        .error(fontaine_tools::error_chain::chain(&e));
                     UnavailableChoice::Deny
                 }
             },

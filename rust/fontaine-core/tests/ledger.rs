@@ -7,8 +7,11 @@ use fontaine_core::session::{CONVERSATION_LOG, CompactResult, Session, SessionEr
 use rig_core::DynModel;
 use rig_core::catalog::{Catalog, ModelSpec};
 use rig_core::completion::{Cost, Message, Usage};
+use rig_core::driver::{Exchange, Opening, Transport};
 use rig_core::operation::Completion;
-use rig_core::test_utils::{MockCompletionModel, MockTurn};
+use rig_core::test_utils::{MockCompletionModel, MockScript, MockTurn};
+use rig_core::wire::Wire;
+use rig_core::{Model, ProviderError};
 use rig_memory::{CompactReason, load, save, summary_state};
 
 const SESSION_ID: &str = "00000000-0000-4000-8000-0000000000aa";
@@ -501,6 +504,72 @@ async fn asking_an_unlisted_model_to_summarize_warns_and_fails() {
     assert_eq!(result, CompactResult::Failed { usage: None });
     assert_eq!(mock.request_count(), 0);
     assert!(approver.0.lock().unwrap()[0].contains("catalog entry is unknown"));
+}
+
+/// A failure whose message omits its cause, as a transport error that wraps a TLS or DNS
+/// failure does.
+#[derive(Debug)]
+struct Outer(Inner);
+
+#[derive(Debug)]
+struct Inner;
+
+impl std::fmt::Display for Outer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("error sending request")
+    }
+}
+
+impl std::fmt::Display for Inner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("tls handshake rejected the certificate")
+    }
+}
+
+impl std::error::Error for Inner {}
+
+impl std::error::Error for Outer {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+#[derive(Clone)]
+struct NestedFailure;
+
+impl Transport<MockScript> for NestedFailure {
+    fn send(
+        &self,
+        _payload: <MockScript as Wire>::Payload,
+        _exchange: Exchange,
+    ) -> Opening<<MockScript as Wire>::Frame> {
+        Opening::failed(ProviderError::request(Outer(Inner)))
+    }
+}
+
+#[tokio::test]
+async fn a_summarizer_failure_warns_with_its_whole_cause_chain() {
+    let w = World::new();
+    let (session, _) = session_with_history(&w, 8);
+    let script = MockScript::new("failing").priced_as(small_window_spec(1_000));
+    let failing: DynModel<Completion> = Model::new(script, NestedFailure).into();
+    let approver = Collect(Default::default());
+    let result = session
+        .compact_logged(
+            &failing,
+            true,
+            CompactReason::Asked {
+                focus: String::new(),
+            },
+            &approver,
+        )
+        .await;
+    assert_eq!(result, CompactResult::Failed { usage: None });
+    let warnings = approver.0.lock().unwrap();
+    assert!(
+        warnings[0].contains("tls handshake rejected the certificate"),
+        "{warnings:?}"
+    );
 }
 
 #[tokio::test]

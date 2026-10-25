@@ -22,6 +22,7 @@ pub mod permissions;
 pub mod prompt;
 pub mod providers;
 pub mod questions;
+pub mod runtime_error;
 #[cfg(feature = "pg2")]
 pub mod scanner_model;
 pub mod scanner_stage;
@@ -38,3 +39,5 @@ pub mod user_config;
 pub mod user_hooks;
 pub mod user_shell;
 pub mod workspace;
+
+pub use runtime_error::RuntimeError;

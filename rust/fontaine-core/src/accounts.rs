@@ -9,7 +9,9 @@ use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup, check_
 use crate::credentials::{self, Credentials, StoredCredential};
 use crate::models::{Credential, credential};
 use crate::providers::{self, CredentialPolicy, SignInError, SignInProgress};
+use crate::runtime_error::RuntimeError;
 use crate::user_config;
+use fontaine_tools::error_chain::chain;
 use fontaine_tools::tls::LoadedNetwork;
 
 pub use crate::providers::{BaseUrlPolicy, SignInStep};
@@ -175,37 +177,42 @@ pub fn rows(
 
 /// Whether `name` can be given to a new account. Stricter than what a hand-written file may
 /// use, so a dialog-made name is always addressable as `/login <name>` and `<account>/<model>`.
-pub fn check_name(name: &str, config: &Config) -> Result<(), String> {
+pub fn check_name(name: &str, config: &Config) -> Result<(), RuntimeError> {
     check_name_in(name, &|taken| config.accounts.contains_key(taken))
 }
 
 /// [`check_name`] for a caller that knows the existing names but holds no [`Config`].
-pub fn check_name_in(name: &str, exists: &dyn Fn(&str) -> bool) -> Result<(), String> {
+pub fn check_name_in(name: &str, exists: &dyn Fn(&str) -> bool) -> Result<(), RuntimeError> {
     if name.is_empty() {
-        return Err("a name is required".to_string());
+        return Err(RuntimeError::new("a name is required"));
     }
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err("use only letters, digits, `-` and `_`".to_string());
+        return Err(RuntimeError::new("use only letters, digits, `-` and `_`"));
     }
     if exists(name) {
-        return Err(format!("an account named `{name}` already exists"));
+        return Err(RuntimeError::new(format!(
+            "an account named `{name}` already exists"
+        )));
     }
     Ok(())
 }
 
-fn check_base_url(url: &str) -> Result<(), String> {
-    let parsed = url::Url::parse(url).map_err(|e| format!("`{url}` is not a URL: {e}"))?;
+fn check_base_url(url: &str) -> Result<(), RuntimeError> {
+    let parsed = url::Url::parse(url)
+        .map_err(|e| RuntimeError::caused(format!("`{url}` is not a URL"), e))?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-        return Err(format!("`{url}` is not an http(s) URL with a host"));
+        return Err(RuntimeError::new(format!(
+            "`{url}` is not an http(s) URL with a host"
+        )));
     }
     Ok(())
 }
 
 /// The account `new` describes, after the checks the settings loader would make on it.
-pub fn build(new: &NewAccount, config: &Config) -> Result<Account, String> {
+pub fn build(new: &NewAccount, config: &Config) -> Result<Account, RuntimeError> {
     check_name(&new.name, config)?;
     let base_url = new
         .base_url
@@ -230,7 +237,8 @@ pub fn build(new: &NewAccount, config: &Config) -> Result<Account, String> {
         client_cert: None,
         client_key: None,
     };
-    check_account(&new.name, &account).map_err(|(key, message)| format!("{key}: {message}"))?;
+    check_account(&new.name, &account)
+        .map_err(|(key, message)| RuntimeError::new(format!("{key}: {message}")))?;
     Ok(account)
 }
 
@@ -243,7 +251,7 @@ pub fn add(
     new: &NewAccount,
     config: &Config,
 ) -> Result<Account, AccountsError> {
-    let account = build(new, config).map_err(AccountsError::Invalid)?;
+    let account = build(new, config).map_err(|e| AccountsError::Invalid(chain(&e)))?;
     credentials::remove(data_dir, &new.name).map_err(|e| {
         io_error(
             format!("could not clear the stored credential for `{}`", new.name),

@@ -586,8 +586,11 @@ impl SessionState {
             "internal_error"
         );
         if !self.sink_warned[sink as usize].swap(true, Ordering::Relaxed) {
-            self.approver
-                .warn(&format!("{} could not be written: {error}", sink.what()));
+            self.approver.warn(&format!(
+                "{} could not be written: {}",
+                sink.what(),
+                fontaine_tools::error_chain::chain(error)
+            ));
         }
     }
 

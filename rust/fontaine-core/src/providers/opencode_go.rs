@@ -33,6 +33,7 @@ use super::{
 use crate::config::{Account, Wire};
 use crate::credentials::{self, OAuthTokens, StoredCredential};
 use crate::transport::{AuthPlacement, Decorated, Decoration, caused_client, reqwest_client};
+use fontaine_tools::error_chain::chain;
 use fontaine_tools::tls::LoadedNetwork;
 
 pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/inference/go";
@@ -112,7 +113,7 @@ impl Provider for OpencodeGo {
                 .map_err(|_| "the session id cannot be sent as an HTTP header".to_string())?;
             headers.push((HeaderName::from_static("x-opencode-session"), value));
         }
-        let base_client = caused_client(ctx.network)?;
+        let base_client = caused_client(ctx.network).map_err(|e| chain(&e))?;
         let http = |placement: AuthPlacement| {
             Ok::<_, String>(Decorated::new(
                 base_client.clone(),
@@ -333,7 +334,7 @@ async fn user_email(
     network: &LoadedNetwork,
     request_timeout: Option<Duration>,
 ) -> Result<Option<String>, FlowError> {
-    let http = reqwest_client(network).map_err(FlowError::Invalid)?;
+    let http = reqwest_client(network).map_err(|e| FlowError::Invalid(chain(&e)))?;
     let mut request = http.get(format!("{console}/api/user"));
     if let Some(timeout) = request_timeout {
         request = request.timeout(timeout);

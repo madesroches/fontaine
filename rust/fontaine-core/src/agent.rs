@@ -16,6 +16,7 @@ use fontaine_guardian::{
 use fontaine_mcp::{Connected, ServerSpec, Transport, connect as connect_server};
 use fontaine_tools::ask_user::AskUserTool;
 use fontaine_tools::builtins::Seen;
+use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::{AgentId, CallView, ROOT_AGENT};
 use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::guarded::Guard;
@@ -51,6 +52,7 @@ use crate::models::{
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
 use crate::questions::HumanQuestions;
+use crate::runtime_error::RuntimeError;
 use crate::scanner_stage::{Backend, ScannerStage, ScannerStart, llm_backend};
 use crate::session::{CONVERSATION_LOG, ClearError, Session};
 use crate::skills::{self, SkillRuntime};
@@ -165,14 +167,16 @@ const OLLAMA_URL: &str = "http://localhost:11434";
 
 /// The screen stage `[guardian.screen]` configures, or `None` when it is not configured. The
 /// model names an account of kind `ollama`, whose `base_url` is the daemon to ask.
-pub fn build_screen(config: &Config, profile: Profile) -> Result<Option<ScreenStage>, String> {
+pub fn build_screen(
+    config: &Config,
+    profile: Profile,
+) -> Result<Option<ScreenStage>, RuntimeError> {
     let Some(screen) = &config.guardian.screen else {
         return Ok(None);
     };
-    let (account, model) = screen
-        .model
-        .split_once('/')
-        .ok_or_else(|| format!("`{}` is not `<account>/<model>`", screen.model))?;
+    let (account, model) = screen.model.split_once('/').ok_or_else(|| {
+        RuntimeError::new(format!("`{}` is not `<account>/<model>`", screen.model))
+    })?;
     let account_config = config.accounts.get(account);
     let context_tokens = account_config.map_or(
         crate::config::DEFAULT_OLLAMA_CONTEXT_TOKENS,
@@ -183,8 +187,12 @@ pub fn build_screen(config: &Config, profile: Profile) -> Result<Option<ScreenSt
         .filter(|url| !url.is_empty())
         .unwrap_or(OLLAMA_URL);
     // `join` replaces the last path segment unless the base ends in a slash.
-    let endpoint = url::Url::parse(&format!("{}/", base.trim_end_matches('/')))
-        .map_err(|e| format!("the base_url of account `{account}` is not a URL: {e}"))?;
+    let endpoint = url::Url::parse(&format!("{}/", base.trim_end_matches('/'))).map_err(|e| {
+        RuntimeError::caused(
+            format!("the base_url of account `{account}` is not a URL"),
+            e,
+        )
+    })?;
     let settings = ScreenSettings {
         endpoint,
         model: model.to_string(),
@@ -199,10 +207,7 @@ pub fn build_screen(config: &Config, profile: Profile) -> Result<Option<ScreenSt
         }),
     };
     let network = config.loaded_network(Some(account)).map_err(|e| {
-        format!(
-            "the network settings of account `{account}`: {}",
-            fontaine_tools::error_chain::chain(&e)
-        )
+        RuntimeError::caused(format!("the network settings of account `{account}`"), e)
     })?;
     Ok(Some(ScreenStage {
         screen: Arc::new(Screen::new(
@@ -422,7 +427,7 @@ fn agent_limits(config: &Config) -> Limits {
 }
 
 impl AgentRuntime {
-    pub fn new(mut setup: AgentSetup) -> Result<AgentRuntime, String> {
+    pub fn new(mut setup: AgentSetup) -> Result<AgentRuntime, RuntimeError> {
         setup
             .session
             .set_autocompact_window(setup.config.context.autocompact_window);
@@ -486,7 +491,7 @@ impl AgentRuntime {
             }
             Err(e) => setup
                 .approver
-                .warn(&format!("the guardian screen stage is off: {e}")),
+                .warn(&format!("the guardian screen stage is off: {}", chain(&e))),
         }
 
         let hook_process = Arc::new(HookProcess {
@@ -541,12 +546,7 @@ impl AgentRuntime {
             .config
             .loaded_network(None)
             .map(Arc::new)
-            .map_err(|e| {
-                format!(
-                    "invalid [network] settings: {}",
-                    fontaine_tools::error_chain::chain(&e)
-                )
-            })?;
+            .map_err(|e| RuntimeError::caused("invalid [network] settings", e))?;
         let setup_rest = Setup {
             network,
             config_dir: setup.config_dir,
@@ -663,7 +663,7 @@ impl AgentRuntime {
 
     /// Rebuilds the registry and the agent for the current scope. The conversation lives in the
     /// session store, so a new agent continues it.
-    fn rebuild(&mut self) -> Result<(), String> {
+    fn rebuild(&mut self) -> Result<(), RuntimeError> {
         let (agent, prompt_pieces) = build_agent(&Parts {
             setup: &self.setup,
             roots: &self.roots,
@@ -726,7 +726,7 @@ impl AgentRuntime {
 
     /// `/output-style`: makes `name` the style for the next turn, or none. The style only
     /// changes the agent's prompt; the guardian's request is the same with or without it.
-    pub fn set_output_style(&mut self, name: Option<&str>) -> Result<(), String> {
+    pub fn set_output_style(&mut self, name: Option<&str>) -> Result<(), RuntimeError> {
         if let Some(name) = name
             && self.extensions.output_style(name).is_none()
         {
@@ -736,14 +736,14 @@ impl AgentRuntime {
                 .iter()
                 .map(|s| s.name.as_str())
                 .collect();
-            return Err(format!(
+            return Err(RuntimeError::new(format!(
                 "no output style named `{name}`; available: {}",
                 if known.is_empty() {
                     "none".to_string()
                 } else {
                     known.join(", ")
                 }
-            ));
+            )));
         }
         let previous = std::mem::replace(&mut self.output_style, name.map(str::to_string));
         if let Err(e) = self.rebuild() {
@@ -770,7 +770,7 @@ impl AgentRuntime {
     }
 
     /// `/name arguments`: the skill's text for the root agent, ready to be the next prompt.
-    pub async fn expand_skill(&self, name: &str, arguments: &str) -> Result<String, String> {
+    pub async fn expand_skill(&self, name: &str, arguments: &str) -> Result<String, RuntimeError> {
         // A user-typed skill is no model call, so its commands must not inherit the previous
         // turn's tool_use_id.
         self.state.clear_current_call(ROOT_AGENT);
@@ -780,7 +780,8 @@ impl AgentRuntime {
         let text = self
             .skills
             .expand(name, arguments, ROOT_AGENT, false)
-            .await?;
+            .await
+            .map_err(RuntimeError::new)?;
         std::mem::forget(guard);
         Ok(text)
     }
@@ -910,10 +911,11 @@ impl AgentRuntime {
                     });
                 }
                 Err(e) => {
-                    self.approver.warn(&e.to_string());
+                    let rendered = chain(&e);
+                    self.approver.warn(&rendered);
                     outcomes.push(McpOutcome {
                         server: plan.name,
-                        error: Some(e.to_string()),
+                        error: Some(rendered),
                     });
                 }
             }
@@ -922,14 +924,14 @@ impl AgentRuntime {
     }
 
     /// Records the user's approval of a repository-defined MCP server in the trust store.
-    pub fn approve_mcp_server(&self, plan: &McpServerPlan) -> Result<(), String> {
+    pub fn approve_mcp_server(&self, plan: &McpServerPlan) -> Result<(), RuntimeError> {
         trust::approve_server(
             &self.setup.data_dir,
             &self.roots[0],
             &plan.name,
             &plan.digest,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| RuntimeError::caused("could not record the approval", e))
     }
 
     pub fn state(&self) -> &Arc<SessionState> {
@@ -939,22 +941,25 @@ impl AgentRuntime {
     /// Adds a workspace root from `/add-dir`: validated and canonicalized like `--add-dir`, then
     /// the scope, registry and agent are rebuilt for the next turn. The conversation and the
     /// session store are kept. Returns the canonical root.
-    pub fn add_dir(&mut self, entry: &Path, launch_dir: &Path) -> Result<PathBuf, String> {
+    pub fn add_dir(&mut self, entry: &Path, launch_dir: &Path) -> Result<PathBuf, RuntimeError> {
         let resolved = workspace::resolve(
             &self.roots[0],
             launch_dir,
             [(RootSource::Command, entry.to_path_buf())],
         );
         if let Some(warning) = resolved.warnings.first() {
-            return Err(warning.clone());
+            return Err(RuntimeError::new(warning.clone()));
         }
         let root = resolved
             .roots
             .into_iter()
             .nth(1)
-            .ok_or_else(|| "that is the primary workspace root".to_string())?;
+            .ok_or_else(|| RuntimeError::new("that is the primary workspace root"))?;
         if self.roots.contains(&root) {
-            return Err(format!("{} is already a workspace root", root.display()));
+            return Err(RuntimeError::new(format!(
+                "{} is already a workspace root",
+                root.display()
+            )));
         }
         let previous_scope = self.state.scope();
         self.state
@@ -985,39 +990,43 @@ impl AgentRuntime {
     }
 
     /// A copy of the shared switcher, so no lock is held across an await.
-    fn switcher(&self) -> Result<Switcher, String> {
+    fn switcher(&self) -> Result<Switcher, RuntimeError> {
         self.setup
             .switcher
             .as_ref()
             .map(|switcher| read(switcher, "model switcher").clone())
-            .ok_or_else(|| "models cannot be switched in this session".to_string())
+            .ok_or_else(|| RuntimeError::new("models cannot be switched in this session"))
     }
 
-    fn guardian_for(&self, text: &str) -> Result<GuardianModel, String> {
+    fn guardian_for(&self, text: &str) -> Result<GuardianModel, RuntimeError> {
         self.switcher()?
             .guardian(
                 text,
                 Some((&self.models.main.reference, &self.models.main_listing)),
             )
-            .map_err(|e| e.to_string())
+            .map_err(|e| RuntimeError::caused("could not resolve the guardian model", e))
     }
 
-    fn persist(&self, write: impl FnOnce(&Path) -> std::io::Result<()>) -> Option<String> {
+    fn persist(&self, write: impl FnOnce(&Path) -> std::io::Result<()>) -> Option<RuntimeError> {
         match &self.setup.user_config {
-            Some(path) => write(path)
-                .err()
-                .map(|e| format!("could not save it to {}: {e}", path.display())),
-            None => Some("there is no user settings file to save it to".to_string()),
+            Some(path) => write(path).err().map(|e| {
+                RuntimeError::caused(format!("could not save it to {}", path.display()), e)
+            }),
+            None => Some(RuntimeError::new(
+                "there is no user settings file to save it to",
+            )),
         }
     }
 
     /// `/model`: switches the live session's model, rebuilds the agent on it and saves the
     /// choice as `[model] model`. The guardian follows only when it is on the main-model
     /// fallback; a pinned or validated guardian stays where it is.
-    pub async fn switch_main_model(&mut self, text: &str) -> Result<Switched, String> {
+    pub async fn switch_main_model(&mut self, text: &str) -> Result<Switched, RuntimeError> {
         let guardian_followed = self.install_main(text).await?;
         let reference = self.models.main.reference.to_string();
-        let persist_error = self.persist(|path| user_config::set_model(path, &reference));
+        let persist_error = self
+            .persist(|path| user_config::set_model(path, &reference))
+            .map(|e| chain(&e));
         Ok(Switched {
             reference,
             guardian_followed,
@@ -1027,12 +1036,12 @@ impl AgentRuntime {
 
     /// Resolves `text`, rebuilds the agent on it and makes it the model of the session and its
     /// subagents, without saving anything. Returns whether the guardian followed.
-    async fn install_main(&mut self, text: &str) -> Result<bool, String> {
+    async fn install_main(&mut self, text: &str) -> Result<bool, RuntimeError> {
         let (handle, listing) = self
             .switcher()?
             .main(text)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| RuntimeError::caused("could not resolve the model", e))?;
         let previous = std::mem::replace(&mut self.models.main, handle);
         let previous_listing = std::mem::replace(&mut self.models.main_listing, listing);
         if let Err(e) = self.rebuild() {
@@ -1064,7 +1073,7 @@ impl AgentRuntime {
     pub async fn model_listings(
         &mut self,
         account: Option<&str>,
-    ) -> Result<Vec<AccountListing>, String> {
+    ) -> Result<Vec<AccountListing>, RuntimeError> {
         let switcher = self.switcher()?;
         let wanted: Option<Vec<String>> = match account {
             Some(name) => Some(vec![name.to_string()]),
@@ -1180,7 +1189,7 @@ impl AgentRuntime {
             let reference = self.models.main.reference.to_string();
             match self.install_main(&reference).await {
                 Ok(_) => effect.main_rebuilt = true,
-                Err(e) => effect.main_error = Some(e),
+                Err(e) => effect.main_error = Some(chain(&e)),
             }
         }
         let guardian_on_account = ModelRef::parse(self.state.guardian().label())
@@ -1194,13 +1203,15 @@ impl AgentRuntime {
     /// `/guardian-model`: pins the guardian to `text` for the live session and saves it as
     /// `[guardian] model`. An account with no credential gives an unavailable guardian rather
     /// than an error, which the next adjudication reports.
-    pub fn set_guardian_model(&mut self, text: &str) -> Result<Switched, String> {
+    pub fn set_guardian_model(&mut self, text: &str) -> Result<Switched, RuntimeError> {
         let model = self.guardian_for(text)?;
         self.install_guardian(&model);
         let reference = model.reference().to_string();
         self.models.guardian = Some(model);
         self.models.guardian_choice = GuardianChoice::Pinned;
-        let persist_error = self.persist(|path| user_config::set_guardian_model(path, &reference));
+        let persist_error = self
+            .persist(|path| user_config::set_guardian_model(path, &reference))
+            .map(|e| chain(&e));
         Ok(Switched {
             reference,
             guardian_followed: false,
@@ -1210,7 +1221,7 @@ impl AgentRuntime {
 
     /// Tries the guardian model again, for when its credential has appeared since startup.
     /// Returns whether it can be asked now.
-    pub fn retry_guardian(&self) -> Result<bool, String> {
+    pub fn retry_guardian(&self) -> Result<bool, RuntimeError> {
         let current = self.state.guardian();
         let model = self.guardian_for(current.label())?;
         self.install_guardian(&model);
@@ -1223,14 +1234,16 @@ impl AgentRuntime {
     ///
     /// It takes `&self` because it answers a prompt raised mid-turn, so the runtime's own record
     /// of the guardian is not updated; the live guardian is the gate state's.
-    pub fn use_guardian(&self, text: &str) -> Result<Option<Switched>, String> {
+    pub fn use_guardian(&self, text: &str) -> Result<Option<Switched>, RuntimeError> {
         let model = self.guardian_for(text)?;
         self.install_guardian(&model);
         if !matches!(model, GuardianModel::Ready(_)) {
             return Ok(None);
         }
         let reference = model.reference().to_string();
-        let persist_error = self.persist(|path| user_config::set_guardian_model(path, &reference));
+        let persist_error = self
+            .persist(|path| user_config::set_guardian_model(path, &reference))
+            .map(|e| chain(&e));
         Ok(Some(Switched {
             reference,
             guardian_followed: false,
@@ -1331,10 +1344,8 @@ impl AgentRuntime {
         self.session.clear().await?;
         self.state.append(Record::ContextCleared {});
         if let Err(e) = self.session.todos().clear() {
-            self.approver.warn(&format!(
-                "the task list was not cleared: {}",
-                fontaine_tools::error_chain::chain(&e)
-            ));
+            self.approver
+                .warn(&format!("the task list was not cleared: {}", chain(&e)));
         }
         Ok(())
     }
@@ -1396,7 +1407,7 @@ struct Parts<'a> {
 }
 
 /// The agent, with its wrapped tools registered in the session's tool server.
-fn build_agent(p: &Parts<'_>) -> Result<(Agent, prompt::PromptPieces), String> {
+fn build_agent(p: &Parts<'_>) -> Result<(Agent, prompt::PromptPieces), RuntimeError> {
     let instructions = prompt::load_instructions(&p.setup.config_dir, &p.roots[0]);
     let skill_index = skills::index(p.skills.extensions());
     let pieces = prompt::layers(&PromptParts {
@@ -1450,7 +1461,8 @@ fn build_agent(p: &Parts<'_>) -> Result<(Agent, prompt::PromptPieces), String> {
                 }),
             },
         }),
-    })?;
+    })
+    .map_err(RuntimeError::new)?;
     for tool in registered {
         if tool.name == "shell" {
             p.skills.set_shell(tool.tool.clone());
