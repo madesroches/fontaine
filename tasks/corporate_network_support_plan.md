@@ -41,7 +41,7 @@ https_proxy = "http://proxy.corp:8080"   # also: http_proxy
 no_proxy    = "localhost,.corp.internal"
 ca_bundle   = "/etc/corp/ca.pem"         # PEM, one or more certs; ADDED to the system roots
 client_cert = "/etc/corp/client.pem"     # PEM certificate chain
-client_key  = "/etc/corp/client.key"     # PKCS#8 PEM, unencrypted
+client_key  = "/etc/corp/client.key"     # unencrypted PEM key
 
 [accounts.work]                # each overrides the [network] value for that account only
 https_proxy = "..."            # also http_proxy, no_proxy, ca_bundle, client_cert, client_key
@@ -54,7 +54,8 @@ https_proxy = "..."            # also http_proxy, no_proxy, ca_bundle, client_ce
   `CLAUDE_CODE_CLIENT_CERT`/`_KEY` → `client_cert`/`client_key`. Fontaine reads no new environment
   variables; the config file is the surface (recorded in Decisions).
 - `client_cert` and `client_key` must be set together. Encrypted private keys are not supported
-  (reqwest's rustls identity takes unencrypted PKCS#8); the error says so.
+  (reqwest's rustls identity takes an unencrypted PEM key); a pre-check for an `ENCRYPTED PRIVATE KEY`
+  PEM label gives a clear error, since reqwest itself only reports "No valid certificate".
 - Account values override `[network]` per key. `ollama`/local accounts on `localhost` keep working
   through a proxy because reqwest's env handling and `no_proxy` apply to them like any host.
 
@@ -74,31 +75,41 @@ impl NetworkSettings {
 pub struct LoadedNetwork { proxies: Vec<reqwest::Proxy>, roots: Vec<Certificate>, identity: Option<Identity> }
 impl LoadedNetwork { pub fn apply(&self, builder: ClientBuilder) -> ClientBuilder }
 ```
-`apply` adds the proxies, `tls_certs_merge(roots)` and `identity`. `build_client` gains a
+`apply` adds the proxies, `tls_certs_merge(roots)` and `identity`. `load` builds the identity by
+reading `client_cert` and `client_key`, joining them with a newline and calling
+`Identity::from_pem` (the rustls-backend API; `from_pkcs8_pem` is native-tls only). `build_client` gains a
 `&LoadedNetwork` parameter and applies it inside `make`'s builder on both the first attempt and the
 bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom roots too).
 `NetworkError` is a typed enum (`Read{path,source}`, `NoCertificates{path}`, `Pem{path,source}`,
 `Proxy{source}`, `HalfIdentity`) because callers surface it at config load with exit code 2.
 
 ### Wiring
-- `Config` gains `network: NetworkSettings` (merged like other user-only sections) and `Account`
-  gains the same six optional keys, flattened into a `NetworkSettings` field.
+- `NetworkSettings` has no serde and `Account` is `deny_unknown_fields` (incompatible with
+  `flatten`), so `Account` declares the six optional keys directly and `fontaine-core` adds a
+  `NetworkSection` (`Deserialize`, `deny_unknown_fields`) for `[network]`; both convert to
+  `NetworkSettings` via a method. `Config` gains the `[network]` section, merged per key via
+  `overlaid_by` (user scope, with `--settings` overriding user scope).
 - Validation at config load: `LoadedNetwork` is built for `[network]` and for each account that
   overrides it; any `NetworkError` is a config error (exit 2) naming the key and file. Relative
-  paths resolve against the config file's directory, like other path-valued keys (check
-  `scanner_model_path` handling and follow it); `~` is not expanded.
+  paths resolve against the process cwd, like `scanner_model_path`; `~` is not expanded.
+- `Config` holds a precomputed `LoadedNetwork` per account (account overlaid on global) plus the
+  global one. `ConnectContext` (borrow-only, built at `models.rs:289`) gains
+  `network: &LoadedNetwork`; the opencode-go sign-in (`opencode_go.rs:327`, which has no
+  `ConnectContext`) takes the account's `&LoadedNetwork` as an explicit parameter.
 - `transport::caused_client(network: &LoadedNetwork)` and `reqwest_client(network)` take the
-  effective settings. Each provider `connect` passes `ctx.network()` (account overlaid on global,
-  loaded once per account and cached on `ConnectContext`'s owner). The guardian screen passes the
+  effective settings. Each provider `connect` passes `ctx.network`. The guardian screen passes the
   settings of the `ollama` account it targets; the device flow and opencode-go use the account's.
 - `Webfetch::new` and `scanner_model::ensure` use the global `[network]` settings (no account).
 - HTTP MCP: build the client with `tls::build_client` (global `[network]`), keeping
   `pool_max_idle_per_host(0)` and a copy of rmcp's same-origin 307/308 redirect policy, and pass it
   via `StreamableHttpClientTransport::with_client(client, StreamableHttpClientTransportConfig::with_uri(url))`.
   This also removes the build-time panic path. A test pins the redirect behavior to rmcp's documented one.
+  `servers.rs` HTTP connect currently gets only `spec`, so the global `&LoadedNetwork` is passed in
+  from its caller in `agent.rs`; `fontaine-mcp` gets `reqwest.workspace = true`.
 - Trust: `[network]` and the account keys are user-scope/`--settings` only. A project file setting
   `[network]` is a load error naming the scope (proxy and trust roots decide who can read model
-  traffic; same class as `base_url`). Add the row to the per-key scope table.
+  traffic; same class as `base_url`). Add the row to the per-key scope table, with the same values
+  as `[accounts.*]` (no/no/yes), for both `[network]` and the account network keys.
 
 ### Fail-closed
 - Any `NetworkError` at load stops the run before a client exists. At client build, a failure after
@@ -110,24 +121,28 @@ bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom
 
 ## Implementation Steps
 1. `fontaine-tools/src/tls.rs`: add `NetworkSettings`, `LoadedNetwork`, `NetworkError`; change
-   `build_client` to take `&LoadedNetwork`. Add `url`/`pem` helpers only if reqwest's
-   `Certificate::from_pem_bundle` and `Identity::from_pkcs8_pem` do not suffice (they should).
+   `build_client` to take `&LoadedNetwork`. `Certificate::from_pem_bundle` covers the CA bundle; the
+   identity needs our own step: join cert and key PEM and call `Identity::from_pem`, with the
+   `ENCRYPTED PRIVATE KEY` pre-check.
 2. Update `Webfetch::new` (`webfetch.rs`) and `scanner_model::ensure` to pass the loaded settings;
    thread `Config::network` into `builtins::BuiltinEnv`.
 3. `fontaine-core/src/config.rs`: `[network]` section, `Account` keys, merge, user-scope-only
-   enforcement, load-time validation, per-key scope table entry; update the config JSON schema in
-   `docs/schemas/` if one covers config.
-4. `transport.rs`, `providers/*`, `agent.rs` (screen), `device_flow.rs`: pass the effective
-   `LoadedNetwork`.
-5. `fontaine-mcp/src/servers.rs`: build the HTTP client through `tls::build_client`; plumb settings
-   into `connect`'s caller in `fontaine-core/src/agent.rs`.
+   enforcement, load-time validation, per-key scope table entry (no/no/yes, same as `[accounts.*]`).
+4. `transport.rs`, `providers/*` (add `network` to `ConnectContext`, built at `models.rs:289`),
+   `opencode_go.rs` sign-in, `agent.rs` (screen), `device_flow.rs`: pass the effective
+   `LoadedNetwork`. Fix the `Account` struct literals at `accounts.rs:217`, `user_config.rs:334` and
+   `tests/account_session.rs:193`.
+5. `fontaine-mcp/src/servers.rs` and `fontaine-mcp/Cargo.toml` (`reqwest.workspace = true`): build
+   the HTTP client through `tls::build_client`; plumb settings into `connect`'s caller in
+   `fontaine-core/src/agent.rs`.
 6. Docs, changelog, tests (below).
 
 ## Files to Modify
 - `rust/fontaine-tools/src/{tls.rs,webfetch.rs,builtins.rs}`
-- `rust/fontaine-core/src/{config.rs,transport.rs,agent.rs,scanner_model.rs,tools.rs}`
+- `rust/fontaine-core/src/{config.rs,transport.rs,agent.rs,scanner_model.rs,tools.rs,models.rs,accounts.rs,user_config.rs}`
 - `rust/fontaine-core/src/providers/{mod.rs,anthropic.rs,openai.rs,gemini.rs,ollama.rs,openai_compatible.rs,opencode_go.rs,device_flow.rs}`
-- `rust/fontaine-mcp/src/servers.rs`
+- `rust/fontaine-core/tests/account_session.rs`
+- `rust/fontaine-mcp/src/servers.rs`, `rust/fontaine-mcp/Cargo.toml`
 - `docs/configuration.md`, `docs/tools.md`, `docs/mcp.md`, `docs/guardian.md` (one line), `CHANGELOG.md`
 
 ## Trade-offs
@@ -139,8 +154,9 @@ bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom
   identity; the copy is ~15 lines and test-pinned.
 
 ## Decisions
-- 2026-10-25 Encrypted client keys are out of scope (reqwest's rustls identity needs unencrypted
-  PKCS#8); a passphrase key is a clear load error.
+- 2026-10-25 Encrypted client keys are out of scope (reqwest's rustls identity needs an unencrypted
+  PEM key); a passphrase key is a clear load error.
+- 2026-10-25 `ca_bundle` is a single PEM file; directories are unsupported (`SSL_CERT_DIR` still works).
 - 2026-10-25 No new environment variables; config keys only. `HTTPS_PROXY` & co. keep working through reqwest.
 
 ## Documentation
@@ -158,21 +174,20 @@ Unit tests (no live network):
 - Config: `[network]` accepted in user and `--settings` scope, rejected in project scope; account
   keys parsed; load errors exit 2 and name the key.
 - `build_client` with a custom root retried through the bundled-roots path keeps the custom root and
-  identity (extend the existing retry test).
+  identity: assert `apply` was invoked on both attempts (the existing test forces the failure via a
+  bad user agent, so it cannot observe the roots themselves).
 - Proxy routing with `wiremock`: a client built from `https_proxy`/`http_proxy` sends a plain-HTTP
   request to the mock "proxy" in absolute-form; `no_proxy` bypass reaches the origin directly.
 - CA and mTLS against a local rustls test server (generated with `rcgen` as a dev-dependency):
   a client without the CA fails the handshake; with `ca_bundle` it succeeds; a server requiring a
   client cert rejects a client without identity and accepts one with it. This catches what a fake
-  cannot: the handshake actually using the configured roots and identity.
-- MCP redirect policy: same-origin 307 followed, 302 and cross-origin not (pins parity with rmcp's
-  default).
+  cannot: the handshake actually using the configured roots and identity. New dev-dependencies are
+  exact pins (workspace convention): `rcgen =0.14.10`, `tokio-rustls =<exact>`, `rustls =<exact>`.
+- MCP redirect policy: same-origin 307 followed; 302 and cross-origin redirect responses are
+  returned unfollowed (rmcp's policy calls `attempt.stop()`).
 - Fail-closed: a bad `[network]` never yields a client; the screen stage with an unusable network
   denies rather than skips.
 
 ## Manual Verification
 1. Behind a real authenticating proxy, run `fontaine -p "say hi"` with `https_proxy` set and check
    the proxy log shows the model request. Not automated: needs a corporate proxy.
-
-## Open Questions
-- Should `ca_bundle` also accept a directory of certs (like `SSL_CERT_DIR`)? Default: file only.
