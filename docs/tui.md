@@ -52,17 +52,35 @@ The bar shows the permission mode, the model, how many subagents are running, an
 
 | Key | Action |
 |---|---|
-| Enter | Submit. Alt+Enter, Shift+Enter or Ctrl+J insert a newline; a trailing `\` before Enter also continues the line. Which of these your terminal sends, and how to bind Shift+Enter, is in [Terminal setup](terminal.md#new-lines-in-the-message-box). While a turn runs, a message is queued (see [Messages during a turn](#messages-during-a-turn)). With a `@` list open, Enter completes instead. |
-| Up, Down | On the first or last line of the input, recall older or newer submitted inputs; elsewhere they move the cursor. With messages queued, Up takes them back into the input. |
+| Enter | Submit. Alt+Enter, Shift+Enter or Ctrl+J insert a newline; a trailing `\` before Enter also continues the line. Which of these your terminal sends, and how to bind Shift+Enter, is in [Terminal setup](terminal.md#new-lines-in-the-message-box). While a turn runs, a message is queued (see [Messages during a turn](#messages-during-a-turn)). With a `@` list open, Enter completes instead; with the [slash-command menu](#slash-command-menu) open, it runs the selected command. |
+| Up, Down | With the `@` list or the slash-command menu open, move the selection. Otherwise, on the first or last line of the input, recall older or newer submitted inputs; elsewhere they move the cursor. With messages queued, Up takes them back into the input. |
 | Ctrl-R | Search the prompt history; see [History](#history). |
-| Tab | Completes the `@` file under the cursor when a list is open. |
+| Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. |
 | Shift+Tab | Cycle the mode: manual, accept edits, plan, auto, and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` lists the broad allow rules it sets aside and says so when the guardian cannot be asked. |
-| Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search or `@` list is closed first. |
+| Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. |
 | Ctrl-C, or Ctrl-D on an empty input, when idle | Quit. |
 | PageUp, PageDown | Scroll the command in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/U/K/W/B/F | Edit the input. |
 | Ctrl-T | Open or close the [agents panel](#the-agents-panel), even over an approval prompt. |
-| `/` as the first character | Lists the commands and skills that match what you typed. |
+| `/` as the first character | Opens the [slash-command menu](#slash-command-menu). |
+
+## Slash-command menu
+
+Typing `/` as the first character lists the commands and skills, and narrows the list as you type
+the name. Names and aliases that start with what you typed come first, then those that merely
+contain it; the match ignores case. A row found through an alias shows it in parentheses, as in
+`/clear (reset)`. Up to eight rows are shown, scrolling to keep the selection visible.
+
+| Key | Action |
+|---|---|
+| Up, Down | Move the selection. |
+| Tab | Complete the selected name, with a trailing space when the command takes an argument. An alias becomes the command's own name. |
+| Enter | Run the selected command. A command with a required argument, shown as `<arg>` in its hint, is completed instead, since it cannot run without one. |
+| Esc, Ctrl-C | Close the menu until the text changes. |
+
+The menu only opens while the input is a bare `/name`: it closes once you type a space, and it
+never opens over a panel or prompt, during a history search or beside a `@` list. A recalled
+history entry that starts with `/` does not open it, so Up keeps walking the history.
 
 ## Shell commands
 

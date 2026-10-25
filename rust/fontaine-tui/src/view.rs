@@ -12,6 +12,7 @@ use crate::model_picker::PickerPurpose;
 use crate::statusbar;
 
 const MAX_INPUT_ROWS: usize = 6;
+const MAX_MENU_ROWS: usize = 8;
 
 /// The wrapped rows of the message box and where the cursor sits in them.
 struct InputView {
@@ -165,8 +166,9 @@ impl Overlay {
 
 /// What sits above the message box, if anything: the denied list, the unavailable-guardian
 /// prompt, the MCP server prompt, the model picker, the provider dialog, the agents panel, the approval prompt, the
-/// history search or the file completion list, then the `/` menu, in that order of precedence,
-/// which is the order `App::handle_key` routes keys in.
+/// history search or the file completion list, then the `/` menu (at most `MAX_MENU_ROWS` rows
+/// and a key-help footer), in that order of precedence, which is the order `App::handle_key`
+/// routes keys in.
 pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Overlay {
     let theme = &app.theme;
     if let Some(list) = &app.denied {
@@ -264,36 +266,55 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
     }
     let menu = menu_lines(app, width);
     if !menu.is_empty() {
-        return Overlay::new("commands", menu, Vec::new());
+        // A screen reader is not made to hear the key help.
+        let footer = if linear {
+            Vec::new()
+        } else {
+            vec![Line::styled(
+                "↑/↓ select · Tab complete · Enter run · Esc close",
+                Style::default().add_modifier(Modifier::DIM),
+            )]
+        };
+        return Overlay::new("commands", menu, footer);
     }
     Overlay::new("", Vec::new(), Vec::new())
 }
 
-/// The `/` menu: the commands and skills the text typed so far could be. Shown while the
-/// first word of the message is a bare `/name`.
+/// The `/` menu: the commands and skills the text typed so far could be, the selected one
+/// marked. Shown while the first word of the message is a bare `/name`.
 fn menu_lines(app: &App, width: usize) -> Vec<Line<'static>> {
-    let text = app.input.text();
-    let Some(typed) = text.strip_prefix('/') else {
+    let Some(menu) = app.slash_menu() else {
         return Vec::new();
     };
-    if typed.contains(char::is_whitespace) {
-        return Vec::new();
-    }
     let dim = Style::default().add_modifier(Modifier::DIM);
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    app.menu
+    // The window follows the selection so it stays visible; `draw_overlay` would otherwise
+    // show only the tail.
+    let first = (menu.selected + 1).saturating_sub(MAX_MENU_ROWS);
+    menu.matches
         .iter()
-        .filter(|entry| entry.name.starts_with(typed))
-        .map(|entry| {
+        .enumerate()
+        .skip(first)
+        .take(MAX_MENU_ROWS)
+        .map(|(i, entry)| {
             let hint = entry
                 .hint
                 .as_deref()
                 .map_or(String::new(), |h| format!(" {h}"));
-            let head = format!("/{}{hint}", entry.name);
-            let room = width.saturating_sub(head.chars().count() + 3);
+            let alias = entry
+                .matched_alias(&menu.typed)
+                .map_or(String::new(), |a| format!(" ({a})"));
+            let marker = if i == menu.selected { "> " } else { "  " };
+            let head = format!("{marker}/{}{alias}{hint}", entry.name);
+            let room = width.saturating_sub(head.chars().count() + 2);
             let description: String = entry.description.chars().take(room).collect();
+            let head_style = if i == menu.selected {
+                bold
+            } else {
+                Style::default()
+            };
             Line::from(vec![
-                ratatui::text::Span::styled(head, bold),
+                ratatui::text::Span::styled(head, head_style),
                 ratatui::text::Span::styled(format!("  {description}"), dim),
             ])
         })
@@ -394,5 +415,80 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
             inner.x + view.cursor.0 as u16,
             inner.y + view.cursor.1 as u16,
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::linear::flatten_all;
+    use fontaine_core::config::PermissionMode;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use crate::app::Input;
+
+    fn typed(text: &str) -> App {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        for c in text.chars() {
+            app.handle_input(Input::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        app
+    }
+
+    fn down(app: &mut App, times: usize) {
+        for _ in 0..times {
+            app.handle_input(Input::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        }
+    }
+
+    fn body(app: &App) -> Vec<String> {
+        let overlay = overlay(app, 80, 40, false);
+        assert_eq!(overlay.title, "commands");
+        overlay
+            .body
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn the_selected_row_is_marked_and_the_footer_lists_the_keys() {
+        let mut app = typed("/mod");
+        down(&mut app, 1);
+        let rows = body(&app);
+        assert!(rows[0].starts_with("  /model"), "{rows:?}");
+        assert!(rows[1].starts_with("> /guardian-model"), "{rows:?}");
+        let footer = flatten_all(&overlay(&app, 80, 40, false).footer);
+        assert_eq!(
+            footer,
+            ["↑/↓ select · Tab complete · Enter run · Esc close"]
+        );
+        assert!(overlay(&app, 80, 40, true).footer.is_empty());
+    }
+
+    #[test]
+    fn a_row_matched_by_an_alias_shows_it() {
+        let app = typed("/res");
+        let rows = body(&app);
+        assert!(rows[0].starts_with("> /clear (reset)"), "{rows:?}");
+    }
+
+    #[test]
+    fn a_long_list_is_windowed_to_eight_rows_around_the_selection() {
+        let mut app = typed("/");
+        assert!(app.menu.len() > MAX_MENU_ROWS);
+        let rows = body(&app);
+        assert_eq!(rows.len(), MAX_MENU_ROWS);
+        assert!(rows[0].starts_with("> /add-dir"), "{rows:?}");
+
+        down(&mut app, MAX_MENU_ROWS + 2);
+        let rows = body(&app);
+        assert_eq!(rows.len(), MAX_MENU_ROWS);
+        assert!(!rows[0].contains("add-dir"), "{rows:?}");
+        assert!(rows[MAX_MENU_ROWS - 1].starts_with("> "), "{rows:?}");
+        assert_eq!(height(&app, 80, 60) as usize, rows.len() + 1 + 2 + 3 + 1);
     }
 }
