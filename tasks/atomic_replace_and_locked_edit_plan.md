@@ -5,7 +5,7 @@
 ## Overview
 
 Fontaine rewrites six persistent files with three different "replace a file" implementations, and
-the two that are read-modify-write (`trust.toml`, the user `settings.toml`) take no cross-process
+the two that are read-modify-write (`trust.toml`, the user `config.toml`) take no cross-process
 lock. A crash truncates `trust.toml`, and two sessions can drop each other's edits, including a
 hand-added `[permissions] deny` rule. This plan makes `owner_only::write_atomic` the single
 atomic-replace implementation, adds one lock helper generalized from `credentials::lock`, takes it
@@ -17,12 +17,12 @@ around every read-modify-write of `trust.toml` and the settings file, and makes 
 | File | Writer | Atomic | Cross-process lock |
 |---|---|---|---|
 | `trust.toml` | `trust.rs` `approve_server`, `record`: `owner_only::write` (truncates in place) | no | no |
-| user `settings.toml` | `user_config.rs` `write_atomically` (`NamedTempFile::persist`, resolves symlinks, keeps the target's permissions) behind `append_allow_rule`, `set_string` (model/guardian/theme), `add_account`, `remove_account` | yes | no |
+| user `config.toml` | `user_config.rs` `write_atomically` (`NamedTempFile::persist`, resolves symlinks, keeps the target's permissions) behind `append_allow_rule`, `set_string` (model/guardian/theme), `add_account`, `remove_account` | yes | no |
 | `credentials.toml` | `owner_only::write_atomic` (`.<name>.<pid>.tmp`, `rename`) | yes | yes, `credentials::lock` |
 | `todos.json` | `owner_only::write_atomic` | yes | in-process `Mutex` (`todos.rs:19`, justified by the per-process temp name) |
 | `recent.json` | `owner_only::write_atomic` (`fontaine-tui/src/recent.rs`) | yes | no (best-effort file) |
 | `history.jsonl` rewrite | `history.rs` `rewrite`: own `<pid>.tmp`, `owner_only::write`, `rename`, no `sync_all` | partly | no |
-| session copy (`copy_tree`) | `session.rs` `owner_only::write` | no | n/a (fresh directory) |
+| session copy (`copy_tree`) | `session.rs` `owner_only::write` | no | n/a (fresh directory); unchanged |
 
 `read_file` in `trust.rs` returns `None` for an unreadable or unparseable file, so `is_trusted` and
 `server_approved` answer "no" with no message. The only callers of `is_trusted` outside tests are
@@ -65,15 +65,15 @@ pub fn write_atomic_keeping_mode(path, contents)  // replace(.., KeepExisting, w
    directory ACL on Windows, as now).
 4. Run `write`, `flush`, `sync_all`, drop the handle, then `TempPath::persist` onto the target. On
    Windows, a rename onto a file another handle holds open fails with `PermissionDenied`; retry a
-   few short sleeps (5 × 20 ms) before surfacing it. Unix does not retry.
+   few short sleeps (5 × 20 ms) before surfacing it. Unix does not retry. This answers the issue's
+   requirement of a rename that is safe on Windows.
 
 `replace` taking a writer closure is the injection point for the interrupted-write test; it is not
 public.
 
 Callers moved onto it: `credentials` (unchanged call), `todos`, `recent` (unchanged),
 `trust` (`write_atomic`), `user_config` (`write_atomic_keeping_mode`, `write_atomically` deleted),
-`history::rewrite` (`write_atomic`, own temp name deleted), `session::copy_tree`
-(`write_atomic`). `owner_only::write` stays for its remaining callers (new files and the lock open).
+`history::rewrite` (`write_atomic`, own temp name deleted). `owner_only::write` stays for its remaining callers (new files and the lock open).
 `SessionTodos` keeps its mutex only to order concurrent in-memory updates with their saves; its
 comment about the temp name is replaced.
 
@@ -93,7 +93,8 @@ still `credentials.lock`, so a running older build and a new one exclude each ot
 
 Callers hold the guard across read → edit → `write_atomic*`:
 
-- `trust::record` and `trust::approve_server`: take the lock before the first read. The
+- `trust::record` and `trust::approve_server`: take the lock before the first read; lock errors map
+  to `ConfigError::Write`, as in `credentials::lock`. The
   `server_approved` early-out in `approve_server` moves inside the lock so the decision uses the
   latest content.
 - `user_config`: `append_allow_rule`, `set_string`, `add_account`, `remove_account` each take the
@@ -106,9 +107,9 @@ Callers hold the guard across read → edit → `write_atomic*`:
 `trust::unreadable(data_dir) -> Option<String>`: `None` for a missing or valid file; otherwise a
 one-line message naming `trust.toml`, the cause chain (`error_chain::chain`), and the effect
 ("no workspace is trusted and no MCP server approved until it is fixed or removed").
-`agent.rs` calls it next to the `trust::is_trusted` call at session start and passes a message to
-`Approver::warn` once per session. The shared `read_file` is split so `unreadable` and `read_file`
-use one parse path.
+`agent.rs` calls it in `record_session_start`, next to the `trust::is_trusted` call, and passes the
+message to `Approver::warn` once per session. `unreadable` and `read_file` share a new
+Result-returning read helper (today `read_file` discards the parse error).
 
 ## Implementation Steps
 
@@ -117,14 +118,17 @@ use one parse path.
 2. `file_lock.rs`: new module, export from `lib.rs`; make `credentials::lock` delegate.
 3. `trust.rs`: lock + `write_atomic` in `record` and `approve_server`; add `unreadable`.
 4. `user_config.rs`: `locked` wrapper in the four mutating functions; replace `write_atomically`.
-5. `todos.rs` comment; `session.rs` `copy_tree`; `fontaine-tui/src/history.rs` `rewrite`.
-6. `agent.rs`: warn once at session start.
+5. `todos.rs` comment; `fontaine-tui/src/history.rs` `rewrite` (and its test assertion at
+   ~247-251: scan the directory and require that only `history.jsonl` remains, replacing the
+   check for the old `jsonl.<pid>.tmp` name).
+6. `agent.rs`: warn once at session start, in `record_session_start`.
 7. Tests (below), docs, changelog.
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/owner_only.rs`, `file_lock.rs` (new), `lib.rs`, `credentials.rs`,
-  `trust.rs`, `user_config.rs`, `todos.rs`, `session.rs`, `agent.rs`
+  `trust.rs`, `user_config.rs`, `todos.rs`, `agent.rs` (the interrupted-write test lives in a new
+  `#[cfg(test)] mod tests` in `owner_only.rs`)
 - `rust/fontaine-tui/src/history.rs`
 - `rust/fontaine-core/tests/owner_only.rs`, `tests/trust.rs`, new `tests/persisted_files.rs`
 - `docs/configuration.md`, `CHANGELOG.md`
@@ -147,32 +151,36 @@ use one parse path.
 - 2026-10-25: the corrupt-trust warning is raised at session start only. The pre-prompt path
   already fails with a `ConfigError::Parse` naming the file if the user answers "trust", and the
   TUI has no `Approver` before the session exists.
+- 2026-10-25: `session::copy_tree` stays on `owner_only::write` because it writes only into a
+  freshly created directory.
 
 ## Documentation
 
 `docs/configuration.md`: in Workspace trust, say that an unparseable `trust.toml` is reported once
 at session start; note the sibling `.lock` files (`trust.lock`, next to the settings file
-`settings.lock`, `credentials.lock`) that serialize edits between sessions. `CHANGELOG.md`
+`config.lock`, `credentials.lock`) that serialize edits between sessions. `CHANGELOG.md`
 Unreleased: atomic, locked trust and settings writes; corrupt-trust warning.
 
 ## Testing Strategy
 
 Unit and integration tests, no live APIs:
 
-- `owner_only.rs`: an injected writer that writes half and errors leaves the previous content
-  intact and no `.tmp` leftover (the interrupted-write criterion); unique temp names under two
-  concurrent `write_atomic` calls to one path; a symlinked target stays a symlink and
-  `write_atomic_keeping_mode` preserves a 0644 mode while `write_atomic` yields 0600 (Unix);
-  existing atomic test still passes on Windows DACL check.
-- `trust`: `record` with an unwritable data directory (Unix, read-only dir) errors and leaves the
-  old `trust.toml` byte-identical; two threads calling `record` for different roots each through
+- `src/owner_only.rs` (`#[cfg(test)] mod tests`, since `replace` is private): an injected writer
+  that writes half and errors leaves the previous content intact and no `.tmp` leftover (the
+  interrupted-write criterion).
+- `tests/owner_only.rs` (public API): unique temp names under two concurrent `write_atomic` calls
+  to one path; a symlinked target stays a symlink and `write_atomic_keeping_mode` preserves a 0644
+  mode while `write_atomic` yields 0600 (Unix); existing atomic test still passes on Windows DACL
+  check.
+- `trust`: two threads calling `record` for different roots each through
   its own lock handle both land; same for `approve_server`; `unreadable` returns `None` for
   missing and valid files and a message containing `trust.toml` for a corrupt one.
 - `user_config`: two threads calling `append_allow_rule` with different rules both land; existing
   symlink and comment-preservation tests keep passing.
 - `agent`: a session started over a corrupt `trust.toml` calls `Approver::warn` exactly once
   (recording approver), naming the file.
-- `history`: existing rewrite test; assert no `.tmp` residue.
+- `history`: existing rewrite test; the residue assertion scans the directory and requires that
+  only `history.jsonl` remains.
 
 The concurrency tests use threads with separate lock handles as the stand-in for processes, since
 `flock`/`LockFileEx` conflict across open file descriptions even within one process. CI runs them on
