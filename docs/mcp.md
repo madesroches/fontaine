@@ -62,7 +62,8 @@ terminal UI, a line on stderr in a headless run) and left out; the session goes 
   and, like `shell` and `webfetch`, never earns the read-only fast path. In `manual` it asks, in
   `auto` the [guardian](guardian.md) judges it, in `dontAsk` and headless runs it is denied unless
   an allow rule covers it. The one exception is a tool its server marks as
-  [requiring your approval](#requiring-approval-for-a-tool), which asks in every mode.
+  [requiring your approval](#requiring-approval-for-a-tool): it always needs a person's approval
+  and no allow rule pre-approves it, so it is denied in `dontAsk` and headless runs.
 - **What a server declares is only text, with one exception.** A tool can claim to be read-only,
   idempotent or non-destructive. Those hints are passed to the guardian as untrusted text inside the `tool_call`
   block of its request, labelled as the server's own claim, and never as a fact or a gate:
@@ -96,7 +97,7 @@ setting `_meta["anthropic/requiresUserInteraction"]` to the JSON Boolean `true` 
 ```
 
 Fontaine treats the marker as an implicit `ask` rule on that one tool, at the floor of the
-[permission pipeline](permissions.md#the-pipeline). The tool asks in every mode, `auto` included,
+[permission pipeline](permissions.md#the-pipeline). The tool asks wherever a person can answer, `auto` included,
 and the prompt offers no "allow for this session" or "always allow". An allow rule or a hook's
 allow does not skip it, and no guardian verdict approves it. In `dontAsk` and in headless runs the
 call is denied. The audit record carries `tier = ask_rule` and

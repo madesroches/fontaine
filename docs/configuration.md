@@ -117,7 +117,7 @@ A project-local file that has not earned user trust is validated against the pro
 Shared project settings can add `deny` and `ask` rules and `[auto_mode]` `soft_deny` and
 `hard_deny` entries, because those can only make Fontaine stricter. They cannot add `allow` rules,
 choose a model or an endpoint, widen the workspace, or change anything that loosens a decision.
-Project hooks and MCP servers may be declared, but a project-declared executable can tighten a
+Project hooks and MCP servers may be declared; a project-declared executable can tighten a
 permission decision (a hook's deny or ask, an MCP tool's `requiresUserInteraction` marker) but
 never loosen one.
 

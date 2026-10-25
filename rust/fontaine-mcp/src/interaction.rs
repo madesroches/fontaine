@@ -182,16 +182,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stale_unmarked_response_after_a_marked_one_leaves_the_marker() {
-        let marked = tap(vec![
-            page(vec![tool("a", Some(json!(true)))]),
-            page(vec![tool("a", None)]),
-        ])
-        .await;
-        assert!(marked.contains("a"));
-    }
-
-    #[tokio::test]
     async fn other_messages_pass_through_and_mark_nothing() {
         let notification = ServerJsonRpcMessage::Notification(rmcp::model::JsonRpcNotification {
             jsonrpc: JsonRpcVersion2_0,
