@@ -37,8 +37,9 @@ ancestor was released.
 
 **Pipeline**: `posture_of` returns `Option<(PermissionMode, bool)>`, `None` when the lineage is
 not intact (root short-circuits before any tree lookup). `adjudicate` handles `None` before running
-hooks: it builds the call context with the strictest mode (`dontAsk`) for the audit record and
-denies through the existing `self.deny` path with `Tier::DenyRule`, rule `agent registry`, reason
+hooks: it keeps the existing `self.state.current_call(call.agent)` `tool_use_id` lookup that
+precedes `posture_of`, builds the call context with that id and the strictest mode (`dontAsk`) so the
+audit record carries the `tool_use_id`, and denies through the existing `self.deny` path with `Tier::DenyRule`, rule `agent registry`, reason
 "the calling agent is no longer registered". `Tier::DenyRule` keeps the denial in the floor's
 audit/telemetry tier set, so it is recorded like any other floor denial, and no new tier is added.
 Hooks and the guardian are never consulted, so no mode, hook or verdict can reach past it. The
@@ -67,6 +68,7 @@ No config surface, no regex on arguments.
 - `rust/fontaine-core/src/permissions.rs`
 - `rust/fontaine-core/src/gate.rs`
 - `rust/fontaine-core/tests/agent_pipeline.rs`
+- `rust/fontaine-core/tests/choke_point.rs`
 - `docs/permissions.md` (and `docs/agents.md` if it states the child-mode invariant)
 - `CHANGELOG.md`
 
@@ -92,7 +94,10 @@ All unit/integration, no live APIs. In `tests/agent_pipeline.rs`, using `Rig::ch
   each denied, under every mode (`Manual`, `Auto`, `DontAsk`, `Plan` as supported by the rig),
   including an `auto` root with an allow-verdict fake guardian (guardian call count stays 0).
 - The audit record has `Decision::Deny`, `Tier::DenyRule`, rule `agent registry`.
-- Root calls and existing child-posture tests are unaffected (existing tests stay green).
+- Root calls and existing child-posture tests are unaffected (existing tests stay green), except
+  `a_child_that_inherits_the_tool_is_refused_at_call_time` in `tests/choke_point.rs`, which inserts
+  `AgentId("worker-1")` under `Rig::new(Manual)` without a tree node; it must reserve the id in the
+  agent tree before the call.
 - `child_restriction` directly: unknown non-root id yields a restriction, root and a live child
   do not.
 - `tree.rs`: `lineage_intact` for root, live child, grandchild, released child, released parent,
