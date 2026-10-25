@@ -46,9 +46,11 @@ client_key  = "/etc/corp/client.key"     # unencrypted PEM key
 [accounts.work]                # each overrides the [network] value for that account only
 https_proxy = "..."            # also http_proxy, no_proxy, ca_bundle, client_cert, client_key
 ```
-- Unset keys leave reqwest's environment/system handling untouched, so existing `HTTPS_PROXY`
-  users see no change. A set `https_proxy`/`http_proxy` replaces the environment value for that
-  scheme; `no_proxy` is an exception list in `HTTPS_PROXY`'s own syntax. Proxy URLs may carry
+- With no proxy key set, reqwest's environment/system handling is untouched, so existing
+  `HTTPS_PROXY` users see no change. Any configured proxy key (`https_proxy`, `http_proxy`,
+  `no_proxy`) turns off environment and system proxy handling for that client (reqwest's
+  `ClientBuilder::proxy()` disables it: `HTTP_PROXY`, `ALL_PROXY`, env `NO_PROXY`, macOS/Windows
+  system proxy); `no_proxy` is an exception list in `HTTPS_PROXY`'s own syntax. Proxy URLs may carry
   credentials (`http://user:pass@host`), as in Claude Code.
 - Claude Code's environment variables map to: `NODE_EXTRA_CA_CERTS` → `ca_bundle`,
   `CLAUDE_CODE_CLIENT_CERT`/`_KEY` → `client_cert`/`client_key`. Fontaine reads no new environment
@@ -56,8 +58,8 @@ https_proxy = "..."            # also http_proxy, no_proxy, ca_bundle, client_ce
 - `client_cert` and `client_key` must be set together. Encrypted private keys are not supported
   (reqwest's rustls identity takes an unencrypted PEM key); a pre-check for an `ENCRYPTED PRIVATE KEY`
   PEM label gives a clear error, since reqwest itself only reports "No valid certificate".
-- Account values override `[network]` per key. `ollama`/local accounts on `localhost` keep working
-  through a proxy because reqwest's env handling and `no_proxy` apply to them like any host.
+- Account values override `[network]` per key. `ollama`/local accounts on `localhost` bypass
+  the proxy only if `no_proxy` lists them.
 
 ### Types
 In `fontaine-tools/src/tls.rs` (lowest crate that builds clients, so `fontaine-mcp` and
@@ -92,13 +94,17 @@ bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom
 - Validation at config load: `LoadedNetwork` is built for `[network]` and for each account that
   overrides it; any `NetworkError` is a config error (exit 2) naming the key and file. Relative
   paths resolve against the process cwd, like `scanner_model_path`; `~` is not expanded.
+- `Config` derives `PartialEq` (`config.rs:1195`) but `LoadedNetwork` wraps reqwest
+  `Proxy`/`Certificate`/`Identity`, which are not `PartialEq`: implement it manually, comparing the
+  source `NetworkSettings`.
 - `Config` holds a precomputed `LoadedNetwork` per account (account overlaid on global) plus the
   global one. `ConnectContext` (borrow-only, built at `models.rs:289`) gains
   `network: &LoadedNetwork`; the opencode-go sign-in (`opencode_go.rs:327`, which has no
   `ConnectContext`) takes the account's `&LoadedNetwork` as an explicit parameter.
 - `transport::caused_client(network: &LoadedNetwork)` and `reqwest_client(network)` take the
   effective settings. Each provider `connect` passes `ctx.network`. The guardian screen passes the
-  settings of the `ollama` account it targets; the device flow and opencode-go use the account's.
+  settings of the `ollama` account it targets (if that account is absent from config, the global
+  `[network]`); the device flow and opencode-go use the account's.
 - `Webfetch::new` and `scanner_model::ensure` use the global `[network]` settings (no account).
 - HTTP MCP: build the client with `tls::build_client` (global `[network]`), keeping
   `pool_max_idle_per_host(0)` and a copy of rmcp's same-origin 307/308 redirect policy, and pass it
@@ -130,7 +136,14 @@ bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom
    enforcement, load-time validation, per-key scope table entry (no/no/yes, same as `[accounts.*]`).
 4. `transport.rs`, `providers/*` (add `network` to `ConnectContext`, built at `models.rs:289`),
    `opencode_go.rs` sign-in, `agent.rs` (screen), `device_flow.rs`: pass the effective
-   `LoadedNetwork`. Fix the `Account` struct literals at `accounts.rs:217`, `user_config.rs:334` and
+   `LoadedNetwork`. Call sites carrying the account's `&LoadedNetwork`: `GoRefresher`
+   (`opencode_go.rs:236-246`) -> `DeviceFlow::new` -> `reqwest_client()` (`device_flow.rs:136`),
+   `SignIn::sign_in` (`providers/mod.rs:120`), `accounts::sign_in` (`accounts.rs:261`),
+   `scanner_model::ensure`'s caller (`scanner_stage.rs:234`), plus the tests
+   `tests/{token_source,device_flow,account_ops}.rs`,
+   `fontaine-tools/tests/{webfetch,result_pipeline,common/mod}.rs`,
+   `fontaine-core/tests/scanner_model.rs`, `fontaine-mcp/tests/mcp_registration.rs` and the
+   `tls.rs` unit tests. Fix the `Account` struct literals at `accounts.rs:217`, `user_config.rs:334` and
    `tests/account_session.rs:193`.
 5. `fontaine-mcp/src/servers.rs` and `fontaine-mcp/Cargo.toml` (`reqwest.workspace = true`): build
    the HTTP client through `tls::build_client`; plumb settings into `connect`'s caller in
@@ -141,9 +154,11 @@ bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom
 - `rust/fontaine-tools/src/{tls.rs,webfetch.rs,builtins.rs}`
 - `rust/fontaine-core/src/{config.rs,transport.rs,agent.rs,scanner_model.rs,tools.rs,models.rs,accounts.rs,user_config.rs}`
 - `rust/fontaine-core/src/providers/{mod.rs,anthropic.rs,openai.rs,gemini.rs,ollama.rs,openai_compatible.rs,opencode_go.rs,device_flow.rs}`
-- `rust/fontaine-core/tests/account_session.rs`
+- `rust/fontaine-core/src/scanner_stage.rs`
+- `rust/fontaine-core/tests/{account_session,token_source,device_flow,account_ops,scanner_model}.rs`
+- `rust/fontaine-tools/tests/{webfetch.rs,result_pipeline.rs,common/mod.rs}`, `rust/fontaine-mcp/tests/mcp_registration.rs`
 - `rust/fontaine-mcp/src/servers.rs`, `rust/fontaine-mcp/Cargo.toml`
-- `docs/configuration.md`, `docs/tools.md`, `docs/mcp.md`, `docs/guardian.md` (one line), `CHANGELOG.md`
+- `docs/configuration.md`, `docs/tools.md`, `docs/mcp.md`, `docs/guardian.md` (one line), `CHANGELOG.md`, `research/research-claude-code-parity.md`
 
 ## Trade-offs
 - Environment variables (Claude Code's `NODE_EXTRA_CA_CERTS`, `CLAUDE_CODE_CLIENT_*`) vs config
@@ -166,6 +181,7 @@ bundled-roots retry (retry uses `tls_certs_only(bundled)` then merges the custom
 - `docs/mcp.md`: HTTP servers honor `[network]`.
 - `docs/guardian.md`: the guardian endpoint inherits its account's network settings and fails closed.
 - `CHANGELOG.md`: `### Added` entry under `[Unreleased]`.
+- `research/research-claude-code-parity.md:282`: update the stale backlog row for proxy / custom CA / mTLS.
 
 ## Testing Strategy
 Unit tests (no live network):
@@ -182,7 +198,7 @@ Unit tests (no live network):
   a client without the CA fails the handshake; with `ca_bundle` it succeeds; a server requiring a
   client cert rejects a client without identity and accepts one with it. This catches what a fake
   cannot: the handshake actually using the configured roots and identity. New dev-dependencies are
-  exact pins (workspace convention): `rcgen =0.14.10`, `tokio-rustls =<exact>`, `rustls =<exact>`.
+  exact pins (workspace convention): `rcgen =0.14.10`, `tokio-rustls =0.26.6`, `rustls =0.23.46`.
 - MCP redirect policy: same-origin 307 followed; 302 and cross-origin redirect responses are
   returned unfollowed (rmcp's policy calls `attempt.stop()`).
 - Fail-closed: a bad `[network]` never yields a client; the screen stage with an unusable network
