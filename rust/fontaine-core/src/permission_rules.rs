@@ -428,15 +428,18 @@ pub fn matches(rule: &Rule, call: &CallContext<'_>, posture: Posture) -> bool {
         Some(Specifier::Shell) => shell_matches(spec, call, posture),
         Some(Specifier::Domain) => webfetch_matches(spec, call.args, posture),
         Some(Specifier::Name) => {
-            let key = if call.tool == "agent" {
-                "agent_type"
-            } else {
-                "name"
-            };
-            string_arg(call.args, key).is_some_and(|name| name == spec)
+            string_arg(call.args, name_arg_key(call.tool)).is_some_and(|name| name == spec)
         }
         Some(Specifier::Path) => path_matches(spec, call, posture),
         Some(Specifier::None) | None => false,
+    }
+}
+
+fn name_arg_key(tool: &str) -> &'static str {
+    if tool == "agent" {
+        "agent_type"
+    } else {
+        "name"
     }
 }
 
@@ -591,14 +594,7 @@ pub fn propose(call: &CallContext<'_>) -> Option<Rule> {
             let url = url::Url::parse(string_arg(call.args, "url")?).ok()?;
             Some(format!("domain:{}", url.host_str()?.to_ascii_lowercase()))
         }
-        Some(Specifier::Name) => {
-            let key = if call.tool == "agent" {
-                "agent_type"
-            } else {
-                "name"
-            };
-            Some(string_arg(call.args, key)?.to_string())
-        }
+        Some(Specifier::Name) => Some(string_arg(call.args, name_arg_key(call.tool))?.to_string()),
         Some(Specifier::Path) => Some(path_pattern(&path_args(call)?.resolved)),
         _ if is_mcp(call.tool) || matches!(call.tool, "send_message" | "ask_user_question") => None,
         _ => return None,
