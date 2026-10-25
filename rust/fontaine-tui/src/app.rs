@@ -184,6 +184,7 @@ impl App {
             self.input.set_text(&format!("{text}\n\n{current}"));
         }
         self.history.reset();
+        self.refresh_slash();
     }
 
     /// Whether the input is a `!` shell command.
@@ -383,6 +384,13 @@ impl App {
     }
 
     pub fn handle_input(&mut self, input: Input) -> Action {
+        let action = self.dispatch_input(input);
+        // Paste and history-search accept change the text outside handle_key's tails.
+        self.refresh_slash();
+        action
+    }
+
+    fn dispatch_input(&mut self, input: Input) -> Action {
         match input {
             Input::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
             Input::Paste(text) => {
@@ -557,7 +565,7 @@ impl App {
         }
     }
 
-    /// Closes an open history search or completion list; false when neither was open.
+    /// Closes an open history search, completion list or slash menu; false when none was open.
     fn close_palette(&mut self) -> bool {
         if self.search.take().is_some() {
             self.refresh_completion();
@@ -1289,6 +1297,16 @@ mod tests {
         // With the menu closed, the next Esc interrupts the turn.
         press(&mut app, KeyCode::Esc);
         assert_eq!(press(&mut app, KeyCode::Esc), Action::Interrupt);
+    }
+
+    #[test]
+    fn a_paste_clears_the_menu_dismissal() {
+        let mut app = app();
+        type_text(&mut app, "/mod");
+        press(&mut app, KeyCode::Esc);
+        app.handle_input(Input::Paste("e".into()));
+        press(&mut app, KeyCode::Backspace);
+        assert!(app.slash_menu().is_some());
     }
 
     #[test]

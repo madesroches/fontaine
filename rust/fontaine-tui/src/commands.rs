@@ -257,7 +257,17 @@ impl MenuEntry {
     /// The alias that made the entry match `typed`, when its own name did not.
     pub fn matched_alias(&self, typed: &str) -> Option<&str> {
         let typed = typed.to_lowercase();
-        if self.name.to_lowercase().contains(&typed) {
+        let name = self.name.to_lowercase();
+        if name.starts_with(&typed) {
+            return None;
+        }
+        // A name that merely contains the text loses to an alias that starts with it, as in
+        // match_menu's ranking.
+        let alias_prefix = self
+            .aliases
+            .iter()
+            .any(|a| a.to_lowercase().starts_with(&typed));
+        if name.contains(&typed) && !alias_prefix {
             return None;
         }
         let by = |hit: fn(&str, &str) -> bool| {
@@ -505,6 +515,12 @@ mod tests {
         assert_eq!(found[0].matched_alias("res"), Some("reset"));
         assert_eq!(found[0].matched_alias("cle"), None);
         assert_eq!(names(&match_menu(&menu, "tas")), ["agents"]);
+        let agents = match_menu(&menu, "t");
+        let agents = agents
+            .iter()
+            .find(|e| e.name == "agents")
+            .expect("agents matches t");
+        assert_eq!(agents.matched_alias("t"), Some("tasks"));
     }
 
     #[test]
