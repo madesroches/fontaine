@@ -59,10 +59,11 @@ result: "Updated todo list: N items (P pending, I in progress, C completed)"
 Only the root agent's list is written through to `<session dir>/todos.json` (owner-only, atomic
 write via `owner_only::write_atomic`, temp file + rename) on every root replace; subagent lists stay in memory.
 `Session::create` and `open` build the struct literally (`session.rs` ~201, ~234), so both set the new
-field; `open` loads it; a missing or unparseable file yields an empty list and one
-`Approver::warn` for the unparseable case. `Session::fork` already copies the directory; a test pins
-that `todos.json` comes along. A write failure is returned as the tool's error result and warned,
-never swallowed. The file write happens inside the store `Mutex` (`owner_only::write_atomic`'s temp name is
+field; `open` loads it; a missing or unparseable file yields an empty list. `open` takes no
+`Approver`, so an unparseable file leaves a pending warning string inside `SessionTodos`, which
+`build_agent` (`agent.rs`, where `setup.approver` is in hand) drains with `Approver::warn` on first build. `Session::fork` already copies the directory; a test pins
+that `todos.json` comes along. A write failure is returned as the tool's error result and also warned
+through `setup.approver` (the `todo_write` tool is built with an approver clone), never swallowed. The file write happens inside the store `Mutex` (`owner_only::write_atomic`'s temp name is
 `.<name>.<pid>.tmp`, so concurrent writes would race) and never across an await. Lists are keyed by
 agent in memory so a subagent's calls cannot overwrite the root's; the TUI shows the root's list.
 `SessionTodos` is an `Arc` field on `Session` (`Session` is `Clone`, and `build_agent` re-runs on
@@ -93,10 +94,15 @@ agent in memory so a subagent's calls cannot overwrite the root's; the TUI shows
   (`lib.rs` ~503), and a `parse_command("/todos")` test.
 - Layout (`view.rs`): the draw path uses a fixed vertical stack (:85-92) and `view::height`
   (:47-62) computes the inline live-area height; both get the todo-row constraint (0 when hidden,
-  1 collapsed, item count when expanded). The `KEYS` help line (`reports.rs:28-29`) gains
+  1 collapsed, item count when expanded). The expanded panel is capped at the terminal height minus
+  the input rows, status row, and any approval/queued rows, and at least 1 row is kept; overflow
+  shows the first items that fit with a final `+N more` line. Row position: directly above the
+  input, below the approval and queued rows (stack: transcript, approval, queued, todos, input,
+  status); the approval-height clamp counts the todo rows so the approval shrinks first. The `KEYS` help line (`reports.rs:28-29`) gains
   `ctrl+o todos`; optionally the `statusbar.rs:55` hint too.
-- Screen-reader/linear mode (`linear.rs`): no panel; on each change the list is rendered as plain
-  lines.
+- Screen-reader/linear mode (`linear.rs`): no panel. `linear.rs` is pull-based, so `Linear` keeps a
+  last-printed snapshot of the list; each loop iteration compares the store's root list against it
+  and, if it differs, prints the list as plain lines (`[ ]`/`[~]`/`[x]`) before the next prompt.
 - Updates: in `on_event` (`fontaine-tui/src/lib.rs`), after a successful `todo_write` `ToolResult`,
   the driver reads the store and calls `panel.set_items(...)`. At start the panel is seeded from `runtime.session` (covers resume); the Session exposes the store
   via a read accessor the driver uses. `/clear` empties the list (and `todos.json`); `rebuild()` keeps it.
@@ -163,6 +169,9 @@ at `prompt.rs:7`), telling the model to use `todo_write` for multi-step work, ke
 - 2026-10-25: Only the root's list is persisted to `todos.json`; subagent lists are in-memory (agent ids are not stable across resume).
 - 2026-10-25: Panel toggle is Ctrl-O (unbound; Ctrl-T is the agents panel) plus a `/todos` slash command (`/tasks` aliases the agents panel).
 - 2026-10-25: Screen-reader/linear mode renders the list as plain lines on change; no glyph fallbacks or per-item theme styles.
+- AFK: 2026-10-25: Load warning is stashed by `Session::open` and drained in `build_agent` via `setup.approver`; write-failure warning goes through the same approver (no approver param on `open`).
+- AFK: 2026-10-25: Linear mode detects changes by comparing the store's root list to a last-printed snapshot in `Linear`; no new event or transcript notice.
+- AFK: 2026-10-25: Expanded todo panel sits directly above the input (below approval/queued), is capped at available height minus input/status/approval/queued rows with a `+N more` line, and the approval shrinks before it.
 
 ## Documentation
 
