@@ -67,8 +67,7 @@ value-dependent cells: `default_mode ∈ {manual, dontAsk}` (project, local), `e
 (project, local), `shadow == true` (project, local, cli), set on the `guardian.screen.shadow` leaf; every other `guardian.screen.*` leaf is `No` for project, local and cli. Each predicate is a named `fn`, unit-tested.
 The user column is never consulted (user may set everything).
 
-Paths use dotted segments; `*` matches exactly one segment and appears only for `BTreeMap` keys
-(`accounts`, `accounts.*.wires`, `mcp.servers`, `agents.types`, `env`, `telemetry.resource_attributes`).
+Row paths are plain dotted prefixes (no wildcard); map keys are covered by the row for the map's path.
 Arrays of tables (`[[hooks.pre_tool_use]]`) are traversed without an index segment. `HooksSection`
 has fixed fields, so hooks get one row per event (`hooks.pre_tool_use`, `hooks.post_tool_use`,
 `hooks.permission_denied`), each covering its elements.
@@ -77,7 +76,7 @@ Row semantics: a row's path matches a node exactly and covers its descendants. T
 first row matching a node and stops there. Interior nodes with no row are descended into, never
 denied (a bare `[guardian]`, `[permissions]`, `[telemetry]`, `[auto_mode]`, `[hooks]` is accepted
 today); only leaves and nodes matching a row are decision points. One row per subtree: `env` (not
-`env` + `env.*`), `accounts` (not also `accounts.*`), `mcp.servers`, `agents`, and so on, used where
+`env` plus per-key rows), `accounts` (not also per-account rows), `mcp.servers`, `agents`, and so on, used where
 the subtree is wholly one policy. Section-level rows (`accounts`, `network`, `tui`, `env`, `model`,
 `agents`, `context`, `shell_preclassifier`) match the interior node itself, so a present-but-empty
 table is still refused as it is today; `model` is such a row (`Settings.model` is
@@ -134,6 +133,7 @@ rows). For each row and each of `Project`, `ProjectLocal`, `Cli` the snippet is 
 `parse_settings` and asserted to be a `ConfigError::Scope` for `No` cells and *not* a `Scope` error
 for `Yes` cells (other errors, such as value validation, are allowed — the test is about scope). The
 completeness test needs paths only. These tests live in the `#[cfg(test)]` module of `config_scope.rs`.
+The loader's file-to-column mapping (`config.rs:1837-1870`) is pinned by two small tests in `tests/config.rs`: a user-file-only key via `w.cli_file` + `load_with_settings`, and a local-rejected key (`[tui]` or `[accounts.x]`) via a trusted `w.local_file`, each expecting `Scope`.
 
 The existing hand-written accept-side tests (`project_scope_accepts_the_tightening_cells`,
 `project_local_scope_accepts_...`, `cli_scope_accepts_...`) stay: they pin that the loaded config
@@ -155,8 +155,8 @@ actually carries the values, which the table test does not.
    `config.rs` (keep `loosens`); pass the `toml::Table` parsed in `parse_settings_with_hint`.
 4. Add `#[cfg(test)]` unit tests inside `config_scope.rs` (completeness, no-dead-rows, no-overlap,
    predicate tests, the `parse_settings`-driven per-column test, and "a key with no row is rejected from project and project-local" using a
-   synthetic table via an inner function that takes `&[Rule]`). Delete `NO_FOR_PROJECT`, `NO_FOR_LOCAL`, `USER_FILE_ONLY` and the three loop
-   tests from `tests/config.rs`; delete the `assert_scope_error` helper (`tests/config.rs:704`) if no remaining test uses it (`:1381` does today); keep the specific screen/env/telemetry tests that assert messages.
+   synthetic table via an inner function that takes `&[Rule]`). Delete `NO_FOR_PROJECT`, `NO_FOR_LOCAL`, `USER_FILE_ONLY` and the loop
+   tests from `tests/config.rs` other than `cli_scope_rejects_user_file_only_keys`, which is replaced by two small loader tests there: a user-file-only key sent via `w.cli_file` + `load_with_settings` expecting `Scope`, and a local-rejected key (`[tui]` or `[accounts.x]`) sent via a trusted `w.local_file` expecting `Scope`; keep `assert_scope_error` (`tests/config.rs:1381` uses it); keep the specific screen/env/telemetry tests that assert messages.
 5. Docs and design: update `docs/configuration.md` (scope-table intro and a one-line note that
    every key has a declared policy and an undeclared key is refused from project scopes) and
    `tasks/design/config.md` (name the table as the single source). Add a `CHANGELOG.md` entry under `### Changed` in `[Unreleased]`.
@@ -203,6 +203,7 @@ All unit-level and reachable by constructed inputs, so no live or manual tier:
   deny-by-default for `Project`/`ProjectLocal` (the real table cannot be used because the
   completeness test forbids an unlisted key);
 - unit tests in `config_scope.rs`: table-driven per-column accept/reject through `parse_settings` for every row;
+- loader tests in `tests/config.rs`: `--settings` (CLI) and trusted project-local slots each reject a key their column denies with `Scope`;
 - the existing `tests/config.rs` scope tests that remain (screen shadow, env, telemetry, accounts
   network keys) pass unchanged, pinning the decisions and the error text.
 
