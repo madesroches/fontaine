@@ -154,3 +154,6 @@ CI configuration has no unit-testable logic. Verification is the CI run itself:
 2. Push a commit touching only `tasks/` (or `AGENTS.md`) to a throwaway branch/PR and confirm the matrix is skipped but the PR
    shows as mergeable (item 10 shipped), with `ubuntu-latest`, `macos-latest` and `windows-latest` all
    reporting green.
+- 2026-10-25 (measured on PR #180): Windows went from ~32 min to 17m22 with Stage 1 alone. Cold runs (no `rust-cache`) beat cached runs on every OS: Windows 11m29 vs 14m38, macOS 7m54 vs 11m32, Ubuntu 10m27 vs 11m43, so the `rust-cache` step is removed.
+- 2026-10-25 (measured): `mold` on Linux gave no gain (test build 183 s vs 160 s) and was dropped. `lld-link` plus a `D:\` target dir on Windows was slower (15m18 vs 11m29; clippy 247 s vs 158 s, test build 393 s vs 287 s) and was dropped.
+- 2026-10-25 (measured): running the tests takes ~1 min on Windows under `cargo nextest`; compilation dominates, so `cargo nextest` plus `cargo test --doc` is kept for the run phase and compilation is the remaining lever.

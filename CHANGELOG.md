@@ -261,8 +261,9 @@ All notable changes are recorded here. The format follows
 
 - CI runs faster: the pg2 clippy and test legs and the fixture eval runs are Linux-only (macOS and
   Windows still run `cargo check --features fontaine/pg2` and the `--guardian none` eval), the
-  Rust cache is saved only on `main`, pull-request runs cancel when superseded, debug info in the
-  dev and test profiles is reduced to line tables, and a PR touching only `tasks/` or `AGENTS.md`
+  Rust cache is dropped (measured slower than a cold build on every OS), tests run under
+  `cargo nextest`, pull-request runs cancel when superseded, debug info in the dev and test
+  profiles is reduced to line tables, and a PR touching only `tasks/` or `AGENTS.md`
   skips the Rust steps (#178).
 
 ### Fixed
