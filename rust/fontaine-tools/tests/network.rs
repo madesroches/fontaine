@@ -327,3 +327,39 @@ fn a_bad_network_setting_never_yields_a_client() {
     };
     assert!(bad.load().is_err());
 }
+
+#[test]
+fn a_key_that_does_not_match_the_certificate_is_a_load_error_naming_both_files() {
+    let pki = pki();
+    let a = leaf(&pki, ExtendedKeyUsagePurpose::ClientAuth);
+    let b = leaf(&pki, ExtendedKeyUsagePurpose::ClientAuth);
+    let dir = tempfile::tempdir().unwrap();
+    let settings = NetworkSettings {
+        client_cert: Some(write(&dir, "cert.pem", &a.cert_pem)),
+        client_key: Some(write(&dir, "key.pem", &b.key_pem)),
+        ..Default::default()
+    };
+    let err = settings.load().unwrap_err();
+    let text = fontaine_tools::error_chain::chain(&err);
+    assert!(
+        matches!(
+            err,
+            fontaine_tools::tls::NetworkError::IdentityMismatch { .. }
+        ),
+        "{text}"
+    );
+    assert!(text.contains("client_cert") && text.contains("cert.pem") && text.contains("key.pem"));
+}
+
+#[test]
+fn a_matching_pair_loads() {
+    let pki = pki();
+    let a = leaf(&pki, ExtendedKeyUsagePurpose::ClientAuth);
+    let dir = tempfile::tempdir().unwrap();
+    let settings = NetworkSettings {
+        client_cert: Some(write(&dir, "cert.pem", &a.cert_pem)),
+        client_key: Some(write(&dir, "key.pem", &a.key_pem)),
+        ..Default::default()
+    };
+    settings.load().unwrap();
+}

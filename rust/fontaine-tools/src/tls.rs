@@ -76,7 +76,10 @@ impl NetworkSettings {
                     }
                 })?;
                 if roots.is_empty() {
-                    return Err(NetworkError::NoCertificates { path: path.clone() });
+                    return Err(NetworkError::NoCertificates {
+                        key: "ca_bundle",
+                        path: path.clone(),
+                    });
                 }
                 roots
             }
@@ -86,6 +89,19 @@ impl NetworkSettings {
             (None, None) => None,
             (Some(cert_path), Some(key_path)) => {
                 let mut pem = read("client_cert", cert_path)?;
+                let certs = reqwest::Certificate::from_pem_bundle(&pem).map_err(|source| {
+                    NetworkError::Pem {
+                        key: "client_cert",
+                        path: cert_path.clone(),
+                        source: source.without_url(),
+                    }
+                })?;
+                if certs.is_empty() {
+                    return Err(NetworkError::NoCertificates {
+                        key: "client_cert",
+                        path: cert_path.clone(),
+                    });
+                }
                 let key = read("client_key", key_path)?;
                 if is_encrypted(&key) {
                     return Err(NetworkError::EncryptedKey {
@@ -98,6 +114,17 @@ impl NetworkSettings {
                     reqwest::Identity::from_pem(&pem).map_err(|source| NetworkError::Pem {
                         key: "client_key",
                         path: key_path.clone(),
+                        source: source.without_url(),
+                    })?;
+                // `from_pem` only sorts PEM sections; a key that does not match the certificate
+                // is first detected when the client is built.
+                reqwest::Client::builder()
+                    .tls_certs_only(std::iter::empty())
+                    .identity(identity.clone())
+                    .build()
+                    .map_err(|source| NetworkError::IdentityMismatch {
+                        cert_path: cert_path.clone(),
+                        key_path: key_path.clone(),
                         source: source.without_url(),
                     })?;
                 Some(identity)
@@ -157,6 +184,7 @@ pub enum NetworkError {
         source: std::io::Error,
     },
     NoCertificates {
+        key: &'static str,
         path: PathBuf,
     },
     Pem {
@@ -166,6 +194,11 @@ pub enum NetworkError {
     },
     EncryptedKey {
         path: PathBuf,
+    },
+    IdentityMismatch {
+        cert_path: PathBuf,
+        key_path: PathBuf,
+        source: reqwest::Error,
     },
     Proxy {
         key: &'static str,
@@ -181,9 +214,20 @@ impl fmt::Display for NetworkError {
             NetworkError::Read { key, path, .. } => {
                 write!(f, "{key}: cannot read {}", path.display())
             }
-            NetworkError::NoCertificates { path } => {
-                write!(f, "ca_bundle: {} contains no certificates", path.display())
+            NetworkError::NoCertificates { key, path } => {
+                write!(f, "{key}: {} contains no certificates", path.display())
             }
+            NetworkError::IdentityMismatch {
+                cert_path,
+                key_path,
+                ..
+            } => write!(
+                f,
+                "client_cert/client_key: {} and {} do not form a usable identity \
+                 (does the key belong to the certificate?)",
+                cert_path.display(),
+                key_path.display()
+            ),
             NetworkError::Pem { key, path, .. } => {
                 write!(f, "{key}: {} is not valid PEM", path.display())
             }
@@ -208,7 +252,9 @@ impl std::error::Error for NetworkError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             NetworkError::Read { source, .. } => Some(source),
-            NetworkError::Pem { source, .. } | NetworkError::Proxy { source, .. } => Some(source),
+            NetworkError::Pem { source, .. }
+            | NetworkError::IdentityMismatch { source, .. }
+            | NetworkError::Proxy { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -304,6 +350,15 @@ mod tests {
         let path = dir.path().join(name);
         std::fs::write(&path, text).unwrap();
         path
+    }
+
+    fn cert_pem() -> String {
+        let key = rcgen::KeyPair::generate().unwrap();
+        rcgen::CertificateParams::new(Vec::new())
+            .unwrap()
+            .self_signed(&key)
+            .unwrap()
+            .pem()
     }
 
     #[test]
@@ -433,7 +488,7 @@ mod tests {
     fn an_encrypted_key_is_refused_with_a_clear_error() {
         let dir = tempfile::tempdir().unwrap();
         let s = NetworkSettings {
-            client_cert: Some(file(&dir, "c.pem", "")),
+            client_cert: Some(file(&dir, "c.pem", &cert_pem())),
             client_key: Some(file(
                 &dir,
                 "k.pem",
@@ -449,10 +504,42 @@ mod tests {
     fn a_non_pem_identity_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let s = NetworkSettings {
-            client_cert: Some(file(&dir, "c.pem", "junk")),
+            client_cert: Some(file(&dir, "c.pem", &cert_pem())),
             client_key: Some(file(&dir, "k.pem", "junk")),
             ..settings()
         };
-        assert!(matches!(s.load(), Err(NetworkError::Pem { .. })));
+        assert!(matches!(
+            s.load(),
+            Err(NetworkError::Pem {
+                key: "client_key",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_bad_client_certificate_is_blamed_on_client_cert_not_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = file(
+            &dir,
+            "k.pem",
+            "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n",
+        );
+        for text in ["", "junk"] {
+            let s = NetworkSettings {
+                client_cert: Some(file(&dir, "c.pem", text)),
+                client_key: Some(key.clone()),
+                ..settings()
+            };
+            match s.load().unwrap_err() {
+                NetworkError::NoCertificates {
+                    key: "client_cert", ..
+                }
+                | NetworkError::Pem {
+                    key: "client_cert", ..
+                } => {}
+                other => panic!("{text:?}: {other}"),
+            }
+        }
     }
 }
