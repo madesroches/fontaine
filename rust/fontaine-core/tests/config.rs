@@ -1326,6 +1326,17 @@ fn env_names_merge_case_insensitively_on_windows() {
     assert_eq!(c.env["Path"].as_str(), "cli");
 }
 
+#[cfg(windows)]
+#[test]
+fn env_names_differing_only_by_case_in_one_file_are_rejected_on_windows() {
+    let text = format!("[env]\nPATH = \"{SECRET}\"\nPath = \"{SECRET}\"\n");
+    let err = parse_settings(&text, Path::new("u.toml"), Column::User).unwrap_err();
+    assert!(matches!(err, ConfigError::Invalid { .. }), "{err:?}");
+    let shown = err.to_string();
+    assert!(shown.contains("env.Path"), "{shown}");
+    assert!(!shown.contains(SECRET), "{shown}");
+}
+
 #[test]
 fn env_is_accepted_from_user_cli_and_trusted_local_scopes() {
     let text = "[env]\nX = \"1\"\n";

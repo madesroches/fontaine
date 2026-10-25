@@ -740,18 +740,9 @@ fn parse_settings_with_hint(
 ) -> Result<Settings, ConfigError> {
     // toml's `Display` quotes the offending source line, which for an `[env]` entry would echo
     // a secret; report the position and toml's bare message instead.
-    let settings: Settings = toml::from_str(text).map_err(|e| {
-        let message = match e.span() {
-            Some(span) => {
-                let (line, column) = line_col(text, span.start);
-                format!("{line}:{column}: {}", e.message())
-            }
-            None => e.message().to_string(),
-        };
-        ConfigError::Parse {
-            path: path.to_path_buf(),
-            message,
-        }
+    let settings: Settings = toml::from_str(text).map_err(|e| ConfigError::Parse {
+        path: path.to_path_buf(),
+        message: bare_toml_message(text, e.span(), e.message()),
     })?;
     if let Err((key, reason)) = check_scope(&settings, column) {
         return Err(ConfigError::Scope {
@@ -764,6 +755,20 @@ fn parse_settings_with_hint(
     }
     validate_values(&settings, path)?;
     Ok(settings)
+}
+
+pub(crate) fn bare_toml_message(
+    text: &str,
+    span: Option<std::ops::Range<usize>>,
+    message: &str,
+) -> String {
+    match span {
+        Some(span) => {
+            let (line, column) = line_col(text, span.start);
+            format!("{line}:{column}: {message}")
+        }
+        None => message.to_string(),
+    }
 }
 
 /// 1-based line and column of a byte offset.
@@ -937,6 +942,20 @@ pub(crate) fn check_account(name: &str, account: &Account) -> Result<(), (String
         .map_err(|(key, message)| (format!("accounts.{name}.{key}"), message))
 }
 
+/// The first name that differs only by ASCII case from an earlier one, when `fold` is set.
+fn case_colliding_env_name<'a>(
+    names: impl Iterator<Item = &'a str>,
+    fold: bool,
+) -> Option<&'a str> {
+    if !fold {
+        return None;
+    }
+    let mut seen = std::collections::HashSet::new();
+    names
+        .into_iter()
+        .find(|n| !seen.insert(n.to_ascii_uppercase()))
+}
+
 fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
     let bad = |key: &str, msg: &str| Err(ConfigError::invalid(path, key, msg));
 
@@ -957,6 +976,15 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         if value.as_str().contains('\0') {
             return bad(&key, "values contain no NUL character");
         }
+    }
+
+    if let Some(env) = &s.env
+        && let Some(name) = case_colliding_env_name(env.keys().map(String::as_str), cfg!(windows))
+    {
+        return bad(
+            &format!("env.{name}"),
+            "names differ only by case, which Windows treats as the same variable",
+        );
     }
 
     for (name, account) in s.accounts.iter().flatten() {
@@ -1951,5 +1979,21 @@ fn read_optional(path: &Path) -> Result<Option<String>, ConfigError> {
             path: path.to_path_buf(),
             source,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::case_colliding_env_name;
+
+    #[test]
+    fn case_collisions_are_found_only_when_folding() {
+        let names = ["PATH", "HOME", "Path"];
+        assert_eq!(
+            case_colliding_env_name(names.into_iter(), true),
+            Some("Path")
+        );
+        assert_eq!(case_colliding_env_name(names.into_iter(), false), None);
+        assert_eq!(case_colliding_env_name(["A", "B"].into_iter(), true), None);
     }
 }

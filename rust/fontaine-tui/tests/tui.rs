@@ -835,6 +835,22 @@ async fn a_bang_command_runs_without_a_prompt_and_its_output_reaches_the_next_me
     );
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bang_command_sees_the_configured_env() {
+    let w =
+        World::new(vec![text_turn("seen it")]).with_config("[env]\nPROBE = \"probe-value-xyz\"\n");
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.type_text("!printenv PROBE");
+        ui.wait_for("shell · Enter runs").await;
+        ui.press(KeyCode::Enter);
+        ui.wait_until("the value", |s| s.matches("probe-value-xyz").count() >= 1)
+            .await;
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn interrupting_a_bang_command_records_it_and_tells_the_agent_nothing() {
     let w = World::new(vec![text_turn("fine")]);
