@@ -6,7 +6,7 @@
 
 `AgentRuntime` (`rust/fontaine-core/src/agent.rs`) keeps the session's start mode and root list
 in two public fields that duplicate `SessionState`, whose live values change during a session. It
-also builds the whole session in one 241-line `new`, and the root and child agents are assembled
+also builds the whole session in one roughly 240-line `new`, and the root and child agents are assembled
 by two separate `AgentBuilder` chains. This plan removes the duplicated state, splits `agent.rs`
 into submodules with no function over about 80 lines, and gives root and child agents one shared
 place for their common builder configuration. There is no behavior change and no change to the
@@ -14,8 +14,8 @@ headless contract schema.
 
 ## Current State
 
-- `agent.rs` is 1,492 lines with no tests in the file. `AgentRuntime` (`agent.rs:264`) has 24
-  fields, 13 of them `pub`. `AgentRuntime::new` (`agent.rs:430`–`:664`) does state, guardian and
+- `agent.rs` is 1,492 lines with no tests in the file. `AgentRuntime` (`agent.rs:264`) has about
+  two dozen fields, most of them `pub`. `AgentRuntime::new` (`agent.rs:430`–`:662`, about 240 lines) does state, guardian and
   screen, hooks and pipeline, result stages, extensions, child runner, then calls `build_agent`.
 - `pub mode` is `setup.mode` and never changes. The live mode is `SessionState::mode()`
   (`gate.rs:318`), changed by Shift+Tab, `/plan` and the unavailable-guardian "switch to manual"
@@ -26,10 +26,10 @@ headless contract schema.
   rolls back both. Other readers: `agent.rs` (`mcp_plan`/`connect_mcp` cwd, `approve_mcp_server`,
   `record_session_start`, `refresh_files`, `rebuild`), `fontaine/src/headless.rs:319`,
   `fontaine-tui/src/ui/commands/reports.rs:18,36`.
-- Root agent: `build_agent` (`agent.rs:~1410`) ends in a builder chain with
+- Root agent: `build_agent` (~83 lines, `agent.rs:~1410`) ends in a builder chain with
   `record_content_telemetry`, `CurrentCall`, `SteeringHook`. Child agent:
   `child_runner.rs:~276` has its own chain with `record_content_telemetry` and `CurrentCall`.
-  Both compute the "record content" flag from `config.telemetry` separately (`agent.rs:~551`
+  Both compute the "record content" flag from `config.telemetry` separately (`agent.rs:568`
   and `~1472`).
 - Other concerns in the same impl: MCP planning/connecting (`mcp_plan`, `connect_mcp`,
   `approve_mcp_server`, `server_digest`, `server_description`, `McpServerPlan`, `McpOutcome`),
@@ -62,9 +62,9 @@ headless contract schema.
 
 ### Private fields
 
-After the accessors exist, fields that nothing outside `fontaine-core` reads become private
-(compiler-driven: make a field private, fix the breakage with an accessor only if the read is
-real). Expected: `guardian_profile`, `origin`, `notices`, `scanner_notices` get accessors
+Fields read outside `fontaine-core` get accessors; fields nothing outside reads go private
+(compiler-driven). `guardian_profile`, `origin`, `notices` and `scanner_notices` are read outside
+core (`headless.rs`, `reports.rs`, `fontaine-tui/src/lib.rs:209-216`), so they get accessors
 (`guardian_profile()`, `origin()`, `notices()`, `scanner_notices()`); `agent`, `state`, `session`,
 `models`, `config`, `steering`, `files` stay `pub` where the TUI, headless and the cross-crate
 tests construct turns from them directly. The goal is to stop growing the public surface, not to
@@ -99,26 +99,22 @@ to child modules of `agent`.
 ### One shared builder configuration
 
 ```text
-pub(crate) fn apply_common<M>(builder: AgentBuilder<M>, state: &Arc<SessionState>,
-                              record_content: bool) -> AgentBuilder<M>
-    = builder.record_content_telemetry(record_content).add_hook(CurrentCall { state })
+pub(crate) fn apply_common(b: AgentBuilder, state: &Arc<SessionState>,
+                           record_content: bool) -> AgentBuilder
+    = b.record_content_telemetry(record_content).add_hook(CurrentCall { state })
 ```
 
 Lives in `agent/build.rs`. `build_agent` calls it and then adds root-only configuration
 (`SteeringHook`, conversation log, session memory, output schema); `child_runner.rs` calls it
-and adds its in-memory `MemoryStore` and `"main"` conversation. The generic bound and the exact
-rig typestate (`AgentBuilder` changes type as methods are applied) are settled when
-implementing; if one function cannot be generic over the states both chains are in, apply it at
-the first step of each chain, which is what makes the common part live in one place.
+and adds its in-memory `MemoryStore` and `"main"` conversation. It must be applied before
+`SteeringHook` so hook order (`CurrentCall` first) is preserved.
 
-The "record content" flag becomes one method, `TelemetryConfig::records_content()` (in
-`config`), replacing the two hand-written copies, and `reveal_mcp_names`/`hide_mcp_names` keep
-using the existing `enabled && log_tool_details` expression through the same place if it is
-equally a one-liner there.
+The "record content" flag becomes one method, `Telemetry::records_content()` (in
+`config.rs`), replacing the two hand-written copies.
 
 ## Implementation Steps
 
-1. Add `TelemetryConfig::records_content()` in `fontaine-core/src/config` and use it in
+1. Add `Telemetry::records_content()` in `fontaine-core/src/config.rs` and use it in
    `new`/`build_agent` and `child_runner`'s `ChildContext::record_content` initialization.
 2. Replace `mode`/`roots` fields with `start_mode` (private) plus `mode()`, `start_mode()`,
    `roots()`, `primary_root()`; update every in-crate reader, `add_dir`, `rebuild`,
@@ -141,10 +137,10 @@ equally a one-liner there.
 - `rust/fontaine-core/src/agent.rs` (shrinks; keeps struct, setup types, accessors)
 - `rust/fontaine-core/src/agent/{setup,build,models,mcp}.rs` (new)
 - `rust/fontaine-core/src/child_runner.rs` (use `apply_common`)
-- `rust/fontaine-core/src/config/` (`records_content()`)
+- `rust/fontaine-core/src/config.rs` (`Telemetry::records_content()`)
 - `rust/fontaine/src/headless.rs` (`start_mode()`, `roots()`)
-- `rust/fontaine-tui/src/ui/commands/reports.rs`, `rust/fontaine-tui/src/lib.rs` (field → accessor
-  where privatized)
+- `rust/fontaine-tui/src/ui/commands/reports.rs`, `rust/fontaine-tui/src/lib.rs` (`notices()`/
+  `scanner_notices()`/`origin()` accessors)
 - `rust/clippy.toml` (line-count threshold)
 - `CHANGELOG.md`
 
@@ -157,23 +153,19 @@ equally a one-liner there.
   configured `AgentBuilder` would have to take the memory/conversation differences as
   parameters and is a bigger interface; a function that applies just the common hooks keeps root
   and child differences visible at their own call sites.
-- **Making every field private.** The TUI, headless and the cross-crate tests build turns from
-  `agent`/`state`/`session`/`models`/`config`; hiding them would need a wide accessor surface
-  for no safety gain, so only the fields that mirror other state or that nobody reads outside
-  core are closed.
 
 ## Documentation
 
 - `docs/architecture.md`: check whether it names `AgentRuntime` fields or `agent.rs`; update the
   module description if so. No user-facing docs change (no behavior or schema change).
-- `CHANGELOG.md`: one line under the unreleased section.
+- `CHANGELOG.md`: add a line under `### Changed` in `[Unreleased]` (create the heading if absent).
 
 ## Testing Strategy
 
 - Existing suites must stay green unchanged except for renamed accessors: `cargo test`, the
   headless contract/schema tests in `fontaine/tests`, the TUI tests, and the fixture evals.
 - New unit/integration tests in `fontaine-core/tests` using the existing `built.runtime` rig:
-  - `mode()` follows `state.set_mode`/the guardian-unavailable switch while `start_mode()` keeps
+  - `mode()` follows `state.set_mode` while `start_mode()` keeps
     the opening value (pins the stale-field bug class).
   - `add_dir` makes `roots()` include the new root, and when `rebuild` fails the scope and
     `roots()` both return to the previous list (single source rolls back with the scope).
@@ -182,8 +174,3 @@ equally a one-liner there.
 - `cargo clippy --all-targets -- -D warnings` enforces the ~80-line limit through the lint above.
 - Headless contract: the existing init-event schema test confirms `permission_mode` and
   `workspace_roots` are unchanged.
-
-## Open Questions
-
-- Whether `AgentBuilder`'s typestate allows one generic `apply_common` for both chains (see
-  Design); the fallback is stated there.
