@@ -19,7 +19,7 @@ Everything is in `rust/fontaine-core/src/config.rs`:
 - `check_scope` (`config.rs:849`) is called from `parse_settings_with_hint` after the typed
   `toml::from_str::<Settings>` and returns `(key, reason)`, which becomes `ConfigError::Scope`.
   It is three tiers of `if`s, each returning early:
-  1. all non-user columns (CLI included): scanner keys and non-`shadow = true` `[guardian.screen]`;
+  1. all non-user columns (CLI included): scanner keys and every `[guardian.screen]` key except `shadow = true` (a missing `shadow` and `shadow = true` are accepted; `shadow = false` and any other screen key are refused);
   2. then `Column::Cli` returns Ok; `Project` and `ProjectLocal` additionally refuse `accounts`,
      `network`, `tui`, `permissions.default_mode` outside `manual`/`dontAsk`, and every
      `[telemetry]` key but `enabled = false`;
@@ -47,8 +47,8 @@ Everything is in `rust/fontaine-core/src/config.rs`:
 
 ### The table
 
-The table goes in a new file `rust/fontaine-core/src/config_scope.rs` (`mod config_scope;`,
-`pub(crate)` items) holding only the table, the `Rule`/`Cell` types and the walker. `check_scope`
+The table goes in a new file `rust/fontaine-core/src/config_scope.rs` (declared with `pub(crate) mod config_scope;` in
+`rust/fontaine-core/src/lib.rs`; `pub(crate)` items) holding only the table, the `Rule`/`Cell` types and the walker. `check_scope`
 becomes a thin call into it.
 
 Each row is a `Rule` of three cells, one per non-user column:
@@ -56,7 +56,7 @@ Each row is a `Rule` of three cells, one per non-user column:
 ```text
 enum Cell { No, Yes, If(fn(&toml::Value) -> bool) }
 struct Rule { path: &'static str, project: Cell, local: Cell, cli: Cell, reason: &'static str,
-              samples: Option<(&'static str, &'static str)> }   // (accepted, rejected) TOML literals for If cells
+              samples: &'static [&'static str] }   // one valid TOML snippet; for If cells an (accept, reject) pair
 ```
 
 The five policies (any scope; user file, CLI and project-local; user file and CLI; user file only;
@@ -64,7 +64,7 @@ value-dependent) are patterns over `(project, local, cli)`, built with `const` c
 `Rule::any(path)`, `user_trust(path, reason)`, `user_or_cli`, `user_only`, `shadow_true`, etc. so the
 table stays one line per key. `If` predicates are the
 value-dependent cells: `default_mode ∈ {manual, dontAsk}` (project, local), `enabled == false`
-(project, local), `shadow == true` (project, local, cli). Each predicate is a named `fn`, unit-tested.
+(project, local), `shadow == true` (project, local, cli), set on the `guardian.screen.shadow` leaf; every other `guardian.screen.*` leaf is `No` for project, local and cli. Each predicate is a named `fn`, unit-tested.
 The user column is never consulted (user may set everything).
 
 Paths use dotted segments; `*` matches exactly one segment (a map key such as an account name, or a
@@ -73,7 +73,7 @@ hook event). Arrays of tables (`[[hooks.pre_tool_use]]`) are traversed without a
 (for example `accounts.*`, `agents.types.*`) covers the whole subtree and is used only where the
 subtree is a user-defined entry that is wholly one policy (accounts, MCP servers, agent types,
 `env.*`, `telemetry.resource_attributes`). Section-level rows (`accounts`, `network`, `tui`, `env`,
-`agents`, `context`, `shell_preclassifier`, `guardian.screen`) match on the interior node itself, so
+`model`, `agents`, `context`, `shell_preclassifier`) match on the interior node itself, so
 a present-but-empty table is still refused as it is today. The reported key is the matched row's
 path.
 
@@ -92,7 +92,7 @@ the key (`tests/config.rs` asserts key text only at the `env` case, which keeps 
 4. Row found → evaluate the cell for the column; `No` → `Err((path, row.reason))`; `If(p)` → `p`
    on the leaf value.
 
-Walking order is sorted-key order (the `toml::Table` is a `BTreeMap`), not today's tier order.
+The walk order is unspecified, not today's tier order.
 
 The tier shape of today's code (screen/scanner checked before the CLI early-return) falls out of the
 table: those rows have `cli: No`.
@@ -107,9 +107,9 @@ arrays, collecting leaf paths. Leaf types that are enums or newtypes (`Permissio
 `fontaine_guardian::Question`, the agent-mode type) derive `JsonSchema`, except `AccountKind` and
 `EnvValue`, which need `#[schemars(with = "String")]`. `fontaine_guardian::Question` (`screen.rs:30`)
 derives only `Deserialize`, so it gets the derive (or the same attribute). `Hook.origin` is
-`serde(skip)`, which schemars honors. `schemars` is added to `fontaine-core` as a regular
-dependency (already in the workspace lockfile via `fontaine-guardian`, so no new crate);
-`cargo deny check` must stay green.
+`serde(skip)` and gets `#[schemars(skip)]` (`Origin` needs no `JsonSchema`). `schemars.workspace = true` is added to
+`fontaine-core`'s `Cargo.toml` (already in the workspace lockfile via `fontaine-guardian`, so no new crate);
+`cargo deny check` must stay green. The schema walker unwraps `anyOf` with a null branch and type arrays containing `null` (Option fields).
 
 Test assertions:
 
@@ -121,15 +121,11 @@ Test assertions:
 ### Table-driven column tests
 
 A second test derives accept/reject assertions from the rows themselves instead of three hand lists.
-For each row and each of `Project`, `ProjectLocal`, `Cli` a *sample value* is needed to build a
-valid TOML snippet. The schema walk supplies the type (`string`, `integer`, `number`, `boolean`,
-`array`, `object`, enum values), from which a generator produces a minimal valid value (first enum
-variant, `"x"`, `1`, `0.5`, `true`, `["x"]`); rows with `If` cells name their accepting and
-rejecting sample literals in the row's `samples` field so the test exercises both sides. Values that need cross-field
-validity (for example an `accounts.x` needs `kind`) use an override map in the test. The generated
-snippet is passed through `parse_settings` for each column and asserted to be a `ConfigError::Scope`
-for `No` cells and *not* a `Scope` error for `Yes` cells (other errors, such as value validation,
-are allowed — the test is about scope).
+Each row carries one valid TOML snippet in its `samples` field (an accept/reject pair for `If`
+rows). For each row and each of `Project`, `ProjectLocal`, `Cli` the snippet is passed through
+`parse_settings` and asserted to be a `ConfigError::Scope` for `No` cells and *not* a `Scope` error
+for `Yes` cells (other errors, such as value validation, are allowed — the test is about scope). The
+completeness test needs paths only. These tests live in the `#[cfg(test)]` module of `config_scope.rs`.
 
 The existing hand-written accept-side tests (`project_scope_accepts_the_tightening_cells`,
 `project_local_scope_accepts_...`, `cli_scope_accepts_...`) stay: they pin that the loaded config
@@ -150,10 +146,8 @@ actually carries the values, which the table test does not.
 3. Replace `check_scope` and the four helpers in `config.rs`; thread the `toml::Table` from
    `parse_settings_with_hint`.
 4. Add `#[cfg(test)]` unit tests inside `config_scope.rs` (completeness, no-dead-rows, no-overlap,
-   predicate tests, and "a key with no row is rejected from project and project-local" using a
-   synthetic table via an inner function that takes `&[Rule]`). Add
-   `rust/fontaine-core/tests/config_scope.rs` with only the `parse_settings`-driven per-column
-   test. Delete `NO_FOR_PROJECT`, `NO_FOR_LOCAL`, `USER_FILE_ONLY` and the three loop
+   predicate tests, the `parse_settings`-driven per-column test, and "a key with no row is rejected from project and project-local" using a
+   synthetic table via an inner function that takes `&[Rule]`). Delete `NO_FOR_PROJECT`, `NO_FOR_LOCAL`, `USER_FILE_ONLY` and the three loop
    tests from `tests/config.rs`; keep the specific screen/env/telemetry tests that assert messages.
 5. Docs and design: update `docs/configuration.md` (scope-table intro and a one-line note that
    every key has a declared policy and an undeclared key is refused from project scopes) and
@@ -163,12 +157,12 @@ actually carries the values, which the table test does not.
 
 ## Files to Modify
 
-- `rust/fontaine-core/Cargo.toml` (schemars)
+- `rust/fontaine-core/Cargo.toml` (`schemars.workspace = true`)
 - `rust/fontaine-core/src/config.rs` (derives, remove helpers, call the table)
 - `rust/fontaine-core/src/config_scope.rs` (new)
-- `rust/fontaine-core/src/lib.rs` (module declaration, if modules are declared there)
+- `rust/fontaine-core/src/lib.rs` (`pub(crate) mod config_scope;`)
 - `rust/fontaine-guardian/src/*` only if `Question` lacks `JsonSchema`
-- `rust/fontaine-core/tests/config.rs`, `rust/fontaine-core/tests/config_scope.rs` (new, per-column test only; table-internal tests are unit tests in `config_scope.rs`)
+- `rust/fontaine-core/tests/config.rs`
 - `docs/configuration.md`, `tasks/design/config.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -200,7 +194,7 @@ All unit-level and reachable by constructed inputs, so no live or manual tier:
   predicates (both sides of every `If`); a synthetic table with an unlisted key proves
   deny-by-default for `Project`/`ProjectLocal` (the real table cannot be used because the
   completeness test forbids an unlisted key);
-- `tests/config_scope.rs`: table-driven per-column accept/reject through `parse_settings` for every row;
+- unit tests in `config_scope.rs`: table-driven per-column accept/reject through `parse_settings` for every row;
 - the existing `tests/config.rs` scope tests that remain (screen shadow, env, telemetry, accounts
   network keys) pass unchanged, pinning the decisions and the error text.
 
