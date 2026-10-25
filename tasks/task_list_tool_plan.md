@@ -41,12 +41,15 @@ args:   { "todos": [ { "content": string, "status": "pending"|"in_progress"|"com
 result: "Updated todo list: N items (P pending, I in progress, C completed)"
 ```
 
-- Replaces the whole list, matching the shape the DeepSeek harness study measured as sufficient: the
-  list is never re-injected into context, the model sees it only through its own earlier calls.
+- Replaces the whole list: the list is never re-injected into context, the model sees it only
+  through its own earlier calls.
 - `#[serde(deny_unknown_fields)]`. Rejected with an error result: more than 50 items, empty or
   over-long `content` (500 chars), more than one `in_progress` item (keeps the panel's "current"
   line unambiguous). An empty array clears the list.
-- Seam: `trait TodoStore: Send + Sync { fn replace(&self, agent: &str, items: Vec<TodoItem>) -> Result<(), String>; }`.
+- Seam: `trait TodoStore: Send + Sync { fn replace(&self, agent: &str, items: Vec<TodoItem>) -> Result<(), TodoError>; }`,
+  where `TodoError` is a small enum in `fontaine-tools` (`Write { path, source: io::Error }`) that
+  keeps the cause as `source()`; `TodoTool` renders it once with `fontaine_tools::error_chain::chain`
+  into the tool's error result.
   `TodoItem { content, status: TodoStatus }` and `TodoStatus` live in `fontaine-tools` with serde
   derives. The agent id comes from the `AgentId` context value as in `SkillTool`.
 
@@ -54,13 +57,15 @@ result: "Updated todo list: N items (P pending, I in progress, C completed)"
 
 `fontaine-core` implements `TodoStore` as `SessionTodos`: a `Mutex<HashMap<agent id, Vec<TodoItem>>>`.
 Only the root agent's list is written through to `<session dir>/todos.json` (owner-only, atomic
-write via temp file + rename) on every root replace; subagent lists stay in memory. Subagent ids
-are counter-based and the agent tree is not persisted, so persisted non-root entries would be
-orphaned or wrongly inherited by a different agent after resume. `Session::open` loads it; a missing or unparseable file yields an empty list and one
+write via temp file + rename) on every root replace; subagent lists stay in memory.
+`Session::open` loads it; a missing or unparseable file yields an empty list and one
 `Approver::warn` for the unparseable case. `Session::fork` already copies the directory; a test pins
 that `todos.json` comes along. A write failure is returned as the tool's error result and warned,
-never swallowed. Lists are keyed by agent in memory so a subagent's calls cannot overwrite the
-root's; the TUI shows the root's list. Sharing one list with subagents is left for later, as the issue says.
+never swallowed. The file write happens inside the store `Mutex` (`write_atomic`'s temp name is
+`.<name>.<pid>.tmp`, so concurrent writes would race) and never across an await. Lists are keyed by
+agent in memory so a subagent's calls cannot overwrite the root's; the TUI shows the root's list.
+`SessionTodos` is an `Arc` field on `Session` (`Session` is `Clone`, and `build_agent` re-runs on
+`rebuild()`), so every rebuilt toolset shares the same store.
 
 ### Permissions
 
@@ -68,24 +73,30 @@ root's; the TUI shows the root's list. Sharing one list with subagents is left f
   and agent type toolsets can name it).
 - `permissions.rs`: the no-path fast-path exception becomes a small `NO_PATH_TOOLS = ["skill", "todo_write"]`
   check instead of a second `==`. This is the one place a name, not containment, earns the fast
-  path; it is justified because the tool's only effect is writing a file Fontaine itself picks
-  inside the session directory, with content that is never executed.
+  path.
 - `destructive.rs`: add `todo_write` to the non-destructive arm.
+- `permission_rules.rs` `validate_specifier` (:157-165): add a "takes no specifier" arm for
+  `todo_write`; otherwise it falls to `_ => Ok(())` and a rule with a specifier silently never matches.
 - The deterministic floor still runs first: `deny`/`ask` rules naming `todo_write` apply.
 
 ### TUI
 
 - New `fontaine-tui/src/todo_panel.rs`: `TodoPanel { items, expanded }`. Collapsed it is one line
   above the input: `Tasks 3/7 · ▶ <in-progress content>`; expanded it lists every item with
-  plain `[ ]`, `[~]`, `[x]` markers. Hidden when the list is empty. Toggled by Ctrl-O, added as
-  another `if` beside the Ctrl-T check in `handle_input` (`app.rs`), and by a new `/todos` slash
-  command (`commands.rs` plus its help text). Not `/tasks`, which aliases the agents panel.
+  plain `[ ]`, `[~]`, `[x]` markers. Hidden when the list is empty. Toggled by Ctrl-O, a plain
+  bool toggle checked beside Ctrl-T in `handle_input` (`app.rs:518`) under the same `!typing_reason`
+  guard, and by a new `/todos` slash command. Not `/tasks`, which aliases the agents panel.
+- `/todos` wiring (`commands.rs`): a `Command::Todos` variant, a `BUILTINS` entry in alphabetical
+  position (`the_table_is_sorted_by_name` enforces it), a match arm near `Command::Agents`
+  (`lib.rs` ~503), and a `parse_command("/todos")` test.
+- Layout (`view.rs`): the draw path uses a fixed vertical stack (:85-92) and `view::height`
+  (:47-62) computes the inline live-area height; both get the todo-row constraint (0 when hidden,
+  1 collapsed, item count when expanded). The `KEYS` help line (`reports.rs:28-29`) gains
+  `ctrl+o todos`.
 - Screen-reader/linear mode (`linear.rs`): no panel; on each change the list is rendered as plain
   lines.
 - Updates: in `on_event` (`fontaine-tui/src/lib.rs`), after a successful `todo_write` `ToolResult`,
-  the driver reads the store and calls `panel.set_items(...)`. This is a new trigger, unlike the
-  agents panel's per-tick `refresh_panel`, but the same pull model, so no new `SessionEvent`
-  variant. At start the panel is seeded from `runtime.session` (covers resume).
+  the driver reads the store and calls `panel.set_items(...)`. At start the panel is seeded from `runtime.session` (covers resume).
 - The transcript keeps its one-line `Entry::Tool` for the call. `summarize(args)` in `transcript.rs`
   is not per-tool (first of `SUMMARY_KEYS`, else raw JSON; called with args only), so a `todo_write`
   special case is added there, computing the counts from `args.todos`.
@@ -104,7 +115,8 @@ at `prompt.rs:7`), telling the model to use `todo_write` for multi-step work, ke
 ## Implementation Steps
 
 1. `fontaine-tools`: add `todo.rs` (types, `TodoStore`, `TodoTool`, validation); export in `lib.rs`;
-   add the name to `names.rs` and the row to `EXTENSION_RISK` in `risk.rs`.
+   add the name to `names.rs` (`BUILTIN_TOOL_NAMES` goes `[&str; 11]` to `[&str; 12]`) and the row
+   to `EXTENSION_RISK` in `risk.rs`.
 2. `fontaine-core`: add `SessionTodos` (new `todos.rs`), load/save in `session.rs`; hold it on
    `Session`; add `todo: TodoTool` to `ExtensionTools`, register it in `tools.rs`, construct it in
    `agent.rs`.
@@ -121,19 +133,18 @@ at `prompt.rs:7`), telling the model to use `todo_write` for multi-step work, ke
 ## Files to Modify
 
 - `rust/fontaine-tools/src/{todo.rs (new), lib.rs, names.rs, risk.rs}`
-- `rust/fontaine-core/src/{todos.rs (new), lib.rs, session.rs, tools.rs, agent.rs, permissions.rs, destructive.rs}`
+- `rust/fontaine-core/src/{todos.rs (new), lib.rs, session.rs, tools.rs, agent.rs, permissions.rs, permission_rules.rs, destructive.rs}`
 - `rust/fontaine-core/prompts/system_prompt.md`
-- `rust/fontaine-tui/src/{todo_panel.rs (new), lib.rs (seeding/refresh), app.rs, commands.rs, view.rs, linear.rs, transcript.rs}`
+- `rust/fontaine-tui/src/{todo_panel.rs (new), lib.rs (seeding/refresh, `/todos` arm), app.rs, commands.rs, view.rs, reports.rs, linear.rs, transcript.rs}`
 - `rust/fontaine-core/tests/choke_point.rs`, `rust/fontaine-core/tests/system_prompt.rs`,
-  `rust/fontaine-core/tests/snapshots/system_prompt__the_assembled_prompt_is_stable.snap`,
-  `rust/fontaine/tests/headless_smoke.rs`
-- `docs/tools.md`, `docs/tui.md`, `docs/permissions.md`, `docs/architecture.md`, `docs/headless.md`, `CHANGELOG.md`
+  `rust/fontaine-core/tests/snapshots/system_prompt__the_assembled_prompt_is_stable.snap`
+- Tests: in-file `#[cfg(test)]` modules in `todos.rs` and `session.rs` (`SessionTodos`, fork) and
+  `permission_rules.rs`/`permissions.rs` (permission cases); `rust/fontaine/tests/headless_smoke.rs`
+  (tool list) and the combined headless test (see Testing Strategy).
+- `docs/tools.md`, `docs/tui.md` (keys table, Commands table :196), `docs/permissions.md`, `docs/architecture.md`, `docs/headless.md`, `CHANGELOG.md`
 
 ## Trade-offs
 
-- **One replace-all tool vs. Claude Code's four task tools.** One tool is one schema in every
-  request and was measured sufficient by the DeepSeek study; the four-tool shape earns its keep
-  only for dependency tracking and multi-agent claiming, which the issue defers.
 - **New `RiskClass::Internal` vs. `ReadOnly` plus a named exception.** A new class touches every
   `match` on `RiskClass` and the guardian's inputs for a single tool; `skill` already sets the
   named-exception precedent.
@@ -168,11 +179,13 @@ Unit (no live APIs):
 - `SessionTodos`: replace/read per agent in memory, write-through file contents (root only; a subagent replace leaves `todos.json` untouched), load on open, corrupt file →
   empty list + warning, forked session carries the list, write failure surfaces as an error result.
 - Permissions: `todo_write` in default mode takes the fast path; a `deny` rule on it still denies
-  (floor precedence); `choke_point.rs` expects the new name with `ReadOnly`; destructive derive is false.
+  (floor precedence); a rule with a specifier (`todo_write(x)`) is rejected by `validate_specifier`; `choke_point.rs` expects the new name with `ReadOnly`; destructive derive is false.
 - `choke_point.rs`: `EXTENSION_RISK` has exactly four entries including `todo_write`; `tests/docs.rs` finds the `docs/tools.md` row.
 - Child toolset: an agent type narrowed to `read` does not get `todo_write`.
-- TUI: `TodoPanel` rendering (collapsed, expanded, empty) via ratatui `TestBackend`
-  snapshots; Ctrl-O and `/todos` toggle; linear-mode plain-line rendering; driver refresh after a `todo_write` result using `rig_core::test_utils`
+- TUI (`fontaine-tui` has no insta): `TodoPanel` rendering (collapsed, expanded, empty) asserted
+  with the `ui.send` / `ui.screen().contains` harness (`tests/common/mod.rs`); Ctrl-O and `/todos` toggle; linear-mode plain-line rendering; driver refresh after a `todo_write` result using `rig_core::test_utils`
   deterministic models.
-- Headless integration: a scripted model calls `todo_write`; the `tool_result` event succeeds and
-  `todos.json` appears in the session dir; resuming that session reloads it.
+- Headless integration: a single combined test (call, file, resume) in
+  `rust/fontaine/tests/headless_smoke.rs`, reusing the `Endpoint`/`Turn::tool` harness from
+  `headless_smoke.rs` and `resume.rs`: a scripted model calls `todo_write`; the `tool_result`
+  event succeeds, `todos.json` appears in the session dir, and resuming that session reloads it.
