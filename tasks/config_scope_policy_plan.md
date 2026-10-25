@@ -55,13 +55,12 @@ Each row is a `Rule` of three cells, one per non-user column:
 
 ```text
 enum Cell { No, Yes, If(fn(&toml::Value) -> bool) }
-struct Rule { path: &'static str, project: Cell, local: Cell, cli: Cell, reason: &'static str,
-              samples: &'static [&'static str] }   // one valid TOML snippet; for If cells an (accept, reject) pair
+struct Rule { path: &'static str, project: Cell, local: Cell, cli: Cell, reason: &'static str }
 ```
 
 The five policies (any scope; user file, CLI and project-local; user file and CLI; user file only;
 value-dependent) are patterns over `(project, local, cli)`, built with `const` constructors
-`Rule::any(path)`, `user_trust(path, reason)`, `user_or_cli`, `user_only`, `shadow_true`, etc. so the
+`Rule::any(path)`, `user_trust(path, reason)` (takes a reason: `env` has its own, the other rows pass the "shared project settings may only tighten" text), `user_or_cli`, `user_only`, `shadow_true` (`If` in all three columns), `if_project_local(path, pred, reason)` (`If` for project and local, `Yes` for CLI; used by `permissions.default_mode` and `telemetry.enabled`), so the
 table stays one line per key. `If` predicates are the
 value-dependent cells: `default_mode ∈ {manual, dontAsk}` (project, local), `enabled == false`
 (project, local), `shadow == true` (project, local, cli), set on the `guardian.screen.shadow` leaf; every other `guardian.screen.*` leaf is `No` for project, local and cli. Each predicate is a named `fn`, unit-tested.
@@ -126,11 +125,11 @@ Test assertions:
 ### Table-driven column tests
 
 A second test derives accept/reject assertions from the rows themselves instead of three hand lists.
-Each row carries one valid TOML snippet in its `samples` field (an accept/reject pair for `If`
+The snippets live in a test-only table in the `#[cfg(test)]` module of `config_scope.rs`, keyed by row path (one valid TOML snippet per row; an (accept, reject) pair for `If`
 rows). For each row and each of `Project`, `ProjectLocal`, `Cli` the snippet is passed through
 `parse_settings` and asserted to be a `ConfigError::Scope` for `No` cells and *not* a `Scope` error
 for `Yes` cells (other errors, such as value validation, are allowed — the test is about scope). The
-completeness test needs paths only. These tests live in the `#[cfg(test)]` module of `config_scope.rs`.
+completeness test needs paths only. A test asserts every row has a snippet entry and no entry lacks a row. These tests live in the `#[cfg(test)]` module of `config_scope.rs`.
 The loader's file-to-column mapping (`config.rs:1837-1870`) is pinned by two small tests in `tests/config.rs`: a user-file-only key via `w.cli_file` + `load_with_settings`, and a local-rejected key (`[tui]` or `[accounts.x]`) via a trusted `w.local_file`, each expecting `Scope`.
 
 The existing hand-written accept-side tests (`project_scope_accepts_the_tightening_cells`,
@@ -185,6 +184,8 @@ actually carries the values, which the table test does not.
 
 ## Decisions
 
+- AFK: 2026-10-25: named the `if_project_local` constructor (checked against `check_scope`: default_mode and telemetry.enabled are value-gated in project/local, unrestricted for CLI) and noted `user_trust` takes a reason (env's own, others the "tighten" text) -- applied, as it only clarifies the plan.
+- AFK: 2026-10-25: moved the per-row TOML samples out of the production `Rule` into a test-only table keyed by row path in `config_scope.rs`'s `#[cfg(test)]` module, with a test that every row has an entry -- applied, as it keeps test data out of the release binary and `Rule` at path, cells, reason.
 - 2026-10-25: the reported key and the order in which multiple violations are reported are not stable across this change.
 
 ## Documentation
