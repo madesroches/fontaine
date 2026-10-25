@@ -4,6 +4,7 @@
 
 mod common;
 
+use fontaine_tools::lock::lock_recovering;
 use std::sync::{Arc, Mutex};
 
 use common::{Endpoint, Sandbox, Turn, Wire};
@@ -23,7 +24,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn serial() -> std::sync::MutexGuard<'static, ()> {
-    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    // The mutex only serialises tests; one failing test must not fail the rest.
+    lock_recovering(&SERIAL)
 }
 
 const TARGET: &str = "fontaine::telemetry";

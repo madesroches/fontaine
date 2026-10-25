@@ -4,6 +4,7 @@
 //! side reassembles into a tree. `tracing` events reach it through the stock capture layer. Async
 //! span events ride per-thread streams, which the sink builder's CPU-tracing switch creates.
 
+use fontaine_tools::lock::lock_recovering;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -69,7 +70,8 @@ impl MicromegasExport {
 
     /// One location per `tracing` callsite, leaked once: bounded by the number of callsites.
     fn location(&self, meta: &'static Metadata<'static>) -> &'static SpanLocation {
-        let mut locations = self.locations.lock().unwrap_or_else(|e| e.into_inner());
+        // Tallies of leaked statics: an entry is inserted whole or not at all.
+        let mut locations = lock_recovering(&self.locations);
         locations.entry(meta.callsite()).or_insert_with(|| {
             Box::leak(Box::new(SpanLocation {
                 lod: Verbosity::Med,
@@ -88,7 +90,8 @@ impl MicromegasExport {
         unit: &'static str,
         target: &'static str,
     ) -> &'static StaticMetricMetadata {
-        let mut metrics = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+        // Tallies of leaked statics: an entry is inserted whole or not at all.
+        let mut metrics = lock_recovering(&self.metrics);
         metrics.entry(name).or_insert_with(|| {
             Box::leak(Box::new(StaticMetricMetadata {
                 lod: Verbosity::Med,

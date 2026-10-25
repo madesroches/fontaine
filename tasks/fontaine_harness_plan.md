@@ -323,6 +323,7 @@ scorecard run (see `## Remaining work`).
 
 ## Decisions
 
+- 2026-10-25: Locks guarding permission, guardian, spend, model-selection or durable-record state panic on poison via `fontaine_tools::lock`; only display and advisory state recovers (`*_recovering`, reason at the call site), because a corrupted permission state must end the session rather than keep deciding (#186).
 - 2026-10-25: One `todo_write` tool (the whole list replaced per call) stands in for Claude Code's TaskCreate/TaskGet/TaskList/TaskUpdate, because a single replace-all call is one testable path and Claude Code's `TodoWrite` already works that way (#22).
 - 2026-10-25: Only the root agent's list is displayed and persisted with the session; a subagent's list lives and dies with that subagent, because the panel and the session file have one slot and a child's list is scratch state that is never shown or saved (#22).
 - 2026-10-25: Ctrl-O and `/todos` both toggle the task panel (`/todos` does not print), because the panel can be hidden to reclaim height (#22).

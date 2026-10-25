@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::owner_only;
 use crate::tier::Tier;
+use fontaine_tools::lock::lock;
 
 pub const AUDIT_DIR: &str = "audit";
 
@@ -186,7 +187,7 @@ impl AuditLog {
     pub fn append(&self, record: &DecisionRecord) -> io::Result<()> {
         let mut line = serde_json::to_vec(record).map_err(io::Error::other)?;
         line.push(b'\n');
-        let mut file = self.file.lock().unwrap_or_else(|e| e.into_inner());
+        let mut file = lock(&self.file, "audit file");
         file.write_all(&line)?;
         file.flush()
     }

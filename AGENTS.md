@@ -96,6 +96,10 @@ all tests pass:
   reaches them through `Approver::warn` at least once; core reports warnings through the
   `Approver` (whose default implementation writes to stderr) rather than writing to stderr directly.
   `let _ =` is only for best-effort cleanup and sends to closed channels.
+- Lock poisoning: a lock whose contents feed a permission or guardian decision, a spend tally, the
+  model in use or a durable record panics on poison (`fontaine_tools::lock::{lock, read, write}`);
+  only display or advisory state recovers (`lock_recovering` and kin), with a one-line reason at
+  the call site. Don't write `unwrap_or_else(|e| e.into_inner())` anywhere else.
 - Error text may explain a Deny, never change it.
 
 ## Testing
