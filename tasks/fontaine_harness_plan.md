@@ -50,13 +50,17 @@ bar, so `guardian_models.toml` still ships empty and the guardian falls back to 
 The remaining live-key, live-model and maintainer steps are GitHub issues labelled
 `release-blocker`; see `## Remaining work`.
 
-`research/` holds seven companion docs that are this plan's precedent and inputs:
+`research/` holds nine companion docs that are this plan's precedent and inputs:
 `analysis-competitive-landscape.md` (market/permission-story survey),
 `analysis-guardian-market.md`, `analysis-differentiation.md`,
 `analysis-devils-advocate.md` (kill criteria), `analysis-strategic-verdict.md` (verdict and
 "Required plan amendments" A1–A5, which this plan incorporates: A1 as the public scorecard plus a contributor path for dataset and red-team cases in `CONTRIBUTING.md`, A5 as the local/air-gapped lead in the README quickstart), and
-`research-llamafirewall.md` (deep-dive on the nearest open prior art), and
-`research-claude-code-parity.md` (Claude Code feature matrix and backlog triage).
+`research-llamafirewall.md` (deep-dive on the nearest open prior art),
+`analysis-typed-decision-screen.md` (the typed-decision screen spike, with its scripts under
+`research/typed-decision-screen/`), `research-claude-code-parity.md` (Claude Code feature matrix
+and backlog triage), and `research-deepseek-harness.md` (study of DeepSeek's own agent harness:
+desirable features led by iteration, DeepSeek model support, experiments under
+`research/deepseek-harness/`).
 
 ## Phase Tracker
 
@@ -222,7 +226,7 @@ fontaine/
 ├── docs/                       # all product docs — one topic per page, website-ready (see `design/documentation.md` §Documentation);
 │                               #   `schemas/headless-v1.schema.json`
 ├── tasks/                      # this master plan + design/ (topic design docs) + completed/ (shipped plans, incl. phases/)
-└── research/                   # seven analysis/research companion docs
+└── research/                   # nine analysis/research companion docs
 ```
 
 Crate dependency graph (arrows point at dependencies; no cycles):
@@ -491,6 +495,7 @@ scorecard run (see `## Remaining work`).
 - 2026-10-24: AFK: `/context` is a text notice, not Claude Code's colored grid and suggestions, for the same reason as the other read-only reports (#11).
 - 2026-10-24: AFK: `/clear` is refused while any subagent is running, because a running subagent's guardian requests read the root's live human messages, so clearing them under it would judge its later calls with an empty task intent; refusing is the fail-closed choice over a warning or a documented gap (#11).
 - 2026-10-24: AFK: `[context] autocompact_window` enables threshold compaction only for catalog-listed models; a model the catalog does not list gets no fallback `ModelSpec`, is never compacted automatically (nor by `/compact`), and `/context` says so, because rig reports no spec for unlisted models on purpose and a guessed spec's request options and limits could be wrong for the real model; a fallback can come later as its own change (#11).
+- 2026-10-24: A repeated-identical-tool-call reminder like dsh's `repeat-tool-reminder` (#160) may be added although Claude Code has none (measured: nine identical calls, no nudge); it must stay advisory, one user-role notice that never blocks a call or changes a permission decision, because in the #154 study it made the model stop and diagnose after three identical failing calls.
 
 ## Open Questions
 

@@ -1,0 +1,6 @@
+# E3: shorten web_fetch's cooperative timeout so timeout-policy fires before web-fetch-http's own 30 s deadline.
+- id: tool-web
+  config:
+    fetch: true
+    searchTimeoutMs: 60000
+    fetchTimeoutMs: 5000

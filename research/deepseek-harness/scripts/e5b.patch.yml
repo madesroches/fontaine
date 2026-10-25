@@ -1,0 +1,5 @@
+# E5 (second try): trigger = floor(min(W*0.015, W-O-65536)) = 15728 tokens; retain = floor((W-O)*0.005) = 3962.
+- id: compaction-basic
+  config:
+    thresholdRatio: 0.015
+    retainRatio: 0.005

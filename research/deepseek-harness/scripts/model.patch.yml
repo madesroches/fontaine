@@ -1,0 +1,14 @@
+# Point dsh at the Go gateway's model id; every field of the stock deepseek-flash catalog entry is copied.
+- id: llm-deepseek
+  config:
+    models:
+      - id: deepseek-v4.1-flash
+        name: DeepSeek-V4.1-Flash (Go gateway)
+        contextWindow: 1048576
+        inputModalities: [text, image]
+        systemPromptUpdate: in-history
+        toolUpdate: addition-only
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: deepseek-v4.1-flash

@@ -1,0 +1,254 @@
+{
+ "P1 tool turn WITH reasoning_content, thinking on": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 22,
+  "prompt_tokens": 435,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "P2 tool turn, reasoning_content ABSENT, thinking on": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 62,
+  "prompt_tokens": 429,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "P3 tool turn, reasoning_content '' (rig fallback), thinking on": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 25,
+  "prompt_tokens": 429,
+  "cached_tokens": 384,
+  "finish": "stop"
+ },
+ "P4 tool turn, reasoning_content ABSENT, no thinking param (Fontaine default)": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 10,
+  "prompt_tokens": 429,
+  "cached_tokens": 384,
+  "finish": "stop"
+ },
+ "P5 NON-tool assistant turn, reasoning ABSENT, tools sent, thinking on": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 13,
+  "prompt_tokens": 378,
+  "cached_tokens": 256,
+  "finish": "stop"
+ },
+ "P6 non-tool assistant turn, reasoning ABSENT, no tools, thinking on": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 46,
+  "prompt_tokens": 110,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "P7 tool turn WITH reasoning_content, thinking disabled": {
+  "status": 200,
+  "has_reasoning_content": false,
+  "tool_calls": 0,
+  "reasoning_tokens": null,
+  "prompt_tokens": 350,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "P8 first turn, no thinking param: does the model think by default?": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 74,
+  "prompt_tokens": 93,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "P9 first turn, thinking disabled": {
+  "status": 200,
+  "has_reasoning_content": false,
+  "tool_calls": 0,
+  "reasoning_tokens": null,
+  "prompt_tokens": 14,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "P10 temperature=0.2 with thinking on": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 22,
+  "prompt_tokens": 86,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "P11 top_p=0.1, presence_penalty=1 with thinking on": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 19,
+  "prompt_tokens": 86,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "E reasoning_effort=low (thinking on)": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 34,
+  "prompt_tokens": 11,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "E reasoning_effort=medium (thinking on)": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 18,
+  "prompt_tokens": 90,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "E reasoning_effort=high (thinking on)": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 42,
+  "prompt_tokens": 90,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "E reasoning_effort=max (thinking on)": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 51,
+  "prompt_tokens": 103,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "E reasoning_effort=xhigh (thinking on)": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 42,
+  "prompt_tokens": 90,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "E reasoning_effort=none (thinking on)": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 35,
+  "prompt_tokens": 90,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "E reasoning_effort=high without thinking param": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 35,
+  "prompt_tokens": 90,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "M messages output_config.effort=low thinking enabled": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": null,
+  "prompt_tokens": 11,
+  "cached_tokens": null,
+  "finish": "end_turn"
+ },
+ "M messages output_config.effort=high thinking enabled": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": null,
+  "prompt_tokens": 90,
+  "cached_tokens": null,
+  "finish": "end_turn"
+ },
+ "M messages output_config.effort=max thinking enabled": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": null,
+  "prompt_tokens": 103,
+  "cached_tokens": null,
+  "finish": "end_turn"
+ },
+ "M messages output_config.effort=xhigh thinking enabled": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": null,
+  "prompt_tokens": 90,
+  "cached_tokens": null,
+  "finish": "end_turn"
+ },
+ "M messages thinking absent": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": null,
+  "prompt_tokens": 90,
+  "cached_tokens": null,
+  "finish": "end_turn"
+ },
+ "C1 cache: long prompt, first send": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 41,
+  "prompt_tokens": 5492,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "C2 cache: same prompt again": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 33,
+  "prompt_tokens": 5492,
+  "cached_tokens": 5376,
+  "finish": "stop"
+ },
+ "C3 cache: same prefix, changed trailing question": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 17,
+  "prompt_tokens": 5492,
+  "cached_tokens": 5376,
+  "finish": "stop"
+ },
+ "C4 cache: system prompt prepended (prefix change)": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 30,
+  "prompt_tokens": 5497,
+  "cached_tokens": 0,
+  "finish": "stop"
+ },
+ "C5 cache: system message appended AFTER history (in-history update shape)": {
+  "status": 200,
+  "has_reasoning_content": true,
+  "tool_calls": 0,
+  "reasoning_tokens": 168,
+  "prompt_tokens": 5504,
+  "cached_tokens": 5376,
+  "finish": "stop"
+ }
+}

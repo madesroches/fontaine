@@ -1,0 +1,24 @@
+## e8-read
+main requests: 3  guardian/screen requests (thinking disabled): 0  statuses: [200]
+request 1: previous response had reasoning_content=False; last assistant turn resent with reasoning_content=False; assistant turns=1; with_reasoning_field=0
+request 2: previous response had reasoning_content=True; last assistant turn resent with reasoning_content=True; assistant turns=2; with_reasoning_field=1
+reasoning-bearing turns round-tripped: 1; reasoning-bearing turns dropped: 0
+
+## e8-fix
+main requests: 16  guardian/screen requests (thinking disabled): 10  statuses: [200]
+request 1: previous response had reasoning_content=False; last assistant turn resent with reasoning_content=False; assistant turns=1; with_reasoning_field=0
+request 2: previous response had reasoning_content=True; last assistant turn resent with reasoning_content=True; assistant turns=2; with_reasoning_field=1
+request 3: previous response had reasoning_content=True; last assistant turn resent with reasoning_content=True; assistant turns=3; with_reasoning_field=2
+request 4: previous response had reasoning_content=True; last assistant turn resent with reasoning_content=True; assistant turns=4; with_reasoning_field=3
+request 5: previous response had reasoning_content=True; last assistant turn resent with reasoning_content=True; assistant turns=5; with_reasoning_field=4
+request 6: previous response had reasoning_content=True; last assistant turn resent with reasoning_content=True; assistant turns=6; with_reasoning_field=5
+request 7: previous response had reasoning_content=True; last assistant turn resent with reasoning_content=True; assistant turns=7; with_reasoning_field=6
+request 8: previous response had reasoning_content=True; last assistant turn resent with reasoning_content=True; assistant turns=8; with_reasoning_field=7
+request 9: previous response had reasoning_content=True; last assistant turn resent with reasoning_content=True; assistant turns=9; with_reasoning_field=8
+request 10: previous response had reasoning_content=True; last assistant turn resent with reasoning_content=True; assistant turns=10; with_reasoning_field=9
+request 11: previous response had reasoning_content=True; last assistant turn resent with reasoning_content=True; assistant turns=11; with_reasoning_field=10
+request 12: previous response had reasoning_content=False; last assistant turn resent with reasoning_content=False; assistant turns=12; with_reasoning_field=10
+request 13: previous response had reasoning_content=True; last assistant turn resent with reasoning_content=True; assistant turns=13; with_reasoning_field=11
+request 14: previous response had reasoning_content=False; last assistant turn resent with reasoning_content=False; assistant turns=14; with_reasoning_field=11
+request 15: previous response had reasoning_content=True; last assistant turn resent with reasoning_content=True; assistant turns=15; with_reasoning_field=12
+reasoning-bearing turns round-tripped: 12; reasoning-bearing turns dropped: 0

@@ -1,0 +1,9 @@
+resume of a session built on go/glm-5.1 with --model go/deepseek-v4.1-flash, Chat wire:
+fontaine GET /v1/models 200
+fontaine /openai/v1/chat/completions 200 dsh_fields=[] bytes=16252 msgs=9 tools=11 thinking=null input=['4034'] cache_read=[]
+fontaine /openai/v1/chat/completions 200 dsh_fields=[] bytes=16637 msgs=11 tools=11 thinking=null input=['4119'] cache_read=[]
+
+assistant turns in the replayed history:
+{'role': 'assistant', 'content': 'Let me read both files.', 'tool_calls': "[{'type': 'function', 'id': 'chatcmpl-tool-a1676b5326fdbba9'"}
+{'role': 'assistant', 'content': 'The source is simple: lowercase and replace spaces with dash', 'tool_calls': "[{'type': 'function', 'id': 'chatcmpl-tool-ade0d39c3f35da68'"}
+{'role': 'assistant', 'content': "Can't run tests. That's fine; the ask was just to explain in"}

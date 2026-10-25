@@ -1,0 +1,10 @@
+DNS queries (name, type, count):
+  fwd A x5
+destinations (proto, ip, port, packets):
+   tcp 172.18.0.2 18080 x157
+   tcp 172.18.0.3 38882 x19
+   tcp 172.18.0.3 38892 x64
+   tcp 172.18.0.3 38902 x2
+   tcp 172.18.0.3 38916 x62
+   tcp 172.18.0.3 38924 x2
+   udp 224.0.0.251 5353 x15
