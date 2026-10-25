@@ -78,10 +78,12 @@ New module `rust/fontaine-mcp/src/interaction.rs`:
   and sinks the tools only after the last page, so `GuardedSink::wrap` always reads the current
   marker.
 
-`servers.rs`: `start` and `connect_transport` both build one `Marked` per server. They wrap the
-transport (`InteractionTap::new(transport.into_transport(), marked.clone())`, for stdio, HTTP and
-in-process alike) and pass `marked` to `GuardedSink::new`. The tap sits on the path every
-server takes, so a new transport can't silently skip it.
+`servers.rs`: `start` and `connect_transport` both build one `Marked` per server and pass it to
+`GuardedSink::new`. `start` wraps the stdio and HTTP transports directly
+(`InteractionTap::new(transport, marked.clone())`), since `TokioChildProcess` and
+`StreamableHttpClientTransport` already implement `Transport<RoleClient>`. Only `connect_transport`
+calls `.into_transport()` (its where-clause pins the generics). The tap's `type Error = T::Error`.
+The tap sits on the path every server takes, so a new transport can't silently skip it.
 
 ### 2. Carrying it to the gate (`fontaine-tools`)
 
@@ -91,7 +93,9 @@ server takes, so a new transport can't silently skip it.
 - `guarded.rs`: `Meta` gains the same field. `gated` copies it into both `CallView`s (gate and
   result pipeline). `guard_callback` gains a `requires_user_interaction: bool` parameter. The
   built-in `GuardedTool::call` passes `false`.
-- `GuardedSink` gains a `marked: Marked` field. `wrap` reads `marked.contains(&original_name)`
+- `GuardedSink` gains a `marked: Marked` field, which stays private. `GuardedSink::new` takes it and
+  becomes `pub(crate)`, because a `pub` signature naming the `pub(crate)` `Marked` would trip
+  `private_interfaces` under `-D warnings`; its only callers are in `servers.rs`. `wrap` reads `marked.contains(&original_name)`
   once, before renaming, and passes the result to `guard_callback`. Each refresh re-wraps every
   tool, so a marker a server adds or removes takes effect on the next list-changed refresh. This
   matches how the risk class is fixed at wrap time.
@@ -102,10 +106,14 @@ In `PermissionPipeline::evaluate`, extend the forced-ask chain. The order is the
 rule, then the server marker, then a hook `ask`:
 
 ```rust
-let forced_ask = rules.ask.iter().find(..).map(|r| (Tier::AskRule, r.label()))
-    .or_else(|| call.requires_user_interaction
-        .then(|| (Tier::AskRule, REQUIRES_USER_INTERACTION.to_string())))
-    .or_else(|| hook.ask.clone().map(|id| (Tier::Hook, id)));
+let forced_ask = rules.ask.iter().find(..)
+    .map(|r| (Tier::AskRule, r.label(), format!("`{}` asks for approval before this runs", r.label())))
+    .or_else(|| call.requires_user_interaction.then(|| (
+        Tier::AskRule,
+        REQUIRES_USER_INTERACTION.to_string(),
+        "the MCP server requires a person's approval for every call of this tool".to_string(),
+    )))
+    .or_else(|| hook.ask.clone().map(|id| (Tier::Hook, id, /* existing hook reason */)));
 ```
 
 - The marker has the same tier and the same path as an ask rule: `Tier::AskRule`, `forced:
@@ -114,9 +122,8 @@ let forced_ask = rules.ask.iter().find(..).map(|r| (Tier::AskRule, r.label()))
   `rule` is the fixed text `anthropic/requiresUserInteraction` (the `fontaine_mcp::REQUIRES_USER_INTERACTION`
   constant). It never contains the server or tool name, so `hide_mcp_names` telemetry
   stays clean.
-- Prompt reason: "the MCP server requires a person's approval for every call of this tool". The
-  existing ask-rule wording ("`{rule}` asks for approval before this runs") would read oddly
-  with a `_meta` key as the rule, so the marker gets its own wording.
+- Prompt reason: the tuple carries its own reason, so the marker gets its own wording. The
+  existing ask-rule wording ("`{rule}` asks for approval before this runs") would read oddly with a `_meta` key as the rule.
 
 ## Implementation Steps
 
@@ -128,7 +135,7 @@ let forced_ask = rules.ask.iter().find(..).map(|r| (Tier::AskRule, r.label()))
    helper for the marked call), `fontaine-core/tests/{scanner,scanner_model,user_hooks}.rs`, `fontaine-tools/tests/guarded.rs:235` (pass `false` to `guard_callback`).
 2. **fontaine-mcp** — add `interaction.rs` (`Marked`, `marks`, `InteractionTap`, the constant)
    with unit tests. Wire the tap and `Marked` into `start` and `connect_transport` in
-   `servers.rs`, and add `marked` to `GuardedSink` in `register.rs` (its `new` takes it). Re-export
+   `servers.rs`, and add `marked` to `GuardedSink` in `register.rs` (its `new` takes it and becomes `pub(crate)`). Re-export
    `REQUIRES_USER_INTERACTION` from `lib.rs`; core uses it as the audit rule. Update the stale
    comments to say the marker is the one declared value that can force a prompt: the module doc
    at `lib.rs:1-3` ("what a server declares ... reaches the guardian as untrusted text") and the
@@ -165,7 +172,11 @@ let forced_ask = rules.ask.iter().find(..).map(|r| (Tier::AskRule, r.label()))
   offers no session/always grant, is denied in `dontAsk` and headless runs, and isn't skipped by
   allow rules or hook allows. It's audited as `tier = ask_rule`,
   `rule = anthropic/requiresUserInteraction`. Include a `tools/list` JSON example. Also note that
-  it's the only declared value that changes a decision, and only toward asking.
+  it's the only declared value that changes a decision, and only toward asking. Reword the
+  statements the marker makes false: auto routes to the guardian and dontAsk/headless deny
+  unless an allow rule covers it (lines 61-64), "what a server declares is only text ... never
+  as a fact or a gate" (65-67), "rules are the way to pre-approve" (74-76), and project servers'
+  tools being "ordinary `arbitrary` tools" (96-98) must each carve out the marker.
 - `docs/permissions.md` § The pipeline: name the marker alongside ask rules in the floor's ask
   step.
 - `tasks/design/permissions.md` § Core data flow step 2: add the marker to the `ask` floor check.
@@ -203,8 +214,6 @@ All automated, none live:
     `permissions_screen.rs` the screen is never called either;
   - an `allow` rule `mcp__srv__grant` still prompts (`permission_rules.rs`), and so does a
     PreToolUse hook `allow` (`permissions_auto.rs`, which has the allow-capable hook double);
-  - a session grant or skill grant covering the tool still prompts;
-  - a subagent's marked call gets the same forced prompt;
   - `dontAsk` and headless deny with `tier = ask_rule`;
   - a `deny` rule on the tool still wins with `tier = deny_rule`;
   - the same call unmarked keeps today's behavior (an allow rule allows it).
