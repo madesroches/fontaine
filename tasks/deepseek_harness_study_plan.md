@@ -47,8 +47,8 @@ every source citation in the doc is `path@22ddee37`. Known shape, from a first r
   default in base, `packages/bundle/base/cordis.patch.yml:326-327`, which continues in rounds;
   feeds #17); `packages/guard/repeat-tool-reminder` (reminds the model
   when it repeats the exact same tool call); `packages/guard/timeout-policy` (a hung call returns
-  a timed-out error to the model, but only for tools that declare `timeoutMs`: `web_fetch` and
-  `web_search` at 30 s; shipped bash/read/write/edit "are never cut off",
+  a timed-out error to the model, but only for tools that declare `timeoutMs`: `web_fetch` at 30 s
+  and `web_search` at 60 s (`cordis.patch.yml:482-486`); shipped bash/read/write/edit "are never cut off",
   `packages/guard/timeout-policy/README.md:42`); `packages/shell/tool-bash` (keeps its own
   `BASH_TIMEOUT` and, with `promoteOnTimeout: true` (the default), moves a hung command to a background job and
   returns `[still running after <ms>ms; moved to background job <id>]`,
@@ -201,7 +201,7 @@ the request path passed through unchanged:
   (`rust/fontaine-guardian/data/guardian_models.toml`) and the config sets no `[guardian] model`,
   so the guardian falls back to the main model (`rust/fontaine-core/src/models.rs`, MainFallback)
   on the same account. Its requests carry `thinking: disabled` and the guardian's system prompt,
-  which tells them apart from main-agent requests. They are filtered out before the E8
+  which tells them apart from main-agent requests. They, and scanner requests if the scanner is enabled, are filtered out before the E8
   round-trip check and the framing comparison, and may be kept separately as the guardian's own
   wire record.
 
@@ -230,7 +230,7 @@ under `runs/`. The specific excerpts the doc cites are committed under
 
 ### Experiments
 
-Each experiment has a script under `scripts/`, a task fixture under `fixtures/` (a tiny repo),
+Each experiment has a script under `scripts/`, a task fixture under `fixtures/` where it needs one (a tiny repo),
 and a results section in the doc.
 | # | Experiment | Answers |
 |---|---|---|
