@@ -4,8 +4,9 @@
 
 ## Overview
 
-Study DeepSeek's own agent harness, DeepSeek Harness (`dsh`), and record what Fontaine should
-adopt, adapt or skip. The work covers how it frames prompts, tool calls and reasoning for DeepSeek
+Study DeepSeek's own agent harness, DeepSeek Harness (`dsh`), and produce a list of desirable
+features for Fontaine. The list is led by the features that let the model iterate on a solution,
+which dsh is reportedly good at. There is no benchmark or live scorecard in this study. The work covers how it frames prompts, tool calls and reasoning for DeepSeek
 models, how it manages context, its safety model, tasks, session log and the feedback it gives the
 model. Running DeepSeek models through Fontaine's rig provider path, as the main agent and as a
 guardian or screen, is in scope too. This is a research spike. The deliverables are
@@ -33,8 +34,21 @@ every source citation in the doc is `path@22ddee37`. Known shape, from a first r
 - `docs/deepseek-llm-api-wire-extensions.md` documents non-model-visible request additions:
   `x-deepseek-harness-user-id` (a stable anonymous UUID), `x-deepseek-harness-session-id`,
   `x-deepseek-harness-compact`, and `dsh_*` body fields such as `dsh_plugin_packages` and
-  `dsh_session_log`. What `dsh_session_log` sends, and whether it is on by default, is a
-  privacy finding the doc must settle.
+  `dsh_session_log`. `dsh_session_log` is on by default (`enabled: true`, `maxBytes` 8 MiB,
+  `packages/session/session-log-deepseek/src/index.ts:52-53`) and mounted in the base bundle
+  (`packages/bundle/base/cordis.patch.yml:43-44`), so headless has it. It is sent incrementally on
+  every Messages request to whatever base URL is configured (`index.ts:188-193`). It carries the
+  full canonical session log: cwd, system-prompt snapshots, user and assistant content,
+  reasoning, tool args and results, and compaction summaries. API keys are excluded.
+  `dsh_plugin_packages` is also on by default (`cordis.patch.yml:85-86`). So whole session
+  content reaches the opencode gateway in every experiment.
+- Candidate iteration mechanisms, the first reading of what lets the model iterate on a
+  solution: `packages/goal/*` (a durable per-session goal, plus an optional `goal-round-driver`
+  that continues in rounds; feeds #17); `packages/guard/repeat-tool-reminder` (reminds the model
+  when it repeats the exact same tool call); `packages/guard/timeout-policy` (a hung call returns
+  a timed-out error to the model); `packages/lsp/*` (diagnostics; to check whether they are fed
+  back after edits automatically); and the shapes of tool errors and test output. Negative
+  finding: `packages/feedback/*` is human ratings that never reach the model.
 - Packages map onto the issue's questions: `compaction/*` (basic, tool-result pruner, image
   offload), `guard/*` (repeat-tool-reminder, timeout-policy), `sandbox/*` (local, policy,
   Windows ACL), `plan/plan-mode`, `todo/tool-todo`, `goal/*`, `subagent`, `feedback/*`, `lsp`,
@@ -60,7 +74,7 @@ every source citation in the doc is `path@22ddee37`. Known shape, from a first r
 - Precedent: `research/research-llamafirewall.md` (format of a deep-dive) and the #98 spike
   (`research/analysis-typed-decision-screen.md` with `research/typed-decision-screen/scripts/`,
   for the layout of experiments and data). The master plan lists the research docs at
-  `tasks/fontaine_harness_plan.md:53-59`, and `tasks/design/research-findings.md` has one
+  `tasks/fontaine_harness_plan.md:53-60`, and `tasks/design/research-findings.md` has one
   subsection per piece of prior art.
 - Related open issues that findings may feed rather than duplicate: #13 prompt caching, #53
   reasoning effort, #22 todo tools, #24 plan-mode exit, #10 session UX, #12 checkpoints/rewind,
@@ -79,15 +93,20 @@ output. Negative results are recorded as findings ("X does not exist", "Y failed
 
 ### Environment and safety
 
-- dsh runs **only in a Docker container** (`node:22-bookworm`, pinned by digest in the script)
+- dsh runs **only in a Docker container** (`node:24-bookworm`, pinned by digest in the script;
+  dsh needs Node >=24.9, see the root `package.json` engines and `docs/development.md:11`)
   with a throwaway workspace volume, a throwaway `DSH_HOME`, and no host mounts besides
   `research/deepseek-harness/runs/<run>/`, as `SAFETY.md` asks. The container's network is
   needed for the model API and the npm install. Credentials enter the container only as the one
   gateway key, passed by env.
-- It is built from the pinned checkout (`pnpm install && pnpm run build`), not with
-  `npx @deepseek-ai/dsh@latest`, so the binary matches the cited source. If the build fails,
-  fall back to the npm package version that matches the commit and record the mismatch.
-- The `headless` profile is the driver, so experiments are scripted and repeatable. The Web UI
+- It is built from the pinned checkout, not with `npx @deepseek-ai/dsh@latest`, so the binary
+  matches the cited source. pnpm comes from Corepack (`docs/development.md:13`), so `run_dsh.sh`
+  runs `corepack enable` before `pnpm install && pnpm run build:artifacts` (skips typecheck and
+  desktop; `docs/development.md:96`). If the build fails, fall back to
+  `@deepseek-ai/dsh@0.2.1-rc.3`, whose exact commit is unknown (the repo has no tags), and
+  record the mismatch.
+- The `headless` profile is the driver (`pnpm dsh --profile headless "<task>"`,
+  `docs/development.md:173-178`), so experiments are scripted and repeatable. The Web UI
   is opened once, to check that headless behaviour matches the default surface, then it is
   dropped.
 
@@ -96,19 +115,44 @@ output. Negative results are recorded as findings ("X does not exist", "Y failed
 `research/deepseek-harness/scripts/record_proxy.py` is a small stdlib-only (`http.server` plus
 `urllib`) reverse proxy. It forwards to a configured upstream, streams SSE through unchanged, and
 writes each exchange as JSONL (request headers, request body, response status, and the response
-chunks joined into one body). Before writing, it **redacts** `authorization`, `x-api-key` and any
-header or field whose name contains `key`, `token` or `secret`. Both harnesses point their base
-URL at it:
+chunks joined into one body). Before writing, it **redacts** an exact list of names:
+`authorization`, `x-api-key`, `api_key`, `apiKey`, plus credential-bearing fields. It does not
+match substrings, which would wipe the usage and cache fields the study measures
+(`max_tokens`, `input_tokens`, `cache_read_input_tokens`, `prompt_cache_hit_tokens`). Both
+harnesses point their base URL at it. Its upstream is `https://opencode.ai/inference/go`, with
+the request path passed through unchanged:
 
-- dsh: `llm-deepseek` `baseURL = http://host.docker.internal:<port>`, upstream
-  `https://opencode.ai/inference/go/anthropic`, model `deepseek-v4.1-flash`. If the Go gateway
-  does not serve DeepSeek on its Messages path, fall back to an `llm-pi-ai` OpenAI-compatible
-  route to the Go Chat path, and record that the native adapter was not exercised.
-- Fontaine: a temporary `go` account copy with `base_url` set to the proxy, so the same model
-  runs on Fontaine's normal Chat path.
+- dsh: `DEEPSEEK_BASE_URL=http://host.docker.internal:<port>/anthropic`. dsh appends
+  `/v1/messages` to its base (`packages/llm/llm-deepseek/src/messages-api.ts:14-17`,
+  `adapter.ts:138`). Its default model is `deepseek-flash`
+  (`packages/bundle/base/cordis.patch.yml:88-94`, `llm-deepseek/src/models.ts:10,18`), not the
+  gateway id, so a dsh patch overrides the `models` catalog and `agent-default-model` with
+  `deepseek-v4.1-flash`. dsh may send the beta `mid-conversation-tool-changes-2026-07-01` blocks
+  (`messages-api.ts:7`); a gateway rejection of the beta header or blocks is recorded as a
+  finding. If the Go gateway does not serve DeepSeek on its Messages path, fall back to an
+  `llm-pi-ai` OpenAI-compatible route to the Go Chat path, and record that the native adapter
+  was not exercised.
+- Fontaine: `fontaine -p --settings <proxy.toml> --model go/deepseek-v4.1-flash`. The settings
+  layer redefines `[accounts.go]` with `base_url` set to the proxy
+  (`rust/fontaine/src/cli.rs:9-11,44`; `rust/fontaine-core/src/config.rs:667-676,1220-1226`) and
+  reuses the real credential, so the same model runs on Fontaine's normal Chat path. The
+  proxy forwards `{base}/openai/v1` (`opencode_go.rs:126-140`) to the same upstream.
 
 The captures answer the framing, reasoning, caching and telemetry questions from what is actually
-sent, not from the docs. Before any capture is committed, a scrubber pass
+sent, not from the docs. The model-URL proxy cannot show what else dsh sends. The base bundle
+mounts `session-telemetry-otel`, exporting to `https://dsh-otel-collector.deepseeksvc.com/v1/logs`
+(`cordis.patch.yml:205-231`; default mode `FEEDBACK_ONLY`; overridable with
+`DSH_TELEMETRY_OTLP_URL`, `DSH_TELEMETRY_MODE`, `DSH_TELEMETRY_DISABLED` in
+`packages/boot/app-boot/src/profile-context.ts:39-52`). Web search defaults to
+`https://api.deepseek.com/anthropic/v1` (`packages/web/web-search-deepseek/src/provider.ts:7,34`)
+and `web-deepseek-api` to `https://api.deepseek.com/v1/tools`, both sending `DEEPSEEK_API_KEY`
+(`cordis.patch.yml:463-477`). So the container's egress is logged too: it runs on a network whose
+only route out is the host proxy, or its DNS and connection attempts are captured. Each endpoint
+dsh contacts goes into the telemetry section. `DSH_TELEMETRY_OTLP_URL` and
+`DEEPSEEK_SEARCH_BASE_URL` point at the proxy or are disabled, so no credential reaches
+`api.deepseek.com`.
+
+Before any capture is committed, a scrubber pass
 (`scripts/scrub.py`) removes keys and the anonymous user id. Bulky full captures stay gitignored
 under `runs/`. The specific excerpts the doc cites are committed under
 `research/deepseek-harness/captures/`.
@@ -121,20 +165,17 @@ answers.
 
 | # | Experiment | Answers |
 |---|---|---|
-| E1 | Build, boot `headless`, run `--dump-config`, and record the default plugin tree | architecture; which defaults are on (telemetry, `dsh_session_log`) |
-| E2 | One read-only question with the wire captured | system-prompt sections, tool schemas, tool-call and result format, headers, `dsh_*` fields |
-| E3 | Fix a failing test in a fixture repo (edit → run tests → iterate) | tool errors, the test-output feedback loop, repeat-tool-reminder, multi-turn reasoning round-trip |
+| E1 | Build, boot `headless`, run `--dump-config`, and record the default plugin tree and the container's egress endpoints | architecture; which defaults are on (telemetry, `dsh_session_log`); every endpoint dsh contacts |
+| E2 | One read-only question with the wire captured, once with default `session-log-deepseek` and once with `enabled: false` | system-prompt sections, tool schemas, tool-call and result format, headers, `dsh_*` fields; what `dsh_session_log` puts on the wire |
+| E3 | Fix a failing test in a fixture repo (edit → run tests → iterate) | the iteration loop: tool errors, the test-output feedback, LSP diagnostics after edits, repeat-tool-reminder, timeout-policy, goal rounds, multi-turn reasoning round-trip |
 | E4 | Risky actions in the fixture (write outside the workspace, `rm -rf` of a parent, `curl … \| sh`, reading `~/.ssh` in the container) | sandbox and approval policy, defaults, what a denial says to the model; compared with Fontaine's floor and guardian |
 | E5 | A long session that crosses the compaction threshold (lower the configured window) plus a large tool result | compaction trigger, summary prompt, tool-result pruning and spill, cache-hit accounting across compaction |
 | E6 | A multi-step task in plan mode, then with the todo tool, then with one subagent | task representation, todo state, plan handoff, subagent context |
-| E7 | Resume the E3 session, then inspect the on-disk log and `session-query` | session log format, durability, resume and review |
-| E8 | Run E2 and E3 through `fontaine -p` on the same model, with thinking on, through the proxy | whether rig sends `reasoning_content` back on the Chat wire; a side-by-side diff of framing against dsh |
-| E9 | Live guardian scorecard: `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:go/deepseek-v4.1-flash`, at the default timeout | DeepSeek as a guardian; compared with `evals/scorecards/kimi-for-coding.json` |
-| E10 | Where dsh's behaviour differs from what Fontaine copies, capture the Claude Code baseline with `claude -p` on the same fixture task | the "different from Claude Code" column |
+| E7 | Resume the E3 session, then inspect the on-disk log and `session-query` | session log format, durability, resume and review. Session-query search is off by default (`session-query-sqlite` with `path: ':memory:'`, `openAt: never`, `cordis.patch.yml:150-161`, giving `SESSION_QUERY_SEARCH_DISABLED`; `tool-session-query` is experimental and unmounted). E7 may enable it with a patch (`openAt: first-search`) to observe search. |
+| E8 | Run E2 and E3 through `fontaine -p` on the same model, through the proxy. It relies on the model's default thinking: Fontaine's main agent sends no thinking parameter (`thinking_off` applies only to guardian and scanner; #53 is open). Check the capture shows a `reasoning_content` response before judging the round-trip. | whether rig sends `reasoning_content` back on the Chat wire; a side-by-side diff of framing against dsh |
+| E9 | Where dsh's behaviour differs from what Fontaine copies, capture the Claude Code baseline with `claude -p` on the same fixture task | the "different from Claude Code" column |
 
-E9 is a full live bench, so it runs at the default timeout (memory: live bench timeouts). Its
-scorecard goes to `evals/scorecards/deepseek-v4.1-flash.json`. It is a measurement, not a merge
-gate.
+The experiments are observations that serve as evidence for the feature list. None is scored.
 
 Anything that cannot be run goes into a "Not tried" list with the reason (for example, no direct
 DeepSeek API key, so `api.deepseek.com` Files and context caching are reached only through the
@@ -149,19 +190,23 @@ gateway, or the build fails). The user can then supply what is missing.
 3. Architecture (Cordis, profiles, the turn flow).
 4. One section per issue question: prompt and tool framing; reasoning output; context management
    (caching, compaction, truncation); permission and safety model; DeepSeek through rig, including
-   as a guardian or screen; tasks; session log; model feedback. Each section has "What dsh does",
+   as a guardian or screen (from source and the thinking-off history, not measured); tasks; session log; model feedback. Each section has "What dsh does",
    "Claude Code", "Fontaine today", the evidence, and a verdict.
-5. Telemetry and privacy: what leaves the machine by default (headers, `dsh_*` fields).
-6. An **Adopt / Adapt / Skip** table. Each row links to the issue it filed, the existing issue
-   it feeds, or the reason it is skipped.
-7. Experiment log (E1–E10), with commands, results and failures.
+5. Telemetry and privacy: what leaves the machine by default (headers, `dsh_*` fields, the
+   session log upload, the telemetry exporter, every endpoint the container contacts).
+6. **Desirable features**, the centrepiece, led by the features that let the model iterate on a
+   solution. Each entry gives: what dsh does; the evidence (source citation and/or observed
+   run); how Fontaine would get it (an existing issue it feeds, a new issue, or skip with the
+   reason); and whether Claude Code does it (if not, adopting needs a Decisions line).
+7. Experiment log (E1–E9), with commands, results and failures.
 8. Not tried, and why.
 
 ### Follow-ups and decisions
 
-- For each Adopt or Adapt row, file an issue (`gh issue create`, with labels matching the area) or
-  comment on the existing issue it feeds, linking the doc section. A bug found in Fontaine (E8 is
-  the likely candidate) is filed as a `bug` with its reproduction.
+- For each desirable feature to adopt, file an issue (`gh issue create`, with labels matching the
+  area) or comment on the existing issue it feeds, linking the doc section. A bug found in
+  Fontaine (E8 is the likely candidate) is filed as a `bug` with its reproduction. File one more
+  issue for a measured guardian scorecard of DeepSeek on the live eval harness.
 - A finding that argues for departing from Claude Code semantics gets a dated line in the master
   plan's `## Decisions`. Adopting something Claude Code also does needs no Decisions line.
 - The doc and the PR body both carry the full findings list, including the negative ones.
@@ -175,38 +220,37 @@ gateway, or the build fails). The user can then supply what is missing.
    notes per question, with `path@22ddee37` citations. Use Explore subagents for the broad
    package sweep, and read the cited files directly before quoting them.
 3. **Tooling.** Write `record_proxy.py` and `scrub.py` (stdlib only, run with `python3 -I`),
-   `run_dsh.sh` (the docker invocation: build from the checkout, headless profile, proxy base
-   URL, a run directory), and `run_fontaine.sh` (a temporary config with a proxied `go` account,
-   then `fontaine -p`).
+   `run_dsh.sh` (the docker invocation: `corepack enable`, build from the checkout with
+   `pnpm run build:artifacts`, run `pnpm dsh --profile headless "<task>"`, proxy base URL, a run
+   directory, and `--add-host=host.docker.internal:host-gateway` for Linux Docker; the proxy
+   binds to the docker bridge address, not 0.0.0.0, if the bridge address works), and
+   `run_fontaine.sh` (`fontaine -p --settings <proxy.toml> --model go/deepseek-v4.1-flash`).
 4. **E1–E7** on dsh, in order. Record each result in the doc as it lands. E4 runs only inside the
    container.
 5. **E8** through Fontaine. If rig drops `reasoning_content`, reproduce it minimally, file the
    bug, and note whether the Messages wire avoids it.
-6. **E9** live guardian bench, plus the scorecard file.
-7. **E10** `claude -p` baselines, only for the rows where the Claude Code behaviour is in doubt.
-8. **Write the doc.** Fill in the summary, the Adopt/Adapt/Skip table, the experiment log and the
-   Not tried list.
-9. **Follow-ups.** File and comment on issues, then link them from the table. Add a `## Decisions`
-   line only where the rule above applies.
-10. **Index.** Add the doc to the research list in `tasks/fontaine_harness_plan.md:53-59`, and
-    update the count of "seven companion docs". Add a short "DeepSeek Harness" subsection to
-    `tasks/design/research-findings.md` pointing to the deep-dive.
+6. **E9** `claude -p` baselines, only for the rows where the Claude Code behaviour is in doubt.
+7. **Write the doc.** Fill in the summary, the Desirable features list, the experiment log and
+   the Not tried list.
+8. **Follow-ups.** File and comment on issues, including the guardian scorecard issue, then link
+   them from the list. Add a `## Decisions` line only where the rule above applies.
+9. **Index.** Add the doc to the research list in `tasks/fontaine_harness_plan.md:53-60`, add the
+   missing `analysis-typed-decision-screen.md` entry there, and update the count in that list and
+   in the workspace tree (~line 225) from "seven" to nine. Add a short "DeepSeek Harness"
+   subsection to `tasks/design/research-findings.md` pointing to the deep-dive.
 
 ## Files to Modify
 
 - New: `research/research-deepseek-harness.md`
 - New: `research/deepseek-harness/{README.md,.gitignore,scripts/*,fixtures/*,captures/*}`
-- New: `evals/scorecards/deepseek-v4.1-flash.json` (E9)
-- `tasks/fontaine_harness_plan.md`: the research doc list, and `## Decisions` only if needed
+- `tasks/fontaine_harness_plan.md`: the research doc list (add the missing
+  `analysis-typed-decision-screen.md` entry and the new doc, count nine there and in the
+  workspace tree), and `## Decisions` only if needed
 - `tasks/design/research-findings.md`: a pointer subsection
 
 ## Trade-offs
 
-- **Container rather than the host or bwrap.** Container isolation is what `SAFETY.md` asks
-  for, and it supplies Node without installing it on the host. bwrap would need Node on the host
-  anyway.
-- **Build from the pinned source rather than `npx`.** Citations and behaviour then refer to the
-  same code. It costs a pnpm build, and `npx` is the fallback.
+- **Container rather than bwrap.** bwrap would need Node on the host anyway.
 - **Run through the opencode-go gateway rather than a direct DeepSeek key.** It is the only
   DeepSeek access available, and it is the path Fontaine users take. The cost is that
   gateway-specific behaviour (caching, Files API, wire coverage) may differ from
@@ -214,22 +258,26 @@ gateway, or the build fails). The user can then supply what is missing.
 - **A stdlib recording proxy rather than mitmproxy.** Both harnesses accept a plain-HTTP base
   URL, so TLS interception is not needed and there are no new dependencies.
 
+## Decisions
+
+- 2026-10-24: The deliverable is a list of desirable features, led by those that let the model iterate; no benchmark or live scorecard in this study (user direction).
+
 ## Documentation
 
-No `docs/` change. This is research, and `docs/` describes shipped behaviour. If E9 is published
-as a scorecard, `docs/evals.md` is left to the release-scorecard issue (#104). The research doc and
-the two index updates in Step 10 are the documentation deliverable.
+No `docs/` change. This is research, and `docs/` describes shipped behaviour. The research doc and
+the two index updates in Step 9 are the documentation deliverable.
 
 ## Testing Strategy
 
 There is no product code, so nothing is added to `cargo test`. The scripts are research tooling,
 in the same tier as `research/typed-decision-screen/scripts/`. They are checked by running them:
 each experiment's recorded output is the check. One exception: `scrub.py` runs over every
-committed capture, and a final `rg -i 'sk-|bearer|api[-_]?key'` over `research/deepseek-harness/`
-must find nothing before commit, because a leaked key would fail silently.
+committed capture, and before commit an `rg` over `research/deepseek-harness/captures/` only
+must find nothing. It uses credential-shaped patterns (for example `Bearer [A-Za-z0-9._-]{20,}`),
+the actual token value from the environment, and the anonymous `x-deepseek-harness-user-id`
+value, because a leaked key would fail silently.
 
 ## Open Questions
 
 - Does the Go gateway serve `deepseek-v4.1-flash` on its `/anthropic` (Messages) path? This
   decides whether dsh's native adapter can be exercised at all. Answered by the first run of E2.
-- Is `dsh_session_log` on by default, and what does it upload? Answered by E1 and E2.
