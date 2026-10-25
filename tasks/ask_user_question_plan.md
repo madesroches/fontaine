@@ -108,9 +108,16 @@ and advance to the next question, Esc to cancel the whole call. Keys typed ahead
 must not answer it: import `ANSWER_GRACE` from `server_prompt.rs` (`pub(crate)`; `approval.rs` and
 `denials.rs` keep private copies). `ChannelApprover` gets a `Prompt::Question` variant mirrored
 on `Prompt::Ask` (oneshot reply, dropped sender = unavailable), with `on_prompt` (~`lib.rs:277`)
-and `drain_prompts` (~:290) gaining a Question arm. `App` keeps one slot per panel (`app.rs:87-105`)
-and `prune_closed` / `pending_for` handle only approvals, so a question gets its own slot, queue
-behind an open approval, and closed-reply pruning. `view.rs:177-221` picks overlays by title
+and `drain_prompts` (~:290) gaining a Question arm. `App` keeps one slot per panel (`app.rs:87-105`),
+and `begin_server` / `begin_unavailable` overwrite a single slot, which would drop a first
+question's reply sender (the call would return unavailable). Questions therefore get a
+`VecDeque` (open one at the front) with closed-reply pruning in `prune_closed`. An open
+approval shows first; a question waits behind it. `handle_key` routes to the question panel
+before the `running` Esc-interrupt at `app.rs:525` (as for the server/unavailable/denied
+prompts, ~:454-470), since a question is open only while a turn runs, so Esc yields
+`Reply::Declined` rather than interrupting; `overlay()` follows the same order. An interrupt
+(`deny_pending`, ~:355, which today handles only approvals) answers the root agent's pending
+questions `Declined`. `view.rs:177-221` picks overlays by title
 (`is_approval` flag), so it gains a branch for the question title. Screen-reader mode renders
 linearly in `linear.rs` (`accessibility.rs` only resolves the screen-reader flag): `NEEDS_ANSWER`
 (`linear.rs:24`) must gain the new overlay title.
@@ -144,10 +151,14 @@ the label's wording, is what counts as intent.
 3. `fontaine-core/src/tools.rs`, `agent.rs`, `extensions.rs`: add to `ExtensionTools`, build the
    `QuestionSource` over the approver and ledger, rule-name mapping beside `extensions.rs:115`,
    and add `AskUserQuestion` to the known-Claude-tool-names error string (`extensions.rs:133`).
+   `registry()` in `tools.rs` pushes each extension separately, so add
+   `tools.push(register_extension(extension.ask_user, &guard))` beside :125-127. `summarize`
+   (`permissions.rs:1559`) gets an arm showing the question headers.
 4. `fontaine-tui`: `question.rs` panel, `Prompt::Question`, `App` hosting/queueing/pruning, view
    (overlay-title branch), `lib.rs` `on_prompt` / `drain_prompts` arms, key routing, `linear.rs`
    (`NEEDS_ANSWER`).
-5. One system prompt guidance line for the tool, on all surfaces (`fontaine-core/src/prompt.rs`).
+5. One system prompt guidance line for the tool, on all surfaces (`fontaine-core/src/prompt.rs`);
+   update the insta snapshot in `fontaine-core/tests/system_prompt.rs`.
 6. Docs: the files listed under Documentation; flip the
    parity row in `research/research-claude-code-parity.md`; `CHANGELOG.md`.
 7. Add dated `## Decisions` lines to `tasks/fontaine_harness_plan.md` for the deviations
@@ -159,7 +170,8 @@ the label's wording, is what counts as intent.
 - `rust/fontaine-tools/src/{ask_user.rs (new), lib.rs, names.rs, risk.rs}`
 - `rust/fontaine-core/src/{permissions.rs, permission_rules.rs, destructive.rs, tools.rs, agent.rs, extensions.rs, prompt.rs}`
 - `rust/fontaine-tui/src/{question.rs (new), lib.rs, app.rs, view.rs, linear.rs}`
-- `rust/fontaine-core/tests/{choke_point.rs (ExtensionTools literal at :71), permission_rules.rs (tool-name lists at :71, :84)}`,
+- `rust/fontaine-core/tests/{choke_point.rs (ExtensionTools literal at :71), permission_rules.rs (tool-name lists at :71, :84), system_prompt.rs (snapshot, :29-42), docs.rs (:205, needs a `| ask_user_question |` row in `docs/tools.md`), common/pipeline.rs (:65, `Scripted` overrides `ask_user`)}`,
+  the `app.rs` overlay-name test (~:1134, add the question overlay),
   `rust/fontaine-tools/tests/choke_point.rs`, `rust/fontaine/tests/headless_smoke.rs` (hard-coded
   tool names)
 - `docs/{tools,tui,headless,permissions,configuration,guardian,agents,architecture,extensions}.md`, `CHANGELOG.md`,
@@ -187,10 +199,10 @@ the label's wording, is what counts as intent.
 
 ## Documentation
 
-`docs/tools.md` (table row, fast-path note; ~:33), `docs/tui.md` (dialog keys),
+`docs/tools.md` (table row, fast-path note; ~:33, and :46-60 "skill is the one read-only tool that names no path"), `docs/tui.md` (dialog keys),
 `docs/headless.md` (unavailable result), `docs/permissions.md` (never auto-answered; answers
 become intent; ~:60 and ~:108-115), `docs/configuration.md` (~:457-458), `docs/guardian.md`
-(~:56-60 intent rule, ~:130), `docs/agents.md` (~:38-39, ~:93), `docs/architecture.md` (~:108),
+(~:56-60 intent rule, ~:130), `docs/agents.md` (~:38-39, ~:93), `docs/architecture.md` (~:108, :131),
 `docs/extensions.md` (~:65), `CHANGELOG.md`.
 
 ## Testing Strategy
@@ -198,13 +210,16 @@ become intent; ~:60 and ~:108-115), `docs/configuration.md` (~:457-458), `docs/g
 - Unit (`ask_user.rs`): argument validation (0 or 5 questions, 1 or 5 options, duplicate labels,
   unknown field, over-long header), result rendering for single/multi-select/other, root-only
   refusal, unavailable and declined texts.
+- TUI (`app.rs`): a second question does not drop the first (queued, shown in order);
+  Esc while `running` with a question open yields `Reply::Declined`, not `Action::Interrupt`;
+  interrupt declines pending root questions.
 - Unit (`question.rs`): key handling — navigation, toggle, Other entry, advance, Esc cancel,
   ahead-typed keys ignored within the grace period, dropped sender → closed.
 - Core: with a scripted `Approver`, `Answered` appends a `UserMessage` that appears in the
   adjudication request's `recent_user_messages`; `DenyAll`/default yields the unavailable result
   and appends nothing; every permission mode (including `auto`) still reaches the approver and
-  never answers itself; a deny rule blocks the call before any dialog.
+  never answers itself (one parametrised choke-point assertion over all modes); a deny rule blocks the call before any dialog.
 - Choke-point tests: the tool is registered wrapped with `ReadOnly` risk (update the table-size
   assertions); built-in child toolsets exclude it, and a custom agent type that inherits every parent tool is refused at call time.
-- Headless integration (`fontaine -p` with a deterministic completion model): the tool call
-  returns the unavailable result and the run continues.
+- Headless smoke (`headless_smoke.rs`): only checks the advertised tool list includes
+  `ask_user_question`; the unavailable result is covered by the core test above.
