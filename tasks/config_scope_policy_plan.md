@@ -10,7 +10,7 @@ per-section helpers that list the keys to refuse. A key nobody lists is accepted
 declarative policy table keyed by dotted path, makes the default deny, and adds a completeness test
 that walks every `Settings` leaf path and fails until it has a row. The same table drives the
 per-column accept/reject tests, replacing the hand-kept `NO_FOR_PROJECT` / `NO_FOR_LOCAL` /
-`USER_FILE_ONLY` lists. No scope decision changes.
+`USER_FILE_ONLY` lists. No scope decision changes; the reported key becomes the matched row's path.
 
 ## Current State
 
@@ -47,36 +47,22 @@ Everything is in `rust/fontaine-core/src/config.rs`:
 
 ### The table
 
-A new module `rust/fontaine-core/src/config/scope_policy.rs` is not needed; `config.rs` is already
-2144 lines, so the table goes in a sibling file `rust/fontaine-core/src/config_scope.rs`
-(`mod config_scope;`, `pub(crate)` items) holding only the table, the `Policy` type and the walker.
-`check_scope` becomes a thin call into it.
+The table goes in a new file `rust/fontaine-core/src/config_scope.rs` (`mod config_scope;`,
+`pub(crate)` items) holding only the table, the `Rule`/`Cell` types and the walker. `check_scope`
+becomes a thin call into it.
 
-```text
-pub(crate) enum Policy {
-    /// Every scope: the key can only tighten (deny/ask lists, hooks, mcp).
-    Any,
-    /// User file, CLI, and a user-trust project-local file; not shared project.
-    UserTrust,
-    /// User file and CLI only (accounts, network, tui, telemetry sinks).
-    UserOrCli,
-    /// User file only (scanner keys, screen stage knobs).
-    UserOnly,
-    /// Any scope, but the value must satisfy a predicate in the non-user-trust columns.
-    Value { cli: Cell, local: Cell, project: Cell }   // see below
-}
-```
-
-A cleaner encoding avoids the enum/`Value` split: each row is a `Rule` of three cells, one per
-non-user column, because the five policies above are just patterns over `(project, local, cli)`:
+Each row is a `Rule` of three cells, one per non-user column:
 
 ```text
 enum Cell { No, Yes, If(fn(&toml::Value) -> bool) }
-struct Rule { path: &'static str, project: Cell, local: Cell, cli: Cell, reason: &'static str }
+struct Rule { path: &'static str, project: Cell, local: Cell, cli: Cell, reason: &'static str,
+              samples: Option<(&'static str, &'static str)> }   // (accepted, rejected) TOML literals for If cells
 ```
 
-with `const` constructors `Rule::any(path)`, `user_trust(path, reason)`, `user_or_cli`,
-`user_only`, `shadow_true`, etc. so the table stays one line per key. `If` predicates are the
+The five policies (any scope; user file, CLI and project-local; user file and CLI; user file only;
+value-dependent) are patterns over `(project, local, cli)`, built with `const` constructors
+`Rule::any(path)`, `user_trust(path, reason)`, `user_or_cli`, `user_only`, `shadow_true`, etc. so the
+table stays one line per key. `If` predicates are the
 value-dependent cells: `default_mode ∈ {manual, dontAsk}` (project, local), `enabled == false`
 (project, local), `shadow == true` (project, local, cli). Each predicate is a named `fn`, unit-tested.
 The user column is never consulted (user may set everything).
@@ -86,10 +72,13 @@ hook event). Arrays of tables (`[[hooks.pre_tool_use]]`) are traversed without a
 `hooks.*.command` names the field of every element. Rows are leaf-level; a row for an interior node
 (for example `accounts.*`, `agents.types.*`) covers the whole subtree and is used only where the
 subtree is a user-defined entry that is wholly one policy (accounts, MCP servers, agent types,
-`env.*`, `telemetry.resource_attributes`).
+`env.*`, `telemetry.resource_attributes`). Section-level rows (`accounts`, `network`, `tui`, `env`,
+`agents`, `context`, `shell_preclassifier`, `guardian.screen`) match on the interior node itself, so
+a present-but-empty table is still refused as it is today. The reported key is the matched row's
+path.
 
 Reasons are carried per row, reusing today's strings verbatim so error text is unchanged apart from
-the key; several keys share a reason through shared `const &str`s (`TIGHTEN`, `USER_FILE`, ...).
+the key (`tests/config.rs` asserts key text only at the `env` case, which keeps its section-level row); several keys share a reason through shared `const &str`s (`TIGHTEN`, `USER_FILE`, ...).
 
 ### Deny by default
 
@@ -99,18 +88,11 @@ the key; several keys share a reason through shared `const &str`s (`TIGHTEN`, `U
 2. Walk the raw `toml::Table` (the same text, parsed once more as `toml::Table` after the typed
    parse has already validated the schema, so unknown keys keep their current `Parse` error). For
    each leaf (or each node that matches a subtree row), find the first row whose path matches.
-3. No row → `Err((path, DEFAULT_DENY_REASON))` for `Project`, `ProjectLocal` **and `Cli`** is *not*
-   chosen: the issue says deny in project and project-local; CLI is user-trust, so a missing row is
-   a hard fail only in the two project columns and is also reported by the completeness test (so
-   it can never ship). CLI with no row is accepted, matching "CLI accepts everything but the
-   user-file-only keys".
+3. No row → `Err` for `Project` and `ProjectLocal`; `Cli` accepts.
 4. Row found → evaluate the cell for the column; `No` → `Err((path, row.reason))`; `If(p)` → `p`
    on the leaf value.
 
-Walking order is document order (the `toml::Table` is a `BTreeMap`, so sorted by key), not today's
-tier order. When a file violates several rules the reported key can change. Existing tests assert
-only that a scope error occurs or name a single key; the plan keeps the test for the multi-violation
-case out of scope. The `Decisions` section records the accepted change.
+Walking order is sorted-key order (the `toml::Table` is a `BTreeMap`), not today's tier order.
 
 The tier shape of today's code (screen/scanner checked before the CLI early-return) falls out of the
 table: those rows have `cli: No`.
@@ -122,16 +104,12 @@ on `Settings` and the section types, then walk `schemars::schema_for!(Settings)`
 into `$defs`, `properties` for objects, `additionalProperties` for maps (as `*`) and `items` for
 arrays, collecting leaf paths. Leaf types that are enums or newtypes (`PermissionMode`,
 `GuardianProfile`, `Scanner`, `TelemetryBackend`, `ThemeName`, `AccountKind`, `EnvValue`,
-`fontaine_guardian::Question`, the agent-mode type) either derive `JsonSchema` or use
-`#[schemars(with = "String")]` where their `Deserialize` is hand-written. `Origin` and other
-`serde(skip)` fields use `#[schemars(skip)]`. `schemars` is added to `fontaine-core` as a regular
+`fontaine_guardian::Question`, the agent-mode type) derive `JsonSchema`, except `AccountKind` and
+`EnvValue`, which need `#[schemars(with = "String")]`. `fontaine_guardian::Question` (`screen.rs:30`)
+derives only `Deserialize`, so it gets the derive (or the same attribute). `Hook.origin` is
+`serde(skip)`, which schemars honors. `schemars` is added to `fontaine-core` as a regular
 dependency (already in the workspace lockfile via `fontaine-guardian`, so no new crate);
 `cargo deny check` must stay green.
-
-Fallback if the derive churn proves larger than expected during implementation: a test-only
-`fn leaf_paths()` can be derived from serde's own error, deserializing `{ "<x>": 0 }` into each
-section and parsing `expected one of` from `deny_unknown_fields`, but that is brittle and only used
-if schemars cannot be applied cleanly. This is called out in Open Questions.
 
 Test assertions:
 
@@ -147,8 +125,7 @@ For each row and each of `Project`, `ProjectLocal`, `Cli` a *sample value* is ne
 valid TOML snippet. The schema walk supplies the type (`string`, `integer`, `number`, `boolean`,
 `array`, `object`, enum values), from which a generator produces a minimal valid value (first enum
 variant, `"x"`, `1`, `0.5`, `true`, `["x"]`); rows with `If` cells name their accepting and
-rejecting sample values explicitly in the table (`Cell::If { ok: "manual", bad: "plan", .. }`
-extended with literal samples) so the test exercises both sides. Values that need cross-field
+rejecting sample literals in the row's `samples` field so the test exercises both sides. Values that need cross-field
 validity (for example an `accounts.x` needs `kind`) use an override map in the test. The generated
 snippet is passed through `parse_settings` for each column and asserted to be a `ConfigError::Scope`
 for `No` cells and *not* a `Scope` error for `Yes` cells (other errors, such as value validation,
@@ -172,16 +149,15 @@ actually carries the values, which the table test does not.
    every current leaf, the predicate fns, and the walker returning `Result<(), (String, String)>`.
 3. Replace `check_scope` and the four helpers in `config.rs`; thread the `toml::Table` from
    `parse_settings_with_hint`.
-4. Port the multi-column tests: add `rust/fontaine-core/tests/config_scope.rs` (completeness,
-   no-dead-rows, no-overlap, table-driven columns, predicate unit tests, "a key with no row is
-   rejected from project and project-local" using a test-only table via an inner function that
-   takes `&[Rule]`). Delete `NO_FOR_PROJECT`, `NO_FOR_LOCAL`, `USER_FILE_ONLY` and the three loop
+4. Add `#[cfg(test)]` unit tests inside `config_scope.rs` (completeness, no-dead-rows, no-overlap,
+   predicate tests, and "a key with no row is rejected from project and project-local" using a
+   synthetic table via an inner function that takes `&[Rule]`). Add
+   `rust/fontaine-core/tests/config_scope.rs` with only the `parse_settings`-driven per-column
+   test. Delete `NO_FOR_PROJECT`, `NO_FOR_LOCAL`, `USER_FILE_ONLY` and the three loop
    tests from `tests/config.rs`; keep the specific screen/env/telemetry tests that assert messages.
 5. Docs and design: update `docs/configuration.md` (scope-table intro and a one-line note that
    every key has a declared policy and an undeclared key is refused from project scopes) and
-   `tasks/design/config.md` (name the table as the single source). Add a dated line to
-   `tasks/fontaine_harness_plan.md` `## Decisions` if the order-of-report change is judged a
-   deviation; add a `CHANGELOG.md` entry.
+   `tasks/design/config.md` (name the table as the single source). Add a `CHANGELOG.md` entry.
 6. Run from `rust/`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`,
    `cargo deny check`, the two `fixture` evals.
 
@@ -192,7 +168,7 @@ actually carries the values, which the table test does not.
 - `rust/fontaine-core/src/config_scope.rs` (new)
 - `rust/fontaine-core/src/lib.rs` (module declaration, if modules are declared there)
 - `rust/fontaine-guardian/src/*` only if `Question` lacks `JsonSchema`
-- `rust/fontaine-core/tests/config.rs`, `rust/fontaine-core/tests/config_scope.rs` (new)
+- `rust/fontaine-core/tests/config.rs`, `rust/fontaine-core/tests/config_scope.rs` (new, per-column test only; table-internal tests are unit tests in `config_scope.rs`)
 - `docs/configuration.md`, `tasks/design/config.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -209,7 +185,7 @@ actually carries the values, which the table test does not.
 
 ## Decisions
 
-(None yet.)
+- 2026-10-25: the reported key and the order in which multiple violations are reported are not stable across this change.
 
 ## Documentation
 
@@ -220,15 +196,14 @@ actually carries the values, which the table test does not.
 
 All unit-level and reachable by constructed inputs, so no live or manual tier:
 
-- completeness, dead-row and overlap checks against the schema;
-- table-driven per-column accept/reject for every row, both sides of every `If` predicate;
-- a synthetic table with an unlisted key proves deny-by-default for `Project`/`ProjectLocal`
-  (the real table cannot be used because the completeness test forbids an unlisted key);
+- unit tests in `config_scope.rs`: completeness, dead-row and overlap checks against the schema;
+  predicates (both sides of every `If`); a synthetic table with an unlisted key proves
+  deny-by-default for `Project`/`ProjectLocal` (the real table cannot be used because the
+  completeness test forbids an unlisted key);
+- `tests/config_scope.rs`: table-driven per-column accept/reject through `parse_settings` for every row;
 - the existing `tests/config.rs` scope tests that remain (screen shadow, env, telemetry, accounts
-  network keys) pass unchanged, pinning "every decision is unchanged" and the error text.
+  network keys) pass unchanged, pinning the decisions and the error text.
 
 ## Open Questions
 
-- Whether `JsonSchema` derives on every leaf type are acceptable in `fontaine-core`, or the
-  serde-error enumeration fallback is preferred.
-- Whether the multi-violation reporting order change needs a `## Decisions` line in the master plan.
+None.
