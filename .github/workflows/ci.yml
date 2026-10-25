@@ -9,7 +9,7 @@ env:
   CARGO_TERM_COLOR: always
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          files=$(git diff --name-only "origin/$BASE_REF...HEAD")
+          files=$(git diff --no-renames --name-only "origin/$BASE_REF...HEAD")
           if printf '%s\n' "$files" | grep -qvE '^(tasks/|research/|AGENTS\.md$)'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else

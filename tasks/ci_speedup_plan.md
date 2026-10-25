@@ -49,8 +49,9 @@ next is kept. "Measure" means: push the branch, read per-step durations with
 2. **Eval runs.** `fixture` (default and `--profile minimal`) are scoring over static data and
    platform-independent: Linux only. `--guardian none` drives the real `PermissionPipeline`
    including path handling, so it stays on all three OSes.
-3. **Concurrency.** `concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: ${{ github.event_name == 'pull_request' }} }`
-   (cancels pull request runs only, never `main` runs), so a force-push doesn't queue behind a stale run.
+3. **Concurrency.** `concurrency: { group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}, cancel-in-progress: ${{ github.event_name == 'pull_request' }} }`
+   (cancels pull request runs only; `main` pushes get per-commit groups so queue replacement never
+   cancels them), so a force-push doesn't queue behind a stale run.
 4. **Cache saves only on `main`.** `rust-cache` with `save-if: ${{ github.ref == 'refs/heads/main' }}`;
    PRs restore but do not save, removing the ~313 s Windows post-step. `main` runs keep the cache warm.
 
@@ -127,6 +128,11 @@ nothing to reuse. `cargo test --no-run` reuse is already what `cargo test` does.
 - AFK: Stage 1 item 1 keeps `cargo check --features fontaine/pg2` on macOS and Windows
   (release ships pg2 on all dist targets; candle deps have arch/OS-specific code); only pg2
   clippy and test are Linux-only.
+- AFK: Stage 2 items 6 (D:\ target dir), 7 (rust-lld) and 8 (nextest) are deliberately not
+  shipped in this change: they need CI measurement and are follow-ups to evaluate with the PR's
+  measured run.
+- AFK: Stage 2 item 5 shipped in the combined Stage 1 commit.
+- AFK: Stage 3 item 10 shipped unconditionally because it cannot hurt required checks.
 
 ## Documentation
 
@@ -146,5 +152,5 @@ CI configuration has no unit-testable logic. Verification is the CI run itself:
    the 32 min baseline (target < 16 min). Not automated: wall time depends on runner variance and
    must be judged over a couple of runs.
 2. Push a docs-only commit to a throwaway branch/PR and confirm the matrix is skipped but the PR
-   shows as mergeable (only if Stage 3 item 10 shipped), with `ubuntu-latest`, `macos-latest` and `windows-latest` all
+   shows as mergeable (item 10 shipped), with `ubuntu-latest`, `macos-latest` and `windows-latest` all
    reporting green.
