@@ -433,7 +433,7 @@ scorecard run (see `## Remaining work`).
 - 2026-10-21: v1 supports Linux, macOS and Windows; every CI step runs on all three OSes. Windows runs `shell` through Git Bash (Claude Code parity; PowerShell tool is backlog issue #28); details in `design/platforms.md`.
 - 2026-10-21: Deviation — provider and telemetry credential variables are scrubbed from the `shell` and hook child environment (list: Phase 2 step 1); reason: a model-run command must not read provider keys.
 - 2026-10-21: AgentDojo-comparable (ASR × utility) reporting is dropped; the scorecard reports per-class catch rate and false-deny rate.
-- 2026-10-21: Workspace trust (Claude Code parity: folder trust covers the whole folder — bounded at the enclosing git work-tree root, as in Claude Code; unbounded outside a repo) — in the TUI, project and project-local executables (hooks, MCP servers, skill `!cmd`) load only after the trust prompt; headless loads them without one; they never change a permission decision (`design/config.md` §Config, Workspace trust).
+- 2026-10-21: Workspace trust (Claude Code parity: folder trust covers the whole folder — bounded at the enclosing git work-tree root, as in Claude Code; unbounded outside a repo) — in the TUI, project and project-local executables (hooks, MCP servers, skill `!cmd`) load only after the trust prompt; headless loads them without one; they can tighten but never loosen a permission decision (`design/config.md` §Config, Workspace trust).
 - 2026-10-21: A user-scope hook `allow` in `auto` follows Claude Code (like an allow rule; broad matchers suspended; the `claude -p` baseline confirms narrow hooks only, see 2026-10-23 for broad ones).
 - 2026-10-21: The `skill` tool stays `ReadOnly` on the fast path; a skill's `!cmd` is gated as a `shell` call.
 - 2026-10-21 (user): Shell parsing uses exact-pinned `brush-parser` for Tier 0.5, critical-path and rule matching; no hand-rolled lexer, no `shlex`; anything not exactly one simple command falls through.
@@ -511,6 +511,7 @@ scorecard run (see `## Remaining work`).
 - 2026-10-25: Esc in the `ask_user_question` dialog gives a "declined" result rather than an error or the unavailable text, so the model can tell a refusal from a headless session (#23).
 - 2026-10-25: Only the human's typed "Other" text from `ask_user_question` is appended to the ledger as a `UserMessage` (`Other: "<text>"`); selected labels, question text and descriptions reach the model through the tool result only, because option labels are model-authored and "only messages you typed count as intent" must hold (#23).
 - 2026-10-25: Narrows the 2026-10-21 "every CI step runs on all three OSes": compile, lint and test coverage stays on all three, Linux runs pg2 clippy and test, macOS and Windows run `cargo check --features fontaine/pg2`; only the pure-scoring `fixture` evals are Linux-only (`--guardian none` stays everywhere; required check names unchanged). Reason: Windows CI took ~32 min vs ~8 on Ubuntu (#178).
+- 2026-10-25: Deviation — an MCP server's `requiresUserInteraction` marker stays in force for the life of the connection once any `tools/list` response carried it (Claude Code follows the latest listing); overlapping refreshes and late responses could otherwise let a stale page loosen it. It only ever asks more.
 
 ## Open Questions
 

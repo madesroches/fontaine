@@ -535,3 +535,21 @@ async fn a_screen_that_cannot_answer_leaves_the_allow_path_to_the_guardian() {
     assert_eq!(record.tier, Tier::Guardian);
     assert_eq!(record.screen_outcome.as_deref(), Some("unavailable"));
 }
+
+#[tokio::test]
+async fn a_server_marked_tool_never_reaches_the_screen_or_the_guardian() {
+    let server = clear().await;
+    let slow = slow_denier().await;
+    let mut options = Options::new(Auto)
+        .guardian(slow.guardian.clone())
+        .headless();
+    options.always_allow_file = false;
+    let rig = Rig::with(options);
+    rig.state.set_screen(Some(allowing_stage(&server, false)));
+    assert!(!allowed(
+        &rig.check_marked("mcp__srv__grant", json!({})).await
+    ));
+    assert_eq!(rig.audit()[0].tier, Tier::AskRule);
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
+    assert_eq!(slow.asked.load(Ordering::SeqCst), 0);
+}

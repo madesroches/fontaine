@@ -241,6 +241,7 @@ fn mcp_tool(
             results: Arc::new(results),
             hide_mcp_names: false,
         },
+        false,
     );
     (runs, tool)
 }

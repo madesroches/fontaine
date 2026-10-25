@@ -688,3 +688,78 @@ async fn cli_rules_act_as_rules() {
     assert!(allowed(&rig.check("shell", shell("touch x")).await));
     assert!(!allowed(&rig.check("read", json!({"path": ".env"})).await));
 }
+
+const MARKER: &str = "anthropic/requiresUserInteraction";
+
+#[tokio::test]
+async fn a_server_marked_tool_prompts_without_a_grant_in_manual_and_accept_edits() {
+    use fontaine_core::config::PermissionMode::AcceptEdits;
+    for mode in [Manual, AcceptEdits] {
+        let rig = Rig::new(mode);
+        rig.approver.answer(Answer::AllowOnce);
+        assert!(allowed(
+            &rig.check_marked("mcp__srv__grant", json!({})).await
+        ));
+        let record = rig.audit()[0].clone();
+        assert_eq!(
+            (record.decision, record.tier),
+            (Decision::Prompt, Tier::AskRule),
+            "{mode:?}"
+        );
+        assert_eq!(record.rule.as_deref(), Some(MARKER));
+        let request = rig.approver.last_request();
+        assert!(
+            !request.offers.session && !request.offers.always,
+            "{mode:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_server_marked_tool_is_denied_in_dont_ask_and_headless() {
+    for options in [Options::new(DontAsk), Options::new(Manual).headless()] {
+        let rig = Rig::with(options);
+        assert!(!allowed(
+            &rig.check_marked("mcp__srv__grant", json!({})).await
+        ));
+        let record = rig.audit()[0].clone();
+        assert_eq!(
+            (record.decision, record.tier),
+            (Decision::Deny, Tier::AskRule)
+        );
+        assert_eq!(record.rule.as_deref(), Some(MARKER));
+        assert_eq!(rig.approver.asked(), 0);
+    }
+}
+
+#[tokio::test]
+async fn an_allow_rule_never_skips_a_server_marker_but_still_allows_the_unmarked_call() {
+    let settings = "[permissions]\nallow = [\"mcp__srv__grant\"]\n";
+    let rig = Rig::with(Options::new(DontAsk).settings(settings));
+    assert!(!allowed(
+        &rig.check_marked("mcp__srv__grant", json!({})).await
+    ));
+    assert_eq!(rig.audit()[0].tier, Tier::AskRule);
+
+    let rig = Rig::with(Options::new(Manual).settings(settings));
+    rig.approver.answer(Answer::AllowOnce);
+    assert!(allowed(
+        &rig.check_marked("mcp__srv__grant", json!({})).await
+    ));
+    assert_eq!(rig.approver.asked(), 1);
+
+    let rig = Rig::with(Options::new(DontAsk).settings(settings));
+    assert!(allowed(&rig.check("mcp__srv__grant", json!({})).await));
+    assert_eq!(rig.audit()[0].tier, Tier::AllowRule);
+}
+
+#[tokio::test]
+async fn a_deny_rule_beats_a_server_marker() {
+    let rig =
+        Rig::with(Options::new(Manual).settings("[permissions]\ndeny = [\"mcp__srv__grant\"]\n"));
+    assert!(!allowed(
+        &rig.check_marked("mcp__srv__grant", json!({})).await
+    ));
+    assert_eq!(rig.audit()[0].tier, Tier::DenyRule);
+    assert_eq!(rig.approver.asked(), 0);
+}

@@ -518,6 +518,7 @@ async fn through(
         args: &args,
         agent: ROOT_AGENT,
         annotations: None,
+        requires_user_interaction: false,
     };
     match pipeline.run(view, outcome).await.0 {
         Ok(output) => output.render(),

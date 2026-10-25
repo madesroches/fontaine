@@ -152,6 +152,7 @@ struct Meta<'a> {
     risk: RiskClass,
     source: ToolSource,
     annotations: Option<&'a str>,
+    requires_user_interaction: bool,
 }
 
 async fn gated<'a, F, Fut>(
@@ -170,6 +171,7 @@ where
         risk,
         source,
         annotations,
+        requires_user_interaction,
     } = meta;
     let args = normalize(args);
     let agent = agent_of(context)?;
@@ -195,6 +197,7 @@ where
         args: &args,
         agent: &agent,
         annotations,
+        requires_user_interaction,
     };
     let mut scan = None;
     let outcome = match guard.gate.check(view).instrument(span.clone()).await {
@@ -208,6 +211,7 @@ where
                 args: &allowed,
                 agent: &agent,
                 annotations,
+                requires_user_interaction,
             };
             let (outcome, record) = guard
                 .results
@@ -265,6 +269,7 @@ impl<T: Tool> Tool for GuardedTool<T> {
                 risk: self.risk,
                 source: ToolSource::Builtin,
                 annotations: None,
+                requires_user_interaction: false,
             },
             context,
             args,
@@ -281,6 +286,7 @@ pub fn guard_callback(
     callback: Arc<dyn ToolCallback>,
     risk: RiskClass,
     guard: Guard,
+    requires_user_interaction: bool,
 ) -> DynamicTool {
     let ToolDefinition {
         name,
@@ -308,6 +314,7 @@ pub fn guard_callback(
                     risk,
                     source: ToolSource::Mcp,
                     annotations: declared.as_deref(),
+                    requires_user_interaction,
                 },
                 context,
                 args,

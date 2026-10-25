@@ -41,7 +41,8 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
 2. **The deterministic floor**, in this order:
    - a `[permissions] deny` rule: denied.
    - in `plan`, an edit tool: blocked.
-   - an `ask` rule (or a hook's ask): asks.
+   - an `ask` rule, a hook's ask, or an MCP tool its server
+     [marked as requiring your approval](mcp.md#requiring-approval-for-a-tool): asks.
    - **critical path**: a `shell` command that removes the file system root, a top-level
      directory, your home directory, a workspace root or a parent of one asks. The command is
      parsed with a real shell parser, and every `rm` and `rmdir` word in any segment of a list,
@@ -59,7 +60,7 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
      prompt, for a path the file tools can reach.
 
    A floor outcome that asks is a denial in `dontAsk` and in headless runs. In `auto` an `ask`
-   rule and a critical path still ask you: no verdict approves them.
+   rule, a server's approval marker and a critical path still ask you: no verdict approves them.
 3. **Read-only fast path.** A read-only tool (`read`, `ls`, `glob`, `grep`) whose paths all
    resolve inside a workspace root runs. Symlinks are resolved first. The label alone earns
    nothing: a path outside the roots does not qualify. `skill`, `ask_user_question` and `todo_write` name

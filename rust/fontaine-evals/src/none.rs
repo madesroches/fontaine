@@ -141,6 +141,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
             args: &case.args,
             agent: ROOT_AGENT,
             annotations: None,
+            requires_user_interaction: false,
         })
         .await;
     let latency_ms = started.elapsed().as_millis() as u64;

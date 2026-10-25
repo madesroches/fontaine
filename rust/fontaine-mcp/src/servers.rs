@@ -13,6 +13,7 @@ use rmcp::model::{ClientCapabilities, ClientConfig, Implementation};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 
+use crate::interaction::{InteractionTap, Marked};
 use crate::register::GuardedSink;
 
 const TARGET: &str = "fontaine::telemetry";
@@ -202,10 +203,12 @@ where
     T: rmcp::transport::IntoTransport<rmcp::RoleClient, E, A>,
     E: std::error::Error + Send + Sync + 'static,
 {
+    let marked = Marked::default();
     let handler = McpClientHandler::new(
         client_config(),
-        GuardedSink::new(sink, name, guard, reveal_names),
+        GuardedSink::new(sink, name, guard, reveal_names, marked.clone()),
     );
+    let transport = InteractionTap::new(transport.into_transport(), marked);
     handler.connect(transport).await.map_err(|e| McpError {
         server: name.to_string(),
         message: e.to_string(),
@@ -223,9 +226,10 @@ async fn start<S>(
 where
     S: ManagedToolSink + Send + Sync + 'static,
 {
+    let marked = Marked::default();
     let handler = McpClientHandler::new(
         client_config(),
-        GuardedSink::new(sink, &spec.name, guard, reveal_names),
+        GuardedSink::new(sink, &spec.name, guard, reveal_names, marked.clone()),
     );
     let connection = match &spec.transport {
         Transport::Stdio {
@@ -264,7 +268,7 @@ where
                 });
             }
             handler
-                .connect(transport)
+                .connect(InteractionTap::new(transport, marked))
                 .await
                 .map_err(|e| fail(spec, e))?
         }
@@ -283,7 +287,7 @@ where
                 StreamableHttpClientTransportConfig::with_uri(url.as_str()),
             );
             handler
-                .connect(transport)
+                .connect(InteractionTap::new(transport, marked))
                 .await
                 .map_err(|e| fail(spec, e))?
         }
