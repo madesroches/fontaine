@@ -41,20 +41,18 @@ next is kept. "Measure" means: push the branch, read per-step durations with
 2. **Eval runs.** `fixture` (default and `--profile minimal`) are scoring over static data and
    platform-independent: Linux only. `--guardian none` drives the real `PermissionPipeline`
    including path handling, so it stays on all three OSes.
-3. **Concurrency.** `concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: true }` for
-   pull requests only (never cancel `main` runs), so a force-push doesn't queue behind a stale run.
+3. **Concurrency.** `concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: ${{ github.event_name == 'pull_request' }} }`
+   (cancels pull request runs only, never `main` runs), so a force-push doesn't queue behind a stale run.
 4. **Cache saves only on `main`.** `rust-cache` with `save-if: ${{ github.ref == 'refs/heads/main' }}`;
    PRs restore but do not save, removing the ~313 s Windows post-step. `main` runs keep the cache warm.
 
 ### Stage 2 — shrink and speed up builds
 
 5. **Less debuginfo.** `[profile.dev] debug = "line-tables-only"` in `rust/Cargo.toml` (the test
-   profile inherits it). Backtraces keep file/line; PDB size and link time drop. Also set
-   `CARGO_INCREMENTAL: 0` in the workflow env (incremental artifacts bloat the cache and don't pay
-   off on clean-ish CI checkouts).
-6. **Windows working drive.** Measure Defender/disk effect by pointing `CARGO_TARGET_DIR` (and the
-   checkout's cargo home if cheap) at `D:\` on Windows runners; keep only if the gain is clear.
-   The `working-directory: rust` default is unchanged.
+   profile inherits it). Backtraces keep file/line; PDB size and link time drop.6. **Windows working drive.** Measure Defender/disk effect by setting `CARGO_TARGET_DIR` to a path on
+   `D:\` in the job env (Windows runners only) before the `rust-cache` step, and point the cache at
+   the new location (`workspaces: rust -> <path>` or `cache-directories`). Judge the gain net of
+   cache restore and save time; keep only if clear. The `working-directory: rust` default is unchanged.
 7. **Linker.** Try `-C linker=rust-lld` via `RUSTFLAGS` on the MSVC target for Windows only; keep
    only if it links measurably faster and all tests pass.
 8. **`cargo nextest`.** Install with `taiki-e/install-action`, run `cargo nextest run` plus
@@ -96,15 +94,8 @@ nothing to reuse. `cargo test --no-run` reuse is already what `cargo test` does.
 - `AGENTS.md` (Essential Commands CI paragraph)
 - `tasks/fontaine_harness_plan.md` (workspace-layout `ci.yml` description; `## Decisions`)
 - `tasks/design/platforms.md` ("every CI step runs on all three OSes" sentence)
-- `CONTRIBUTING.md` only if it lists the CI steps
-
-## Trade-offs
-
-- Linux-only pg2 vs. `-p`-scoped pg2 on all OSes: the feature is platform-independent, so scoping
-  by crate would still pay Windows compile cost for candle for no added signal.
-- Cache save on `main` only: PRs may start from a slightly older cache; accepted for the ~5 min
-  Windows saving.
-- Nextest and lld are adopted per measurement, not assumed.
+- `CONTRIBUTING.md` (line ~18 says CI runs the first seven steps on all three OSes and lists the
+  eval commands; stale once pg2 and fixture evals are Linux-only)
 
 ## Decisions
 
@@ -118,10 +109,7 @@ nothing to reuse. `cargo test --no-run` reuse is already what `cargo test` does.
 
 ## Documentation
 
-- `AGENTS.md`: note which CI steps are Linux-only.
-- Master plan workspace layout paragraph and `design/platforms.md`: replace "every CI step runs on all
-  three OSes" with the narrowed statement; keep `ci.yml` step list accurate (including any lint/test
-  job split).
+- `AGENTS.md` and `CONTRIBUTING.md`: note which CI steps are Linux-only.
 
 ## Testing Strategy
 
