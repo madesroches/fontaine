@@ -7,7 +7,7 @@
 Fontaine can already reopen a session (`--continue`, `--resume <id>`, `--fork-session`), but only
 by UUID, only at launch, and with no way to tell sessions apart or take a conversation out of the
 store. This adds Claude Code's session UX: session names (`--name`, `/rename`), a resume picker
-(`/resume`, bare `--resume`), `--resume <name>`, `/branch` (fork the live session and carry on in
+(`/resume`), `--resume <name>`, `/branch` (fork the live session and carry on in
 the copy), and `/export` (the conversation as a text file). Issue #10.
 
 ## Current State
@@ -19,7 +19,7 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
   (`Record::SessionStart`) for its primary root and takes the newest by ledger mtime. There is no
   general listing.
 - `open_session` (`fontaine/src/lib.rs`) maps `--resume <id>` / `--continue` / `--fork-session` to
-  one of those calls. `--resume` takes a required id (`fontaine/src/cli.rs`). Flag combinations are
+  one of those calls. `--resume` takes a required id (`fontaine/src/cli.rs`) and stays that way: the picker is a TUI command only. Flag combinations are
   checked in `check_session_flags`; `fontaine/tests/resume.rs` covers them headlessly.
 - `Record::Resumed { source, how }` records continuation in the ledger. `LedgerView` ignores
   records that are not the human's words (`Scheduled`), the pattern for a record the guardian must
@@ -75,10 +75,10 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
   carries the source's: the given name, else the source's name plus ` (branch)` when the source has
   one, else none. Without this a `--fork-session` copy would share the source's name and `resolve`
   would return `Ambiguous`.
-- `--resume`/`-r` takes an optional value (`num_args = 0..=1`). With a value it is an id or name
-  (`resolve`). Without one the TUI opens the picker before the session starts; with `-p` it is a
-  usage error (nothing to pick with). `conflicts_with = "continue_session"` stays.
-- The picker-at-launch result feeds the same `open_session` path as `--resume <id>`.
+- `--resume`/`-r` keeps its required value, now an id or name (`resolve`); there is no bare
+  `--resume` picker at launch (the picker is an overlay inside `drive`, which needs a live session,
+  and an optional value would swallow the positional PROMPT). `/resume` in the TUI is the picker.
+  `conflicts_with = "continue_session"` stays.
 
 ### TUI
 
@@ -140,8 +140,8 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
 1. **Core metadata** (`fontaine-core/src/ledger.rs`, `session.rs`): `SessionNamed` record,
    `validate_name`, `SessionInfo`, `list`, `resolve`, `Session::{rename,name}`; rebuild
    `latest_for_root` on `list`. Make `LedgerView` ignore the new record.
-2. **CLI** (`fontaine/src/cli.rs`, `lib.rs`): `--name`, optional-value `--resume`, name resolution
-   in `open_session`, `check_session_flags` updates, write the name on create/fork.
+2. **CLI** (`fontaine/src/cli.rs`, `lib.rs`): `--name`, `--resume` by id or name, name resolution
+   in `open_session`, write the name on create/fork.
 3. **Export** (new `fontaine-core/src/export.rs`): conversation → Markdown as a pure function over
    loaded messages, plus the file write.
 4. **Picker and commands** (`fontaine-tui`): `resume_picker.rs`, `Command::{Resume,Branch,Rename,
@@ -192,15 +192,17 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
 - 2026-10-26: A switch restarts MCP servers and the scanner, like any resume.
 - 2026-10-26: `/resume` and `/branch` run only between turns; `/branch` is refused while a subagent runs.
 - 2026-10-26: `/export` is owner-only and never overwrites an existing file.
+- AFK 2026-10-26: No bare `--resume` picker at launch; the picker is `/resume` in the TUI only (the overlay lives in `drive`, which needs a live session, and an optional `--resume` value would swallow the positional PROMPT). Deviation from Claude Code; issue #10 asks for a TUI picker.
+- AFK 2026-10-26: `--resume` keeps its required value, so `fontaine -p --resume <id> "task"` parses unchanged.
 - 2026-10-26: `/rename` without an argument is deterministic (no model call), a deviation from Claude Code.
 
 ## Documentation
 
 - `docs/tui.md`: new rows for `/resume`, `/branch`, `/rename`, `/export`; rewrite the Resuming
   section and the `/clear` sentence.
-- `docs/headless.md`: `--name`, `--resume` by name, bare `--resume` rejected under `-p`.
+- `docs/headless.md`: `--name`, `--resume` by name.
 - `docs/configuration.md` (~876): the `--continue`/`--resume`/`--fork-session` row gains `--name`
-  and bare `--resume`. `docs/telemetry.md` (~118): a switch uses `start_type` `resume`.
+  (`--resume` takes an id or name). `docs/telemetry.md` (~118): a switch uses `start_type` `resume`.
   `docs/architecture.md` (~184-187): resuming and forking. `docs/tui.md` ~240 and ~278: the
   `/clear` text.
 - `tasks/design/sessions.md`: `SessionNamed`, listing and the switch loop.
@@ -223,7 +225,7 @@ Unit tests (fakes suffice, no live APIs):
 
 Integration (`fontaine -p`, `fontaine/tests/resume.rs`): `--name` then `--resume <name>`
 reopens it; `--fork-session --name` names the copy only; ambiguous name exits 2 and lists ids;
-bare `--resume` under `-p` is a usage error. The TUI switch loop is tested with the existing
+`fontaine -p --resume <id> "task"` still parses the prompt as the prompt. The TUI switch loop is tested with the existing
 `fontaine-tui` test rig by driving `/branch` and asserting the returned `Switch` outcome and the
 copy on disk; the rig (`World::run`, `run_linear` in `fontaine-tui/tests/common/mod.rs`) returns
 `drive`'s outcome and the test reads the copy's id from it.
@@ -238,4 +240,4 @@ copy on disk; the rig (`World::run`, `run_linear` in `fontaine-tui/tests/common/
 
 ## Open Questions
 
-- None the code cannot settle.
+- None.
