@@ -67,9 +67,9 @@ segment, arrays and scalars are leaves. A map-section summary row (`accounts`, `
 `agents.types`, `env`, `telemetry.resource_attributes`) takes as its source label the union of
 slots over every `sources` key with prefix `<section>.`, highest precedence first. It is generic, so `Config::apply` is unchanged and a new key needs no provenance
 code. CLI flag rules (`--allowed-tools`, `--disallowed-tools`) are already folded into the CLI
-layer's `Settings` before the merge. A flags-only CLI layer has no raw table, so the walk starts it
-from an empty `toml::Table` and adds `permissions.allow` / `permissions.deny`, so they show up as
-`cli`. Labels come from `Slot::label()`; a key with no `sources` entry shows `default`.
+layer's `Settings` before the merge. `load` appends them to the CLI layer's raw table too
+(`permissions.allow` / `permissions.deny`) in every case, starting from an empty `toml::Table`
+only when no `--settings` file was given, so they show up as `cli` with or without one. Labels come from `Slot::label()`; a key with no `sources` entry shows `default`.
 
 `[env]` values are never shown in the panel: only names. (`EnvValue` already redacts
 its `Debug`.)
@@ -94,8 +94,8 @@ pub struct KeyRow {
 pub struct Running<'a> { pub theme: &'a str, pub main_model: &'a str, pub guardian_model: Option<&'a str> }
 
 pub enum Edit {
-    /// Cycles through fixed values (`tui.theme`'s names, `true`/`false`).
-    Choice(fn() -> Vec<&'static str>),
+    /// Cycles through fixed `(label, value)` pairs; a `None` value resets (removes) the key.
+    Choice(fn() -> Vec<(&'static str, Option<toml_edit::Value>)>),
     /// A positive integer typed into a field; empty clears the key.
     PositiveInt,
     /// Opens an existing picker instead (`/model`, `/guardian-model`).
@@ -137,8 +137,8 @@ Editable rows (all other rows are read-only, with the footer naming the file to 
 | `model.model` | `Picker(Main)` | Live (existing `/model` path) |
 | `guardian.model` | `Picker(Guardian)` | Live (existing `/guardian-model` path) |
 
-Choice strings map to typed TOML values per row (`true`/`false` → bool, theme → string). Cycling
-onto `unset` emits `ConfigKey::Reset(path)`.
+Each `Choice` pair carries its typed TOML value (`true`/`false` → bool, theme → string); the
+`unset` pair's value is `None`, and cycling onto it emits `ConfigKey::Reset(path)`.
 
 An in-crate unit test (moving `schema_nodes` from `config_scope`'s tests into a shared
 `#[cfg(test)]` helper; `Config::defaults` becomes `pub(crate)` if needed) fails when a `Settings`
@@ -174,14 +174,20 @@ user file fail to load (e.g. `autocompact_window = 0`) is refused with the confi
 
 - `ConfigPanel { rows: Vec<PanelRow>, selected, filter: String, field: Option<String>, status: Option<String> }`
   is built from `KEYS`, the running `Config`, `Running` and the user file path. `PanelRow` holds the path,
-  effective text, source label(s), edit kind, and `pending: Option<String>` (a saved value that
-  applies next launch).
+  effective text, source label(s), edit kind, and `pending: Option<String>` (the label of a saved
+  value that applies next launch, `unset` after a reset). `Ui` keeps `config_pending:
+  BTreeMap<String, String>`, updated on every NextLaunch save or reset, and seeds `pending` from it
+  each time the panel opens, so a pending value survives closing and reopening `/config`.
 - Typed characters, including space, go into the filter (by path substring, as in the model picker). Up/Down select. Enter on a
-  `Choice` row moves to the next value and saves it. On a `PositiveInt` row it opens a text
+  `Choice` row moves to the value after the row's `pending` label, else after its effective value
+  (first pair if neither matches), and saves it. On a `PositiveInt` row it opens a text
   field, where Enter saves and Esc cancels. On a `Picker` row it closes the panel and opens the
-  existing model picker. Del removes the key from the user file (reset); Backspace on an empty filter does
+  existing model picker. Del on a `Choice` or `PositiveInt` row removes the key from the user file
+  (reset); on a Live row (`tui.theme`) the running theme also switches to the default. Del is
+  ignored on `Picker` rows (reset `model.model` / `guardian.model` by editing the file) and on
+  read-only rows. Backspace on an empty filter does
   nothing, as in the model picker. Esc closes.
-- `handle_key` returns `ConfigKey::{None, Close, Save { path, value }, Reset(path), OpenPicker(ModelSlot)}`,
+- `handle_key` returns `ConfigKey::{None, Close, Save { path, value: toml_edit::Value }, Reset(path), OpenPicker(ModelSlot)}`,
   mirroring `PanelKey`. `Ui` does the I/O: `user_config::set_config_value`, then for `Live` rows the
   same runtime switch `/theme` does. The panel's status line reports the outcome:
   - saved to the user file;
@@ -217,7 +223,7 @@ user file fail to load (e.g. `autocompact_window = 0`) is refused with the confi
 4. **`config_panel.rs`** in `fontaine-tui`: state, filtering, key handling, body/footer/linear
    body. Unit tests in the file.
 5. **Wiring**: `Command::Config` + `BUILTINS` row; `App.config`, key routing, `App::covered()`,
-   `view::overlay` branch; `Ui::config` and the `ConfigKey` handler in a new
+   `view::overlay` branch; `Ui::config`, `Ui::config_pending` and the `ConfigKey` handler in a new
    `ui/commands/config.rs`, reusing `theme`'s switch (factor the "apply theme" part out of
    `Ui::theme`; the helper only switches `app.theme`, with no persistence or reporting, so `/theme`
    keeps calling `finish_switch` and the panel sets `panel.status`) and the picker-opening code
@@ -241,16 +247,6 @@ user file fail to load (e.g. `autocompact_window = 0`) is refused with the confi
 - `docs/tui.md`, `docs/configuration.md`, `docs/index.md`
 - `CHANGELOG.md`, `research/research-claude-code-parity.md`, `tasks/fontaine_harness_plan.md`
 
-## Trade-offs
-
-- **Provenance from raw TOML vs. tracking in `Config::apply`.** Tracking inside `apply` means a
-  line per field and a new place to forget when a key is added. Walking the raw tables is generic
-  and uses the scope table's path convention, so provenance can't drift from the scope policy.
-- **Catalog table vs. rendering raw TOML.** Rendering the winning layer's raw value would need no
-  catalog but cannot show defaults or the merged result of lists/maps. A catalog with an
-  `effective` renderer over `Config` shows what is actually running, and the coverage test keeps
-  it complete, as `RULES`' test does.
-
 ## Decisions
 
 - 2026-10-25: `/config` is an interactive overlay, unlike the read-only notices of `/status` and
@@ -271,6 +267,13 @@ user file fail to load (e.g. `autocompact_window = 0`) is refused with the confi
 - 2026-10-25: `user_config::set_value` and its wrappers validate the edited document against the
   user column before writing, so no Fontaine-made edit through them can leave the user file
   unloadable.
+- 2026-10-25: AFK: NextLaunch pending values persist across panel opens in a session-scoped `Ui::config_pending` map that seeds each `PanelRow::pending`, rather than re-reading the user file at open, because it needs no file read or comparison logic and edits from other sessions are out of scope.
+- 2026-10-25: AFK: `Edit::Choice` is a typed list of `(label, Option<toml_edit::Value>)` pairs with `None` meaning reset, and `ConfigKey::Save.value` is a `toml_edit::Value`, because the panel must hand `set_config_value` a typed value and the `unset` entry must map to a removal.
+- 2026-10-25: AFK: the panel shows only config-layer provenance; `--model`, the screen-reader flag and `FONTAINE_AX_SCREEN_READER` overrides outside `Config` are not named as sources (the model rows still render the running model), because those are per-launch overrides rather than config scopes, which is what the issue asks the panel to show, and plumbing their sources into the panel adds state for little gain.
+- 2026-10-25: AFK: `load` appends the `--allowed-tools` / `--disallowed-tools` rules to the CLI layer's raw table in every case, starting from an empty table only without `--settings`, because otherwise a `--settings` file plus flag rules would omit `cli` from those rules' sources.
+- 2026-10-25: AFK: Enter on a `Choice` row cycles from the row's pending value, else its effective value, because with pending kept across opens this avoids re-saving an overriding scope's value without reading the user file.
+- 2026-10-25: AFK: Del resets `Choice`/`PositiveInt` rows only (a `tui.theme` reset also switches the running theme to the default) and is ignored on `Picker` and read-only rows, because removing `model.model` sends the next launch to the setup screen and a live `guardian.model` reset has no defined switch path.
+- 2026-10-25: AFK: provenance comes from walking each layer's raw TOML rather than tracking in `Config::apply`, and the panel renders through a catalog over `Config` rather than raw TOML, because the walk needs no per-field code and only the merged `Config` shows defaults and merged lists; this replaces the plan's Trade-offs section.
 
 ## Documentation
 
@@ -278,6 +281,8 @@ user file fail to load (e.g. `autocompact_window = 0`) is refused with the confi
 - `docs/tui.md`: `/config`, `/settings` row in the commands table and a short "Settings panel"
   section covering keys, the source column, which keys are editable, overridden-by-scope and
   next-launch behavior.
+- The "Settings panel" section notes that the source column names config scopes only: a value set by
+  a CLI flag or environment variable (`--model`, screen-reader mode) is not labelled as such.
 - `docs/configuration.md`: one paragraph saying the TUI's `/config` shows each key's effective
   value and source and edits a few preferences in the user file. Link from the "The settings scope stack"
   section.
@@ -290,7 +295,7 @@ user file fail to load (e.g. `autocompact_window = 0`) is refused with the confi
 Unit tests (all behavior reachable with constructed inputs):
 
 - **Provenance** (`tests/config.rs`): a key set in user only → `[User]`; in user and project-local →
-  `[ProjectLocal, User]`; a list in user and project → both; `--disallowed-tools` → `Cli`; an unset
+  `[ProjectLocal, User]`; a list in user and project → both; `--disallowed-tools` → `Cli`; `--settings f.toml --disallowed-tools X` → the rule path includes `Cli`; an unset
   key → absent; `[env]` paths present by name.
 - **`user_config`**: set/replace/remove keeps comments and other tables; removal drops an emptied
   table; an invalid value (`autocompact_window = 0`, a non-theme string) is refused and the file is
@@ -298,8 +303,9 @@ Unit tests (all behavior reachable with constructed inputs):
 - **Catalog**: every schema leaf/section has a row; each
   `effective` renderer on `Config::defaults` gives the documented default (spot-check theme,
   `schedule.enabled = true`, `agents.max_parallel = 4`); `env` row never contains a value.
-- **Panel**: filtering; Up/Down bounds; Enter cycles a `Choice` and emits `Save` (cycling onto `unset` emits `Reset`); Backspace on an empty filter emits nothing; `PositiveInt`
-  field accepts digits only, empty → `Reset`; Del → `Reset`; `Picker` row → `OpenPicker`;
+- **Panel**: filtering; Up/Down bounds; Enter cycles a `Choice` and emits `Save` (cycling onto `unset` emits `Reset`); Backspace on an empty filter emits nothing; Enter cycles from `pending` when set; `PositiveInt`
+  field accepts digits only, empty → `Reset`; Del → `Reset` on `Choice`/`PositiveInt` rows and nothing on
+  `Picker` and read-only rows; a panel built with a seeded pending value shows it; `Picker` row → `OpenPicker`;
   overridden row's status text names the winning scope; read-only rows emit nothing; linear body
   has one line per row with no box-drawing characters.
 - **Commands**: `parse_command("/config")` and `/settings` → `Command::Config`; menu lists it.
