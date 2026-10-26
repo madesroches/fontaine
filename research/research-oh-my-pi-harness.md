@@ -26,7 +26,7 @@ on the wire).
 
 omp is a large, fast-moving TypeScript harness (Bun, Rust N-API addon) that bets on three things Fontaine mostly does not: a very
 rich set of in-loop recovery nudges, an edit format built around file-version tags, and a permissive security posture (`yolo` by
-default, no trust gate for anything a project defines, no sandbox). The recovery layer and some UI ideas are worth adopting;
+default, no trust gate for anything a project defines, no sandbox; Fontaine's workspace trust gates project executables in the TUI only). The recovery layer and some UI ideas are worth adopting;
 the security posture is the opposite of Fontaine's invariants and is a catalogue of what not to do.
 
 What lets the model iterate, in order of value to Fontaine (all [measured] unless noted; detail in 4.1 and section 5):
@@ -365,7 +365,7 @@ summarizer prompt.
   [measured] (E7): with the parent at `always-ask` and `tools.approval.task: allow`, the parent's own `bash echo parent-ran` was refused
   (`requires approval but no interactive UI available`) while the child it spawned ran `touch /tmp/child_marker && echo child-ran`
   (the file existed afterwards; captures `e7_child_mode_allowed_task.txt`). With `task` itself unapproved the spawn was refused
-  (`e7_child_mode_refused.txt`), so the escape is: allow one tool, get all of `yolo` for the child.
+  (`e7_child_mode_refused.txt`; the parent's approval-mode argument for that run was not recorded, though `omp.out` shows it was stricter than the yolo default, so the conclusion rests on `e7-child-mode2`, which has its config), so the escape is: allow one tool, get all of `yolo` for the child.
 
 **Claude Code.** `TodoWrite`; plan mode with `ExitPlanMode` approval; `Task` subagents that inherit the parent's permission mode
 (documented; not re-measured here).
@@ -400,8 +400,8 @@ prompt and `isProjectTrusted` is hard-coded `() => true` (`extensibility/extensi
 project `permissions.allow` of `Bash(echo *)`) and `.mcp.json` (a stdio server that touches a file): the hook ran, the project MCP
 server was spawned (status `pending` in the init event), and the allowed `echo` ran without a prompt (capture
 `e10_claude_planted_project.txt`). So in `-p`, where there is no trust dialog, **Claude Code behaves like omp on this row**: project hooks,
-project MCP servers and project allow rules take effect. On project allow rules and the TUI trust prompt Fontaine is stricter than
-both: project scope can only tighten (the recorded deviation, Decisions 2026-10-21, covers project allow rules only), and the TUI asks
+project MCP servers and project allow rules take effect. On project allow rules Fontaine is stricter than
+both: project scope can only tighten (the recorded deviation, Decisions 2026-10-21, covers project allow rules only). The TUI also asks
 before loading project executables (seen in E11: "Do you trust the files in this folder? … hooks, MCP servers and the commands in
 skills … none of them can approve a tool call for you"). In `-p`, Fontaine follows Claude Code and loads project hooks and MCP servers
 without a prompt (Decisions 2026-10-21, workspace trust); they can tighten a permission decision but never loosen one.
@@ -691,7 +691,7 @@ proposed one in section 10.
 What omp does that conflicts with an invariant, for the record:
 
 - **Project scope can loosen** (`tools.approvalMode`, `tools.approval.*`, `bash.patterns`, `contextFiles`, MCP, hooks, extensions, LSP servers,
-  `.omp/secrets.yml`); Fontaine: project scope only tightens, workspace trust gates executables. [measured] E9.
+  `.omp/secrets.yml`); Fontaine: project scope only tightens, workspace trust gates executables in the TUI only (headless loads them like Claude Code). [measured] E9.
 - **Child looser than parent** [measured] E7.
 - **Regex on tool arguments** (critical patterns, `bash.patterns`, interceptor, TTSR, secret redaction). Fontaine: no regex on tool
   arguments anywhere.
@@ -826,9 +826,13 @@ P7. **Measure cross-model session resume: tool-call ids and empty assistant cont
 P8. **Headless workspace trust: decide whether `-p` should load project hooks and MCP servers unprompted**
    Labels: `enhancement`, `area:security`, `priority:low`.
    Body: omp loads project hooks, MCP servers and allow rules without a prompt, and Claude Code `-p` does the same (E10). Fontaine follows Claude Code:
-   the TUI asks, `-p` loads project hooks and MCP servers without a prompt (they can only tighten a permission decision, but a hook or stdio MCP
+   only the TUI asks, `-p` loads project hooks and MCP servers without a prompt (they can only tighten a permission decision, but a hook or stdio MCP
    server is still a process spawned from repo contents). Proposal: measure first; if worth closing, an opt-in user-scope setting that makes `-p`
    skip project executables unless the folder was trusted in the TUI. Any default change is a deviation from Claude Code and needs a Decisions line.
+
+P9. **Approval prompt: rule line drops newlines of a multi-line command**
+   Labels: `bug`, `area:tui`, `priority:low`.
+   Body: in the approval prompt the proposed-rule line is wrapped by `input::wrap` (`rust/fontaine-tui/src/input.rs`, used at `approval.rs` for the rule line), which splits by width only; ratatui drops the control characters, so a command with a newline reads `…from stats import medianprint(…`. The saved rule keeps the real newlines and the command pane shows the break, so no permission outcome changes. Reproduction: `research/oh-my-pi-harness/captures/e11_fontaine/07_approval_prompt.txt`. Fix: render the rule with newlines shown as `\n` or split into lines first. See 4.11.
 
 ### Proposed comments on existing issues
 
@@ -853,7 +857,7 @@ P8. **Headless workspace trust: decide whether `-p` should load project hooks an
 
 ### Bugs found in Fontaine
 
-None reproduced. Observations that are not bugs: headless `fontaine -p` with an open stdin waits 3 s and prints "no stdin data received"
+No permission or guardian defect reproduced. One minor cosmetic display defect (proposed as P9): in the approval prompt the rule line for a multi-line command drops the newlines (`…from stats import medianprint(…`, capture `e11_fontaine/07_approval_prompt.txt`); the saved rule keeps real newlines (`permission_rules.rs`), and the command pane above shows the line break, because `input::wrap` splits by width only and ratatui drops control characters. Observations that are not bugs: headless `fontaine -p` with an open stdin waits 3 s and prints "no stdin data received"
 (by design); Fontaine's denial text is better than omp's.
 
 ### Decisions

@@ -184,11 +184,12 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   job with a wake-up; pruned results left as pointers the model pages back; a stale-edit recovery message. A judge-based
   unexpected-stop check cost a model request per turn and never fired.
 - **Not copied**: `yolo` as the default approval mode, project config that can loosen approval, everything a project defines loading
-  with no trust prompt (extensions, hooks including `.claude/hooks`, stdio MCP servers, rules), subagents that are always `yolo` (a
+  with no trust prompt, in every mode (extensions, hooks including `.claude/hooks`, stdio MCP servers, rules), subagents that are always `yolo` (a
   parent in `always-ask` spawned a child that ran `bash`), regexes on command text as the safety check, a model-liftable tool deadline
   (`timeout: 0`), prompt-only plan mode (shell ran in plan mode), and project rules that interrupt the model with system authority.
 - **Claude Code** (one `claude -p`): project hooks, project MCP servers and project allow rules also take effect in `-p`; Fontaine's
-  workspace trust and tighten-only project scope are stricter than both.
+  tighten-only project scope is stricter than both; its workspace trust prompt gates project executables in the TUI only, and
+  headless `-p` loads them like Claude Code.
 - **Edit format**: hashline (file-version tags) worked and recovered a stale edit, but four edit tasks did not separate it from
   text-anchored edits (n=1); not adopted.
 - **Terminal UI**: framed tool cards with output panes and edit diffs, a segmented status line, an approval prompt that ignores Enter for
