@@ -6,7 +6,7 @@
 
 Startup warnings are hard to see: the TUI shows every notice as the same dim `· ` line, and the
 config-root warnings never reach the conversation because they go out through `eprintln!` before
-the screen starts. This plan gives notices a severity (info / warning / error) with its own
+the screen starts. This plan gives notices a severity (info / warning) with its own
 glyph and theme colour, splits a notice into a short headline and an actionable hint, routes
 every non-fatal startup warning into the transcript, and bottom-anchors the transcript so a short
 one (typically just the warnings) sits directly above the prompt.
@@ -27,10 +27,11 @@ one (typically just the warnings) sits directly above the prompt.
 - Config-root warnings: `prepare_session` does `eprintln!("fontaine: warning: ...")` for each
   `roots.warnings` (`fontaine/src/lib.rs:435-437`) before either surface starts; the TUI never
   sees them. Other pre-TUI `eprintln!`s are either fatal errors (exit) or one-off warnings
-  (`lib.rs:152` ignored `FONTAINE_AX_SCREEN_READER` value, `lib.rs:219` trust decision not saved).
+  (`lib.rs:152` ignored `FONTAINE_AX_SCREEN_READER` value; `lib.rs:219` unsaved trust decision is
+  fatal and returns exit 1).
 - The linear (screen-reader) renderer labels a notice `notice:` (`linear.rs:259`).
 - Theme: `fontaine-tui/src/theme.rs` has `warning`, `error`, `heading` slots but no info slot.
-- Layout: `Screen::render` (`screen.rs:~165-190`) commits settled transcript lines to terminal
+- Layout: `Screen::render` (`screen.rs:~153-178`) commits settled transcript lines to terminal
   scrollback via `insert_before` on every frame and sizes the inline live area to reach the
   bottom row. When the transcript is short, the committed lines sit at the top and the live area
   is mostly padding above the input (`view::draw_transcript`, `view.rs:390`, draws live lines
@@ -41,14 +42,15 @@ one (typically just the warnings) sits directly above the prompt.
 ### Notice type (fontaine-core)
 
 ```text
-pub enum Severity { Info, Warning, Error }
+pub enum Severity { Info, Warning }
 pub struct Notice { pub severity: Severity, pub headline: String, pub hint: Option<String> }
 ```
 
 `Notice::info(text)`, `Notice::warning(headline, hint)` constructors; `Display`/`text()` joins
 headline and hint with " — " for the plain surfaces (headless stderr, tests that match on
 content). `Models::notices`, `AgentSetup.notices`, `AgentRuntime::notices()`, and the scanner
-notices become `Vec<Notice>`. The guardian fallback becomes headline "Guardian is running on
+notices become `Vec<Notice>`. `fontaine-tui/src/setup.rs` keeps `warnings: Vec<String>` and
+converts them to `Notice::warning` where it appends them into `models.notices` (`:423,435`). The guardian fallback becomes headline "Guardian is running on
 your main model `kimi/kimi-for-coding`", hint "No benchmark-validated guardian model is
 available on your accounts — set `[guardian] model` or run /guardian-model". The containment and
 scanner notices keep their text as a headline (`Warning` for failures/fallbacks, `Info`
@@ -61,32 +63,33 @@ for the other `Approver` implementors).
 ### Pre-TUI warnings
 
 `prepare_session` stops printing the root warnings and returns them as `SessionPrep.warnings:
-Vec<Notice>` (severity `Warning`). They flow into `AgentSetup` as a `startup_warnings` list kept
-beside `scanner_notices` because, like the scanner's, they print in every mode.
-`headless::announce` prints them first, in every mode, with the unchanged
-`fontaine: warning: ...` text, so headless output does not change. The TUI shows them first in
-the transcript, then the history/recent errors, notices and scanner notices in the existing
-order. The same route carries the other non-fatal pre-TUI warnings that can reach the TUI (the
-ignored screen-reader env value, the unsaved trust decision) when their emit site is before the
-runtime exists, via a `Vec<Notice>` collected on `Launch`; any that cannot be carried stay on
-stderr and are named in Decisions. Fatal errors keep `eprintln!` and exit.
+Vec<Notice>` (severity `Warning`). Headless prints them to stderr, with the unchanged
+`fontaine: warning: ...` text, right after `prepare_session` (in `main` when `cli.print`, or first
+thing in `run_headless`), before `resolve_models`, the `--max-budget-usd` check and
+`open_input`, so early exits keep them and headless ordering does not change. The interactive path
+carries them on: `run_interactive` and `agent_setup` both take `SessionPrep`, and `AgentSetup`
+gets a `startup_warnings` list beside `scanner_notices`. The TUI shows them first in the
+transcript, then the history/recent errors, notices and scanner notices in the existing order.
+`screen_reader_mode` runs before any `Launch` exists, so it returns its ignored-env-value warning
+as a `Notice` passed to `run_interactive` and pushed first in the TUI. The unsaved trust decision
+is fatal and stays on stderr, as do fatal errors, which keep `eprintln!` and exit.
 
 ### Rendering
 
 - `Entry::Notice(String)` becomes `Entry::Notice { severity, headline, hint }`.
-  `Transcript::notice(text)` keeps its signature (Info, no hint) so the ~25 existing call sites
+  `Transcript::notice(text)` keeps its signature (Info, no hint) so the 57 existing non-test call sites
   are untouched; `Transcript::warning(headline, hint)` and `Transcript::push_notice(Notice)` are
   new.
 - `entry_lines` renders: Info = the existing dim `· ` style (unchanged look); Warning = `⚠ `
-  in `theme.warning` with the headline in `theme.warning`; Error = `✗ ` in `theme.error`. The
+  in `theme.warning` with the headline in `theme.warning`. The
   hint wraps on its own lines indented under the headline in the dim style. Spans inside
   backticks and `/command` tokens in the hint are bold, so the actionable part stands out
   independently of colour.
-- Theme: no hard-coded colours. Warning and error reuse `theme.warning` / `theme.error`; no new
+- Theme: no hard-coded colours. Warning reuses `theme.warning`; no new
   slot is needed because Info keeps the dim style (decision below).
-- Glyph fallback: a small `Glyphs` choice (`⚠`/`✗`/`·` vs `!`/`x`/`-`) selected once at startup by
+- Glyph fallback: a small `Glyphs` choice (`⚠`/`·` vs `!`/`-`) selected once at startup by
   locale (non-UTF-8 `LC_ALL`/`LC_CTYPE`/`LANG` → ASCII) and stored on `App` next to the theme.
-- Linear renderer: `notice:` for Info, `warning:` / `error:` labels for the others, headline
+- Linear renderer: `notice:` for Info, `warning:` for Warning, headline
   and hint on separate labelled lines, so screen readers announce severity in words.
 
 ### Bottom-anchored transcript
@@ -98,22 +101,25 @@ Today every settled line is committed to scrollback immediately, so a short tran
 written at the top and the live area below it is padding. Change: settled lines are committed
 only when they no longer fit above the input.
 
-- `Screen::render` computes `R`, the rows the transcript region has (terminal rows below the
-  viewport top minus the rows the overlay, queue, todo panel, input box and status line need —
-  `view::height` already computes `content - live` for these). `Transcript` gets a commit that
-  takes this budget: whole settled entries are committed oldest-first only while the
-  uncommitted rows (settled-but-held plus live) exceed `R`. A streaming reply keeps its
-  row-at-a-time cut.
+- `Screen::render` computes `R = (term_h - top_before_commit) - chrome`, where `chrome` is the
+  non-live rows (overlay, queue, todo panel, input box, status line) from a new `view` helper
+  split out of `view::height`'s `content - live`. `Transcript` gets a commit that takes this
+  budget. Invariant: each frame, before draw, whole oldest entries are committed while the
+  uncommitted rows (settled-but-held plus live) exceed `R`; an entry taller than `R` commits
+  whole. The streaming cut gets the same budget: stream rows commit oldest-first only while total
+  uncommitted rows exceed `R`, so the first streamed row does not force held settled entries
+  (the warnings) to scrollback. The existing `Cut::Rows`/`Cut::Lines` path stays unchanged for
+  the linear renderer.
 - Held-back settled entries are drawn as live lines, so `draw_transcript` bottom-aligns: when
   `lines.len() < area.height` it renders into the bottom `lines.len()` rows of the area.
-- The viewport sizing (`wanted`/`free`) must stay consistent with what is held back, so the
-  live area keeps the full height while the transcript is short instead of shrinking around
-  committed lines.
+- `wanted`/`free` are computed after the commit, unchanged.
 - Exit: `clear_live` erases the live area, which now may hold uncommitted transcript.
   `TerminalGuard` therefore flushes everything still held back to scrollback (a
   `Screen::commit_all`) before `clear_live`, so the conversation stays in the terminal after
   quitting, as today.
-- `/clear` empties the transcript and keeps scrollback as before; resizing recomputes `R` each
+- `/clear` calls `commit_all` before `transcript.clear()` (`ui/commands/context.rs:19`, which
+  resets `committed`), so held entries reach scrollback instead of vanishing; scrollback is kept as
+  before; resizing recomputes `R` each
   frame, committing entries that stop fitting.
 - The linear renderer has no live area and is unaffected.
 
@@ -125,27 +131,31 @@ only when they no longer fit above the input.
    guardian-fallback text. Update the tests that match on notice text (`tests/models.rs`,
    `tests/scanner_model.rs`, `tests/scanner.rs`) to use `Notice` accessors.
 2. `fontaine` crate: containment notice as `Notice`; `prepare_session` returns warnings in
-   `SessionPrep.warnings`; collect the other non-fatal pre-TUI warnings on `Launch`; thread into
-   `AgentSetup`; `headless::announce` prints `startup_warnings` first in every mode and
-   `Display`s `Notice`s as before. Update `tests/scanner_headless.rs`, `parallel_agents.rs`,
+   `SessionPrep.warnings`; headless prints them right after `prepare_session`; thread them from
+   `SessionPrep` into `AgentSetup` on the interactive path only; `screen_reader_mode` returns its
+   warning as a `Notice` passed to `run_interactive`; `headless::announce` `Display`s `Notice`s as
+   before. Update `tests/scanner_headless.rs`, `parallel_agents.rs`,
    `telemetry_micromegas.rs` expectations only if text changes (it should not).
-3. `fontaine-tui`: `Prompt::Notice(Severity, String)`; `ChannelApprover::{notice,warn}`; `Entry::Notice`
+3. `fontaine-tui`: convert `setup.rs` `warnings` into `Notice`s where appended to
+   `models.notices`; update `ui/tests.rs:106` (`Prompt::Notice` construction) and
+   `fontaine-evals/src/runner.rs:731` (scanner notice printing; `AgentSetup` test constructors
+   compile unchanged); `Prompt::Notice(Severity, String)`; `ChannelApprover::{notice,warn}`; `Entry::Notice`
    variant, `Transcript::{warning,push_notice}`; `entry_lines` rendering with hint wrapping and
    bold actionable spans; `Glyphs` + locale detection; `lib.rs` startup loop pushes
    `startup_warnings`, notices and scanner notices as `Notice`s; `app.rs` test helper
    `last_notice` and `linear.rs` labels.
 4. Bottom-anchoring: budgeted commit in `transcript.rs`, `Screen::render` sizing,
    `draw_transcript` bottom alignment, `Screen::commit_all` called from `TerminalGuard::drop`
-   before `clear_live`.
+   before `clear_live` and before `transcript.clear()` on `/clear`.
 5. Docs and changelog (see Documentation).
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/{lib.rs,models.rs,agent.rs,scanner_stage.rs}`, new `notice.rs`;
   tests under `rust/fontaine-core/tests/`
-- `rust/fontaine/src/{lib.rs,headless.rs}`
+- `rust/fontaine/src/{lib.rs,headless.rs}`; `rust/fontaine-evals/src/runner.rs`
 - `rust/fontaine-tui/src/{lib.rs,transcript.rs,view.rs,screen.rs,linear.rs,app.rs,theme.rs
-  (only if a slot proves needed),ui/mod.rs}`; `tests/tui.rs`
+  (only if a slot proves needed),setup.rs,ui/mod.rs,ui/tests.rs,ui/commands/context.rs}`; `tests/tui.rs`
 - `docs/tui.md`, `docs/terminal.md`, `docs/headless.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -171,8 +181,10 @@ only when they no longer fit above the input.
 
 ## Documentation
 
-- `docs/tui.md`: notice severities, warning glyph/colour, bottom-anchored transcript.
-- `docs/terminal.md`: ASCII glyph fallback and its locale rule.
+- `docs/tui.md`: notice severities, warning glyph/colour, bottom-anchored transcript; revise the
+  top-down / scrollback / narrowing paragraphs (~lines 10-27).
+- `docs/terminal.md`: update the label table (~line 157); add a new glyph/locale section for the
+  ASCII fallback and its locale rule.
 - `docs/headless.md`: confirm stderr output is unchanged and now includes the config-root
   warnings through the same path.
 - `CHANGELOG.md` under Unreleased.
@@ -185,17 +197,17 @@ All unit/`TestBackend` screen tests; nothing needs a live service.
   (update `tests/models.rs`).
 - Transcript rendering (`transcript.rs` tests): warning entry has `⚠ ` prefix and
   `theme.warning` colour, distinct from Info; hint wraps under the headline at narrow widths;
-  backticked and `/command` spans are bold; ASCII glyph fallback; each preset theme draws the
-  warning in its own `warning` colour.
-- Linear renderer: `warning:` / `error:` labels.
+  backticked and `/command` spans are bold; ASCII glyph fallback; one test with a non-default
+  theme draws the warning in that theme's `warning` colour.
+- Linear renderer: `warning:` label.
 - Bottom anchoring (`screen.rs` tests, the issue's acceptance): a transcript shorter than the
   viewport renders with its last line on the row immediately above the input box and blank rows
   above the first entry; adding entries until it overflows commits the oldest to scrollback with
-  nothing lost or duplicated; a streaming reply across the boundary; resize; `commit_all`
+  nothing lost or duplicated; a streaming reply across the boundary keeps held warnings anchored; `/clear` commits held entries first; resize; `commit_all`
   followed by `clear_live` leaves the full transcript in scrollback.
 - Pre-TUI warnings: a `tests/tui.rs` (or `ui/tests.rs`) test that root warnings handed to the
   startup path appear as warning entries; a headless test that they still go to stderr in every
-  mode.
+  mode, including when a later startup check exits early.
 - Regression: every existing `screen.rs` scrollback test stays green, which pins the unchanged
   overflow behaviour.
 
