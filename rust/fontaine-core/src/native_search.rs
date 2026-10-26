@@ -59,6 +59,12 @@ fn provider_entry(config: &Config, models: &Models) -> Option<Value> {
         .then_some(entry)
 }
 
+/// Whether the main model's account has a provider search at all, whatever the mode and rules
+/// say this turn.
+pub(crate) fn provider_available(config: &Config, models: &Models) -> bool {
+    provider_entry(config, models).is_some()
+}
+
 /// The tool entry the request carries now, or `None` when the client-side backend (if any)
 /// serves searches.
 pub(crate) fn offered(config: &Config, models: &Models, state: &SessionState) -> Option<Value> {

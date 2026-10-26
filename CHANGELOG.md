@@ -12,8 +12,9 @@ All notable changes are recorded here. The format follows
   lines, three lines of context, scrollable) before you decide; in the linear renderer it is plain
   text. It is display-only and absent when the file cannot be read or the edit would fail (#45).
 - Web search. An `anthropic` account on the Anthropic API can use the provider's own search; every
-  other account gets a `websearch` tool when `[websearch] backend` names Tavily or a SearXNG
-  instance, which Fontaine can start on demand with `[websearch] command`. The tool takes `query`,
+  other account gets a `websearch` tool: by default a SearXNG container that Fontaine starts on the
+  first search when `docker` or `podman` is installed, or the Tavily or SearXNG instance that
+  `[websearch] backend` names (`command` starts your own on demand; `backend = "off"` disables it). The tool takes `query`,
   `allowed_domains` and `blocked_domains`, returns titles, URLs and snippets, and is judged by the
   permission pipeline and scanned like any other call (`WebSearch` in skill and agent files maps to
   it). Provider-native search runs inside the model's response, so the guardian, the scanner and

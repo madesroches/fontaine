@@ -54,6 +54,52 @@ pub struct Launch {
     pub env: Vec<(OsString, OsString)>,
 }
 
+/// What a managed start runs, decided when the first search needs it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedPlan {
+    pub argv: Vec<String>,
+    pub base_url: Url,
+    pub env: Vec<(OsString, OsString)>,
+}
+
+type Prepare = dyn Fn() -> std::io::Result<ManagedPlan> + Send + Sync;
+
+/// A SearXNG instance Fontaine decides how to run itself, not the user. The plan is made on the
+/// first search, not at configuration time, because it writes a file and picks a free port.
+#[derive(Clone)]
+pub struct Managed {
+    prepare: Arc<Prepare>,
+    pub startup_timeout: Duration,
+}
+
+impl Managed {
+    pub fn new(
+        startup_timeout: Duration,
+        prepare: impl Fn() -> std::io::Result<ManagedPlan> + Send + Sync + 'static,
+    ) -> Self {
+        Managed {
+            prepare: Arc::new(prepare),
+            startup_timeout,
+        }
+    }
+}
+
+impl std::fmt::Debug for Managed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Managed")
+            .field("startup_timeout", &self.startup_timeout)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for Managed {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.prepare, &other.prepare) && self.startup_timeout == other.startup_timeout
+    }
+}
+
+impl Eq for Managed {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BackendConfig {
     Tavily {
@@ -64,6 +110,7 @@ pub enum BackendConfig {
         base_url: Url,
         launch: Option<Launch>,
     },
+    Managed(Managed),
 }
 
 impl BackendConfig {
@@ -77,7 +124,7 @@ impl BackendConfig {
     fn name(&self) -> &'static str {
         match self {
             BackendConfig::Tavily { .. } => "Tavily",
-            BackendConfig::Searxng { .. } => "SearXNG",
+            BackendConfig::Searxng { .. } | BackendConfig::Managed(_) => "SearXNG",
         }
     }
 }
@@ -244,7 +291,8 @@ async fn settle(child: &mut Child, pid: Option<u32>, grace: Duration) {
 /// rebuilt registry reuses it. Dropping the last handle kills the process.
 #[derive(Debug, Default)]
 pub struct SearxngChild {
-    slot: tokio::sync::Mutex<Option<Running>>,
+    // The address is kept with the process: a managed start picks its port per start.
+    slot: tokio::sync::Mutex<Option<(Running, Url)>>,
 }
 
 impl SearxngChild {
@@ -252,7 +300,7 @@ impl SearxngChild {
     pub async fn is_running(&self) -> bool {
         let mut slot = self.slot.lock().await;
         slot.as_mut()
-            .is_some_and(|running| matches!(running.child().try_wait(), Ok(None)))
+            .is_some_and(|(running, _)| matches!(running.child().try_wait(), Ok(None)))
     }
 }
 
@@ -458,11 +506,32 @@ impl Websearch {
                     .json(&json!({ "query": query, "max_results": self.config.max_results }));
                 parse_tavily(&self.send(request, backend, false).await?)
             }
-            BackendConfig::Searxng { base_url, launch } => {
-                if let Some(launch) = launch {
-                    self.ensure_started(launch, base_url).await?;
-                }
-                let mut url = base_url.clone();
+            BackendConfig::Searxng { .. } | BackendConfig::Managed(_) => {
+                let base_url = match &self.config.backend {
+                    BackendConfig::Searxng {
+                        base_url,
+                        launch: None,
+                    } => base_url.clone(),
+                    BackendConfig::Searxng {
+                        base_url,
+                        launch: Some(launch),
+                    } => {
+                        self.ensure_started(launch.startup_timeout, || {
+                            Ok(ManagedPlan {
+                                argv: launch.argv.clone(),
+                                base_url: base_url.clone(),
+                                env: launch.env.clone(),
+                            })
+                        })
+                        .await?
+                    }
+                    BackendConfig::Managed(managed) => {
+                        self.ensure_started(managed.startup_timeout, || (managed.prepare)())
+                            .await?
+                    }
+                    BackendConfig::Tavily { .. } => unreachable!("matched by the outer arm"),
+                };
+                let mut url = base_url;
                 url.path_segments_mut()
                     .map_err(|()| {
                         ToolExecutionError::other("the SearXNG base_url cannot hold a path")
@@ -519,21 +588,28 @@ impl Websearch {
     /// meanwhile wait for the same start.
     async fn ensure_started(
         &self,
-        launch: &Launch,
-        base_url: &Url,
-    ) -> Result<(), ToolExecutionError> {
+        startup_timeout: Duration,
+        plan: impl FnOnce() -> std::io::Result<ManagedPlan>,
+    ) -> Result<Url, ToolExecutionError> {
         let mut slot = self.child.slot.lock().await;
-        if let Some(running) = slot.as_mut() {
+        if let Some((running, url)) = slot.as_mut() {
             if matches!(running.child().try_wait(), Ok(None)) {
-                return Ok(());
+                return Ok(url.clone());
             }
             *slot = None;
         }
-        let (program, args) = launch
-            .argv
+        let ManagedPlan {
+            argv,
+            base_url,
+            env,
+        } = plan().map_err(|e| {
+            ToolExecutionError::other(format!("cannot prepare SearXNG: {}", chain(&e)))
+        })?;
+        let base_url = &base_url;
+        let (program, args) = argv
             .split_first()
             .expect("a launch command is validated as non-empty");
-        let child = command(program, args, &launch.env).spawn().map_err(|e| {
+        let child = command(program, args, &env).spawn().map_err(|e| {
             ToolExecutionError::other(format!(
                 "cannot start the SearXNG command `{program}`: {}",
                 chain(&e)
@@ -581,7 +657,7 @@ impl Websearch {
             if self.probe(base_url).await {
                 break;
             }
-            if started.elapsed() >= launch.startup_timeout {
+            if started.elapsed() >= startup_timeout {
                 let pid = running.pid;
                 stop(running.child(), pid, STOP_GRACE).await;
                 if let Some(drain) = drain {
@@ -590,15 +666,15 @@ impl Websearch {
                 return Err(start_failure(
                     format!(
                         "{base_url} did not answer within {} seconds of starting `{program}`",
-                        launch.startup_timeout.as_secs_f64()
+                        startup_timeout.as_secs_f64()
                     ),
                     &stderr,
                 ));
             }
             tokio::time::sleep(PROBE_INTERVAL).await;
         }
-        *slot = Some(running);
-        Ok(())
+        *slot = Some((running, base_url.clone()));
+        Ok(base_url.clone())
     }
 
     /// Any non-5xx answer counts: the instance is up even if it has no page at its root, but a

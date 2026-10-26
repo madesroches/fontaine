@@ -24,7 +24,9 @@ async fn a_prompt_streams_to_stdout_and_exits_zero() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_registered_tools_are_advertised_to_the_model() {
     let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("ok")]).await;
-    let s = Sandbox::compatible(&endpoint.url());
+    let mut s = Sandbox::compatible(&endpoint.url());
+    // A container runtime on the test host would add the default `websearch` tool.
+    s.set_env("PATH", "/nonexistent");
     let out = s.headless(&["--output-format", "stream-json", "hi"]).await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let names = [

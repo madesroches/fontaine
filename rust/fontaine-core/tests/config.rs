@@ -1572,6 +1572,44 @@ mod websearch {
     }
 
     #[test]
+    fn off_parses_and_builds_no_tool_even_with_a_runtime_installed() {
+        let w = World::new();
+        w.user_file("[websearch]\nbackend = \"off\"\n");
+        let c = w.load().unwrap();
+        assert_eq!(c.websearch.backend, Some(WebsearchBackend::Off));
+        let env = |name: &str| (name == "PATH").then(|| std::ffi::OsString::from("/usr/bin"));
+        assert!(c.websearch_config(&env, &w.data).unwrap().is_none());
+        assert!(c.default_search_runtime(&env).is_none());
+    }
+
+    #[test]
+    fn off_refuses_the_keys_of_a_real_backend() {
+        let w = World::new();
+        w.user_file("[websearch]\nbackend = \"off\"\nbase_url = \"http://localhost:8080\"\n");
+        assert!(w.load().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_default_is_a_managed_backend_only_when_a_runtime_is_found() {
+        use std::os::unix::fs::PermissionsExt;
+        let w = World::new();
+        let c = w.load().unwrap();
+        let bin = w.root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let path = std::ffi::OsString::from(bin.as_os_str());
+        let env = move |name: &str| (name == "PATH").then(|| path.clone());
+        assert!(c.websearch_config(&env, &w.data).unwrap().is_none());
+        std::fs::write(bin.join("podman"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join("podman"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let built = c.websearch_config(&env, &w.data).unwrap().unwrap();
+        assert!(matches!(built.backend, BackendConfig::Managed(_)));
+        // Building the config starts nothing and writes nothing.
+        assert!(!w.data.join("searxng").exists());
+    }
+
+    #[test]
     fn a_searxng_section_parses_and_builds_a_launching_backend() {
         let w = World::new();
         w.user_file(

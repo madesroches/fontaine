@@ -269,6 +269,7 @@ pub(super) fn gates(
     tree: &Arc<AgentTree>,
     state: &Arc<SessionState>,
 ) -> Result<Gates, RuntimeError> {
+    super::warn_if_no_search(setup);
     let (pipeline, post_hooks) = permission_pipeline(setup, state);
     let retained = retained(setup)?;
     let instruction_stage = instruction_stage(setup, state);

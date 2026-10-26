@@ -196,6 +196,19 @@ pub(crate) struct Setup {
     searxng: Arc<SearxngChild>,
 }
 
+/// One line when the main model has no way to search: no provider search for its account, no
+/// configured backend and no container runtime for the default one.
+fn warn_if_no_search(setup: &AgentSetup) {
+    if !native_search::provider_available(&setup.config, &setup.models)
+        && setup.config.websearch.backend.is_none()
+        && setup.config.default_search_runtime(&*setup.env).is_none()
+    {
+        setup.approver.warn(
+            "web search is unavailable: install docker or podman, or set `[websearch] backend`",
+        );
+    }
+}
+
 impl AgentRuntime {
     pub fn new(mut setup: AgentSetup) -> Result<AgentRuntime, RuntimeError> {
         setup::prepare(&mut setup);

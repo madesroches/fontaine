@@ -620,6 +620,8 @@ pub struct TelemetrySection {
 pub enum WebsearchBackend {
     Tavily,
     Searxng,
+    /// No client-side search tool, not even the default one.
+    Off,
 }
 
 /// Whether the provider's own search is offered to the model.
@@ -1342,7 +1344,7 @@ impl Telemetry {
 /// The merged `[websearch]` section.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Websearch {
-    /// `None`: no client-side `websearch` tool.
+    /// `None`: the default, a SearXNG container when a runtime is installed.
     pub backend: Option<WebsearchBackend>,
     pub base_url: Option<String>,
     pub command: Option<Vec<String>>,
@@ -2222,9 +2224,11 @@ fn check_websearch(w: &Websearch) -> Result<(), ConfigError> {
         })
     };
     match w.backend {
-        None => {
+        None | Some(WebsearchBackend::Off) => {
             if w.base_url.is_some() || w.command.is_some() || w.api_key_env.is_some() {
-                return fail("`base_url`, `command` and `api_key_env` need a `backend`");
+                return fail(
+                    "`base_url`, `command` and `api_key_env` need `backend = \"tavily\"` or `\"searxng\"`",
+                );
             }
         }
         Some(WebsearchBackend::Tavily) => {
@@ -2285,18 +2289,47 @@ fn websearch_key(
 }
 
 impl Config {
-    /// The client-side search tool's settings; `None` when no backend is configured.
+    /// The client-side search tool's settings; `None` when search is switched off, or no backend
+    /// is configured and no container runtime is installed. Starting the default container is announced
+    /// only through [`Config::websearch_config_with_notice`].
     pub fn websearch_config(
         &self,
         env: EnvLookup<'_>,
         data_dir: &Path,
     ) -> Result<Option<fontaine_tools::websearch::WebsearchConfig>, ConfigError> {
+        self.websearch_config_with_notice(env, data_dir, std::sync::Arc::new(|_| {}))
+    }
+
+    /// [`Config::websearch_config`], with `notice` told when the default container is started.
+    pub fn websearch_config_with_notice(
+        &self,
+        env: EnvLookup<'_>,
+        data_dir: &Path,
+        notice: std::sync::Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Result<Option<fontaine_tools::websearch::WebsearchConfig>, ConfigError> {
         use fontaine_tools::websearch::{BackendConfig, Launch, WebsearchConfig};
         let w = &self.websearch;
-        let Some(backend) = w.backend else {
-            return Ok(None);
+        let backend = match w.backend {
+            Some(WebsearchBackend::Off) => return Ok(None),
+            None => {
+                let Some(runtime) = self.default_search_runtime(env) else {
+                    return Ok(None);
+                };
+                let managed = crate::managed_search::managed(
+                    runtime,
+                    data_dir.to_path_buf(),
+                    fontaine_tools::child_env::container_runtime_env(env),
+                    notice,
+                );
+                let mut config = WebsearchConfig::new(BackendConfig::Managed(managed));
+                config.max_results = w.max_results as usize;
+                config.timeout = std::time::Duration::from_secs(w.timeout_secs);
+                return Ok(Some(config));
+            }
+            Some(backend) => backend,
         };
         let backend = match backend {
+            WebsearchBackend::Off => unreachable!("returned above"),
             WebsearchBackend::Tavily => BackendConfig::tavily(websearch_key(w, env, data_dir)?),
             WebsearchBackend::Searxng => BackendConfig::Searxng {
                 base_url: url::Url::parse(
@@ -2319,6 +2352,16 @@ impl Config {
         config.max_results = w.max_results as usize;
         config.timeout = std::time::Duration::from_secs(w.timeout_secs);
         Ok(Some(config))
+    }
+}
+
+impl Config {
+    /// The container runtime the default search backend would use: only when no `backend` is set.
+    pub fn default_search_runtime(&self, env: EnvLookup<'_>) -> Option<std::path::PathBuf> {
+        if self.websearch.backend.is_some() {
+            return None;
+        }
+        crate::managed_search::find_runtime(env("PATH").as_deref())
     }
 }
 

@@ -662,3 +662,62 @@ mod launch {
         assert!(!env.contains("hunter2"), "{env}");
     }
 }
+
+#[cfg(unix)]
+mod managed {
+    use super::*;
+    use fontaine_tools::websearch::{Managed, ManagedPlan, SearxngChild};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn config(server: &MockServer, script: &str, prepared: Arc<AtomicUsize>) -> WebsearchConfig {
+        let base_url: url::Url = server.uri().parse().unwrap();
+        let script = script.to_string();
+        WebsearchConfig::new(BackendConfig::Managed(Managed::new(
+            Duration::from_secs(20),
+            move || {
+                prepared.fetch_add(1, Ordering::SeqCst);
+                Ok(ManagedPlan {
+                    argv: vec!["sh".into(), "-c".into(), script.clone()],
+                    base_url: base_url.clone(),
+                    env: fontaine_tools::child_env::base_env(&|name| std::env::var_os(name)),
+                })
+            },
+        )))
+    }
+
+    #[tokio::test]
+    async fn a_managed_plan_is_made_once_and_its_address_is_used() {
+        let server = serve_searxng(sample()).await;
+        let prepared = Arc::new(AtomicUsize::new(0));
+        let child = Arc::new(SearxngChild::default());
+        let tool = Websearch::new(
+            config(&server, "exec sleep 300", prepared.clone()),
+            &Default::default(),
+            child.clone(),
+        )
+        .unwrap();
+        for _ in 0..3 {
+            let out = tool.call(&mut ToolContext::new(), args("x")).await.unwrap();
+            assert!(out.contains("1. "), "{out}");
+        }
+        assert_eq!(prepared.load(Ordering::SeqCst), 1);
+        assert!(child.is_running().await);
+    }
+
+    #[tokio::test]
+    async fn a_plan_that_cannot_be_made_is_a_search_error_with_its_cause() {
+        let config = WebsearchConfig::new(BackendConfig::Managed(Managed::new(
+            Duration::from_secs(20),
+            || Err(std::io::Error::other("no room for the settings")),
+        )));
+        let tool = Websearch::new(config, &Default::default(), Default::default()).unwrap();
+        let err = tool
+            .call(&mut ToolContext::new(), args("x"))
+            .await
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("cannot prepare SearXNG"), "{text}");
+        assert!(text.contains("no room for the settings"), "{text}");
+    }
+}

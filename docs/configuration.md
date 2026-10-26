@@ -428,7 +428,7 @@ runs. See [Web search](tools.md#web-search) for how the two ways of searching ar
 
 | Key | Meaning | Default |
 |---|---|---|
-| `backend` | `tavily` or `searxng`. Without it there is no client-side `websearch` tool. | unset |
+| `backend` | `tavily`, `searxng` or `off`. Unset: a SearXNG container Fontaine starts itself when `docker` or `podman` is installed (see [Default search](tools.md#default-search)). `off` disables the client-side `websearch` tool. | unset |
 | `base_url` | The SearXNG instance, an `http` or `https` URL. Required for `searxng`; refused for `tavily`. | unset |
 | `command` | `searxng` only: the argv (no shell) that starts the instance serving `base_url`, such as `["docker", "run", "--rm", "-p", "127.0.0.1:8080:8080", "searxng/searxng"]`. Started by the first search with a minimal environment and stopped with the session (SIGTERM to its process group, then SIGKILL after 10 seconds from a background task, so a session that ends sooner can leave a process that ignores SIGTERM running). | unset: Fontaine does not start it |
 | `startup_timeout_secs` | How long to wait for `base_url` to answer after starting `command`. Needs `command`. | `60` |
@@ -441,7 +441,9 @@ Queries are sent to the provider, or to the configured backend, in the clear. A 
 needs a key, and a missing key is a configuration error (exit code 2) at startup, not at the first
 search. The key is `api_key_env` when that is set; if the named variable is unset or empty the key
 counts as missing. When it is omitted, the key is the `[websearch]` entry in `credentials.toml`.
-Keys are never written inline in settings. `command` is an executable like an MCP server or a hook
+Keys are never written inline in settings. With `backend` unset, the managed container gets the minimal child environment plus
+`DOCKER_HOST`, `DOCKER_CONFIG`, `XDG_RUNTIME_DIR` and `CONTAINER_HOST` when they are set (the runtime needs them to
+reach its daemon), a 300 second start timeout for the first image pull, and a command that is fixed by Fontaine. `command` is an executable like an MCP server or a hook
 command, but it can only start the instance; it never loosens a permission decision.
 
 ```toml

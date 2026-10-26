@@ -16,7 +16,7 @@ result passes one post-call step before the model sees it.
 | `edit` | workspace write | Replaces text in a file. The file must have been read first. |
 | `shell` | arbitrary | Runs a shell command. |
 | `webfetch` | arbitrary | Fetches one web page. |
-| `websearch` | arbitrary | Searches the web through the backend set in [`[websearch]`](configuration.md#websearch); registered only when one is configured. Arguments: `query`, `allowed_domains`, `blocked_domains`. |
+| `websearch` | arbitrary | Searches the web through the backend set in [`[websearch]`](configuration.md#websearch); registered when one is configured, or by default when `docker` or `podman` is installed. Arguments: `query`, `allowed_domains`, `blocked_domains`. |
 | `agent` | arbitrary | Starts a [subagent](agents.md) and returns its report, or an id when it runs in the background. |
 | `skill` | read-only | Loads a [skill](extensions.md#skills) by name into the conversation. |
 | `ask_user_question` | read-only | Asks you 1 to 4 multiple-choice questions and returns your answers; see [Questions](tui.md#questions-from-the-model). Only the main conversation can ask. |
@@ -158,9 +158,10 @@ Search reaches the model in one of two ways, in this order:
    `websearch`, since a call there would otherwise ask or be denied. Switching modes or adding a
    rule takes effect on the next turn. If the endpoint rejects the request because of the search
    tool, the failure message says to set `native = "off"`; nothing retries without it.
-2. **The `websearch` tool**, when `[websearch] backend` is set. Every other account kind uses it,
-   and so does an `anthropic` account when the provider's search is not offered. With no backend
-   there is no `websearch` tool at all.
+2. **The `websearch` tool**, which every other account kind uses, and so does an `anthropic`
+   account when the provider's search is not offered. It searches through `[websearch] backend`;
+   with none set, it searches through a SearXNG container that Fontaine starts itself (see
+   [Default search](#default-search)). `backend = "off"` removes the tool.
 
 The tool takes a `query` and, optionally, one of `allowed_domains` or `blocked_domains` (giving both
 is an error). Fontaine applies the domain lists to the results itself, so they work the same for
@@ -177,8 +178,38 @@ every backend: a result is kept or dropped when its host is the domain or a subd
 - The queries go to the provider or to the configured backend. They are checked like any other call
   by the [permission pipeline](permissions.md), and the result passes the result scanner.
 
-SearXNG is the free, no-account path: run an instance on localhost and set `base_url`, or let
-Fontaine start it with `command`:
+### Default search
+
+With no `[websearch] backend`, and `docker` (or else `podman`) found on Fontaine's own `PATH`, the
+`websearch` tool is registered and backed by SearXNG in a container, with no configuration. The
+first search:
+
+- writes `searxng/settings.yml` in Fontaine's data directory (the `json` format enabled, the
+  limiter off, a random secret generated once and kept in that file; Fontaine rewrites the file if
+  it differs, keeping the secret);
+- picks a free loopback port and runs
+  `<runtime> run --rm -p 127.0.0.1:<port>:8080 -v <settings.yml>:/etc/searxng/settings.yml:ro docker.io/searxng/searxng:latest`
+  (no shell), so the instance is reachable from this machine only;
+- warns once that SearXNG is starting and that the first run pulls the image, then waits up to 300
+  seconds for it to answer.
+
+Later searches and registry rebuilds reuse the container, and it is stopped when the session ends,
+as described below for `command`. The settings directory is owner-only; the file inside is
+readable by other users because the container's unprivileged user must read it through the bind
+mount, which keeps the host's permissions. On an SELinux host the mount may need a `:Z` label,
+which Fontaine does not add: start SearXNG yourself with `command` instead. The container runtime
+gets the minimal environment plus `DOCKER_HOST`, `DOCKER_CONFIG`, `XDG_RUNTIME_DIR` and
+`CONTAINER_HOST` when they are set, so it can reach its daemon. The command is fixed by Fontaine; it
+is not configurable and never comes from a project file.
+
+Without a container runtime there is no default: Fontaine warns once at startup that web search
+is unavailable, unless the provider's own search applies or `backend` is set (to `"off"` as well).
+`backend = "off"` disables the tool and the warning.
+
+### Your own SearXNG
+
+SearXNG is also the free, no-account path with your own instance: run one on localhost and set
+`base_url`, or let Fontaine start it with `command`:
 
 ```toml
 [websearch]
