@@ -105,7 +105,7 @@ briefly find the file missing or access denied. No rename change.
 4. `config.rs`: `read_optional` takes the reader; user layer passes `file_lock::read_shared`.
 5. `user_config.rs`: `model_key_naming` reads via `file_lock::read_shared`.
 6. `owner_only.rs`: doc comment on `write_atomic`.
-7. Tests (below), `docs/configuration.md`.
+7. Tests (below), `docs/configuration.md`, `CHANGELOG.md` (`## [Unreleased]` fix entry).
 
 ## Files to Modify
 
@@ -113,6 +113,7 @@ briefly find the file missing or access denied. No rename change.
   `user_config.rs`, `owner_only.rs`, `providers/token_source.rs`
 - `rust/fontaine-core/tests/owner_only.rs` (and a `#[cfg(test)] mod tests` in `file_lock.rs`)
 - `docs/configuration.md`
+- `CHANGELOG.md`
 
 ## Trade-offs
 
@@ -124,10 +125,7 @@ briefly find the file missing or access denied. No rename change.
   `NotFound` gaps. Rejected.
 - **vs. in-place write under the lock (Go `lockedfile`).** Loses crash safety: a crash or full disk
   mid-write leaves a torn `trust.toml`, which the atomic replace was introduced to prevent.
-- **What other harnesses do.** Claude Code and Gemini CLI read without a lock (Claude Code retries
-  non-`ENOENT` errors and treats `ENOENT` as absent; its Windows issue tracker has reports of a
-  session overwriting `~/.claude.json` after seeing it missing). Codex's `history.jsonl` readers take
-  a shared lock. Internal persistence only; no user-visible Claude Code semantics change.
+- **Claude Code parity.** Internal persistence only; no user-visible Claude Code semantics change.
 
 ## Decisions
 
