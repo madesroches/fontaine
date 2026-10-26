@@ -312,6 +312,8 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
             }
         }),
         Err(e) => {
+            print_warnings(&ax_warnings);
+            print_warnings(&prep.warnings);
             eprintln!("fontaine: cannot start the async runtime: {e}");
             1
         }

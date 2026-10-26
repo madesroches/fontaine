@@ -24,7 +24,8 @@ status: pending, done, failed, denied with the reason, or interrupted. A call th
 shows its rule label and the guardian's own explanation on lines of their own, for example
 `[Download+Execute] pipes a download into a shell`. A line is written to scrollback once it has
 settled and no longer fits above the input, so a call's status is final by then; a call still
-pending when the screen is full is written as pending.
+pending when the screen is full is written as pending. A long command under approval scrolls inside
+half the screen, so the call it asks about stays visible above the input.
 
 ### Notices
 

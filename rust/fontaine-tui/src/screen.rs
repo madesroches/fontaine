@@ -422,6 +422,28 @@ mod tests {
     }
 
     #[test]
+    fn a_long_approval_leaves_the_pending_call_live() {
+        let mut screen = screen(40, 14);
+        let mut app = app();
+        app.on_event(SessionEvent::ToolCall {
+            id: "t".into(),
+            tool: "shell".into(),
+            args: serde_json::json!({ "command": "sleep 9" }),
+        });
+        let (tx, _rx) = oneshot::channel();
+        app.begin_approval(approval_request(&"x".repeat(600)), tx);
+        screen.render(&mut app).unwrap();
+
+        assert!(
+            !rows(screen.backend().scrollback())
+                .join("\n")
+                .contains("sleep 9"),
+            "the pending call must not be written to scrollback"
+        );
+        assert!(live(&mut screen).join("\n").contains("sleep 9"));
+    }
+
+    #[test]
     fn a_pending_call_over_budget_is_committed_so_no_row_is_hidden() {
         let mut screen = screen(30, 8);
         let mut app = app();

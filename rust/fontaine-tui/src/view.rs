@@ -48,11 +48,16 @@ fn input_view(buffer: &InputBuffer, width: usize) -> InputView {
 /// screen.
 pub fn chrome(app: &App, width: u16, max_height: u16) -> usize {
     let inner_width = usize::from(width.saturating_sub(2)).max(1);
-    let Overlay { body, footer, .. } = overlay(app, inner_width, max_height, false);
+    let Overlay {
+        body,
+        footer,
+        approval,
+        ..
+    } = overlay(app, inner_width, max_height, false);
     let overlay_rows = if body.is_empty() {
         0
     } else {
-        body.len() + footer.len() + 2
+        shown_body_rows(body.len(), footer.len(), approval, max_height) + footer.len() + 2
     };
     let overlay_rows = overlay_rows + queued_lines(app, inner_width).len();
     let input_rows = input_view(&app.input, inner_width).rows.len() + 2;
@@ -101,7 +106,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let approval_height = if body.is_empty() {
         0
     } else {
-        ((body.len() + footer.len()) as u16 + 2).min(
+        ((shown_body_rows(body.len(), footer.len(), is_approval, area.height) + footer.len())
+            as u16
+            + 2)
+        .min(
             area.height
                 .saturating_sub(input_height + queued.len() as u16 + todos.len() as u16 + 1),
         )
@@ -128,6 +136,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(todos), todo_area);
     draw_input(frame, input, app, &view);
     statusbar::render(frame, status, app);
+}
+
+/// A long call under approval scrolls so the prompt takes at most half the screen, so the pending call it
+/// asks about keeps room above the input and never has to be written to scrollback unsettled.
+fn shown_body_rows(rows: usize, footer: usize, approval: bool, height: u16) -> usize {
+    if approval {
+        rows.min(usize::from(height / 2).saturating_sub(footer + 2).max(3))
+    } else {
+        rows
+    }
 }
 
 /// The messages waiting for the agent's next tool result, one dimmed row each.
