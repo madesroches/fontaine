@@ -560,11 +560,11 @@ cannot be resolved is left out, with a warning naming the path and whether it ca
 `--add-dir` or the settings, and the run continues. The terminal UI shows the warning in the
 conversation; a headless run prints it on stderr.
 
-Each session also gets a private scratch directory as a last root, with no setting to add or move
+Each session also gets a private scratch directory as a root of its own, with no setting to add or move
 it: `$XDG_RUNTIME_DIR/fontaine/<session id>/` where that is available, else a per-user directory
 under the temp dir (`$TMPDIR` or `/tmp`; `%TEMP%` on Windows). It is removed when the session ends
 and swept after a crash, and `shell` commands in it still go through the guardian. See
-[the scratch directory](tools.md#the-scratch-directory). Tests and sandboxes redirect it by
+[the scratch directory](tools.md#the-scratch-directory). On Unix, tests and sandboxes redirect it by
 setting `XDG_RUNTIME_DIR`.
 
 Roots grant file access, not configuration: settings, hooks, MCP servers and extension files load

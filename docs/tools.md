@@ -95,8 +95,8 @@ More roots come from the repeatable `--add-dir <path>` flag and from
 
 ### The scratch directory
 
-Each session gets a private scratch directory, added to the workspace roots as the last, non-primary
-root, so `write` and `edit` can stage a helper script or a temporary file without a prompt in
+Each session gets a private scratch directory, appended to the workspace roots after the session's startup
+roots as a non-primary root (`/add-dir` roots come after it), so `write` and `edit` can stage a helper script or a temporary file without a prompt in
 `acceptEdits` and without a detour through `shell`. The system prompt names it, and the denial for
 a path outside every root points at it.
 

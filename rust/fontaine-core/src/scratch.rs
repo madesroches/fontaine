@@ -38,6 +38,7 @@ impl Scratch {
                 format!("`{session_id}` is not usable as a directory name"),
             ));
         }
+        refuse_protected(&parent_path(env)?.join(session_id), protected)?;
         let parent = ensure_parent(env)?;
         let dir = parent.join(session_id);
         refuse_protected(&dir, protected)?;
@@ -89,7 +90,10 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = owner_only::remove_dir_all_retrying(&self.dir);
+        // A leftover directory keeps its lock file, which is what lets the next sweep find it.
+        if owner_only::remove_dir_all_retrying(&self.dir).is_err() {
+            return;
+        }
         // Unlinking while the lock is held keeps a concurrent sweep from deleting the
         // directory of a session that starts in between; Windows cannot delete an open file.
         if cfg!(windows) {
@@ -167,7 +171,12 @@ fn sweep_one(parent: &Path, id: &str) -> io::Result<()> {
     }
     if cfg!(windows) {
         drop(lock);
-        return std::fs::remove_file(&lock_path);
+        // The directory is already gone; another instance opening the lock in the gap
+        // makes the unlink fail, and its own sweep or exit removes the file.
+        return match std::fs::remove_file(&lock_path) {
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => Ok(()),
+            other => other,
+        };
     }
     std::fs::remove_file(&lock_path)
 }
@@ -319,6 +328,32 @@ mod tests {
         drop(scratch);
         assert!(!dir.exists());
         assert!(!lock.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_removal_keeps_the_lock_so_a_sweep_retries() {
+        use std::os::unix::fs::PermissionsExt;
+        let runtime = tempfile::tempdir().unwrap();
+        let env = env_for(runtime.path());
+        let scratch = Scratch::create(&env, &[], "stuck").unwrap();
+        let dir = scratch.path().to_path_buf();
+        let sub = dir.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("f"), b"x").unwrap();
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let lock = dir.with_file_name("stuck.lock");
+        drop(scratch);
+        let stuck = dir.exists();
+        if stuck {
+            assert!(lock.exists());
+        }
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)).ok();
+        if stuck {
+            assert!(sweep_stale(&env).is_empty());
+            assert!(!dir.exists());
+            assert!(!lock.exists());
+        }
     }
 
     #[cfg(unix)]

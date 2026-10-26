@@ -56,7 +56,7 @@ One JSON object on standard input:
 | `tool_use_id` | The model's id for the call, when there is one. |
 | `agent_id` | `root`, or the id of the subagent that made the call. |
 | `permission_mode` | The mode the call is judged under, by its Fontaine name (`manual`, `acceptEdits`, `plan`, `dontAsk`, `auto`). |
-| `workspace_roots` | Every workspace root, the session's [scratch directory](tools.md#the-scratch-directory) last. |
+| `workspace_roots` | Every workspace root, including the session's [scratch directory](tools.md#the-scratch-directory), which comes after the startup roots and before any `/add-dir` root. |
 | `tool_response` | `post_tool_use` only: `{"is_error": false, "output": "..."}`. |
 | `reason`, `tier` | `permission_denied` only: why, and which part of the pipeline denied it. |
 
