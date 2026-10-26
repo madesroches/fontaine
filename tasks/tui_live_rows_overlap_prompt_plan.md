@@ -17,9 +17,9 @@ finds and pins it with a regression test.
 - `view::draw` (`fontaine-tui/src/view.rs:86`) lays the frame out as transcript (`Min(0)`),
   overlay, queued, todos, input (`Length`), status row. `draw_transcript` (`view.rs:431`) shows
   the last `area.height` live rows, bottom-aligned, so the layout itself cannot overlap the input.
-- `Screen::draw_frame` (`fontaine-tui/src/screen.rs:~175`) commits what no longer fits
+- `Screen::draw_frame` (`fontaine-tui/src/screen.rs:~172`) commits what no longer fits
   (`commit_within`), computes the live area's height `wanted = max(content, free)` and, when it
-  differs from `self.height`, calls `rebuild`. `rebuild` (`screen.rs:~215`) moves the cursor to
+  differs from `self.height`, calls `rebuild`. `rebuild` (`screen.rs:~203`) moves the cursor to
   the viewport top, clears after it, builds a new `Terminal` with `Viewport::Inline(wanted)`,
   and answers ratatui's cursor query locally (`Anchored::arm`). ratatui then appends
   `wanted - 1` newlines from that row (`ratatui-core` `compute_inline_size`), so a viewport that
@@ -42,46 +42,52 @@ finds and pins it with a regression test.
 
 ### 1. An emulator oracle (diagnosis, kept as test infrastructure)
 
-Add a dev-only terminal emulator to `fontaine-tui` (`vt100`, exact-pinned like every other
-dependency; check `cargo deny check` and its license against `rust/deny.toml`). A test helper
-drives a real `Screen<Anchored<CrosstermBackend<SharedBuf>>>` where `SharedBuf` collects the
-written bytes, feeds the bytes to the emulator after each `render`, and exposes two screens:
+Add a dev-only terminal emulator to `fontaine-tui` (`vt100` `=0.18.1`, re-check at
+implementation time; exact-pinned like every other dependency; check `cargo deny check` and its
+license against `rust/deny.toml`). `Anchored<CrosstermBackend<SharedBuf>>` alone still makes real
+tty calls: `Anchored` falls through to the inner backend for `size()`, `window_size()` and an
+unarmed `get_cursor_position()` (`screen.rs:96-110`), and `CrosstermBackend` implements them with
+`crossterm::terminal::size()` (tty ioctl) and `crossterm::cursor::position()` (stdin round trip);
+`Screen::new` and every `draw_frame` call `size()`. So the helper defines a small test `Backend`
+wrapper around `CrosstermBackend<SharedBuf>` that overrides `size`, `window_size` and
+`get_cursor_position` from the emulator, and drives a real `Screen<Anchored<ThatWrapper>>`.
+`SharedBuf` collects the written bytes; the helper feeds them to the emulator after each `render`
+and exposes two screens:
 
 - the model screen: ratatui's `Terminal` buffer (what `TestBackend` shows today);
 - the real screen: the emulator's visible rows.
 
-Cursor-position queries are already answered locally by `Anchored::arm`; `Anchored` falls through
-to the inner backend otherwise, so the helper answers those from the emulator's cursor.
+The full sweep (Design 2) is a one-off local diagnostic, not CI; the helper stays as test
+infrastructure for the regression test and a small strided matrix.
 
 ### 2. Find the divergence
 
 Sweep scenarios through the helper and compare the emulator's rows to the model's after every
-frame; the first frame where they differ is the bug. The sweep covers terminal heights 6..24 and
-widths 20..80, a transcript full enough that the viewport starts at the bottom, and 1..4 calls
-started one at a time and in one batch, each completing in different orders. Candidate causes
-to check, most likely first:
+frame; the first frame where they differ is the bug. The full sweep covers terminal heights
+6..24 and widths 20..80, a transcript full enough that the viewport starts at the bottom, and
+1..4 calls started one at a time and in one batch, each completing in different orders; it is an
+`#[ignore]` test run locally. Candidate causes to check, most likely first:
 
-1. A rebuild at the bottom row: the newline-scroll in `compute_inline_size` runs from the
-   viewport's old top, so any row the emulator scrolls differently from ratatui's model (for
-   example the cursor sitting in the deferred-wrap state in the last column after the previous
-   frame) leaves the new viewport offset from where ratatui believes it is.
+1. A rebuild at the bottom row: `rebuild` already moves the cursor to the viewport top with an
+   absolute `set_cursor_position` and clears after it, but the newline-scroll in
+   `append_lines` / `compute_inline_size` runs from there, so any row the emulator scrolls
+   differently from ratatui's model leaves the new viewport offset from where ratatui believes
+   it is.
 2. Rows exactly `width` columns wide: `line + " …"` fills the last column, and the next frame's
    diff skips cells it believes are unchanged.
 3. Ambiguous-width glyphs (`•`, `…`) counted as one column by ratatui and `truncate`, drawn as
    two by the terminal, shifting the rest of the row and the cells after it.
-4. The synchronized-update markers going through a different `Stdout` handle than the
-   backend's, so the begin/end markers and the frame can interleave through the shared
-   `LineWriter`, which flushes at each newline `append_lines` writes.
+
+State `vt100`'s handling of DECSTBM scroll regions and scrollback must be checked in Step 1,
+because ratatui is built with `scrolling-regions`.
 
 ### 3. Fix at the cause
 
 The fix is not designed until step 2 names the cause; whichever it is must keep the properties
 in `screen.rs`'s module comment (live area ends on the bottom row, settled rows written once).
-Fix direction per candidate: (1) anchor the new viewport with an absolute cursor move to the
-bottom row before the newlines, or scroll with an explicit region; (2) leave the last column
-empty in `entry_lines`'s `Tool` arm; (3) measure with `unicode-width` in `truncate` and
-`wrap`, which `ratatui` already depends on; (4) write the markers through the backend's writer.
-If the cause is a terminal-specific behavior that cannot be modeled, the fallback is a full
+Fix direction per candidate: (1) scroll with an explicit region instead of newlines; (2) leave
+the last column empty in `entry_lines`'s `Tool` arm; (3) measure with `unicode-width` in
+`truncate` and `wrap`, which `ratatui-core` already depends on. If the cause is a terminal-specific behavior that cannot be modeled, the fallback is a full
 repaint after every rebuild: clear each viewport row and redraw every cell, not only the diff.
 
 ### 4. Regression test
@@ -89,27 +95,32 @@ repaint after every rebuild: clear each viewport row and redraw every cell, not 
 The reproducing scenario from step 2 becomes an automated test on the emulator helper that
 asserts, after every frame, that the emulator's rows equal the model's and that the input
 box's top border, input row and bottom border are intact in order above the status row. It is
-named for issue 217. Alongside it, a `TestBackend` test for any fix that lives in the model
+named for issue 217. CI also runs a small strided matrix (every 4th height, every 10th width,
+1..3 calls). Alongside it, a `TestBackend` test for any fix that lives in the model
 (truncation by display width, last-column handling).
 
 ## Implementation Steps
 
-1. Add the `vt100` dev-dependency and the `SharedBuf` + emulator helper
-   (`fontaine-tui/src/screen.rs` tests, or a `tests/common` module if the integration tests need
-   it); confirm `cargo deny check` passes.
-2. Write the sweep from Design 2 and run it until it fails; record the failing frame and the
+1. Add the `vt100` (`=0.18.1`) dev-dependency and the `SharedBuf` + wrapper-backend + emulator
+   helper (`fontaine-tui/src/screen.rs` tests, or a `tests/common` module if the integration
+   tests need it); check `vt100`'s DECSTBM and scrollback handling; confirm `cargo deny check`
+   passes.
+2. Write the full sweep from Design 2 as an `#[ignore]` test and run it until it fails; record the failing frame and the
    cause under `## Decisions`.
 3. Implement the fix for that cause (Design 3).
 4. Add the regression test (Design 4) and the model-level test if applicable; run the full sweep
-   green.
+   locally green and keep the strided matrix in CI.
 5. Run the existing `fontaine-tui` tests, clippy and fmt.
 
 ## Files to Modify
 
-- `rust/Cargo.toml`, `rust/fontaine-tui/Cargo.toml` (dev-dependency)
-- `rust/fontaine-tui/src/screen.rs` (fix and tests, if the cause is in `rebuild`)
-- `rust/fontaine-tui/src/transcript.rs`, `rust/fontaine-tui/src/lib.rs` (only if the cause is
-  in row width or the synchronized-update write path)
+- `rust/Cargo.toml`, `rust/fontaine-tui/Cargo.toml` (dev-dependency; under candidate (3) also
+  `unicode-width` in `[workspace.dependencies]`, exact-pinned to the version `ratatui-core`
+  resolves, and in fontaine-tui `[dependencies]`)
+- `rust/fontaine-tui/src/screen.rs` (fix and tests, if the cause is in `rebuild`, ~line 203;
+  `draw_frame` is ~line 172)
+- `rust/fontaine-tui/src/transcript.rs` (only if the cause is in row width)
+- `CHANGELOG.md` (fix entry)
 
 ## Trade-offs
 
@@ -130,7 +141,8 @@ No user docs change: the fix restores documented behavior. `CHANGELOG.md` gets a
 
 ## Testing Strategy
 
-- Emulator sweep and regression test (Design 1, 2, 4). This is automated rather than manual
+- Emulator regression test plus a strided matrix in CI; the full sweep is a local `#[ignore]`
+  diagnostic (Design 1, 2, 4). This is automated rather than manual
   because the failure is silent: nothing errors, the screen is just wrong, and it depends on
   terminal height, scrollback state and call timing. It catches what `TestBackend` cannot:
   how a real terminal scrolls and wraps the bytes ratatui writes.
