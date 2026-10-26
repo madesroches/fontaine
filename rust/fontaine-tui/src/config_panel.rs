@@ -98,7 +98,7 @@ pub fn saved_status(
             "applied now; {} sets this key and wins from the next launch",
             scope.label()
         ),
-        (Applies::NextLaunch, None) => format!("saved to {file}; applies from the next launch"),
+        (Applies::NextLaunch, None) => format!("applies from the next launch; saved to {file}"),
         (Applies::NextLaunch, Some(scope)) => {
             let stays = effective.map_or_else(String::new, |v| format!(", so the value stays {v}"));
             format!("saved, but {} sets this key and wins{stays}", scope.label())
