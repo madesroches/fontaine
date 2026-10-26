@@ -103,8 +103,8 @@ use the prebuilt one.
 - **Tool surface**: 30 built-in tools, three hidden (`yield`, `goal`, `think`) (`tools/index.ts@dcafcef6:563-600`). In `-p` the model
   was offered 11 (`read bash edit eval glob grep task wait todo web_search write`) and the rest are "tool devices" reached by
   `read xd://<tool>` for the schema and `write xd://<tool>` with JSON arguments (`tools.xdev` default true) [measured: capture
-  `e2_tool_schemas_omp.json`, and the model used `xd://lsp`, `xd://propose`, `xd://report_issue` in E4/E7]. Every tool call carries an
-  `i` argument, a few-word intent string ("Listing workspace") that the TUI shows as the status label [measured].
+  `e2_tool_schemas_omp.json`, and the model used `xd://lsp`, `xd://propose`, `xd://report_issue` in E4/E7]. Every tool except `eval` carries an
+  `i` argument (optional on `wait`), a few-word intent string ("Listing workspace") that the TUI shows as the status label [measured].
 - **Models and providers**: `packages/ai` providers plus `packages/catalog` KDL compat rules; a custom OpenAI-compatible host is a
   `models.yml` entry (`docs/models.md@dcafcef6`). Section 4.10.
 - **Sessions**: JSONL tree under `~/.omp/agent/sessions/<encoded-cwd>/`. Section 4.8.
@@ -266,7 +266,7 @@ user variants; `APPEND_SYSTEM.md`; a `PERSONALITY.md` override.
 | Tools sent | 11, 17,754 B of schema | 13, 12,195 B of schema |
 | Request params | `stream_options.include_usage`, `store:false`, `max_completion_tokens:16384`, `reasoning_effort:"high"`; `temperature` only on judge calls | `stream_options.include_usage`, no token cap, no reasoning param |
 | Headers | `user-agent: omp/18.13.0`, `x-stainless-timeout: 300` (OpenAI SDK), `x-opencode-session` supplied by my `models.yml` | `user-agent: fontaine/0.1.0 (+repo)`, `x-opencode-session` per session |
-| Per-call extras | `i` intent argument on every tool; date and cwd in the first user turn | none |
+| Per-call extras | `i` intent argument on every tool except `eval` (optional on `wait`); date and cwd in the first user turn | none |
 | Prompt tokens, first request | 7,515 (7,424 cached by the gateway) | 6,556 (0 cached), including ~2.4k estimated tokens of `AGENTS.md`; ~4.1k without |
 
 **Contamination in the Fontaine column.** The Fontaine runs had their working directory inside this repository, and Fontaine loads the `AGENTS.md` of every ancestor of the cwd (`fontaine-core/src/instructions/mod.rs:204-212`), so the system message carries a `Instructions from <repo>/AGENTS.md:` block (9,645 B). Removing that block from the captured request leaves 3,507 B of text, so **on the wire Fontaine's own framing is about a third of omp's 10,678 B, not heavier**; the raw 13,494 B vs 10,678 B comparison measures this repository's `AGENTS.md`, not the harness. The ~2.4k-token figure is estimated from the byte ratio (9,645 B at the ~3.9 B/token both requests show); I did not re-run. The scripts now run Fontaine from a workspace outside the repo; the captures predate that (`README.md`). The same block is in every Fontaine request in E3, E4 and E11, and in the guardian prompts.
@@ -465,9 +465,9 @@ arguments, with a sandbox option [documented].
 **Fontaine today.** The deterministic floor gates every mode, no regex on tool arguments, fail-closed guardian, child never looser,
 project scope tightens.
 
-**Verdict.** Nothing to adopt in the pipeline. Three small things: (a) the no-UI refusal tells the model how to loosen; Fontaine's
+**Verdict.** Nothing to adopt in the pipeline. Two small things: (a) the no-UI refusal tells the model how to loosen; Fontaine's
 `... was denied: it needs the user's approval, and a headless run cannot ask the user. Do not retry it or look for another route`
-(seen in E3/E4 Fontaine runs) is the better wording and should stay; (b) an approval prompt's arming delay (4.11); (c) the one
+(seen in E3/E4 Fontaine runs) is the better wording and should stay; (b) nothing on approval-prompt arming: Fontaine already ignores answer keys for a 400 ms grace period (4.11); (c) the one
 "plan mode is read-only because the tool says so" lesson.
 
 ### 4.8 Session log
@@ -520,7 +520,7 @@ file, and storing per-message usage and cost in the log.
 **Measured (E1, internal Docker network + tcpdump).** With no prompt, the TUI idle for 25 s tried to resolve `catalog.stencil.so`,
 `api.kilo.ai`, `api.venice.ai`, `api.commandcode.ai`, `coding-intl.dashscope.aliyuncs.com`, `hyper.charm.land` and `zenmux.ai`
 (DNS only, since nothing external answers) and probed `127.0.0.1:11434`, `:1234`, `:8080`. A headless `-p` run with one prompt
-tried only `hyper.charm.land` besides the proxy (capture `e1_egress.txt`, `e1_local_discovery_probes.txt`). **No install-id file was
+resolved only `hyper.charm.land` (DNS) besides the proxy, and still probed the loopback ports 11434, 1234 and 8080 (captures `e1_egress.txt`, `e1_local_discovery_probes.txt`). **No install-id file was
 created** with a custom provider (it is created lazily by the consumers above), no `build.stencil.so` lookup appeared (source checkout), no OTLP endpoint was
 tried. So the default network footprint of a quiet session is model-catalog and provider-model discovery against ~7 vendor hosts,
 and no OTLP endpoint. I cannot say what those catalog requests carry; the hosts were unreachable by
@@ -591,8 +591,8 @@ candidates are the empty-completion retry and, for session resume across models,
   full, folded, one-line, hidden (`tui-runtime-internals.md@dcafcef6:60-71`).
 - *Layout* [measured, 120×40]: scrolling transcript; a one-line prompt band; a status line below. Startup shows a logo, a rotating tip and,
   on first run, a **5-step setup wizard** ("Sign in to your providers …", `OMP_SKIP_SETUP=1` or `startup.setupWizard: false` skips it)
-  (`e1_pane_startup.txt`). Status line (E11): `π > ◒ DeepSeek V4.1 Flash (via gateway) > 📁 /run/study/ws > ⑂ master *1 ?1 > $0.01
-  ▶──10%────╎──┃───128K─` with a context bar, git branch and dirty counts, running cost and a spinner with elapsed seconds; segments are
+  (`e1_pane_startup.txt`). Status line (E11, `e11_omp/90_final.txt:39`): `π > ◒ DeepSeek V4.1 Flash (via gateway) > 📁 /run/study/ws > ⑂ master *1 ?1 > $0.00 ▶──8%──────────────────╎──┃───128K─`
+  with a context bar, git branch and dirty counts and running cost (a spinner with elapsed seconds appears in other frames); segments are
   configurable (27 ids, presets default/minimal/compact/full/nerd/ascii, `statusLine.*` settings). A second line shows the live
   intent (`⎋ Listing workspace and running tests`) and the active todo (`🐍 UNIT: Fix failing unit test`).
 - *Tool calls* [measured]: framed cards. `bash` shows `$ command` in a box, then an **Output** pane (last 10 of 19 lines with
@@ -626,7 +626,7 @@ with `↑/↓ select · Tab complete · Enter run · Esc close`. `/resume` picke
 `· edit allowed once`); no inline output, no diff. The approval prompt is a bordered `approval` box. The `Allow edit?` prompt shows the path, `[y] allow once / [s] allow session / [a] always
 allow / [n] deny`, "rule the lasting answers would add: edit(/…/stats.py)" and "Enter on deny adds a reason", with no diff. An `Allow shell?`
 prompt shows the command; for a pipeline (`python3 -m unittest -q 2>&1 | tail -40`) and a `;` list (`python3 -m unittest -q; echo "exit=$?"`) it listed only `[y] allow once` and `[n] deny`, and for a
-one-command `python3 -c` it listed all four options and a `shell(…)` rule line. Cause: a shell call that is not one literal simple command offers no lasting answers, because no allow rule can act on it (`fontaine-core/src/permissions.rs`, `Offers`; the `[y]/[s]/[a]/[n]` hint line is still printed under the two-choice prompt) (captures `e11_fontaine/03_` and `06_approval_prompt.txt` vs `07_`; the edit prompt is `05_`). Task
+one-command `python3 -c` it listed all four options and a `shell(…)` rule line. Cause: a shell call that is not one literal simple command offers no lasting answers, because no allow rule can act on it (`fontaine-core/src/permissions.rs`, `Offers`; the `y/s/a/n, arrows + Enter; Enter on deny adds a reason` hint line is still printed under the two-choice prompt) (captures `e11_fontaine/03_` and `06_approval_prompt.txt` vs `07_`; the edit prompt is `05_`). Task
 progress is one line (`Tasks 0/3 · ▶ Investigate the failing test_median_even test and stats.py median implementation`, later
 `Tasks 2/3 · ▶ Verify with python3 -m unittest -q`, finally `Tasks 3/3`). A busy indicator is the
 word `working · esc to interrupt` in the status line. At 60 columns the layout reflows and truncates the status line. (A first Fontaine
@@ -636,13 +636,12 @@ rerun, so it is not claimed as a bug.)
 **Comparison.** Fontaine already has more explicit approval semantics (scoped always-allow with the rule it would add, deny with a
 reason); omp shows much more per tool call. Candidates, with the existing issue where one exists: inline bash output pane and edit diff in
 the transcript (#45 asks for the diff in the approval prompt; the transcript card is new), a model-supplied intent label next to the
-spinner (#214), a todo card, status-line segments for context %, cost and git (#48 is the custom status line), the approval arming
-delay, an "all projects" toggle in `/resume`, paste placeholders, `Ctrl+R` history search, remappable keys and vim input (#49),
+spinner (#214), a todo card, status-line segments for context %, cost and git (#48 is the custom status line), an "all projects" toggle in `/resume`, paste placeholders, `Ctrl+R` history search, remappable keys and vim input (#49),
 and the tmux/PTY drive as a regression harness for `fontaine-tui` (this study's `e11_*` scripts are a working prototype).
 Skip: the 100-theme catalogue (a theme format with a handful is enough), the splash/logo/tips, mouse support, the Tern Surface Protocol.
 
-**Verdict.** Worth doing: transcript cards for shell output and edit diffs with a fold, the arming delay, and the screen-capture
-harness. The renderer split (history vs viewport) is relevant to Fontaine's inline-viewport work (`completed/tui_inline_viewport_plan.md`)
+**Verdict.** Worth doing: transcript cards for shell output and edit diffs with a fold, and the screen-capture
+harness. Approval-prompt arming is not a gap: `fontaine-tui/src/approval.rs` already ignores Enter and every character key (`y/s/a/n` included) for `ANSWER_GRACE` = 400 ms after the prompt opens (test `keys_inside_the_grace_period_do_not_answer`), against omp's 500 ms Enter-only delay (`overlays/approval-dialog.ts@dcafcef6:11-14`). The renderer split (history vs viewport) is relevant to Fontaine's inline-viewport work (`completed/tui_inline_viewport_plan.md`)
 but is a deep rewrite; note it, do not propose it.
 
 ## 5. Desirable features
@@ -658,9 +657,9 @@ proposed one in section 10.
 | D4 | **Background promotion with wake-up** | A `bash` past its deadline continues as a job; the model is told, calls `wait`, and the result is injected as a follow-up | [measured] E3 `e3_tool_timeout_bypass.txt` | proposed comment on #25 | Yes (promote-on-timeout, measured in #154) | **Adopt the wake-up notice**; reject the model-liftable cap (`timeout: 0`) |
 | D5 | **Recoverable pruning** | Pruned or oversized results become a pointer (`[shaken ~N tokens — recover: artifact://0 (region 1)]`, `[raw output: artifact://N]`) that `read` pages back; superseded full reads blanked cache-aware | [measured] E6 `e6_trace.txt`; supersede [source] | proposed comment on #161 | Partly (micro-pruning, no read-back) | **Adopt** the pointer + paging; copy the cache-aware supersede rule |
 | D6 | **Stale-state errors with the remedy inline** | Stale tag: current tag + ±2 context lines; unseen-line anchors: the actual lines inlined; no-op escalation to `STOP`; snapshot recovery with a warning | [measured] stale recovery in E4; [source] for the rest | (Fontaine's `edit` already returns clear errors) | No | **Adapt** the discipline; do not adopt hashline |
-| D7 | **Model-supplied intent label per tool call** | Every tool has an `i` argument ("Listing workspace"); the TUI shows it next to the spinner | [measured] E2 schemas, E11 frames | proposed comment on #214 | No | **Adapt**, display-only |
+| D7 | **Model-supplied intent label per tool call** | Every tool except `eval` has an `i` argument (optional on `wait`) ("Listing workspace"); the TUI shows it next to the spinner | [measured] E2 schemas, E11 frames | proposed comment on #214 | No | **Adapt**, display-only |
 | D8 | **Headless plan mode** | `--plan-yolo`: plan in a sandboxed `local://` file, propose, auto-approve, implement | [measured] E7 `e7_plan_yolo.txt` | proposed comment on #24 | Plan mode exists (interactive) | **Adapt** if Fontaine's plan mode stays mechanical; omp's is not (shell ran in plan mode) |
-| D9 | **Todo reminders and `blocked`** | Nudge after 12 mutating calls without a todo update (max 3); statuses add `blocked`, `abandoned` | [source] `todo-tracker.ts@dcafcef6:15-20`; list text [measured] E7 | proposed issue P8 | No | **Adapt**, advisory |
+| D9 | **Todo reminders and `blocked`** | Nudge after 12 mutating calls without a todo update (max 3); statuses add `blocked`, `abandoned` | [source] `todo-tracker.ts@dcafcef6:15-20`; list text [measured] E7 | proposed issue P6 | No | **Adapt**, advisory |
 | D10 | **Provider "learn from the 400"** | On a 400/422 for `reasoning_effort` or strict tools, parse the accepted values or retry without, and remember per endpoint+model | [source] `openai-reasoning-fallback.ts@dcafcef6:393`, compat ref `:268-270` | proposed comments on #169, #53 | n/a | **Adopt** as part of #169 |
 | D11 | **Empty-completion retry at the provider layer** | Up to 2 retries when a stream ends `stop` with no visible content and ≤1 output token, buffering pre-output events so a discarded attempt is never shown | [source] `utils/empty-completion-retry.ts@dcafcef6:91` | proposed issue P2 | Not known | **Adopt** (same issue as D3) |
 | D12 | **Cache-aware context edits** | Pruning/supersede only when the suffix is small or the cache has gone cold; `cache-warmer` refreshes before expiry | [source] `session-maintenance.ts@dcafcef6:735-790`, `cache-warmer.ts@dcafcef6:1-60` | #161 | n/a | Adopt the rule, skip the warmer |
@@ -668,7 +667,7 @@ proposed one in section 10.
 | D14 | **Tool devices (`xd://`)** | Only 11 of 30 tools in the prompt; the rest are discovered by `read xd://<tool>` and called by `write xd://<tool>` with JSON | [measured] E2 tool list, E4/E7 use | #34 (deferred MCP tool loading) | Tool search exists for MCP | Informational: a second precedent for lazy tool schemas |
 | D15 | **Goal / ratchet / autoresearch** | Token-budgeted goal continuation with a completion-audit prompt; eval hill-climbing; benchmark loop with keep/revert commits | [source]; `/goal` in `-p` is plain text ([measured] E3) | #17 | Not equivalent (`/loop`, Stop hooks) | Interactive-only in omp; useful prompt text for #17 (`goal-continuation.md`: "Before goal({op:"complete"}), MUST audit current repo state … Budget exhaustion ≠ completion") |
 | D16 | **TTSR** | Mid-stream rule interruption by regex/AST/judge on the output | [measured] E3 `e3_ttsr.txt` | none | No | **Skip** (see section 6) |
-| D17 | **TUI cards, diffs, status line, approval hardening, paste placeholders, pane-capture tool** | Section 4.11 | [measured] E11 | related #45, #48, #49, #214; proposed issues P3, P4, P5, P7 | partly | Adopt selected items |
+| D17 | **TUI cards, diffs, status line, approval grace period (already present), paste placeholders, pane-capture tool** | Section 4.11 | [measured] E11 | related #45, #48, #49, #214; proposed issues P2, P3, P5 | partly | Adopt selected items |
 
 ## 6. Ideas to adopt or adapt, with the security implication under Fontaine's invariants
 
@@ -683,7 +682,7 @@ proposed one in section 10.
 | S7 | Learn from the 400 (D10) | A retry without `strict` or with another effort value changes the request, never a permission decision. Do not retry guardian calls into a *weaker* configuration (guardian is fail-closed: a retry must keep the same screen) | Not applied to guardian/scanner calls, or applied only where the retry is semantically identical |
 | S8 | Empty-stop retry (D3/D11) | A re-sample is a new model call under the same permissions; capped at 3 | Counted against `--max-turns`/budget |
 | S9 | Intent label `i` (D7) | Model-written text shown in the UI is untrusted display data: strip control characters, cap length, never use it as an argument to permission logic (a model could label `rm -rf` "Reading docs") | Display-only, rendered after sanitising |
-| S10 | Approval arming delay and "type to deny and steer" (D17) | Reduces stray-key approvals; a steering message typed into a denial must enter the ledger as a human message (it is one) | None |
+| S10 | "Type to deny and steer" in the approval prompt (D17); Fontaine already has a 400 ms answer grace period | A steering message typed into a denial must enter the ledger as a human message (it is one) | None |
 | S11 | Pane-capture harness (D17) | None in product; runs fixture workspaces only | Test-only |
 | S12 | Egress audit harness | None; strengthens the "what does a default session contact" claim | Container-only |
 
@@ -717,7 +716,7 @@ Setbacks, in order, because they are findings:
 3. The first model request got `400 MissingSessionID`: the gateway requires `x-opencode-session`; added as a `models.yml` header.
 4. LSP: Debian's pylsp needed `python3-setuptools` or its linter plugins fail silently (4.2).
 5. Fontaine headless without `--permission-mode` and `--allowed-tools` denied `edit` and `shell` (correctly: no one to ask), so the first
-   Fontaine "fix" run only diagnosed; the comparison run used `--permission-mode acceptEdits --allowed-tools 'shell(python3 -m unittest *)'`.
+   Fontaine "fix" run only diagnosed; the comparison run probably used `--permission-mode acceptEdits --allowed-tools 'shell(python3 -m unittest *)'` (its extra args were not recorded).
 6. Fontaine's TUI first asks for workspace trust; my first capture sent keys into that dialog. The rerun answers `n` (the default, no side
    effect on the user's trust file).
 
@@ -785,43 +784,37 @@ No GitHub issue was created or commented on by this work; the orchestrator files
 
 2. **TUI: show shell output and edit diffs as foldable cards in the transcript**
    Labels: `enhancement`, `area:tui`.
-   Body: Fontaine's transcript shows one line per tool call (`• shell python3 -m unittest -q ✓`, `· edit allowed once`). omp renders a framed card
+   Body: Fontaine's transcript shows one line per tool call (`• shell python3 -m unittest -q 2>&1 | tail -40 ✓`, `· edit allowed once`). omp renders a framed card
    per call: the command, the last ~10 lines of output with an expand key and a `Wall: 0.12s · Timeout: 300s` footer, and for edits a diff
-   with line numbers, word-level highlighting and visible indentation (captures `e11_omp/05_run.txt`, `07_run.txt`; Fontaine `e11_fontaine/05_approval_prompt.txt`).
+   with line numbers, word-level highlighting and visible indentation (captures `e11_omp/05_run.txt`, `07_run.txt`; Fontaine `e11_fontaine/06_approval_prompt.txt`).
    #45 asks for the diff in the approval prompt; this is the transcript side. Output shown is already in the model's context, so there is no new data
    exposure, but it must pass the same display sanitising as other tool output. See 4.11.
 
-3. **TUI: ignore Enter for a short arming delay after an approval prompt appears**
-   Labels: `enhancement`, `area:tui`, `area:permissions`, `priority:low`.
-   Body: omp ignores Enter for 500 ms after the approval dialog mounts so a keypress meant for the composer cannot approve a tool call
-   (`overlays/approval-dialog.ts@dcafcef6:11-14`); typing while the prompt is up denies and sends the text as steering. Fontaine's prompt takes `y/s/a/n`
-   and Enter on the default row at once. Proposal: an arming delay for Enter and the lasting answers (`s`, `a`), not for `n`/Esc. See 4.11, S10.
-
-4. **Test harness: drive fontaine-tui under tmux and assert on captured panes**
+3. **Test harness: drive fontaine-tui under tmux and assert on captured panes**
    Labels: `enhancement`, `area:tui`.
    Body: `research/oh-my-pi-harness/scripts/e11_fontaine_tui.sh` drives the release binary at a fixed size, answers approval prompts, resizes to 60
    columns and writes the panes as text. omp ships a PTY tool with start/send/screen/resize/stop for the same purpose. Proposal: promote it to a
    small test helper (feeding the idle-helper dedupe in #215), run against a mock model, assert on the approval box, slash menu and the narrow
    layout. Capture frames show a trust dialog first in a new folder; the harness answers `n`.
 
-5. **Egress audit: record every endpoint a default Fontaine session contacts**
+4. **Egress audit: record every endpoint a default Fontaine session contacts**
    Labels: `enhancement`, `area:observability`.
    Body: the study's container on an `--internal` network with a `socat` forwarder and a `tcpdump` sidecar logged every DNS name and destination omp
    tried with no prompt (catalog refresh and provider discovery against seven vendor hosts; research doc 4.9). Do the same for `fontaine` (TUI idle,
    `-p`, with and without telemetry configured) and keep the expected list in `docs/`. Container-only; no product change unless a surprise appears.
 
-6. **/resume picker: toggle between this directory and all projects**
+5. **/resume picker: toggle between this directory and all projects**
    Labels: `enhancement`, `area:sessions`, `area:tui`, `priority:low`.
    Body: omp's picker has `⇥ all projects` and multi-field fuzzy search (id, title, cwd, first message); Fontaine's lists sessions started in the current
    directory with a type-to-filter line (captures `e11_*/02_session_picker.txt`). Proposal: a scope toggle and cwd in the row; `resolve` semantics unchanged.
 
-7. **Advisory todo reminder and a `blocked` task status**
+6. **Advisory todo reminder and a `blocked` task status**
    Labels: `enhancement`, `area:agents`, `area:tools`, `priority:low`.
    Body: omp nudges after 12 mutating calls without a todo update (max 3 per cycle) and its list has `blocked` (with a reason) and `abandoned`;
    Fontaine's `todo_write` has `pending|in_progress|completed`. Proposal: an advisory one-line notice on the same terms as #160 (one user-role notice,
    never blocks, never in the guardian's intent source) and a `blocked` status with a reason. See 4.5, D9, S6.
 
-8. **Measure cross-model session resume: tool-call ids and empty assistant content**
+7. **Measure cross-model session resume: tool-call ids and empty assistant content**
    Labels: `enhancement`, `area:providers`, `area:sessions`.
    Body: omp sanitises tool-call ids to `[a-zA-Z0-9_-]` ≤ 64 with `_dupN` suffixes for duplicates, replaces empty assistant content with `"."` on tool-call turns for
    hosts that 400 on it, and re-renders prior thinking when the model family changes mid-session. The DeepSeek study showed a resume under a foreign

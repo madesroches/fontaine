@@ -180,7 +180,7 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   Docker against the opencode Go gateway behind a recording proxy on an internal network, and its TUI was driven under tmux next to
   Fontaine's. The npm prebuilt addon is older than the checkout and does not load; the addon was built from source.
 - **What lets the model iterate** (measured): diagnostics from a language server delivered as a late notice after a write; an
-  identical-call redirect (three identical failing calls, then a stop-and-diagnose); a deadline that promotes a command to a background
+  identical-call redirect (three identical failing calls (threshold lowered from the default 5), then a stop-and-diagnose); a deadline that promotes a command to a background
   job with a wake-up; pruned results left as pointers the model pages back; a stale-edit recovery message. A judge-based
   unexpected-stop check cost a model request per turn and never fired.
 - **Not copied**: `yolo` as the default approval mode, project config that can loosen approval, everything a project defines loading
@@ -192,7 +192,7 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
 - **Edit format**: hashline (file-version tags) worked and recovered a stale edit, but four edit tasks did not separate it from
   text-anchored edits (n=1); not adopted.
 - **Terminal UI**: framed tool cards with output panes and edit diffs, a segmented status line, an approval prompt that ignores Enter for
-  500 ms; follow-ups in the research doc.
+  500 ms (Fontaine already has a 400 ms answer grace period); follow-ups in the research doc.
 
 ### Ecosystem / dependencies — reuse-first (user requirement)
 
