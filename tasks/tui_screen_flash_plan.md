@@ -18,7 +18,7 @@ write, and stops blanking rows that are about to be repainted anyway.
   writes) except in two cases:
   1. `wanted != self.height` calls `rebuild`, which runs `erase_rows` (per row: cursor move +
      clear line) from the viewport top to the bottom, then builds a fresh `Terminal` whose empty
-     previous buffer makes the next `draw` repaint everything. ratatui's diff skips blank cells, so
+     previous buffer makes the next `draw` repaint everything. ratatui's diff skips cells unchanged from its previous buffer, so
      the erase is what clears stale text under blank cells.
   2. `one_row_region` (viewport top <= 1 and lines being committed): `erase_rows`, `insert_before`,
      `rebuild` (second erase), then a full repaint.
@@ -33,8 +33,8 @@ write, and stops blanking rows that are about to be repainted anyway.
 
 ## Design
 
-Two independent changes; the first alone makes the flash invisible in terminals that paint per
-read chunk, the second removes the blank state altogether.
+Two independent changes; the first alone works without any terminal feature and makes the flash
+invisible in terminals that paint per read chunk, the second removes the blank state altogether.
 
 ### 1. One write per frame
 
@@ -61,10 +61,13 @@ read chunk, the second removes the blank state altogether.
 
 Replace the blank-then-repaint in `rebuild` with an in-place overwrite: the freshly built
 `Terminal` must repaint every cell of the viewport including blanks, without a preceding erase.
-The mechanism is a sentinel buffer swap: after `Terminal::with_options` in `rebuild`, set
-`*terminal.current_buffer_mut() = Buffer::filled(area, Cell::new("\u{1}"))` then call
-`swap_buffers()` (all public in ratatui-core 0.1.2). This writes nothing, and the next `draw` emits
-every cell, blanks included as spaces, so no preceding erase is needed.
+The mechanism is a sentinel buffer swap (`current_buffer_mut`, `swap_buffers` and `Buffer::filled`
+are public in ratatui-core 0.1.2). `rebuild` and `resume` only set a repaint flag; `draw_frame`
+installs the sentinel immediately before `terminal.draw`, after all `insert_before` calls
+(`insert_before`'s fullscreen branch would draw the sentinel row as `\x01` bytes):
+`*terminal.current_buffer_mut() = Buffer::filled(area, Cell::new("\u{1}"))` then `swap_buffers()`.
+The swap itself writes nothing, and the `draw` emits every cell, blanks included as spaces, so no
+preceding erase is needed.
 
 `erase_rows` is removed from `rebuild` only. The `one_row_region` pre-insert erase (before
 `insert_before`) exists so the row `insert_before` scrolls over does not keep stale text; whether
@@ -87,13 +90,11 @@ erase. Whatever route is chosen must keep the invariant that no stale cell survi
    record the bytes of each; assert (at the writer-trait level, not `write(2)`) one `render` that changes the live area height
    and one that commits settled lines with the viewport at row 0 each produce exactly one write beginning with
    `\x1b[?2026h` and ending with `\x1b[?2026l`.
-3. Confirm the sentinel buffer swap in the harness (`current_buffer_mut`, `swap_buffers` and
-   `Buffer::filled` are public in ratatui-core 0.1.2, checked in the vendored source).
-4. Implement change 2 in `rebuild`/`draw_frame`. Test (red first): extend `Sink` with a recording mode that splits each
+3. Implement change 2 in `rebuild`/`resume`/`draw_frame`. Test (red first): extend `Sink` with a recording mode that splits each
    frame at escape boundaries and feeds the same parser incrementally, asserting after each piece
    that no live row holding content both before and after the frame is blank (the flash this issue
    reports), in the existing height-change and commit scenarios.
-5. Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test -p
+4. Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test -p
    fontaine-tui`; reproduce the old and new behavior in a real tmux with the `live_area` example
    (see `tasks/design/testing.md`, "Reproducing terminal layout bugs"), and add a `CHANGELOG.md`
    fix entry.
@@ -108,8 +109,6 @@ erase. Whatever route is chosen must keep the invariant that no stale cell survi
 
 ## Trade-offs
 
-- Buffering alone is the safe floor: it works without any terminal feature and is mechanical. It
-  does not remove the blank state, only makes the terminal see it and its repaint together.
 - Keeping ratatui's diff across a height change (issue's first direction) is blocked because
   `Viewport::Inline` cannot be resized in place; hence the overwrite-in-place approach on the
   rebuilt terminal.
@@ -122,7 +121,7 @@ No `docs/` page describes frame painting; no doc change beyond the changelog.
 
 ## Testing Strategy
 
-- Unit/emulated tests as in Implementation Steps 2 and 4: one write per frame with sync markers
+- Unit/emulated tests as in Implementation Steps 2 and 3: one write per frame with sync markers
   inside it, and no intermediate blank for rows that keep content. These are the regression tests
   for #220; the emulator sees bytes, which `TestBackend` cannot.
 - Existing `emulated` and `TestBackend` screen tests stay green (stale-cell and scrollback
@@ -130,10 +129,9 @@ No `docs/` page describes frame painting; no doc change beyond the changelog.
 
 ## Manual Verification
 
-1. Follow the detached-tmux steps in `tasks/design/testing.md`, "Reproducing terminal layout
-   bugs" (commands run from `rust/`), and run
-   `cargo run -p fontaine-tui --example live_area` and watch rows being added: expect no visible
-   flashing. Not automated because only a human can judge what a real terminal paints.
+1. Follow the tmux steps in `tasks/design/testing.md`, "Reproducing terminal layout
+   bugs" (commands run from `rust/`), then attach to the session (`tmux -L repro attach -t repro`)
+   and watch the `live_area` example add rows: expect no visible flashing. Not automated because only a human can judge what a real terminal paints.
 
 ## Decisions
 
