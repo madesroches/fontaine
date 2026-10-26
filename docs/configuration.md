@@ -29,7 +29,7 @@ Files in these directories:
 | `<config dir>/config.toml` | The user settings file. |
 | `<data dir>/trust.toml` | Workspace trust record (see [Workspace trust](#workspace-trust)). |
 | `<data dir>/credentials.toml` | Stored API keys (see [Credentials](#credentials)). |
-| `<config dir>/config.lock`, `<data dir>/trust.lock`, `<data dir>/credentials.lock` | Empty lock files beside the files they guard. Sessions hold one while they edit that file, so concurrent edits do not overwrite each other; safe to delete when no session is running. |
+| `<config dir>/config.lock`, `<data dir>/trust.lock`, `<data dir>/credentials.lock` | Empty lock files beside the files they guard. Sessions hold one while they edit that file, so concurrent edits do not overwrite each other, and briefly while they read the settings or trust file, so a read waits for an edit in progress; safe to delete when no session is running. |
 | `<data dir>/history.jsonl` | What you submitted in the terminal UI, for Up and Ctrl-R recall (see [History](tui.md#history)). Readable by the current user only. |
 | `<data dir>/recent_models.json` | The models you last switched to with `/model` and `/guardian-model`, for the picker's Recent group (see [Choosing a model](tui.md#choosing-a-model)). Readable by the current user only. |
 
@@ -792,7 +792,8 @@ it; outside any repository there is no bound. An entry that cannot be resolved i
 unreadable or unparseable `trust.toml` trusts nothing, and the session reports it once at start so
 the file can be fixed or removed. Writes to `trust.toml` and to the settings file are atomic and
 take a lock beside the file (`trust.lock`, `config.lock`), so a crash cannot truncate them and two
-sessions cannot drop each other's edits. Paths compare case-insensitively on Windows.
+sessions cannot drop each other's edits. Reading either file takes the same lock briefly, so a
+read never sees an edit half-done. Paths compare case-insensitively on Windows.
 
 ### Project-local settings
 

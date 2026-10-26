@@ -144,7 +144,12 @@ pub fn remove_account(path: &Path, name: &str) -> io::Result<bool> {
 /// The settings key in the file at `path` whose model reference names account `name`, if any.
 /// `None` when the file does not define the account, since there is nothing to remove from it.
 pub fn model_key_naming(path: &Path, name: &str) -> io::Result<Option<&'static str>> {
-    let doc = read_document(path)?;
+    let text = match crate::file_lock::read_shared(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let doc = parse_document(&text, path)?;
     if doc.get("accounts").and_then(|a| a.get(name)).is_none() {
         return Ok(None);
     }

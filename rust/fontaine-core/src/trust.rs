@@ -62,7 +62,7 @@ pub fn toml_literal(value: &str) -> String {
 
 /// The error is one line: toml's own rendering quotes the source line.
 fn load(data_dir: &Path) -> Result<TrustFile, String> {
-    let text = match std::fs::read_to_string(trust_path(data_dir)) {
+    let text = match crate::file_lock::read_shared(&trust_path(data_dir)) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(TrustFile::default()),
         Err(e) => return Err(fontaine_tools::error_chain::chain(&e)),
@@ -146,18 +146,22 @@ pub fn approve_server(
         source: io::Error::other("the root cannot be resolved"),
     })?;
     let _lock = lock(&path)?;
-    if server_approved(data_dir, Path::new(&root), name, digest) {
-        return Ok(());
-    }
     let mut text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(read_err(e)),
     };
-    toml::from_str::<TrustFile>(&text).map_err(|e| ConfigError::Parse {
+    let parsed: TrustFile = toml::from_str(&text).map_err(|e| ConfigError::Parse {
         path: path.clone(),
         message: e.to_string(),
     })?;
+    if parsed
+        .approved_servers
+        .iter()
+        .any(|a| a.root == root && a.name == name && a.digest == digest)
+    {
+        return Ok(());
+    }
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }

@@ -1699,17 +1699,17 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
         })?;
 
     let user_path = params.config_dir.join(USER_FILE);
-    let user = read_optional(&user_path)?
+    let user = read_optional(&user_path, crate::file_lock::read_shared)?
         .map(|text| parse_settings(&text, &user_path, Column::User))
         .transpose()?;
 
     let project_path = workspace.join(PROJECT_DIR).join(PROJECT_FILE);
-    let project = read_optional(&project_path)?
+    let project = read_optional(&project_path, |p| std::fs::read_to_string(p))?
         .map(|text| parse_settings(&text, &project_path, Column::Project))
         .transpose()?;
 
     let local_path = workspace.join(PROJECT_DIR).join(PROJECT_LOCAL_FILE);
-    let (local_column, local) = match read_optional(&local_path)? {
+    let (local_column, local) = match read_optional(&local_path, |p| std::fs::read_to_string(p))? {
         None => (Column::ProjectLocal, None),
         Some(text) => {
             let classification =
@@ -1982,8 +1982,11 @@ fn demotion_hint(why: &ProjectDemotion, data_dir: &Path) -> Option<String> {
     }
 }
 
-fn read_optional(path: &Path) -> Result<Option<String>, ConfigError> {
-    match std::fs::read_to_string(path) {
+fn read_optional(
+    path: &Path,
+    read: fn(&Path) -> io::Result<String>,
+) -> Result<Option<String>, ConfigError> {
+    match read(path) {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(ConfigError::Read {
