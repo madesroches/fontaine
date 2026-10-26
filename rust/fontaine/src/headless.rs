@@ -477,6 +477,7 @@ async fn run_one(
                 sid,
                 json!({ "tool_use_id": id, "tool": tool, "success": success, "text": text }),
             )),
+            SessionEvent::ToolPreview { .. } => {}
             SessionEvent::Usage { usage, calls_tool } => {
                 totals.add(&usage);
                 // The cap is checked between turns: a spent budget stops the run before its

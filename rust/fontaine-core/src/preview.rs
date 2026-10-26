@@ -155,6 +155,19 @@ fn from_change(path: &str, change: &FileChange) -> Option<DiffPreview> {
     })
 }
 
+/// Multi-line text made safe to paint, line by line: of a line redrawn with `\r` (a progress
+/// meter) only the last drawing is kept, as a terminal would show it; the rest is as `sanitize`.
+/// Line breaks are kept.
+pub fn display_text(raw: &str) -> String {
+    raw.split('\n')
+        .map(|line| {
+            let line = line.trim_end_matches('\r');
+            sanitize(line.rsplit('\r').next().unwrap_or(line))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// One line with its ending dropped, tabs expanded and every other control character blanked, so
 /// file content cannot drive the terminal; credential-shaped text is redacted.
 fn sanitize(raw: &str) -> String {
@@ -307,6 +320,20 @@ mod tests {
         }
         assert_eq!(p.lines[0].text, " [31mred ");
         assert_eq!(p.lines.last().unwrap().text, "    y");
+    }
+
+    #[test]
+    fn display_text_keeps_lines_and_makes_each_safe() {
+        let key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";
+        let raw = format!("a\tb\n\x1b[2Jx\x07\n10%\r50%\r100%\r\nkey {key}\n");
+        let out = display_text(&raw);
+        let lines: Vec<&str> = out.split('\n').collect();
+        assert_eq!(lines[0], "a   b");
+        assert_eq!(lines[1], " [2Jx ");
+        assert_eq!(lines[2], "100%");
+        assert!(!lines[3].contains("abcdefghijklmnopqrstuvwxyz0123456789"));
+        assert_eq!(lines[4], "");
+        assert!(!out.chars().any(|c| c.is_control() && c != '\n'));
     }
 
     #[test]

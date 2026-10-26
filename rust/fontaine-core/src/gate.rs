@@ -24,6 +24,7 @@ use crate::permission_rules::{
     CallContext, Posture, Rule, RuleSource, SourcedRule, is_broad_code_execution, matches,
 };
 use crate::permissions::Approver;
+use crate::preview::DiffPreview;
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -190,13 +191,36 @@ struct Inner {
     allow: Vec<SourcedRule>,
 }
 
+/// What the pipeline published for a call.
+pub enum Published {
+    Decision(Box<DecisionRecord>),
+    /// The diff of an allowed `edit` or `write`, with the id of the call.
+    Preview(String, DiffPreview),
+}
+
 /// The receiving end of the decisions the pipeline makes; the turn runner drains it into its
 /// event stream.
 pub struct DecisionFeed {
     rx: UnboundedReceiver<DecisionRecord>,
+    previews: UnboundedReceiver<(String, DiffPreview)>,
 }
 
 impl DecisionFeed {
+    /// The next thing published, a decision before a preview. Previews travel on a channel of
+    /// their own because the audit log holds the decision record and must not carry them.
+    pub async fn next_published(&mut self) -> Option<Published> {
+        tokio::select! {
+            biased;
+            Some(decision) = self.rx.recv() => Some(Published::Decision(Box::new(decision))),
+            Some((id, preview)) = self.previews.recv() => Some(Published::Preview(id, preview)),
+            else => None,
+        }
+    }
+
+    pub fn try_next_preview(&mut self) -> Option<(String, DiffPreview)> {
+        self.previews.try_recv().ok()
+    }
+
     pub async fn next(&mut self) -> Option<DecisionRecord> {
         self.rx.recv().await
     }
@@ -260,12 +284,14 @@ pub struct SessionState {
     child_restrictions: Mutex<HashMap<String, ChildRestrictions>>,
     current_calls: Mutex<HashMap<String, String>>,
     decisions: UnboundedSender<DecisionRecord>,
+    previews: UnboundedSender<(String, DiffPreview)>,
     feed: tokio::sync::Mutex<DecisionFeed>,
 }
 
 impl SessionState {
     pub fn new(params: StateParams) -> SessionState {
         let (decisions, rx) = unbounded_channel();
+        let (previews, previews_rx) = unbounded_channel();
         let mode = Arc::new(RwLock::new(params.mode));
         {
             let cell = mode.clone();
@@ -308,7 +334,11 @@ impl SessionState {
             child_restrictions: Mutex::default(),
             current_calls: Mutex::new(HashMap::new()),
             decisions,
-            feed: tokio::sync::Mutex::new(DecisionFeed { rx }),
+            previews,
+            feed: tokio::sync::Mutex::new(DecisionFeed {
+                rx,
+                previews: previews_rx,
+            }),
         }
     }
 
@@ -651,6 +681,13 @@ impl SessionState {
         }
         // No consumer is not an error: the audit log already holds the record.
         let _ = self.decisions.send(record);
+    }
+
+    /// Hands the diff an allowed `edit` or `write` call is about to make to whoever follows the
+    /// decision feed.
+    pub fn publish_preview(&self, tool_use_id: String, preview: DiffPreview) {
+        // No consumer is not an error: the preview is display only.
+        let _ = self.previews.send((tool_use_id, preview));
     }
 
     /// The decisions made for `agent`, oldest first, for the agents panel.
