@@ -81,13 +81,11 @@ struct GoalState {
 }
 struct ActiveGoal {
     condition: String,                      // persisted
-    set_ms: i64,                            // persisted
     // run counters, reset on resume:
     started: Instant,
     evaluations: u32,
     last_reason: Option<String>,
     spend_base: Spend,                      // root + subagent spend when set (or resumed)
-    evaluator_spend: Spend,                 // per-evaluator breakdown only (usage.goal); not added to status or caps
     calls_seen: usize,                      // root-agent tool calls in the ledger at the last after_turn
     stretch: Stretch,                       // reset whenever the user sends a prompt
     pending: bool,                          // a turn ended with an answer and is not evaluated yet
@@ -98,21 +96,32 @@ pub enum PauseReason { TurnCap(u32), CostCap(f64), NoProgress(u32), TurnFailed(S
                        Interrupted, EvaluatorFailed(String) }
 ```
 
-- Persisted to `<session dir>/goal.json` (`{condition, set_ms}`, `owner_only::write_atomic`, written
+- Persisted to `<session dir>/goal.json` (`{condition}`, `owner_only::write_atomic`, written
   inside the mutex, never across an await) only while a goal is active; met, impossible and cleared
   remove the file. `Session::open` loads it with fresh counters (Claude Code resets turn count,
   timer and spend baseline on resume); an unparseable file yields no goal plus a `take_warning`
   line, as `todos.json` does. `fork` copies it with the directory.
 - API: `set(condition, base) -> Result<(), GoalError>` (replaces any active goal), `clear() ->
   Option<String>` (the cleared condition), `status() -> GoalStatus`,
-  `after_turn(Option<&TurnOutcome>)` (core type; `None` = interrupted; a closed input makes no call),
-  `user_prompt()`, `next_step() -> Option<Pending>`, `apply(verdict) -> Step`, `take_warning()`.
+  `after_turn(Option<&TurnOutcome>)` (core type; `None` = interrupted, which is also what Esc during
+  an evaluation passes; a closed input makes no call), `user_prompt(spend_now: Spend)`,
+  `next_step(agents_running: bool) -> Option<Pending>`,
+  `apply(result: Evaluation, spend_now: Spend, caps: &GoalCaps, priced: bool) -> Step`,
+  `take_warning()`. `Evaluation` is `Verdict(GoalVerdict) | Failed(String)` (a `Failed` pauses with
+  `EvaluatorFailed`); `GoalCaps` is the `[goal]` limits.
   `GoalStatus` is `{ active: Option<{condition, elapsed, evaluations, last_reason, spend, paused}>, last_achieved: Option<Summary> }`;
   `Pending` is `{ condition: String }` (the evaluation to run); `Step` is `Done(GoalEvent) | Pause(PauseReason) | Continue(Continue)`;
   `Continue` is `{ reason: String, condition: String }` (what `goal_prompt` renders).
 - `GoalError` is a typed enum (`Empty`, `TooLong`, `Persist { source }`): the TUI and headless word
   the message by kind, and `Persist` keeps the `io::Error` as `source()`.
 - Condition limit: 4,000 characters, non-empty (Claude Code's limit).
+- `parse_goal_arg(&str) -> GoalArg { Status, Clear, Set(String) }` in `goal.rs` (empty is `Status`;
+  `clear` and its aliases `stop`, `off`, `reset`, `none`, `cancel` are `Clear`) is the one argument
+  parser, called by both the TUI and headless; the `Set` path still validates via `set()`.
+- Evaluator usage is a session-wide tally on `SessionState` beside `guardian_usage`
+  (`add_goal_usage` / `goal_usage`, `rust/fontaine-tools/src/gate.rs:445-463`); `add_goal_usage` also
+  does the `debit(ROOT_AGENT)`, as `add_guardian_usage` does. It outlives the goal, so headless reads
+  it after the goal ends.
 
 ### When a goal is evaluated
 
@@ -153,6 +162,10 @@ pauses the goal (it stays set; the next user prompt resumes evaluation with a fr
 The existing session caps (`[agents] session_*_budget`) only limit subagents and refuse spawns; they
 never stop the root, so they do not bound goal turns. `[goal] max_cost_usd` and headless
 `--max-budget-usd` do (headless adds evaluator usage to its `spent()` and `total_cost_usd`).
+Headless goal turns would otherwise skip the cap and compaction (`over_cap` → `compact_if_needed`
+→ `over_cap` runs only before an input message's first `run_one`, and `run_one` stops on the cap
+only on `calls_tool` usage), so before each evaluator call and each goal turn headless runs that
+same sequence, factored into a helper shared with the first turn.
 
 A turn that fails pauses the goal rather than clearing it or retrying. An evaluator that errors,
 times out or answers unreadably also pauses, with the reason shown.
@@ -183,9 +196,9 @@ times out or answers unreadably also pauses, with the reason shown.
   / `[Tool result]` blocks; tool arguments and results are cut to 2,000 characters each, and the
   whole is cut to 100,000 characters keeping the **tail** (recent work is what proves the
   condition), with a `[earlier conversation omitted]` marker.
-- Usage: billed like the guardian's (cost dropped when not `catalog_billed`), debited to `ROOT_AGENT`
-  (so tree-delta spend includes it) and added to the goal's `evaluator_spend` for the `usage.goal`
-  breakdown. One `fontaine.goal_evaluation` tracing span per call with `verdict` and token fields; no
+- Usage: billed like the guardian's (cost dropped when not `catalog_billed`), recorded through
+  `SessionState::add_goal_usage` (debited to `ROOT_AGENT`, so tree-delta spend includes it; the
+  tally feeds the `usage.goal` breakdown). One `fontaine.goal_evaluation` tracing span per call with `verdict` and token fields; no
   condition or reason text in telemetry unless `telemetry.log_assistant_responses` is on.
 
 ### The goal turn
@@ -251,7 +264,8 @@ Ledger: `Record::Goal { event: GoalEvent, evaluations: u32 }` with `GoalEvent` =
 
 `-p "/goal <condition>"` runs the loop to completion in one invocation, as Claude Code does. Only
 the `/goal` command is recognised (headless still parses no other slash command), on any input
-message whose text starts with `/goal` followed by whitespace or the end. Headless calls
+message whose text starts with `/goal` followed by whitespace or the end; the argument goes through
+`parse_goal_arg`. Headless calls
 `goal.user_prompt()` for each input message and `goal.after_turn(..)` after each `run_one` (typed,
 news and goal turns):
 
@@ -268,9 +282,11 @@ news and goal turns):
 - stream-json: one new `goal` event per evaluation
   (`{"type":"goal","verdict":"not_met","reason":..,"evaluations":3}`), and the `result` event gains
   an optional `goal` object (`condition`, `status`: `active | met | impossible | paused | cleared`,
-  `evaluations`, `reason`) when a goal was involved, plus `usage.goal` for the evaluator (the evaluator's usage is also added into headless `spent()` and
-  `total_cost_usd`, which sum Totals + guardian + subagent usage, never the tree). Both are
-  additive, so `SCHEMA_VERSION` stays 1; `docs/schemas/headless-v1.schema.json` gains them.
+  `evaluations`, `reason`) when a goal was involved, plus `usage.goal` for the evaluator (read from `SessionState::goal_usage`; also added into headless
+  `spent()` and `total_cost_usd`, which sum Totals + guardian + goal + subagent usage, never the
+  tree). Both are additive, so `SCHEMA_VERSION` stays 1; `docs/schemas/headless-v1.schema.json` gains
+  a `$defs/goal` (with a `const` type) referenced from the top-level `oneOf`, plus the `result`
+  additions (`tests/headless_contract.rs` validates the output).
 - Exit code: when the message set or continued a goal, `0` only if it ended *met*; *impossible* or
   paused sets `code = 1` and breaks the input loop as a failed turn does (`headless.rs:653-672`), like
   any run that did not finish its task. The turn outcome's `subtype` is unchanged (`success`, or the
@@ -313,15 +329,16 @@ Both appear in `/config` read-only (catalog rows), validated at load (`max_turns
 
 - `rust/fontaine-core/src/goal.rs` (new), `rust/fontaine-core/prompts/goal_evaluator.md` (new),
   `rust/fontaine-core/src/lib.rs`
-- `rust/fontaine-core/src/session.rs`, `agent.rs`, `agent/build.rs`, `ledger.rs`, `config.rs`,
+- `rust/fontaine-core/src/session.rs`, `rust/fontaine-tools/src/gate.rs`, `agent.rs`, `agent/build.rs`, `ledger.rs`, `config.rs`,
   `config_scope.rs`, `config_catalog.rs`
 - `rust/fontaine-tui/src/commands.rs`, `ui/mod.rs`, `ui/turn.rs`, `ui/goal.rs` (new), `app.rs`,
   `statusbar.rs`
-- `rust/fontaine/src/headless.rs`, `docs/schemas/headless-v1.schema.json`
+- `rust/fontaine/src/headless.rs`, `docs/schemas/headless-v1.schema.json`,
+  `rust/fontaine/tests/headless_contract.rs`
 - Tests: `rust/fontaine-core/tests/goal.rs` (new), `tests/ledger.rs`, `tests/config.rs`,
   `rust/fontaine-tui/src/ui/tests.rs`, `rust/fontaine/tests/` headless suite
-- `docs/tui.md`, `docs/headless.md`, `docs/configuration.md`, `docs/architecture.md`,
-  `docs/index.md`
+- `CHANGELOG.md`, `docs/tui.md`, `docs/headless.md`, `docs/configuration.md`,
+  `docs/architecture.md`, `docs/index.md`
 - `research/research-claude-code-parity.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
@@ -331,10 +348,7 @@ Both appear in `/config` read-only (catalog rows), validated at load (`max_turns
   surface, trust gating, project-scope rules) is a much larger change than the issue asks for, and
   the goal's needs (screened reason, caps, status, resume) would still sit on top. The step logic
   is isolated in `goal.rs` so a future Stop-hook event can share the evaluator and caps.
-- **Transcript tail, not a summary.** A summarizer call per evaluation doubles the evaluator cost;
-  the tail holds the test output and exit codes a condition is proved by.
-- **Tool-call detection from the ledger.** Counting actions and denials needs no change to the turn
-  event stream and is identical in the TUI and headless.
+- **Transcript tail, not a summary.** A summarizer call per evaluation doubles the evaluator cost.
 
 ## Security
 
@@ -349,6 +363,7 @@ Both appear in `/config` read-only (catalog rows), validated at load (`max_turns
 
 ## Documentation
 
+- `CHANGELOG.md`: a `/goal` entry under `[Unreleased] / Added`.
 - `docs/tui.md`: a "Goals" section (setting, status, clearing, verdict notices, pausing and caps,
   resume, Esc), next to Scheduled prompts; the Commands table (`:234-266`) and the status-bar
   section (`:63`).
