@@ -690,7 +690,7 @@ enabled = false
 | Key | Meaning | Default |
 |---|---|---|
 | `max_turns` | Goal turns in one unattended stretch, 1 to 1000. Reaching it [pauses the goal](tui.md#goals); your next message starts a fresh stretch. | `50` |
-| `max_cost_usd` | The stretch's spend (the main model, the guardian, the goal evaluator and subagents) that pauses the goal, zero or more. Inactive for a model with no known price. | unset |
+| `max_cost_usd` | The stretch's spend (the main model, compaction, the guardian, the goal evaluator and subagents) that pauses the goal, zero or more. Inactive for a model with no known price. | unset |
 
 A goal turn runs with nobody typing, so only the user file and `--settings` can set these. The
 no-progress cap (8 verdicts in a row after turns that called no tool) is fixed.

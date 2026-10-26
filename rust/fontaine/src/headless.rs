@@ -633,14 +633,7 @@ async fn stop_before_call(
     if over_cap(runtime, options, totals) {
         return Some(budget_stop());
     }
-    let compaction = runtime
-        .session
-        .compact_if_needed(
-            &runtime.models.main.completion,
-            runtime.models.main.catalog_billed(),
-            runtime.approver(),
-        )
-        .await;
+    let compaction = runtime.compact_if_needed().await;
     if let Some(usage) = compaction.usage() {
         totals.add(usage);
     }

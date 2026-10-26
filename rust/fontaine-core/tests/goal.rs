@@ -1105,3 +1105,66 @@ fn a_goal_record_adds_nothing_to_what_the_user_asked() {
     let reopened = Ledger::open(f.dir.path()).unwrap();
     assert_eq!(reopened.view().user_messages.len(), 1);
 }
+
+#[tokio::test]
+async fn a_compaction_is_debited_to_the_root_so_a_goal_counts_it() {
+    use fontaine_core::models::{GuardianChoice, Models};
+    use fontaine_core::session::{CONVERSATION_LOG, CompactReason, CompactResult};
+    use rig_core::catalog::Catalog;
+    let world = World::new();
+    let mut spec = (*Catalog::builtin()
+        .resolve("openai/gpt-4o-mini")
+        .unwrap()
+        .spec)
+        .clone();
+    spec.context_window = Some(1_000);
+    let mut usage = Usage::new();
+    usage.input_tokens = Some(700);
+    usage.output_tokens = Some(30);
+    let main = MockCompletionModel::from_turns(vec![MockTurn::text("SUMMARY").with_usage(usage)])
+        .priced_as(spec);
+    let models = Models {
+        main: ModelHandle::new(
+            ModelRef::parse("test/main").unwrap(),
+            AccountKind::named("openai-compatible"),
+            main.clone().into(),
+        ),
+        main_listing: Vec::new(),
+        guardian: None,
+        guardian_choice: GuardianChoice::Pinned,
+        notices: Vec::new(),
+    };
+    let runtime = common::runtime::build_with_models(
+        &world,
+        Manual,
+        models,
+        None,
+        false,
+        ScannerStart::default(),
+        None,
+    );
+    let mut conversation = rig_memory::load(&runtime.session.store(), CONVERSATION_LOG).unwrap();
+    for i in 0..8 {
+        conversation.extend([
+            Message::user(format!("question {i}: {}", "lorem ipsum ".repeat(100))),
+            Message::assistant(format!("answer {i}: {}", "dolor sit ".repeat(100))),
+        ]);
+    }
+    rig_memory::save(
+        &runtime.session.store(),
+        CONVERSATION_LOG,
+        &mut conversation,
+    )
+    .unwrap();
+    let before = runtime.tree_spend();
+    let result = runtime
+        .compact_with(CompactReason::Asked {
+            focus: String::new(),
+        })
+        .await;
+    assert!(
+        matches!(result, CompactResult::Compacted { .. }),
+        "{result:?}"
+    );
+    assert_eq!(runtime.tree_spend().tokens() - before.tokens(), 730);
+}

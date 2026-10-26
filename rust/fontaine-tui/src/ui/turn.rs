@@ -242,14 +242,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Flow::Continue
         };
         let mut run = Box::pin(async {
-            runtime
-                .session
-                .compact_if_needed(
-                    &runtime.models.main.completion,
-                    runtime.models.main.catalog_billed(),
-                    runtime.approver(),
-                )
-                .await;
+            runtime.compact_if_needed().await;
             let ids = runtime.models.main.wire_ids();
             let (model, provider) = (ids.model, ids.provider);
             run_turn(

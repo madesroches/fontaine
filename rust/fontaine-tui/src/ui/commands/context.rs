@@ -65,12 +65,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.running = true;
         let mut closed = false;
         let result = {
-            let mut run = Box::pin(runtime.session.compact_logged(
-                &runtime.models.main.completion,
-                runtime.models.main.catalog_billed(),
-                CompactReason::Asked { focus },
-                runtime.approver(),
-            ));
+            let mut run = Box::pin(runtime.compact_with(CompactReason::Asked { focus }));
             match self.serve_while(runtime, &mut run, Serve::Queueing).await {
                 Ok(result) => Some(result),
                 Err(end) => {

@@ -7,12 +7,13 @@ use fontaine_tools::gate::ROOT_AGENT;
 use rig_memory::load_async;
 
 use super::AgentRuntime;
+use crate::gate::spend_of;
 use crate::goal::{
     Applied, Cleared, Continue, Evaluation, GoalCaps, GoalError, GoalEvaluator, PauseReason,
     Pending, REASON_CHARS, Step, cut, goal_prompt_text, transcript_of,
 };
 use crate::ledger::{GoalEvent, Record};
-use crate::session::CONVERSATION_LOG;
+use crate::session::{CONVERSATION_LOG, CompactReason, CompactResult};
 use crate::turn::TurnOutcome;
 
 impl AgentRuntime {
@@ -24,6 +25,30 @@ impl AgentRuntime {
         let mut spend = tree.spend_of(ROOT_AGENT);
         spend.add(&tree.subagent_spend());
         spend
+    }
+
+    /// [`Session::compact_if_needed`](crate::session::Session::compact_if_needed) on the main
+    /// model, with the summarizer's usage debited to the root so spend caps count it.
+    pub async fn compact_if_needed(&self) -> CompactResult {
+        self.compact_with(CompactReason::Threshold).await
+    }
+
+    /// [`Session::compact_logged`](crate::session::Session::compact_logged) on the main model,
+    /// debited like [`compact_if_needed`](Self::compact_if_needed).
+    pub async fn compact_with(&self, reason: CompactReason) -> CompactResult {
+        let result = self
+            .session
+            .compact_logged(
+                &self.models.main.completion,
+                self.models.main.catalog_billed(),
+                reason,
+                self.approver(),
+            )
+            .await;
+        if let Some(usage) = result.usage() {
+            self.state.agents().debit(ROOT_AGENT, &spend_of(usage));
+        }
+        result
     }
 
     fn forward_goal_warning(&self) {
