@@ -223,7 +223,10 @@ Bookkeeping is **per agent** (`CallView::agent`), in a lock-protected map from a
 loaded paths and digests. Each agent's entry is seeded with the launch set, and the main agent's
 entry is reset by `/clear` and by compaction so files load again on demand. The stage has a
 `reseed(&Loaded)` entry point that `build_agent` calls with the rebuilt `Loaded`: it replaces the
-path rules and resets the main agent's seed. The lock feeds no
+path rules and unions the rebuilt launch set into each agent's entry, keeping on-demand entries,
+because a rebuild keeps the conversation and its earlier tool results. Only `/clear` and
+compaction reset the main agent's entry. Entries are never evicted: one per subagent started,
+so the map grows with session length, like the agent tree's own node map. The lock feeds no
 permission decision, so it uses `lock_recovering`, with a one-line reason.
 
 Its `StageKind::Instructions` sits between `Notifications` and `Scanner`, so the tool-result
@@ -364,7 +367,8 @@ takes no argument and is TUI-only, like the other built-ins.
      `Notifications` and `Scanner`;
    - write `instructions/on_demand.rs` `InstructionStage`, attached in `setup.rs`
      `result_pipeline`;
-   - add `InstructionStage::reseed`, called by `build_agent` with the rebuilt `Loaded`;
+   - add `InstructionStage::reseed`, called by `build_agent` with the rebuilt `Loaded`; it
+     replaces the path rules and unions the launch set into every entry without resetting any;
    - keep the reset handle on `Session`, fired inside `Session::compact` (`session.rs:402`) only
      on `CompactResult::Compacted` and inside `Session::clear` (`session.rs:488`), so no caller
      changes.
@@ -457,6 +461,8 @@ takes no argument and is TUI-only, like the other built-ins.
   mid-session edits and on-demand files cannot steer it.
 - 2026-10-26: `.claude` joins the protected directories because Fontaine now reads it into
   system prompts, matching Claude Code.
+- 2026-10-26: AFK: A rebuild (model switch, output style, `/add-dir`) unions the launch set into each agent's on-demand entry instead of resetting it; the conversation survives the rebuild, so a reset would re-inject files earlier tool results already carry.
+- 2026-10-26: AFK: Per-agent on-demand entries are never evicted, so the map grows by one entry per subagent for the session's life; a completion hook would add wiring across crates for a size bounded like the agent tree's own node map.
 
 ## Documentation
 
