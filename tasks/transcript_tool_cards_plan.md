@@ -42,7 +42,7 @@ either. No key is rebound.
 ### Data (`transcript.rs`)
 
 `Entry::Tool` gains `ordinal: usize` (assigned from a session counter when the `ToolCall` event
-creates the entry; entries are retired and duplicated by follow-ups, so an entries index is not a
+creates the entry; settling pushes a clone of the entry with the same id and ordinal, so an entries index is not a
 stable handle), `call: String` (the full call text), `output: Option<ToolOutput>` and
 `diff: Option<DiffPreview>`:
 
@@ -108,8 +108,10 @@ Settled `Done`/`Failed` call, width `w`:
 New command in `rust/fontaine-tui/src/commands.rs`: prints the full call, the full retained output
 (up to the 64 KiB cap, with a clipped note) and the full diff of call `n` (default latest) as a
 new transcript lines of a new `Entry` variant (shaped like `Entry::Shell`: the pre-rendered block
-is printed as is), so it lands in scrollback like everything else. An
-unknown `n` is an error line. It does not touch the model's context and adds no tool. A `Command` variant plus
+is printed as is), so it lands in scrollback like everything else. `n` resolves to the LAST entry with that ordinal (like `find_tool`'s `rposition`), so the settled
+clone wins over its stale pending row. After `/clear` the entries are gone but the ordinal counter
+is not reset, so `/expand n` for a cleared call is an unknown-call error line, as is any other
+unknown `n`. It does not touch the model's context and adds no tool. A `Command` variant plus
 a `BUILTINS` entry (`commands.rs:77`) register it in `/help`; the handler lives in
 `rust/fontaine-tui/src/ui/commands/`.
 
@@ -182,6 +184,7 @@ store time, not at paint time. No regex matching on tool arguments for any decis
 ## Decisions
 
 - 2026-10-26: No key is rebound; Ctrl-O stays the task list, because a transcript view (c) needs a key and an alternate screen (#222).
+- 2026-10-26: AFK: `/expand n` takes the last entry with ordinal `n` and returns an unknown-call error after `/clear` (no store surviving `/clear`), the least new state (#222).
 
 ## Documentation
 
