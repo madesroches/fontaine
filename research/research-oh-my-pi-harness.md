@@ -154,7 +154,7 @@ use the prebuilt one.
 - *TTSR* (E3, `e3-ttsr`): a project rule `.omp/rules/no-todo.md` with `condition: "TODO"`. The model streamed a `write` call
   containing `TODO`; the stream was cut, the call never ran, and the next request began with the `rule_violation` interrupt as a
   user message. The model then wrote `NOTE` instead (capture `e3_ttsr.txt`). Anything a project writes in `.omp/rules` reaches the model with
-  system-level authority (see 4.7).
+  system-level authority (see section 6, "Project text with system authority", and section 3).
 - *Edit auto-repair* (E3, `e3-repair`, `edit.autoRepair.enabled`, off by default): after an edit that broke the parse, omp sent two
   "output the corrected AFTER region" requests to the `smol` model; the first "fix" restored the colon (a plain revert, rejected by
   design), the second also did not satisfy the check, and the model received `Warnings: This edit introduced a syntax error near line 4
@@ -283,7 +283,7 @@ the intent argument has no Claude Code equivalent.
 **Verdict.** The `i` intent argument is worth borrowing for UI labels: the TUI status line showed `⎋ Reading tests` from it (E11) at
 the cost of a few output tokens per call, and it gives #214 (indicate what is in progress) a model-supplied label. Treat it as
 display-only, never as a permission input. The terse-engineer tone and the "XML tags are system-authored" rule are omp's choices
-and argue against adoption (the second is an injection amplifier; see 4.7).
+and argue against adoption (the second is an injection amplifier; see section 6, "Project text with system authority", and section 3).
 
 ### 4.4 Context management
 
@@ -608,7 +608,7 @@ candidates are the empty-completion retry and, for session resume across models,
 - *Slash menu* [measured]: typing `/` opens a list with icons and one-line descriptions (`security`, `settings`, `setup`, `plan`, `vibe`, `goal`,
   `loop`, `queue` …); about 90 built-ins (`slash-commands/builtin-*.ts`). *Session picker* [measured] (`/resume`): a bordered list with
   `[⌦/⌫ delete · ⏎ select · ⇥ all projects · ⎋ cancel]`; the source adds fuzzy multi-field search, status badges and mouse support.
-- *Narrow width* [measured, 60×30]: the transcript reflows; the status line collapses to `π > 📁 …y/ws ▶───8%───╎───┃─────128K─` (model name and
+- *Narrow width* [measured, 60×30]: the transcript reflows; the status line collapses to `π > 📁 …y/ws ▶───8%─────────────────────────╎───┃─────128K─` (model name and
   git segments dropped).
 - *Editor/keys* [docs/source]: multiline with `Ctrl+G` external editor, `@file` and `/` autocomplete, `!` bash, `#` quick actions,
   pastes over 10 lines or 1000 chars collapse to an atomic `[Paste #N, +30 lines]` token, `[Image #N]` chips, optional vim mode with
