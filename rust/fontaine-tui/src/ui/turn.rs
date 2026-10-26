@@ -3,6 +3,7 @@ use crate::{Action, App, Ui};
 use fontaine_core::RuntimeError;
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::Decision;
+use fontaine_core::goal::Continue;
 use fontaine_core::ledger::Record;
 use fontaine_core::schedule::{Fired, Kind};
 use fontaine_core::tier::Tier;
@@ -92,6 +93,29 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
+    /// A turn on a goal the evaluator found not met yet. A harness note, never the user
+    /// speaking; what the human queued meanwhile is handled as after a scheduled turn.
+    pub(crate) async fn goal_turn(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        next: Continue,
+    ) -> std::ops::ControlFlow<()> {
+        use std::ops::ControlFlow::{Break, Continue as Go};
+        let prompt = runtime.goal_prompt(&next).await;
+        let end = self.turn(runtime, prompt, None).await;
+        if matches!(end, TurnEnd::InputClosed) {
+            return Break(());
+        }
+        match end_of_turn(&end, runtime.steering.retract()) {
+            EndOfTurn::Submit(next) => self.converse(runtime, next, None).await,
+            EndOfTurn::RestoreToInput(back) => {
+                self.app.restore_to_input(&back);
+                Go(())
+            }
+            EndOfTurn::Nothing => Go(()),
+        }
+    }
+
     /// Drives `fut` to completion while serving keys and prompts. `serve` says which of the
     /// retry and queueing keys the caller handles. `Err` is the user leaving or interrupting;
     /// the caller cleans up.
@@ -174,6 +198,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         use std::ops::ControlFlow::{Break, Continue};
         loop {
             self.app.transcript.user(text.clone());
+            // A prompt from the user resumes a paused goal.
+            runtime.goal_user_prompt();
             let end = match expanded.take() {
                 Some(prompt) => self.turn(runtime, prompt, None).await,
                 None => self.turn(runtime, text.clone(), Some(&text)).await,
@@ -296,6 +322,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
         self.show_delivered(runtime);
         self.finish_turn(runtime, &end).await;
+        self.goal_after_turn(runtime, &end);
         runtime.refresh_files();
         end
     }
@@ -303,6 +330,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// Shows queued messages where the agent received them.
     fn show_delivered(&mut self, runtime: &AgentRuntime) {
         for text in runtime.steering.take_delivered() {
+            // The user spoke into the turn, so a paused goal resumes.
+            runtime.goal_user_prompt();
             self.app.transcript.user(text);
         }
     }

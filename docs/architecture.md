@@ -149,7 +149,7 @@ terminal UI renders them and answers approval prompts concurrently with the run.
 
 ## The session ledger
 
-Each session keeps two stores, a task list file and a schedule file, in `<data dir>/sessions/<session id>/`:
+Each session keeps two stores, plus a task list, a schedule and a goal file, in `<data dir>/sessions/<session id>/`:
 
 - the **model context**, the conversation the model sees, kept in `logs/` by rig's memory store.
   Compaction rewrites it: when the conversation outgrows the model's context window, or the
@@ -173,6 +173,12 @@ Each session keeps two stores, a task list file and a schedule file, in `<data d
   `deleted`, `expired`, with the task's id, who set it and its cron expression, never its prompt)
   show what ran and who scheduled it, and do not count toward what you asked for.
 
+- the **goal**, `goal.json`: the condition of the session's [`/goal`](tui.md#goals), present only
+  while a goal is active. The ledger's `goal` records (`set`, `met`, `impossible`, `cleared`,
+  `paused`, with the number of evaluations, never the condition) show how it went; the condition
+  itself is in the `user_message` of the `/goal` line. A goal turn is a harness turn, so it adds
+  nothing to what you asked for.
+
 Compaction changes the first store only, and so does `/clear`, which empties the model context in
 the same session and adds a `context_cleared` record to the ledger. The ledger keeps everything it
 held; only the guardian's view of what you asked restarts after the record. A summary is model-written text and is never an input to a
@@ -181,13 +187,13 @@ own subdirectory because the memory store refuses a directory that holds a top-l
 
 ### Resuming and forking
 
-`--continue` and `--resume` reopen the stores of an earlier session: the conversation log, the task list, the schedule and the
+`--continue` and `--resume` reopen the stores of an earlier session: the conversation log, the task list, the schedule, the goal and the
 ledger, whose records rebuild the view the guardian's requests are built from, and new records
 continue the sequence. The session starts in the mode the settings resolve to and with no
-"allow session" grants, which were never persisted. `--fork-session` copies the session directory, `todos.json` and `schedule.json` included, into a
+"allow session" grants, which were never persisted. `--fork-session` copies the session directory, `todos.json`, `schedule.json` and `goal.json` included, into a
 session directory under a new id and opens the copy, leaving the original as it was; the audit log
 of the copy starts empty. A resumed schedule keeps its tasks that are still worth running and
-re-arms them from now, so nothing replays what came due while the session was closed; the rest
+re-arms them from now, so nothing replays what came due while the session was closed; a resumed goal comes back with its clock, evaluations and spend baseline reset; the rest
 are dropped from the file and reported once at startup, when scheduling is enabled (see [Scheduled prompts](tui.md#scheduled-prompts)).
 
 A session can carry a name, recorded in its ledger and changed by appending another; `--resume`

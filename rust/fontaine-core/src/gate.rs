@@ -11,6 +11,7 @@ use fontaine_agents::budget::Spend;
 use fontaine_agents::mode::{Ladder, RootMode};
 use fontaine_agents::tree::AgentTree;
 use fontaine_guardian::{EnvironmentConfig, Guardian, LoopBreaker, RuleConfig, Screen, Settings};
+use fontaine_tools::gate::ROOT_AGENT;
 use fontaine_tools::lock::{lock, lock_recovering, read, write};
 use fontaine_tools::scope::Scope;
 use rig_core::completion::Usage;
@@ -254,6 +255,7 @@ pub struct SessionState {
     guardian_usage: Mutex<GuardianUsage>,
     guardian_usage_by: Mutex<HashMap<String, GuardianUsage>>,
     subagent_usage: Mutex<GuardianUsage>,
+    goal_usage: Mutex<GuardianUsage>,
     skill_grants: Mutex<HashMap<String, Vec<SourcedRule>>>,
     child_restrictions: Mutex<HashMap<String, ChildRestrictions>>,
     current_calls: Mutex<HashMap<String, String>>,
@@ -300,6 +302,7 @@ impl SessionState {
             retries: Mutex::default(),
             guardian_usage: Mutex::default(),
             guardian_usage_by: Mutex::default(),
+            goal_usage: Mutex::default(),
             subagent_usage: Mutex::default(),
             skill_grants: Mutex::default(),
             child_restrictions: Mutex::default(),
@@ -468,6 +471,24 @@ impl SessionState {
             .get(agent)
             .copied()
             .unwrap_or_default()
+    }
+
+    /// Counts a goal evaluation's model calls: in the session total and against the root, so
+    /// the spend a goal's cost cap reads includes them.
+    pub fn add_goal_usage(&self, usage: &Usage) {
+        let mut total = lock(&self.goal_usage, "goal usage");
+        total.input_tokens += usage.input_tokens.unwrap_or(0);
+        total.output_tokens += usage.output_tokens.unwrap_or(0);
+        if let Some(cost) = usage.cost {
+            *total.cost_usd.get_or_insert(0.0) += cost.total;
+        }
+        drop(total);
+        self.agents.debit(ROOT_AGENT, &spend_of(usage));
+    }
+
+    /// What goal evaluations have cost this session, which outlives the goal.
+    pub fn goal_usage(&self) -> GuardianUsage {
+        *lock(&self.goal_usage, "goal usage")
     }
 
     /// Counts a subagent's model call. The agent's own tally is the tree's; this is the

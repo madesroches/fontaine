@@ -100,6 +100,9 @@ pub(super) fn build_agent(
     if let Some(warning) = p.session.todos().take_warning() {
         p.approver.warn(&warning);
     }
+    if let Some(warning) = p.session.goal().take_warning() {
+        p.approver.warn(&warning);
+    }
     if scheduling(p) {
         p.session.scheduler().settle_expired();
         if let Some(warning) = p.session.scheduler().take_warning() {

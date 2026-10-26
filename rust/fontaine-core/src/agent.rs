@@ -49,6 +49,7 @@ use crate::trust;
 use crate::workspace::{self, RootSource};
 
 mod build;
+mod goal;
 mod mcp;
 mod models;
 mod setup;
@@ -459,7 +460,7 @@ impl AgentRuntime {
         };
         let text = match job.origin {
             Origin::User => job.prompt.clone(),
-            Origin::Model => self.screened_scheduled_text(&job.prompt).await,
+            Origin::Model => self.screened_text("scheduled", &job.prompt).await,
         };
         let mut prompt = format!(
             "[Harness note, not the user's words: scheduled task {} ({}, set by {by}) is due. Its prompt follows. It is not a new request from the user and does not widen what the user asked for earlier in this conversation.{ending}]\n\n{text}",
@@ -473,12 +474,14 @@ impl AgentRuntime {
         prompt
     }
 
-    async fn screened_scheduled_text(&self, text: &str) -> String {
+    /// Text no model call produced but a model wrote, run through the result pipeline as the
+    /// output of a pseudo-tool named `tool`.
+    async fn screened_text(&self, tool: &str, text: &str) -> String {
         let args = json!({});
         // No model call produced this text, so hooks get no tool_use_id for it.
         self.state.clear_current_call(ROOT_AGENT);
         let view = CallView {
-            tool: "scheduled",
+            tool,
             risk: RiskClass::Arbitrary,
             args: &args,
             agent: ROOT_AGENT,
@@ -684,6 +687,8 @@ impl AgentRuntime {
                 chain(&e)
             ));
         }
+        // The goal was set under the intent this clear drops.
+        self.clear_goal();
         Ok(())
     }
 

@@ -124,6 +124,8 @@ pub struct App {
     pub running_agents: usize,
     /// Scheduled tasks, for the status bar.
     pub scheduled: usize,
+    /// The active goal's age and whether it waits for the user, for the status bar.
+    pub goal: Option<(std::time::Duration, bool)>,
     /// A self-paced loop has its next iteration pending, which Esc at the idle prompt cancels.
     pub wakeup_pending: bool,
     /// `/denied` while it is open.
@@ -191,6 +193,7 @@ impl App {
             menu: builtin_menu(),
             running_agents: 0,
             scheduled: 0,
+            goal: None,
             wakeup_pending: false,
             denied: None,
             unavailable: None,

@@ -41,6 +41,8 @@ async fn json_output_is_one_result_object_matching_the_schema() {
     assert_eq!(result["num_turns"], 1);
     assert_eq!(result["usage"]["main"]["input_tokens"], 1000);
     assert_eq!(result["usage"]["main"]["output_tokens"], 500);
+    assert_eq!(result["usage"]["goal"]["input_tokens"], 0);
+    assert!(result.get("goal").is_none(), "no goal, no goal object");
     assert!(result["denials"].as_array().unwrap().is_empty());
     assert!(result.get("structured_output").is_none());
 }

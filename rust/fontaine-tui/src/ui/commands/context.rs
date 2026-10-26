@@ -14,6 +14,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             );
             return;
         }
+        let had_goal = runtime.session.goal().is_active();
         match runtime.clear_conversation().await {
             Ok(()) => {
                 self.app.transcript.clear();
@@ -23,6 +24,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.app.transcript.notice(
                     "cleared the conversation; the session, its permissions and its mode carry on",
                 );
+                if had_goal {
+                    self.app.transcript.notice("the goal was cleared with it");
+                }
             }
             Err(e) => self
                 .app

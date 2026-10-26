@@ -106,7 +106,9 @@ and a call to an MCP tool a `fontaine.mcp.call` span (`mcp.server`, `mcp.tool`).
 compaction, automatic or asked for with `/compact`, adds a `fontaine.compaction` span
 (`compaction.reason`: `threshold` or `asked`) around the summarizer call, and each scan by the
 `llm` tool-result scanner a `fontaine.scanner` span (`scanner`) around the scanner's model call.
-Those two also carry `model.priced`. `model.priced` says whether the model it bills by is priced;
+Each [goal](tui.md#goals) evaluation adds a `fontaine.goal_evaluation` span (`verdict`, `input_tokens`
+and `output_tokens`; never the condition or the reason) around the evaluator's model call.
+Those three also carry `model.priced`. `model.priced` says whether the model it bills by is priced;
 the cost of a model call is dropped under the nearest ancestor span that records
 `model.priced = false`. Model-call spans carry the provider, the model, the response id and
 the token counts. Source file paths and thread names are not exported.
@@ -116,7 +118,7 @@ the token counts. Source file paths and thread names are not exported.
 | Metric | Unit | Attributes |
 |---|---|---|
 | `fontaine.session.count` | `{session}` | `start_type` (`fresh`, `resume` or `continue`; a fork takes the value of the flag it forks from, `--continue` with nothing to continue is `fresh`, and a `/resume` or `/branch` inside the terminal UI starts a new session span with `resume`), `headless` (`true` or `false`) |
-| `fontaine.token.usage` | `{token}` | `type` (`input`, `output`, `cacheRead`, `cacheCreation`, `reasoning`), `model`, `query_source`; `estimated` (`true`) on the guardian spend estimate only |
+| `fontaine.token.usage` | `{token}` | `type` (`input`, `output`, `cacheRead`, `cacheCreation`, `reasoning`), `model`, `query_source` (`main`, `guardian`, `scanner`, `goal` or `subagent`); `estimated` (`true`) on the guardian spend estimate only |
 | `fontaine.cost.usage` | USD | `model`, `query_source`; `estimated` (`true`) on the guardian spend estimate only |
 | `fontaine.tool_decision.count` | `{decision}` | `tier`, `decision` |
 | `fontaine.guardian.latency` | ms | `model`, `profile`, `cache_hit` |
