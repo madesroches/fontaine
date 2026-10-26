@@ -359,7 +359,7 @@ summarizer prompt.
   `reviewer`, `security-reviewer`, `seance`. Results return as a `<task-result id= agent= status= duration=>` block, long output to
   `agent://<id>`; up to 32 in parallel; recursion depth 2. [measured] (E7): the parent spawned a `scout` named `MedianScout`, got
   `Spawned agent …`, called `wait`, and received the task-result block; the child's 4-message request carried a reduced tool list and a
-  goal-shaped prompt (`Complete assignment thoroughly: # Target … # Change … # Acceptance …`; capture `e7_child_request_summary.json`).
+  goal-shaped prompt (`Complete assignment thoroughly: # Target … # Change … # Acceptance …`; capture `e7_todo_task.txt`; tool list and message count in `e7_child_request_summary.json`).
 - **Child approval mode.** Every child's settings snapshot forces `"tools.approvalMode": "yolo"` ("Subagents run headless — there is no UI
   to confirm prompts against, so the parent task approval is the authorization boundary", `task/executor.ts@dcafcef6:1181-1184`).
   [measured] (E7): with the parent at `always-ask` and `tools.approval.task: allow`, the parent's own `bash echo parent-ran` was refused
@@ -824,7 +824,7 @@ P7. **Measure cross-model session resume: tool-call ids and empty assistant cont
    replaying a Fontaine session across the supported hosts, fixing only what fails. See 4.10.
 
 P8. **Headless workspace trust: decide whether `-p` should load project hooks and MCP servers unprompted**
-   Labels: `enhancement`, `area:security`, `priority:low`.
+   Labels: `enhancement`, `area:permissions`, `priority:low`.
    Body: omp loads project hooks, MCP servers and allow rules without a prompt, and Claude Code `-p` does the same (E10). Fontaine follows Claude Code:
    only the TUI asks, `-p` loads project hooks and MCP servers without a prompt (they can only tighten a permission decision, but a hook or stdio MCP
    server is still a process spawned from repo contents). Proposal: measure first; if worth closing, an opt-in user-scope setting that makes `-p`
@@ -833,6 +833,10 @@ P8. **Headless workspace trust: decide whether `-p` should load project hooks an
 P9. **Approval prompt: rule line drops newlines of a multi-line command**
    Labels: `bug`, `area:tui`, `priority:low`.
    Body: in the approval prompt the proposed-rule line is wrapped by `input::wrap` (`rust/fontaine-tui/src/input.rs`, used at `approval.rs` for the rule line), which splits by width only; ratatui drops the control characters, so a command with a newline reads `…from stats import medianprint(…`. The saved rule keeps the real newlines and the command pane shows the break, so no permission outcome changes. Reproduction: `research/oh-my-pi-harness/captures/e11_fontaine/07_approval_prompt.txt`. Fix: render the rule with newlines shown as `\n` or split into lines first. See 4.11.
+
+P10. **Shell redirect targets are missing from the guardian's touched paths**
+   Labels: `bug`, `area:guardian`, `area:permissions`.
+   Body: `touched_paths` (`rust/fontaine-core/src/destructive.rs`, shell branch) builds the guardian's `paths_this_call_touches` from the argument words of each simple command, treating a word containing `/` or `\` (or starting with `.`) as a path. `redirect()` in `rust/fontaine-tools/src/preclassify.rs` only sets `output_redirect` and never adds the target to `words`, so the targets of `>`, `>>`, `>|` and `&>` are never listed, while a non-path argument such as `'# generated\\n'` is. Reproduction: `research/oh-my-pi-harness/captures/e4_edit_runs.txt` (request #4): for `printf '# generated\\n' >> cfg.py` the list is `ws/# generated\\n [unindexed]` and omits `cfg.py`. The guardian still allowed the call correctly (it also sees the raw command), so no outcome changed here, but the fact is wrong and the same list picks the target for on-demand nested instructions (`rust/fontaine-core/src/instructions/on_demand.rs`). Proposal: add redirect targets to the touched paths (file-write class), keep the soundness rule that anything unparsed falls through to the guardian, and add a test for each redirect operator. See "Bugs found in Fontaine".
 
 ### Proposed comments on existing issues
 
@@ -857,7 +861,7 @@ P9. **Approval prompt: rule line drops newlines of a multi-line command**
 
 ### Bugs found in Fontaine
 
-No permission or guardian defect reproduced. One minor cosmetic display defect (proposed as P9): in the approval prompt the rule line for a multi-line command drops the newlines (`…from stats import medianprint(…`, capture `e11_fontaine/07_approval_prompt.txt`); the saved rule keeps real newlines (`permission_rules.rs`), and the command pane above shows the line break, because `input::wrap` splits by width only and ratatui drops control characters. Observations that are not bugs: headless `fontaine -p` with an open stdin waits 3 s and prints "no stdin data received"
+One guardian-input defect (proposed as P10): redirect targets are not among the paths the guardian is told a shell call touches. For `printf '# generated\\n' >> cfg.py` the guardian request lists `ws/# generated\\n [unindexed]` as the only touched path and omits `cfg.py` (capture `e4_edit_runs.txt`, request #4). Cause: `touched_paths` (`destructive.rs`) takes any argument word containing `/` or `\` as a path, and `redirect()` (`preclassify.rs`) only sets `output_redirect` without adding the target to `words`, so `>`, `>>`, `>|` and `&>` targets never reach the list; `adjudication.rs` passes the list into the session facts, and `instructions/on_demand.rs` picks its nested-instruction target from the same list. The guardian's verdict was still correct because it also sees the raw command; the defect is a missing fact, not a bypass. One minor cosmetic display defect (proposed as P9): in the approval prompt the rule line for a multi-line command drops the newlines (`…from stats import medianprint(…`, capture `e11_fontaine/07_approval_prompt.txt`); the saved rule keeps real newlines (`permission_rules.rs`), and the command pane above shows the line break, because `input::wrap` splits by width only and ratatui drops control characters. Observations that are not bugs: headless `fontaine -p` with an open stdin waits 3 s and prints "no stdin data received"
 (by design); Fontaine's denial text is better than omp's.
 
 ### Decisions

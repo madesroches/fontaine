@@ -2,7 +2,7 @@
 # Run omp once inside Docker with the study's network and capture setup.
 # usage: run_omp.sh NAME "task text"
 #   env: FIXTURE=<dir under fixtures/>  CONFIG=<file under scripts/ copied to ~/.omp/agent/config.yml>
-#        OMP_ARGS="extra omp args"  TELEMETRY=1 (leave telemetry at defaults)  IDLE=1 (start container, run no omp; use POST)
+#        OMP_ARGS="extra omp args"  IDLE=1 (start container, run no omp; use POST)
 #        POST=<cmd run in container after>  PRE=<cmd run in container before>  KEEP=1 (do not tear down)  GIT=1 (git init the workspace)
 #        XENV="-e A=b -e C=d" (extra env for the omp process)
 #        TIMEOUT=<seconds> (default 900)  CMD=<full command run instead of omp -p>
