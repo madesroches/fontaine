@@ -32,20 +32,27 @@ pub fn create_dir(path: &Path) -> io::Result<()> {
 }
 
 /// Removes the directory tree at `path`; a missing one is success. Windows reports a file a
-/// scanner or a just-exited child still has open as access denied, so that is retried briefly.
+/// scanner or a just-exited child still has open as access denied or, without FILE_SHARE_DELETE, as
+/// a sharing violation (which std leaves uncategorized), so both are retried briefly.
 pub fn remove_dir_all_retrying(path: &Path) -> io::Result<()> {
     let attempts = if cfg!(windows) { 5 } else { 1 };
     for attempt in 1..=attempts {
         match std::fs::remove_dir_all(path) {
             Ok(()) => return Ok(()),
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(e) if attempt < attempts && e.kind() == io::ErrorKind::PermissionDenied => {
+            Err(e) if attempt < attempts && is_transient_removal_error(&e) => {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
             Err(e) => return Err(e),
         }
     }
     unreachable!("the last attempt returns")
+}
+
+fn is_transient_removal_error(e: &io::Error) -> bool {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    e.kind() == io::ErrorKind::PermissionDenied
+        || (cfg!(windows) && e.raw_os_error() == Some(ERROR_SHARING_VIOLATION))
 }
 
 /// The current user's SID in string form; what a current-user-only DACL must name.

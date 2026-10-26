@@ -72,8 +72,9 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    every root is denied, with a hint naming the session's scratch directory and `/add-dir`: the
    file tools are confined to the roots, so an approval could never make the call run. The scratch
    directory is an ordinary root (see [Tools](tools.md#the-scratch-directory)): this step, the floor
-   and the guardian treat a path in it like one in the workspace, and `shell` commands there still
-   go through the guardian. Claude Code prompts for a write outside the workspace; Fontaine denies
+   and the guardian treat a path in it like one in the workspace, and `shell` treats it like any root:
+   read-only commands whose operands are inside it take the pre-classifier fast path, and other
+   commands go through the guardian as usual. Claude Code prompts for a write outside the workspace; Fontaine denies
    it and offers the scratch directory instead.
 4. **Shell pre-classifier**, below.
 5. **Allow rules**, below.

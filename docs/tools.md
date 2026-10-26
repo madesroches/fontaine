@@ -112,7 +112,8 @@ a path outside every root points at it.
   directory name stand in for that). The path is canonical, and it is never inside
   Fontaine's config or data directory, so those stay protected.
 - It is an ordinary root. The deterministic floor still applies (a protected file name such as
-  `.bashrc` still asks), the guardian still judges `shell` commands that run there, and it appears
+  `.bashrc` still asks), `shell` treats it like any root (read-only commands whose operands are inside it take the
+  pre-classifier fast path, other commands go through the guardian as usual), and it appears
   in the guardian's workspace roots, in hook payloads and in the headless `init` event. Subagents
   share their parent's scratch directory.
 - It is removed when the session ends, including before a `/resume` or `/branch` starts the next
