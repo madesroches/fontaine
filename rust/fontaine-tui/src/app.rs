@@ -24,6 +24,7 @@ use crate::input::InputBuffer;
 use crate::model_picker::{ModelPicker, PickerKey, PickerPurpose};
 use crate::provider_dialog::{DialogKey, ProviderDialog};
 use crate::question::QuestionPanel;
+use crate::resume_picker::{ResumeKey, ResumePicker};
 use crate::server_prompt::ServerPrompt;
 use crate::theme::Theme;
 use crate::todo_panel::TodoPanel;
@@ -59,6 +60,8 @@ pub enum Action {
     Guardian(UnavailableAnswer),
     /// The human chose `<account>/<model>` in the model picker.
     PickModel(PickerPurpose, String),
+    /// The human chose a session in the `/resume` picker.
+    ResumeSession(String),
     /// The human asked to stop a subagent.
     KillAgent(String),
     /// The provider dialog asks for something done.
@@ -109,6 +112,8 @@ pub struct App {
     pub server: Option<ServerPrompt>,
     /// The `/model` or `/guardian-model` picker while it is open.
     pub models: Option<ModelPicker>,
+    /// The `/resume` picker while it is open.
+    pub resume: Option<ResumePicker>,
     /// The `/config` panel while it is open.
     pub config: Option<ConfigPanel>,
     /// The `/login` dialog while it is open.
@@ -180,6 +185,7 @@ impl App {
             todos: TodoPanel::default(),
             server: None,
             models: None,
+            resume: None,
             config: None,
             providers: None,
             menu: builtin_menu(),
@@ -456,6 +462,7 @@ impl App {
                     || self.unavailable.is_some()
                     || self.server.is_some()
                     || self.models.is_some()
+                    || self.resume.is_some()
                     || self.config.is_some();
                 if above_dialog {
                 } else if let Some(dialog) = &mut self.providers {
@@ -484,6 +491,7 @@ impl App {
             || self.unavailable.is_some()
             || self.server.is_some()
             || self.models.is_some()
+            || self.resume.is_some()
             || self.config.is_some()
             || self.providers.is_some()
             || self.agents.is_some()
@@ -544,6 +552,19 @@ impl App {
                 PickerKey::Pick(_, reference) => {
                     self.models = None;
                     Action::PickModel(purpose, reference)
+                }
+            };
+        }
+        if let Some(picker) = &mut self.resume {
+            return match picker.handle_key(key) {
+                ResumeKey::None => Action::None,
+                ResumeKey::Close => {
+                    self.resume = None;
+                    Action::None
+                }
+                ResumeKey::Pick(id) => {
+                    self.resume = None;
+                    Action::ResumeSession(id)
                 }
             };
         }

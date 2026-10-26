@@ -25,3 +25,28 @@ it, so the guardian's intent is untouched. `/clear` also clears the schedule, si
 intent a model-created job was scheduled under; resume drops expired and wakeup jobs and re-arms
 the rest from now. Ledger in Phase 2; guardian
 reads it in Phase 4; resume/fork in Phase 5.
+
+Session names and listing. `SessionNamed { name }` is appended by `--name` and `/rename`; the
+latest wins, and `LedgerView` ignores it like `Scheduled`, so the guardian's intent is untouched.
+A name is 1-80 characters with no control characters (`session::validate_name`). `session::list`
+scans each ledger once (tolerating a torn or foreign one by skipping it) for the primary root, the
+last name, the first message since the last `ContextCleared` and, for a branch, the parent in the
+last `Resumed` whose `how` starts with `fork`; the id is the directory name, because a fork copies
+the source's records. `latest_for_root` is the first of `list(.., Some(root))`. `session::resolve`
+(for `--resume` and `/resume <text>`) tests `text` as a session id before any path join, lets an
+existing session directory win, and otherwise matches the name case-insensitively among sessions
+started in the root: none is `Missing`, several `Ambiguous` (exit 2, ids listed). Every fork writes
+the copy's own `SessionNamed` (the given name, else the source's plus ` (branch)`), and the TUI's
+`/branch` also writes the copy's `Resumed` (`fork (branch)`), so nothing inherited is read as the
+copy's.
+
+Switching sessions in the TUI. `fontaine_tui::drive` returns `DriveOutcome::Exit` or
+`Switch(SessionTarget { source, record_resume })`. `/resume` validates the target and returns it;
+`/branch` forks first (refused while a subagent runs or has a report, like `/clear`) and returns the
+copy with `record_resume` false. The run loop in `fontaine::run` then tears the old session down and
+opens the target with a derived `Cli` (`resume` set; `continue`, `fork_session`, `session_id` and
+`name` cleared), so a stale `--session-id` or `--continue` is never re-applied. The telemetry guard,
+the configuration and the trust decision are kept; each iteration enters a new `fontaine.session`
+span with `start_type` `resume`, resolves models again and restarts MCP servers and the scanner.
+
+`/export` renders the rig-memory conversation (not the ledger) as Markdown; see `export.rs`.

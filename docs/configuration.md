@@ -874,7 +874,7 @@ for any reason other than not existing, is a configuration error naming the path
 | `--model <account>/<model>` | Overrides `[model] model`. |
 | `--permission-mode <mode>` | Overrides `[permissions] default_mode`. `auto` is accepted. |
 | `--in-container` | States that the process runs inside a container. With `[guardian] profile = "minimal"` it lets the minimal guardian load, after a runtime probe also finds a container; the flag alone is never enough. |
-| `--continue`, `--resume <id>`, `--fork-session` | Reopen the latest session of the launch directory, reopen one by id, or copy the one that would have been reopened under a new id. See [Headless runs](headless.md#continuing-a-session). |
+| `--continue`, `--resume <id-or-name>`, `--fork-session`, `--name <name>` | Reopen the latest session of the launch directory, reopen one by id or by name, copy the one that would have been reopened under a new id, or name the session started (or, without `--fork-session`, the one reopened). See [Headless runs](headless.md#continuing-a-session). |
 | `--allowed-tools <rule>`, `--disallowed-tools <rule>` | Adds an allow or deny rule for the session (CLI scope). Repeatable. |
 | `--ax-screen-reader` | Prints the interface as plain labelled lines for a screen reader instead of drawing it, and prints `[Screen Reader Mode: on via flag]` first. A headless run ignores it. |
 | `FONTAINE_AX_SCREEN_READER` | `1` turns screen-reader mode on and `0` keeps it off even when `[tui] screen_reader` is `true`; the flag still turns it on. Any other value is ignored, with a warning in the conversation (or on stderr when the UI cannot start). |

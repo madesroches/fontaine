@@ -36,6 +36,7 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         render: |_: &mut App| {},
         recent: RecentModels::in_memory(),
         pending_pick: None,
+        pending_resume: None,
         config_pending: Default::default(),
         pending_config: VecDeque::new(),
         pending_provider: VecDeque::new(),
@@ -46,6 +47,7 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         clipboard: Box::new(|_| Ok(())),
         suspend: crate::no_suspend(),
         launcher: crate::ui::Launcher::Sh,
+        switch: None,
     }
 }
 

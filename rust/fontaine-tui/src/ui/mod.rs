@@ -174,6 +174,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
             if let Some((purpose, reference)) = self.pending_pick.take() {
                 self.apply_pick(runtime, purpose, &reference).await;
             }
+            if let Some(id) = self.pending_resume.take()
+                && self.switch_to(runtime, &id).is_break()
+            {
+                return;
+            }
             while let Some(change) = self.pending_config.pop_front() {
                 match change {
                     ConfigKey::OpenPicker(slot) => self.open_config_picker(runtime, slot).await,
@@ -244,6 +249,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Action::CancelWakeup => self.cancel_wakeup(runtime),
                 Action::RetryDenied(index) => self.retry_denied(runtime, index),
                 Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
+                Action::ResumeSession(id) => {
+                    if self.switch_to(runtime, &id).is_break() {
+                        return;
+                    }
+                }
                 Action::KillAgent(id) => self.kill_agent(runtime, &id),
                 Action::PickModel(purpose, reference) => {
                     self.apply_pick(runtime, purpose, &reference).await;
@@ -317,6 +327,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(Command::Copy(argument)) => self.copy(&argument),
             Some(Command::Memory(argument)) => self.memory(runtime, &argument),
             Some(Command::Init(argument)) => return self.init(runtime, &argument).await,
+            Some(Command::Resume(argument)) => return self.resume(runtime, &argument),
+            Some(Command::Branch(name)) => return self.branch(runtime, &name),
+            Some(Command::Rename(name)) => self.rename(runtime, &name),
+            Some(Command::Export(path)) => self.export(runtime, launch_dir, &path).await,
             Some(Command::Clear(name)) => self.clear(runtime, &name).await,
             Some(Command::Compact(focus)) => return self.compact(runtime, focus).await,
             Some(Command::Context(argument)) => self.context(runtime, &argument).await,

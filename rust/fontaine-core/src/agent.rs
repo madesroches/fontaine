@@ -69,6 +69,9 @@ pub enum SessionOrigin {
     Continued {
         source: String,
         how: String,
+        /// Whether starting the session appends the `Resumed` record. Off for a copy whose
+        /// `Resumed` was written when it was forked.
+        record_resume: bool,
     },
 }
 
@@ -613,7 +616,12 @@ impl AgentRuntime {
                 .map(|(name, _)| name.to_string_lossy().into_owned())
                 .collect(),
         });
-        if let SessionOrigin::Continued { source, how } = &self.origin {
+        if let SessionOrigin::Continued {
+            source,
+            how,
+            record_resume: true,
+        } = &self.origin
+        {
             self.append(Record::Resumed {
                 source: source.clone(),
                 how: how.clone(),

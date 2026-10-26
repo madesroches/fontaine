@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, ValueEnum};
 use fontaine_core::config::PermissionMode;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "fontaine", version, about = "A terminal AI coding agent")]
 pub struct Cli {
     /// TOML settings file layered over the project and user settings for this session
@@ -83,15 +83,21 @@ pub struct Cli {
     #[arg(short = 'c', long = "continue", conflicts_with = "resume")]
     pub continue_session: bool,
 
-    /// Resume the session with this ID: its conversation and ledger come back, in the default
-    /// permission mode and without any grants
-    #[arg(short = 'r', long, value_name = "ID")]
+    /// Resume the session with this ID or name (a name is looked up among the sessions started
+    /// in this directory): its conversation and ledger come back, in the default permission mode
+    /// and without any grants
+    #[arg(short = 'r', long, value_name = "ID|NAME")]
     pub resume: Option<String>,
 
     /// With --continue or --resume, start a new session that is a copy of the one it would
     /// have continued
     #[arg(long)]
     pub fork_session: bool,
+
+    /// Name the session, so --resume can find it by name. With --fork-session it names the
+    /// copy; with --continue or --resume alone it renames the session reopened
+    #[arg(short = 'n', long, value_name = "NAME")]
+    pub name: Option<String>,
 
     /// Replace the base system prompt
     #[arg(long, value_name = "TEXT")]

@@ -109,6 +109,11 @@ pub enum Record {
     /// The human emptied the model's context with `/clear`. The guardian's view of what the
     /// human asked starts again here.
     ContextCleared {},
+    /// The session was named, by `--name` or `/rename`; the latest record wins. Like `Scheduled`
+    /// it is not something the human asked, so it stays out of the guardian's view of intent.
+    SessionNamed {
+        name: String,
+    },
     /// A scheduled task was created, ran, was cancelled or ran out. The prompt it runs is not
     /// recorded: a task fires as a harness note, never as something the human said, so this
     /// record is not part of the guardian's view of the user's intent.
@@ -265,7 +270,8 @@ impl LedgerView {
             | Record::Resumed { .. }
             | Record::Agent { .. }
             | Record::UserShell { .. }
-            | Record::Scheduled { .. } => {}
+            | Record::Scheduled { .. }
+            | Record::SessionNamed { .. } => {}
         }
     }
 }

@@ -35,7 +35,8 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `--add-dir <path>` | Adds a directory to the workspace roots. Repeatable. See [Tools](tools.md#workspace-roots). |
 | `--session-id <uuid>` | Uses this UUID as the session id. A value that is not a UUID is a usage error (exit code 2), and so is an id whose session directory already exists. With `--continue` or `--resume` it is accepted only together with `--fork-session`, where it names the copy; otherwise it is a usage error. |
 | `--continue`, `-c` | Reopens the most recently updated session that was started in the launch directory; starts a fresh session when there is none. |
-| `--resume <id>`, `-r <id>` | Reopens the session with this id. An id with no session is a usage error (exit code 2). |
+| `--resume <id-or-name>`, `-r <id-or-name>` | Reopens the session with this id, or else the session started in the launch directory that has this name (compared without regard to case). A value that matches no session is a usage error (exit code 2), and so is a name carried by several sessions: the error lists their ids. The value is required, so `fontaine -p --resume <id> "task"` reads `task` as the prompt. |
+| `--name <name>`, `-n <name>` | Names the session being started, so `--resume` can find it by name. With `--fork-session` it names the copy; with `--continue` or `--resume` alone it renames the session reopened. A name is 1 to 80 characters with no control characters; anything else is a usage error. A fork the flag does not name is called the source's name followed by ` (branch)` when the source has one, so a name finds one session. |
 | `--fork-session` | With `--continue` or `--resume`, starts a new session that is a copy of the one that would have been reopened. Alone it is a usage error. |
 | `--system-prompt <text>` | Replaces the base system prompt. |
 | `--append-system-prompt <text>` | Appends to the system prompt after every other layer. |
@@ -72,12 +73,13 @@ harness did. Compaction never touches it. See [Architecture](architecture.md#the
 
 ### Continuing a session
 
-`--continue` and `--resume <id>` reopen a session: the conversation and the ledger come back, and
+`--continue` and `--resume <id-or-name>` reopen a session: the conversation and the ledger come back, and
 the new messages continue both. The run starts in the permission mode the settings and flags
 resolve to, as a new session does, not in the mode the session ended in, and none of the earlier
 session's "allow session" grants carry over. `--fork-session` copies both stores under a new id
 (`--session-id` chooses it) and leaves the original untouched; the audit log of the copy starts
-empty. `--continue` looks only at sessions whose primary workspace root is the launch directory.
+empty. `--continue` and a `--resume` by name look only at sessions whose primary workspace root is
+the launch directory; `--resume` by id takes a session of any directory.
 
 ## Subagents
 

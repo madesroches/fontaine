@@ -41,6 +41,14 @@ pub enum Command {
     Init(String),
     /// `/memory [n]`: lists the instruction files, or opens the `n`th in the editor.
     Memory(String),
+    /// `/resume [name-or-id]`: switches to another session, or opens the picker.
+    Resume(String),
+    /// `/branch [name]` (`/fork`): carries on in a copy of this session.
+    Branch(String),
+    /// `/rename [name]`.
+    Rename(String),
+    /// `/export [path]`.
+    Export(String),
     /// A name no built-in command has; it may be a skill.
     Other {
         name: String,
@@ -78,6 +86,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: None,
         description: "the background agents panel",
         command: |_| Command::Agents,
+    },
+    Builtin {
+        name: "branch",
+        aliases: &["fork"],
+        hint: Some("[name]"),
+        description: "carry on in a copy of this session",
+        command: Command::Branch,
     },
     Builtin {
         name: "clear",
@@ -127,6 +142,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: None,
         description: "leave Fontaine",
         command: |_| Command::Exit,
+    },
+    Builtin {
+        name: "export",
+        aliases: &[],
+        hint: Some("[path]"),
+        description: "write the conversation to a Markdown file",
+        command: Command::Export,
     },
     Builtin {
         name: "guardian-model",
@@ -211,6 +233,20 @@ pub const BUILTINS: &[Builtin] = &[
         hint: Some("[description]"),
         description: "enter plan mode, optionally with a task",
         command: Command::Plan,
+    },
+    Builtin {
+        name: "rename",
+        aliases: &[],
+        hint: Some("[name]"),
+        description: "name this session, or derive a name from the first message",
+        command: Command::Rename,
+    },
+    Builtin {
+        name: "resume",
+        aliases: &[],
+        hint: Some("[name-or-id]"),
+        description: "switch to another session of this directory",
+        command: Command::Resume,
     },
     Builtin {
         name: "skills",
@@ -726,6 +762,37 @@ mod tests {
     }
 
     #[test]
+    fn the_session_commands_parse_with_their_arguments_and_are_listed() {
+        assert_eq!(
+            parse_command("/resume  demo "),
+            Some(Command::Resume("demo".into()))
+        );
+        assert_eq!(
+            parse_command("/resume"),
+            Some(Command::Resume(String::new()))
+        );
+        assert_eq!(
+            parse_command("/branch try it"),
+            Some(Command::Branch("try it".into()))
+        );
+        assert_eq!(parse_command("/fork"), Some(Command::Branch(String::new())));
+        assert_eq!(
+            parse_command("/rename new name"),
+            Some(Command::Rename("new name".into()))
+        );
+        assert_eq!(
+            parse_command("/export notes.md"),
+            Some(Command::Export("notes.md".into()))
+        );
+        let menu = builtin_menu();
+        for name in ["resume", "branch", "rename", "export"] {
+            let row = menu.iter().find(|m| m.name == name).expect(name);
+            assert!(!row.requires_argument(), "{name} runs bare");
+        }
+        assert_eq!(names(&match_menu(&menu, "fork")), ["branch"]);
+    }
+
+    #[test]
     fn a_skill_named_like_a_builtin_or_its_alias_is_left_out_of_the_menu() {
         let skill = |name: &str| (name.to_string(), None, "d".to_string());
         let (rows, hidden) = skill_menu(vec![skill("status"), skill("quit"), skill("review")]);
@@ -762,9 +829,9 @@ mod tests {
     #[test]
     fn aliases_match_and_the_matched_one_is_reported() {
         let menu = builtin_menu();
-        let found = match_menu(&menu, "res");
+        let found = match_menu(&menu, "rese");
         assert_eq!(names(&found), ["clear"]);
-        assert_eq!(found[0].matched_alias("res"), Some("reset"));
+        assert_eq!(found[0].matched_alias("rese"), Some("reset"));
         assert_eq!(found[0].matched_alias("cle"), None);
         assert_eq!(names(&match_menu(&menu, "tas")), ["agents"]);
         let agents = match_menu(&menu, "t");

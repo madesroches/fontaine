@@ -305,6 +305,61 @@ impl Session {
         }
     }
 
+    /// [`fork`](Self::fork), then names the copy: `name`, else the source's name with
+    /// ` (branch)` after it, else none. The copy's ledger carries the source's records, so it
+    /// is given its own, or `resolve` would find two sessions of one name.
+    pub fn fork_named(
+        data_dir: &Path,
+        source: &str,
+        id: &str,
+        name: Option<&str>,
+    ) -> Result<Session, SessionError> {
+        let copy = Session::fork(data_dir, source, id)?;
+        let name = match name {
+            Some(name) => Some(name.to_string()),
+            None => copy
+                .name()
+                .map_err(|source| SessionError::Io {
+                    op: SessionOp::Open,
+                    path: copy.ledger.path().to_path_buf(),
+                    source,
+                })?
+                .map(|inherited| {
+                    let room = NAME_MAX_CHARS - BRANCH_SUFFIX.chars().count();
+                    let head: String = inherited.chars().take(room).collect();
+                    format!("{}{BRANCH_SUFFIX}", head.trim_end())
+                }),
+        };
+        if let Some(name) = name {
+            copy.rename(&name).map_err(|e| SessionError::Io {
+                op: SessionOp::Create,
+                path: copy.ledger.path().to_path_buf(),
+                source: io::Error::other(e),
+            })?;
+        }
+        Ok(copy)
+    }
+
+    /// Names the session, or renames it; the latest name wins. Returns the name as recorded.
+    pub fn rename(&self, name: &str) -> Result<String, RenameError> {
+        let name = validate_name(name).map_err(RenameError::Name)?;
+        self.ledger
+            .append(crate::ledger::Record::SessionNamed { name: name.clone() })
+            .map_err(RenameError::Ledger)?;
+        Ok(name)
+    }
+
+    /// The session's name, if it has one.
+    pub fn name(&self) -> io::Result<Option<String>> {
+        Ok(scan_ledger(self.ledger.path())?.name)
+    }
+
+    /// The name `/rename` gives with no argument: drawn from the first thing the human said
+    /// since the last `/clear`.
+    pub fn suggested_name(&self) -> Option<String> {
+        derive_name(self.ledger.view().user_messages.first()?)
+    }
+
     /// The task lists of this session, shared by every clone of it.
     pub fn todos(&self) -> &Arc<SessionTodos> {
         &self.todos
@@ -553,47 +608,289 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The id of the most recently updated session whose primary root is `root`.
-pub fn latest_for_root(data_dir: &Path, root: &Path) -> Option<String> {
-    use std::io::BufRead;
-    let wanted = crate::ledger::path_key(&root.display().to_string());
-    let mut best: Option<(std::time::SystemTime, String)> = None;
-    for entry in std::fs::read_dir(data_dir.join(SESSIONS_DIR))
-        .ok()?
-        .flatten()
-    {
+/// The longest session name, in characters.
+pub const NAME_MAX_CHARS: usize = 80;
+
+/// The longest name `/rename` derives from the first message, in characters.
+const DERIVED_NAME_CHARS: usize = 60;
+
+/// The longest first prompt a listing carries, in characters.
+const FIRST_PROMPT_CHARS: usize = 100;
+
+/// Appended to a source's name when a fork of it is not named.
+const BRANCH_SUFFIX: &str = " (branch)";
+
+/// Why a session name was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NameError {
+    Empty,
+    TooLong,
+    ControlCharacter,
+}
+
+impl fmt::Display for NameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NameError::Empty => f.write_str("a session name cannot be empty"),
+            NameError::TooLong => write!(
+                f,
+                "a session name is at most {NAME_MAX_CHARS} characters long"
+            ),
+            NameError::ControlCharacter => {
+                f.write_str("a session name cannot contain control characters")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NameError {}
+
+/// The name `name` stands for: trimmed, 1 to [`NAME_MAX_CHARS`] characters, no control
+/// characters.
+pub fn validate_name(name: &str) -> Result<String, NameError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(NameError::Empty);
+    }
+    if name.chars().any(char::is_control) {
+        return Err(NameError::ControlCharacter);
+    }
+    if name.chars().count() > NAME_MAX_CHARS {
+        return Err(NameError::TooLong);
+    }
+    Ok(name.to_string())
+}
+
+/// A name drawn from the first non-blank line of `message`, cut to 60 characters. `None` when
+/// there is no such line.
+pub fn derive_name(message: &str) -> Option<String> {
+    let line = message
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    let flat: String = line
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(DERIVED_NAME_CHARS)
+        .collect();
+    let name = flat.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Renaming a session failed.
+#[derive(Debug)]
+pub enum RenameError {
+    Name(NameError),
+    Ledger(io::Error),
+}
+
+impl fmt::Display for RenameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RenameError::Name(_) => f.write_str("the name is not valid"),
+            RenameError::Ledger(_) => f.write_str("the name could not be recorded"),
+        }
+    }
+}
+
+impl std::error::Error for RenameError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RenameError::Name(source) => Some(source),
+            RenameError::Ledger(source) => Some(source),
+        }
+    }
+}
+
+/// A fresh session id.
+pub fn new_id() -> String {
+    uuid::Uuid::new_v4().hyphenated().to_string()
+}
+
+/// What `list` knows of one session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionInfo {
+    pub id: String,
+    pub name: Option<String>,
+    /// The first thing the human said since the last `/clear`: its first line, cut for display.
+    pub first_prompt: Option<String>,
+    /// When the ledger was last written.
+    pub updated: std::time::SystemTime,
+    pub primary_root: String,
+    /// The session this one was forked from, when its last continuation was a fork.
+    pub branched_from: Option<String>,
+}
+
+/// What one pass over a ledger yields. A record is skipped when it does not parse: a listing
+/// must not fail because one session's ledger is torn.
+#[derive(Default)]
+struct Scan {
+    primary_root: Option<String>,
+    name: Option<String>,
+    first_prompt: Option<String>,
+    branched_from: Option<String>,
+}
+
+fn scan_ledger(path: &Path) -> io::Result<Scan> {
+    use crate::ledger::{Entry, Record};
+    let text = std::fs::read_to_string(path)?;
+    let mut scan = Scan::default();
+    for line in text.lines() {
+        let Ok(Entry { record, .. }) = serde_json::from_str(line) else {
+            continue;
+        };
+        match record {
+            Record::SessionStart {
+                workspace_roots, ..
+            } => {
+                if scan.primary_root.is_none() {
+                    scan.primary_root = workspace_roots.into_iter().next();
+                }
+            }
+            Record::SessionNamed { name } => scan.name = Some(name),
+            Record::Resumed { source, how } => {
+                if how.starts_with("fork") {
+                    scan.branched_from = Some(source);
+                }
+            }
+            Record::UserMessage { text } => {
+                if scan.first_prompt.is_none() {
+                    scan.first_prompt = Some(text);
+                }
+            }
+            Record::ContextCleared {} => scan.first_prompt = None,
+            _ => {}
+        }
+    }
+    Ok(scan)
+}
+
+fn first_line_cut(text: &str, chars: usize) -> Option<String> {
+    let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let mut cut: String = line.chars().take(chars).collect();
+    if line.chars().count() > chars {
+        cut.push('…');
+    }
+    Some(cut)
+}
+
+/// The sessions under `data_dir`, newest first. With `root`, only those started in it; without,
+/// every session whose ledger records a start. A session whose ledger cannot be read is left out.
+pub fn list(data_dir: &Path, root: Option<&Path>) -> Vec<SessionInfo> {
+    let wanted = root.map(|root| crate::ledger::path_key(&root.display().to_string()));
+    let Ok(entries) = std::fs::read_dir(data_dir.join(SESSIONS_DIR)) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if !is_session_id(&id) {
+            continue;
+        }
         let ledger = entry
             .path()
             .join(crate::ledger::LEDGER_DIR)
             .join(crate::ledger::LEDGER_FILE);
-        let Ok(file) = std::fs::File::open(&ledger) else {
+        let Ok(updated) = std::fs::metadata(&ledger).and_then(|m| m.modified()) else {
             continue;
         };
-        let Ok(updated) = file.metadata().and_then(|m| m.modified()) else {
+        let Ok(scan) = scan_ledger(&ledger) else {
             continue;
         };
-        let mut first = String::new();
-        if std::io::BufReader::new(file).read_line(&mut first).is_err() {
+        let Some(primary_root) = scan.primary_root else {
+            continue;
+        };
+        if wanted
+            .as_ref()
+            .is_some_and(|wanted| crate::ledger::path_key(&primary_root) != *wanted)
+        {
             continue;
         }
-        let Ok(crate::ledger::Entry {
-            record:
-                crate::ledger::Record::SessionStart {
-                    workspace_roots, ..
-                },
-            ..
-        }) = serde_json::from_str(first.trim())
-        else {
-            continue;
-        };
-        let same = workspace_roots
-            .first()
-            .is_some_and(|primary| crate::ledger::path_key(primary) == wanted);
-        if same && best.as_ref().is_none_or(|(at, _)| updated > *at) {
-            best = Some((updated, entry.file_name().to_string_lossy().into_owned()));
+        found.push(SessionInfo {
+            id,
+            name: scan.name,
+            first_prompt: scan
+                .first_prompt
+                .and_then(|text| first_line_cut(&text, FIRST_PROMPT_CHARS)),
+            updated,
+            primary_root,
+            branched_from: scan.branched_from,
+        });
+    }
+    found.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| a.id.cmp(&b.id)));
+    found
+}
+
+/// The id of the most recently updated session whose primary root is `root`.
+pub fn latest_for_root(data_dir: &Path, root: &Path) -> Option<String> {
+    list(data_dir, Some(root)).into_iter().next().map(|s| s.id)
+}
+
+/// A session id or name that did not pick exactly one session.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResolveError {
+    Missing(String),
+    /// Several sessions started in the root carry this name; their ids, newest first.
+    Ambiguous {
+        name: String,
+        ids: Vec<String>,
+    },
+}
+
+impl fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ResolveError::Missing(text) => {
+                write!(f, "no session with ID or name {text} to resume")
+            }
+            ResolveError::Ambiguous { name, ids } => write!(
+                f,
+                "several sessions are named {name}; resume one by its ID: {}",
+                ids.join(", ")
+            ),
         }
     }
-    best.map(|(_, id)| id)
+}
+
+impl std::error::Error for ResolveError {}
+
+impl ResolveError {
+    /// An unknown or ambiguous session is a usage error.
+    pub fn exit_code(&self) -> u8 {
+        crate::config::CONFIG_EXIT_CODE
+    }
+}
+
+/// The id of the session `text` names: a session directory of that name, else the one session
+/// started in `root` that carries the name `text`, compared without regard to case.
+pub fn resolve(data_dir: &Path, root: &Path, text: &str) -> Result<String, ResolveError> {
+    if is_session_id(text)
+        && data_dir
+            .join(SESSIONS_DIR)
+            .join(text)
+            .join(crate::ledger::LEDGER_DIR)
+            .is_dir()
+    {
+        return Ok(text.to_string());
+    }
+    let wanted = text.trim().to_lowercase();
+    let mut ids: Vec<String> = list(data_dir, Some(root))
+        .into_iter()
+        .filter(|info| {
+            info.name
+                .as_ref()
+                .is_some_and(|name| name.to_lowercase() == wanted)
+        })
+        .map(|info| info.id)
+        .collect();
+    match ids.len() {
+        0 => Err(ResolveError::Missing(text.to_string())),
+        1 => Ok(ids.remove(0)),
+        _ => Err(ResolveError::Ambiguous {
+            name: text.to_string(),
+            ids,
+        }),
+    }
 }
 
 /// The default reserve and summary size leave no room on a small window: the threshold falls

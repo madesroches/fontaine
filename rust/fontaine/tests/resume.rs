@@ -240,3 +240,111 @@ async fn the_session_id_help_says_what_it_does_with_resume() {
         "{help}"
     );
 }
+
+fn names(entries: &[Value]) -> Vec<String> {
+    entries
+        .iter()
+        .filter(|e| e["kind"] == "session_named")
+        .map(|e| e["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_named_at_launch_is_resumed_by_that_name() {
+    let (endpoint, s) = setup().await;
+    let (out, id) = run(&s, &["--name", "  Demo run "], "one").await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert_eq!(names(&ledger(&s, &id)), ["Demo run"]);
+    let (_, other) = run(&s, &[], "unrelated").await;
+    assert_ne!(id, other);
+
+    // The prompt after the flag is still the prompt.
+    let (out, resumed) = run(&s, &["--resume", "demo RUN"], "two").await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert_eq!(resumed, id);
+    let body = endpoint.requests().await[2].to_string();
+    assert!(
+        body.contains("one") && body.contains("two") && !body.contains("unrelated"),
+        "{body}"
+    );
+
+    // With plain --resume, --name renames the session reopened.
+    let (_, again) = run(&s, &["-r", &id, "-n", "Renamed"], "three").await;
+    assert_eq!(again, id);
+    assert_eq!(names(&ledger(&s, &id)), ["Demo run", "Renamed"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fork_with_a_name_names_the_copy_and_leaves_the_original_alone() {
+    let (_endpoint, s) = setup().await;
+    let (_, id) = run(&s, &["--name", "base"], "one").await;
+    let (out, copy) = run(
+        &s,
+        &["--resume", "base", "--fork-session", "--name", "variant"],
+        "two",
+    )
+    .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert_ne!(copy, id);
+    assert_eq!(names(&ledger(&s, &id)), ["base"]);
+    assert_eq!(names(&ledger(&s, &copy)), ["base", "variant"]);
+
+    // Without --name the copy is the source's name plus a suffix, so the source's name still
+    // finds the source alone.
+    let (_, unnamed) = run(&s, &["--resume", "base", "--fork-session"], "three").await;
+    assert_eq!(
+        names(&ledger(&s, &unnamed)),
+        ["base", "base (branch)"],
+        "the copy carries the source's record, then its own"
+    );
+    let (_, found) = run(&s, &["--resume", "base"], "four").await;
+    assert_eq!(found, id);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ambiguous_or_unknown_name_and_a_bad_name_are_usage_errors_that_list_the_candidates() {
+    let (endpoint, s) = setup().await;
+    let (_, first) = run(&s, &["--name", "twin"], "one").await;
+    let (_, second) = run(&s, &["--name", "twin"], "two").await;
+    assert_ne!(first, second);
+    let before = endpoint.requests().await.len();
+
+    let out = s
+        .run(&[
+            "-p",
+            "--permission-mode",
+            "manual",
+            "--resume",
+            "TWIN",
+            "go",
+        ])
+        .await;
+    assert_eq!(out.code, Some(2), "{}", out.stderr);
+    assert!(
+        out.stderr.contains(&first) && out.stderr.contains(&second),
+        "{}",
+        out.stderr
+    );
+    let out = s
+        .run(&[
+            "-p",
+            "--permission-mode",
+            "manual",
+            "--resume",
+            "nobody",
+            "go",
+        ])
+        .await;
+    assert_eq!(out.code, Some(2), "{}", out.stderr);
+    for bad in ["", "   ", "line\nbreak"] {
+        let out = s
+            .run(&["-p", "--permission-mode", "manual", "--name", bad, "go"])
+            .await;
+        assert_eq!(out.code, Some(2), "{bad:?}: {}", out.stderr);
+    }
+    assert_eq!(
+        endpoint.requests().await.len(),
+        before,
+        "none of them reached the model"
+    );
+}
