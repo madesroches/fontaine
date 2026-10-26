@@ -409,8 +409,10 @@ impl<B: Backend + Anchor> Screen<B> {
         }
         if mem::take(&mut self.repaint) {
             // Installed this late because `insert_before` reads the buffers. Diffing
-            // against a private-use glyph no view draws makes the draw write every cell, so the old
-            // rows are overwritten in place instead of being blanked first.
+            // against a private-use glyph makes the draw write every cell, so the old rows are
+            // overwritten in place instead of being blanked first. Accepted limitation: a literal
+            // U+E000 in default style (rare, e.g. in model text) could stay stale for one frame.
+            // "\u{1}" is not usable: ratatui panics in `cell_width` on it.
             self.set_previous(Cell::new("\u{E000}"));
         }
         self.terminal.draw(|frame| view::draw(frame, app))?;
@@ -438,7 +440,7 @@ impl<B: Backend + Anchor> Screen<B> {
                 viewport: Viewport::Inline(height),
             },
         )?;
-        // The replaced terminal shows the cursor when it drops, so hide it only after the swap.
+        // A freshly built Terminal leaves the cursor shown, so hide it after the swap.
         self.terminal = terminal;
         self.terminal.hide_cursor()?;
         self.height = height;
@@ -455,8 +457,8 @@ impl<B: Backend + Anchor> Screen<B> {
         backend.flush()
     }
 
-    /// Redraws the live area from scratch at the row the cursor is on, after a child process
-    /// has had the terminal.
+    /// Rebuilds the live area at its previous top and marks it for a full repaint on the next
+    /// render, after a child process has had the terminal.
     pub fn resume(&mut self) -> Result<(), B::Error> {
         self.rebuild(self.height)
     }
@@ -1396,14 +1398,16 @@ mod tests {
         }
     }
 
-    /// The frames of a session that grows and shrinks the live area while settled lines are
-    /// committed with the viewport at the top of the screen: for each, the app, the harness and
-    /// what changed.
+    /// What a frame's check observed: whether the live area resized and whether lines were
+    /// committed with the viewport at the top of the screen.
     struct Frame {
         resized: bool,
         committed_at_top: bool,
     }
 
+    /// The frames of a session that grows and shrinks the live area while settled lines are
+    /// committed with the viewport at the top of the screen: for each, the app, the harness and
+    /// what changed.
     fn frames(
         harness: &mut emulated::Harness,
         app: &mut App,
