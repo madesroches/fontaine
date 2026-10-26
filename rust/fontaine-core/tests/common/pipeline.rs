@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fontaine_agents::tree::{AgentTree, Limits};
@@ -39,6 +39,8 @@ pub struct Scripted {
     pub unavailable_asked: Mutex<Vec<GuardianUnavailable>>,
     replies: Mutex<VecDeque<QuestionReply>>,
     pub questions: Mutex<Vec<Vec<Question>>>,
+    /// While set, a prompt records its request and is never answered.
+    pub hang: AtomicBool,
 }
 
 impl Scripted {
@@ -74,6 +76,9 @@ impl Approver for Scripted {
     fn approve<'a>(&'a self, request: ApprovalRequest) -> BoxFuture<'a, Answer> {
         Box::pin(async move {
             self.requests.lock().unwrap().push(request);
+            if self.hang.load(Ordering::SeqCst) {
+                futures::future::pending::<()>().await;
+            }
             self.answers
                 .lock()
                 .unwrap()

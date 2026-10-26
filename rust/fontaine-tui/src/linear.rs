@@ -247,7 +247,9 @@ fn label(settled: &Settled<'_>, out: &mut Vec<String>) {
             summary,
             status,
             ordinal,
+            call: full_call,
             output,
+            diff,
             ..
         } => {
             let call = format!("{tool} {summary}");
@@ -259,15 +261,21 @@ fn label(settled: &Settled<'_>, out: &mut Vec<String>) {
                 ToolStatus::Denied(why) => format!("tool error: {call} — denied: {why}"),
             };
             out.push(line);
-            if matches!(status, ToolStatus::Done | ToolStatus::Failed(_))
-                && let Some(output) = output
-            {
-                let (rows, skipped) = tail_lines(&output.text, OUTPUT_ROWS);
-                if skipped > 0 {
-                    out.push(format!("… {skipped} earlier lines"));
+            if matches!(status, ToolStatus::Done | ToolStatus::Failed(_)) {
+                let mut cut = full_call.contains('\n')
+                    || (diff.is_some() && !matches!(status, ToolStatus::Failed(_)));
+                if let Some(output) = output {
+                    let (rows, skipped) = tail_lines(&output.text, OUTPUT_ROWS);
+                    if skipped > 0 {
+                        out.push(format!("… {skipped} earlier lines"));
+                    }
+                    out.extend(rows.into_iter().map(str::to_string));
+                    if output.clipped {
+                        out.push("… clipped: only the start and end of the output are kept".into());
+                    }
+                    cut |= skipped > 0 || output.clipped;
                 }
-                out.extend(rows.into_iter().map(str::to_string));
-                if skipped > 0 {
+                if cut {
                     out.push(format!("expand: /expand {ordinal}"));
                 }
             }
@@ -284,14 +292,18 @@ fn label(settled: &Settled<'_>, out: &mut Vec<String>) {
             else {
                 return;
             };
-            let mark = match status {
-                ToolStatus::Pending => "pending".to_string(),
-                ToolStatus::Done => "done".to_string(),
-                ToolStatus::Interrupted => "interrupted".to_string(),
-                ToolStatus::Failed(why) => format!("failed: {why}"),
-                ToolStatus::Denied(why) => format!("denied: {why}"),
+            let (label, mark) = match status {
+                ToolStatus::Pending => ("tool:", "pending".to_string()),
+                ToolStatus::Done => ("tool:", "done".to_string()),
+                ToolStatus::Interrupted => ("tool:", "interrupted".to_string()),
+                ToolStatus::Failed(why) => ("tool error:", format!("failed: {why}")),
+                ToolStatus::Denied(why) => ("tool error:", format!("denied: {why}")),
             };
-            labelled("tool:", &format!("{tool} {call} — {mark}"), out);
+            labelled(label, &format!("{tool} — {mark}"), out);
+            out.extend(call.split('\n').map(str::to_string));
+            let diff = diff
+                .as_ref()
+                .filter(|_| !matches!(status, ToolStatus::Failed(_)));
             if let Some(diff) = diff {
                 out.push(format!("{}  +{} -{}", diff.path, diff.added, diff.removed));
                 out.extend(diff.lines.iter().map(|l| {
@@ -919,9 +931,10 @@ mod tests {
         rig.app.transcript.expand(None).unwrap();
         let out = rig.render();
         let lines: Vec<&str> = out.split("\r\n").collect();
-        assert!(lines[0].ends_with("tool: shell go — done"), "{lines:?}");
-        assert_eq!(lines[1], "row 1");
-        assert_eq!(lines[14], "row 14");
+        assert!(lines[0].ends_with("tool: shell — done"), "{lines:?}");
+        assert_eq!(lines[1], "go");
+        assert_eq!(lines[2], "row 1");
+        assert_eq!(lines[15], "row 14");
     }
 
     #[test]

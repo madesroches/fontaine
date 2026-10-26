@@ -730,6 +730,35 @@ async fn a_prompted_edit_publishes_the_diff_it_was_shown() {
 }
 
 #[tokio::test]
+async fn an_interrupted_prompt_leaves_no_diff_for_the_next_call() {
+    let rig = Rig::new(Manual);
+    std::fs::write(rig.work().join("a.txt"), "one\ntwo\n").unwrap();
+    rig.approver
+        .hang
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let interrupted = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        rig.check("edit", preview_edit("two", "2")),
+    )
+    .await;
+    assert!(interrupted.is_err());
+    assert_eq!(rig.approver.asked(), 1);
+
+    rig.state.set_mode(AcceptEdits);
+    let d = rig.check("edit", preview_edit("one", "1")).await;
+    assert!(allowed(&d));
+    let (id, preview) = rig
+        .state
+        .feed()
+        .await
+        .try_next_preview()
+        .expect("a preview");
+    assert_eq!(id, "call-2");
+    assert!(preview.lines.iter().any(|l| l.text == "1"));
+    assert!(preview.lines.iter().all(|l| l.text != "2"));
+}
+
+#[tokio::test]
 async fn a_denied_edit_and_other_tools_publish_no_diff() {
     let rig = Rig::new(DontAsk);
     std::fs::write(rig.work().join("a.txt"), "one\ntwo\n").unwrap();

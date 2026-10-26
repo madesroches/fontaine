@@ -1778,6 +1778,9 @@ impl ToolGate for PermissionPipeline {
         );
         let (tool, agent) = (call.tool, call.agent);
         Box::pin(async move {
+            // A prompt cut short by an interrupt drops this future before `publish_preview`
+            // clears the entry, and it must not outlive its call.
+            lock(&self.prompted, "prompted previews").remove(agent);
             let decision = self.adjudicate(call).instrument(span).await;
             self.publish_preview(tool, agent, &decision).await;
             decision
