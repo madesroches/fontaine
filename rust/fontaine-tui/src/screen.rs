@@ -148,12 +148,34 @@ impl<B: Backend + Anchor> Screen<B> {
         })
     }
 
-    /// Commits settled lines, sizes the live area to reach the bottom row, and draws it.
+    /// Commits the transcript rows that no longer fit above the input, sizes the live area to
+    /// reach the bottom row, and draws it. A transcript that fits stays in the live area, so a
+    /// short one sits directly above the input instead of at the top of the screen.
     pub fn render(&mut self, app: &mut App) -> Result<(), B::Error> {
+        self.draw_frame(app, false)
+    }
+
+    /// Writes everything still held back to scrollback, for exit: the live area is about to be
+    /// cleared.
+    pub fn commit_all(&mut self, app: &mut App) -> Result<(), B::Error> {
+        self.draw_frame(app, true)
+    }
+
+    fn draw_frame(&mut self, app: &mut App, all: bool) -> Result<(), B::Error> {
         self.terminal.autoresize()?;
         let width = self.terminal.get_frame().area().width;
         let terminal_height = self.terminal.size()?.height;
-        let lines = app.transcript.commit(usize::from(width).max(1), &app.theme);
+        let columns = usize::from(width).max(1);
+        let lines = if all {
+            app.transcript.commit_all(columns, &app.theme)
+        } else {
+            let mut lines = app.transcript.take_retired(columns, &app.theme);
+            let chrome = view::chrome(app, width, terminal_height);
+            let held = app.transcript.live_lines(columns, &app.theme).len();
+            let over = (held + chrome).saturating_sub(usize::from(terminal_height));
+            lines.extend(app.transcript.commit_within(columns, &app.theme, over));
+            lines
+        };
         let content = view::height(app, width, terminal_height);
         let top = self.terminal.get_frame().area().y;
         let free = usize::from(terminal_height.saturating_sub(top)).saturating_sub(lines.len());
@@ -289,24 +311,52 @@ mod tests {
         }
     }
 
+    /// The index of the input box's top border among the visible rows.
+    fn input_top(screen: &mut Screen<TestBackend>) -> usize {
+        rows(screen.backend().buffer())
+            .iter()
+            .position(|r| r.contains("message ·"))
+            .expect("the input box is drawn")
+    }
+
+    fn warning(app: &mut App, text: &str) {
+        app.transcript.warning(text, Some(format!("fix `{text}`")));
+    }
+
     #[test]
-    fn settled_lines_go_to_scrollback_and_the_live_area_holds_the_input() {
+    fn a_short_transcript_stays_above_the_input_and_nothing_is_committed() {
         let mut screen = screen(40, 12);
         let mut app = app();
         app.transcript.user("hello".into());
         app.on_event(SessionEvent::Assistant("the reply".into()));
         screen.render(&mut app).unwrap();
-        let history = nonblank(above(&mut screen));
-        assert_eq!(history, vec!["> hello", "the reply"]);
-        let live = live(&mut screen).join("\n");
-        assert!(live.contains("message"));
-        assert!(!live.contains("hello"));
-        assert!(!live.contains("the reply"));
+        assert!(nonblank(rows(screen.backend().scrollback())).is_empty());
+        let visible = rows(screen.backend().buffer());
+        let top = input_top(&mut screen);
+        assert!(visible[top - 1].contains("the reply"), "{visible:?}");
+        assert!(visible[top - 3].contains("> hello"), "{visible:?}");
+        assert!(visible[..top - 3].iter().all(|r| r.trim().is_empty()));
     }
 
     #[test]
-    fn a_streaming_reply_commits_only_completed_rows() {
-        let mut screen = screen(10, 12);
+    fn settled_lines_go_to_scrollback_once_they_no_longer_fit_above_the_input() {
+        let mut screen = screen(40, 8);
+        let mut app = app();
+        app.transcript.user("hello".into());
+        for reply in ["one", "two", "three"] {
+            app.on_event(SessionEvent::Assistant(reply.into()));
+        }
+        screen.render(&mut app).unwrap();
+        assert_eq!(nonblank(above(&mut screen)), vec!["> hello"]);
+        let live = live(&mut screen).join("\n");
+        assert!(live.contains("message"));
+        assert!(live.contains("three"));
+        assert!(!live.contains("hello"));
+    }
+
+    #[test]
+    fn a_streaming_reply_commits_only_completed_rows_and_only_when_over_budget() {
+        let mut screen = screen(10, 8);
         let mut app = app();
         app.on_event(SessionEvent::AssistantDelta("abc".into()));
         screen.render(&mut app).unwrap();
@@ -314,8 +364,167 @@ mod tests {
         assert!(live(&mut screen).join("\n").contains("abc"));
         app.on_event(SessionEvent::AssistantDelta("defghijkl".into()));
         screen.render(&mut app).unwrap();
+        assert!(
+            nonblank(above(&mut screen)).is_empty(),
+            "two rows fit above the input"
+        );
+        app.on_event(SessionEvent::AssistantDelta(
+            "mnopqrstuvwxyz0123456789ABCDE".into(),
+        ));
+        screen.render(&mut app).unwrap();
         assert_eq!(nonblank(above(&mut screen)), vec!["abcdefghij"]);
-        assert!(live(&mut screen).join("\n").contains("kl"));
+        assert!(live(&mut screen).join("\n").contains("E"));
+    }
+
+    #[test]
+    fn held_warnings_stay_anchored_while_a_reply_streams_across_the_boundary() {
+        let mut screen = screen(30, 14);
+        let mut app = app();
+        warning(&mut app, "first");
+        warning(&mut app, "second");
+        screen.render(&mut app).unwrap();
+        let top = input_top(&mut screen);
+        let visible = rows(screen.backend().buffer());
+        assert!(visible[top - 1].contains("fix `second`"), "{visible:?}");
+        let mut streamed = String::new();
+        for i in 0..120 {
+            let word = format!("w{i} ");
+            streamed.push_str(&word);
+            app.on_event(SessionEvent::AssistantDelta(word));
+            screen.render(&mut app).unwrap();
+            if i == 2 {
+                let visible = rows(screen.backend().buffer());
+                assert!(nonblank(rows(screen.backend().scrollback())).is_empty());
+                assert!(visible[input_top(&mut screen) - 1].contains("w0 w1 w2"));
+            }
+        }
+        let all = nonblank(everything(&screen));
+        let warnings: Vec<&String> = all
+            .iter()
+            .filter(|r| r.contains("fix `") || r.contains("⚠"))
+            .collect();
+        assert_eq!(warnings.len(), 4, "{all:?}");
+        let body: String = all
+            .iter()
+            .filter(|r| {
+                r.starts_with('w') || r.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+            })
+            .flat_map(|r| r.chars())
+            .collect();
+        let squeezed: String = streamed.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(body.replace(' ', "").contains(&squeezed), "{all:?}");
+        assert!(
+            rows(screen.backend().scrollback())
+                .join("\n")
+                .contains("first"),
+            "older entries commit before any stream row"
+        );
+    }
+
+    #[test]
+    fn a_long_approval_leaves_the_pending_call_live() {
+        let mut screen = screen(40, 14);
+        let mut app = app();
+        app.on_event(SessionEvent::ToolCall {
+            id: "t".into(),
+            tool: "shell".into(),
+            args: serde_json::json!({ "command": "sleep 9" }),
+        });
+        let (tx, _rx) = oneshot::channel();
+        app.begin_approval(approval_request(&"x".repeat(600)), tx);
+        screen.render(&mut app).unwrap();
+
+        assert!(
+            !rows(screen.backend().scrollback())
+                .join("\n")
+                .contains("sleep 9"),
+            "the pending call must not be written to scrollback"
+        );
+        assert!(live(&mut screen).join("\n").contains("sleep 9"));
+    }
+
+    #[test]
+    fn a_pending_call_over_budget_is_committed_so_no_row_is_hidden() {
+        let mut screen = screen(30, 8);
+        let mut app = app();
+        app.on_event(SessionEvent::ToolCall {
+            id: "t".into(),
+            tool: "shell".into(),
+            args: serde_json::json!({ "command": "sleep 9" }),
+        });
+        for i in 0..8 {
+            app.transcript.notice(format!("n{i}"));
+            screen.render(&mut app).unwrap();
+        }
+        let all = nonblank(everything(&screen)).join("\n");
+        assert_eq!(all.matches("sleep 9").count(), 1, "{all}");
+        for i in 0..8 {
+            assert_eq!(all.matches(&format!("· n{i}")).count(), 1, "{all}");
+        }
+        let held = app.transcript.live_lines(30, &app.theme).len();
+        assert!(held + view::chrome(&app, 30, 8) <= 8);
+    }
+
+    #[test]
+    fn an_overlay_growing_the_chrome_commits_held_entries() {
+        let mut screen = screen(40, 14);
+        let mut app = app();
+        for i in 0..4 {
+            app.transcript.notice(format!("n{i}"));
+        }
+        screen.render(&mut app).unwrap();
+        assert!(nonblank(rows(screen.backend().scrollback())).is_empty());
+        let (tx, _rx) = oneshot::channel();
+        app.begin_approval(approval_request("ls"), tx);
+        screen.render(&mut app).unwrap();
+        let held = app.transcript.live_lines(40, &app.theme).len();
+        assert!(held + view::chrome(&app, 40, 14) <= 14);
+        let all = nonblank(everything(&screen)).join("\n");
+        for i in 0..4 {
+            assert_eq!(all.matches(&format!("· n{i}")).count(), 1, "{all}");
+        }
+    }
+
+    #[test]
+    fn narrowing_the_terminal_commits_entries_that_stop_fitting() {
+        let mut screen = screen(60, 12);
+        let mut app = app();
+        for i in 0..4 {
+            app.transcript.notice(format!("{i} {}", "word ".repeat(10)));
+        }
+        screen.render(&mut app).unwrap();
+        assert!(nonblank(rows(screen.backend().scrollback())).is_empty());
+        screen.terminal.backend_mut().resize(20, 12);
+        screen.render(&mut app).unwrap();
+        let held = app.transcript.live_lines(20, &app.theme).len();
+        assert!(held + view::chrome(&app, 20, 12) <= 12);
+        assert!(!nonblank(rows(screen.backend().scrollback())).is_empty());
+    }
+
+    #[test]
+    fn retired_entries_reach_scrollback_before_the_new_conversation() {
+        let mut screen = screen(40, 12);
+        let mut app = app();
+        warning(&mut app, "old");
+        screen.render(&mut app).unwrap();
+        app.transcript.clear();
+        app.transcript.notice("cleared");
+        screen.render(&mut app).unwrap();
+        let all = nonblank(everything(&screen));
+        let old = all
+            .iter()
+            .position(|r| r.contains("old"))
+            .expect("old kept");
+        let new = all
+            .iter()
+            .position(|r| r.contains("cleared"))
+            .expect("new shown");
+        assert!(old < new, "{all:?}");
+        assert!(
+            !rows(screen.backend().scrollback())
+                .join("")
+                .contains("cleared")
+        );
     }
 
     #[test]
@@ -392,9 +601,9 @@ mod tests {
                 app.transcript.notice(format!("late{i}"));
             }
             screen.render(&mut app).unwrap();
-            let history: Vec<String> = nonblank(above(&mut screen))
+            let history: Vec<String> = nonblank(everything(&screen))
                 .into_iter()
-                .filter(|r| !r.contains("approval"))
+                .filter(|r| r.starts_with("· "))
                 .collect();
             let mut expected: Vec<String> = (0..8).map(|i| format!("· n{i}")).collect();
             expected.extend((0..late).map(|i| format!("· late{i}")));
@@ -437,15 +646,17 @@ mod tests {
     }
 
     #[test]
-    fn first_commits_fill_from_the_top() {
+    fn first_entries_sit_directly_above_the_input() {
         let mut screen = screen(30, 12);
         let mut app = app();
         app.transcript.notice(String::from("a"));
         app.transcript.notice(String::from("b"));
         screen.render(&mut app).unwrap();
         let visible = rows(screen.backend().buffer());
-        assert!(visible[0].contains("a"));
-        assert!(visible[1].contains("b"));
+        let top = input_top(&mut screen);
+        assert!(visible[top - 2].contains("a"), "{visible:?}");
+        assert!(visible[top - 1].contains("b"), "{visible:?}");
+        assert!(visible[..top - 2].iter().all(|r| r.trim().is_empty()));
         assert!(nonblank(rows(screen.backend().scrollback())).is_empty());
         assert_eq!(screen.area().bottom(), 12);
     }
@@ -460,6 +671,16 @@ mod tests {
             assert_eq!(area.bottom(), height);
             let content = view::height(app, area.width, height);
             assert_eq!(area.height, content.max(height - area.top()));
+            let held = app
+                .transcript
+                .live_lines(usize::from(area.width), &app.theme);
+            // Only a reply's live last row can stay held once the chrome alone fills the screen.
+            let chrome = view::chrome(app, area.width, height);
+            assert!(
+                held.len() + chrome <= usize::from(height) || chrome >= usize::from(height),
+                "{} held + {chrome} chrome",
+                held.len()
+            );
         };
         for i in 0..4 {
             app.transcript.notice(format!("note{i}"));
@@ -503,7 +724,7 @@ mod tests {
             .iter()
             .map(|r| r.trim_end().to_string())
             .collect::<Vec<_>>();
-        let history = nonblank(trimmed.clone());
+        let history = nonblank(everything(&screen));
         while trimmed.last().is_some_and(|r| r.is_empty()) {
             trimmed.pop();
         }
@@ -540,18 +761,30 @@ mod tests {
     fn clear_live_keeps_scrollback_and_blanks_the_live_rows() {
         let mut screen = screen(30, 10);
         let mut app = app();
-        for i in 0..8 {
+        for i in 0..12 {
             app.transcript.notice(format!("n{i}"));
         }
         screen.render(&mut app).unwrap();
+        screen.commit_all(&mut app).unwrap();
         let before = rows(screen.backend().scrollback());
         screen.clear_live().unwrap();
         assert_eq!(rows(screen.backend().scrollback()), before);
         assert!(nonblank(live(&mut screen)).is_empty());
-        assert!(
-            nonblank(above(&mut screen))
-                .iter()
-                .any(|r| r.contains("n7"))
-        );
+        let expected: Vec<String> = (0..12).map(|i| format!("· n{i}")).collect();
+        assert_eq!(nonblank(everything(&screen)), expected);
+    }
+
+    #[test]
+    fn leaving_without_committing_loses_nothing_that_was_committed() {
+        let mut screen = screen(30, 10);
+        let mut app = app();
+        for i in 0..3 {
+            app.transcript.notice(format!("n{i}"));
+        }
+        screen.render(&mut app).unwrap();
+        screen.commit_all(&mut app).unwrap();
+        screen.clear_live().unwrap();
+        let expected: Vec<String> = (0..3).map(|i| format!("· n{i}")).collect();
+        assert_eq!(nonblank(everything(&screen)), expected);
     }
 }

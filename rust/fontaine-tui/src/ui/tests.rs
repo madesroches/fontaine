@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use fontaine_core::config::PermissionMode;
+use fontaine_core::notice::Severity;
 use fontaine_core::permissions::{Answer, ApprovalRequest, Offers};
 use fontaine_core::tier::Tier;
 use fontaine_core::turn::{SessionEvent, TurnOutcome};
@@ -103,7 +104,8 @@ fn an_ask_queued_when_the_turn_ends_never_opens() {
     let mut ui = ui(rx);
     let (prompt, answer) = ask();
     tx.send(prompt).unwrap();
-    tx.send(Prompt::Notice("kept".into())).unwrap();
+    tx.send(Prompt::Notice(Severity::Info, "kept".into()))
+        .unwrap();
     ui.drain_prompts();
     assert!(ui.app.approval.is_none());
     assert!(ui.prompts.try_recv().is_err());

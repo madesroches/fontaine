@@ -38,6 +38,7 @@ use std::time::Duration;
 
 use fontaine_core::agent::{AgentRuntime, AgentSetup, EnvLookup};
 use fontaine_core::config::PermissionMode;
+use fontaine_core::notice::{Notice, Severity};
 use fontaine_core::permissions::{
     Answer, ApprovalRequest, Approver, GuardianUnavailable, UnavailableChoice,
 };
@@ -71,7 +72,7 @@ enum Prompt {
     /// The model's questions for the human, with the agent that asks. A dropped sender means
     /// nobody could answer.
     Question(String, Vec<Question>, oneshot::Sender<QuestionReply>),
-    Notice(String),
+    Notice(Severity, String),
 }
 
 /// Hands approval requests to the interface and waits for the human's answer. With the
@@ -111,11 +112,15 @@ impl Approver for ChannelApprover {
     }
 
     fn notice(&self, message: &str) {
-        let _ = self.tx.send(Prompt::Notice(message.to_string()));
+        let _ = self
+            .tx
+            .send(Prompt::Notice(Severity::Info, message.to_string()));
     }
 
     fn warn(&self, message: &str) {
-        self.notice(message);
+        let _ = self
+            .tx
+            .send(Prompt::Notice(Severity::Warning, message.to_string()));
     }
 
     fn guardian_unavailable<'a>(
@@ -159,10 +164,13 @@ struct Ui<R> {
 }
 
 /// Runs the interface until the user quits or `input` closes. `render` is called with the
-/// interface state after every change; it may advance the transcript's commit cursor.
+/// interface state after every change; it may advance the transcript's commit cursor, and is
+/// called once more with `App::flush` set so whatever is still held back reaches the terminal.
+/// `startup` is shown before every other notice.
 pub async fn drive(
     mut setup: AgentSetup,
     launch_dir: PathBuf,
+    startup: Vec<Notice>,
     input: UnboundedReceiver<Input>,
     render: impl FnMut(&mut App),
     clipboard: impl FnMut(&str) -> std::io::Result<()> + 'static,
@@ -180,6 +188,7 @@ pub async fn drive(
     let data_dir = setup.data_dir.clone();
     let user_config = setup.user_config.clone();
     let env = setup.env.clone();
+    let env_lookup = env.clone();
     let mut runtime =
         AgentRuntime::new(setup).map_err(|e| fontaine_tools::error_chain::chain(&e))?;
     runtime.record_session_start().await;
@@ -199,9 +208,20 @@ pub async fn drive(
         clipboard: Box::new(clipboard),
     };
     ui.app.theme = theme;
+    ui.app.transcript.glyphs = theme::Glyphs::from_env(
+        (env_lookup)(theme::ASCII_GLYPHS_VAR)
+            .and_then(|v| v.into_string().ok())
+            .as_deref(),
+    );
     ui.app.history = history;
     ui.app.primary_root = primary_root;
     ui.app.todos.set_items(runtime.session.todos().root());
+    for notice in startup
+        .into_iter()
+        .chain(runtime.startup_warnings().iter().cloned())
+    {
+        ui.app.transcript.push_notice(notice);
+    }
     for error in [history_error, recent_error].into_iter().flatten() {
         ui.app.transcript.notice(error);
     }
@@ -211,7 +231,7 @@ pub async fn drive(
         .chain(runtime.scanner_notices())
         .cloned()
     {
-        ui.app.transcript.notice(notice);
+        ui.app.transcript.push_notice(notice);
     }
     if let fontaine_core::agent::SessionOrigin::Continued { source, how } = runtime.origin() {
         ui.app.transcript.notice(format!(
@@ -235,6 +255,8 @@ pub async fn drive(
     }
     // Whatever is still running is stopped with the session.
     runtime.state.agents().kill_all();
+    ui.app.flush = true;
+    (ui.render)(&mut ui.app);
     Ok(())
 }
 
@@ -306,6 +328,7 @@ pub async fn run(
     setup: AgentSetup,
     launch_dir: PathBuf,
     screen_reader: Option<accessibility::Source>,
+    startup: Vec<Notice>,
 ) -> Result<(), String> {
     enable_raw_mode().map_err(|e| {
         format!(
@@ -353,6 +376,7 @@ pub async fn run(
     let result = drive(
         setup,
         launch_dir,
+        startup,
         rx,
         move |app| {
             let rendered = match &screen {
@@ -361,7 +385,12 @@ pub async fn run(
                         // A rebuild clears rows before redrawing them; one frame hides that.
                         let mut out = std::io::stdout();
                         let _ = ratatui::crossterm::execute!(out, BeginSynchronizedUpdate);
-                        let ok = screen.render(app).is_ok();
+                        let ok = if app.flush {
+                            screen.commit_all(app)
+                        } else {
+                            screen.render(app)
+                        }
+                        .is_ok();
                         let _ = ratatui::crossterm::execute!(out, EndSynchronizedUpdate);
                         ok
                     }

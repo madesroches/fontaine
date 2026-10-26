@@ -661,7 +661,7 @@ async fn switching_to_manual_from_the_unavailable_prompt_asks_the_human_instead(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn finished_replies_scroll_above_the_live_area() {
+async fn finished_replies_stay_in_the_live_area_above_the_input_while_they_fit() {
     let w = World::new(vec![text_turn("first reply"), text_turn("second reply")]);
     w.run(|ui| async move {
         ui.send("one");
@@ -675,8 +675,84 @@ async fn finished_replies_scroll_above_the_live_area() {
         let second = screen.find("second reply").unwrap();
         assert!(first < second, "{screen}");
         let live = ui.live();
-        assert!(!live.contains("reply"), "{live}");
+        assert!(live.contains("second reply"), "{live}");
         assert!(live.contains("shift+tab mode"), "{live}");
+        let reply = live.find("second reply").unwrap();
+        let input = live.find("message ·").unwrap();
+        assert!(reply < input, "{live}");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clear_writes_the_held_conversation_to_scrollback_before_the_notice() {
+    let w = World::new(vec![text_turn("first reply")]);
+    w.run(|ui| async move {
+        ui.send("one");
+        ui.wait_for("first reply").await;
+        idle(&ui).await;
+        ui.send("/clear");
+        ui.wait_for("cleared the conversation").await;
+        idle(&ui).await;
+        let screen = ui.screen();
+        let reply = screen.find("first reply").expect("the reply is kept");
+        let cleared = screen.find("cleared the conversation").unwrap();
+        assert!(reply < cleared, "{screen}");
+        assert_eq!(screen.matches("first reply").count(), 1, "{screen}");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn startup_warnings_open_the_conversation_as_warning_entries() {
+    use fontaine_core::Notice;
+    let mut w = World::new(vec![]);
+    w.startup = vec![Notice::warning(
+        "FONTAINE_AX_SCREEN_READER=x is ignored",
+        None,
+    )];
+    w.startup_warnings = vec![Notice::warning(
+        "additional directory /nope is skipped",
+        Some("check `permissions.additional_directories`".into()),
+    )];
+    w.run(|ui| async move {
+        idle(&ui).await;
+        let live = ui.live();
+        let ax = live
+            .find("⚠ FONTAINE_AX_SCREEN_READER=x is ignored")
+            .expect("{live}");
+        let root = live
+            .find("⚠ additional directory /nope is skipped")
+            .unwrap();
+        let input = live.find("message ·").unwrap();
+        assert!(ax < root && root < input, "{live}");
+        assert!(
+            live.contains("check `permissions.additional_directories`"),
+            "{live}"
+        );
+        let lines: Vec<&str> = live.lines().collect();
+        let hint = lines
+            .iter()
+            .position(|l| l.contains("check `permissions"))
+            .unwrap();
+        assert!(
+            lines[hint + 1].contains("message ·"),
+            "the last warning sits on the input: {live}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ascii_glyphs_replace_the_warning_mark_when_asked() {
+    use fontaine_core::Notice;
+    let mut w = World::new(vec![]);
+    w.env = vec![("FONTAINE_ASCII_GLYPHS".into(), "1".into())];
+    w.startup = vec![Notice::warning("heads up", None)];
+    w.run(|ui| async move {
+        idle(&ui).await;
+        let live = ui.live();
+        assert!(live.contains("* heads up") && !live.contains('⚠'), "{live}");
     })
     .await;
 }

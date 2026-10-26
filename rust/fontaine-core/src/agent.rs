@@ -34,6 +34,7 @@ use crate::extensions::Extensions;
 use crate::gate::SessionState;
 use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
 use crate::models::{AccountListing, Models, SharedSwitcher, Switcher};
+use crate::notice::Notice;
 use crate::permissions::{Approver, PermissionPipeline};
 use crate::prompt;
 use crate::runtime_error::RuntimeError;
@@ -100,7 +101,10 @@ pub struct AgentSetup {
     /// The guardian profile that is actually in force, after the containment check.
     pub guardian_profile: Profile,
     /// What to tell the user once at startup.
-    pub notices: Vec<String>,
+    pub notices: Vec<Notice>,
+    /// Warnings gathered before the session started (config roots, the screen-reader setting),
+    /// shown ahead of every other notice. Surfaces that print them elsewhere leave this empty.
+    pub startup_warnings: Vec<Notice>,
     /// The tool-result scanner as started, and what it has to tell the user.
     pub scanner: ScannerStart,
     /// Resolves models again for `/model` and `/guardian-model`.
@@ -128,10 +132,11 @@ pub struct AgentRuntime {
     /// The mode the session opened in; the live mode is the state's.
     start_mode: PermissionMode,
     guardian_profile: Profile,
-    notices: Vec<String>,
+    notices: Vec<Notice>,
+    startup_warnings: Vec<Notice>,
     /// Scanner startup notices. Kept apart from `notices` because every surface shows them in
     /// every permission mode.
-    scanner_notices: Vec<String>,
+    scanner_notices: Vec<Notice>,
     origin: SessionOrigin,
     /// Messages typed while a turn runs, delivered with the next tool result.
     pub steering: Steering,
@@ -237,6 +242,7 @@ impl AgentRuntime {
             start_mode: setup.mode,
             guardian_profile: setup.guardian_profile,
             notices: setup.notices,
+            startup_warnings: setup.startup_warnings,
             scanner_notices: setup.scanner.notices,
             origin: setup.origin,
             steering,
@@ -505,11 +511,15 @@ impl AgentRuntime {
         &self.origin
     }
 
-    pub fn notices(&self) -> &[String] {
+    pub fn notices(&self) -> &[Notice] {
         &self.notices
     }
 
-    pub fn scanner_notices(&self) -> &[String] {
+    pub fn startup_warnings(&self) -> &[Notice] {
+        &self.startup_warnings
+    }
+
+    pub fn scanner_notices(&self) -> &[Notice] {
         &self.scanner_notices
     }
 

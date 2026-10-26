@@ -381,7 +381,14 @@ async fn an_empty_list_means_the_main_model_judges_with_a_one_time_notice() {
         };
         assert_eq!(guardian.reference.to_string(), "main/qwen3:4b");
         assert_eq!(resolved.notices.len(), 1);
-        assert!(resolved.notices[0].contains("main/qwen3:4b"));
+        let notice = &resolved.notices[0];
+        assert_eq!(notice.severity, fontaine_core::Severity::Warning);
+        assert_eq!(
+            notice.headline,
+            "Guardian is running on your main model `main/qwen3:4b`"
+        );
+        let hint = notice.hint.as_deref().expect("a hint");
+        assert!(hint.contains("`[guardian] model`") && hint.contains("/guardian-model"));
     }
 }
 

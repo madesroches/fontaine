@@ -9,17 +9,34 @@ settings, colour themes and screen-reader mode are on [Terminal setup](terminal.
 
 The UI draws inline, not on the alternate screen, but it takes the whole terminal when it starts:
 the shell's earlier output scrolls into the terminal's history. The transcript reads top-down, with
-the input box and status bar on the bottom rows, and this holds across resizes. Finished output goes
-into the terminal's normal scrollback, and a live area down to the bottom row holds the input box,
-the status bar, any open prompt and the unfinished tail of the transcript. Scroll back with the terminal or with tmux copy mode, and
-select text with the mouse as in any shell program.
+the input box and status bar on the bottom rows, and this holds across resizes. A live area down to
+the bottom row holds the input box, the status bar, any open prompt and the part of the transcript
+that still fits above the input. A short transcript, typically just the startup warnings, sits on
+the rows directly above the input box with empty space above it. Once the transcript no longer
+fits, the oldest entries move into the terminal's normal scrollback, and leaving the UI (or
+`/clear`) writes whatever was still held back there too, so the conversation stays in the
+terminal. Scroll back with the terminal or with tmux copy mode, and select text with the mouse as
+in any shell program.
 
 The input box title says what Enter does: it sends a message, or, when the input starts with `!`,
 runs it as a shell command. The transcript shows your messages (`>`), the streaming answer, and one line per tool call with its
 status: pending, done, failed, denied with the reason, or interrupted. A call the guardian refused
 shows its rule label and the guardian's own explanation on lines of their own, for example
-`[Download+Execute] pipes a download into a shell`. A line is written to scrollback once it is
-settled, so a call's status is final by then.
+`[Download+Execute] pipes a download into a shell`. A line is written to scrollback once it has
+settled and no longer fits above the input; a call still pending when the screen is full is written
+as pending, and its outcome (failed, denied or interrupted) follows as a line of its own. A long command under approval scrolls inside
+half the screen, so the call it asks about stays visible above the input.
+
+### Notices
+
+Notices are the lines Fontaine adds itself. An informational notice is a dim line starting with
+`·`. A warning starts with `⚠` and shows its headline in the theme's warning colour, with what to
+do about it on dim lines indented underneath; text in backticks and `/commands` in that hint are
+bold, so the actionable part stands out without relying on colour. Warnings open the conversation:
+a guardian that runs on your main model, a `[guardian] profile = "minimal"` that is not in effect,
+a tool-result scanner that is unavailable, an additional directory that was skipped and an ignored
+`FONTAINE_AX_SCREEN_READER` value. Set `FONTAINE_ASCII_GLYPHS=1` to use `*` and `-` in place of
+`⚠` and `·` on terminals or fonts that lack them (see [Terminal setup](terminal.md#ascii-glyphs)).
 
 Narrowing the terminal clears the visible screen and redraws the live area over the whole screen. Output
 already scrolled off is kept. Lines still on screen at that moment are kept only where clearing the

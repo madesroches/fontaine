@@ -162,6 +162,7 @@ pub fn build_scheduling(
         user_config,
         guardian_profile: fontaine_guardian::Profile::Full,
         notices: Vec::new(),
+        startup_warnings: Vec::new(),
         scanner,
         switcher,
         extensions: loaded,

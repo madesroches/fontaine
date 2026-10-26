@@ -43,14 +43,21 @@ fn input_view(buffer: &InputBuffer, width: usize) -> InputView {
     }
 }
 
-/// The rows the live area needs for the next frame, at most `max_height`.
-pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
+/// The rows of the live area that are not transcript: overlay, queue, task list, message box and
+/// status line. Unclamped, since the caller budgets the transcript against what is left of the
+/// screen.
+pub fn chrome(app: &App, width: u16, max_height: u16) -> usize {
     let inner_width = usize::from(width.saturating_sub(2)).max(1);
-    let Overlay { body, footer, .. } = overlay(app, inner_width, max_height, false);
+    let Overlay {
+        body,
+        footer,
+        approval,
+        ..
+    } = overlay(app, inner_width, max_height, false);
     let overlay_rows = if body.is_empty() {
         0
     } else {
-        body.len() + footer.len() + 2
+        shown_body_rows(body.len(), footer.len(), approval, max_height) + footer.len() + 2
     };
     let overlay_rows = overlay_rows + queued_lines(app, inner_width).len();
     let input_rows = input_view(&app.input, inner_width).rows.len() + 2;
@@ -63,11 +70,16 @@ pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
             queued_lines(app, inner_width).len(),
         )
         .len();
+    overlay_rows + input_rows + 1
+}
+
+/// The rows the live area needs for the next frame, at most `max_height`.
+pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
     let live = app
         .transcript
         .live_lines(usize::from(width).max(1), &app.theme)
         .len();
-    let total = live + overlay_rows + input_rows + 1;
+    let total = live + chrome(app, width, max_height);
     u16::try_from(total).unwrap_or(u16::MAX).min(max_height)
 }
 
@@ -94,7 +106,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let approval_height = if body.is_empty() {
         0
     } else {
-        ((body.len() + footer.len()) as u16 + 2).min(
+        ((shown_body_rows(body.len(), footer.len(), is_approval, area.height) + footer.len())
+            as u16
+            + 2)
+        .min(
             area.height
                 .saturating_sub(input_height + queued.len() as u16 + todos.len() as u16 + 1),
         )
@@ -121,6 +136,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(todos), todo_area);
     draw_input(frame, input, app, &view);
     statusbar::render(frame, status, app);
+}
+
+/// A long call under approval scrolls so the prompt takes at most half the screen, so the pending call it
+/// asks about keeps room above the input and never has to be written to scrollback unsettled.
+fn shown_body_rows(rows: usize, footer: usize, approval: bool, height: u16) -> usize {
+    if approval {
+        rows.min(usize::from(height / 2).saturating_sub(footer + 2).max(3))
+    } else {
+        rows
+    }
 }
 
 /// The messages waiting for the agent's next tool result, one dimmed row each.
@@ -392,7 +417,11 @@ fn draw_transcript(frame: &mut Frame, area: Rect, app: &App) {
         .transcript
         .live_lines(usize::from(area.width).max(1), &app.theme);
     let start = lines.len().saturating_sub(usize::from(area.height));
-    frame.render_widget(Paragraph::new(lines[start..].to_vec()), area);
+    let shown = lines[start..].to_vec();
+    // A short transcript sits on the row above the input; the empty rows are above it.
+    let spare = usize::from(area.height).saturating_sub(shown.len()) as u16;
+    let area = Rect::new(area.x, area.y + spare, area.width, area.height - spare);
+    frame.render_widget(Paragraph::new(shown), area);
 }
 
 fn draw_approval(

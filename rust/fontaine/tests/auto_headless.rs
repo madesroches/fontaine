@@ -239,7 +239,7 @@ async fn without_a_configured_guardian_the_main_model_judges_and_says_so() {
     let out = run_auto(&s, &[]).await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     assert!(
-        out.stderr.contains("no benchmark-validated guardian model"),
+        out.stderr.contains("No benchmark-validated guardian model"),
         "{}",
         out.stderr
     );

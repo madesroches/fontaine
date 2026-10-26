@@ -18,6 +18,7 @@ pub mod frontmatter;
 pub mod gate;
 pub mod ledger;
 pub mod models;
+pub mod notice;
 pub mod owner_only;
 pub mod permission_rules;
 pub mod permissions;
@@ -43,4 +44,5 @@ pub mod user_hooks;
 pub mod user_shell;
 pub mod workspace;
 
+pub use notice::{Notice, Severity};
 pub use runtime_error::RuntimeError;
