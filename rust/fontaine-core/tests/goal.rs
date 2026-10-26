@@ -1102,7 +1102,10 @@ fn a_goal_record_adds_nothing_to_what_the_user_asked() {
     assert_eq!(f.ledger.view().user_messages, ["/goal the build is green"]);
     let text = std::fs::read_to_string(f.ledger.path()).unwrap();
     assert!(text.contains(r#""kind":"goal""#) && text.contains(r#""event":"set""#));
-    let reopened = Ledger::open(f.dir.path()).unwrap();
+    // Windows refuses a second open while the first handle is live.
+    let Fixture { dir, ledger } = f;
+    drop(ledger);
+    let reopened = Ledger::open(dir.path()).unwrap();
     assert_eq!(reopened.view().user_messages.len(), 1);
 }
 
