@@ -16,7 +16,7 @@ already met and need no code (see Current State); they are recorded in Decisions
   `args`, `offers`, `proposed_rule`. `ask_human` (~line 1500) builds it; `summarize`
   (`permissions.rs:1689`) maps `edit`/`write`/`read` to the path only and `shell` to the full command.
 - `Approval::body` (`rust/fontaine-tui/src/approval.rs`) wraps `summary` then `reason` into
-  scrollable lines (PageUp/PageDown, `scroll`/`max_scroll`); `footer` (choices, rule line) is
+  scrollable lines (PageUp/PageDown, `scroll`/`max_scroll`; `docs/tui.md` keys table, ~line 80); `footer` (choices, rule line) is
   always visible. A long shell command already scrolls inside the box (`docs/tui.md`, "Approval prompts").
 - The guardian's explanation on an `escalate` verdict already reaches the prompt as the
   `[Rule] explanation` reason (`docs/tui.md`, "An `escalate` verdict opens the usual approval prompt").
@@ -50,22 +50,28 @@ pub fn preview(tool: &str, args: &Value, scope: &Scope) -> Option<DiffPreview>
   the path resolves outside the scope roots (no reading files the call could not touch anyway);
   the file is unreadable, non-UTF-8 or over the limit; `apply` fails (the tool will fail the same
   way, so there is nothing to approve that a diff could show); or args do not parse.
-- Display safety: every line's text goes through the same control-character stripping as
-  `action_summary` (control chars to spaces, tabs expanded) so file content cannot inject terminal
-  escapes, and through `redact::text` so credential-shaped text is not painted. Total lines are
-  capped (200); past that `truncated` is set and the TUI says so.
+- Display safety: `preview.rs` has its own sanitizer (`action_summary` is a single-line summarizer
+  and does not expand tabs): expand tabs, replace other control chars with spaces, so file content
+  cannot inject terminal escapes, then `redact::text` so credential-shaped text is not painted.
+  Total lines are capped (200); past that `truncated` is set and the TUI says so.
+- The file read happens inside async `ask_human`, so the preview is computed with
+  `tokio::task::spawn_blocking` and a preview-specific size cap constant `PREVIEW_MAX_BYTES`
+  (1 MiB), much smaller than rig-tools' `MAX_FILE_BYTES` (16 MiB).
 - The preview is display-only: it is not sent to the guardian, hooks, telemetry or the ledger, and
   does not influence any decision (error text may explain, never change, a decision). It is computed
   in `ask_human` only, after the pipeline has already decided a human must answer.
 
 ### Request and prompt
 
-- `ApprovalRequest` gains `preview: Option<DiffPreview>`; `ask_human` fills it. All other
-  construction sites (tests in `fontaine-tui`, `fontaine-core/tests/common`) add `preview: None`.
+- `ApprovalRequest` gains `preview: Option<DiffPreview>`; `ask_human` fills it. `DiffPreview` and
+  `DiffLine` derive `Clone, Debug` because `ApprovalRequest` does. Other literal sites (`permissions.rs`,
+  `fontaine-tui` `approval.rs` tests (~286), `linear.rs`, `screen.rs`, `app.rs`, `ui/tests.rs`) add `preview: None`.
 - `Approval::body` renders, after the question and summary and before the reason, a header
   `path  +A -R` followed by the diff lines: line-number gutter (width from the largest number), `+`/`-`
   prefix, added lines in `theme.success`, removed in `theme.error`, context and gaps dim. Lines are
-  wrapped to the box width via the existing `wrap`, so scrolling (PageUp/PageDown) works unchanged.
+  scrolling (PageUp/PageDown) works unchanged. The existing `wrap` (`input.rs:197-207`) just chunks
+  chars by width and knows nothing about prefixes, so diff text is wrapped to `width - gutter_width - 1`;
+  continuation rows get a blank gutter and a space in place of the sign.
   Colors come from the existing `Theme`; no new theme fields. The linear (non-fullscreen) renderer
   (`linear.rs`) prints the same lines via the shared `body`.
 - A `truncated` preview ends with `… N more changed lines (not shown)`.
@@ -75,17 +81,17 @@ pub fn preview(tool: &str, args: &Value, scope: &Scope) -> Option<DiffPreview>
 1. Add `similar` to `fontaine-core/Cargo.toml` (workspace dependency, pinned like the others).
 2. Add `fontaine-core/src/preview.rs` with the types and `preview()`; export from `lib.rs`.
 3. Add `preview` to `ApprovalRequest`; fill it in `ask_human`; fix the construction sites.
-4. Render the preview in `Approval::body` (`fontaine-tui/src/approval.rs`), covering the
-   non-fullscreen path if it builds its own text.
+4. Render the preview in `Approval::body` (`fontaine-tui/src/approval.rs`). Linear mode uses the
+   shared `body` via `view::overlay` and is plain text (styling dropped), so the sign and gutter
+   carry the meaning.
 5. Update docs (below), `CHANGELOG.md`, and the plan's `## Decisions` in the master plan.
 
 ## Files to Modify
 
 - `rust/fontaine-core/Cargo.toml`, `rust/Cargo.toml` (workspace dep)
 - `rust/fontaine-core/src/preview.rs` (new), `src/lib.rs`, `src/permissions.rs`
-- `rust/fontaine-core/tests/common/pipeline.rs` and other `ApprovalRequest` literals
 - `rust/fontaine-tui/src/approval.rs`, `src/linear.rs`, `src/screen.rs`, `src/app.rs`, `src/ui/tests.rs` (literals)
-- `docs/tui.md`, `docs/permissions.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
+- `docs/tui.md`, `docs/terminal.md`, `docs/permissions.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
 
@@ -106,10 +112,12 @@ pub fn preview(tool: &str, args: &Value, scope: &Scope) -> Option<DiffPreview>
 - 2026-10-26: The preview is computed from the file at prompt time. The file can change before the
   tool runs; the tool applies its edits to the file as it then is, so the preview is advisory
   while the permission decision is unchanged.
+- 2026-10-26: The preview line cap and file-size limit are constants, not configurable.
 
 ## Documentation
 
 - `docs/tui.md` "Approval prompts": the diff preview, when it is absent, truncation.
+- `docs/terminal.md`: the linear "Permission Required:" output now includes the diff preview (plain text).
 - `docs/permissions.md`: one sentence that the preview is display-only and affects no decision.
 - `CHANGELOG.md`: user-facing entry.
 
@@ -124,9 +132,9 @@ Unit tests in `preview.rs` (constructed inputs against a tempdir):
   credential-shaped string is redacted.
 - Truncation at the line cap sets `truncated`.
 
-TUI tests (`TestBackend`, `fontaine-tui/src/ui/tests.rs`): a prompt with a preview shows
-gutter, `+`/`-` lines and header; a long diff scrolls with PageDown; a request without a preview
-renders exactly as before (snapshot unchanged). A `fontaine-core` pipeline test asserts that the
+TUI tests (`TestBackend`, plain assertions, in `fontaine-tui/src/view.rs` and `approval.rs` where
+rendering tests live): a prompt with a preview shows gutter, `+`/`-` lines and header; a long diff
+scrolls with PageDown; a request without a preview renders exactly the same rows as before. A `fontaine-core` pipeline test asserts that the
 request handed to the approver for an `edit` call carries a preview and that denying/allowing is
 unaffected by it.
 
@@ -135,7 +143,6 @@ unaffected by it.
 1. Run `cargo run -p fontaine`, in manual mode ask the model to edit a file in the workspace.
    Expect the `Allow edit?` box to show the diff above the choices. Not automated: only a real
    terminal shows whether the box looks right at narrow widths (tmux, per `tasks/design/testing.md`).
-
-## Open Questions
-
-- Should the preview line cap (200) and file-size limit be configurable? Default: no, constants.
+2. Repeat in a short terminal (a few rows tall): the approval body is capped at about half the
+   screen height (`view.rs` `shown_body_rows`), so the diff scrolls with PageUp/PageDown and the
+   footer choices stay visible.
