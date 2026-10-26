@@ -45,13 +45,17 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
 - `session::validate_name(&str) -> Result<String, NameError>`: trimmed, 1–80 chars, no control
   characters. One validator for the flag and `/rename`.
 - `session::list(data_dir, root: Option<&Path>) -> Vec<SessionInfo>`; `SessionInfo` holds `id`,
-  `name: Option<String>`, `first_prompt: Option<String>` (first `UserMessage`, truncated for
-  display), `updated` (ledger mtime), `primary_root`, `branched_from: Option<String>` (from a
-  `Resumed` record whose `how` starts with `fork`). It reads each ledger once, tolerating a torn
+  `name: Option<String>`, `first_prompt: Option<String>` (the first entry of `ledger.view().user_messages`, the
+  same source `/rename` derives from, so it is the first message since the last clear; truncated
+  for display), `updated` (ledger mtime), `primary_root`, `branched_from: Option<String>` (from the copy's own last
+  `Resumed` record whose `how` starts with `fork`). `Session::fork` copies the whole tree, so `list`
+  takes the first `SessionStart` and ignores `Resumed` and `SessionNamed` records inherited from the
+  source. It reads each ledger once, tolerating a torn
   or unreadable one by skipping it. `latest_for_root` becomes `list(.., Some(root))` first-by-
   recency, so there is one scan, not two.
 - `session::resolve(data_dir, root, text) -> Result<String, ResolveError>` for `--resume` and
-  `/resume <text>`: a session directory named `text` wins; otherwise exact, case-insensitive name
+  `/resume <text>`: `is_session_id` is applied to `text` before any path join or directory check;
+  a session directory named `text` wins; otherwise exact, case-insensitive name
   match among sessions started in `root`. Zero matches is `Missing`; several is `Ambiguous(ids)`
   (typed because the caller prints the candidates and exits 2).
 - `Session::rename(&self, name)` appends `SessionNamed` through the ledger; `Session::name()`
@@ -61,7 +65,12 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
 ### CLI
 
 - `--name`/`-n <name>`: names the session being started, including the copy made by
-  `--fork-session`. Invalid names are a usage error.
+  `--fork-session`. With plain `--resume`/`--continue` (no fork) it renames the reopened session
+  (appends `SessionNamed`); `check_session_flags` needs no new rule for it. Invalid names are a
+  usage error. Every fork writes its own `SessionNamed` for the copy, since the copied ledger
+  carries the source's: the given name, else the source's name plus ` (branch)` when the source has
+  one, else none. Without this a `--fork-session` copy would share the source's name and `resolve`
+  would return `Ambiguous`.
 - `--resume`/`-r` takes an optional value (`num_args = 0..=1`). With a value it is an id or name
   (`resolve`). Without one the TUI opens the picker before the session starts; with `-p` it is a
   usage error (nothing to pick with). `conflicts_with = "continue_session"` stays.
@@ -75,28 +84,37 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
   current workspace root, like `--continue`; the current session is omitted.
 - `/resume [name-or-id]`: with an argument resolves it as above and switches; without opens the
   picker. Only between turns.
-- `/branch [name]` (alias `/fork`): `Session::fork` of the live session under a fresh id (named if
-  given, otherwise the source's name plus ` (branch)` when it has one), then switches into the
-  copy. The original is left as it was. Refused while a subagent runs, as `/clear` is, because the
-  copy would not carry the subagent's in-flight state.
+- `/branch [name]` (alias `/fork`): `Session::fork` of the live session under a fresh id (named as
+  for `--fork-session`), then switches into the copy. The original is left as it was. Only between
+  turns, like `/resume`, with the scheduler quiet during the copy. Refused while a subagent runs,
+  as `/clear` is, because the copy would not carry the subagent's in-flight state.
 - `/rename [name]`: appends `SessionNamed`. Without an argument the name is derived
-  deterministically from the first user message (first line, truncated to 60 chars); with none to
+  deterministically from the first entry of `ledger.view().user_messages` (first line, truncated
+  to 60 chars); with none to
   derive from it is an error. No model call.
 - `/export [path]`: writes the conversation as Markdown. The text comes from the rig-memory
   conversation log (the same load `Session::clear` does), so compaction summaries appear as the
-  summaries they are. Tool calls are one line each (name and the ledger-style redacted summary);
+  summaries they are. Tool calls, read from the conversation log, are one line each
+  (`adjudication::action_summary(tool, &Value)` supplies the text);
   tool results are omitted except their length. Default path is `fontaine-<id8>.md` in the launch
   directory; a relative path resolves against it. The write is `create_new` and owner-only, since
   a transcript may hold secrets: an existing file is an error rather than an overwrite. The path is
   user-typed, so it is not a model tool call and passes no scope validator; the command is not
   reachable by the model.
 - Switching: `fontaine_tui::drive` returns an outcome instead of `()`: `Exit` or
-  `Switch(SessionTarget { source, fork, name })`. The caller in `fontaine/src/lib.rs` loops: on
-  `Switch` it tears the run down (the existing exit path kills agents and restores the terminal),
-  then runs `prepare_session`/`run_interactive` again with the target in place of the CLI flags, in
-  a new `fontaine.session` span with `start_type` `resume`. Resume semantics are unchanged: default
-  mode, no grants, MCP servers and scanner restarted. A failure to open the target prints the error
-  and returns to the loop with the old target intact, rather than exiting.
+  `Switch(SessionTarget { source, fork, name })`. The TUI resolves and validates the target before
+  returning `Switch`, and for `/branch` performs the `Session::fork` itself, so a failure is shown
+  in the live session, which is untouched. After `Switch` the old run is torn down (agents killed,
+  terminal restored, grants, mode and transcript gone), so the loop only opens an already-validated
+  session. The loop sits in `run` (`fontaine/src/lib.rs`) around the runtime block, because `run`
+  owns the telemetry guard, the config load and the trust prompt, and `export.finish` is called
+  once; the trust decision and telemetry carry across iterations and each iteration enters a new
+  `fontaine.session` span with `start_type` `resume`. `prepare_session`/`open_session` read
+  `cli.resume`, `cli.continue_session`, `cli.fork_session` and `cli.session_id`, so each iteration
+  builds a derived session selection (a cloned `Cli` with those four overwritten) rather than
+  reusing the launch flags: a stale `session_id` would be reused as the fork id (`InUse`) and the
+  original `--continue` would be re-applied. Resume semantics are unchanged: default mode, no
+  grants, MCP servers and scanner restarted.
 
 ```
 /resume ─▶ picker ─▶ Enter ─▶ drive returns Switch(src) ─▶ run loop ─▶ Session::open(src) ─▶ drive
@@ -113,19 +131,26 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
 3. **Export** (new `fontaine-core/src/export.rs`): conversation → Markdown as a pure function over
    loaded messages, plus the file write.
 4. **Picker and commands** (`fontaine-tui`): `resume_picker.rs`, `Command::{Resume,Branch,Rename,
-   Export}` rows in `BUILTINS`, handlers in `ui/mod.rs`, app/screen/linear wiring for the overlay
-   (screen-reader linear mode lists the rows as plain lines, as the model picker does).
-5. **Switch loop**: `drive`/`run` return the outcome; `run_interactive` loops in `lib.rs`.
+   Export}` rows in `BUILTINS`, handlers under `ui/commands/*.rs` (dispatch at `ui/mod.rs` ~273-317), `pub mod resume_picker;`
+   in `lib.rs`, `app.rs` `Action` variants, overlay drawing in `view.rs`, and `screen.rs`/`linear.rs`
+   wiring (screen-reader linear mode lists the rows as plain lines, as the model picker does).
+   `BUILTINS` must stay sorted by name with unique names and aliases. Replace the "/resume not
+   available yet" message in `ui/commands/context.rs`.
+5. **Switch loop**: `drive` returns the outcome (callers in `fontaine-tui/tests/common/mod.rs`
+   change with it); `run` in `lib.rs` loops around the runtime block with a derived session
+   selection per iteration, as in Design.
 6. **Docs and decisions** (below).
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/{ledger.rs,session.rs,lib.rs}`, new `export.rs`
 - `rust/fontaine/src/{cli.rs,lib.rs}`
-- `rust/fontaine-tui/src/{commands.rs,lib.rs,app.rs,screen.rs,linear.rs,ui/mod.rs}`, new
-  `resume_picker.rs`
+- `rust/fontaine-tui/src/{commands.rs,lib.rs,app.rs,view.rs,screen.rs,linear.rs,ui/mod.rs,
+  ui/commands/*.rs}`, new `resume_picker.rs`
 - `rust/fontaine/tests/resume.rs`, `rust/fontaine-core` unit tests, `rust/fontaine-tui` tests
-- `docs/tui.md`, `docs/headless.md`, `tasks/design/sessions.md`,
+  including the shared rig `rust/fontaine-tui/tests/common/mod.rs`
+- `docs/tui.md`, `docs/headless.md`, `docs/configuration.md`, `docs/telemetry.md`,
+  `docs/architecture.md`, `tasks/design/sessions.md`,
   `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Trade-offs
@@ -146,13 +171,22 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
   toggle is not added.
 - `/branch` carries no grants and starts in the default mode, like every resume/fork.
 - `/clear` still refuses a name for the old conversation; with `/resume` available its docs point
-  there instead of saying "not available yet".
+  there instead of saying "not available yet". This plan supersedes the master plan's 2026-10-24
+  `/clear <name>` decision ("until `/resume` exists").
+- 2026-10-26: A switch restarts MCP servers and the scanner, like any resume.
+- 2026-10-26: `/resume` and `/branch` run only between turns; `/branch` is refused while a subagent runs.
+- 2026-10-26: `/export` is owner-only and never overwrites an existing file.
+- 2026-10-26: `/rename` without an argument is deterministic (no model call), a deviation from Claude Code.
 
 ## Documentation
 
 - `docs/tui.md`: new rows for `/resume`, `/branch`, `/rename`, `/export`; rewrite the Resuming
   section and the `/clear` sentence.
 - `docs/headless.md`: `--name`, `--resume` by name, bare `--resume` rejected under `-p`.
+- `docs/configuration.md` (~876): the `--continue`/`--resume`/`--fork-session` row gains `--name`
+  and bare `--resume`. `docs/telemetry.md` (~118): a switch uses `start_type` `resume`.
+  `docs/architecture.md` (~184-187): resuming and forking. `docs/tui.md` ~240 and ~278: the
+  `/clear` text.
 - `tasks/design/sessions.md`: `SessionNamed`, listing and the switch loop.
 - Master plan `## Decisions`: dated lines for the deviations above (no all-projects picker,
   deterministic `/rename`).
