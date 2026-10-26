@@ -42,7 +42,7 @@ analysis and list them first in `touched_paths`.
     to the guardian, which also sees the raw command.
 - `touched_paths` ("shell" arm): list redirect targets first, then command argument words. The
   resolve step (absolute vs. cwd-relative, `scope.resolved`) is factored into a local closure
-  shared by both. Redirect targets are listed unconditionally (no path-like/exists filter): a
+  shared by both. Redirect targets are listed first so they survive the 16-path cap. Redirect targets are listed unconditionally (no path-like/exists filter): a
   redirect target is a file by construction, including a not-yet-existing bare name like `cfg.py`.
 
 ## Implementation Steps
@@ -50,7 +50,9 @@ analysis and list them first in `touched_paths`.
    `Walk::redirect`, merge in `Walk::nested` and in the command-substitution handler in
    `Walk::expanding`.
 2. `destructive.rs`: in the shell arm of `touched_paths`, resolve and push `output_targets`
-   literals before the argument-word loop.
+   literals before the argument-word loop. Update the `touched_paths` doc comment
+   (`destructive.rs:272-274`, "a shell command's literal words that look like paths") to mention
+   redirect targets.
 3. Tests (below).
 4. Docs: update `docs/guardian.md` (the `paths_this_call_touches` session_facts row ~l.49, and
    ~l.277 if needed) to say that for a shell command, it lists its redirect targets and
@@ -59,7 +61,7 @@ analysis and list them first in `touched_paths`.
 
 ## Files to Modify
 - `rust/fontaine-tools/src/preclassify.rs`
-- `rust/fontaine-core/src/destructive.rs`
+- `rust/fontaine-core/src/destructive.rs` (shell arm and the `touched_paths` doc comment, l.272-274)
 - `rust/fontaine-core/tests/destructive.rs`
 - `CHANGELOG.md`
 - `docs/guardian.md`
@@ -67,10 +69,6 @@ analysis and list them first in `touched_paths`.
 ## Trade-offs
 - Per-`SimpleCommand` targets vs. a global list: compound-command redirects have no simple
   command to attach to, so a global list is the only complete option.
-- Redirect targets are listed first as presentation order only.
-
-## Decisions
-- No change to `output_redirect` semantics or to any permission verdict.
 
 ## Documentation
 Update `docs/guardian.md` (`paths_this_call_touches` row, ~l.49; ~l.277 if needed): for a shell
