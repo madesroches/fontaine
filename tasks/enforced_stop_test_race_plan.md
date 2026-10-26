@@ -34,9 +34,7 @@ estimate that sends nothing, which is also not a race.
 
 ## Design
 
-Keep the production code as is: the "usually sent" semantics are deliberate (dropping the future
-is what cancels the request, and a request that never left costs nothing). Only the tests'
-assumption changes.
+Keep the production code as is (see Decisions); only the tests' assumption changes.
 
 Add one helper to `tests/common/mod.rs`:
 
@@ -65,9 +63,7 @@ response, and this reply is a slow success).
 
 ## Implementation Steps
 
-1. `fontaine-guardian/tests/common/mod.rs`: add `Endpoint::wait_for_calls` (needs `Duration` and
-   `tokio::time` in scope; the file already depends on both through its other helpers or the test
-   crate's tokio features, check before adding imports).
+1. `fontaine-guardian/tests/common/mod.rs`: add `Endpoint::wait_for_calls`.
 2. `fontaine-guardian/tests/cascade.rs`: use it at lines 134 and 158; update the comment at 133 to
    say the request is awaited because it races the screen.
 3. Run `cargo test -p fontaine-guardian --test cascade` repeatedly, and under CPU load (see
