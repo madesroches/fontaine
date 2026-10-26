@@ -10,6 +10,7 @@ use super::Tier;
 use super::markdown::strip_comments;
 use crate::floor::under;
 use crate::frontmatter;
+use fontaine_tools::error_chain::chain;
 
 /// A rule that applies only to files its patterns match, kept until a read or write brings one
 /// into view.
@@ -65,8 +66,16 @@ pub(crate) fn compile(patterns: &[String]) -> (Option<GlobSet>, Vec<String>) {
             Err(e) => problems.push(format!("the pattern `{pattern}` is not a valid glob: {e}")),
         }
     }
-    let set = (valid > 0).then(|| set.build().ok()).flatten();
-    (set, problems)
+    if valid == 0 {
+        return (None, problems);
+    }
+    match set.build() {
+        Ok(set) => (Some(set), problems),
+        Err(e) => {
+            problems.push(format!("its paths do not compile: {}", chain(&e)));
+            (None, problems)
+        }
+    }
 }
 
 fn glob(pattern: &str) -> Result<Glob, globset::Error> {

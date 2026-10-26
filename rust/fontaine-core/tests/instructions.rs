@@ -374,6 +374,20 @@ fn rules_load_in_path_order_and_path_scoped_ones_wait() {
 }
 
 #[test]
+fn a_user_path_rule_matches_relative_to_the_primary_root_even_under_home() {
+    let w = World::new();
+    write(
+        &w.root.join(".claude/rules/r.md"),
+        "---\npaths: src/**\n---\nscoped",
+    );
+    let loaded = instructions::load(&sources_with(&w, Some(&w.root), &[], &[]));
+    assert_eq!(loaded.path_rules.len(), 1);
+    assert_eq!(loaded.path_rules[0].base, w.work);
+    assert!(loaded.path_rules[0].matches(&w.work.join("src/a.rs")));
+    assert!(!loaded.path_rules[0].matches(&w.root.join("src/a.rs")));
+}
+
+#[test]
 fn a_large_launch_set_warns_with_the_largest_files() {
     let w = World::new();
     write(&w.work.join("CLAUDE.md"), &"x".repeat(41_000));

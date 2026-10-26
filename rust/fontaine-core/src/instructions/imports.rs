@@ -1,6 +1,7 @@
 //! Reading one instruction file at a time: confinement, the `read` deny rules, dedup, and the
 //! `@path` imports a file pulls in right after itself.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
@@ -21,6 +22,8 @@ pub(crate) struct Loader<'a> {
     pub(crate) files: Vec<InstructionFile>,
     pub(crate) warnings: Vec<String>,
     pub(crate) path_rules: Vec<PathRule>,
+    /// Path-scoped rule files already registered, so the first registration (and its base) wins.
+    registered: HashSet<PathBuf>,
 }
 
 /// A file that passed the checks, with what it said.
@@ -37,6 +40,7 @@ impl<'a> Loader<'a> {
             files: Vec::new(),
             warnings: Vec::new(),
             path_rules: Vec::new(),
+            registered: HashSet::new(),
         }
     }
 
@@ -103,6 +107,9 @@ impl<'a> Loader<'a> {
                 self.accept(&file, admitted.canonical, parsed.text, tier, &origin, 0);
                 continue;
             };
+            if !self.registered.insert(admitted.canonical) {
+                continue;
+            }
             let (globs, problems) = rules::compile(&patterns);
             for problem in problems {
                 self.warnings

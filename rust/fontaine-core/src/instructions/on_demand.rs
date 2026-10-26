@@ -48,13 +48,17 @@ impl State {
 }
 
 pub struct InstructionStage {
-    // Advisory state: a poisoned lock at worst repeats or misses a note, and decides nothing
-    // about permissions, so it recovers.
     state: Mutex<State>,
     approver: Arc<dyn Approver>,
 }
 
 impl InstructionStage {
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        // A poisoned lock at worst repeats or misses a note; the deny and confinement copy in
+        // `sources` is replaced whole, so it cannot be torn.
+        lock_recovering(&self.state)
+    }
+
     /// A stage with an empty launch set; `reseed` gives it the real one.
     pub fn new(sources: Sources, approver: Arc<dyn Approver>) -> InstructionStage {
         InstructionStage {
@@ -75,7 +79,7 @@ impl InstructionStage {
     /// Takes the launch set of a rebuilt agent. Files an agent already received on demand stay
     /// received: the conversation survives a rebuild, and so do the tool results that carry them.
     pub fn reseed(&self, sources: Sources, loaded: &Loaded) {
-        let mut state = lock_recovering(&self.state);
+        let mut state = self.state();
         state.sources = sources;
         state.launch = loaded.seen.clone();
         state.launch_rules = loaded.path_rules.clone();
@@ -88,14 +92,14 @@ impl InstructionStage {
 
     /// The main agent's context was emptied or compacted: its on-demand files load again.
     pub fn reset_main(&self) {
-        let mut state = lock_recovering(&self.state);
+        let mut state = self.state();
         let entry = state.fresh_entry();
         state.agents.insert(ROOT_AGENT.to_string(), entry);
     }
 
     /// The files the main agent received on demand, in the order it received them.
     pub fn loaded_on_demand(&self) -> Vec<PathBuf> {
-        lock_recovering(&self.state)
+        self.state()
             .agents
             .get(ROOT_AGENT)
             .map(|entry| entry.loaded.clone())
@@ -105,7 +109,7 @@ impl InstructionStage {
     /// Reports each distinct warning once for the session.
     pub fn warn_once(&self, warnings: &[String]) {
         let fresh: Vec<&String> = {
-            let mut state = lock_recovering(&self.state);
+            let mut state = self.state();
             warnings
                 .iter()
                 .filter(|w| state.warned.insert((*w).clone()))
@@ -118,7 +122,7 @@ impl InstructionStage {
 
     fn note_for(&self, agent: &str, tool: &str, args: &serde_json::Value) -> Option<String> {
         let (files, warnings, target) = {
-            let mut guard = lock_recovering(&self.state);
+            let mut guard = self.state();
             let state = &mut *guard;
             let scope = state.sources.scope.clone();
             let target = PathBuf::from(touched_paths(tool, args, &scope).into_iter().next()?);
