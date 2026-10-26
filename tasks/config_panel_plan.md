@@ -83,12 +83,15 @@ pub struct KeyRow {
     /// Dotted path, as in the scope table (`tui.theme`, `context.autocompact_window`).
     pub path: &'static str,
     /// The running value as the panel shows it, defaults included.
-    pub effective: fn(&Config) -> String,
+    pub effective: fn(&Config, &Running) -> String,
     /// How the panel may change it; `None` is read-only.
     pub edit: Option<Edit>,
     /// Whether a saved change applies to the running session or only from the next launch.
     pub applies: Applies,
 }
+
+/// Live state that diverges from `Config` once a session switches theme or model.
+pub struct Running<'a> { pub theme: &'a str, pub main_model: &'a str, pub guardian_model: Option<&'a str> }
 
 pub enum Edit {
     /// Cycles through fixed values (`tui.theme`'s names, `true`/`false`).
@@ -112,9 +115,13 @@ Rows:
 
 - **Scalars**: every scalar leaf, each with an `effective` renderer. `Option` values render as
   `unset` plus what that means where the type documents it (`permissions.default_mode` →
-  `unset (interactive: auto)`, `guardian.model` → `unset (best validated)`).
-- **Lists**: one row per list key, effective value `N entries`, with the contributing scopes.
-- **Named tables / maps** (`accounts`, `mcp.servers`, `agents.types`, `hooks.*`, `env`,
+  `unset (interactive: auto)`); unset `guardian.model` renders as
+  `unset (best validated, else main model)`.
+- Live edits never update `runtime.config`, so `tui.theme`, `model.model` and `guardian.model` render
+  from `Running` (`app.theme`, `runtime.models.main.reference`, the guardian's current label); every
+  other row renders from `Config`.
+- **Lists** (including `hooks.*`, whose fields are `Option<Vec<Hook>>`): one row per list key, effective value `N entries`, with the contributing scopes.
+- **Named tables / maps** (`accounts`, `mcp.servers`, `agents.types`, `env`,
   `telemetry.resource_attributes`): one summary row per section listing the entry names
   (env: names only), read-only.
 - `guardian.screen.*` renders from `Config::guardian.screen` (`unset` when the stage is off).
@@ -135,7 +142,8 @@ onto `unset` emits `ConfigKey::Reset(path)`.
 
 An in-crate unit test (moving `schema_nodes` from `config_scope`'s tests into a shared
 `#[cfg(test)]` helper; `Config::defaults` becomes `pub(crate)` if needed) fails when a `Settings`
-leaf, or a map/section node, has no catalog row.
+leaf or map node has no catalog row. It matches nodes to rows by prefix, as the `RULES` test does
+(`config_scope.rs:256-261,318`); plain sections need no row of their own.
 
 ### 3. Validated user-file writes (core): `user_config`
 
@@ -153,7 +161,7 @@ user file fail to load (e.g. `autocompact_window = 0`) is refused with the confi
 ┌ config ─────────────────────────────────────────────────────────┐
 │ > tui.theme                    dark-ansi          user      ✎  │
 │   tui.screen_reader            unset              default   ✎  │
-│   context.autocompact_window   150000             project-local ✎ (user value 90000 is overridden) │
+│   context.autocompact_window   150000             project-local ✎ │
 │   permissions.default_mode     manual             project       │
 │   permissions.deny             3 entries          user, project │
 │   accounts                     work, local        user          │
@@ -165,7 +173,7 @@ user file fail to load (e.g. `autocompact_window = 0`) is refused with the confi
 ```
 
 - `ConfigPanel { rows: Vec<PanelRow>, selected, filter: String, field: Option<String>, status: Option<String> }`
-  is built from `KEYS`, the running `Config` and the user file path. `PanelRow` holds the path,
+  is built from `KEYS`, the running `Config`, `Running` and the user file path. `PanelRow` holds the path,
   effective text, source label(s), edit kind, and `pending: Option<String>` (a saved value that
   applies next launch).
 - Typed characters, including space, go into the filter (by path substring, as in the model picker). Up/Down select. Enter on a
@@ -182,28 +190,19 @@ user file fail to load (e.g. `autocompact_window = 0`) is refused with the confi
     launch"; NextLaunch rows: "saved, but `<scope>` sets this key and wins, so the value stays
     `<value>`";
   - saved; applies from the next launch (row shows `pending`);
-  - a model pick made through a picker reports the same way, and the picker completion path
-    (so `/model` and `/guardian-model` too) appends "`<scope>` sets this key and wins from the next
-    launch" when `runtime.config.sources[path][0]` is not `Slot::User`;
   - not saved: the error chain (`fontaine_tools::error_chain::chain`), or "there is no user
     settings file" when `user_config` is `None`.
+- Picker rows close the panel before the picker opens, so a model pick reports through the picker
+  completion path as a transcript notice (`finish_switch`, `ui/commands/model.rs:130-153`; the
+  `answer_unavailable` `use_guardian` path, `model.rs:225-233`, also persists `guardian.model`). That
+  path, for `/model` and `/guardian-model` too, appends "`<scope>` sets this key and wins from the
+  next launch" when `runtime.config.sources[path][0]` is not `Slot::User`.
 - `App.config: Option<ConfigPanel>`, routed in `App::handle_key`, counted in `App::covered()`
   (`app.rs:466-475`, the any-overlay-open check gating paste, slash menu, @-completion, input
-  dimming and Ctrl+C), and drawn in `view::overlay` next to the agents panel. It sits after the model picker and provider dialog, so a picker opened
-  from the panel takes the keys. A `body_as(linear)` variant renders one plain line per row for the
+  dimming and Ctrl+C), and drawn in `view::overlay` next to the agents panel. A `body_as(linear)` variant renders one plain line per row for the
   screen-reader renderer, like `ModelPicker`.
 - `Command::Config` in `BUILTINS` (`/config`, alias `/settings`, as in Claude Code), no
   argument.
-
-### Data flow
-
-```
-/config ─► Ui::config(runtime) ─► ConfigPanel::new(&KEYS, &runtime.config, user_file)
-key ─► ConfigPanel::handle_key ─► ConfigKey::Save{path,value}
-      ─► user_config::set_config_value(user_file, path, value)   (lock → edit → validate → write)
-      ─► Applies::Live ? apply to runtime (theme / picker path) : mark row pending
-      ─► panel.status = outcome (incl. "overridden by <scope>")
-```
 
 ## Implementation Steps
 
@@ -275,6 +274,7 @@ key ─► ConfigPanel::handle_key ─► ConfigKey::Save{path,value}
 
 ## Documentation
 
+- The `/model` and `/guardian-model` rows in `docs/tui.md` (and "Choosing a model" in `docs/configuration.md`) mention the higher-scope override note.
 - `docs/tui.md`: `/config`, `/settings` row in the commands table and a short "Settings panel"
   section covering keys, the source column, which keys are editable, overridden-by-scope and
   next-launch behavior.
