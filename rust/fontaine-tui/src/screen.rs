@@ -123,6 +123,18 @@ impl<B: Backend> Backend for Anchored<B> {
     }
 }
 
+/// Blanks the rows from `top` down one at a time and leaves the cursor on the last. Erasing from
+/// the top row to the end of the screen in one go makes tmux move everything visible into its
+/// scrollback, which is where the prompt box and live rows would otherwise pile up.
+fn erase_rows<B: Backend>(backend: &mut B, top: u16) -> Result<(), B::Error> {
+    let bottom = backend.size()?.height;
+    for row in top..bottom {
+        backend.set_cursor_position(Position::new(0, row))?;
+        backend.clear_region(ClearType::CurrentLine)?;
+    }
+    Ok(())
+}
+
 pub struct Screen<B: Backend + Anchor> {
     terminal: Terminal<B>,
     height: u16,
@@ -185,11 +197,23 @@ impl<B: Backend + Anchor> Screen<B> {
         if wanted != self.height {
             self.rebuild(wanted)?;
         }
+        // ratatui scrolls the rows above the viewport as a region, and a one-row region is
+        // invalid DECSTBM that terminals ignore, so the whole screen scrolls with the viewport
+        // still in it. The viewport is repainted from scratch to undo that. Its live rows are
+        // erased first: the row each settled line is drawn over would otherwise keep that text
+        // wherever the line has a blank cell, because ratatui's diff skips blank cells.
+        let one_row_region = self.terminal.get_frame().area().y <= 1 && !lines.is_empty();
+        if one_row_region {
+            erase_rows(self.terminal.backend_mut(), top)?;
+        }
         for chunk in lines.chunks(INSERT_CHUNK) {
             let rows = chunk.to_vec();
             self.terminal.insert_before(chunk.len() as u16, |buf| {
                 Paragraph::new(rows).render(buf.area, buf);
             })?;
+        }
+        if one_row_region {
+            self.rebuild(self.height)?;
         }
         self.terminal.draw(|frame| view::draw(frame, app))?;
         Ok(())
@@ -199,8 +223,8 @@ impl<B: Backend + Anchor> Screen<B> {
     fn rebuild(&mut self, height: u16) -> Result<(), B::Error> {
         let top = Position::new(0, self.terminal.get_frame().area().y);
         let backend = self.terminal.backend_mut();
+        erase_rows(backend, top.y)?;
         backend.set_cursor_position(top)?;
-        backend.clear_region(ClearType::AfterCursor)?;
         let mut real = mem::replace(backend, (self.placeholder)());
         real.arm(top);
         let terminal = Terminal::with_options(
@@ -220,8 +244,8 @@ impl<B: Backend + Anchor> Screen<B> {
     pub fn clear_live(&mut self) -> Result<(), B::Error> {
         let top = self.terminal.get_frame().area().y;
         let backend = self.terminal.backend_mut();
+        erase_rows(backend, top)?;
         backend.set_cursor_position(Position::new(0, top))?;
-        backend.clear_region(ClearType::AfterCursor)?;
         backend.flush()
     }
 
@@ -714,6 +738,389 @@ mod tests {
             step(screen, &mut app);
         }
         expected
+    }
+
+    /// A terminal emulator behind the real crossterm backend, so a test sees what a terminal does
+    /// with the bytes ratatui writes rather than what ratatui believes it wrote.
+    mod emulated {
+        use super::*;
+        use ratatui::backend::CrosstermBackend;
+        use std::io::{self, Write};
+        use std::sync::{Arc, Mutex};
+
+        fn nz(n: u16) -> std::num::NonZeroU16 {
+            std::num::NonZeroU16::new(n).expect("the emulator needs at least one row and column")
+        }
+
+        type Emulator = Arc<Mutex<vt100::Parser>>;
+
+        /// Set when the screen is erased from its top-left corner, which tmux answers by moving
+        /// everything visible into its scrollback.
+        type Erased = Arc<std::sync::atomic::AtomicBool>;
+
+        struct Sink(Emulator, Erased);
+
+        impl Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                let mut parser = self.0.lock().unwrap();
+                let mut rest = bytes;
+                while let Some(at) = rest.windows(3).position(|w| w == b"\x1b[J") {
+                    parser.process(&rest[..at]);
+                    if parser.screen().cursor_position() == (0, 0) {
+                        self.1.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    parser.process(b"\x1b[J");
+                    rest = &rest[at + 3..];
+                }
+                parser.process(rest);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        /// Answers every query from the emulator instead of a tty.
+        pub struct Emu {
+            inner: CrosstermBackend<Sink>,
+            emulator: Emulator,
+        }
+
+        impl Emu {
+            fn with(emulator: Emulator, erased: Erased) -> Self {
+                Emu {
+                    inner: CrosstermBackend::new(Sink(emulator.clone(), erased)),
+                    emulator,
+                }
+            }
+        }
+
+        impl Backend for Emu {
+            type Error = io::Error;
+
+            fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+            where
+                I: Iterator<Item = (u16, u16, &'a Cell)>,
+            {
+                self.inner.draw(content)
+            }
+
+            fn append_lines(&mut self, n: u16) -> io::Result<()> {
+                self.inner.append_lines(n)
+            }
+
+            fn hide_cursor(&mut self) -> io::Result<()> {
+                self.inner.hide_cursor()
+            }
+
+            fn show_cursor(&mut self) -> io::Result<()> {
+                self.inner.show_cursor()
+            }
+
+            fn get_cursor_position(&mut self) -> io::Result<Position> {
+                let (row, col) = self.emulator.lock().unwrap().screen().cursor_position();
+                Ok(Position::new(col, row))
+            }
+
+            fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+                self.inner.set_cursor_position(position)
+            }
+
+            fn clear(&mut self) -> io::Result<()> {
+                self.inner.clear()
+            }
+
+            fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+                self.inner.clear_region(clear_type)
+            }
+
+            fn size(&self) -> io::Result<Size> {
+                let (rows, cols) = self.emulator.lock().unwrap().screen().size();
+                Ok(Size::new(cols.get(), rows.get()))
+            }
+
+            fn window_size(&mut self) -> io::Result<WindowSize> {
+                let size = self.size()?;
+                Ok(WindowSize {
+                    columns_rows: size,
+                    pixels: Size::new(0, 0),
+                })
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Backend::flush(&mut self.inner)
+            }
+
+            fn scroll_region_up(
+                &mut self,
+                region: std::ops::Range<u16>,
+                line_count: u16,
+            ) -> io::Result<()> {
+                self.inner.scroll_region_up(region, line_count)
+            }
+
+            fn scroll_region_down(
+                &mut self,
+                region: std::ops::Range<u16>,
+                line_count: u16,
+            ) -> io::Result<()> {
+                self.inner.scroll_region_down(region, line_count)
+            }
+        }
+
+        pub type Real = Anchored<Emu>;
+
+        /// A stand-in whose drop writes go to a throwaway emulator.
+        fn spare() -> Real {
+            Anchored::new(Emu::with(
+                Arc::new(Mutex::new(vt100::Parser::new(nz(1), nz(1), 0))),
+                Erased::default(),
+            ))
+        }
+
+        pub struct Harness {
+            pub screen: Screen<Real>,
+            emulator: Emulator,
+            erased: Erased,
+            height: u16,
+        }
+
+        impl Harness {
+            pub fn new(width: u16, height: u16) -> Self {
+                let emulator =
+                    Arc::new(Mutex::new(vt100::Parser::new(nz(height), nz(width), 1000)));
+                let erased = Erased::default();
+                let backend = Anchored::new(Emu::with(emulator.clone(), erased.clone()));
+                Harness {
+                    screen: Screen::new(backend, spare).unwrap(),
+                    emulator,
+                    erased,
+                    height,
+                }
+            }
+
+            /// The emulator's visible rows, trailing blanks trimmed.
+            pub fn real(&self) -> Vec<String> {
+                let parser = self.emulator.lock().unwrap();
+                let screen = parser.screen();
+                screen
+                    .rows(0, screen.size().1.get())
+                    .map(|r| r.trim_end().to_string())
+                    .collect()
+            }
+
+            /// Every row that has left the visible screen, oldest first, trailing blanks trimmed.
+            pub fn scrollback(&self) -> Vec<String> {
+                let mut parser = self.emulator.lock().unwrap();
+                let rows = usize::from(self.height);
+                let mut out = Vec::new();
+                let mut offset = 0;
+                loop {
+                    offset += rows;
+                    parser.screen_mut().set_scrollback(offset);
+                    let reached = parser.screen().scrollback();
+                    let screen = parser.screen();
+                    let page: Vec<String> = screen
+                        .rows(0, screen.size().1.get())
+                        .map(|r| r.trim_end().to_string())
+                        .collect();
+                    let new = reached.saturating_sub(offset - rows);
+                    out.splice(0..0, page[..new.min(rows)].to_vec());
+                    if reached < offset {
+                        break;
+                    }
+                }
+                parser.screen_mut().set_scrollback(0);
+                out
+            }
+
+            /// Writes `text` over a row as a stale live row, leaving ratatui unaware of it.
+            pub fn paint(&mut self, row: u16, text: &str) {
+                let bytes = format!("\x1b7\x1b[{};1H\x1b[2K{text}\x1b8", row + 1);
+                self.emulator.lock().unwrap().process(bytes.as_bytes());
+            }
+
+            pub fn render_unchecked(&mut self, app: &mut App) {
+                self.screen.render(app).unwrap();
+            }
+
+            /// ratatui's idea of the rows: blank above the viewport, its buffer below.
+            fn model(&mut self, app: &App) -> Vec<String> {
+                let area = self.screen.area();
+                let mut drawn = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+                drawn.draw(|frame| view::draw(frame, app)).unwrap();
+                let mut all = vec![String::new(); usize::from(area.top())];
+                all.extend(
+                    rows(drawn.backend().buffer())
+                        .into_iter()
+                        .map(|r| r.trim_end().to_string()),
+                );
+                all
+            }
+
+            /// Renders, then checks the emulator against ratatui's model and the input box's
+            /// place above the status row.
+            pub fn render(&mut self, app: &mut App, what: &str) {
+                self.screen.render(app).unwrap();
+                assert!(
+                    !self.erased.load(std::sync::atomic::Ordering::Relaxed),
+                    "{what}: the screen was erased from its top-left corner"
+                );
+                let area = self.screen.area();
+                let model = self.model(app);
+                let real = self.real();
+                let top = usize::from(area.top());
+                let ctx = || {
+                    format!(
+                        "{what} ({}x{})\nmodel:\n{}\nreal:\n{}",
+                        area.width,
+                        self.height,
+                        model.join("\n"),
+                        real.join("\n")
+                    )
+                };
+                assert_eq!(area.bottom(), self.height, "{}", ctx());
+                assert_eq!(real[top..], model[top..], "{}", ctx());
+                let h = usize::from(self.height);
+                let box_top = &real[h - 4];
+                assert!(box_top.contains("message ·"), "{}", ctx());
+                assert!(real[h - 3].starts_with('│'), "{}", ctx());
+                assert!(
+                    real[h - 2].starts_with('└') || real[h - 2].starts_with('╰'),
+                    "{}",
+                    ctx()
+                );
+            }
+        }
+    }
+
+    fn started(app: &mut App, n: usize) {
+        app.on_event(SessionEvent::ToolCall {
+            id: format!("t{n}"),
+            tool: "shell".into(),
+            args: serde_json::json!({ "command": format!("sleep {} # a long argument", 20 + n) }),
+        });
+    }
+
+    fn finished(app: &mut App, n: usize) {
+        app.on_event(SessionEvent::ToolResult {
+            id: format!("t{n}"),
+            tool: "shell".into(),
+            success: true,
+            text: "done".into(),
+        });
+    }
+
+    /// Fills the terminal's history, starts `calls` tool calls (one render each, or in one batch)
+    /// and finishes them in order or reversed, checking every frame against the emulator.
+    fn live_rows_scenario(width: u16, height: u16, calls: usize, batch: bool, reversed: bool) {
+        let mut harness = emulated::Harness::new(width, height);
+        let mut app = app();
+        for i in 0..usize::from(height) + 4 {
+            app.transcript.notice(format!("note {i}"));
+            harness.render(&mut app, "filling");
+        }
+        if batch {
+            (0..calls).for_each(|n| started(&mut app, n));
+            harness.render(&mut app, "batch start");
+        } else {
+            for n in 0..calls {
+                started(&mut app, n);
+                harness.render(&mut app, &format!("start {n}"));
+            }
+        }
+        let mut order: Vec<usize> = (0..calls).collect();
+        if reversed {
+            order.reverse();
+        }
+        for n in order {
+            finished(&mut app, n);
+            harness.render(&mut app, &format!("finish {n}"));
+        }
+    }
+
+    /// A terminal that ignores the one-row scroll region ratatui uses scrolls the whole screen,
+    /// so the row a settled line is drawn over still holds the live row last painted there.
+    #[test]
+    fn issue_217_settled_lines_keep_no_stale_live_row_text() {
+        for height in 6..=12 {
+            let mut harness = emulated::Harness::new(60, height);
+            let mut app = app();
+            for i in 0..usize::from(height) + 4 {
+                app.transcript.notice(format!("note {i}"));
+                harness.render(&mut app, "filling");
+            }
+            for n in 0..usize::from(height) {
+                started(&mut app, n);
+                harness.render(&mut app, &format!("start {n}"));
+            }
+            for n in 0..usize::from(height) {
+                finished(&mut app, n);
+                harness.render(&mut app, &format!("finish {n}"));
+            }
+            for row in 0..height - 4 {
+                harness.paint(row, &format!("STALE LIVE ROW {row} {}", "x".repeat(30)));
+            }
+            for i in 0..usize::from(height) {
+                app.transcript.notice(format!("short {i}"));
+            }
+            harness.render_unchecked(&mut app);
+            let history = harness.scrollback();
+            let stale: Vec<_> = history
+                .iter()
+                .filter(|r| {
+                    let short = r
+                        .strip_prefix("· short ")
+                        .is_some_and(|n| n.parse::<u8>().is_ok());
+                    !(short
+                        || r.starts_with("· note ")
+                        || (r.starts_with("• shell sleep ")
+                            && (r.ends_with(" …") || r.ends_with(" ✓"))))
+                })
+                .collect();
+            assert!(stale.is_empty(), "height {height}: {stale:?}");
+        }
+    }
+
+    #[test]
+    fn issue_217_live_tool_rows_stay_above_the_prompt_box() {
+        for calls in 1..=3 {
+            for batch in [false, true] {
+                for reversed in [false, true] {
+                    live_rows_scenario(40, 10, calls, batch, reversed);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn issue_217_strided_matrix() {
+        for height in (6..=24).step_by(4) {
+            for width in (20..=80).step_by(10) {
+                for calls in 1..=3 {
+                    live_rows_scenario(width, height, calls, false, false);
+                    live_rows_scenario(width, height, calls, true, true);
+                }
+            }
+        }
+    }
+
+    /// The full local diagnostic: `cargo test -p fontaine-tui -- --ignored issue_217_full_sweep`.
+    #[test]
+    #[ignore]
+    fn issue_217_full_sweep() {
+        for height in 6..=24 {
+            for width in 20..=80 {
+                for calls in 1..=4 {
+                    for batch in [false, true] {
+                        for reversed in [false, true] {
+                            live_rows_scenario(width, height, calls, batch, reversed);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
