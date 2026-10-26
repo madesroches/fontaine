@@ -769,8 +769,9 @@ broker and gateway (`docs/auth-broker-gateway.md`), and the SDK/RPC/ACP embeddin
 
 ## 10. Proposed follow-up issues
 
-No GitHub issue was created or commented on by this work; the orchestrator files these. Each new issue links
-`research/research-oh-my-pi-harness.md` and the section named.
+The new issues below were filed after the study: P1–P10 are #221–#230 in order (P1 #221, P2 #222, P3 #223, P4 #224, P5 #225, P6 #226, P7 #227,
+P8 #228, P9 #229, P10 #230). Each links this doc and its item. The comments on existing issues were not posted; they are listed as proposals
+for the maintainer to post or fold into those issues.
 
 ### New issues
 
