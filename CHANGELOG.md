@@ -356,6 +356,10 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- The guardian's touched paths for a shell command now list its redirect targets (`>`, `>>`, `>|`,
+  `&>`, `<>`, `>&file`), including those on compound commands and in nested command lines, ahead
+  of its arguments; before, a target such as `cfg.py` was missing while a non-path argument
+  containing `/` was listed (#230).
 - In-flight tool rows no longer overwrite the prompt box. Writing settled lines above a live area
   one or zero rows from the top of the screen used a one-row scroll region, which terminals ignore,
   so the whole screen scrolled with the box in it; the live area is now repainted after such a

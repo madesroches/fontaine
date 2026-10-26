@@ -307,6 +307,31 @@ fn a_write_is_an_overwrite_only_when_it_replaces_something_old() {
 }
 
 #[test]
+fn shell_redirect_targets_are_touched_paths() {
+    let (_dir, scope, _view) = world();
+    let root = scope.primary().to_path_buf();
+    let keys = |args: serde_json::Value| -> Vec<String> {
+        touched_paths("shell", &args, &scope)
+            .iter()
+            .map(|p| path_key(p))
+            .collect()
+    };
+    let key = |p: std::path::PathBuf| path_key(&p.to_string_lossy());
+
+    let reported = keys(json!({"command": "printf '# generated\\n' >> cfg.py"}));
+    assert_eq!(reported.first(), Some(&key(root.join("cfg.py"))));
+
+    std::fs::create_dir(root.join("sub")).unwrap();
+    let relative = keys(json!({"command": "echo x > out.txt", "cwd": "sub"}));
+    assert_eq!(relative, [key(root.join("sub").join("out.txt"))]);
+
+    let deduped = keys(json!({"command": "tee ./f > ./f"}));
+    assert_eq!(deduped, [key(root.join("f"))]);
+
+    assert!(keys(json!({"command": "echo x > $F"})).is_empty());
+}
+
+#[test]
 fn touched_paths_are_resolved_by_the_scope() {
     let (_dir, scope, _view) = world();
     let root = scope.primary().to_path_buf();

@@ -63,6 +63,10 @@ pub struct ShellAnalysis {
     /// Some command, anywhere in the text, redirects output to a file (`>`, `>>`, `>|`, `<>`,
     /// `&>`). Duplicating a descriptor (`2>&1`) is not a file.
     pub output_redirect: bool,
+    /// The target word of every redirect that writes a file, in source order, including those on
+    /// compound commands, in substitutions and in nested runner command lines. Descriptor copies
+    /// (`2>&1`) have none. A target that expands has `literal == None`.
+    pub output_targets: Vec<ShellWord>,
     pub raw: String,
 }
 
@@ -207,14 +211,18 @@ impl Walk<'_> {
         match redirect {
             IoRedirect::File(_, kind, target) => match target {
                 IoFileRedirectTarget::Filename(word) => {
-                    self.out.output_redirect |= matches!(
+                    let writes = matches!(
                         kind,
                         IoFileRedirectKind::Write
                             | IoFileRedirectKind::Append
                             | IoFileRedirectKind::ReadAndWrite
                             | IoFileRedirectKind::Clobber
                     );
-                    self.word(word);
+                    self.out.output_redirect |= writes;
+                    let classified = self.word(word);
+                    if writes {
+                        self.out.output_targets.push(classified);
+                    }
                 }
                 IoFileRedirectTarget::Duplicate(word) => {
                     // `>&2` copies a descriptor; `>&file` is how a shell spells `> file 2>&1`.
@@ -223,8 +231,10 @@ impl Walk<'_> {
                         text == "-"
                             || (!text.is_empty() && text.chars().all(|c| c.is_ascii_digit()))
                     });
-                    self.out.output_redirect |=
-                        matches!(kind, IoFileRedirectKind::DuplicateOutput) && !copies_descriptor;
+                    if matches!(kind, IoFileRedirectKind::DuplicateOutput) && !copies_descriptor {
+                        self.out.output_redirect = true;
+                        self.out.output_targets.push(classified);
+                    }
                 }
                 IoFileRedirectTarget::Fd(_) => {}
                 IoFileRedirectTarget::ProcessSubstitution(_, sub) => self.list(&sub.list),
@@ -236,7 +246,8 @@ impl Walk<'_> {
             }
             IoRedirect::OutputAndError(word, _) => {
                 self.out.output_redirect = true;
-                self.word(word);
+                let classified = self.word(word);
+                self.out.output_targets.push(classified);
             }
             IoRedirect::HereString(_, word) => {
                 self.word(word);
@@ -280,6 +291,7 @@ impl Walk<'_> {
         }
         self.out.unanalyzed |= nested.unanalyzed;
         self.out.output_redirect |= nested.output_redirect;
+        self.out.output_targets.extend(nested.output_targets);
         self.out.nested_chain |= nested.nested_chain || (nested.parsed && nested.simple.is_none());
         self.out.commands.extend(nested.commands);
     }
@@ -399,6 +411,7 @@ impl Walk<'_> {
                 }
                 self.out.unanalyzed |= nested.unanalyzed;
                 self.out.output_redirect |= nested.output_redirect;
+                self.out.output_targets.extend(nested.output_targets);
                 self.out.commands.extend(nested.commands);
                 if !nested.parsed {
                     // The inner text still counts as part of the command for textual fallbacks.
@@ -976,7 +989,48 @@ mod tests {
             "echo a\\>b",
         ] {
             assert!(!analyze(text).output_redirect, "{text}");
+            assert!(analyze(text).output_targets.is_empty(), "{text}");
         }
+        for text in ["cat < in", "cat <<< w"] {
+            assert!(analyze(text).output_targets.is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn output_targets_are_listed_in_source_order() {
+        let targets = |text: &str| -> Vec<Option<String>> {
+            analyze(text)
+                .output_targets
+                .into_iter()
+                .map(|w| w.literal)
+                .collect()
+        };
+        let f = || vec![Some("f".to_string())];
+        for text in [
+            "echo x > f",
+            "echo x >> f",
+            "echo x >| f",
+            "cat <> f",
+            "echo x &> f",
+            "echo x &>> f",
+            "echo x >&f",
+            "{ echo x; } > f",
+            "ls | tee out > f",
+            "echo $(echo x > f)",
+            "sh -c 'echo x > f'",
+        ] {
+            let got = targets(text);
+            assert!(got.last() == f().last(), "{text}: {got:?}");
+        }
+        assert_eq!(targets("echo x > f"), f());
+        assert_eq!(targets("{ echo x; } > f"), f());
+        assert_eq!(targets("sh -c 'echo x > f'"), f());
+        assert_eq!(
+            targets("echo x > a 2> b"),
+            vec![Some("a".to_string()), Some("b".to_string())]
+        );
+        assert_eq!(targets("echo x > $F"), vec![None]);
+        assert_eq!(targets("echo x > -x"), vec![Some("-x".to_string())]);
     }
 
     #[test]
