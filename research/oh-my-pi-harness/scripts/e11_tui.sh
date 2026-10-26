@@ -1,6 +1,6 @@
 #!/bin/sh
 # E11 (omp): drive the interactive TUI under tmux at 120x40 and capture panes as text.
-# Frames: f_<n>_<label>.txt. Approval prompts are answered with Enter on the first choice.
+# Frames: <nn>_<label>.txt. Approval prompts are answered with Enter on the first choice.
 cd /run/study/ws
 OUT=/run/study/frames; mkdir -p $OUT
 cap() { tmux capture-pane -p -t o > "$OUT/$1.txt"; }

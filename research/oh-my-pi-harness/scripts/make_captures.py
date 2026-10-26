@@ -59,6 +59,14 @@ for n, r in (("omp", o), ("fontaine", f)):
     cmp.append(f"  tools={[t['function']['name'] for t in b['tools']]} tools_bytes={len(json.dumps(b['tools']))}")
     cmp.append(f"  messages={[(m['role'], len(json.dumps(m))) for m in b['messages']]}")
     cmp.append(f"  headers={ {k: v for k, v in r['req_headers'].items() if k not in ('authorization', 'content-length')} }")
+for n, r in (("omp", o), ("fontaine", f)):
+    u = None
+    for l in r["resp_body"].splitlines():
+        if l.startswith("data: {"):
+            j = json.loads(l[6:])
+            if j.get("usage"):
+                u = j["usage"]
+    cmp.append(f"{n}: first-request usage={json.dumps(u)}")
 write("e2_framing_compare.txt", "\n".join(cmp))
 write_json("e2_tool_schemas_omp.json", o["req_body"]["tools"])
 
@@ -127,6 +135,7 @@ for fp in sd:
     a = [r for r in rows if r.get("type") == "message" and r["message"]["role"] == "assistant"][0]
     out.append("first assistant: " + json.dumps(a)[:900])
 out.append("\n" + open(os.path.join(RUNS, "e8-resume/omp.out")).read())
+out.append(f"\nexport.html size: {os.path.getsize(os.path.join(RUNS, 'e8-resume/export.html'))} bytes")
 write("e8_session_log.txt", "\n".join(out))
 # E9 / E10
 write("e9_planted_project.txt", "markers created in /tmp by the planted project (ls -l):\n" + open(os.path.join(RUNS, "e9-planted/post.out")).read() + "\nomp.out:\n" + open(os.path.join(RUNS, "e9-planted/omp.out")).read() + "\nomp.err:\n" + open(os.path.join(RUNS, "e9-planted/omp.err")).read())

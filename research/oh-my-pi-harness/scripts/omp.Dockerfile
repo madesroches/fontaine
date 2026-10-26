@@ -17,6 +17,6 @@ COPY . /pi/
 RUN bun --cwd=packages/coding-agent run gen:tool-views
 RUN printf '#!/usr/bin/env bash\nexec bun /pi/packages/coding-agent/src/cli.ts "$@"\n' > /usr/local/bin/omp && chmod +x /usr/local/bin/omp
 # Addon built from the checkout with the repo's own Dockerfile natives-builder stage (docker build --target
-# natives-builder omp-src; copy /out/*.node to omp-src/packages/natives/native/ before this build).
+# natives-builder omp-src; copy /out/*.node to omp-src/natives-out/ and drop the **/*.node line from omp-src/.dockerignore before this build).
 # The last published prebuilt (18.12.6) is stale for this checkout: see the README.
 COPY natives-out/pi_natives.linux-x64-modern.node /pi/packages/natives/native/

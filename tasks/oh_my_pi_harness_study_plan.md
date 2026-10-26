@@ -209,6 +209,7 @@ Fontaine's rig provider path by checking `rust/fontaine-core` provider code.
 
 - 2026-10-26: The study also covers omp's terminal UI (E11 and a UI section in the doc), per user direction.
 - 2026-10-26: AFK: omp is pointed at the opencode-go gateway's OpenAI-compatible route through the recording proxy; if omp cannot take a custom base URL, the wire-dependent experiments (E2-E8) fall back to source-only and the doc records that, because no direct provider key is available and the conservative path adds no new credential exposure.
+- 2026-10-26: Follow-up issues and issue comments are filed by the orchestrator after the review loop, from the research doc's "Proposed follow-up issues" section, with the real numbers linked back into the doc; the study itself files nothing.
 
 ## Documentation
 
