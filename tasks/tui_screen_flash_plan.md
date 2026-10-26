@@ -38,22 +38,31 @@ invisible in terminals that paint per read chunk, the second removes the blank s
 
 ### 1. One write per frame
 
-- Add a backend in `screen.rs` that wraps `CrosstermBackend<FrameWriter>` (implements `Backend`
-  and `Anchor`, replacing the plain `Anchored<CrosstermBackend<Stdout>>` in `lib.rs` and the
-  `live_area` example; `Anchored` stays as the cursor-answering wrapper around it).
+- Frame state lives in `FrameWriter`, the writer of a plain `CrosstermBackend<FrameWriter>`, reached
+  via `CrosstermBackend::writer_mut()`; `Anchored<B>` stays the cursor-answering wrapper and
+  forwards `begin_frame`/`end_frame` to `B`. `lib.rs` and the `live_area` example use
+  `Anchored<CrosstermBackend<FrameWriter>>` in place of `Anchored<CrosstermBackend<Stdout>>`.
 - `FrameWriter` is a custom `Write` holding an unbounded `Vec<u8>` frame buffer (no `BufWriter`: its
   8KB default writes through when exceeded, and real stdout is a `LineWriter` that splits at
   newlines, so one trait-level write is not one `write(2)`). `CrosstermBackend` calls
   `writer.flush()` directly (`hide_cursor`, `show_cursor`, `set_cursor_position`, `clear_region`,
   `append_lines`, `scroll_region_*`), so gating lives in `FrameWriter::flush`: a no-op while a
-  frame is open. `end_frame` writes the whole `Vec` once to a locked/raw stdout handle.
-- `Screen` gains `begin_frame` / `end_frame` hooks on the `Anchor` trait (no-ops for
-  `TestBackend`): `begin_frame` queues `BeginSynchronizedUpdate` into the buffer, `end_frame`
+  frame is open. `end_frame` writes the whole `Vec` once straight to the terminal fd, bypassing std's
+  `LineWriter` (Unix: `ManuallyDrop<File>` over the stdout fd; Windows: accept `LineWriter`
+  splitting, or a single `WriteFile`). One write larger than the pty buffer can still arrive in
+  several read chunks.
+- `Screen` gains `begin_frame` / `end_frame` as `Anchor` default methods (no-ops for
+  `TestBackend`, forwarded by `Anchored<B>`; the harness `Emu` implements them over its counted
+  writer, so `Real = Anchored<Emu>` holds). `end_frame` returns `Result<(), Self::Error>`
+  (`Infallible` for `TestBackend`). `begin_frame` queues `BeginSynchronizedUpdate` into the buffer, `end_frame`
   queues `EndSynchronizedUpdate` and writes the buffer once. `Screen::render` and `commit_all` call
   them around `draw_frame`, so the sync markers travel in the same write as the frame, and `lib.rs`
   and the example drop their own `execute!` sync calls. `restore_terminal`'s
   `EndSynchronizedUpdate` stays as a safety net.
-- A failed frame still calls `end_frame`, so it does not leave a dangling begin-sync.
+- `render`/`commit_all` always call `end_frame` after `draw_frame` (so a failed frame leaves no
+  dangling begin-sync) and return the draw error first.
+- The placeholder backend left by `rebuild`'s `mem::replace` has a `FrameWriter` whose sink
+  discards output, so the old `Terminal`'s drop-time `show_cursor` is not a stray stdout write.
 - Other writers of the terminal (`clear_live`, `resume`, the `Suspend` closure) flush as before;
   the frame hooks are only used by `render`/`commit_all`.
 
@@ -87,7 +96,7 @@ erase. Whatever route is chosen must keep the invariant that no stale cell survi
    must sit above `Sink` (which splits at `\x1b[J`). The test at `screen.rs:~1166` needs the updated
    `Anchor` trait.
 2. Test for step 1 (red first): extend the `emulated` harness `Sink` to count `write` calls and
-   record the bytes of each; assert (at the writer-trait level, not `write(2)`) one `render` that changes the live area height
+   record the bytes of each; assert (at the writer-trait level only, not `write(2)`; also assert the placeholder writer saw zero writes) one `render` that changes the live area height
    and one that commits settled lines with the viewport at row 0 each produce exactly one write beginning with
    `\x1b[?2026h` and ending with `\x1b[?2026l`.
 3. Implement change 2 in `rebuild`/`resume`/`draw_frame`. Test (red first): extend `Sink` with a recording mode that splits each
@@ -136,3 +145,6 @@ No `docs/` page describes frame painting; no doc change beyond the changelog.
 ## Decisions
 
 - 2026-10-26: Design 2 uses the sentinel buffer swap (`current_buffer_mut` + `swap_buffers`) rather than a direct row write or keeping `erase_rows`.
+- AFK: 2026-10-26: Applied fix 1: `end_frame` writes straight to the terminal fd (Unix `ManuallyDrop<File>`, Windows accepts `LineWriter`/`WriteFile`) because std stdout's `LineWriter` splits frames at newlines; the step 2 test stays at trait level.
+- AFK: 2026-10-26: Applied fix 2: the placeholder backend's `FrameWriter` discards output so the old `Terminal`'s drop-time `show_cursor` is not a stray stdout write; the harness asserts zero placeholder writes.
+- AFK: 2026-10-26: Applied fix 3: frame state lives in `FrameWriter` via `writer_mut()`; `begin_frame`/`end_frame` are `Anchor` default methods forwarded by `Anchored<B>`, `end_frame` returns `Result<(), Self::Error>`, and `render`/`commit_all` always call it after `draw_frame`, returning the draw error first.
