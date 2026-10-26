@@ -89,7 +89,7 @@ pub fn set_value(path: &Path, key_path: &[&str], value: Option<Value>) -> io::Re
         .split_last()
         .expect("a settings key path has at least one segment");
     let _lock = locked(path)?;
-    let mut doc = read_document(path)?;
+    let mut doc = read_document(path, |p| std::fs::read_to_string(p))?;
     match value {
         Some(value) => {
             let mut table = doc.as_table_mut() as &mut dyn toml_edit::TableLike;
