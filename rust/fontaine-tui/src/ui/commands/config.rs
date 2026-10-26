@@ -1,8 +1,9 @@
-use crate::config_panel::{ConfigKey, ConfigPanel, value_label};
+use crate::config_panel::{ConfigKey, ConfigPanel, saved_status, value_label};
 use crate::{App, Ui};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::config::{Config, Slot, ThemeName};
 use fontaine_core::config_catalog::{self, Applies, ModelSlot, Running};
+use fontaine_core::models::GuardianChoice;
 use fontaine_core::user_config;
 
 /// The scope that outranks the user file for `path`, whose value therefore wins from the next
@@ -20,7 +21,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let running = Running {
             theme: theme.as_str(),
             main_model: &main,
-            guardian_model: Some(guardian.label()).filter(|label| !label.is_empty()),
+            guardian_model: (runtime.models.guardian_choice == GuardianChoice::Pinned)
+                .then(|| guardian.label()),
         };
         self.app.config = Some(ConfigPanel::new(
             &runtime.config,
@@ -46,23 +48,23 @@ impl<R: FnMut(&mut App)> Ui<R> {
             ConfigKey::None | ConfigKey::Close | ConfigKey::OpenPicker(_) => return,
         };
         let Some(file) = self.user_config.clone() else {
-            if let Some(panel) = &mut self.app.config {
-                panel.failed("there is no user settings file");
-            }
+            self.config_report(
+                |panel| panel.failed("there is no user settings file"),
+                || "not saved: there is no user settings file".to_string(),
+            );
             return;
         };
         match user_config::set_config_value(&file, path, value.clone()) {
             Ok(true) => {}
             Ok(false) => {
-                if let Some(panel) = &mut self.app.config {
-                    panel.not_set();
-                }
+                self.config_report(ConfigPanel::not_set, || {
+                    format!("not set in {}", file.display())
+                });
                 return;
             }
             Err(e) => {
-                if let Some(panel) = &mut self.app.config {
-                    panel.failed(&fontaine_tools::error_chain::chain(&e));
-                }
+                let why = fontaine_tools::error_chain::chain(&e);
+                self.config_report(|panel| panel.failed(&why), || format!("not saved: {why}"));
                 return;
             }
         }
@@ -85,16 +87,37 @@ impl<R: FnMut(&mut App)> Ui<R> {
             theme.as_str()
         });
         let overridden = overriding_scope(&runtime.config, path);
-        let Some(panel) = &mut self.app.config else {
-            return;
-        };
-        match panel.saved(path, &label, live, overridden) {
+        let pending = (row.applies == Applies::NextLaunch).then(|| label.clone());
+        match &pending {
             Some(pending) => {
-                self.config_pending.insert(path.to_string(), pending);
+                self.config_pending
+                    .insert(path.to_string(), pending.clone());
             }
             None => {
                 self.config_pending.remove(path);
             }
+        }
+        match &mut self.app.config {
+            Some(panel) => {
+                panel.saved(path, &label, live, overridden);
+            }
+            None => {
+                let message =
+                    saved_status(row.applies, overridden, &file.display().to_string(), None);
+                self.app.transcript.notice(format!("{path}: {message}"));
+            }
+        }
+    }
+
+    /// Reports a failed change to the panel, or to the transcript when it has closed since.
+    fn config_report(
+        &mut self,
+        panel: impl FnOnce(&mut ConfigPanel),
+        notice: impl FnOnce() -> String,
+    ) {
+        match &mut self.app.config {
+            Some(p) => panel(p),
+            None => self.app.transcript.notice(notice()),
         }
     }
 }

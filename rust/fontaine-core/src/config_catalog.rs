@@ -158,14 +158,14 @@ fn names<'a>(names: impl Iterator<Item = &'a String>) -> String {
 // A proxy or endpoint URL may carry credentials in its userinfo or query.
 fn redacted_url(url: &str) -> String {
     let url = url.split(['?', '#']).next().unwrap_or(url);
-    if let Some((scheme, rest)) = url.split_once("://") {
-        let end = rest.find('/').unwrap_or(rest.len());
-        let (authority, path) = rest.split_at(end);
-        if let Some((_, host)) = authority.rsplit_once('@') {
-            return format!("{scheme}://***@{host}{path}");
-        }
+    let (scheme, rest) = url.split_once("://").map_or(("", url), |(s, r)| (s, r));
+    let end = rest.find('/').unwrap_or(rest.len());
+    let (authority, path) = rest.split_at(end);
+    match authority.rsplit_once('@') {
+        Some((_, host)) if scheme.is_empty() => format!("***@{host}{path}"),
+        Some((_, host)) => format!("{scheme}://***@{host}{path}"),
+        None => url.to_string(),
     }
-    url.to_string()
 }
 
 fn bool_choices() -> Vec<ChoiceValue> {
@@ -457,6 +457,16 @@ mod tests {
 
     use super::*;
     use crate::config_scope::schema::{is_prefix, schema_nodes};
+
+    #[test]
+    fn urls_lose_credentials_with_or_without_a_scheme() {
+        assert_eq!(redacted_url("user:pw@proxy:8080"), "***@proxy:8080");
+        assert_eq!(
+            redacted_url("http://user:pw@proxy:8080/x?t=1"),
+            "http://***@proxy:8080/x"
+        );
+        assert_eq!(redacted_url("proxy:8080"), "proxy:8080");
+    }
 
     fn defaults() -> Config {
         Config::defaults(PathBuf::from("/work"))

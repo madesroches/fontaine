@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use fontaine_core::config::{Config, Slot};
-use fontaine_core::config_catalog::{Applies, Edit, KEYS, KeyRow, ModelSlot, Running};
+use fontaine_core::config_catalog::{
+    Applies, Edit, KEYS, KeyRow, ModelSlot, Running, winning_slot,
+};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -54,6 +56,11 @@ struct PanelRow {
     source: String,
     /// The label of a saved value that applies from the next launch; `unset` after a reset.
     pending: Option<String>,
+    /// The label of a Save or Reset emitted but not yet reported back, so a repeated Enter moves
+    /// on from it instead of asking for the same change again.
+    cycle: Option<String>,
+    /// A scope above the user file sets this key, so `pending` is not what the next launch runs.
+    overridden: bool,
 }
 
 pub struct ConfigPanel {
@@ -77,6 +84,28 @@ pub fn value_label(value: &Value) -> String {
     }
 }
 
+/// What a change written to the user file means for the running session. `effective` is the
+/// value a next-launch row keeps running on, when known.
+pub fn saved_status(
+    applies: Applies,
+    overridden_by: Option<Slot>,
+    file: &str,
+    effective: Option<&str>,
+) -> String {
+    match (applies, overridden_by) {
+        (Applies::Live, None) => format!("saved to {file}"),
+        (Applies::Live, Some(scope)) => format!(
+            "applied now; {} sets this key and wins from the next launch",
+            scope.label()
+        ),
+        (Applies::NextLaunch, None) => format!("saved to {file}; applies from the next launch"),
+        (Applies::NextLaunch, Some(scope)) => {
+            let stays = effective.map_or_else(String::new, |v| format!(", so the value stays {v}"));
+            format!("saved, but {} sets this key and wins{stays}", scope.label())
+        }
+    }
+}
+
 impl ConfigPanel {
     /// `pending` maps a key path to the label of a value saved earlier in this session that
     /// applies from the next launch.
@@ -93,6 +122,8 @@ impl ConfigPanel {
                 effective: (key.effective)(config, running),
                 source: key.source_label(config),
                 pending: pending.get(key.path).cloned(),
+                cycle: None,
+                overridden: winning_slot(config, key.path).is_some_and(|slot| slot != Slot::User),
             })
             .collect();
         ConfigPanel {
@@ -174,9 +205,10 @@ impl ConfigPanel {
     }
 
     fn enter(&mut self) -> ConfigKey {
-        let Some(row) = self.selected_row() else {
+        let Some(&index) = self.visible().get(self.selected) else {
             return ConfigKey::None;
         };
+        let row = &mut self.rows[index];
         let key = row.key;
         match &key.edit {
             None => {
@@ -196,17 +228,27 @@ impl ConfigPanel {
             }
             Some(Edit::Choice(choices)) => {
                 let choices = choices();
-                let current = row.pending.as_deref().unwrap_or(&row.effective);
+                let current = row
+                    .cycle
+                    .as_deref()
+                    .or(row.pending.as_deref())
+                    .unwrap_or(&row.effective);
                 let next = choices
                     .iter()
                     .position(|(label, _)| *label == current)
                     .map_or(0, |i| (i + 1) % choices.len());
                 match choices.into_iter().nth(next) {
-                    Some((_, Some(value))) => ConfigKey::Save {
-                        path: key.path,
-                        value,
-                    },
-                    Some((_, None)) => ConfigKey::Reset(key.path),
+                    Some((label, Some(value))) => {
+                        row.cycle = Some(label.to_string());
+                        ConfigKey::Save {
+                            path: key.path,
+                            value,
+                        }
+                    }
+                    Some((label, None)) => {
+                        row.cycle = Some(label.to_string());
+                        ConfigKey::Reset(key.path)
+                    }
                     None => ConfigKey::None,
                 }
             }
@@ -279,51 +321,41 @@ impl ConfigPanel {
     ) -> Option<String> {
         let file = self.user_file.clone().unwrap_or_default();
         let row = self.row_mut(path)?;
-        let (status, pending) = match (row.key.applies, overridden_by) {
-            (Applies::Live, None) => {
-                if let Some(value) = live_value {
-                    row.effective = value.to_string();
-                }
-                (format!("saved to {file}"), None)
-            }
-            (Applies::Live, Some(scope)) => {
-                if let Some(value) = live_value {
-                    row.effective = value.to_string();
-                }
-                (
-                    format!(
-                        "applied now; {} sets this key and wins from the next launch",
-                        scope.label()
-                    ),
-                    None,
-                )
-            }
-            (Applies::NextLaunch, None) => (
-                format!("saved to {file}; applies from the next launch"),
-                Some(label.to_string()),
-            ),
-            (Applies::NextLaunch, Some(scope)) => (
-                format!(
-                    "saved, but {} sets this key and wins, so the value stays {}",
-                    scope.label(),
-                    row.effective
-                ),
-                None,
-            ),
-        };
+        if row.cycle.as_deref() == Some(label) {
+            row.cycle = None;
+        }
+        let live = row.key.applies == Applies::Live;
+        if live && let Some(value) = live_value {
+            row.effective = value.to_string();
+        }
+        let status = saved_status(
+            row.key.applies,
+            overridden_by,
+            &file,
+            (!live).then_some(row.effective.as_str()),
+        );
+        let pending = (!live).then(|| label.to_string());
         row.pending = pending.clone();
         self.status = Some(status);
         pending
     }
 
+    fn forget_cycles(&mut self) {
+        for row in &mut self.rows {
+            row.cycle = None;
+        }
+    }
+
     /// Records that a reset found the key already absent from the user file.
     pub fn not_set(&mut self) {
+        self.forget_cycles();
         let file = self.user_file.clone().unwrap_or_default();
         self.status = Some(format!("not set in {file}"));
     }
 
     /// Records that a change could not be written.
     pub fn failed(&mut self, why: &str) {
+        self.forget_cycles();
         self.status = Some(format!("not saved: {why}"));
     }
 
@@ -364,6 +396,7 @@ impl ConfigPanel {
 
     fn value_text(row: &PanelRow) -> String {
         let shown = match &row.pending {
+            Some(label) if row.overridden => format!("{} (saved: {label})", row.effective),
             Some(label) => format!("{} (next launch: {label})", row.effective),
             None => row.effective.clone(),
         };
@@ -618,6 +651,31 @@ mod tests {
     }
 
     #[test]
+    fn repeated_enter_cycles_before_the_save_is_reported() {
+        let mut p = panel();
+        select(&mut p, "schedule.enabled");
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let ConfigKey::Save { value, .. } = p.handle_key(key(KeyCode::Enter)) else {
+                panic!("expected a save");
+            };
+            seen.push(value.as_bool());
+        }
+        assert_eq!(seen, [Some(false), Some(true)]);
+    }
+
+    #[test]
+    fn enter_moves_on_from_a_saved_value_a_higher_scope_overrides() {
+        let mut p = panel();
+        select(&mut p, "schedule.enabled");
+        p.saved("schedule.enabled", "false", None, Some(Slot::Cli));
+        let ConfigKey::Save { value, .. } = p.handle_key(key(KeyCode::Enter)) else {
+            panic!("expected a save");
+        };
+        assert_eq!(value.as_bool(), Some(true));
+    }
+
+    #[test]
     fn the_integer_field_takes_digits_only() {
         let mut p = panel();
         select(&mut p, "context.autocompact_window");
@@ -704,7 +762,7 @@ mod tests {
         let mut p = panel_with("[schedule]\nenabled = true\n", &BTreeMap::new());
         select(&mut p, "schedule.enabled");
         let pending = p.saved("schedule.enabled", "false", None, Some(Slot::Cli));
-        assert_eq!(pending, None);
+        assert_eq!(pending.as_deref(), Some("false"));
         let status = p.status().unwrap();
         assert!(status.contains("cli sets this key and wins"), "{status}");
         assert!(status.contains("stays true"), "{status}");
