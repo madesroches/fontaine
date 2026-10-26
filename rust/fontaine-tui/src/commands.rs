@@ -49,6 +49,8 @@ pub enum Command {
     Branch(String),
     /// `/rename [name]`.
     Rename(String),
+    /// `/expand [n]`.
+    Expand(String),
     /// `/export [path]`.
     Export(String),
     /// A name no built-in command has; it may be a skill.
@@ -144,6 +146,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: None,
         description: "leave Fontaine",
         command: |_| Command::Exit,
+    },
+    Builtin {
+        name: "expand",
+        aliases: &[],
+        hint: Some("[n]"),
+        description: "print a tool call in full: command, output and diff",
+        command: Command::Expand,
     },
     Builtin {
         name: "export",
@@ -573,6 +582,18 @@ pub fn reply_number(argument: &str) -> Result<usize, String> {
     }
 }
 
+/// Which tool call `/expand` is asked for: none for the latest, otherwise the ordinal the call's
+/// card shows.
+pub fn call_number(argument: &str) -> Result<Option<usize>, String> {
+    if argument.is_empty() {
+        return Ok(None);
+    }
+    argument
+        .parse::<usize>()
+        .map(Some)
+        .map_err(|_| format!("/expand takes a call number, such as `/expand 3`, not `{argument}`"))
+}
+
 /// Which instruction file `/memory` is asked to open: none for the bare list, otherwise the
 /// 1-based number the list shows.
 pub fn memory_number(argument: &str) -> Result<Option<usize>, String> {
@@ -674,6 +695,13 @@ mod tests {
         );
         assert_eq!(parse_command("/plan"), Some(Command::Plan(String::new())));
         assert_eq!(parse_command("/copy 2"), Some(Command::Copy("2".into())));
+        assert_eq!(
+            parse_command("/expand 3"),
+            Some(Command::Expand("3".into()))
+        );
+        assert_eq!(call_number(""), Ok(None));
+        assert_eq!(call_number("3"), Ok(Some(3)));
+        assert!(call_number("x").is_err());
         assert_eq!(
             parse_command("/loop 5m check the build"),
             Some(Command::Loop("5m check the build".into()))

@@ -1,13 +1,15 @@
-//! The conversation as shown: user messages, streaming assistant text, one line per tool call
+//! The conversation as shown: user messages, streaming assistant text, a card per tool call
 //! with its outcome, and notices.
 
 use fontaine_core::audit::Decision;
 use fontaine_core::notice::{Notice, Severity};
+use fontaine_core::preview::{DiffPreview, display_text};
 use fontaine_core::turn::SessionEvent;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
+use crate::diff::diff_rows;
 use crate::input::wrap;
 use crate::theme::{Glyphs, Theme};
 
@@ -18,6 +20,23 @@ pub enum ToolStatus {
     Failed(String),
     Denied(String),
     Interrupted,
+}
+
+/// Most bytes of one call's result a transcript keeps, so a huge `cat` cannot grow memory.
+pub const OUTPUT_KEEP_BYTES: usize = 64 * 1024;
+/// Wrapped rows of a call a card shows before folding the rest.
+const CALL_ROWS: usize = 3;
+/// Wrapped rows of output a card shows, the last ones.
+pub(crate) const OUTPUT_ROWS: usize = 10;
+/// Lines of a diff a card shows.
+const DIFF_ROWS: usize = 20;
+
+/// What a tool call returned, safe to paint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolOutput {
+    pub text: String,
+    /// Only the head and the tail of the result were kept.
+    pub clipped: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,7 +51,16 @@ pub enum Entry {
         tool: String,
         summary: String,
         status: ToolStatus,
+        /// Counts the session's calls from 1; what `/expand` takes. A settled follow-up keeps
+        /// the ordinal of the row it follows.
+        ordinal: usize,
+        /// The whole call: every line of the command, path or URL.
+        call: String,
+        output: Option<ToolOutput>,
+        diff: Option<DiffPreview>,
     },
+    /// A call printed in full by `/expand`; always wraps an `Entry::Tool`.
+    Expanded(Box<Entry>),
     Notice {
         severity: Severity,
         headline: String,
@@ -54,6 +82,8 @@ pub struct Transcript {
     committed: usize,
     /// Chars of `entries[committed]`'s text already written, when it is a streaming reply.
     committed_chars: usize,
+    /// Calls seen this session; `/clear` does not reset it, so an ordinal never names two calls.
+    calls: usize,
     /// Entries that `/clear` removed before they reached scrollback, with the chars of each
     /// already written. The screen writes them out before anything newer so the conversation
     /// that was on display is not lost from the terminal.
@@ -78,6 +108,43 @@ fn summarize(tool: &str, args: &Value) -> String {
         .find_map(|key| args.get(*key).and_then(Value::as_str));
     let text = named.map_or_else(|| args.to_string(), str::to_string);
     first_line(&text)
+}
+
+/// The call whole, where `summarize` keeps its first line.
+fn call_text(tool: &str, args: &Value) -> String {
+    if tool == "todo_write" && args.get("todos").is_some() {
+        return summarize(tool, args);
+    }
+    let named = SUMMARY_KEYS
+        .iter()
+        .find_map(|key| args.get(*key).and_then(Value::as_str));
+    let text = named.map_or_else(|| args.to_string(), str::to_string);
+    display_text(text.trim())
+}
+
+/// The result of a call as the card keeps it: capped, then made safe to paint. Calls whose
+/// result is not worth a block get none.
+fn keep_output(tool: &str, text: &str) -> Option<ToolOutput> {
+    if matches!(tool, "todo_write" | "read") || text.trim().is_empty() {
+        return None;
+    }
+    let (kept, clipped) = if text.len() <= OUTPUT_KEEP_BYTES {
+        (text.to_string(), false)
+    } else {
+        let mut head = OUTPUT_KEEP_BYTES / 2;
+        while !text.is_char_boundary(head) {
+            head -= 1;
+        }
+        let mut tail = text.len() - OUTPUT_KEEP_BYTES / 2;
+        while !text.is_char_boundary(tail) {
+            tail += 1;
+        }
+        (format!("{}\n{}", &text[..head], &text[tail..]), true)
+    };
+    Some(ToolOutput {
+        text: display_text(kept.trim_end_matches('\n')),
+        clipped,
+    })
 }
 
 fn first_line(text: &str) -> String {
@@ -211,12 +278,29 @@ impl Transcript {
             }
             SessionEvent::ToolCall { id, tool, args } => {
                 self.finish_streaming();
+                self.calls += 1;
                 self.entries.push(Entry::Tool {
                     id,
                     summary: summarize(&tool, &args),
+                    call: call_text(&tool, &args),
                     tool,
                     status: ToolStatus::Pending,
+                    ordinal: self.calls,
+                    output: None,
+                    diff: None,
                 });
+            }
+            SessionEvent::ToolPreview { id, preview } => {
+                // By id only: a subagent's call on the same feed must not take it.
+                let at = self
+                    .entries
+                    .iter()
+                    .rposition(|e| matches!(e, Entry::Tool { id: i, .. } if *i == id));
+                if let Some(i) = at
+                    && let Entry::Tool { diff, .. } = &mut self.entries[i]
+                {
+                    *diff = Some(*preview);
+                }
             }
             SessionEvent::Decision(record) => {
                 if record.decision == Decision::Deny {
@@ -238,6 +322,12 @@ impl Transcript {
                 text,
             } => {
                 let at = self.find_tool(&id, &tool);
+                if let Some(i) = at
+                    && let Entry::Tool { output, status, .. } = &mut self.entries[i]
+                    && !matches!(status, ToolStatus::Denied(_))
+                {
+                    *output = keep_output(&tool, &text);
+                }
                 let new = if success {
                     ToolStatus::Done
                 } else {
@@ -272,6 +362,26 @@ impl Transcript {
         for i in pending {
             self.settle(i, ToolStatus::Interrupted);
         }
+    }
+
+    /// Prints call `ordinal` (the latest by default) in full as new lines. The last entry with
+    /// that ordinal wins, so a settled follow-up is chosen over its stale pending row.
+    pub fn expand(&mut self, ordinal: Option<usize>) -> Result<(), String> {
+        let at = self.entries.iter().rposition(
+            |e| matches!(e, Entry::Tool { ordinal: o, .. } if ordinal.is_none_or(|n| n == *o)),
+        );
+        let Some(i) = at else {
+            return Err(match ordinal {
+                Some(n) => format!(
+                    "there is no tool call number {n} to expand; numbers count from the start of the session and the calls /clear removed are gone"
+                ),
+                None => "there is no tool call to expand".to_string(),
+            });
+        };
+        let call = self.entries[i].clone();
+        self.finish_streaming();
+        self.entries.push(Entry::Expanded(Box::new(call)));
+        Ok(())
     }
 
     /// The `n`th latest non-empty assistant entry (1 is the latest). A reply split by a tool
@@ -580,43 +690,10 @@ fn entry_lines(
             let rest: String = text.chars().skip(skip).collect();
             prefixed(&rest, width, "", Style::default(), out);
         }
-        Entry::Tool {
-            tool,
-            summary,
-            status,
-            ..
-        } => {
-            let (mark, style, detail) = match status {
-                ToolStatus::Pending => ("…", dim, String::new()),
-                ToolStatus::Done => ("✓", Style::default().fg(theme.success), String::new()),
-                ToolStatus::Failed(why) => (
-                    "✗",
-                    Style::default().fg(theme.error),
-                    format!(" failed: {why}"),
-                ),
-                ToolStatus::Denied(why) => (
-                    "✗",
-                    Style::default().fg(theme.error),
-                    format!(" denied: {why}"),
-                ),
-                ToolStatus::Interrupted => ("−", dim, " interrupted".to_string()),
-            };
-            let line = truncate(&format!("• {tool} {summary}"), width.saturating_sub(2));
-            if let ToolStatus::Denied(why) = status {
-                // A denial is the part the human has to read, so it gets its own wrapped lines.
-                out.push(Line::from(vec![
-                    Span::styled(line, dim),
-                    Span::styled(format!(" {mark}"), style),
-                ]));
-                prefixed(&format!("denied: {why}"), width, "    ", style, out);
-                return;
-            }
-            let detail = truncate(&detail, width.saturating_sub(line.chars().count() + 3));
-            out.push(Line::from(vec![
-                Span::styled(line, dim),
-                Span::styled(format!(" {mark}"), style),
-                Span::styled(detail, style),
-            ]));
+        Entry::Tool { .. } => tool_lines(entry, width, false, theme, glyphs, out),
+        Entry::Expanded(call) => {
+            tool_lines(call, width, true, theme, glyphs, out);
+            out.push(Line::default());
         }
         Entry::Notice {
             severity: Severity::Info,
@@ -638,6 +715,172 @@ fn entry_lines(
             }
             out.push(Line::default());
         }
+    }
+}
+
+/// The last `rows` lines of `text` and how many came before them.
+pub(crate) fn tail_lines(text: &str, rows: usize) -> (Vec<&str>, usize) {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let skipped = lines.len().saturating_sub(rows);
+    (lines[skipped..].to_vec(), skipped)
+}
+
+/// A tool call: its outcome row and, once it has settled, the whole call, its diff and the end of
+/// its output. `full` is the `/expand` form, which folds nothing.
+fn tool_lines(
+    entry: &Entry,
+    width: usize,
+    full: bool,
+    theme: &Theme,
+    glyphs: Glyphs,
+    out: &mut Vec<Line<'static>>,
+) {
+    let Entry::Tool {
+        tool,
+        summary,
+        status,
+        ordinal,
+        call,
+        output,
+        diff,
+        ..
+    } = entry
+    else {
+        return;
+    };
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let settled = matches!(status, ToolStatus::Done | ToolStatus::Failed(_));
+    let card = full || settled;
+    let (mark, style, detail) = match status {
+        ToolStatus::Pending => ("…", dim, String::new()),
+        ToolStatus::Done => ("✓", Style::default().fg(theme.success), String::new()),
+        ToolStatus::Failed(why) => (
+            "✗",
+            Style::default().fg(theme.error),
+            format!(" failed: {why}"),
+        ),
+        ToolStatus::Denied(why) => (
+            "✗",
+            Style::default().fg(theme.error),
+            format!(" denied: {why}"),
+        ),
+        ToolStatus::Interrupted => ("−", dim, " interrupted".to_string()),
+    };
+    let wide = card
+        && (call.contains('\n')
+            || call.chars().count() + tool.chars().count() + 3 > width.saturating_sub(2));
+    let line = truncate(
+        &if wide {
+            format!("• {tool}")
+        } else {
+            format!("• {tool} {summary}")
+        },
+        width.saturating_sub(2),
+    );
+    let mut cut = false;
+    let mut call_rows = |out: &mut Vec<Line<'static>>| {
+        if !wide {
+            return;
+        }
+        let rows: Vec<String> = call
+            .split('\n')
+            .flat_map(|l| wrap(l, width.saturating_sub(4).max(1)))
+            .collect();
+        let shown = if full {
+            rows.len()
+        } else {
+            rows.len().min(CALL_ROWS)
+        };
+        for row in &rows[..shown] {
+            out.push(Line::raw(format!("    {row}")));
+        }
+        if shown < rows.len() {
+            cut = true;
+            out.push(Line::styled(
+                format!("    … (+{} rows)", rows.len() - shown),
+                dim,
+            ));
+        }
+    };
+    if let ToolStatus::Denied(why) = status {
+        // A denial is the part the human has to read, so it gets its own wrapped lines.
+        out.push(Line::from(vec![
+            Span::styled(line, dim),
+            Span::styled(format!(" {mark}"), style),
+        ]));
+        call_rows(out);
+        prefixed(&format!("denied: {why}"), width, "    ", style, out);
+        return;
+    }
+    let detail = truncate(&detail, width.saturating_sub(line.chars().count() + 3));
+    out.push(Line::from(vec![
+        Span::styled(line, dim),
+        Span::styled(format!(" {mark}"), style),
+        Span::styled(detail, style),
+    ]));
+    call_rows(out);
+    if !card {
+        return;
+    }
+    // A diff says more than the tool's one-line confirmation, which a failure still needs.
+    let show_diff = diff
+        .as_ref()
+        .filter(|_| !matches!(status, ToolStatus::Failed(_)));
+    if let Some(preview) = show_diff {
+        let mut rows = Vec::new();
+        let limit = if full { None } else { Some(DIFF_ROWS) };
+        cut |= diff_rows(
+            preview,
+            width.saturating_sub(2).max(1),
+            theme,
+            limit,
+            "",
+            &mut rows,
+        );
+        for mut row in rows {
+            row.spans.insert(0, Span::raw("  "));
+            out.push(row);
+        }
+    }
+    if let Some(output) = output.as_ref().filter(|_| show_diff.is_none()) {
+        let gutter = glyphs.gutter;
+        let body = width.saturating_sub(2 + gutter.chars().count()).max(1);
+        let rows: Vec<String> = output
+            .text
+            .split('\n')
+            .flat_map(|l| wrap(l, body))
+            .collect();
+        let skipped = if full {
+            0
+        } else {
+            rows.len().saturating_sub(OUTPUT_ROWS)
+        };
+        let mut push = |text: &str| {
+            out.push(Line::from(vec![
+                Span::styled(format!("  {gutter}"), dim),
+                Span::styled(text.to_string(), dim),
+            ]));
+        };
+        if skipped > 0 {
+            cut = true;
+            push(&format!("… {skipped} earlier rows"));
+        }
+        for row in &rows[skipped..] {
+            push(row);
+        }
+        if output.clipped {
+            if full {
+                push(&format!(
+                    "… clipped: only the first and last {} KiB of the output are kept",
+                    OUTPUT_KEEP_BYTES / 2048
+                ));
+            } else {
+                cut = true;
+            }
+        }
+    }
+    if cut {
+        out.push(Line::styled(format!("  expand: /expand {ordinal}"), dim));
     }
 }
 
@@ -975,7 +1218,8 @@ mod tests {
         assert_eq!(span_fg(&lines[0], "> "), Some(Color::Cyan));
         assert_eq!(span_fg(&lines[2], "✓"), Some(Color::Green));
         assert_eq!(span_fg(&lines[3], "✗"), Some(Color::Red));
-        assert_eq!(span_fg(&lines[4], "!"), Some(Color::Red));
+        assert_eq!(span_fg(&lines[4], "boom"), None);
+        assert_eq!(span_fg(&lines[5], "!"), Some(Color::Red));
     }
 
     #[test]
@@ -1211,5 +1455,353 @@ mod tests {
             vec!["• shell a …", "abcdefghijkl", "mnopqrstuvwx"]
         );
         assert!(t.live_lines(12, &theme()).is_empty());
+    }
+
+    fn call_with(t: &mut Transcript, id: &str, tool: &str, args: Value) {
+        t.on_event(SessionEvent::ToolCall {
+            id: id.into(),
+            tool: tool.into(),
+            args,
+        });
+    }
+
+    fn result_with(t: &mut Transcript, id: &str, tool: &str, success: bool, body: &str) {
+        t.on_event(SessionEvent::ToolResult {
+            id: id.into(),
+            tool: tool.into(),
+            success,
+            text: body.into(),
+        });
+    }
+
+    fn numbered(n: usize) -> String {
+        (1..=n).map(|i| format!("row {i}\n")).collect()
+    }
+
+    fn preview(path: &str, lines: usize, hidden: usize) -> Box<DiffPreview> {
+        use fontaine_core::preview::{DiffKind, DiffLine};
+        Box::new(DiffPreview {
+            path: path.into(),
+            added: lines,
+            removed: 0,
+            lines: (1..=lines)
+                .map(|i| DiffLine {
+                    kind: DiffKind::Added,
+                    old_no: None,
+                    new_no: Some(i),
+                    text: format!("new {i}"),
+                })
+                .collect(),
+            hidden,
+        })
+    }
+
+    #[test]
+    fn a_short_one_line_call_without_output_renders_as_it_always_did() {
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "ls"}));
+        result_with(&mut t, "a", "shell", true, "");
+        assert_eq!(text(&t.lines(40, &theme())), vec!["• shell ls ✓"]);
+    }
+
+    #[test]
+    fn a_long_command_folds_to_three_rows_and_counts_the_rest() {
+        let mut t = Transcript::default();
+        let command: Vec<String> = (1..=12).map(|i| format!("echo {i}")).collect();
+        call_with(
+            &mut t,
+            "a",
+            "shell",
+            serde_json::json!({"command": command.join("\n")}),
+        );
+        result_with(&mut t, "a", "shell", true, "");
+        assert_eq!(
+            text(&t.lines(40, &theme())),
+            vec![
+                "• shell ✓",
+                "    echo 1",
+                "    echo 2",
+                "    echo 3",
+                "    … (+9 rows)",
+                "  expand: /expand 1",
+            ]
+        );
+    }
+
+    #[test]
+    fn output_shows_its_last_ten_rows_behind_a_gutter() {
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+        result_with(&mut t, "a", "shell", true, &numbered(30));
+        let rows = text(&t.lines(40, &theme()));
+        assert_eq!(rows[0], "• shell go ✓");
+        assert_eq!(rows[1], "  │ … 20 earlier rows");
+        assert_eq!(rows[2], "  │ row 21");
+        assert_eq!(rows[11], "  │ row 30");
+        assert_eq!(rows[12], "  expand: /expand 1");
+        assert_eq!(rows.len(), 13);
+    }
+
+    #[test]
+    fn output_that_fits_has_no_expand_footer() {
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+        result_with(&mut t, "a", "shell", true, "one\ntwo\n");
+        assert_eq!(
+            text(&t.lines(40, &theme())),
+            vec!["• shell go ✓", "  │ one", "  │ two"]
+        );
+    }
+
+    #[test]
+    fn a_failed_call_keeps_its_suffix_and_its_output() {
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+        result_with(&mut t, "a", "shell", false, "boom\ndetail");
+        assert_eq!(
+            text(&t.lines(40, &theme())),
+            vec!["• shell go ✗ failed: boom", "  │ boom", "  │ detail"]
+        );
+    }
+
+    #[test]
+    fn read_and_task_list_calls_get_no_output_block() {
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "read", serde_json::json!({"path": "f"}));
+        result_with(&mut t, "a", "read", true, "file body");
+        call_with(&mut t, "b", "todo_write", serde_json::json!({"todos": []}));
+        result_with(&mut t, "b", "todo_write", true, "ok");
+        assert_eq!(
+            text(&t.lines(40, &theme())),
+            vec!["• read f ✓", "• todo_write 0 tasks, 0 done ✓"]
+        );
+    }
+
+    #[test]
+    fn output_is_made_safe_before_it_is_kept() {
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+        let key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";
+        result_with(
+            &mut t,
+            "a",
+            "shell",
+            true,
+            &format!("\x1b[31mred\x07\n\tx\nkey {key}\n50%\r100%"),
+        );
+        let shown = text(&t.lines(60, &theme())).join("\n");
+        assert!(
+            !shown.contains('\x1b') && !shown.contains('\x07'),
+            "{shown:?}"
+        );
+        assert!(
+            !shown.contains("abcdefghijklmnopqrstuvwxyz0123456789"),
+            "{shown}"
+        );
+        assert!(shown.contains("│     x"), "{shown}");
+        assert!(
+            shown.contains("│ 100%") && !shown.contains("50%"),
+            "{shown}"
+        );
+        let Entry::Tool { call, .. } = &t.entries[0] else {
+            panic!("a tool entry");
+        };
+        assert_eq!(call, "go");
+    }
+
+    #[test]
+    fn a_call_is_made_safe_too() {
+        let mut t = Transcript::default();
+        call_with(
+            &mut t,
+            "a",
+            "shell",
+            serde_json::json!({"command": "echo \x1b[2J\nok"}),
+        );
+        let Entry::Tool { call, .. } = &t.entries[0] else {
+            panic!("a tool entry");
+        };
+        assert_eq!(call, "echo  [2J\nok");
+    }
+
+    #[test]
+    fn output_over_the_cap_is_clipped_with_the_flag() {
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+        let body = format!("head\n{}tail\n", "x\n".repeat(OUTPUT_KEEP_BYTES));
+        result_with(&mut t, "a", "shell", true, &body);
+        let Entry::Tool {
+            output: Some(output),
+            ..
+        } = &t.entries[0]
+        else {
+            panic!("a kept output");
+        };
+        assert!(output.clipped);
+        assert!(output.text.len() <= OUTPUT_KEEP_BYTES + 1);
+        assert!(output.text.starts_with("head") && output.text.ends_with("tail"));
+        let shown = text(&t.lines(40, &theme()));
+        assert_eq!(shown.last().unwrap(), "  expand: /expand 1");
+    }
+
+    #[test]
+    fn a_card_is_the_same_rows_committed_budgeted_or_live() {
+        let build = || {
+            let mut t = Transcript::default();
+            call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+            result_with(&mut t, "a", "shell", true, &numbered(15));
+            t
+        };
+        let expected = text(&build().lines(40, &theme()));
+        assert_eq!(expected.len(), 13);
+        assert_eq!(text(&build().commit(40, &theme())), expected);
+        assert_eq!(text(&build().commit_within(40, &theme(), 1)), expected);
+        assert_eq!(text(&build().live_lines(40, &theme())), expected);
+    }
+
+    #[test]
+    fn a_card_released_pending_prints_once_with_its_output_and_diff() {
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "edit", serde_json::json!({"path": "f.rs"}));
+        t.notice("after");
+        assert_eq!(
+            text(&t.commit_within(40, &theme(), 1)),
+            vec!["• edit f.rs …"]
+        );
+        t.on_event(SessionEvent::ToolPreview {
+            id: "a".into(),
+            preview: preview("f.rs", 2, 0),
+        });
+        result_with(&mut t, "a", "edit", true, "edited");
+        assert_eq!(
+            text(&t.commit(40, &theme())),
+            vec![
+                "· after",
+                "• edit f.rs ✓",
+                "  f.rs  +2 -0",
+                "  1 +new 1",
+                "  2 +new 2",
+            ]
+        );
+        assert!(t.live_lines(40, &theme()).is_empty());
+    }
+
+    #[test]
+    fn a_long_diff_folds_at_twenty_lines() {
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "write", serde_json::json!({"path": "f.rs"}));
+        t.on_event(SessionEvent::ToolPreview {
+            id: "a".into(),
+            preview: preview("f.rs", 25, 3),
+        });
+        result_with(&mut t, "a", "write", true, "wrote");
+        let rows = text(&t.lines(40, &theme()));
+        assert_eq!(rows.len(), 1 + 1 + 20 + 1 + 1);
+        assert_eq!(rows[rows.len() - 2], "  … 8 more changed lines");
+        assert_eq!(rows[rows.len() - 1], "  expand: /expand 1");
+    }
+
+    #[test]
+    fn a_preview_attaches_by_id_only() {
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "edit", serde_json::json!({"path": "x"}));
+        call_with(&mut t, "b", "edit", serde_json::json!({"path": "y"}));
+        t.on_event(SessionEvent::ToolPreview {
+            id: "a".into(),
+            preview: preview("x", 1, 0),
+        });
+        t.on_event(SessionEvent::ToolPreview {
+            id: "nope".into(),
+            preview: preview("z", 1, 0),
+        });
+        let diffs: Vec<bool> = t
+            .entries
+            .iter()
+            .map(|e| matches!(e, Entry::Tool { diff: Some(_), .. }))
+            .collect();
+        assert_eq!(diffs, [true, false]);
+    }
+
+    #[test]
+    fn expand_prints_the_whole_call_output_and_diff_and_defaults_to_the_latest() {
+        let mut t = Transcript::default();
+        call_with(
+            &mut t,
+            "a",
+            "shell",
+            serde_json::json!({"command": "first"}),
+        );
+        result_with(&mut t, "a", "shell", true, "one");
+        let command: Vec<String> = (1..=5).map(|i| format!("echo {i}")).collect();
+        call_with(
+            &mut t,
+            "b",
+            "shell",
+            serde_json::json!({"command": command.join("\n")}),
+        );
+        result_with(&mut t, "b", "shell", true, &numbered(14));
+        t.commit(40, &theme());
+        t.expand(None).unwrap();
+        let rows = text(&t.commit(40, &theme()));
+        assert_eq!(rows[0], "• shell ✓");
+        assert_eq!(
+            &rows[1..6],
+            [
+                "    echo 1",
+                "    echo 2",
+                "    echo 3",
+                "    echo 4",
+                "    echo 5"
+            ]
+        );
+        assert_eq!(rows[6], "  │ row 1");
+        assert_eq!(rows[19], "  │ row 14");
+        assert_eq!(rows[20], "");
+        assert_eq!(rows.len(), 21);
+        t.expand(Some(1)).unwrap();
+        assert_eq!(
+            text(&t.commit(40, &theme())),
+            vec!["• shell first ✓", "  │ one", ""]
+        );
+        assert!(t.expand(Some(9)).is_err());
+    }
+
+    #[test]
+    fn expand_prefers_the_settled_follow_up_and_an_ordinal_outlives_clear() {
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+        t.notice("after");
+        t.commit_within(40, &theme(), 1);
+        result_with(&mut t, "a", "shell", true, "out");
+        t.expand(Some(1)).unwrap();
+        let Some(Entry::Expanded(inner)) = t.entries.last() else {
+            panic!("an expanded entry");
+        };
+        assert!(matches!(
+            &**inner,
+            Entry::Tool {
+                status: ToolStatus::Done,
+                output: Some(_),
+                ..
+            }
+        ));
+        t.clear();
+        assert!(t.expand(Some(1)).is_err());
+        call_with(&mut t, "b", "shell", serde_json::json!({"command": "go"}));
+        let Entry::Tool { ordinal, .. } = &t.entries[0] else {
+            panic!("a tool entry");
+        };
+        assert_eq!(*ordinal, 2);
+    }
+
+    #[test]
+    fn ascii_glyphs_give_the_gutter_an_ascii_form() {
+        let mut t = Transcript {
+            glyphs: Glyphs::ASCII,
+            ..Transcript::default()
+        };
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+        result_with(&mut t, "a", "shell", true, "out");
+        assert_eq!(text(&t.lines(40, &theme()))[1], "  | out");
     }
 }

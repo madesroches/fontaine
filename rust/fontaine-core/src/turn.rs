@@ -15,7 +15,8 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::audit::DecisionRecord;
-use crate::gate::{DecisionFeed, SessionState, spend_of};
+use crate::gate::{DecisionFeed, Published, SessionState, spend_of};
+use crate::preview::DiffPreview;
 
 /// Without a limit from the caller, a turn is still bounded so a looping model cannot run
 /// forever.
@@ -39,6 +40,12 @@ pub enum SessionEvent {
         tool: String,
         success: bool,
         text: String,
+    },
+    /// The change an allowed `edit` or `write` call is about to make, for call `id`. Display
+    /// only, and always ahead of that call's result.
+    ToolPreview {
+        id: String,
+        preview: Box<DiffPreview>,
     },
     /// One model call finished. `calls_tool` says its turn asked for tools, which have not run
     /// yet: stopping now spares them.
@@ -155,9 +162,9 @@ fn error_class(error: &PromptError) -> Option<&'static str> {
     }
 }
 
-async fn next_decision(feed: &mut Option<&mut DecisionFeed>) -> Option<DecisionRecord> {
+async fn next_fed(feed: &mut Option<&mut DecisionFeed>) -> Option<Published> {
     match feed {
-        Some(feed) => feed.next().await,
+        Some(feed) => feed.next_published().await,
         None => std::future::pending().await,
     }
 }
@@ -193,8 +200,15 @@ pub async fn drive(
     'run: loop {
         let item = tokio::select! {
             biased;
-            Some(decision) = next_decision(&mut feed) => {
-                if on_event(SessionEvent::Decision(Box::new(decision))) == Flow::Stop {
+            Some(fed) = next_fed(&mut feed) => {
+                let event = match fed {
+                    Published::Decision(decision) => SessionEvent::Decision(decision),
+                    Published::Preview(id, preview) => SessionEvent::ToolPreview {
+                        id,
+                        preview: Box::new(preview),
+                    },
+                };
+                if on_event(event) == Flow::Stop {
                     stopped = true;
                     break 'run;
                 }
@@ -207,6 +221,16 @@ pub async fn drive(
         if let Some(feed) = feed.as_deref_mut() {
             while let Some(decision) = feed.try_next() {
                 if on_event(SessionEvent::Decision(Box::new(decision))) == Flow::Stop {
+                    stopped = true;
+                    break 'run;
+                }
+            }
+            while let Some((id, preview)) = feed.try_next_preview() {
+                let event = SessionEvent::ToolPreview {
+                    id,
+                    preview: Box::new(preview),
+                };
+                if on_event(event) == Flow::Stop {
                     stopped = true;
                     break 'run;
                 }
@@ -277,6 +301,12 @@ pub async fn drive(
     if let Some(feed) = feed {
         while let Some(decision) = feed.try_next() {
             let _ = on_event(SessionEvent::Decision(Box::new(decision)));
+        }
+        while let Some((id, preview)) = feed.try_next_preview() {
+            let _ = on_event(SessionEvent::ToolPreview {
+                id,
+                preview: Box::new(preview),
+            });
         }
     }
 

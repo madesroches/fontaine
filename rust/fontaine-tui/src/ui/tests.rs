@@ -172,3 +172,40 @@ fn a_session_whose_ledger_cannot_be_read_is_refused_in_the_live_session() {
         .collect();
     assert!(shown.contains("/resume:"), "{shown}");
 }
+
+#[test]
+fn expand_prints_a_call_and_reports_an_unknown_one() {
+    let (_tx, rx) = unbounded_channel();
+    let mut ui = ui(rx);
+    ui.expand("");
+    ui.app.on_event(SessionEvent::ToolCall {
+        id: "c1".into(),
+        tool: "shell".into(),
+        args: serde_json::json!({ "command": "ls" }),
+    });
+    ui.app.on_event(SessionEvent::ToolResult {
+        id: "c1".into(),
+        tool: "shell".into(),
+        success: true,
+        text: "a\nb".into(),
+    });
+    ui.expand("1");
+    ui.expand("7");
+    ui.expand("x");
+    let shown: Vec<String> = ui
+        .app
+        .transcript
+        .lines(80, &crate::theme::Theme::default())
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+        .collect();
+    let all = shown.join("\n");
+    assert!(all.contains("there is no tool call to expand"), "{all}");
+    assert!(all.contains("there is no tool call number 7"), "{all}");
+    assert!(all.contains("/expand takes a call number"), "{all}");
+    assert_eq!(
+        shown.iter().filter(|l| l.as_str() == "  │ a").count(),
+        2,
+        "{all}"
+    );
+}

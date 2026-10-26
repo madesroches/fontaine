@@ -377,6 +377,7 @@ async fn run_child(
             }
             SessionEvent::Decision(_)
             | SessionEvent::AssistantDelta(_)
+            | SessionEvent::ToolPreview { .. }
             | SessionEvent::Usage { .. } => {}
         }
         // A spent budget ends the run at the next event: the guardian's calls for this child

@@ -158,8 +158,8 @@ What is printed:
 |---|---|
 | `you: ...` | A message you sent. |
 | `assistant: ...` | The model's reply, printed a line at a time as it streams. The label appears once. |
-| `tool: <tool> <summary> — done` | A tool call that finished; `— interrupted` for one that did not. |
-| `tool error: <tool> <summary> — failed: ...` | A tool call that failed, or `— denied: ...` for one that was refused. |
+| `tool: <tool> <summary> — done` | A tool call that finished; `— interrupted` for one that did not. Its last ten output lines follow as plain lines, after `… N earlier lines` and with `expand: /expand N` when some were cut. |
+| `tool error: <tool> <summary> — failed: ...` | A tool call that failed, or `— denied: ...` for one that was refused. A failed call's output follows like a finished one's. |
 | `error: ...`, `notice: ...` and `warning: ...` | Errors, notices and warnings. A warning's advice follows on its own `hint: ...` line. |
 | `shell: <command>` | A `!` command you ran, followed by its output. |
 | `Permission Required:` | An approval prompt opened. Its question, the call (for an `edit` or `write`, its diff as plain text: line numbers, then `+` or `-` and the line), the choices and the rule the lasting answers would add follow. |

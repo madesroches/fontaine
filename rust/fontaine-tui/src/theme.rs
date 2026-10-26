@@ -9,16 +9,20 @@ use ratatui::style::Color;
 pub struct Glyphs {
     pub info: &'static str,
     pub warning: &'static str,
+    /// Starts each row of a tool call's output.
+    pub gutter: &'static str,
 }
 
 impl Glyphs {
     pub const UNICODE: Glyphs = Glyphs {
         info: "· ",
         warning: "⚠ ",
+        gutter: "│ ",
     };
     pub const ASCII: Glyphs = Glyphs {
         info: "- ",
         warning: "* ",
+        gutter: "| ",
     };
 
     /// ASCII when `FONTAINE_ASCII_GLYPHS` is set to anything but empty or `0`.

@@ -1383,11 +1383,15 @@ mod tests {
     }
 
     fn finished(app: &mut App, n: usize) {
+        finished_with(app, n, "done");
+    }
+
+    fn finished_with(app: &mut App, n: usize, text: &str) {
         app.on_event(SessionEvent::ToolResult {
             id: format!("t{n}"),
             tool: "shell".into(),
             success: true,
-            text: "done".into(),
+            text: text.into(),
         });
     }
 
@@ -1434,8 +1438,9 @@ mod tests {
                 started(&mut app, n);
                 harness.render(&mut app, &format!("start {n}"));
             }
+            // One row per call, so the live area's rows are the ones the stale text is painted on.
             for n in 0..usize::from(height) {
-                finished(&mut app, n);
+                finished_with(&mut app, n, "");
                 harness.render(&mut app, &format!("finish {n}"));
             }
             for row in 0..height - 4 {

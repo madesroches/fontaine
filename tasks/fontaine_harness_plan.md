@@ -566,6 +566,8 @@ scorecard run (see `## Remaining work`).
 - 2026-10-26 AFK: `span_bridge.rs` reports model calls under `fontaine.goal_evaluation` as `query_source = "goal"` (the span carries `model.priced`), documented in `docs/telemetry.md`; otherwise evaluator spend is misreported as `main`, unlike the guardian's and scanner's.
 - 2026-10-26 AFK: "made a tool call" is a per-turn `made_call` flag set in `after_turn` from the change in root-agent ledger actions since the previous `after_turn`, and counts actions only (no `agent` added to `DenialEntry`); a turn whose calls were all denied counts as idle, so the no-progress cap can only pause sooner.
 - 2026-10-26: The approval prompt for `edit` and `write` shows a diff computed from the file at prompt time from rig-tools' `FileChange` hunks (display-only, advisory, capped at 200 rows and 1 MiB, absent when unreadable or the edit would fail); shell and guardian explanations already reach the prompt, and MCP tools get no preview (#45).
+- 2026-10-26: No key is rebound for tool cards; Ctrl-O stays the task list, because a transcript view needs a key and an alternate screen. `/expand [n]` re-prints a call instead (#222).
+- 2026-10-26: `/expand n` takes the last entry with ordinal `n`, and an unknown call after `/clear` is an error, because no store survives `/clear` and that is the least new state (#222).
 
 ## Open Questions
 
