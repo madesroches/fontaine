@@ -68,9 +68,10 @@ the day of the clone), so every citation in the doc is `path@dcafcef6`. The repo
 **Fontaine's side** (the comparison column): edit/code-intelligence plans are tracked in #27;
 prior study docs are `research/research-deepseek-harness.md` and
 `research/research-claude-code-parity.md`; the permission floor and guardian invariants are in
-`AGENTS.md`. Session format, compaction, task list, instruction hierarchy and subagents each
-have a completed plan under `tasks/completed/`; the doc reads the relevant ones before it
-writes a "Fontaine today" line. Fontaine issues the findings may feed are looked up with
+`AGENTS.md`. The doc reads `tasks/design/sessions.md`, the completed plans that exist
+(`instruction_hierarchy_plan.md`, `task_list_tool_plan.md`, `session_ux_plan.md`,
+`context_commands_plan.md`, `agent_runtime_split_plan.md`) and the relevant phase plans under
+`tasks/completed/phases/` before it writes a "Fontaine today" line. Fontaine issues the findings may feed are looked up with
 `gh issue list` at write time, not guessed here.
 
 **Environment constraints found on this machine:** no `bun` or `node` on the host; Docker and
@@ -176,8 +177,9 @@ Fontaine's rig provider path by checking `rust/fontaine-core` provider code.
 6. **Write the doc**: summary, both lists, experiment log, Not tried.
 7. **Follow-ups.** File and comment on issues; link them from the lists; add `## Decisions`
    lines only where the rule above applies.
-8. **Index.** Add the doc to the research list in `tasks/fontaine_harness_plan.md` (~line 53-60)
-   and fix the count there and in the workspace tree; add a short "oh-my-pi" subsection to
+8. **Index.** Add the doc to the research list in `tasks/fontaine_harness_plan.md` (~line 53-63),
+   also adding the missing `research-anthropic-models.md`, and set the count to eleven (the
+   ten existing docs plus this one) there and in the workspace tree (~line 229); add a short "oh-my-pi" subsection to
    `tasks/design/research-findings.md` pointing to the deep-dive; add a `CHANGELOG.md` entry.
 
 ## Files to Modify
