@@ -9,7 +9,8 @@ Claude Code's `WebSearch` tool searches the web and returns titles, URLs and sni
 account's provider supports it; else a client-side `websearch` tool that calls a configured backend (Tavily, or
 SearXNG, optionally launched on demand) over Fontaine's own HTTP client; else no `websearch` capability.
 The first release has native search for `anthropic` accounts only; every other account kind uses the
-client-side backend. The client-side tool keeps each search inside the permission pipeline; native search
+client-side backend. The fallback is decided up front by account kind, `base_url` and `[websearch] native`,
+not at runtime. The client-side tool keeps each search inside the permission pipeline; native search
 cannot (see Permissions and security).
 
 ## Current State
@@ -48,9 +49,13 @@ rig-core 0.45.0 already round-trips `server_tool_use` and
 `web_search_tool_result` blocks through history, resumes a `pause_turn` and maps `web_search_result_location`
 citations (`providers/anthropic/{wire,streaming,extension}.rs`), so no custom history handling is needed.
 
-- Attached where the builder is finished (`finish_builder` in `rust/fontaine-core/src/agent/build.rs`),
-  decided per request from the current mode and rules, so a mode switch or rule change takes effect on the
-  next turn.
+- Attached where the builder is finished (`finish_builder` in `rust/fontaine-core/src/agent/build.rs`).
+  That runs only when the agent is built, and `SessionState::set_mode` and session rules/grants do not
+  rebuild, so `AgentRuntime` records the gate result its agent was built with and a new
+  `AgentRuntime::refresh_native_search()` recomputes it from the live mode and rules and calls `rebuild()` when it differs. Both
+  turn drivers (`fontaine/src/headless.rs`, `fontaine-tui/src/ui/turn.rs`) call it before `run_turn`, so a mode
+  switch or rule change takes effect on the next turn and never leaves native search enabled against a `deny`/`ask`
+  rule. (rig-agent's per-run patch API is not used: it is not reachable from `run_turn`'s prebuilt runner.)
 - Only for accounts whose `base_url` is the Anthropic API (Databricks and other hosts are unverified), unless
   `[websearch] native = "on"` opts in. `finish_builder`'s `Parts` carries only `config` and `models`, and
   `ModelHandle` has no account or `base_url`, so a helper resolves the main model's account from
@@ -61,10 +66,10 @@ citations (`providers/anthropic/{wire,streaming,extension}.rs`), so no custom hi
   non-allowed `websearch` call would ask or be denied) it is offered only when an `allow` rule for
   `websearch` exists. When native is not offered the client-side tool is registered if a backend is
   configured and is then subject to the same rules, so a `deny` disables both.
-- If the provider rejects the request because of the native tool (an HTTP 400 naming it, as Azure does for
-  other versions), Fontaine drops the tool, retries the request once without it, and keeps native off for the
-  rest of the session, so the client-side tool takes over when a backend is configured. Any other error is not
-  retried.
+- There is no runtime retry. If the provider rejects the request because of the native tool (an HTTP 400
+  whose body, read via `PromptError::provider_response_body()`, names `web_search`), the `TurnOutcome::Failed`
+  text built in `run_turn` (`rust/fontaine-core/src/turn.rs`) gains a line telling the user to set
+  `[websearch] native = "off"`. Any other error text is unchanged.
 - Native searches are not visible to Fontaine's tool events, audit or usage record: rig's generic `Usage` has
   no server-tool field and the turn loop drops non-text, non-tool-call content. They appear only in the
   model's text and citations.
@@ -214,7 +219,9 @@ configured the tool is absent, so an allow entry is inert and a disallow entry s
    `rust/fontaine-tools/tests/choke_point.rs` (the tool is unregistered there unless configured, so unaffected
    unless a configured case is added).
 7. `fontaine-core`: in `agent/build.rs`, merge the Anthropic `web_search_20250305` tool entry into the main
-   builder's `additional_params` when the native gate allows (including the account/`base_url` helper).
+   builder's `additional_params` when the native gate allows (including the account/`base_url` helper); in
+   `agent.rs` add the recorded gate result and `refresh_native_search()` (rebuild on change), called from both
+   turn drivers before `run_turn`; in `turn.rs` add the `native = "off"` hint to the 400 failure text.
 8. `fontaine-core`: add the shared launcher `Arc` as a field of `AgentRuntime` (`agent.rs`), created once
    in `AgentRuntime::new`, carried through a new `Parts` field (`agent/build.rs`) into `register_tools`, and
    cloned into every rebuild's `RegistryParams`.
@@ -224,7 +231,8 @@ configured the tool is absent, so an allow entry is inert and a disallow entry s
 
 - `rust/fontaine-tools/src/websearch.rs` (new), `Cargo.toml`, `lib.rs`, `descriptor.rs`, `builtins.rs`
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`, `credentials.rs`, `tools.rs`,
-  `agent/build.rs` (`finish_builder`: `additional_params` tool entry), `permissions.rs`, `permission_rules.rs`,
+  `agent/build.rs` (`finish_builder`: `additional_params` tool entry), `agent.rs` (`refresh_native_search`), `turn.rs` (400 hint),
+  `rust/fontaine/src/headless.rs`, `rust/fontaine-tui/src/ui/turn.rs` (call it), `permissions.rs`, `permission_rules.rs`,
   `extensions.rs`
 - `rust/fontaine-mcp/src/servers.rs` (import the moved `BASE_ENV`)
 - `rust/fontaine-evals/src/baseline.rs` (`TOOL_NAMES`)
@@ -246,6 +254,9 @@ configured the tool is absent, so an allow entry is inert and a disallow entry s
   at session end, no fallback on failure); the user asked for this. It stays an external service.
 - 2026-10-26: The SearXNG child is stopped only by drop of the runtime on normal return; a kill by signal or
   `process::exit` can orphan it (accepted).
+- AFK: Native-search gate timing: `finish_builder` runs only at build, so `AgentRuntime::refresh_native_search()` rebuilds before each turn when the live mode/rules change the gate result (rather than the rig per-run patch API, unreachable from `run_turn`).
+- AFK: No automatic retry on a native-tool 400 (it would need a custom turn loop); the fallback is by account kind, `base_url` and `native = "off"`, and the 400 failure text tells the user to set `native = "off"`.
+- AFK: A runtime drop-and-retry for a rejected native tool is a possible follow-up issue.
 - 2026-10-26: First backends are SearXNG and Tavily (Brave's free tier needs a card); Brave is a follow-up.
 
 ## Documentation
@@ -274,10 +285,11 @@ All offline: `wiremock` stands in for the backends.
   redirect returned as an error for both backends; the key absent from every error; one short test that a
   search goes through the configured `[network]` proxy (like `webfetch_goes_through_the_configured_proxy`).
 - Native search (`fontaine-core`): the request carries the `web_search_20250305` tool entry only when the
-  gate allows (per mode, including the allow-rule requirement); a `deny` or `ask` rule removes it; non-Anthropic
+  gate allows (per mode, including the allow-rule requirement); a `set_mode` switch and a session `deny`/`ask`/`allow` rule change
+  add or remove it on the next turn via `refresh_native_search()` (and an unchanged gate does not rebuild); non-Anthropic
   account kinds and non-Anthropic `base_url` (unless `native = "on"`) use the client-side backend; `native =
-  "off"` does too; a 400 naming the tool is retried once without it and keeps
-  native off for the session, while another 400 is not retried.
+  "off"` does too; a 400 naming `web_search` yields the `native = "off"` hint in the failure text and is not
+  retried, while another 400 text is unchanged.
 - SearXNG launch (`fontaine-tools/tests/websearch.rs`): a fake child script that serves the responder
   starts once across several searches, is terminated when the tool is dropped, and a script that exits
   non-zero or never answers surfaces a start failure / readiness timeout with the chain and no fallback;
