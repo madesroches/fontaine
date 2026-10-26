@@ -44,11 +44,11 @@ Layout:
 2. omp runs: `scripts/run_omp.sh <name> "<task>"` with `FIXTURE=<dir>`, `GIT=1`, `CONFIG=<file>` (copied to
    `~/.omp/agent/config.yml`), `OMP_ARGS`, `XENV="-e A=b"`, `IMG`, `CMD`, `POST`, `RESUME=1`, `TIMEOUT`. `scripts/models.yml` points the
    `go` provider at the proxy and adds the `x-opencode-session` header the gateway requires.
-3. Fontaine runs: `scripts/run_fontaine.sh <name> proxy.toml "<prompt>" [args]`. The scripts now run Fontaine in a `mktemp` workspace outside the repo (copied back to `runs/<name>/ws` afterwards). **The committed Fontaine captures predate this**: they ran with a cwd inside the repo, so Fontaine's system prompt (and its guardian prompts) include the repo's own `AGENTS.md` (9,645 B of the 13,494 B system message in `e2_fontaine_request.json`). Also, until `record_proxy.py` resolved the run directory on request arrival, the last request of one run could be filed under the next; the E4 Fontaine logs were re-attributed by hand (one stray request from an earlier stale-file run, whose log no longer exists, was dropped).
+3. Fontaine runs: `scripts/run_fontaine.sh <name> proxy.toml "<prompt>" [args]` (also reads `FIXTURE`, `FONTAINE` for the binary path and `MODEL`). The scripts now run Fontaine in a `mktemp` workspace outside the repo (copied back to `runs/<name>/ws` afterwards). **The committed Fontaine captures predate this** (including the E11 frames, e.g. `captures/e11_fontaine/00_trust_prompt.txt`, which show the trust prompt for a folder inside the repo): they ran with a cwd inside the repo, so Fontaine's system prompt (and its guardian prompts) include the repo's own `AGENTS.md` (9,645 B of the 13,494 B system message in `e2_fontaine_request.json`). Also, until `record_proxy.py` resolved the run directory on request arrival, the last request of one run could be filed under the next; the E4 Fontaine logs were re-attributed by hand (one stray request from an earlier stale-file run, whose log no longer exists, was dropped).
 4. `scripts/trace_run.py runs/<name> [--full] [--listener omp|fontaine]` prints one block per model request;
    `scripts/summarize_runs.py runs/<a> runs/<b>` prints request, tool-call and token counts.
 
-Environment per run (`FIXTURE`, `GIT`, `CONFIG`, `POST`, `IMG` are `run_omp.sh` variables; `run_fontaine.sh` takes only `FIXTURE`). `R=scripts/run_omp.sh`; `<q>` is the prompt recorded in the run's first request.
+Environment per run (`FIXTURE`, `GIT`, `CONFIG`, `POST`, `IMG`, `TELEMETRY`, `IDLE`, `PRE`, `KEEP` are `run_omp.sh` variables; `run_fontaine.sh` takes `FIXTURE`, `FONTAINE` and `MODEL`). `R=scripts/run_omp.sh`; `<q>` is the prompt recorded in the run's first request.
 
 | Id | Command |
 |---|---|

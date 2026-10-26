@@ -122,13 +122,13 @@ use the prebuilt one.
 
 | Mechanism | Trigger | Default | Message (opening words) | Evidence |
 |---|---|---|---|---|
-| Tool-call loop redirect (`model.toolCallLoopGuard`) | N consecutive assistant turns with an identical set of tool calls (hash of sorted name+args, intent field stripped; `wait` exempt) (`packages/ai/src/utils/tool-call-loop-guard.ts@dcafcef6:105-114`) | on, threshold **5** | `<system-interrupt reason="tool_call_loop_detected">You called `bash` 3 consecutive times with identical arguments … NEVER call `bash` with those arguments again this turn. Use different arguments, choose another tool, or summarize findings and yield if complete.` | [measured] threshold 3: fired on the 3rd call, the model stopped and reported (capture `e3_loop_redirect.txt`) |
+| Tool-call loop redirect (`model.toolCallLoopGuard`) | N consecutive assistant turns with an identical set of tool calls (hash of sorted name+args, intent field stripped; `wait` exempt) (`packages/ai/src/utils/tool-call-loop-guard.ts@dcafcef6:105-114`) | on, threshold **5** | ``<system-interrupt reason="tool_call_loop_detected">You called `bash` 3 consecutive times with identical arguments … NEVER call `bash` with those arguments again this turn. Use different arguments, choose another tool, or summarize findings and yield if complete.`` | [measured] threshold 3: fired on the 3rd call, the model stopped and reported (capture `e3_loop_redirect.txt`) |
 | Empty-stop retry | assistant stop with no actionable output; 3 retries (`session/turn-recovery.ts@dcafcef6:99,1040-1055`) | on | `Stopped without actionable output; task incomplete. Continue with a user-visible final answer or the next required tool call.` | did not fire (no empty stop occurred) |
 | Unexpected-stop detection (`features.unexpectedStopDetection`) | `mechanical`: thinking-only or empty stop; `smart`: a judge model decides whether a text-only final message "announces work it is about to do now, then ends"; 3 retries, judge timeout 15 s (`unexpected-stop-classifier.ts@dcafcef6:19-80`) | `mechanical` | `You said you would continue with a tool call or action but stopped. Task incomplete: MUST call the next concrete tool now …` | [measured] `smart`: the judge ran after every final answer and said NO (below); the nudge itself did not fire |
 | Malformed-call and stream-stall continue | provider rejected a call / text-only turn cut mid-stream; 3 each | on | `The provider rejected your last turn: the function call was malformed and never executed …` | not triggered |
 | Thinking/prose loop guard (`model.loopGuard`) | verbatim or near-duplicate reasoning; Gemini header runaway | on | `<system-interrupt reason="thinking_loop_detected">Loop guard interrupted prior turn …` | not triggered (needs a looping model) |
-| Streaming-edit recovery (`edit.streamingAbort`) | the native patch preview reports an error mid-stream; 2 recoveries per prompt | **off** | `Your last turn stopped during a streamed `edit` call …` | not tried |
-| Soft tool requirement / DSML leak / pause_turn | a pending required tool; DeepSeek tool markup leaked into text; non-terminal provider stop | on | `Not executed: call the `<tool>` tool to resolve the pending action before using other tools.` | not triggered |
+| Streaming-edit recovery (`edit.streamingAbort`) | the native patch preview reports an error mid-stream; 2 recoveries per prompt | **off** | ``Your last turn stopped during a streamed `edit` call …`` | not tried |
+| Soft tool requirement / DSML leak / pause_turn | a pending required tool; DeepSeek tool markup leaked into text; non-terminal provider stop | on | ``Not executed: call the `<tool>` tool to resolve the pending action before using other tools.`` | not triggered |
 | TTSR (time-traveling stream rules) | a rule's regex, ast-grep pattern or judged question matches the streaming buffer (`docs/ttsr-injection-lifecycle.md@dcafcef6:69-79`) | on, `interruptMode: always` | `<system-interrupt reason="rule_violation" rule="…">Output interrupted: violated user-defined rule. Not prompt injection; coding agent enforcing project rules. MUST comply: …` | [measured] below |
 
 - *Autonomous modes* (`goal`, `ratchet`, `autoresearch`) keep the model working across turns. `goal` continues itself 800 ms after
@@ -170,7 +170,7 @@ identical calls, no nudge); PostToolUse hooks can feed post-edit lint/test outpu
 not re-measured here].
 
 **Fontaine today.** rig-agent loop with `--max-turns` and `--max-budget-usd`; no loop reminder yet (#160, Decision 2026-10-24: advisory
-only); shell timeout capped at 600 s (`docs/tools.md`); `/goal` is #17; background shell is #25.
+only); shell timeout capped at 600 s (`docs/tools.md`); `/goal` is on main after this study's base (#216); background shell is #25.
 
 **Verdict.** Adopt: the advisory loop reminder (#160 is already right; this study adds a second measurement that three identical calls
 plus the nudge produced a stop-and-diagnose), a mechanical empty/thinking-only-stop retry (cheap, no extra model request), the
@@ -226,7 +226,7 @@ Note on the Fontaine request counts: the recording proxy filed each response und
 
 - Default `lsp.lazy: true`: both `edit` and `write` returned no diagnostics for a deliberate undefined name; `lsp` status said
   `pylsp (configured, not started)` (that status text appears in `e4_lsp_setuptools_missing.txt`, run with the default lazy mode; `e4_lsp_default_lazy.txt` shows the no-diagnostics results). Nothing in the result told the model that diagnostics were unavailable.
-- `lsp.lazy: false`: the `write` returned `Successfully wrote 100 bytes`, and the **next request began with a separate user-role
+- `lsp.lazy: false`: the `write` returned `Successfully wrote 100 bytes`, and a **later request carried a separate user-role
   message** `<system-notice>Late LSP diagnostics arrived after the edit returned: /run/study/ws/calc.py — 2 error(s) calc.py:6:16 [error]
   [pyflakes] undefined name 'y' …` (capture `e4_lsp_eager_late_diagnostics.txt`). Mechanism: inline wait 500 ms, then a deferred queue
   (`lsp/diagnostics.ts@dcafcef6:45`, `lsp/deferred-diagnostics.ts@dcafcef6:13-55`).
@@ -319,8 +319,8 @@ and argue against adoption (the second is an injection amplifier; see 4.7).
 read in pages plus a 60,000-line `seq`: 30 model requests, 22 tool calls, 239,868 prompt tokens, 25,206 completion tokens for a six-step
 task (capture `e6_trace.txt`, `e6_usage.txt`). 16 of the 30 requests were summarizer calls (turn-prefix and history summaries in pairs); the summary request is the system prompt
 above and a user message holding the whole conversation serialized **in the model's own chat-template markers**
-(`<｜User｜>…<｜tool▁calls▁begin｜>…`; capture `e6_compaction_request.txt`). After compaction the old tool results appeared as
-`[shaken ~11874 tokens — recover: artifact://0 (region 1)]`, and the model burned several turns paging them back
+(`<｜Assistant｜>…<｜tool▁calls▁begin｜>…`; capture `e6_compaction_request.txt`). After compaction the old tool results appeared as
+`[shaken ~11874 tokens — recover: artifact://0 (region 1)]` (capture `e6_after_compaction_messages.txt`), and the model burned several turns paging them back
 (`artifact://1:84-167` …) and then re-reading the file, i.e. **a threshold this low turns compaction into a loop**. That is an artifact of my
 setting (14 k of 128 k), not a statement about the default; the `shake` pointers and the `artifact://` read-back are the interesting parts.
 `methodOrder: ["soft"]` still produced shaken pointers, so the shake pre-pass is not selectable by that key alone [measured; not
@@ -400,9 +400,11 @@ prompt and `isProjectTrusted` is hard-coded `() => true` (`extensibility/extensi
 project `permissions.allow` of `Bash(echo *)`) and `.mcp.json` (a stdio server that touches a file): the hook ran, the project MCP
 server was spawned (status `pending` in the init event), and the allowed `echo` ran without a prompt (capture
 `e10_claude_planted_project.txt`). So in `-p`, where there is no trust dialog, **Claude Code behaves like omp on this row**: project hooks,
-project MCP servers and project allow rules take effect. Fontaine's workspace-trust prompt (seen in E11: "Do you trust the files in
-this folder? … hooks, MCP servers and the commands in skills … none of them can approve a tool call for you") plus "project scope can
-only tighten" is stricter than both.
+project MCP servers and project allow rules take effect. On project allow rules and the TUI trust prompt Fontaine is stricter than
+both: project scope can only tighten (the recorded deviation, Decisions 2026-10-21, covers project allow rules only), and the TUI asks
+before loading project executables (seen in E11: "Do you trust the files in this folder? … hooks, MCP servers and the commands in
+skills … none of them can approve a tool call for you"). In `-p`, Fontaine follows Claude Code and loads project hooks and MCP servers
+without a prompt (Decisions 2026-10-21, workspace trust); they can tighten a permission decision but never loosen one.
 
 **Fontaine today.** Hooks (#29 for the full event set), skills, MCP with project/user scopes, workspace trust, project scope
 tighten-only (`tasks/fontaine_harness_plan.md` Decisions 2026-10-21).
@@ -467,7 +469,7 @@ project scope tightens.
 
 **Verdict.** Nothing to adopt in the pipeline. Two small things: (a) the no-UI refusal tells the model how to loosen; Fontaine's
 `... was denied: it needs the user's approval, and a headless run cannot ask the user. Do not retry it or look for another route`
-(seen in E3/E4 Fontaine runs) is the better wording and should stay; (b) nothing on approval-prompt arming: Fontaine already ignores answer keys for a 400 ms grace period (4.11); (c) the one
+(seen in E4 Fontaine runs) is the better wording and should stay; (b) the one
 "plan mode is read-only because the tool says so" lesson.
 
 ### 4.8 Session log
@@ -530,7 +532,7 @@ that would be stored locally, not pushed [source].
 **Fontaine today.** Telemetry is opt-in micromegas/OTLP (`docs/telemetry.md`); model discovery only against configured accounts.
 
 **Verdict.** Nothing to adopt except the method: the internal network + tcpdump sidecar is a cheap egress audit. A proposed issue
-turns it into a standing check for Fontaine (section 10).
+turns it into a standing check for Fontaine (P4, section 10).
 
 ### 4.10 Provider handling
 
@@ -653,19 +655,19 @@ proposed one in section 10.
 |---|---|---|---|---|---|---|
 | D1 | **Late diagnostics notice** | After a `write`/`edit`, LSP diagnostics are waited for 500 ms inline, then delivered as their own `<system-notice>` message when they arrive; dedup per file; dropped if the file changed again | [measured] E4 `e4_lsp_eager_late_diagnostics.txt`; lazy default returned nothing (`e4_lsp_default_lazy.txt`) | proposed comment on #27 | No headless equivalent (IDE only) | **Adopt**, with an explicit "server not started / produced no diagnostics" state and untrusted-data delivery |
 | D2 | **Identical-call redirect** | Hash of the turn's tool-call set; at N consecutive repeats inject an interrupt telling the model to change arguments, switch tool or yield | [measured] E3 `e3_loop_redirect.txt` | proposed comment on #160 | No (measured earlier: nine calls, no nudge) | **Adopt** as advisory (existing Decision); this run's result: the model stopped and diagnosed |
-| D3 | **Mechanical empty/thinking-only-stop retry** | Re-sample after dropping an empty or reasoning-only final turn, 3 tries, with a short developer message | [source] `turn-recovery.ts@dcafcef6:99,1040-1055`; not triggered | proposed issue P2 | Not known | **Adopt** (no extra model call) |
+| D3 | **Mechanical empty/thinking-only-stop retry** | Re-sample after dropping an empty or reasoning-only final turn, 3 tries, with a short developer message | [source] `turn-recovery.ts@dcafcef6:99,1040-1055`; not triggered | proposed issue P1 | Not known | **Adopt** (no extra model call) |
 | D4 | **Background promotion with wake-up** | A `bash` past its deadline continues as a job; the model is told, calls `wait`, and the result is injected as a follow-up | [measured] E3 `e3_tool_timeout_bypass.txt` | proposed comment on #25 | Yes (promote-on-timeout, measured in #154) | **Adopt the wake-up notice**; reject the model-liftable cap (`timeout: 0`) |
-| D5 | **Recoverable pruning** | Pruned or oversized results become a pointer (`[shaken ~N tokens — recover: artifact://0 (region 1)]`, `[raw output: artifact://N]`) that `read` pages back; superseded full reads blanked cache-aware | [measured] E6 `e6_trace.txt`; supersede [source] | proposed comment on #161 | Partly (micro-pruning, no read-back) | **Adopt** the pointer + paging; copy the cache-aware supersede rule |
+| D5 | **Recoverable pruning** | Pruned or oversized results become a pointer (`[shaken ~N tokens — recover: artifact://0 (region 1)]`, `[raw output: artifact://N]`) that `read` pages back; superseded full reads blanked cache-aware | [measured] E6 `e6_after_compaction_messages.txt`; supersede [source] | proposed comment on #161 | Partly (micro-pruning, no read-back) | **Adopt** the pointer + paging; copy the cache-aware supersede rule |
 | D6 | **Stale-state errors with the remedy inline** | Stale tag: current tag + ±2 context lines; unseen-line anchors: the actual lines inlined; no-op escalation to `STOP`; snapshot recovery with a warning | [measured] stale recovery in E4; [source] for the rest | (Fontaine's `edit` already returns clear errors) | No | **Adapt** the discipline; do not adopt hashline |
 | D7 | **Model-supplied intent label per tool call** | Every tool except `eval` has an `i` argument (optional on `wait`) ("Listing workspace"); the TUI shows it next to the spinner | [measured] E2 schemas, E11 frames | proposed comment on #214 | No | **Adapt**, display-only |
 | D8 | **Headless plan mode** | `--plan-yolo`: plan in a sandboxed `local://` file, propose, auto-approve, implement | [measured] E7 `e7_plan_yolo.txt` | proposed comment on #24 | Plan mode exists (interactive) | **Adapt** if Fontaine's plan mode stays mechanical; omp's is not (shell ran in plan mode) |
 | D9 | **Todo reminders and `blocked`** | Nudge after 12 mutating calls without a todo update (max 3); statuses add `blocked`, `abandoned` | [source] `todo-tracker.ts@dcafcef6:15-20`; list text [measured] E7 | proposed issue P6 | No | **Adapt**, advisory |
 | D10 | **Provider "learn from the 400"** | On a 400/422 for `reasoning_effort` or strict tools, parse the accepted values or retry without, and remember per endpoint+model | [source] `openai-reasoning-fallback.ts@dcafcef6:393`, compat ref `:268-270` | proposed comments on #169, #53 | n/a | **Adopt** as part of #169 |
-| D11 | **Empty-completion retry at the provider layer** | Up to 2 retries when a stream ends `stop` with no visible content and ≤1 output token, buffering pre-output events so a discarded attempt is never shown | [source] `utils/empty-completion-retry.ts@dcafcef6:91` | proposed issue P2 | Not known | **Adopt** (same issue as D3) |
+| D11 | **Empty-completion retry at the provider layer** | Up to 2 retries when a stream ends `stop` with no visible content and ≤1 output token, buffering pre-output events so a discarded attempt is never shown | [source] `utils/empty-completion-retry.ts@dcafcef6:91` | proposed issue P1 | Not known | **Adopt** (same issue as D3) |
 | D12 | **Cache-aware context edits** | Pruning/supersede only when the suffix is small or the cache has gone cold; `cache-warmer` refreshes before expiry | [source] `session-maintenance.ts@dcafcef6:735-790`, `cache-warmer.ts@dcafcef6:1-60` | #161 | n/a | Adopt the rule, skip the warmer |
 | D13 | **Read-only scout agents and `agent://` results** | `scout` agent (read-only tools, small model, structured output); long results at `agent://<id>`; agent hub to steer/kill | [measured] E7 (scout, task-result block) | #114, #39 | Task subagents yes | Informational; Fontaine's agents already cover the use |
 | D14 | **Tool devices (`xd://`)** | Only 11 of 30 tools in the prompt; the rest are discovered by `read xd://<tool>` and called by `write xd://<tool>` with JSON | [measured] E2 tool list, E4/E7 use | #34 (deferred MCP tool loading) | Tool search exists for MCP | Informational: a second precedent for lazy tool schemas |
-| D15 | **Goal / ratchet / autoresearch** | Token-budgeted goal continuation with a completion-audit prompt; eval hill-climbing; benchmark loop with keep/revert commits | [source]; `/goal` in `-p` is plain text ([measured] E3) | #17 | Not equivalent (`/loop`, Stop hooks) | Interactive-only in omp; useful prompt text for #17 (`goal-continuation.md`: "Before goal({op:"complete"}), MUST audit current repo state … Budget exhaustion ≠ completion") |
+| D15 | **Goal / ratchet / autoresearch** | Token-budgeted goal continuation with a completion-audit prompt; eval hill-climbing; benchmark loop with keep/revert commits | [source]; `/goal` in `-p` is plain text ([measured] E3) | proposed comment on the shipped `/goal` (#216, on main after this study's base) | Not equivalent (`/loop`, Stop hooks) | Interactive-only in omp; useful prompt text for Fontaine's evaluator (`goal-continuation.md`: "Before goal({op:"complete"}), MUST audit current repo state … Budget exhaustion ≠ completion") |
 | D16 | **TTSR** | Mid-stream rule interruption by regex/AST/judge on the output | [measured] E3 `e3_ttsr.txt` | none | No | **Skip** (see section 6) |
 | D17 | **TUI cards, diffs, status line, approval grace period (already present), paste placeholders, pane-capture tool** | Section 4.11 | [measured] E11 | related #45, #48, #49, #214; proposed issues P2, P3, P5 | partly | Adopt selected items |
 
@@ -772,7 +774,7 @@ No GitHub issue was created or commented on by this work; the orchestrator files
 
 ### New issues
 
-1. **Retry a model turn that ends empty or with only reasoning**
+P1. **Retry a model turn that ends empty or with only reasoning**
    Labels: `enhancement`, `area:agents`, `area:providers`.
    Body: omp re-samples when a turn ends with no actionable output (empty text, or only a signed thinking block): it drops the empty turn,
    appends a short developer message ("Stopped without actionable output; task incomplete. Continue …") and continues, at most 3 times; a
@@ -782,7 +784,7 @@ No GitHub issue was created or commented on by this work; the orchestrator files
    changing a permission decision; first measure how often Fontaine's supported models end a turn empty (the guardian's fail-closed path is
    separate and must not retry into a weaker configuration). See research doc 4.1, D3/D11, S8.
 
-2. **TUI: show shell output and edit diffs as foldable cards in the transcript**
+P2. **TUI: show shell output and edit diffs as foldable cards in the transcript**
    Labels: `enhancement`, `area:tui`.
    Body: Fontaine's transcript shows one line per tool call (`• shell python3 -m unittest -q 2>&1 | tail -40 ✓`, `· edit allowed once`). omp renders a framed card
    per call: the command, the last ~10 lines of output with an expand key and a `Wall: 0.12s · Timeout: 300s` footer, and for edits a diff
@@ -790,36 +792,43 @@ No GitHub issue was created or commented on by this work; the orchestrator files
    #45 asks for the diff in the approval prompt; this is the transcript side. Output shown is already in the model's context, so there is no new data
    exposure, but it must pass the same display sanitising as other tool output. See 4.11.
 
-3. **Test harness: drive fontaine-tui under tmux and assert on captured panes**
+P3. **Test harness: drive fontaine-tui under tmux and assert on captured panes**
    Labels: `enhancement`, `area:tui`.
    Body: `research/oh-my-pi-harness/scripts/e11_fontaine_tui.sh` drives the release binary at a fixed size, answers approval prompts, resizes to 60
    columns and writes the panes as text. omp ships a PTY tool with start/send/screen/resize/stop for the same purpose. Proposal: promote it to a
    small test helper (feeding the idle-helper dedupe in #215), run against a mock model, assert on the approval box, slash menu and the narrow
    layout. Capture frames show a trust dialog first in a new folder; the harness answers `n`.
 
-4. **Egress audit: record every endpoint a default Fontaine session contacts**
+P4. **Egress audit: record every endpoint a default Fontaine session contacts**
    Labels: `enhancement`, `area:observability`.
    Body: the study's container on an `--internal` network with a `socat` forwarder and a `tcpdump` sidecar logged every DNS name and destination omp
    tried with no prompt (catalog refresh and provider discovery against seven vendor hosts; research doc 4.9). Do the same for `fontaine` (TUI idle,
    `-p`, with and without telemetry configured) and keep the expected list in `docs/`. Container-only; no product change unless a surprise appears.
 
-5. **/resume picker: toggle between this directory and all projects**
+P5. **/resume picker: toggle between this directory and all projects**
    Labels: `enhancement`, `area:sessions`, `area:tui`, `priority:low`.
    Body: omp's picker has `⇥ all projects` and multi-field fuzzy search (id, title, cwd, first message); Fontaine's lists sessions started in the current
    directory with a type-to-filter line (captures `e11_*/02_session_picker.txt`). Proposal: a scope toggle and cwd in the row; `resolve` semantics unchanged.
 
-6. **Advisory todo reminder and a `blocked` task status**
+P6. **Advisory todo reminder and a `blocked` task status**
    Labels: `enhancement`, `area:agents`, `area:tools`, `priority:low`.
    Body: omp nudges after 12 mutating calls without a todo update (max 3 per cycle) and its list has `blocked` (with a reason) and `abandoned`;
    Fontaine's `todo_write` has `pending|in_progress|completed`. Proposal: an advisory one-line notice on the same terms as #160 (one user-role notice,
    never blocks, never in the guardian's intent source) and a `blocked` status with a reason. See 4.5, D9, S6.
 
-7. **Measure cross-model session resume: tool-call ids and empty assistant content**
+P7. **Measure cross-model session resume: tool-call ids and empty assistant content**
    Labels: `enhancement`, `area:providers`, `area:sessions`.
    Body: omp sanitises tool-call ids to `[a-zA-Z0-9_-]` ≤ 64 with `_dupN` suffixes for duplicates, replaces empty assistant content with `"."` on tool-call turns for
    hosts that 400 on it, and re-renders prior thinking when the model family changes mid-session. The DeepSeek study showed a resume under a foreign
    model works on the Go gateway; ids and empty content were not stressed. Proposal: a small probe (like `research/deepseek-harness/scripts/probe_chat.py`)
    replaying a Fontaine session across the supported hosts, fixing only what fails. See 4.10.
+
+P8. **Headless workspace trust: decide whether `-p` should load project hooks and MCP servers unprompted**
+   Labels: `enhancement`, `area:security`, `priority:low`.
+   Body: omp loads project hooks, MCP servers and allow rules without a prompt, and Claude Code `-p` does the same (E10). Fontaine follows Claude Code:
+   the TUI asks, `-p` loads project hooks and MCP servers without a prompt (they can only tighten a permission decision, but a hook or stdio MCP
+   server is still a process spawned from repo contents). Proposal: measure first; if worth closing, an opt-in user-scope setting that makes `-p`
+   skip project executables unless the folder was trusted in the TUI. Any default change is a deviation from Claude Code and needs a Decisions line.
 
 ### Proposed comments on existing issues
 
@@ -837,7 +846,7 @@ No GitHub issue was created or commented on by this work; the orchestrator files
 - **#45 (diff in approval prompt)**: omp's bash approval box showed the command only; edits are auto-approved in `write` mode, so omp's edit approval prompt was not seen. The edit appears as a diff card in the transcript (E11).
 - **#24 (plan mode exit)**: omp's `--plan-yolo` and approval options (execute fresh, compact, keep context, refine, save-and-quit); in omp, shell is not blocked
   in plan mode, so keep Fontaine's mechanical.
-- **#17 (/goal)**: omp's goal continuation is interactive/RPC only, token-budgeted, with a completion-audit continuation prompt; `/goal` in `-p` is plain text.
+- **Shipped `/goal` (#216, on main after this study's base; #17 is closed)**: omp's goal continuation is interactive/RPC only, token-budgeted, with a completion-audit continuation prompt (`goal-continuation.md`); `/goal` in `-p` is plain text, whereas Fontaine's `/goal` also runs headless with a separate evaluator. Compare omp's audit wording ("MUST audit current repo state", "Budget exhaustion ≠ completion") with the evaluator prompt as input; no change to the caps or the harness-note delivery.
 - **#169 and #53**: omp parses accepted values out of a 400 for `reasoning_effort`, remembers them per endpoint+model, and retries without `strict` after a strict-schema 400
   (`openai-reasoning-fallback.ts@dcafcef6:393`, `docs/provider-compat-reference.md@dcafcef6:268-270`).
 - **#48 and #49 (status line, keys)**: omp's status segments (context %, cost, git branch with counts, token rate, cache hit) and remappable `keybindings.yml` with an opt-in vim mode.
@@ -850,5 +859,6 @@ None reproduced. Observations that are not bugs: headless `fontaine -p` with an 
 ### Decisions
 
 No `## Decisions` line is proposed. Everything recommended either matches Claude Code or is covered by an existing Decision (#160 advisory
-reminders; project scope tightens). The study found Claude Code `-p` loosening on project hooks/MCP/allow rules, which Fontaine already
-records as a deliberate deviation.
+reminders; project scope tightens; workspace trust follows Claude Code and headless loads project hooks and MCP servers without a prompt).
+The only recorded deviation here is that project allow rules are ignored (tighten-only), which is stricter than Claude Code `-p` (E10). The
+headless-trust exposure is the same as Claude Code's and already recorded, so no new line; whether it is worth closing is proposed as P8.

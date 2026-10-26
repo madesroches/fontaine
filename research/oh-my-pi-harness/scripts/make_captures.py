@@ -90,7 +90,7 @@ for who in ("omp-hashline", "omp-default", "fontaine"):
         lines.append(f"######## {k} / {who}")
         lines.append(trace(f"e4-{k}-{who}", "--full", *(["--listener", "fontaine"] if who == "fontaine" else [])))
 write("e4_edit_runs.txt", "\n".join(lines))
-write("e4_usage.txt", run(os.path.join(HERE, "summarize_runs.py"), *[os.path.join(RUNS, d) for d in sorted(os.listdir(RUNS)) if d.startswith("e4-") and d not in ("e4-lsp", "e4-lsp2")]))
+write("e4_usage.txt", run(os.path.join(HERE, "summarize_runs.py"), *[os.path.join(RUNS, d) for d in sorted(os.listdir(RUNS)) if d.startswith("e4-") and not d.startswith("e4-lsp")]))
 write("e4_lsp_setuptools_missing.txt", trace("e4-lsp2", "--full"))
 write("e4_lsp_default_lazy.txt", trace("e4-lsp3", "--full"))
 write("e4_lsp_eager_late_diagnostics.txt", trace("e4-lsp4", "--full"))
