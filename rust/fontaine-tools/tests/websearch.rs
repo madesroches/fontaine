@@ -553,12 +553,22 @@ mod launch {
             }),
         });
         let ready = dir.path().join("ready");
-        let cancelled = tokio::time::timeout(Duration::from_millis(1500), async {
+        let search = async {
             let _ = run(config, args("x")).await;
-        })
-        .await;
-        assert!(cancelled.is_err(), "the search should still be starting");
-        assert!(ready.exists(), "the fake child never started");
+        };
+        // Dropping the search future is the cancellation under test.
+        tokio::select! {
+            () = search => panic!("the search should still be starting"),
+            () = async {
+                for _ in 0..100 {
+                    if ready.exists() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                panic!("the fake child never started");
+            } => {}
+        }
         // The group is stopped by a detached task, so the trap may run just after the drop.
         let termed = dir.path().join("termed");
         for _ in 0..100 {

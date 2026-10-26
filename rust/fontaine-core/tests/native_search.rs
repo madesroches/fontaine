@@ -66,6 +66,7 @@ async fn turn(built: &Built) -> TurnOutcome {
             priced: true,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
+            native_search: built.runtime.native_search_active(),
         },
         &mut |_| Flow::Continue,
     )
@@ -270,6 +271,21 @@ async fn a_400_naming_web_search_gets_the_hint_and_is_not_retried() {
     };
     assert!(text.contains("native = \"off\""), "{text}");
     assert_eq!(built.main.request_count(), 1, "no retry");
+}
+
+#[tokio::test]
+async fn a_400_naming_web_search_gets_no_hint_when_it_was_not_offered() {
+    let w = world(&format!("{ANTHROPIC}[websearch]\nnative = \"off\"\n"));
+    let built = build(
+        &w,
+        PermissionMode::Auto,
+        "anthropic",
+        rejected(400, "messages.2: web_search_tool_result is not supported"),
+    );
+    let TurnOutcome::Failed(text) = turn(&built).await else {
+        panic!("expected a failure");
+    };
+    assert!(!text.contains("native"), "{text}");
 }
 
 #[tokio::test]

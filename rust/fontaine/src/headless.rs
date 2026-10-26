@@ -503,6 +503,7 @@ async fn run_one(
             priced: runtime.models.main.catalog_billed(),
             model,
             provider,
+            native_search: runtime.native_search_active(),
         },
         &mut on_event,
     )

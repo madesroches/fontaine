@@ -50,6 +50,7 @@ async fn first_prompt(built: &common::runtime::Built) -> String {
             priced: true,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
+            native_search: false,
         },
         &mut seen,
     )
