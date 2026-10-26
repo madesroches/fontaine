@@ -86,7 +86,8 @@ struct ActiveGoal {
     evaluations: u32,
     last_reason: Option<String>,
     spend_base: Spend,                      // root + subagent spend when set (or resumed)
-    calls_seen: usize,                      // root-agent tool calls in the ledger at the last after_turn
+    calls_seen: usize,                      // root-agent actions in the ledger at the last after_turn
+    made_call: bool,                        // the last turn added a root-agent action
     stretch: Stretch,                       // reset whenever the user sends a prompt
     pending: bool,                          // a turn ended with an answer and is not evaluated yet
     paused: Option<PauseReason>,
@@ -119,7 +120,7 @@ pub enum PauseReason { TurnCap(u32), CostCap(f64), NoProgress(u32), TurnFailed(S
   `clear` and its aliases `stop`, `off`, `reset`, `none`, `cancel` are `Clear`) is the one argument
   parser, called by both the TUI and headless; the `Set` path still validates via `set()`.
 - Evaluator usage is a session-wide tally on `SessionState` beside `guardian_usage`
-  (`add_goal_usage` / `goal_usage`, `rust/fontaine-tools/src/gate.rs:445-463`); `add_goal_usage` also
+  (`add_goal_usage` / `goal_usage`, `rust/fontaine-core/src/gate.rs:445-463`); `add_goal_usage` also
   does the `debit(ROOT_AGENT)`, as `add_guardian_usage` does. It outlives the goal, so headless reads
   it after the goal ends.
 
@@ -145,10 +146,11 @@ apply:
                  caps checked (below) → Pause(reason) or Continue(goal prompt)
 ```
 
-"Made a tool call" is read from the ledger, not from turn events: `calls_seen` in `ActiveGoal` holds
-`actions.len() + denials.len()` of `ledger.view()` filtered to `agent == ROOT_AGENT` (subagent calls
-do not count), updated in `after_turn` and compared when the next verdict is applied, so the TUI and
-headless share one core rule with no event plumbing.
+"Made a tool call" is read from the ledger, not from turn events: `after_turn` counts the
+`actions` of `ledger.view()` with `agent == ROOT_AGENT` (subagent calls and denials do not count;
+`DenialEntry` carries no agent), sets `made_call` to whether that count exceeds `calls_seen`, then
+stores it in `calls_seen`; `apply` reads `made_call`. The TUI and headless share one core rule with
+no event plumbing.
 
 Caps, checked after each *not met* verdict and before the next goal turn starts; reaching one
 pauses the goal (it stays set; the next user prompt resumes evaluation with a fresh stretch):
@@ -198,7 +200,8 @@ times out or answers unreadably also pauses, with the reason shown.
   condition), with a `[earlier conversation omitted]` marker.
 - Usage: billed like the guardian's (cost dropped when not `catalog_billed`), recorded through
   `SessionState::add_goal_usage` (debited to `ROOT_AGENT`, so tree-delta spend includes it; the
-  tally feeds the `usage.goal` breakdown). One `fontaine.goal_evaluation` tracing span per call with `verdict` and token fields; no
+  tally feeds the `usage.goal` breakdown). One `fontaine.goal_evaluation` tracing span per call with `verdict`, `model.priced` and token fields
+  (`span_bridge.rs` maps calls under it to `query_source = "goal"`, beside `guardian` and `scanner`); no
   condition or reason text in telemetry unless `telemetry.log_assistant_responses` is on.
 
 ### The goal turn
@@ -290,7 +293,10 @@ news and goal turns):
 - Exit code: when the message set or continued a goal, `0` only if it ended *met*; *impossible* or
   paused sets `code = 1` and breaks the input loop as a failed turn does (`headless.rs:653-672`), like
   any run that did not finish its task. The turn outcome's `subtype` is unchanged (`success`, or the
-  failing turn's), so existing consumers still read it.
+  failing turn's), so existing consumers still read it. Beside `failed`, a `goal_failed` flag (the
+  message set or continued a goal that ended impossible or paused) also sets `code = 1` and breaks.
+  With `--output-format text`, such a message prints `fontaine: goal impossible: <reason>` or
+  `fontaine: goal paused: <why>` on stderr in place of the last answer.
 
 ### Config
 
@@ -329,11 +335,11 @@ Both appear in `/config` read-only (catalog rows), validated at load (`max_turns
 
 - `rust/fontaine-core/src/goal.rs` (new), `rust/fontaine-core/prompts/goal_evaluator.md` (new),
   `rust/fontaine-core/src/lib.rs`
-- `rust/fontaine-core/src/session.rs`, `rust/fontaine-tools/src/gate.rs`, `agent.rs`, `agent/build.rs`, `ledger.rs`, `config.rs`,
+- `rust/fontaine-core/src/session.rs`, `rust/fontaine-core/src/gate.rs`, `agent.rs`, `agent/build.rs`, `ledger.rs`, `config.rs`,
   `config_scope.rs`, `config_catalog.rs`
 - `rust/fontaine-tui/src/commands.rs`, `ui/mod.rs`, `ui/turn.rs`, `ui/goal.rs` (new), `app.rs`,
   `statusbar.rs`
-- `rust/fontaine/src/headless.rs`, `docs/schemas/headless-v1.schema.json`,
+- `rust/fontaine/src/headless.rs`, `rust/fontaine/src/telemetry/span_bridge.rs`, `docs/schemas/headless-v1.schema.json`,
   `rust/fontaine/tests/headless_contract.rs`
 - Tests: `rust/fontaine-core/tests/goal.rs` (new), `tests/ledger.rs`, `tests/config.rs`,
   `rust/fontaine-tui/src/ui/tests.rs`, `rust/fontaine/tests/` headless suite
@@ -370,7 +376,7 @@ Both appear in `/config` read-only (catalog rows), validated at load (`max_turns
 - `docs/headless.md`: `-p "/goal ..."`, the `goal` event, `result.goal`, `usage.goal`, exit codes.
 - `docs/configuration.md`: `[goal]` keys and their scope row; the exit-code table (`:889-895`).
 - `docs/permissions.md:112-118`: harness-started turns now include goal turns.
-- `docs/telemetry.md:95-120`: spans and usage (add `fontaine.goal_evaluation`).
+- `docs/telemetry.md:95-120`: spans and usage (add `fontaine.goal_evaluation` and the `goal` `query_source` value).
 - `docs/architecture.md`: `goal.json` in the session-store list (and the "two stores" opener at `:152`), the `goal` ledger records, resume
   and fork behaviour.
 - `docs/index.md`: mention `/goal` in the TUI feature list.
@@ -418,6 +424,9 @@ Each `Deviation:` line is copied into `tasks/fontaine_harness_plan.md`'s `## Dec
 - 2026-10-26 Deviation: verdicts are shown with their reason inline as transcript notices; Claude Code shows the reason behind Ctrl+O.
 - 2026-10-26 Deviation: headless exits 1 when a goal it ran ends impossible or paused.
 - 2026-10-26 `[goal]` is `user_or_cli` like `schedule.enabled`, not `user_trust` like `[agents]` (`config_scope.rs:167-168`): goal turns run unattended, so only the user decides how long they may run.
+- 2026-10-26 AFK: headless gets a `goal_failed` flag beside `failed` that sets `code = 1` and breaks, and text mode prints `fontaine: goal impossible: <reason>` / `fontaine: goal paused: <why>` on stderr instead of the last answer; without it the decided exit 1 never fires and a failure would be silent.
+- 2026-10-26 AFK: `span_bridge.rs` reports model calls under `fontaine.goal_evaluation` as `query_source = "goal"` (the span carries `model.priced`), documented in `docs/telemetry.md`; otherwise evaluator spend is misreported as `main`, unlike the guardian's and scanner's.
+- 2026-10-26 AFK: "made a tool call" is a per-turn `made_call` flag set in `after_turn` from the change in root-agent ledger actions since the previous `after_turn`, and counts actions only (no `agent` added to `DenialEntry`); a turn whose calls were all denied counts as idle, so the no-progress cap can only pause sooner.
 
 ## Open Questions
 
