@@ -1,6 +1,8 @@
 use crate::model_picker::{Group, ModelPicker, PickerPurpose};
+use crate::ui::commands::config::overriding_scope;
 use crate::{App, Ui, UnavailableAnswer};
 use fontaine_core::agent::AgentRuntime;
+use fontaine_core::config::Slot;
 use fontaine_core::permissions::UnavailableChoice;
 
 impl<R: FnMut(&mut App)> Ui<R> {
@@ -18,7 +20,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     message.push_str("; the guardian runs on it too");
                 }
                 self.remember_model(PickerPurpose::Main, &switched.reference);
-                self.finish_switch(message, switched.persist_error);
+                self.finish_switch(
+                    message,
+                    switched.persist_error,
+                    overriding_scope(&runtime.config, "model.model"),
+                );
             }
             Err(e) => self.app.transcript.error(format!(
                 "/model: {}",
@@ -80,6 +86,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         self.finish_switch(
                             format!("guardian is now {}", switched.reference),
                             switched.persist_error,
+                            overriding_scope(&runtime.config, "guardian.model"),
                         );
                     }
                 }
@@ -91,7 +98,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
-    fn open_guardian_picker(&mut self, runtime: &AgentRuntime) {
+    pub(crate) fn open_guardian_picker(&mut self, runtime: &AgentRuntime) {
         let guardian = runtime.state.guardian();
         let mut header = format!("guardian {}", guardian.label());
         if let Some(reason) = guardian.unavailable_reason() {
@@ -150,12 +157,25 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
-    pub(crate) fn finish_switch(&mut self, message: String, persist_error: Option<String>) {
+    /// `overridden_by` is the scope outranking the user file for the key just saved, if any.
+    pub(crate) fn finish_switch(
+        &mut self,
+        message: String,
+        persist_error: Option<String>,
+        overridden_by: Option<Slot>,
+    ) {
         match persist_error {
-            None => self
-                .app
-                .transcript
-                .notice(format!("{message} (saved to your settings)")),
+            None => {
+                let note = overridden_by.map_or(String::new(), |scope| {
+                    format!(
+                        "; {} sets this key and wins from the next launch",
+                        scope.label()
+                    )
+                });
+                self.app
+                    .transcript
+                    .notice(format!("{message} (saved to your settings{note})"));
+            }
             Some(why) => self
                 .app
                 .transcript
@@ -206,6 +226,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.finish_switch(
                         format!("guardian is now {}", switched.reference),
                         switched.persist_error,
+                        overriding_scope(&runtime.config, "guardian.model"),
                     );
                     UnavailableChoice::Retry
                 }

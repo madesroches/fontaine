@@ -200,6 +200,14 @@ All notable changes are recorded here. The format follows
     directly above the input box instead of at the top of the screen: lines move to scrollback only
     once they no longer fit, and leaving the UI or `/clear` writes the held ones there. The
     headless stderr text of the guardian-on-main-model notice is now "headline — hint".
+  - `/config` (alias `/settings`) opens a settings panel listing every settings key with its
+    effective value and the scope that supplied it (`default`, `user`, `project`, `project-local`,
+    `cli`). It edits `tui.theme` (at once), `tui.screen_reader`, `context.autocompact_window` and
+    `schedule.enabled` (from the next launch) and, through the pickers, `model.model` and
+    `guardian.model`; every other key is read-only. Changes go only to the user settings file,
+    which is validated before it is written, and a higher scope that wins the key is named
+    instead of being written to. `/model` and `/guardian-model` now say when a higher scope wins
+    the key they saved (#4).
   - Terminal polish (#50): six colour themes (`dark-ansi` by default, `light-ansi`, `dark`,
     `light`, `dark-daltonized`, `light-daltonized`) chosen with `/theme` or `[tui] theme`; a
     screen-reader mode (`--ax-screen-reader`, `FONTAINE_AX_SCREEN_READER`, `[tui] screen_reader`)

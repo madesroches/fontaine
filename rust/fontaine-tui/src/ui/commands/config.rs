@@ -1,0 +1,125 @@
+use crate::config_panel::{ConfigKey, ConfigPanel, saved_status, value_label};
+use crate::{App, Ui};
+use fontaine_core::agent::AgentRuntime;
+use fontaine_core::config::{Config, Slot, ThemeName};
+use fontaine_core::config_catalog::{self, Applies, ModelSlot, Running};
+use fontaine_core::models::GuardianChoice;
+use fontaine_core::user_config;
+
+/// The scope that outranks the user file for `path`, whose value therefore wins from the next
+/// launch whatever a save to the user file says.
+pub(crate) fn overriding_scope(config: &Config, path: &str) -> Option<Slot> {
+    config_catalog::winning_slot(config, path).filter(|slot| *slot != Slot::User)
+}
+
+impl<R: FnMut(&mut App)> Ui<R> {
+    /// `/config`: opens the settings panel.
+    pub(crate) fn open_config(&mut self, runtime: &AgentRuntime) {
+        let theme = self.current_theme().unwrap_or(runtime.config.tui.theme);
+        let main = runtime.models.main.reference.to_string();
+        let guardian = runtime.state.guardian();
+        let running = Running {
+            theme: theme.as_str(),
+            main_model: &main,
+            guardian_model: (runtime.models.guardian_choice == GuardianChoice::Pinned)
+                .then(|| guardian.label()),
+        };
+        self.app.config = Some(ConfigPanel::new(
+            &runtime.config,
+            &running,
+            self.user_config.as_deref(),
+            &self.config_pending,
+        ));
+    }
+
+    /// The panel's picker rows hand over to the picker the matching command opens.
+    pub(crate) async fn open_config_picker(&mut self, runtime: &mut AgentRuntime, slot: ModelSlot) {
+        match slot {
+            ModelSlot::Main => self.open_model_picker(runtime, None).await,
+            ModelSlot::Guardian => self.open_guardian_picker(runtime),
+        }
+    }
+
+    /// Writes a change the panel asked for to the user file, then tells the panel how it went.
+    pub(crate) fn config_change(&mut self, runtime: &AgentRuntime, change: ConfigKey) {
+        let (path, value) = match change {
+            ConfigKey::Save { path, value } => (path, Some(value)),
+            ConfigKey::Reset(path) => (path, None),
+            ConfigKey::None | ConfigKey::Close | ConfigKey::OpenPicker(_) => return,
+        };
+        let Some(file) = self.user_config.clone() else {
+            self.config_report(
+                |panel| panel.failed("there is no user settings file"),
+                || "not saved: there is no user settings file".to_string(),
+            );
+            return;
+        };
+        match user_config::set_config_value(&file, path, value.clone()) {
+            Ok(true) => {}
+            Ok(false) => {
+                self.config_report(ConfigPanel::not_set, || {
+                    format!("not set in {}", file.display())
+                });
+                return;
+            }
+            Err(e) => {
+                let why = fontaine_tools::error_chain::chain(&e);
+                self.config_report(|panel| panel.failed(&why), || format!("not saved: {why}"));
+                return;
+            }
+        }
+        let Some(row) = config_catalog::find(path) else {
+            return;
+        };
+        let label = value
+            .as_ref()
+            .map_or_else(|| "unset".to_string(), value_label);
+        let live = (row.applies == Applies::Live && path == "tui.theme").then(|| {
+            // A reset falls back to what the other scopes give, not to the built-in default.
+            let theme = match &value {
+                Some(v) => v.as_str().and_then(ThemeName::parse).unwrap_or_default(),
+                None if overriding_scope(&runtime.config, path).is_some() => {
+                    runtime.config.tui.theme
+                }
+                None => ThemeName::default(),
+            };
+            self.apply_theme(theme);
+            theme.as_str()
+        });
+        let overridden = overriding_scope(&runtime.config, path);
+        let mut pending = (row.applies == Applies::NextLaunch).then(|| label.clone());
+        match &mut self.app.config {
+            Some(panel) => {
+                let saved = panel.saved(path, &label, live, overridden);
+                if pending.is_some() {
+                    pending = saved;
+                }
+            }
+            None => {
+                let message =
+                    saved_status(row.applies, overridden, &file.display().to_string(), None);
+                self.app.transcript.notice(format!("{path}: {message}"));
+            }
+        }
+        match pending {
+            Some(pending) => {
+                self.config_pending.insert(path.to_string(), pending);
+            }
+            None => {
+                self.config_pending.remove(path);
+            }
+        }
+    }
+
+    /// Reports a failed change to the panel, or to the transcript when it has closed since.
+    fn config_report(
+        &mut self,
+        panel: impl FnOnce(&mut ConfigPanel),
+        notice: impl FnOnce() -> String,
+    ) {
+        match &mut self.app.config {
+            Some(p) => panel(p),
+            None => self.app.transcript.notice(notice()),
+        }
+    }
+}

@@ -1,3 +1,4 @@
+use crate::config_panel::ConfigKey;
 use crate::{Action, App, Ui};
 use fontaine_core::RuntimeError;
 use fontaine_core::agent::AgentRuntime;
@@ -119,6 +120,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             self.pending_pick = Some((purpose, reference));
                         }
                         Action::Providers(request) => self.queue_provider(request),
+                        Action::Config(change) => self.pending_config.push_back(change),
+                        Action::OpenPicker(slot) => {
+                            self.pending_config.push_back(ConfigKey::OpenPicker(slot));
+                        }
                         Action::Queue(text) if queueing => {
                             self.remember(&text);
                             runtime.steering.queue(text);
@@ -264,6 +269,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             self.pending_pick = Some((purpose, reference));
                         }
                         Action::Providers(request) => self.queue_provider(request),
+                        Action::Config(change) => self.pending_config.push_back(change),
+                        Action::OpenPicker(slot) => {
+                            self.pending_config.push_back(ConfigKey::OpenPicker(slot));
+                        }
                         Action::Queue(text) => {
                             self.remember(&text);
                             runtime.steering.queue(text);

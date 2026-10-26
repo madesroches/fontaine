@@ -239,17 +239,18 @@ conversation. The session starts in the mode your settings give, with no grants 
 | `/agents`, `/tasks` | Opens the [agents panel](#the-agents-panel). |
 | `/clear`, `/reset`, `/new` | Starts over with an empty context. See [Context](#context). It takes no name for the old conversation; that needs `/resume`, which is not available yet. |
 | `/compact [<focus>]` | Summarizes the conversation so far to free context; the optional focus tells the summary what to keep above all. See [Context](#context). |
+| `/config`, `/settings` | Opens the [settings panel](#settings-panel): every settings key with its effective value and the scope that supplied it, and a few preferences you can change. |
 | `/context [all]` | Shows what fills the context window. See [Context](#context). |
 | `/copy [<n>]` | Copies the latest assistant reply, or the `n`th latest, to the system clipboard. A reply is the text between tool calls, so a turn that calls a tool and then answers has two; `/copy` takes the last one. It is an error when there is no such reply. |
 | `/denied` | Lists the calls the guardian denied this session, with their rule label and explanation. Up and Down select; `r` approves the selected call once, as if you had approved it at a prompt, and tells the agent on its next turn that it may retry exactly that call. The retry runs without asking the guardian, never enters the verdict cache and does not count toward the denial limits. The deterministic floor still runs first, so an `ask` rule or a critical path still prompts. Esc closes the list. |
 | `/exit`, `/quit` | Leave. |
-| `/guardian-model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model) limited to the models the guardian could be. With one, pins the guardian to that model for the live session and saves it as `[guardian] model`. A model whose account has no credential becomes an unavailable guardian, which the next adjudication reports. |
+| `/guardian-model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model) limited to the models the guardian could be. With one, pins the guardian to that model for the live session and saves it as `[guardian] model`. A model whose account has no credential becomes an unavailable guardian, which the next adjudication reports. When a higher scope (`--settings` or a project-local file) sets `[guardian] model`, the notice adds that the scope wins from the next launch. |
 | `/help` | Lists the built-in commands, your user-invocable skills and the main keys. |
 | `/hooks` | Lists the [hooks](hooks.md) by event with their matcher, command and scope, and marks a repository's hooks that did not load because the workspace is not trusted. |
 | `/login [<account>]` | Opens the [provider dialog](#managing-providers) to add an account, log in, log out or remove one. With an account name it opens straight on that account's log-in: a hidden key prompt, or the device sign-in for `opencode-go`. Only between turns. |
 | `/loop [<interval>] <prompt>`, `/loop list`, `/loop stop [<id>]` | Runs a prompt again and again while the session is idle; see [Scheduled prompts](#scheduled-prompts). |
 | `/mcp` | Lists each [MCP server](mcp.md) as `connected`, `failed` with the error, `left off` (you declined it) or `not loaded` (the workspace is not trusted). It takes no arguments. |
-| `/model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model). With one, switches the live session to that model, rebuilds the agent on it with the conversation kept, and saves it as `[model] model` in your user settings file. The guardian moves with it only when it is on the main-model fallback (no `[guardian] model` and no validated model available); a pinned or validated guardian stays. |
+| `/model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model). With one, switches the live session to that model, rebuilds the agent on it with the conversation kept, and saves it as `[model] model` in your user settings file; when a higher scope sets `[model] model`, the notice adds that the scope wins from the next launch. The guardian moves with it only when it is on the main-model fallback (no `[guardian] model` and no validated model available); a pinned or validated guardian stays. |
 | `/output-style [<name>\|none]` | Without an argument, lists the [output styles](extensions.md#output-styles). With one, switches to it for the next turn; `none` removes it. |
 | `/permissions` | Shows the permission mode and the `deny`, `ask` and `allow` rules in force, each with the scope that contributed it (session and always grants included), the workspace roots and the settings file where rules are edited. It is read-only; see [Permissions](permissions.md). |
 | `/plan [<description>]` | Switches to plan mode, as Shift+Tab does. With a description it also sends it as your next message, so `/plan fix the auth bug` plans the fix. |
@@ -326,6 +327,67 @@ provider error or the timeout.
 `/guardian-model` with no argument opens the same overlay with only the models the guardian could
 use: the benchmark-validated models your accounts offer and every model an account lists in its
 `models` setting. A pick pins the guardian and saves it as `[guardian] model`.
+
+## Settings panel
+
+`/config` (alias `/settings`) opens an overlay above the message box that lists every settings key,
+one row each: the key, its effective value with defaults filled in, and the scope that supplied it.
+
+```
+ config ────────────────────────────────────────────────────────────────
+  Settings · key, effective value, source
+ > tui.theme                    dark-ansi                      default   ✎
+   tui.screen_reader            unset                          default   ✎
+   context.autocompact_window   150000                         project-local ✎
+   permissions.default_mode     unset (interactive: auto, ...  default
+   permissions.deny             3 entries                      user, project
+   accounts                     work, local                    user
+ ───────────────────────────────────────────────────────────────────────
+  filter: ▏
+  type to filter · ↑/↓ select · Enter change · Del reset · Esc close
+```
+
+The source column is `default`, `user`, `project`, `project-local` or `cli`. A scalar shows the
+scope that wins. A list key (`permissions.deny`, `hooks.pre_tool_use`, ...) shows every scope that
+contributed, highest first, and its value is the entry count. A named table (`accounts`,
+`mcp.servers`, `agents.types`, `env`, `telemetry.resource_attributes`) is one row listing the entry
+names. `[env]` shows names only, never values, and a proxy or endpoint URL is shown without its
+credentials. The column names config scopes only: a value set by a command-line flag or an
+environment variable (`--model`, screen-reader mode) is not labelled as such.
+
+Typing filters the rows by key, space included. Up and Down select and wrap around, and Esc closes.
+
+Six rows can be changed, marked `✎`. The rest are read-only: guardian, permission, account,
+network, telemetry, `env`, hook and MCP keys change what the guardian and the permission pipeline
+allow or send data off the machine, so they take a deliberate edit of the settings file. Rule
+editing stays in the files too; see [Permissions](permissions.md).
+
+| Key | Enter | Takes effect |
+|---|---|---|
+| `tui.theme` | Cycles the themes | At once, as `/theme` |
+| `tui.screen_reader` | Cycles `true`, `false`, unset | From the next launch |
+| `context.autocompact_window` | Opens a field for a positive whole number; empty clears the key | From the next launch |
+| `schedule.enabled` | Cycles `true`, `false` | From the next launch |
+| `model.model` | Closes the panel and opens the [model picker](#choosing-a-model) | At once, as `/model` |
+| `guardian.model` | Closes the panel and opens the guardian picker | At once, as `/guardian-model` |
+
+Del removes the key from the user file (a reset); resetting `tui.theme` also switches to the
+theme the other settings files give, or the default theme when none sets one. Del does nothing on the two model rows, since removing `model.model` would send the
+next launch to the setup screen; and it does nothing on read-only rows.
+
+A change is always written to your user settings file, with its comments and layout kept, and never
+to a project or project-local file. The file is checked before it is written: a value that would
+make it fail to load, such as `autocompact_window = 0`, is refused with the reason and the file is
+left alone. When a higher scope sets the same key, the panel still saves to the user file and says
+which scope wins: for a live row `applied now; <scope> sets this key and wins from the next launch`,
+for a next-launch row `saved, but <scope> sets this key and wins, so the value stays <value>`.
+A next-launch change that is not overridden shows `(next launch: <value>)` beside the current
+value, and keeps showing it if you close and reopen the panel in the same session; Enter on such a
+row cycles on from the saved value. Without a user settings file nothing is saved and the panel
+says so.
+
+With screen-reader mode on, the panel prints one plain line per key (`tui.theme: dark-ansi, from
+default, editable`) and no box drawing.
 
 ## Managing providers
 

@@ -17,6 +17,7 @@ use crate::agents_panel::{AgentsPanel, PanelKey};
 use crate::approval::Approval;
 use crate::commands::{MenuEntry, builtin_menu, match_menu, parse_command};
 use crate::complete::{self, Mention};
+use crate::config_panel::{ConfigKey, ConfigPanel};
 use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt};
 use crate::history::History;
 use crate::input::InputBuffer;
@@ -27,6 +28,7 @@ use crate::server_prompt::ServerPrompt;
 use crate::theme::Theme;
 use crate::todo_panel::TodoPanel;
 use crate::transcript::Transcript;
+use fontaine_core::config_catalog::ModelSlot;
 
 pub use crate::commands::Command;
 
@@ -65,6 +67,10 @@ pub enum Action {
     Server(bool),
     /// Esc at the idle prompt while a self-paced loop waits for its next iteration.
     CancelWakeup,
+    /// The settings panel asks for a value to be saved or reset.
+    Config(ConfigKey),
+    /// The settings panel hands over to the picker for a model setting.
+    OpenPicker(ModelSlot),
 }
 
 /// Ctrl-R: the query typed so far and the history entry it found.
@@ -103,6 +109,8 @@ pub struct App {
     pub server: Option<ServerPrompt>,
     /// The `/model` or `/guardian-model` picker while it is open.
     pub models: Option<ModelPicker>,
+    /// The `/config` panel while it is open.
+    pub config: Option<ConfigPanel>,
     /// The `/login` dialog while it is open.
     pub providers: Option<ProviderDialog>,
     /// The commands and user-invocable skills the `/` menu lists.
@@ -172,6 +180,7 @@ impl App {
             todos: TodoPanel::default(),
             server: None,
             models: None,
+            config: None,
             providers: None,
             menu: builtin_menu(),
             running_agents: 0,
@@ -446,7 +455,8 @@ impl App {
                     || self.denied.is_some()
                     || self.unavailable.is_some()
                     || self.server.is_some()
-                    || self.models.is_some();
+                    || self.models.is_some()
+                    || self.config.is_some();
                 if above_dialog {
                 } else if let Some(dialog) = &mut self.providers {
                     dialog.handle_paste(&text);
@@ -474,6 +484,7 @@ impl App {
             || self.unavailable.is_some()
             || self.server.is_some()
             || self.models.is_some()
+            || self.config.is_some()
             || self.providers.is_some()
             || self.agents.is_some()
     }
@@ -534,6 +545,20 @@ impl App {
                     self.models = None;
                     Action::PickModel(purpose, reference)
                 }
+            };
+        }
+        if let Some(panel) = &mut self.config {
+            return match panel.handle_key(key) {
+                ConfigKey::None => Action::None,
+                ConfigKey::Close => {
+                    self.config = None;
+                    Action::None
+                }
+                ConfigKey::OpenPicker(slot) => {
+                    self.config = None;
+                    Action::OpenPicker(slot)
+                }
+                change @ (ConfigKey::Save { .. } | ConfigKey::Reset(_)) => Action::Config(change),
             };
         }
         if let Some(dialog) = &mut self.providers {

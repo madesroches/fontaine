@@ -57,6 +57,10 @@ missing or unreadable `--settings` file is also an error.
 
 `--settings` takes the path of a TOML file. It does not accept inline text.
 
+In the terminal UI, `/config` shows each key's effective value and the scope that supplied it, and
+edits a few preferences in the user file; it never writes a project file. See the
+[settings panel](tui.md#settings-panel).
+
 ### Merge rules
 
 - Scalars: the highest scope that sets the key wins.
@@ -512,7 +516,8 @@ scanner_command = "/usr/local/bin/injection-scan"
 ```
 
 `/model` and `/guardian-model` in the terminal UI write `[model] model` and `[guardian] model` to
-the user file for you.
+the user file for you. When a higher scope also sets the key, the choice is still saved to the user
+file, and the notice names the scope that wins from the next launch.
 
 ### `[permissions]`
 

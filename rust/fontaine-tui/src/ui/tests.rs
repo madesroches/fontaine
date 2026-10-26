@@ -36,6 +36,8 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         render: |_: &mut App| {},
         recent: RecentModels::in_memory(),
         pending_pick: None,
+        config_pending: Default::default(),
+        pending_config: VecDeque::new(),
         pending_provider: VecDeque::new(),
         data_dir: PathBuf::new(),
         user_config: None,

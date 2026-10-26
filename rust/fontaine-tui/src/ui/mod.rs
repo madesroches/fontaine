@@ -9,6 +9,7 @@ mod turn;
 use std::path::Path;
 
 use crate::agents_panel::{AgentsPanel, Detail, PanelRow};
+use crate::config_panel::ConfigKey;
 use crate::denials::{DeniedList, UnavailablePrompt};
 use crate::ui::schedule::IDLE_POLL;
 use crate::ui::turn::TurnEnd;
@@ -172,6 +173,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
             if let Some((purpose, reference)) = self.pending_pick.take() {
                 self.apply_pick(runtime, purpose, &reference).await;
             }
+            while let Some(change) = self.pending_config.pop_front() {
+                match change {
+                    ConfigKey::OpenPicker(slot) => self.open_config_picker(runtime, slot).await,
+                    change => self.config_change(runtime, change),
+                }
+            }
             while let Some(request) = self.pending_provider.pop_front() {
                 self.provider_request(runtime, request).await;
             }
@@ -241,6 +248,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.apply_pick(runtime, purpose, &reference).await;
                 }
                 Action::Providers(request) => self.provider_request(runtime, request).await,
+                Action::Config(change) => self.config_change(runtime, change),
+                Action::OpenPicker(slot) => self.open_config_picker(runtime, slot).await,
                 Action::Server(_) | Action::None | Action::Interrupt | Action::Queue(_) => {}
             }
         }
@@ -265,6 +274,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(Command::Denied) => {
                 self.app.denied = Some(DeniedList::new(runtime.state.denied_calls()));
             }
+            Some(Command::Config) => self.open_config(runtime),
             Some(Command::Agents) => self.app.agents = Some(AgentsPanel::new()),
             Some(Command::Todos) => self.app.todos.toggle(),
             Some(Command::OutputStyle(name)) => self.output_style(runtime, &name),
