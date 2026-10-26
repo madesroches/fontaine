@@ -137,7 +137,8 @@ only when they no longer fit above the input.
   entry, so a pending tool call or stream pins later entries. When that pinned prefix, or chrome
   alone, makes the invariant impossible (held rows + chrome > term_h with nothing committable),
   the pinned prefix is force-committed oldest-first until the held rows fit, so `draw_transcript`'s
-  tail view never hides uncommitted rows. The streaming
+  tail view never hides uncommitted rows; a call force-committed while pending gets its outcome
+  appended as a follow-up transcript line when it settles. The streaming
   cut gets the same budget as a new `Cut` variant carrying that remaining row budget; it advances
   `committed_chars` partially, by at most that many rows. Commit is oldest-first, so once the
   stream overflows the budget the older settled entries (the warnings) commit before any stream

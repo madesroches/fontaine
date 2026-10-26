@@ -154,10 +154,26 @@ impl Transcript {
 
     fn set_status(&mut self, at: Option<usize>, new: ToolStatus) {
         if let Some(i) = at
-            && let Entry::Tool { status, .. } = &mut self.entries[i]
+            && let Entry::Tool { status, .. } = &self.entries[i]
             && !matches!(status, ToolStatus::Denied(_))
         {
-            *status = new;
+            self.settle(i, new);
+        }
+    }
+
+    /// Records `new` on call `i`. A call already written to scrollback as pending can no longer
+    /// be redrawn there, so its outcome is appended as a follow-up line, which later lookups by
+    /// id find first.
+    fn settle(&mut self, i: usize, new: ToolStatus) {
+        let Entry::Tool { status, .. } = &mut self.entries[i] else {
+            return;
+        };
+        let written = i < self.committed && *status == ToolStatus::Pending;
+        *status = new;
+        if written {
+            let follow_up = self.entries[i].clone();
+            self.finish_streaming();
+            self.entries.push(follow_up);
         }
     }
 
@@ -210,10 +226,8 @@ impl Transcript {
                         .explanation
                         .or(record.rule)
                         .unwrap_or_else(|| "denied".to_string());
-                    if let Some(i) = at
-                        && let Entry::Tool { status, .. } = &mut self.entries[i]
-                    {
-                        *status = ToolStatus::Denied(first_line(&why));
+                    if let Some(i) = at {
+                        self.settle(i, ToolStatus::Denied(first_line(&why)));
                     }
                 }
             }
@@ -239,22 +253,24 @@ impl Transcript {
     /// words the agent is told.
     pub fn guardian_denied(&mut self, id: &str, tool: &str, rule: &str, explanation: &str) {
         let at = self.find_tool(id, tool);
-        if let Some(i) = at
-            && let Entry::Tool { status, .. } = &mut self.entries[i]
-        {
-            *status = ToolStatus::Denied(first_line(&format!("[{rule}] {explanation}")));
+        if let Some(i) = at {
+            self.settle(
+                i,
+                ToolStatus::Denied(first_line(&format!("[{rule}] {explanation}"))),
+            );
         }
     }
 
     /// Calls that never produced a result because the turn was cut short.
     pub fn interrupt_pending(&mut self) {
         self.finish_streaming();
-        for entry in &mut self.entries {
-            if let Entry::Tool { status, .. } = entry
-                && *status == ToolStatus::Pending
-            {
-                *status = ToolStatus::Interrupted;
-            }
+        let pending: Vec<usize> = (0..self.entries.len())
+            .filter(|&i| {
+                matches!(&self.entries[i], Entry::Tool { status, .. } if *status == ToolStatus::Pending)
+            })
+            .collect();
+        for i in pending {
+            self.settle(i, ToolStatus::Interrupted);
         }
     }
 
@@ -358,9 +374,11 @@ impl Transcript {
 
     /// Commits the oldest rows that fit `budget`, which is how many rows the live area is over
     /// by; nothing is committed while the transcript fits. Entries commit whole, so the last
-    /// one may release more than asked. A pending call or a streaming reply that would keep the
-    /// live area over budget is released too, so the tail the screen shows never hides rows
-    /// that are not in scrollback. A streaming reply is cut at a row, keeping its last row live.
+    /// one may release more than asked. Commit is oldest-first, so a pending call is released
+    /// only once nothing older is left and the live area is still over budget; its outcome then
+    /// reaches scrollback as a follow-up line. A streaming reply that would keep the live area
+    /// over budget is released too, so the tail the screen shows never hides rows that are not
+    /// in scrollback. A streaming reply is cut at a row, keeping its last row live.
     pub fn commit_within(
         &mut self,
         width: usize,
@@ -489,6 +507,18 @@ fn truncate(text: &str, width: usize) -> String {
 }
 
 fn prefixed(text: &str, width: usize, first: &str, style: Style, out: &mut Vec<Line<'static>>) {
+    prefixed_body(text, width, first, style, Style::default(), out);
+}
+
+/// `prefixed` with the wrapped text itself styled, not just the prefix.
+fn prefixed_body(
+    text: &str,
+    width: usize,
+    first: &str,
+    style: Style,
+    body_style: Style,
+    out: &mut Vec<Line<'static>>,
+) {
     let indent = " ".repeat(first.chars().count());
     let body = width.saturating_sub(indent.chars().count());
     let mut head = true;
@@ -496,15 +526,15 @@ fn prefixed(text: &str, width: usize, first: &str, style: Style, out: &mut Vec<L
         for piece in wrap(line, body) {
             let prefix = if head { first } else { indent.as_str() };
             head = false;
-            out.push(row(prefix, style, piece));
+            out.push(row(prefix, style, body_style, piece));
         }
     }
 }
 
-fn row(prefix: &str, style: Style, piece: String) -> Line<'static> {
+fn row(prefix: &str, style: Style, body_style: Style, piece: String) -> Line<'static> {
     Line::from(vec![
         Span::styled(prefix.to_string(), style),
-        Span::raw(piece),
+        Span::styled(piece, body_style),
     ])
 }
 
@@ -524,7 +554,7 @@ fn assistant_rows(text: &str, from: usize, width: usize) -> Vec<(Line<'static>, 
             if i == last && lines.peek().is_some() {
                 offset += 1;
             }
-            rows.push((row("", Style::default(), piece), offset));
+            rows.push((row("", Style::default(), Style::default(), piece), offset));
         }
     }
     rows
@@ -622,21 +652,7 @@ fn warning_lines(
     let style = Style::default().fg(theme.warning);
     let indent = " ".repeat(glyphs.warning.chars().count());
     let body = width.saturating_sub(indent.chars().count());
-    let mut first = true;
-    for line in headline.split('\n') {
-        for piece in wrap(line, body) {
-            let prefix = if first {
-                glyphs.warning
-            } else {
-                indent.as_str()
-            };
-            first = false;
-            out.push(Line::from(vec![
-                Span::styled(prefix.to_string(), style),
-                Span::styled(piece, style),
-            ]));
-        }
-    }
+    prefixed_body(headline, width, glyphs.warning, style, style, out);
     let Some(hint) = hint else {
         return;
     };
@@ -1072,7 +1088,7 @@ mod tests {
     #[test]
     fn ascii_glyphs_replace_both_marks() {
         let lines = warned(80, Glyphs::ASCII, &theme());
-        assert!(text(&lines)[0].starts_with("! Guardian"));
+        assert!(text(&lines)[0].starts_with("* Guardian"));
         let mut t = Transcript {
             glyphs: Glyphs::ASCII,
             ..Transcript::default()
@@ -1139,6 +1155,36 @@ mod tests {
         t.notice("after");
         assert_eq!(text(&t.commit_within(40, &theme(), 1)), vec!["• shell a …"]);
         assert_eq!(text(&t.live_lines(40, &theme())), vec!["· after"]);
+    }
+
+    #[test]
+    fn a_pending_call_stays_pinned_while_older_rows_cover_the_budget() {
+        let mut t = Transcript::default();
+        t.notice("old");
+        call(&mut t, "a", "shell");
+        assert_eq!(text(&t.commit_within(40, &theme(), 1)), vec!["· old"]);
+        assert_eq!(text(&t.live_lines(40, &theme())), vec!["• shell a …"]);
+    }
+
+    #[test]
+    fn a_call_written_as_pending_gets_a_follow_up_line_when_it_settles() {
+        let mut t = Transcript::default();
+        call(&mut t, "a", "shell");
+        call(&mut t, "b", "shell");
+        call(&mut t, "c", "shell");
+        assert_eq!(t.commit_within(40, &theme(), 3).len(), 3);
+        t.guardian_denied("a", "shell", "Rule", "no way");
+        t.on_event(SessionEvent::ToolResult {
+            id: "b".into(),
+            tool: "shell".into(),
+            success: false,
+            text: "boom".into(),
+        });
+        t.interrupt_pending();
+        let live = text(&t.live_lines(60, &theme())).join("\n");
+        assert!(live.contains("denied: [Rule] no way"), "{live}");
+        assert!(live.contains("failed: boom"), "{live}");
+        assert!(live.contains("interrupted"), "{live}");
     }
 
     #[test]

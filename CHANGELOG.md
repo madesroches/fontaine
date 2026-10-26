@@ -196,7 +196,7 @@ All notable changes are recorded here. The format follows
     informational notices keep the dim `·` line. The configuration-root warnings and an ignored
     `FONTAINE_AX_SCREEN_READER` value, which used to print to stderr before the screen opened, now
     open the conversation, and the screen-reader renderer labels them `warning:` and `hint:`.
-    `FONTAINE_ASCII_GLYPHS=1` switches the marks to `!` and `-`. A short transcript now sits
+    `FONTAINE_ASCII_GLYPHS=1` switches the marks to `*` and `-`. A short transcript now sits
     directly above the input box instead of at the top of the screen: lines move to scrollback only
     once they no longer fit, and leaving the UI or `/clear` writes the held ones there. The
     headless stderr text of the guardian-on-main-model notice is now "headline — hint".

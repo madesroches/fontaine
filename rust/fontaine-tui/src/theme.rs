@@ -18,7 +18,7 @@ impl Glyphs {
     };
     pub const ASCII: Glyphs = Glyphs {
         info: "- ",
-        warning: "! ",
+        warning: "* ",
     };
 
     /// ASCII when `FONTAINE_ASCII_GLYPHS` is set to anything but empty or `0`.

@@ -33,11 +33,6 @@ impl Notice {
         }
     }
 
-    /// Headline and hint on one line, for surfaces that do not style them apart.
-    pub fn text(&self) -> String {
-        self.to_string()
-    }
-
     pub fn contains(&self, needle: &str) -> bool {
         self.headline.contains(needle) || self.hint.as_deref().is_some_and(|h| h.contains(needle))
     }
@@ -59,7 +54,7 @@ mod tests {
     #[test]
     fn display_joins_headline_and_hint() {
         let n = Notice::warning("head", Some("do this".into()));
-        assert_eq!(n.text(), "head — do this");
+        assert_eq!(n.to_string(), "head — do this");
         assert_eq!(n.severity, Severity::Warning);
         assert!(n.contains("do this") && n.contains("head") && !n.contains("zzz"));
     }

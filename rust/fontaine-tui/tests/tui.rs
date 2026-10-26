@@ -752,7 +752,7 @@ async fn ascii_glyphs_replace_the_warning_mark_when_asked() {
     w.run(|ui| async move {
         idle(&ui).await;
         let live = ui.live();
-        assert!(live.contains("! heads up") && !live.contains('⚠'), "{live}");
+        assert!(live.contains("* heads up") && !live.contains('⚠'), "{live}");
     })
     .await;
 }

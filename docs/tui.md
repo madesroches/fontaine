@@ -23,8 +23,8 @@ runs it as a shell command. The transcript shows your messages (`>`), the stream
 status: pending, done, failed, denied with the reason, or interrupted. A call the guardian refused
 shows its rule label and the guardian's own explanation on lines of their own, for example
 `[Download+Execute] pipes a download into a shell`. A line is written to scrollback once it has
-settled and no longer fits above the input, so a call's status is final by then; a call still
-pending when the screen is full is written as pending. A long command under approval scrolls inside
+settled and no longer fits above the input; a call still pending when the screen is full is written
+as pending, and its outcome (failed, denied or interrupted) follows as a line of its own. A long command under approval scrolls inside
 half the screen, so the call it asks about stays visible above the input.
 
 ### Notices
@@ -35,7 +35,7 @@ do about it on dim lines indented underneath; text in backticks and `/commands` 
 bold, so the actionable part stands out without relying on colour. Warnings open the conversation:
 a guardian that runs on your main model, a `[guardian] profile = "minimal"` that is not in effect,
 a tool-result scanner that is unavailable, an additional directory that was skipped and an ignored
-`FONTAINE_AX_SCREEN_READER` value. Set `FONTAINE_ASCII_GLYPHS=1` to use `!` and `-` in place of
+`FONTAINE_AX_SCREEN_READER` value. Set `FONTAINE_ASCII_GLYPHS=1` to use `*` and `-` in place of
 `⚠` and `·` on terminals or fonts that lack them (see [Terminal setup](terminal.md#ascii-glyphs)).
 
 Narrowing the terminal clears the visible screen and redraws the live area over the whole screen. Output
