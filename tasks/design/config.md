@@ -36,7 +36,7 @@ server is also approved individually, and a repository cannot pre-approve its ow
 ignored, project MCP tools are gated like any MCP tool (`Arbitrary`), and `!cmd` runs as a gated
 `shell` call; a project-local (user-trust) hook's `allow` counts as a user grant. The trust record lives in `<data dir>/trust.toml`, keyed by
 canonical root path (a trusted ancestor covers subdirectories, bounded at the enclosing git work-tree root as in Claude Code, unbounded outside a repo; hand-editable), never in the repo. Tightening keys (deny/ask, soft/hard deny) and prompt
-content (FONTAINE.md, skills, agent files, output styles) load regardless of trust. Trust state is
+content (the instruction hierarchy of `FONTAINE.md`, `CLAUDE.md` and `AGENTS.md` files, rules, imports; skills, agent files, output styles) load regardless of trust, though an instruction file or import that resolves outside the workspace roots and the enclosing git work tree is refused and a `read` deny rule keeps a file out. Trust state is
 a ledger fact passed to the guardian in `session_facts`.
 
 This block is schema-valid but not load-valid before Phase 4 (`default_mode = "auto"`) and names models that need provider discovery; `docs.rs` only parses and schema-validates such blocks.

@@ -14,9 +14,9 @@ use serde_json::Value;
 use crate::audit::args_digest;
 use crate::destructive::{self, Facts, touched_paths};
 use crate::gate::SessionState;
+use crate::instructions::InstructionFile;
 use crate::ledger::{Existence, LedgerView};
 use crate::permissions::summarize;
-use crate::prompt::InstructionFile;
 
 /// Longest compact summary of a call's arguments kept in the ledger and shown to the guardian.
 pub const SUMMARY_CHARS: usize = 200;

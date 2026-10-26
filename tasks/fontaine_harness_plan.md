@@ -532,6 +532,21 @@ scorecard run (see `## Remaining work`).
 - 2026-10-25: The `/config` panel shows only config-layer provenance (`Config::sources`, built by walking each layer's raw TOML); `--model`, the screen-reader flag and `FONTAINE_AX_SCREEN_READER` overrides are not named as sources, because they are per-launch overrides rather than config scopes (#4).
 - 2026-10-25: `/config` keeps next-launch saves in a session-scoped map that survives closing the panel, and Del resets only `Choice`/`PositiveInt` rows (not the model rows, since removing `model.model` sends the next launch to the setup screen), because this needs no file re-read or comparison logic (#4).
 
+- 2026-10-26: Supersedes the 2026-10-21 "no hierarchy or imports" line: instruction files form a hierarchy under `FONTAINE.md`, `CLAUDE.md` and `AGENTS.md` (user tier, every ancestor of the primary root, `@path` imports to four hops, `.claude/` and `.fontaine/` rules, on-demand nested files), `/memory` and `/init` (#7).
+- 2026-10-26: Claude Code walks ancestor `.claude/rules/` at launch and injects nested `CLAUDE.md` plus matching path rules into the tool result after a Read (observed with `claude -p`); Fontaine copies both (#7).
+- 2026-10-26: External imports from repo-controlled files are skipped with a warning instead of approved; an approval dialog needs persisted per-project state and a headless story (#7).
+- 2026-10-26: A repo-controlled file that is a symlink resolving outside the workspace roots and the enclosing git work tree is refused, where Claude Code follows symlinks; a checked-in `CLAUDE.md -> ~/.ssh/id_rsa` must not reach the prompt (#7).
+- 2026-10-26: Imports from directory-walk files above the confinement set (for example `~/CLAUDE.md`) are confined like repo-controlled ones, unlike Claude Code; those files can be planted by anything writing above the repo (#7).
+- 2026-10-26: Files denied by `read` deny rules are kept out of the prompt, user tier included; Claude Code does not apply deny rules to instruction files. The deterministic floor gates every source (#7).
+- 2026-10-26: `/memory` is a numbered list with `/memory <n>`, not an interactive picker; it reuses the `/copy [n]` pattern and works in the linear interface (#7).
+- 2026-10-26: Shell reads (`cat`) do not trigger on-demand loading; Fontaine does not parse shell commands into file reads (#7).
+- 2026-10-26: The `FONTAINE*` names count toward AGENTS mode like their `CLAUDE*` twins, so a repo with native files does not also load `AGENTS.md` (#7).
+- 2026-10-26: The guardian's `project_instructions` is a snapshot taken at session start, so mid-session edits and on-demand files cannot steer it (#7).
+- 2026-10-26: `.claude` joins the protected directories because Fontaine now reads it into system prompts, matching Claude Code (#7).
+- 2026-10-26: A rebuild (model switch, output style, `/add-dir`) unions the launch set into each agent's on-demand entry instead of resetting it; the conversation survives the rebuild, so a reset would re-inject files earlier tool results already carry (#7).
+- 2026-10-26: Per-agent on-demand entries are never evicted, so the map grows by one entry per subagent for the session's life, bounded like the agent tree's own node map (#7).
+- 2026-10-26: User-tier rules carry `Origin::User`, not `Origin::Rule`, so the guardian's ordering places them with the user tier (#7).
+
 ## Open Questions
 
 None.

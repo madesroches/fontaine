@@ -184,6 +184,7 @@ fn the_required_pages_exist_with_content() {
         "docs/agents.md",
         "docs/hooks.md",
         "docs/extensions.md",
+        "docs/instructions.md",
         "evals/README.md",
         "README.md",
         "CONTRIBUTING.md",

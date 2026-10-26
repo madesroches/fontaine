@@ -4,7 +4,7 @@
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use fontaine_tools::error_chain::chain;
 use rig_core::DynModel;
@@ -175,7 +175,11 @@ pub struct Session {
     store: DirStore,
     policy: CompactionPolicy,
     autocompact_window: Option<u64>,
+    context_reset: Arc<OnceLock<ContextReset>>,
 }
+
+/// What runs when the model's context is emptied or compacted.
+pub type ContextReset = Arc<dyn Fn() + Send + Sync>;
 
 impl Session {
     /// Creates the session directory, owner-only, and opens both stores in it. A directory
@@ -214,6 +218,7 @@ impl Session {
             store,
             policy: CompactionPolicy::default(),
             autocompact_window: None,
+            context_reset: Arc::default(),
         })
     }
 
@@ -250,6 +255,7 @@ impl Session {
             store,
             policy: CompactionPolicy::default(),
             autocompact_window: None,
+            context_reset: Arc::default(),
         })
     }
 
@@ -284,6 +290,19 @@ impl Session {
             source,
         })?;
         Session::open(data_dir, id)
+    }
+
+    /// Sets what runs when `clear` or a successful compaction drops the conversation's earlier
+    /// tool results; shared by every clone. The first hook set stays.
+    pub fn on_context_reset(&self, hook: ContextReset) {
+        // A second hook is ignored: one session has one set of instruction bookkeeping.
+        let _ = self.context_reset.set(hook);
+    }
+
+    fn context_was_reset(&self) {
+        if let Some(hook) = self.context_reset.get() {
+            hook();
+        }
     }
 
     /// The task lists of this session, shared by every clone of it.
@@ -475,6 +494,7 @@ impl Session {
             ));
             return failed(Some(usage));
         }
+        self.context_was_reset();
         CompactResult::Compacted {
             usage: Some(usage),
             before,
@@ -497,7 +517,9 @@ impl Session {
         conversation.set_entries(Vec::new(), Author::plugin("clear"));
         save_async(&self.store, CONVERSATION_LOG, &mut conversation)
             .await
-            .map_err(fail("saved"))
+            .map_err(fail("saved"))?;
+        self.context_was_reset();
+        Ok(())
     }
 }
 

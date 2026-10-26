@@ -20,6 +20,7 @@ use crate::child_runner::{ChildContext, CoreChildRunner, MainModel, Notification
 use crate::config::{Account, AgentMode, Config};
 use crate::extensions::Extensions;
 use crate::gate::{AutoContext, ScreenStage, SessionState, StateParams, no_guardian};
+use crate::instructions::{self, InstructionStage, Sources};
 use crate::models::{GuardianModel, Models};
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
@@ -188,7 +189,13 @@ pub(super) fn session_state(setup: &AgentSetup, tree: &Arc<AgentTree>) -> Arc<Se
     ));
     let permissions = &setup.config.permissions;
     let auto_mode = &setup.config.auto_mode;
-    let instructions = prompt::load_instructions(&setup.config_dir, &setup.roots[0]);
+    let sources = Sources::new(
+        setup.config_dir.clone(),
+        setup.home.clone(),
+        scope.clone(),
+        permissions.deny.iter().map(|r| r.rule.clone()).collect(),
+    );
+    let launch = instructions::load(&sources);
     let telemetry = &setup.config.telemetry;
     Arc::new(SessionState::new(StateParams {
         session_id: setup.session.id.clone(),
@@ -217,7 +224,9 @@ pub(super) fn session_state(setup: &AgentSetup, tree: &Arc<AgentTree>) -> Arc<Se
                 &auto_mode.soft_deny,
                 &auto_mode.allow,
             ),
-            project_instructions: project_instructions(&instructions),
+            project_instructions: project_instructions(&instructions::guardian_order(
+                &launch.files,
+            )),
         },
         agents: tree.clone(),
         reveal_mcp_names: telemetry.enabled && telemetry.log_tool_details,
@@ -243,6 +252,58 @@ pub(super) fn attach_screen(state: &SessionState, setup: &AgentSetup) {
             .approver
             .warn(&format!("the guardian screen stage is off: {}", chain(&e))),
     }
+}
+
+/// What stands between the model and its tools, built together because the result pipeline
+/// carries the instruction stage.
+pub(super) struct Gates {
+    pub(super) pipeline: Arc<PermissionPipeline>,
+    pub(super) retained: Setup,
+    pub(super) instruction_stage: Arc<InstructionStage>,
+    pub(super) results: Arc<ResultPipeline>,
+    pub(super) llm_scanner: Option<Arc<RwLock<Backend>>>,
+}
+
+pub(super) fn gates(
+    setup: &mut AgentSetup,
+    tree: &Arc<AgentTree>,
+    state: &Arc<SessionState>,
+) -> Result<Gates, RuntimeError> {
+    let (pipeline, post_hooks) = permission_pipeline(setup, state);
+    let retained = retained(setup)?;
+    let instruction_stage = instruction_stage(setup, state);
+    let (results, llm_scanner) = result_pipeline(
+        setup.scanner.backend.take(),
+        &setup.config,
+        tree,
+        state,
+        post_hooks,
+        &instruction_stage,
+    );
+    Ok(Gates {
+        pipeline,
+        retained,
+        instruction_stage,
+        results,
+        llm_scanner,
+    })
+}
+
+/// The stage that brings nested instruction files into tool results, wired to the session's
+/// `/clear` and compaction so the main agent receives them again afterwards.
+pub(super) fn instruction_stage(
+    setup: &AgentSetup,
+    state: &Arc<SessionState>,
+) -> Arc<InstructionStage> {
+    let stage = Arc::new(InstructionStage::new(
+        Sources::for_state(state, &setup.config_dir, setup.home.as_deref()),
+        setup.approver.clone(),
+    ));
+    let on_reset = stage.clone();
+    setup
+        .session
+        .on_context_reset(Arc::new(move || on_reset.reset_main()));
+    stage
 }
 
 /// The pre-tool pipeline, and the post-tool hooks the result pipeline runs.
@@ -277,11 +338,14 @@ pub(super) fn result_pipeline(
     tree: &Arc<AgentTree>,
     state: &Arc<SessionState>,
     post_hooks: Vec<CommandHook>,
+    instructions: &Arc<InstructionStage>,
 ) -> (Arc<ResultPipeline>, Option<Arc<RwLock<Backend>>>) {
-    let mut results = ResultPipeline::new().with_stage(
-        StageKind::Notifications,
-        Arc::new(NotificationStage { tree: tree.clone() }),
-    );
+    let mut results = ResultPipeline::new()
+        .with_stage(
+            StageKind::Notifications,
+            Arc::new(NotificationStage { tree: tree.clone() }),
+        )
+        .with_stage(StageKind::Instructions, instructions.clone());
     let mut llm_scanner = None;
     if let Some(backend) = backend {
         let stage = ScannerStage::new(backend);
@@ -309,6 +373,7 @@ pub(super) fn retained(setup: &AgentSetup) -> Result<Setup, RuntimeError> {
     Ok(Setup {
         network,
         config_dir: setup.config_dir.clone(),
+        home: setup.home.clone(),
         data_dir: setup.data_dir.clone(),
         scrub_env: setup.scrub_env.clone(),
         git_bash: setup.git_bash.clone(),
@@ -369,6 +434,7 @@ fn child_runner(
 ) -> Arc<CoreChildRunner> {
     let preamble_state = state.clone();
     let preamble_config_dir = retained.config_dir.clone();
+    let preamble_home = retained.home.clone();
     let preamble_system = retained.system_prompt.clone();
     Arc::new(CoreChildRunner {
         context: Arc::new(ChildContext {
@@ -378,7 +444,12 @@ fn child_runner(
             switcher: retained.switcher.clone(),
             preamble: Arc::new(move |agent_type: &AgentType| {
                 let roots: Vec<PathBuf> = preamble_state.scope().roots().to_vec();
-                let instructions = prompt::load_instructions(&preamble_config_dir, &roots[0]);
+                let sources = Sources::for_state(
+                    &preamble_state,
+                    &preamble_config_dir,
+                    preamble_home.as_deref(),
+                );
+                let instructions = instructions::load(&sources).files;
                 let layer = prompt::subagent_layer(&agent_type.name, agent_type.prompt.as_deref());
                 prompt::assemble(&PromptParts {
                     roots: &roots,

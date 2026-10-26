@@ -23,6 +23,7 @@ use super::Setup;
 use crate::child_runner::{CoreChildRunner, LedgerWindow};
 use crate::config::Config;
 use crate::gate::SessionState;
+use crate::instructions::{self, InstructionStage, Loaded, Sources};
 use crate::models::Models;
 use crate::permissions::{Approver, PermissionPipeline};
 use crate::prompt::{self, PromptParts};
@@ -87,11 +88,15 @@ pub(super) struct Parts<'a> {
     pub(super) runner: &'a Arc<CoreChildRunner>,
     pub(super) output_style: Option<(String, String)>,
     pub(super) steering: &'a Steering,
+    pub(super) instructions: &'a Arc<InstructionStage>,
 }
 
 /// The agent, with its wrapped tools registered in the session's tool server.
-pub(super) fn build_agent(p: &Parts<'_>) -> Result<(Agent, prompt::PromptPieces), RuntimeError> {
-    let pieces = prompt_layers(p);
+pub(super) fn build_agent(
+    p: &Parts<'_>,
+) -> Result<(Agent, prompt::PromptPieces, Loaded), RuntimeError> {
+    let (pieces, sources, loaded) = prompt_layers(p);
+    p.instructions.warn_once(&loaded.warnings);
     if let Some(warning) = p.session.todos().take_warning() {
         p.approver.warn(&warning);
     }
@@ -102,7 +107,8 @@ pub(super) fn build_agent(p: &Parts<'_>) -> Result<(Agent, prompt::PromptPieces)
         }
     }
     register_tools(p)?;
-    Ok((finish_builder(p, pieces.join()), pieces))
+    p.instructions.reseed(sources, &loaded);
+    Ok((finish_builder(p, pieces.join()), pieces, loaded))
 }
 
 /// Whether the scheduling tools exist in this session.
@@ -110,13 +116,14 @@ fn scheduling(p: &Parts<'_>) -> bool {
     p.setup.scheduling && p.config.schedule.enabled
 }
 
-fn prompt_layers(p: &Parts<'_>) -> prompt::PromptPieces {
-    let instructions = prompt::load_instructions(&p.setup.config_dir, &p.roots[0]);
+fn prompt_layers(p: &Parts<'_>) -> (prompt::PromptPieces, Sources, Loaded) {
+    let sources = Sources::for_state(p.state, &p.setup.config_dir, p.setup.home.as_deref());
+    let loaded = instructions::load(&sources);
     let skill_index = skills::index(p.skills.extensions());
-    prompt::layers(&PromptParts {
+    let pieces = prompt::layers(&PromptParts {
         roots: p.roots,
         system_prompt: p.setup.system_prompt.as_deref(),
-        instructions: &instructions,
+        instructions: &loaded.files,
         skill_index: skill_index.as_deref(),
         scheduling: scheduling(p).then_some(prompt::SCHEDULING_PROMPT),
         output_style: p
@@ -124,7 +131,8 @@ fn prompt_layers(p: &Parts<'_>) -> prompt::PromptPieces {
             .as_ref()
             .map(|(name, text)| (name.as_str(), text.as_str())),
         append: p.setup.append_system_prompt.as_deref(),
-    })
+    });
+    (pieces, sources, loaded)
 }
 
 fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {

@@ -431,7 +431,8 @@ impl World {
                 self.startup.clone(),
                 rx,
                 render,
-                clipboard
+                clipboard,
+                fontaine_tui::no_suspend()
             ),
             script(ui)
         );
@@ -467,7 +468,8 @@ impl World {
                 self.startup.clone(),
                 rx,
                 render,
-                |_: &str| Ok(())
+                |_: &str| Ok(()),
+                fontaine_tui::no_suspend()
             ),
             script(ui)
         );

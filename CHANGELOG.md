@@ -159,6 +159,20 @@ All notable changes are recorded here. The format follows
     `HF_TOKEN`, always removed from `shell` and hook environments), with the Llama 4 Community
     License notice shown on every startup in every mode. `llm` uses the guardian's model;
     `command` runs your own program (stdin `{tool, content}`, stdout `{verdict, reason}`).
+- Instruction files (#7)
+  - Fontaine reads `FONTAINE.md`, `CLAUDE.md` and `AGENTS.md` from your config, from every directory
+    from the filesystem root down to the primary root (with `CLAUDE.local.md` and
+    `FONTAINE.local.md`), from `.claude/` and `.fontaine/` (including `rules/`), and from `@path`
+    imports up to four levels deep. `AGENTS.md` is read when no `CLAUDE` or `FONTAINE` file
+    exists. Identical files load once. Rules can be scoped to paths with a `paths` frontmatter key,
+    and nested files and matching rules load into the tool result when the agent reads or writes a
+    file under them.
+  - Repository files that resolve outside the workspace and its git work tree, and imports that
+    leave it, are skipped with a warning; a `read` deny rule keeps a file out of the prompt.
+    `.claude` joins the protected directories. The guardian's `project_instructions` is a
+    snapshot of the launch set from session start, most specific file first.
+  - `/memory` lists the instruction files and opens one in `$VISUAL` or `$EDITOR`; `/init` has the
+    agent write or improve the project instruction file.
 - Terminal UI and headless
   - The terminal UI (`fontaine` without `-p`) draws inline, so finished output goes into the
     terminal's scrollback: transcript, streaming output, scrollable approval prompts, mode cycling,

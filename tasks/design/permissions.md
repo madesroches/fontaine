@@ -117,10 +117,9 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 — the only registered tools that write structurally (`delete`/`move` are not registered; shell writes
 are not structurally detectable without regex on args, so they take the ordinary shell path: guardian
 in `auto`, prompt in manual/acceptEdits). Matched on resolved path components, in any workspace root or
-the home directory, plus any path under Fontaine's own config and data directories. Directories: `.git`, `.vscode`, `.idea`, `.husky`, `.fontaine`. Files: `.gitconfig`,
+the home directory, plus any path under Fontaine's own config and data directories. Directories: `.git`, `.vscode`, `.idea`, `.husky`, `.fontaine`, `.claude` (Fontaine reads `.claude/CLAUDE.md` and `.claude/rules/` into system prompts, so a model write there is a persistence vector). Files: `.gitconfig`,
 `.gitmodules`, `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc`,
-`.mcp.json`. This follows Claude Code's documented protected-paths list (`.fontaine` in place of
-`.claude`); confirm it against a `claude -p` baseline in Phase 3 and record any difference in Decisions.
+`.mcp.json`. This follows Claude Code's documented protected-paths list; confirm it against a `claude -p` baseline in Phase 3 and record any difference in Decisions.
 Per mode: manual/acceptEdits → prompt (acceptEdits' edit auto-allow does not apply); auto → guardian;
 plan → not reachable (edit-class is blocked at steps 3/9); dontAsk → Deny; headless → Deny.
 

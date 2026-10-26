@@ -225,6 +225,12 @@ impl<B: Backend + Anchor> Screen<B> {
         backend.flush()
     }
 
+    /// Redraws the live area from scratch at the row the cursor is on, after a child process
+    /// has had the terminal.
+    pub fn resume(&mut self) -> Result<(), B::Error> {
+        self.rebuild(self.height)
+    }
+
     pub fn backend(&self) -> &B {
         self.terminal.backend()
     }

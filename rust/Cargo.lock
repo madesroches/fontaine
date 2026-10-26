@@ -1640,6 +1640,7 @@ dependencies = [
  "fontaine-tools",
  "futures",
  "gix",
+ "globset",
  "http",
  "ignore",
  "insta",

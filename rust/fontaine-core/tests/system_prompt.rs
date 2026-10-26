@@ -1,9 +1,12 @@
 mod common;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use common::World;
+use fontaine_core::instructions::{self, Origin, Sources};
 use fontaine_core::prompt::{self, BASE_PROMPT, InstructionFile, PromptParts};
+use fontaine_tools::scope::Scope;
 
 fn roots() -> Vec<PathBuf> {
     vec![
@@ -17,10 +20,12 @@ fn instructions() -> Vec<InstructionFile> {
         InstructionFile {
             path: PathBuf::from("/home/me/.config/fontaine/FONTAINE.md"),
             text: "Always answer in French.\n".to_string(),
+            origin: Origin::User,
         },
         InstructionFile {
             path: PathBuf::from("/work/project/FONTAINE.md"),
             text: "Run `cargo test` before finishing.\n".to_string(),
+            origin: Origin::Walk,
         },
     ]
 }
@@ -138,25 +143,34 @@ fn a_replacement_system_prompt_replaces_only_the_base() {
     assert!(assembled.ends_with("APPENDED"));
 }
 
+fn sources(w: &World) -> Sources {
+    Sources::new(
+        w.config.clone(),
+        None,
+        Arc::new(Scope::new(w.work.clone(), [])),
+        Vec::new(),
+    )
+}
+
 #[test]
-fn instruction_files_load_from_the_user_config_dir_and_the_primary_root_only() {
+fn instruction_files_load_from_the_user_config_dir_the_primary_root_and_its_ancestors() {
     let w = World::new();
     common::write(&w.config.join("FONTAINE.md"), "user level\n");
     common::write(&w.work.join("FONTAINE.md"), "project level\n");
-    common::write(&w.work.join("sub/FONTAINE.md"), "nested, never read\n");
-    common::write(&w.root.join("FONTAINE.md"), "parent, never read\n");
-    let loaded = prompt::load_instructions(&w.config, &w.work);
-    let texts: Vec<&str> = loaded.iter().map(|f| f.text.trim()).collect();
-    assert_eq!(texts, ["user level", "project level"]);
-    assert_eq!(loaded[1].path, w.work.join("FONTAINE.md"));
+    common::write(&w.work.join("sub/FONTAINE.md"), "nested, read on demand\n");
+    common::write(&w.root.join("FONTAINE.md"), "parent level\n");
+    let loaded = instructions::load(&sources(&w));
+    let texts: Vec<&str> = loaded.files.iter().map(|f| f.text.trim()).collect();
+    assert_eq!(texts, ["user level", "parent level", "project level"]);
+    assert_eq!(loaded.files[2].path, w.work.join("FONTAINE.md"));
 }
 
 #[test]
 fn absent_and_blank_instruction_files_are_skipped() {
     let w = World::new();
-    assert!(prompt::load_instructions(&w.config, &w.work).is_empty());
+    assert!(instructions::load(&sources(&w)).files.is_empty());
     common::write(&w.work.join("FONTAINE.md"), "  \n\n");
-    assert!(prompt::load_instructions(&w.config, &w.work).is_empty());
+    assert!(instructions::load(&sources(&w)).files.is_empty());
 }
 
 #[test]

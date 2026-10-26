@@ -97,6 +97,43 @@ async fn an_allow_verdict_runs_the_call_and_the_run_reports_the_guardian() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_guardian_reads_the_launch_instructions_and_never_the_on_demand_ones() {
+    let agent = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool("r1", "read", json!({"path": "sub/f.txt"})),
+            Turn::tool("c1", "shell", json!({"command": "echo hi > out.txt"})),
+            Turn::text("finished"),
+        ],
+    )
+    .await;
+    let allow = || submit(verdict("allow", "allow", 0.95));
+    let guardian = Endpoint::start(Wire::Chat, vec![allow(), allow(), allow()]).await;
+    let s = setup(&agent, &guardian, "");
+    s.add_file("CLAUDE.md", "LAUNCH-MARKER\n");
+    s.add_file("sub/CLAUDE.md", "ON-DEMAND-MARKER\n");
+    s.add_file("sub/f.txt", "body\n");
+    let out = run_auto(&s, &[]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let asked = guardian.requests().await;
+    assert!(!asked.is_empty());
+    for request in &asked {
+        let text = request.to_string();
+        assert!(text.contains("LAUNCH-MARKER"), "{text}");
+        assert!(!text.contains("ON-DEMAND-MARKER"), "{text}");
+    }
+    // The agent did receive the nested file, so the guardian's omission is not for want of it.
+    let agent_requests = agent.requests().await;
+    assert!(
+        agent_requests
+            .last()
+            .unwrap()
+            .to_string()
+            .contains("ON-DEMAND-MARKER")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_deny_verdict_stops_the_call_and_tells_the_agent_why() {
     let agent = Endpoint::start(
         Wire::Chat,

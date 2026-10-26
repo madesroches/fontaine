@@ -37,6 +37,10 @@ pub enum Command {
     Plan(String),
     /// `/copy [n]`.
     Copy(String),
+    /// `/init`: has the agent write or improve the project instruction file; takes no argument.
+    Init(String),
+    /// `/memory [n]`: lists the instruction files, or opens the `n`th in the editor.
+    Memory(String),
     /// A name no built-in command has; it may be a skill.
     Other {
         name: String,
@@ -146,6 +150,13 @@ pub const BUILTINS: &[Builtin] = &[
         command: |_| Command::Hooks,
     },
     Builtin {
+        name: "init",
+        aliases: &[],
+        hint: None,
+        description: "write or improve the project's instruction file",
+        command: Command::Init,
+    },
+    Builtin {
         name: "login",
         aliases: &[],
         hint: Some("[account]"),
@@ -165,6 +176,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: None,
         description: "the MCP servers and their state",
         command: Command::Mcp,
+    },
+    Builtin {
+        name: "memory",
+        aliases: &[],
+        hint: Some("[n]"),
+        description: "list the instruction files, or open one in your editor",
+        command: Command::Memory,
     },
     Builtin {
         name: "model",
@@ -510,6 +528,20 @@ pub fn reply_number(argument: &str) -> Result<usize, String> {
     }
 }
 
+/// Which instruction file `/memory` is asked to open: none for the bare list, otherwise the
+/// 1-based number the list shows.
+pub fn memory_number(argument: &str) -> Result<Option<usize>, String> {
+    if argument.is_empty() {
+        return Ok(None);
+    }
+    match argument.parse::<usize>() {
+        Ok(n) if n > 0 => Ok(Some(n)),
+        _ => Err(format!(
+            "/memory takes a number from the list, such as `/memory 2`, not `{argument}`"
+        )),
+    }
+}
+
 /// Whether `/context` is asked for the per-item breakdown.
 pub fn context_all(argument: &str) -> Result<bool, String> {
     match argument {
@@ -650,6 +682,22 @@ mod tests {
         for bad in ["0", "-1", "x", "1.5"] {
             assert!(reply_number(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn memory_takes_a_list_number_and_init_is_a_command() {
+        assert_eq!(memory_number(""), Ok(None));
+        assert_eq!(memory_number("2"), Ok(Some(2)));
+        for bad in ["0", "-1", "x"] {
+            assert!(memory_number(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            parse_command("/memory 3"),
+            Some(Command::Memory("3".into()))
+        );
+        assert_eq!(parse_command("/init"), Some(Command::Init(String::new())));
+        let names: Vec<String> = builtin_menu().into_iter().map(|e| e.name).collect();
+        assert!(names.contains(&"memory".to_string()) && names.contains(&"init".to_string()));
     }
 
     #[test]

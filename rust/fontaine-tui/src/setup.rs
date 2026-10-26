@@ -192,7 +192,9 @@ pub async fn run(params: SetupParams) -> io::Result<Option<(Models, Config)>> {
     let stop = Arc::new(AtomicBool::new(false));
     let reader = {
         let stop = stop.clone();
-        tokio::task::spawn_blocking(move || crate::read_terminal(&tx, &stop))
+        tokio::task::spawn_blocking(move || {
+            crate::read_terminal(&tx, &stop, &crate::ReaderPause::default())
+        })
     };
 
     let result = match terminal {

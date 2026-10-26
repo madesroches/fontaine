@@ -260,6 +260,14 @@ fn boundary(dir: &Path) -> Boundary {
     }
 }
 
+/// The work-tree root of the git repository that holds `dir`, when there is one.
+pub(crate) fn work_tree_root(dir: &Path) -> Option<PathBuf> {
+    match boundary(dir) {
+        Boundary::WorkTree(top) => Some(top),
+        _ => None,
+    }
+}
+
 fn norm(p: &Path) -> Vec<String> {
     p.components()
         .map(|c| match c {

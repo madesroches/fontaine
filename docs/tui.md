@@ -247,9 +247,11 @@ conversation. The session starts in the mode your settings give, with no grants 
 | `/guardian-model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model) limited to the models the guardian could be. With one, pins the guardian to that model for the live session and saves it as `[guardian] model`. A model whose account has no credential becomes an unavailable guardian, which the next adjudication reports. When a higher scope (`--settings` or a project-local file) sets `[guardian] model`, the notice adds that the scope wins from the next launch. |
 | `/help` | Lists the built-in commands, your user-invocable skills and the main keys. |
 | `/hooks` | Lists the [hooks](hooks.md) by event with their matcher, command and scope, and marks a repository's hooks that did not load because the workspace is not trusted. |
+| `/init` | Has the agent write the project instruction file, or improve the one that exists. See [Instruction files](instructions.md#init). Takes no argument. |
 | `/login [<account>]` | Opens the [provider dialog](#managing-providers) to add an account, log in, log out or remove one. With an account name it opens straight on that account's log-in: a hidden key prompt, or the device sign-in for `opencode-go`. Only between turns. |
 | `/loop [<interval>] <prompt>`, `/loop list`, `/loop stop [<id>]` | Runs a prompt again and again while the session is idle; see [Scheduled prompts](#scheduled-prompts). |
 | `/mcp` | Lists each [MCP server](mcp.md) as `connected`, `failed` with the error, `left off` (you declined it) or `not loaded` (the workspace is not trusted). It takes no arguments. |
+| `/memory [<n>]` | Lists the instruction files, numbered, with where each came from and the `FONTAINE.md` files that do not exist yet. With a number it opens that file in `$VISUAL` or `$EDITOR`, creating it first when needed. See [Instruction files](instructions.md#memory). |
 | `/model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model). With one, switches the live session to that model, rebuilds the agent on it with the conversation kept, and saves it as `[model] model` in your user settings file; when a higher scope sets `[model] model`, the notice adds that the scope wins from the next launch. The guardian moves with it only when it is on the main-model fallback (no `[guardian] model` and no validated model available); a pinned or validated guardian stays. |
 | `/output-style [<name>\|none]` | Without an argument, lists the [output styles](extensions.md#output-styles). With one, switches to it for the next turn; `none` removes it. |
 | `/permissions` | Shows the permission mode and the `deny`, `ask` and `allow` rules in force, each with the scope that contributed it (session and always grants included), the workspace roots and the settings file where rules are edited. It is read-only; see [Permissions](permissions.md). |
@@ -290,7 +292,7 @@ the model's window less a reserve, or earlier if you set
 
 `/context` shows what the next request would carry: the system prompt, instruction files, the
 skill index, the tool definitions (MCP tools apart), the messages and what is free of the window,
-with the point where compaction runs on its own. `/context all` also lists each instruction file
+with the point where compaction runs on its own. `/context all` also lists each instruction file (imported files and rules included)
 and tool, largest first. The numbers are estimates from a character-based counter, not the
 provider's tokenizer, and they count the same way the compaction trigger does. When the model is
 not in the catalog there is no `free` row and it never compacts automatically; a catalogued model

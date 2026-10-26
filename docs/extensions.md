@@ -1,7 +1,8 @@
 # Skills, agent files and output styles
 
 Three kinds of file extend what Fontaine tells the model, and each has Claude Code's frontmatter, so
-files from a `.claude/` directory work by copying. `.claude/` itself is not read.
+files from a `.claude/` directory work by copying. Skills, agent files and output styles are not
+read from `.claude/`; instruction files are (see [Instruction files](instructions.md)).
 
 | Kind | File | What it is |
 |---|---|---|
