@@ -11,7 +11,7 @@ to paths), and from `AGENTS.md` when a repo has no `CLAUDE.md`. Claude Code also
 and `/init`. This plan gives Fontaine the same hierarchy under three names: `FONTAINE.md` (native),
 `CLAUDE.md` and `AGENTS.md`. A repo already set up for Claude Code or for other agents then works
 unchanged. The plan also defines dedup across the names and confines symlinks and imports in
-repo-controlled files to the workspace. It pins exactly which files feed the guardian's
+repo-controlled files to the workspace roots and the enclosing git work tree. It pins exactly which files feed the guardian's
 `project_instructions`, and adds `/memory` and `/init` to the TUI.
 
 ## Current State
@@ -191,9 +191,9 @@ Files whose effective text is blank are dropped, as today.
 ### Path-scoped rules and on-demand files
 
 Rule frontmatter goes through `frontmatter::parse`. `paths` is read through `Document::list`
-(`frontmatter.rs:57`), which handles a list or a comma string. Other keys are ignored. A parse error means no `paths`, and the rule
-loads unconditionally as in Claude Code. Patterns compile with `globset` (new exact-pinned
-workspace dependency, the version `ignore` already pulls in) with `literal_separator(true)`, so
+(`frontmatter.rs:57`), which handles a list or a comma string. Other keys are ignored. A parse error (`parse` returns Err with no body) means no `paths`, and the
+whole raw file text, after comment stripping, loads as an unconditional rule, as in Claude Code. Patterns compile with `globset` (new exact-pinned
+workspace dependency, `globset = "=0.4.20"`) with `literal_separator(true)`, so
 `*.md` matches only at the base and `**` crosses directories. Braces are supported natively, so
 no expansion budget is needed. An invalid pattern is dropped with a warning, and the rule's other
 patterns keep working. The base directory is the directory holding the rule's
@@ -252,11 +252,11 @@ most-specific-first order means the cap drops the broadest files, not the repo's
   - `InstructionFile { path, text, origin }`. It moves from `prompt.rs` and is re-exported there
     so existing users compile.
   - `Origin` is one of `User`, `Walk`, `Local`, `Agents`, `Rule`, or `Import { from: PathBuf }`;
-    it is used by `/memory`.
+    it derives `Clone, Debug, PartialEq, Eq` and is used by `/memory`.
   - `Sources { config_dir, home, primary_root, roots, work_tree, deny, scope }`.
   - `Loaded { files, path_rules, agents_mode, warnings }`.
   - `pub fn load(&Sources) -> Loaded`.
-  - `pub fn guardian_order(&[InstructionFile]) -> Vec<&InstructionFile>`.
+  - `pub fn guardian_order(&[InstructionFile]) -> Vec<InstructionFile>` (owned, as `adjudication::project_instructions` takes `&[InstructionFile]`).
 - `markdown.rs`: the comment stripper and the import scanner. Pure functions.
 - `imports.rs`: expansion with depth, dedup, confinement and deny checks.
 - `rules.rs`: rules-directory walk, frontmatter, `PathRule { base, globs, file }`.
@@ -299,7 +299,9 @@ into future system prompts, so a model write there is a persistence vector exact
   - On Windows the same `sh -c '<editor> "$1"' editor <path>` form runs through Git Bash, as user
     command strings do (`user_hooks.rs`, `fontaine-tools/src/git_bash.rs`), so
     `C:\Program Files\…` paths survive. The editor string is split on whitespace only when Git
-    Bash is absent.
+    Bash is absent. The command is built with `fontaine_tools::git_bash::sh_command` plus the
+    `git_bash.path_value(..)` PATH prepend, as `run_user_shell` (`fontaine-core/src/user_shell.rs`)
+    does, and the GitBash comes from the public `AgentSetup.git_bash`.
 - `run()` passes a suspend/resume handle (screen plus the `read_terminal` pause flag) into
   `drive()` (`fontaine-tui/src/lib.rs:177-184`, `372-378`), and `/memory` dispatch calls it.
 - While the editor runs, the TUI:
@@ -339,7 +341,7 @@ takes no argument and is TUI-only, like the other built-ins.
 2. **Rules** — `instructions/rules.rs`:
    - the symlink-following, cycle-safe walk, sorted by relative path;
    - frontmatter `paths` via `Document::list` (a parse error means unconditional);
-   - `PathRule` with `globset` (add `globset = "=<ignore's version>"` to `rust/Cargo.toml`
+   - `PathRule` with `globset` (add `globset = "=0.4.20"` to `rust/Cargo.toml`
      `[workspace.dependencies]` and to `fontaine-core/Cargo.toml`; `cargo deny check`).
 3. **Imports, confinement, dedup** — `instructions/imports.rs`:
    - expansion (four hops, preorder);
@@ -351,7 +353,8 @@ takes no argument and is TUI-only, like the other built-ins.
 4. **Discovery** — `instructions/mod.rs` `load`: user tier, AGENTS-mode test, the root-down walk
    with per-directory order, blank-drop, 40k-character warning, and `guardian_order`. Move
    `InstructionFile` here and re-export it from `prompt.rs`. Delete `load_instructions`, and move
-   its tests in `tests/system_prompt.rs` to `instructions::load`.
+   its tests in `tests/system_prompt.rs` to `instructions::load`. The `instructions()` fixture
+   there (lines 17, 21) builds `InstructionFile { path, text }` literals, which gain an `origin`.
 5. **Call sites** — `agent/build.rs` `prompt_layers` and `build_agent` (warnings),
    `agent/setup.rs` `session_state` (guardian order) and the `child_runner` preamble.
    `adjudication::project_instructions` keeps its signature, and its caller passes the
@@ -401,7 +404,8 @@ takes no argument and is TUI-only, like the other built-ins.
 - `rust/Cargo.toml`, `rust/fontaine-core/Cargo.toml`
 - Tests: `rust/fontaine-core/tests/system_prompt.rs` (+ snapshot),
   `rust/fontaine/tests/{headless_tools,auto_headless}.rs`, `rust/fontaine-core/tests/docs.rs`,
-  `rust/fontaine-tui/tests/tui.rs`
+  `rust/fontaine-tui/tests/tui.rs`, `rust/fontaine-tui/tests/common/mod.rs` (calls `drive` at
+  :428 and :464; pass a no-op suspend handle)
 - Docs: `docs/{index,guardian,tui,extensions,configuration,permissions}.md`
 - Plans: `tasks/fontaine_harness_plan.md`, `tasks/design/{permissions,config}.md`,
   `research/research-claude-code-parity.md`, `CHANGELOG.md`
@@ -434,6 +438,15 @@ takes no argument and is TUI-only, like the other built-ins.
   `claude -p`); the design copies both.
 - 2026-10-26: External imports from repo-controlled files are skipped with a warning instead of
   approved; an approval dialog needs persisted per-project state and a headless story.
+- 2026-10-26: A repo-controlled file that is a symlink resolving outside the confinement set is
+  refused, where Claude Code follows symlinks; a checked-in `CLAUDE.md -> ~/.ssh/id_rsa` must not
+  reach the prompt.
+- 2026-10-26: Imports from directory-walk files above the confinement set (for example
+  `~/CLAUDE.md`) are confined like repo-controlled ones, unlike Claude Code; those files can be
+  planted by anything writing above the repo.
+- 2026-10-26: Files denied by `read` deny rules are kept out of the prompt, user tier included;
+  Claude Code does not apply deny rules to instruction files. The deterministic floor gates every
+  source.
 - 2026-10-26: `/memory` is a numbered list with `/memory <n>`, not an interactive picker; it
   reuses the `/copy [n]` pattern and works in the linear interface.
 - 2026-10-26: Shell reads (`cat`) do not trigger on-demand loading; Fontaine does not parse shell
@@ -459,10 +472,10 @@ takes no argument and is TUI-only, like the other built-ins.
 - `docs/permissions.md`: `.claude` in the protected directories; deny rules on `read` also keep
   files out of the instructions.
 - `docs/configuration.md:794`: the trust paragraph names the new instruction locations.
-- `tasks/design/permissions.md` (protected directories list, ~lines 120-123) gains `.claude`;
+- `tasks/design/permissions.md` (protected directories list, ~lines 120-123) gains `.claude`, and its parenthetical "(`.fontaine` in place of `.claude`)" is removed or reworded;
   `tasks/design/config.md:39` (prompt content) names the instruction hierarchy.
 - `CHANGELOG.md`: an Unreleased entry.
-- `docs/index.md` links the new page; `rust/fontaine-core/tests/docs.rs` lists it.
+- `docs/index.md` links the new page and adds `/memory` and `/init` to its TUI slash-command list; `rust/fontaine-core/tests/docs.rs` lists it.
 
 ## Testing Strategy
 
