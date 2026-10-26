@@ -71,8 +71,7 @@ pub fn sweep_stale(data: &Path) -> Vec<String>;    // returns warnings
   any early return, so it covers `/exit`, `/resume`, `/branch` and headless early returns.
   `Drop` closes the lock handle before deleting the lock file. `owner_only.rs:109-124` retries
   only a rename, so a new bounded retry is added for `remove_dir_all` (Windows file locks); a
-  final failure surfaces once through an `Approver::warn`-style notice rather than being
-  swallowed.
+  final failure is best-effort (no `Approver` is available at `Drop`).
 
 ### Wiring
 
@@ -83,8 +82,9 @@ pub fn sweep_stale(data: &Path) -> Vec<String>;    // returns warnings
   subagents) picks it up from the roots list. **Subagents share the parent's scratch**: they use
   the same `Scope`, and the mode ladder already prevents a child from being looser than its
   parent, so no new rule is needed.
-- Failure to create the directory is a warning, and the session runs without a scratch root
-  (the confinement is the old behavior, never a looser one).
+- Failure to create the directory, including a lock already held (e.g. `/resume` of a session
+  another live process holds), is pushed to `prepare_session`'s `warnings: Vec<Notice>` and the
+  session runs without a scratch root (the confinement is the old behavior, never a looser one).
 
 ### Prompt and denial text
 
@@ -96,7 +96,8 @@ pub fn sweep_stale(data: &Path) -> Vec<String>;    // returns warnings
   cache-boundary cost (a mid-session change would be one).
 - The out-of-roots denial names the scratch dir alongside `/add-dir` when one exists
   (`permissions.rs:827`). `Scope` stays a plain root list; the path travels as a
-  `scratch: Option<PathBuf>` field on the gate (`gate.rs:98`, `:264`) set from `AgentSetup` in
+  `scratch: Option<PathBuf>` field on `StateParams` (`gate.rs:98`) and `SessionState`
+  (`gate.rs:264`), set from `AgentSetup` in
   `agent/setup.rs` (~:211), the same place the gate receives its scope, and `SessionPrep`
   carries it to `AgentSetup`.
 - Error text only explains the Deny; it does not change it.
@@ -113,8 +114,9 @@ pub fn sweep_stale(data: &Path) -> Vec<String>;    // returns warnings
   also appears in the guardian's `workspace_roots`, the hooks payload, the ledger
   `SessionStart.workspace_roots` and the headless `init` event. Removing the scratch root itself
   is already a critical-path prompt (`floor.rs` root-removal rule).
-- Roots grant file access, not configuration: no instructions, MCP servers or hooks are loaded
-  from the scratch dir.
+- Roots grant file access, not configuration discovery: no instruction files, MCP servers or
+  hooks are discovered from the scratch dir. It is a permitted `@`-import location, as the
+  primary root is (`instructions/mod.rs:100-113` confines imports to `scope.roots()`).
 
 ## Implementation Steps
 
@@ -129,11 +131,17 @@ pub fn sweep_stale(data: &Path) -> Vec<String>;    // returns warnings
 3. `rust/fontaine-core/src/prompt.rs` + `prompts/system_prompt.md`: scratch sentence, reworded
    root-confinement sentence; `PromptParts` call sites in `agent/build.rs`, `agent/setup.rs` and
    `tests/system_prompt.rs`.
-4. `rust/fontaine-core/src/gate.rs` + `agent/setup.rs` + `permissions.rs`: gate carries the
-   scratch path; denial text names the scratch dir.
+4. `rust/fontaine-core/src/gate.rs` + `agent/setup.rs` + `permissions.rs`: `StateParams` and
+   `SessionState` carry the scratch path; denial text names the scratch dir. The other
+   `StateParams` construction sites (`fontaine-evals/src/none.rs:117`,
+   `fontaine-core/src/questions.rs:99`, `steering.rs:131`, `gate.rs:817`,
+   `fontaine-core/tests/common/pipeline.rs:206`) are compile-driven updates.
 5. Docs: `docs/tools.md` (Workspace roots; "Only the user adds roots"), `docs/permissions.md`
    step 3, `docs/configuration.md` Workspace roots, `docs/headless.md` (root list in the `init`
-   event; `:83`), `docs/architecture.md`, `docs/tui.md` (`/add-dir` row, denial hint), and
+   event; `:83`, `:162`), `docs/hooks.md:59`, `docs/schemas/headless-v1.schema.json:76-90`
+   (if they describe the root list), `docs/architecture.md`, `docs/tui.md` (`/add-dir` row, denial hint), and
+   `/status` in `fontaine-tui/src/reports.rs:87-91`, which prints every non-primary root under
+   "added roots:": filter the scratch root out of that list and show it labelled "scratch", and
    `tasks/design/permissions.md` and `tasks/design/config.md:12` ("Only the user adds roots at
    runtime"). `docs/index.md` only lists `/add-dir` and needs no change. Check
    `fontaine/tests/docs.rs:172+` still passes.
@@ -150,9 +158,12 @@ pub fn sweep_stale(data: &Path) -> Vec<String>;    // returns warnings
   `rust/fontaine-core/src/agent/build.rs`, `rust/fontaine-core/src/agent/setup.rs`,
   `rust/fontaine-core/tests/system_prompt.rs`
 - `rust/fontaine-core/src/gate.rs`, `rust/fontaine-core/src/permissions.rs`,
-  `rust/fontaine-core/tests/permissions.rs`, `rust/fontaine-core/tests/workspace.rs`
+  `rust/fontaine-core/tests/permissions.rs`, `rust/fontaine-core/tests/workspace.rs`,
+  `rust/fontaine-evals/src/none.rs`, `rust/fontaine-core/src/questions.rs`,
+  `rust/fontaine-core/src/steering.rs`, `rust/fontaine-core/tests/common/pipeline.rs`
+  (`StateParams` construction sites), `rust/fontaine-tui/src/reports.rs`
 - `docs/tools.md`, `docs/permissions.md`, `docs/configuration.md`, `docs/headless.md`,
-  `docs/architecture.md`, `docs/tui.md`
+  `docs/architecture.md`, `docs/tui.md`, `docs/hooks.md`, `docs/schemas/headless-v1.schema.json`
 - `tasks/fontaine_harness_plan.md`, `tasks/design/permissions.md`, `tasks/design/config.md`,
   `CHANGELOG.md`
 
