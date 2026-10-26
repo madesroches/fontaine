@@ -252,7 +252,7 @@ mod default_backend {
             &bin,
             "docker",
             &format!(
-                "printf '%s\\n' \"$@\" > '{0}.tmp'\nmv '{0}.tmp' '{0}'\nexec sleep 300",
+                "[ \"$1\" = run ] || exit 0\nprintf '%s\\n' \"$@\" > '{0}.tmp'\nmv '{0}.tmp' '{0}'\nexec sleep 300",
                 argv.display()
             ),
         );
@@ -299,10 +299,12 @@ mod default_backend {
 
         let argv = std::fs::read_to_string(&argv).unwrap();
         let lines: Vec<&str> = argv.lines().collect();
-        assert_eq!(&lines[..3], ["run", "--rm", "-p"], "{argv}");
-        assert!(lines[3].ends_with(":8080"), "{argv}");
-        assert!(lines[5].ends_with("/etc/searxng/settings.yml:ro"), "{argv}");
-        assert_eq!(lines[6], "docker.io/searxng/searxng:latest");
+        assert_eq!(&lines[..3], ["run", "--rm", "--name"], "{argv}");
+        assert!(lines[3].starts_with("fontaine-searxng-"), "{argv}");
+        assert_eq!(lines[4], "-p", "{argv}");
+        assert!(lines[5].ends_with(":8080"), "{argv}");
+        assert!(lines[7].ends_with("/etc/searxng/settings.yml:ro"), "{argv}");
+        assert_eq!(lines[8], "docker.io/searxng/searxng:latest");
         let settings = std::fs::read_to_string(w.data.join("searxng/settings.yml")).unwrap();
         assert!(settings.contains("- json"), "{settings}");
         let warnings = approver.0.lock().unwrap();

@@ -443,7 +443,7 @@ search. The key is `api_key_env` when that is set; if the named variable is unse
 counts as missing. When it is omitted, the key is the `[websearch]` entry in `credentials.toml`.
 Keys are never written inline in settings. With `backend` unset, the managed container gets the minimal child environment plus
 `DOCKER_HOST`, `DOCKER_CONFIG`, `XDG_RUNTIME_DIR` and `CONTAINER_HOST` when they are set (the runtime needs them to
-reach its daemon), a 300 second start timeout for the first image pull, and a command that is fixed by Fontaine. `command` is an executable like an MCP server or a hook
+reach its daemon), a 300 second start timeout for the first image pull, and a command that is fixed by Fontaine and a generated container name (`fontaine-searxng-<random>`) removed by a detached `rm -f` when the session ends. `command` is an executable like an MCP server or a hook
 command, but it can only start the instance; it never loosens a permission decision.
 
 ```toml

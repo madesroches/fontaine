@@ -60,7 +60,12 @@ pub struct ManagedPlan {
     pub argv: Vec<String>,
     pub base_url: Url,
     pub env: Vec<(OsString, OsString)>,
+    /// Run detached whenever the instance is stopped. A container outlives a SIGTERM and SIGKILL
+    /// sent back to back to its `docker run` client, which is what exiting Fontaine produces.
+    pub cleanup: Option<Vec<String>>,
 }
+
+type Env = Vec<(OsString, OsString)>;
 
 type Prepare = dyn Fn() -> std::io::Result<ManagedPlan> + Send + Sync;
 
@@ -170,6 +175,7 @@ struct Running {
     // wrapper that backgrounded the server leaves the group alive.
     pid: Option<u32>,
     grace: Duration,
+    cleanup: Option<(Vec<String>, Env)>,
 }
 
 impl Running {
@@ -178,6 +184,7 @@ impl Running {
             pid: child.id(),
             child: Some(child),
             grace,
+            cleanup: None,
         }
     }
 
@@ -197,6 +204,9 @@ impl Drop for Running {
         };
         let (pid, grace) = (self.pid, self.grace);
         terminate(pid);
+        if let Some((argv, env)) = self.cleanup.take() {
+            spawn_detached(&argv, &env);
+        }
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 settle(&mut child, pid, grace).await;
@@ -237,6 +247,33 @@ fn command(
     #[cfg(unix)]
     command.process_group(0);
     command
+}
+
+/// Runs `argv` in its own session with no stdio, neither awaited nor killed with the runtime, so
+/// it finishes even when Fontaine exits first. The thread only reaps it; `Drop` never waits.
+fn spawn_detached(argv: &[String], env: &[(OsString, OsString)]) {
+    let Some((program, args)) = argv.split_first() else {
+        return;
+    };
+    let mut command = std::process::Command::new(program);
+    command
+        .args(args)
+        .env_clear()
+        .envs(env.iter().map(|(k, v)| (k, v)))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    // Best effort: with no runtime to report to, a missing binary has nowhere to go.
+    if let Ok(mut child) = command.spawn() {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
 }
 
 /// SIGTERM to the process group: a `docker run` CLI forwards it to the container, which SIGKILL
@@ -506,44 +543,47 @@ impl Websearch {
                     .json(&json!({ "query": query, "max_results": self.config.max_results }));
                 parse_tavily(&self.send(request, backend, false).await?)
             }
-            BackendConfig::Searxng { .. } | BackendConfig::Managed(_) => {
-                let base_url = match &self.config.backend {
-                    BackendConfig::Searxng {
-                        base_url,
-                        launch: None,
-                    } => base_url.clone(),
-                    BackendConfig::Searxng {
-                        base_url,
-                        launch: Some(launch),
-                    } => {
+            BackendConfig::Searxng { base_url, launch } => {
+                let base_url = match launch {
+                    None => base_url.clone(),
+                    Some(launch) => {
                         self.ensure_started(launch.startup_timeout, || {
                             Ok(ManagedPlan {
                                 argv: launch.argv.clone(),
                                 base_url: base_url.clone(),
                                 env: launch.env.clone(),
+                                cleanup: None,
                             })
                         })
                         .await?
                     }
-                    BackendConfig::Managed(managed) => {
-                        self.ensure_started(managed.startup_timeout, || (managed.prepare)())
-                            .await?
-                    }
-                    BackendConfig::Tavily { .. } => unreachable!("matched by the outer arm"),
                 };
-                let mut url = base_url;
-                url.path_segments_mut()
-                    .map_err(|()| {
-                        ToolExecutionError::other("the SearXNG base_url cannot hold a path")
-                    })?
-                    .pop_if_empty()
-                    .push("search");
-                url.query_pairs_mut()
-                    .append_pair("q", query)
-                    .append_pair("format", "json");
-                parse_searxng(&self.send(self.client.get(url), backend, true).await?)
+                self.search_searxng(base_url, query, backend).await
+            }
+            BackendConfig::Managed(managed) => {
+                let base_url = self
+                    .ensure_started(managed.startup_timeout, || (managed.prepare)())
+                    .await?;
+                self.search_searxng(base_url, query, backend).await
             }
         }
+    }
+
+    async fn search_searxng(
+        &self,
+        base_url: Url,
+        query: &str,
+        backend: &str,
+    ) -> Result<Vec<Hit>, ToolExecutionError> {
+        let mut url = base_url;
+        url.path_segments_mut()
+            .map_err(|()| ToolExecutionError::other("the SearXNG base_url cannot hold a path"))?
+            .pop_if_empty()
+            .push("search");
+        url.query_pairs_mut()
+            .append_pair("q", query)
+            .append_pair("format", "json");
+        parse_searxng(&self.send(self.client.get(url), backend, true).await?)
     }
 
     async fn send(
@@ -602,6 +642,7 @@ impl Websearch {
             argv,
             base_url,
             env,
+            cleanup,
         } = plan().map_err(|e| {
             ToolExecutionError::other(format!("cannot prepare SearXNG: {}", chain(&e)))
         })?;
@@ -618,6 +659,7 @@ impl Websearch {
         // Guarded from the spawn on, so a dropped future or an early return still stops the
         // process group; `kill_on_drop` alone would only kill a `docker run` CLI, not its container.
         let mut running = Running::new(child, STOP_GRACE);
+        running.cleanup = cleanup.map(|argv| (argv, env.clone()));
         let stderr = Arc::new(Mutex::new(String::new()));
         let drain = running.child().stderr.take().map(|pipe| {
             let tail_buffer = stderr.clone();

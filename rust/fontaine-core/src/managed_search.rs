@@ -112,11 +112,31 @@ pub fn free_port() -> io::Result<u16> {
         .port())
 }
 
-fn argv(runtime: &Path, port: u16, settings: &Path) -> Vec<String> {
+/// Prefix of every managed container's name, which identifies strays a hard kill left behind.
+pub const NAME_PREFIX: &str = "fontaine-searxng-";
+
+fn new_name() -> String {
+    format!("{NAME_PREFIX}{}", uuid::Uuid::new_v4().simple())
+}
+
+/// Removes the container by name: it works whether or not the `docker run` client got to pass
+/// its stop on.
+fn cleanup_argv(runtime: &Path, name: &str) -> Vec<String> {
+    vec![
+        runtime.to_string_lossy().into_owned(),
+        "rm".into(),
+        "-f".into(),
+        name.into(),
+    ]
+}
+
+fn argv(runtime: &Path, name: &str, port: u16, settings: &Path) -> Vec<String> {
     vec![
         runtime.to_string_lossy().into_owned(),
         "run".into(),
         "--rm".into(),
+        "--name".into(),
+        name.into(),
         "-p".into(),
         format!("127.0.0.1:{port}:8080"),
         "-v".into(),
@@ -145,8 +165,10 @@ pub fn managed(
                 runtime.display()
             ));
         }
+        let name = new_name();
         Ok(ManagedPlan {
-            argv: argv(&runtime, port, &settings),
+            argv: argv(&runtime, &name, port, &settings),
+            cleanup: Some(cleanup_argv(&runtime, &name)),
             base_url: Url::parse(&format!("http://127.0.0.1:{port}"))
                 .expect("a loopback address with a port is a valid URL"),
             env: env.clone(),
@@ -234,6 +256,7 @@ mod tests {
     fn the_argv_binds_loopback_and_mounts_the_settings_read_only() {
         let argv = argv(
             Path::new("/usr/bin/docker"),
+            "fontaine-searxng-abc",
             4242,
             Path::new("/d/settings.yml"),
         );
@@ -243,12 +266,25 @@ mod tests {
                 "/usr/bin/docker",
                 "run",
                 "--rm",
+                "--name",
+                "fontaine-searxng-abc",
                 "-p",
                 "127.0.0.1:4242:8080",
                 "-v",
                 "/d/settings.yml:/etc/searxng/settings.yml:ro",
                 "docker.io/searxng/searxng:latest",
             ]
+        );
+    }
+
+    #[test]
+    fn the_cleanup_removes_the_container_by_its_generated_name() {
+        let (a, b) = (new_name(), new_name());
+        assert!(a.starts_with(NAME_PREFIX));
+        assert_ne!(a, b);
+        assert_eq!(
+            cleanup_argv(Path::new("/usr/bin/docker"), &a),
+            ["/usr/bin/docker", "rm", "-f", a.as_str()]
         );
     }
 

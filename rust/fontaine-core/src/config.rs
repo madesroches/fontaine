@@ -2315,23 +2315,17 @@ impl Config {
                 let Some(runtime) = self.default_search_runtime(env) else {
                     return Ok(None);
                 };
-                let managed = crate::managed_search::managed(
+                BackendConfig::Managed(crate::managed_search::managed(
                     runtime,
                     data_dir.to_path_buf(),
                     fontaine_tools::child_env::container_runtime_env(env),
                     notice,
-                );
-                let mut config = WebsearchConfig::new(BackendConfig::Managed(managed));
-                config.max_results = w.max_results as usize;
-                config.timeout = std::time::Duration::from_secs(w.timeout_secs);
-                return Ok(Some(config));
+                ))
             }
-            Some(backend) => backend,
-        };
-        let backend = match backend {
-            WebsearchBackend::Off => unreachable!("returned above"),
-            WebsearchBackend::Tavily => BackendConfig::tavily(websearch_key(w, env, data_dir)?),
-            WebsearchBackend::Searxng => BackendConfig::Searxng {
+            Some(WebsearchBackend::Tavily) => {
+                BackendConfig::tavily(websearch_key(w, env, data_dir)?)
+            }
+            Some(WebsearchBackend::Searxng) => BackendConfig::Searxng {
                 base_url: url::Url::parse(
                     w.base_url
                         .as_deref()
@@ -2353,9 +2347,7 @@ impl Config {
         config.timeout = std::time::Duration::from_secs(w.timeout_secs);
         Ok(Some(config))
     }
-}
 
-impl Config {
     /// The container runtime the default search backend would use: only when no `backend` is set.
     pub fn default_search_runtime(&self, env: EnvLookup<'_>) -> Option<std::path::PathBuf> {
         if self.websearch.backend.is_some() {

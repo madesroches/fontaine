@@ -188,13 +188,19 @@ first search:
   limiter off, a random secret generated once and kept in that file; Fontaine rewrites the file if
   it differs, keeping the secret);
 - picks a free loopback port and runs
-  `<runtime> run --rm -p 127.0.0.1:<port>:8080 -v <settings.yml>:/etc/searxng/settings.yml:ro docker.io/searxng/searxng:latest`
+  `<runtime> run --rm --name fontaine-searxng-<random> -p 127.0.0.1:<port>:8080 -v <settings.yml>:/etc/searxng/settings.yml:ro docker.io/searxng/searxng:latest`
   (no shell), so the instance is reachable from this machine only;
 - warns once that SearXNG is starting and that the first run pulls the image, then waits up to 300
   seconds for it to answer.
 
-Later searches and registry rebuilds reuse the container, and it is stopped when the session ends,
-as described below for `command`. The settings directory is owner-only; the file inside is
+Later searches and registry rebuilds reuse the container. When the session ends, when a start
+fails or times out, and before a restart over a dead instance, Fontaine sends the `run` client
+SIGTERM as described below for `command` and also starts a detached `<runtime> rm -f <name>`
+(its own process group, no output, never awaited), because a SIGKILL right behind the SIGTERM
+can reach the client before it has passed the stop to the daemon, which would leave the container
+running. The `rm` finishes after Fontaine has exited. A machine that is powered off, or a Fontaine
+killed with SIGKILL, can still leave a container behind; its name starts with `fontaine-searxng-`,
+so `<runtime> ps --filter name=fontaine-searxng-` lists strays. The settings directory is owner-only; the file inside is
 readable by other users because the container's unprivileged user must read it through the bind
 mount, which keeps the host's permissions. On an SELinux host the mount may need a `:Z` label,
 which Fontaine does not add: start SearXNG yourself with `command` instead. The container runtime

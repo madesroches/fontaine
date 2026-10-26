@@ -681,6 +681,7 @@ mod managed {
                     argv: vec!["sh".into(), "-c".into(), script.clone()],
                     base_url: base_url.clone(),
                     env: fontaine_tools::child_env::base_env(&|name| std::env::var_os(name)),
+                    cleanup: None,
                 })
             },
         )))
@@ -719,5 +720,110 @@ mod managed {
         let text = err.to_string();
         assert!(text.contains("cannot prepare SearXNG"), "{text}");
         assert!(text.contains("no room for the settings"), "{text}");
+    }
+
+    fn cleanup_config(
+        base_url: &str,
+        script: &str,
+        dir: &std::path::Path,
+        startup: Duration,
+    ) -> WebsearchConfig {
+        let base_url: url::Url = base_url.parse().unwrap();
+        let (script, record) = (script.to_string(), dir.join("cleanup"));
+        WebsearchConfig::new(BackendConfig::Managed(Managed::new(startup, move || {
+            Ok(ManagedPlan {
+                argv: vec!["sh".into(), "-c".into(), script.clone()],
+                base_url: base_url.clone(),
+                env: fontaine_tools::child_env::base_env(&|name| std::env::var_os(name)),
+                cleanup: Some(vec![
+                    "sh".into(),
+                    "-c".into(),
+                    format!("echo \"$0\" >> {}", record.display()),
+                    "fontaine-searxng-test".into(),
+                ]),
+            })
+        })))
+    }
+
+    async fn wait_for_record(path: std::path::PathBuf) -> String {
+        for _ in 0..200 {
+            if let Ok(text) = std::fs::read_to_string(&path)
+                && !text.is_empty()
+            {
+                return text;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("{} was never written", path.display());
+    }
+
+    #[tokio::test]
+    async fn the_cleanup_runs_after_the_runtime_that_dropped_the_instance_is_gone() {
+        let server = serve_searxng(sample()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let config = cleanup_config(
+            &server.uri(),
+            "exec sleep 300",
+            dir.path(),
+            Duration::from_secs(20),
+        );
+        let child = Arc::new(SearxngChild::default());
+        let tool = Websearch::new(config, &Default::default(), child.clone()).unwrap();
+        // The search runs in its own runtime, which is dropped at once, as at exit.
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                tool.call(&mut ToolContext::new(), args("x")).await.unwrap();
+                drop(child);
+                drop(tool);
+            });
+            drop(runtime);
+        })
+        .join()
+        .unwrap();
+        let text = wait_for_record(dir.path().join("cleanup")).await;
+        assert_eq!(text.trim(), "fontaine-searxng-test");
+    }
+
+    #[tokio::test]
+    async fn the_cleanup_runs_after_a_failed_start() {
+        let dir = tempfile::tempdir().unwrap();
+        // Nothing listens there, so the exit is what ends the start.
+        let config = cleanup_config(
+            "http://127.0.0.1:9",
+            "exit 3",
+            dir.path(),
+            Duration::from_secs(20),
+        );
+        let tool = Websearch::new(config, &Default::default(), Default::default()).unwrap();
+        tool.call(&mut ToolContext::new(), args("x"))
+            .await
+            .unwrap_err();
+        let text = wait_for_record(dir.path().join("cleanup")).await;
+        assert_eq!(text.trim(), "fontaine-searxng-test");
+    }
+
+    #[tokio::test]
+    async fn a_user_command_triggers_no_cleanup() {
+        let server = serve_searxng(sample()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let child = Arc::new(SearxngChild::default());
+        let config = WebsearchConfig::new(BackendConfig::Searxng {
+            base_url: server.uri().parse().unwrap(),
+            launch: Some(fontaine_tools::websearch::Launch {
+                argv: vec!["sh".into(), "-c".into(), "exec sleep 300".into()],
+                startup_timeout: Duration::from_secs(20),
+                env: fontaine_tools::child_env::base_env(&|name| std::env::var_os(name)),
+            }),
+        });
+        let tool = Websearch::new(config, &Default::default(), child.clone()).unwrap();
+        tool.call(&mut ToolContext::new(), args("x")).await.unwrap();
+        drop(tool);
+        drop(child);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(!dir.path().join("cleanup").exists());
     }
 }
