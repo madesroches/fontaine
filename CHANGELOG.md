@@ -360,6 +360,11 @@ All notable changes are recorded here. The format follows
   settled lines. Under tmux the live area also no longer leaves copies of the prompt box and
   transcript in the scrollback: erasing the screen from its top-left corner makes tmux move
   everything visible into history, so the live area is now erased row by row (#217).
+- The screen no longer flashes when content is added to the chat. Each frame now reaches the
+  terminal as one write, with its synchronized-update markers inside it, rather than as several
+  chunks a terminal without that mode could paint one by one. When the live area changes height or
+  settled lines are written above it, the live area is overwritten in place instead of being
+  blanked and repainted, and settled lines no longer blank the rows they scroll over (#220).
 - Reading the user settings or `trust.toml` while another session replaces it no longer fails on
   Windows, where a session could miss the file and start without the user's deny rules. Those
   reads now wait on the same lock the edits hold (#200).

@@ -3,14 +3,18 @@
 //! the content does not need are padding between the transcript tail and the input box, and later
 //! commits consume them before anything scrolls.
 
+use std::io::{self, Write};
 use std::mem;
 
 use ratatui::Terminal;
 use ratatui::TerminalOptions;
 use ratatui::Viewport;
-use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
-use ratatui::buffer::Cell;
+use ratatui::backend::{Backend, ClearType, CrosstermBackend, TestBackend, WindowSize};
+use ratatui::buffer::{Buffer, Cell};
+use ratatui::crossterm::Command;
+use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::layout::{Position, Rect, Size};
+use ratatui::style::Modifier;
 use ratatui::widgets::{Paragraph, Widget};
 
 use crate::app::App;
@@ -19,10 +23,168 @@ use crate::view;
 /// Rows handed to `insert_before` at a time, so the count always fits a `u16`.
 const INSERT_CHUNK: usize = 512;
 
+/// Where a frame's bytes end up.
+pub struct Tty(TtyKind);
+
+enum TtyKind {
+    /// A second handle on the stdout descriptor: std's `Stdout` is a `LineWriter`, which would
+    /// split a frame at every newline it holds.
+    #[cfg(unix)]
+    Fd(std::fs::File),
+    Std(io::Stdout),
+}
+
+impl Tty {
+    pub fn stdout() -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsFd;
+            if let Ok(fd) = io::stdout().as_fd().try_clone_to_owned() {
+                return Tty(TtyKind::Fd(fd.into()));
+            }
+        }
+        Tty(TtyKind::Std(io::stdout()))
+    }
+
+    /// Without the second descriptor, for a writer that never writes.
+    pub fn std() -> Self {
+        Tty(TtyKind::Std(io::stdout()))
+    }
+}
+
+impl Write for Tty {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        match &mut self.0 {
+            #[cfg(unix)]
+            TtyKind::Fd(file) => file.write(bytes),
+            TtyKind::Std(out) => out.write(bytes),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match &mut self.0 {
+            #[cfg(unix)]
+            TtyKind::Fd(file) => file.flush(),
+            TtyKind::Std(out) => out.flush(),
+        }
+    }
+}
+
+/// Collects everything written into one buffer and hands it to `W` in a single write when the
+/// frame ends, so a frame reaches the terminal as one chunk. `CrosstermBackend` flushes its
+/// writer at several points inside a frame; those flushes do nothing while a frame is open.
+pub struct FrameWriter<W: Write = Tty> {
+    out: W,
+    frame: Vec<u8>,
+    open: bool,
+    discard: bool,
+}
+
+impl<W: Write> FrameWriter<W> {
+    pub fn new(out: W) -> Self {
+        FrameWriter {
+            out,
+            frame: Vec::new(),
+            open: false,
+            discard: false,
+        }
+    }
+
+    /// For the stand-in backend left in a terminal that is about to drop: its cleanup writes
+    /// must not reach the real terminal.
+    pub fn discarding(out: W) -> Self {
+        FrameWriter {
+            discard: true,
+            ..Self::new(out)
+        }
+    }
+
+    fn queue(&mut self, command: impl Command) {
+        let mut ansi = String::new();
+        command
+            .write_ansi(&mut ansi)
+            .expect("writing to a String cannot fail");
+        self.frame.extend_from_slice(ansi.as_bytes());
+    }
+
+    fn begin(&mut self) {
+        self.open = true;
+        self.queue(BeginSynchronizedUpdate);
+    }
+
+    fn end(&mut self) -> io::Result<()> {
+        self.queue(EndSynchronizedUpdate);
+        self.open = false;
+        self.drain()
+    }
+
+    fn drain(&mut self) -> io::Result<()> {
+        let frame = mem::take(&mut self.frame);
+        if self.discard {
+            return Ok(());
+        }
+        if !frame.is_empty() {
+            self.out.write_all(&frame)?;
+        }
+        self.out.flush()
+    }
+}
+
+impl FrameWriter<Tty> {
+    pub fn stdout() -> Self {
+        Self::new(Tty::stdout())
+    }
+}
+
+impl<W: Write> Write for FrameWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.frame.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.open { Ok(()) } else { self.drain() }
+    }
+}
+
+/// A backend that frames its output, so one frame is one write.
+pub trait Framed: Backend {
+    /// Starts collecting output, opening with the synchronized-update marker.
+    fn begin_frame(&mut self);
+
+    /// Closes the synchronized update and writes everything collected since `begin_frame`.
+    fn end_frame(&mut self) -> Result<(), Self::Error>;
+}
+
+impl<W: Write> Framed for CrosstermBackend<FrameWriter<W>> {
+    fn begin_frame(&mut self) {
+        self.writer_mut().begin();
+    }
+
+    fn end_frame(&mut self) -> io::Result<()> {
+        self.writer_mut().end()
+    }
+}
+
+impl Framed for TestBackend {
+    // Nothing is written anywhere, so there is nothing to collect.
+    fn begin_frame(&mut self) {}
+
+    fn end_frame(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 /// A backend that can be told where the cursor is, so a rebuilt terminal does not have to ask.
-pub trait Anchor {
+pub trait Anchor: Backend {
     /// Answers the next cursor-position query with `at`.
     fn arm(&mut self, at: Position);
+
+    fn begin_frame(&mut self) {}
+
+    fn end_frame(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 impl Anchor for TestBackend {
@@ -47,9 +209,17 @@ impl<B> Anchored<B> {
     }
 }
 
-impl<B> Anchor for Anchored<B> {
+impl<B: Framed> Anchor for Anchored<B> {
     fn arm(&mut self, at: Position) {
         self.anchor = Some(at);
+    }
+
+    fn begin_frame(&mut self) {
+        self.inner.begin_frame();
+    }
+
+    fn end_frame(&mut self) -> Result<(), Self::Error> {
+        self.inner.end_frame()
     }
 }
 
@@ -140,6 +310,8 @@ pub struct Screen<B: Backend + Anchor> {
     height: u16,
     /// A stand-in left in the old `Terminal` while its backend moves to the new one.
     placeholder: fn() -> B,
+    /// The next draw must write every cell of the viewport, blanks included.
+    repaint: bool,
 }
 
 impl<B: Backend + Anchor> Screen<B> {
@@ -157,6 +329,7 @@ impl<B: Backend + Anchor> Screen<B> {
             terminal,
             height,
             placeholder,
+            repaint: false,
         })
     }
 
@@ -164,13 +337,22 @@ impl<B: Backend + Anchor> Screen<B> {
     /// reach the bottom row, and draws it. A transcript that fits stays in the live area, so a
     /// short one sits directly above the input instead of at the top of the screen.
     pub fn render(&mut self, app: &mut App) -> Result<(), B::Error> {
-        self.draw_frame(app, false)
+        self.framed(app, false)
     }
 
     /// Writes everything still held back to scrollback, for exit: the live area is about to be
     /// cleared.
     pub fn commit_all(&mut self, app: &mut App) -> Result<(), B::Error> {
-        self.draw_frame(app, true)
+        self.framed(app, true)
+    }
+
+    /// The end of the frame is written even when drawing failed, so no synchronized update is
+    /// left open on the terminal; the drawing error is the one reported.
+    fn framed(&mut self, app: &mut App, all: bool) -> Result<(), B::Error> {
+        self.terminal.backend_mut().begin_frame();
+        let drawn = self.draw_frame(app, all);
+        let ended = self.terminal.backend_mut().end_frame();
+        drawn.and(ended)
     }
 
     fn draw_frame(&mut self, app: &mut App, all: bool) -> Result<(), B::Error> {
@@ -199,31 +381,54 @@ impl<B: Backend + Anchor> Screen<B> {
         }
         // ratatui scrolls the rows above the viewport as a region, and a one-row region is
         // invalid DECSTBM that terminals ignore, so the whole screen scrolls with the viewport
-        // still in it. The viewport is repainted from scratch to undo that. Its live rows are
-        // erased first: the row each settled line is drawn over would otherwise keep that text
-        // wherever the line has a blank cell, because ratatui's diff skips blank cells.
+        // still in it. The viewport is repainted from scratch to undo that. Each settled line
+        // after the first is drawn over a row ratatui assumes is clear, and its diff skips blank
+        // cells, so the row would keep its live text wherever the line is blank. Marking the
+        // blanks as concealed makes them differ from an empty cell and be written as spaces,
+        // which overwrites the text without first blanking the row.
         let one_row_region = self.terminal.get_frame().area().y <= 1 && !lines.is_empty();
         if one_row_region {
-            erase_rows(self.terminal.backend_mut(), top)?;
+            // When the viewport fills the screen, ratatui puts back its top row after each
+            // insert, from the buffer it last drew. Blank, that row is a no-op, where the stale
+            // row would overwrite a line that has just scrolled up into it.
+            self.set_previous(Cell::EMPTY);
         }
         for chunk in lines.chunks(INSERT_CHUNK) {
             let rows = chunk.to_vec();
             self.terminal.insert_before(chunk.len() as u16, |buf| {
                 Paragraph::new(rows).render(buf.area, buf);
+                if one_row_region {
+                    for cell in buf.content.iter_mut().filter(|c| **c == Cell::EMPTY) {
+                        cell.modifier.insert(Modifier::HIDDEN);
+                    }
+                }
             })?;
         }
         if one_row_region {
             self.rebuild(self.height)?;
         }
+        if mem::take(&mut self.repaint) {
+            // Installed this late because `insert_before` reads the buffers. Diffing
+            // against a private-use glyph no view draws makes the draw write every cell, so the old
+            // rows are overwritten in place instead of being blanked first.
+            self.set_previous(Cell::new("\u{E000}"));
+        }
         self.terminal.draw(|frame| view::draw(frame, app))?;
         Ok(())
+    }
+
+    /// Makes ratatui believe the viewport holds `cell` everywhere, so the next draw writes every
+    /// cell that differs from it.
+    fn set_previous(&mut self, cell: Cell) {
+        let area = self.terminal.get_frame().area();
+        *self.terminal.current_buffer_mut() = Buffer::filled(area, cell);
+        self.terminal.swap_buffers();
     }
 
     /// ratatui cannot resize an inline viewport, so the terminal is rebuilt at the same top row.
     fn rebuild(&mut self, height: u16) -> Result<(), B::Error> {
         let top = Position::new(0, self.terminal.get_frame().area().y);
         let backend = self.terminal.backend_mut();
-        erase_rows(backend, top.y)?;
         backend.set_cursor_position(top)?;
         let mut real = mem::replace(backend, (self.placeholder)());
         real.arm(top);
@@ -237,6 +442,7 @@ impl<B: Backend + Anchor> Screen<B> {
         self.terminal = terminal;
         self.terminal.hide_cursor()?;
         self.height = height;
+        self.repaint = true;
         Ok(())
     }
 
@@ -744,8 +950,6 @@ mod tests {
     /// with the bytes ratatui writes rather than what ratatui believes it wrote.
     mod emulated {
         use super::*;
-        use ratatui::backend::CrosstermBackend;
-        use std::io::{self, Write};
         use std::sync::{Arc, Mutex};
 
         fn nz(n: u16) -> std::num::NonZeroU16 {
@@ -758,21 +962,72 @@ mod tests {
         /// everything visible into its scrollback.
         type Erased = Arc<std::sync::atomic::AtomicBool>;
 
-        struct Sink(Emulator, Erased);
+        /// When set, the screen as it looks after each escape sequence of every write.
+        type Trace = Arc<Mutex<Option<Vec<Vec<String>>>>>;
+
+        /// What reached the writer, one entry per `write` call.
+        type Writes = Arc<Mutex<Vec<Vec<u8>>>>;
+
+        struct Sink(Emulator, Erased, Trace);
+
+        impl Sink {
+            fn feed(&self, parser: &mut vt100::Parser, bytes: &[u8]) {
+                parser.process(bytes);
+                if let Some(trace) = self.2.lock().unwrap().as_mut() {
+                    let screen = parser.screen();
+                    trace.push(
+                        screen
+                            .rows(0, screen.size().1.get())
+                            .map(|r| r.trim_end().to_string())
+                            .collect(),
+                    );
+                }
+            }
+
+            /// Feeds `bytes` as the pieces a slow terminal could paint between: each escape
+            /// sequence starts a piece.
+            fn feed_pieces(&self, parser: &mut vt100::Parser, bytes: &[u8]) {
+                if self.2.lock().unwrap().is_none() {
+                    parser.process(bytes);
+                    return;
+                }
+                let starts: Vec<usize> = (0..bytes.len()).filter(|&i| bytes[i] == 0x1b).collect();
+                let mut from = 0;
+                for at in starts.into_iter().filter(|&at| at > 0) {
+                    self.feed(parser, &bytes[from..at]);
+                    from = at;
+                }
+                self.feed(parser, &bytes[from..]);
+            }
+        }
+
+        /// Records each write before passing it on, above `Sink`, which splits what it is given.
+        struct Counted(Sink, Writes);
+
+        impl Write for Counted {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.1.lock().unwrap().push(bytes.to_vec());
+                self.0.write(bytes)
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                self.0.flush()
+            }
+        }
 
         impl Write for Sink {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
                 let mut parser = self.0.lock().unwrap();
                 let mut rest = bytes;
                 while let Some(at) = rest.windows(3).position(|w| w == b"\x1b[J") {
-                    parser.process(&rest[..at]);
+                    self.feed_pieces(&mut parser, &rest[..at]);
                     if parser.screen().cursor_position() == (0, 0) {
                         self.1.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    parser.process(b"\x1b[J");
+                    self.feed_pieces(&mut parser, b"\x1b[J");
                     rest = &rest[at + 3..];
                 }
-                parser.process(rest);
+                self.feed_pieces(&mut parser, rest);
                 Ok(bytes.len())
             }
 
@@ -783,16 +1038,31 @@ mod tests {
 
         /// Answers every query from the emulator instead of a tty.
         pub struct Emu {
-            inner: CrosstermBackend<Sink>,
+            inner: CrosstermBackend<FrameWriter<Counted>>,
             emulator: Emulator,
         }
 
         impl Emu {
-            fn with(emulator: Emulator, erased: Erased) -> Self {
+            fn with(emulator: Emulator, erased: Erased, trace: Trace, writes: Writes) -> Self {
+                let sink = Counted(Sink(emulator.clone(), erased, trace), writes);
+                Emu::over(emulator, FrameWriter::new(sink))
+            }
+
+            fn over(emulator: Emulator, writer: FrameWriter<Counted>) -> Self {
                 Emu {
-                    inner: CrosstermBackend::new(Sink(emulator.clone(), erased)),
+                    inner: CrosstermBackend::new(writer),
                     emulator,
                 }
+            }
+        }
+
+        impl Framed for Emu {
+            fn begin_frame(&mut self) {
+                self.inner.begin_frame();
+            }
+
+            fn end_frame(&mut self) -> io::Result<()> {
+                self.inner.end_frame()
             }
         }
 
@@ -871,18 +1141,25 @@ mod tests {
 
         pub type Real = Anchored<Emu>;
 
-        /// A stand-in whose drop writes go to a throwaway emulator.
+        thread_local! {
+            /// The writes that reached the stand-ins made on this thread.
+            static SPARE_WRITES: Writes = Writes::default();
+        }
+
+        /// A stand-in whose writes are discarded, as the real one's are.
         fn spare() -> Real {
-            Anchored::new(Emu::with(
-                Arc::new(Mutex::new(vt100::Parser::new(nz(1), nz(1), 0))),
-                Erased::default(),
-            ))
+            let emulator = Arc::new(Mutex::new(vt100::Parser::new(nz(1), nz(1), 0)));
+            let sink = Sink(emulator.clone(), Erased::default(), Trace::default());
+            let counted = Counted(sink, SPARE_WRITES.with(Arc::clone));
+            Anchored::new(Emu::over(emulator, FrameWriter::discarding(counted)))
         }
 
         pub struct Harness {
             pub screen: Screen<Real>,
             emulator: Emulator,
             erased: Erased,
+            trace: Trace,
+            writes: Writes,
             height: u16,
         }
 
@@ -891,13 +1168,49 @@ mod tests {
                 let emulator =
                     Arc::new(Mutex::new(vt100::Parser::new(nz(height), nz(width), 1000)));
                 let erased = Erased::default();
-                let backend = Anchored::new(Emu::with(emulator.clone(), erased.clone()));
+                let trace = Trace::default();
+                let writes = Writes::default();
+                let backend = Anchored::new(Emu::with(
+                    emulator.clone(),
+                    erased.clone(),
+                    trace.clone(),
+                    writes.clone(),
+                ));
+                SPARE_WRITES.with(|w| w.lock().unwrap().clear());
                 Harness {
                     screen: Screen::new(backend, spare).unwrap(),
                     emulator,
                     erased,
+                    trace,
+                    writes,
                     height,
                 }
+            }
+
+            pub fn height(&self) -> u16 {
+                self.height
+            }
+
+            /// Renders once and returns what reached the writer, one entry per `write` call.
+            pub fn writes_of(&mut self, app: &mut App) -> Vec<Vec<u8>> {
+                self.writes.lock().unwrap().clear();
+                self.screen.render(app).unwrap();
+                mem::take(&mut *self.writes.lock().unwrap())
+            }
+
+            /// Writes that reached the stand-ins made by this thread's harnesses.
+            pub fn spare_writes(&self) -> usize {
+                SPARE_WRITES.with(|w| w.lock().unwrap().len())
+            }
+
+            /// Renders once, returning the screen before the frame, after it, and after each
+            /// escape sequence of it.
+            pub fn pieces_of(&mut self, app: &mut App) -> (Vec<String>, Vec<Vec<String>>) {
+                let before = self.real();
+                *self.trace.lock().unwrap() = Some(Vec::new());
+                self.screen.render(app).unwrap();
+                let pieces = self.trace.lock().unwrap().take().unwrap();
+                (before, pieces)
             }
 
             /// The emulator's visible rows, trailing blanks trimmed.
@@ -1081,6 +1394,150 @@ mod tests {
                 .collect();
             assert!(stale.is_empty(), "height {height}: {stale:?}");
         }
+    }
+
+    /// The frames of a session that grows and shrinks the live area while settled lines are
+    /// committed with the viewport at the top of the screen: for each, the app, the harness and
+    /// what changed.
+    struct Frame {
+        resized: bool,
+        committed_at_top: bool,
+    }
+
+    fn frames(
+        harness: &mut emulated::Harness,
+        app: &mut App,
+        mut check: impl FnMut(&mut emulated::Harness, &mut App) -> Frame,
+    ) -> (usize, usize) {
+        let height = usize::from(harness.height());
+        let (mut resized, mut committed) = (0, 0);
+        let mut count = |frame: Frame| {
+            resized += usize::from(frame.resized);
+            committed += usize::from(frame.committed_at_top);
+        };
+        for i in 0..height + 4 {
+            app.transcript.notice(format!("note {i}"));
+            count(check(harness, app));
+        }
+        for n in 0..3 {
+            started(app, n);
+            count(check(harness, app));
+        }
+        for n in 0..3 {
+            finished(app, n);
+            count(check(harness, app));
+        }
+        app.transcript.clear();
+        app.transcript.notice(String::from("fresh"));
+        count(check(harness, app));
+        let (tx, _rx) = oneshot::channel();
+        app.begin_approval(approval_request("ls"), tx);
+        count(check(harness, app));
+        app.approval = None;
+        count(check(harness, app));
+        for i in 0..3 {
+            app.transcript.notice(format!("late {i}"));
+            count(check(harness, app));
+        }
+        (resized, committed)
+    }
+
+    /// The change a render made to the live area: its height and whether lines were committed
+    /// while the viewport sat in the top two rows.
+    fn rendered(
+        harness: &mut emulated::Harness,
+        render: impl FnOnce(&mut emulated::Harness),
+    ) -> Frame {
+        let (height, top) = (harness.screen.height, harness.screen.area().y);
+        let history = harness.scrollback().len();
+        render(harness);
+        Frame {
+            resized: harness.screen.height != height,
+            committed_at_top: top <= 1 && harness.scrollback().len() > history,
+        }
+    }
+
+    /// A frame that reaches the terminal in several writes is painted in several steps by a
+    /// terminal that does not honor the synchronized-update markers.
+    #[test]
+    fn issue_220_every_frame_is_one_write_wrapped_in_the_sync_markers() {
+        let mut harness = emulated::Harness::new(40, 10);
+        let mut app = app();
+        let (resized, committed) = frames(&mut harness, &mut app, |harness, app| {
+            rendered(harness, |harness| {
+                let writes = harness.writes_of(app);
+                assert_eq!(writes.len(), 1, "{writes:?}");
+                let frame = String::from_utf8_lossy(&writes[0]).into_owned();
+                assert!(frame.starts_with("\x1b[?2026h"), "{frame:?}");
+                assert!(frame.ends_with("\x1b[?2026l"), "{frame:?}");
+            })
+        });
+        assert!(
+            resized > 0 && committed > 0,
+            "{resized} resized, {committed} committed"
+        );
+        assert_eq!(harness.spare_writes(), 0);
+    }
+
+    /// Whether `now` is `before` with the rows between its first and last difference scrolled
+    /// up or down, the rows the scroll exposes left blank.
+    fn is_scroll_of(before: &[String], now: &[String]) -> bool {
+        let differing: Vec<usize> = (0..now.len()).filter(|&r| now[r] != before[r]).collect();
+        let (Some(&first), Some(&last)) = (differing.first(), differing.last()) else {
+            return false;
+        };
+        let region = first..last + 1;
+        (1..region.len()).any(|k| {
+            let up = region.clone().all(|r| {
+                now[r]
+                    == before
+                        .get(r + k)
+                        .filter(|_| r + k < region.end)
+                        .map_or("", |s| s)
+            });
+            let down = region.clone().all(|r| {
+                now[r]
+                    == r.checked_sub(k)
+                        .filter(|&from| from >= region.start)
+                        .map_or("", |from| before[from].as_str())
+            });
+            up || down
+        })
+    }
+
+    /// A row that holds text before a frame and after it must not go blank in between, or a
+    /// terminal that paints what it has read so far flashes. A terminal scroll exposes blank
+    /// rows that the same frame fills, which no write order avoids.
+    #[test]
+    fn issue_220_rows_that_keep_their_text_are_never_blanked_mid_frame() {
+        let mut harness = emulated::Harness::new(40, 10);
+        let mut app = app();
+        let (resized, committed) = frames(&mut harness, &mut app, |harness, app| {
+            rendered(harness, |harness| {
+                let (before, pieces) = harness.pieces_of(app);
+                let after = harness.real();
+                let mut previous = &before;
+                for (n, piece) in pieces.iter().enumerate() {
+                    for row in 0..before.len() {
+                        let kept = !before[row].is_empty() && !after[row].is_empty();
+                        if kept && piece[row].is_empty() && !previous[row].is_empty() {
+                            assert!(
+                                is_scroll_of(previous, piece),
+                                "row {row} blanked by piece {n} of {}\nbefore:\n{}\nafter:\n{}",
+                                pieces.len(),
+                                before.join("\n"),
+                                after.join("\n")
+                            );
+                        }
+                    }
+                    previous = piece;
+                }
+            })
+        });
+        assert!(
+            resized > 0 && committed > 0,
+            "{resized} resized, {committed} committed"
+        );
     }
 
     #[test]
