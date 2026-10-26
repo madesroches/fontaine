@@ -3,13 +3,16 @@
 # usage: e11_fontaine_tui.sh NAME
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd); NAME=$1
-RUN=$HERE/runs/$NAME; rm -rf "$RUN"; mkdir -p "$RUN/ws" "$RUN/frames"; cp -a "$HERE/fixtures/repo-failing/." "$RUN/ws/"
+RUN=$HERE/runs/$NAME; rm -rf "$RUN"; mkdir -p "$RUN/frames"
+# Workspace outside the repo: Fontaine loads every ancestor AGENTS.md, so a cwd under the repo would add the repo's own to the system prompt.
+WS=$(mktemp -d); trap 'rm -rf "$RUN/ws"; cp -a "$WS" "$RUN/ws"; rm -rf "$WS"' EXIT
+cp -a "$HERE/fixtures/repo-failing/." "$WS/"
 echo "$NAME" > "$HERE/runs/CURRENT"
 FONTAINE=${FONTAINE:-$HERE/../../rust/target/release/fontaine}
 OUT=$RUN/frames; S=fe11
 cap() { tmux capture-pane -p -t $S > "$OUT/$1.txt"; }
 tmux kill-session -t $S 2>/dev/null
-tmux new-session -d -s $S -x 120 -y 40 -c "$RUN/ws" "$FONTAINE --settings $HERE/scripts/proxy.toml --model go/deepseek-v4.1-flash --permission-mode manual; sleep 3"
+tmux new-session -d -s $S -x 120 -y 40 -c "$WS" "$FONTAINE --settings $HERE/scripts/proxy.toml --model go/deepseek-v4.1-flash --permission-mode manual; sleep 3"
 sleep 8; cap 00_trust_prompt
 # decline (default, no side effects: it asks again next time) so the real trust.toml is not written
 tmux send-keys -t $S n; sleep 3; cap 00b_startup

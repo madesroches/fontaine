@@ -44,7 +44,7 @@ Layout:
 2. omp runs: `scripts/run_omp.sh <name> "<task>"` with `FIXTURE=<dir>`, `GIT=1`, `CONFIG=<file>` (copied to
    `~/.omp/agent/config.yml`), `OMP_ARGS`, `XENV="-e A=b"`, `IMG`, `CMD`, `POST`, `RESUME=1`, `TIMEOUT`. `scripts/models.yml` points the
    `go` provider at the proxy and adds the `x-opencode-session` header the gateway requires.
-3. Fontaine runs: `scripts/run_fontaine.sh <name> proxy.toml "<prompt>" [args]`.
+3. Fontaine runs: `scripts/run_fontaine.sh <name> proxy.toml "<prompt>" [args]`. The scripts now run Fontaine in a `mktemp` workspace outside the repo (copied back to `runs/<name>/ws` afterwards). **The committed Fontaine captures predate this**: they ran with a cwd inside the repo, so Fontaine's system prompt (and its guardian prompts) include the repo's own `AGENTS.md` (9,645 B of the 13,494 B system message in `e2_fontaine_request.json`). Also, until `record_proxy.py` resolved the run directory on request arrival, the last request of one run could be filed under the next; the E4 Fontaine logs were re-attributed by hand (one stray request from an earlier stale-file run, whose log no longer exists, was dropped).
 4. `scripts/trace_run.py runs/<name> [--full] [--listener omp|fontaine]` prints one block per model request;
    `scripts/summarize_runs.py runs/<a> runs/<b>` prints request, tool-call and token counts.
 
@@ -53,7 +53,7 @@ Layout:
 | E1 | `FIXTURE=repo-failing GIT=1 CMD='sh /run/study/e1_idle.sh' scripts/run_omp.sh e1-idle ""`; `scripts/run_omp.sh e1-ok "Reply with the single word OK."`; `python3 -I scripts/pcap_endpoints.py runs/e1-idle/egress.pcap` |
 | E2 | `scripts/run_omp.sh e2-readonly "<question>"` and `scripts/run_fontaine.sh e2-readonly-fontaine proxy.toml "<question>" --permission-mode manual` |
 | E3 | `run_omp.sh e3-fix` (plain); `CONFIG=e3_loop.yml` for `e3-repeat`, `e3-repeat2`, `e3-hang`; `CONFIG=e3_repair.yml XENV="-e PI_STRICT_EDIT_MODE=1"` for `e3-repair`; `FIXTURE=ttsr` for `e3-ttsr`; `"/goal ..."` for `e3-goal-print` |
-| E4 | `scripts/e4_edits.sh omp\|omp-default\|fontaine`; LSP: `IMG=omp-study-lsp:dcafcef6 FIXTURE=lsp-py CONFIG=e4_lsp.yml scripts/run_omp.sh e4-lsp4 "..."` |
+| E4 | `scripts/e4_edits.sh omp\|omp-default\|fontaine` (the stale-file prompt says "bash tool" for omp and "shell tool" for Fontaine; Fontaine's stale run uses `--permission-mode auto`, the other three `acceptEdits` + `--allowed-tools 'shell(cat *)'`); LSP: `IMG=omp-study-lsp:dcafcef6 FIXTURE=lsp-py CONFIG=e4_lsp.yml scripts/run_omp.sh e4-lsp4 "..."` |
 | E5 | `scripts/e5_risky.sh`; `scripts/e5_patterns.sh`; `CONFIG=e5_interceptor.yml` run |
 | E6 | `python3 scripts/gen_long_fixture.py fixtures/long`, then `FIXTURE=long GIT=1 CONFIG=e6_compact.yml scripts/run_omp.sh e6-compact "..."` |
 | E7 | `e7-todo-task` (plain), `e7-child-mode` and `e7-child-mode2` (`CONFIG=e7_child.yml`), `e7-plan` (`OMP_ARGS=--plan-yolo`) |

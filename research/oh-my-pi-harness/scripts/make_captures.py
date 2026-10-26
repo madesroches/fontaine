@@ -20,6 +20,9 @@ def write(name, text):
     with open(os.path.join(CAP, name), "w") as f:
         f.write(tidy(text))
 
+def write_json(name, obj):
+    write(name, json.dumps(obj, indent=1))
+
 def trace(run_name, *flags):
     return run(os.path.join(HERE, "trace_run.py"), os.path.join(RUNS, run_name), *flags)
 
@@ -36,14 +39,19 @@ write("e1_egress.txt", eg)
 shutil.copy(os.path.join(RUNS, "e1-idle/pane_startup.txt"), os.path.join(CAP, "e1_pane_startup.txt"))
 cl = open(os.path.join(RUNS, "e1-idle/config_list.txt")).read().splitlines()
 write("e1_config_defaults.txt", "\n".join(l if len(l) < 300 else l[:300] + " ... [truncated]" for l in cl))
-logs = subprocess.run(f"rg -N 'model discovery failed' {RUNS}/e1-ok/home/.omp/logs/*.log", shell=True, capture_output=True, text=True).stdout
+import glob
+logs = ""
+for r in ("e1-ok", "e1-idle"):
+    logs += f"== {r}\n"
+    for fp in sorted(glob.glob(f"{RUNS}/{r}/home/.omp/logs/*.log")):
+        logs += "".join(l for l in open(fp) if "model discovery failed" in l)
 write("e1_local_discovery_probes.txt", logs)
 
 # E2
 o = chat_ok(exchanges("e2-readonly"))[0]
 f = chat_ok(exchanges("e2-readonly-fontaine"), "fontaine")[0]
-json.dump(o["req_body"], open(os.path.join(CAP, "e2_omp_request.json"), "w"), indent=1)
-json.dump(f["req_body"], open(os.path.join(CAP, "e2_fontaine_request.json"), "w"), indent=1)
+write_json("e2_omp_request.json", o["req_body"])
+write_json("e2_fontaine_request.json", f["req_body"])
 cmp = []
 for n, r in (("omp", o), ("fontaine", f)):
     b = r["req_body"]
@@ -52,7 +60,7 @@ for n, r in (("omp", o), ("fontaine", f)):
     cmp.append(f"  messages={[(m['role'], len(json.dumps(m))) for m in b['messages']]}")
     cmp.append(f"  headers={ {k: v for k, v in r['req_headers'].items() if k not in ('authorization', 'content-length')} }")
 write("e2_framing_compare.txt", "\n".join(cmp))
-write("e2_tool_schemas_omp.json", json.dumps(o["req_body"]["tools"], indent=1))
+write_json("e2_tool_schemas_omp.json", o["req_body"]["tools"])
 
 # E3
 write("e3_fix_omp.txt", trace("e3-fix"))
@@ -99,8 +107,8 @@ write("e6_after_compaction_messages.txt", "\n---\n".join(f"{x['role']}: " + (x['
 # E7
 write("e7_todo_task.txt", trace("e7-todo-task", "--full"))
 child = chat_ok(exchanges("e7-todo-task"))[2]["req_body"]
-json.dump({"model": child["model"], "tools": [t["function"]["name"] for t in child["tools"]], "messages": [{"role": x["role"], "len": len(json.dumps(x))} for x in child["messages"]],
-           "system_head": child["messages"][0]["content"][:1200]}, open(os.path.join(CAP, "e7_child_request_summary.json"), "w"), indent=1)
+write_json("e7_child_request_summary.json", {"model": child["model"], "tools": [t["function"]["name"] for t in child["tools"]], "messages": [{"role": x["role"], "len": len(json.dumps(x))} for x in child["messages"]],
+           "system_head": child["messages"][0]["content"][:1200]})
 write("e7_child_mode_refused.txt", trace("e7-child-mode", "--full") )
 write("e7_child_mode_allowed_task.txt", trace("e7-child-mode2", "--full") + "\n/tmp/child_marker after the run (parent bash was refused):\n" + open(os.path.join(RUNS, "e7-child-mode2/post.out")).read())
 write("e7_plan_yolo.txt", trace("e7-plan", "--full"))

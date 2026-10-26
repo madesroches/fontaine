@@ -209,21 +209,23 @@ and any model-liftable deadline.
 
 | Task | omp hashline | omp replace | Fontaine |
 |---|---|---|---|
-| multi-hunk rename (3 functions) | one `edit` call, 3 `PUT` hunks; 4 requests | 3 `edit` calls; 5 requests | one `edit` with 3 edits; 5 requests |
-| tabs (Makefile, add rule) | one edit, tab kept (`cat -A` verified); 4 requests | two edits; 6 requests | one rejected (identical old/new text, clear error), then one edit; 7 requests |
+| multi-hunk rename (3 functions) | one `edit` call, 3 `PUT` hunks; 4 requests | 3 `edit` calls; 5 requests | one `edit` with 3 edits; 6 requests |
+| tabs (Makefile, add rule) | one edit, tab kept (`cat -A` verified); 4 requests | two edits; 6 requests | one rejected (identical old/new text, clear error), then one edit; 7 requests (6 recorded, see note) |
 | stale file (external append between read and edit) | edit on the stale tag succeeded with `Warnings: Recovered from a stale file hash using a previous read snapshot`; 4 requests | succeeded (text anchor); 5 requests | succeeded (text anchor, run under `--permission-mode auto`); 6 requests incl. 2 guardian calls |
-| duplicate lines (change one of three identical `return None`) | `PUT 15.=15` after a `grep` and a `read`; 6 requests | text edit with enough context; 6 requests | text edit with signature context; 5 requests |
+| duplicate lines (change one of three identical `return None`) | `PUT 15.=15` after a `grep` and a `read`; 6 requests | text edit with enough context; 6 requests | text edit with signature context; 4 requests |
 
 All 12 final files were checked by script (renamed parameter in all three functions, `-O3` and a tab-indented `test` recipe, only
-`find_group` changed, `DEFAULT_TIMEOUT = 30`). Prompt tokens per task were 27-50 k; hashline was lowest of the three on two tasks
-(multi, tabs) and Fontaine on the other two (stale, dup), but n=1 and the turn counts differ for reasons unrelated to the format (extra
+`find_group` changed, `DEFAULT_TIMEOUT = 30`). Recorded prompt tokens per task were 27-50 k (Fontaine: multi 42,144; tabs 42,509 for the 6 recorded requests; stale 27,270; dup 27,390; hashline 32-50 k; replace 39-48 k); as recorded, hashline was lowest of the three on two tasks
+(multi, tabs) and Fontaine on the other two (stale, dup). **The Fontaine figures include the repo's `AGENTS.md` (~2.4k estimated tokens per main request, 4-6 requests per task, so roughly 10-15 k per task; see 4.3), so with it removed Fontaine would be lowest on all four and the multi and tabs ordering above does not hold.** Also n=1 and the turn counts differ for reasons unrelated to the format (extra
 verification commands), so **this does not show hashline is more reliable**; it shows it works and is not worse. The one new capability is the stale-tag recovery message. A fair test needs many tasks
 and the benchmark's difficulty tiers; I did not run it.
+
+Note on the Fontaine request counts: the recording proxy filed each response under whichever run was current when it finished, so the last request of one Fontaine run landed in the next run's log. Re-attributed by hand from the logs: multi has 6 requests (42,144 tokens, not 5 / 34,576) and dup 4 (27,390, not 5 / 34,632). Tabs' own final request (after its last tool call) is missing from every log, because it was filed under an earlier stale-file run whose log was overwritten by the rerun, so tabs shows 6 recorded requests / 42,509 tokens out of 7 actual. omp runs were unaffected. `record_proxy.py` now resolves the run directory when the request arrives.
 
 **LSP (E4, `omp-study-lsp` image with `python3-pylsp`).** Config `lsp.diagnosticsOnEdit: true`:
 
 - Default `lsp.lazy: true`: both `edit` and `write` returned no diagnostics for a deliberate undefined name; `lsp` status said
-  `pylsp (configured, not started)` (capture `e4_lsp_default_lazy.txt`). Nothing in the result told the model that diagnostics were unavailable.
+  `pylsp (configured, not started)` (that status text appears in `e4_lsp_setuptools_missing.txt`, run with the default lazy mode; `e4_lsp_default_lazy.txt` shows the no-diagnostics results). Nothing in the result told the model that diagnostics were unavailable.
 - `lsp.lazy: false`: the `write` returned `Successfully wrote 100 bytes`, and the **next request began with a separate user-role
   message** `<system-notice>Late LSP diagnostics arrived after the edit returned: /run/study/ws/calc.py — 2 error(s) calc.py:6:16 [error]
   [pyflakes] undefined name 'y' …` (capture `e4_lsp_eager_late_diagnostics.txt`). Mechanism: inline wait 500 ms, then a deferred queue
@@ -260,12 +262,14 @@ user variants; `APPEND_SYSTEM.md`; a `PERSONALITY.md` override.
 
 | | omp | Fontaine |
 |---|---|---|
-| System message(s) | two: 10,166 B static + 512 B `<project-context>` (workstation, model id, `<critical>` rules) | one: 13,494 B |
+| System message(s) | two: 10,166 B static + 512 B `<project-context>` (workstation, model id, `<critical>` rules) | one: 13,494 B, of which 9,645 B is this repo's own `AGENTS.md` (see below); Fontaine's own framing is 3,507 B of text (3,614 B as a message) |
 | Tools sent | 11, 17,754 B of schema | 13, 12,195 B of schema |
 | Request params | `stream_options.include_usage`, `store:false`, `max_completion_tokens:16384`, `reasoning_effort:"high"`; `temperature` only on judge calls | `stream_options.include_usage`, no token cap, no reasoning param |
 | Headers | `user-agent: omp/18.13.0`, `x-stainless-timeout: 300` (OpenAI SDK), `x-opencode-session` supplied by my `models.yml` | `user-agent: fontaine/0.1.0 (+repo)`, `x-opencode-session` per session |
 | Per-call extras | `i` intent argument on every tool; date and cwd in the first user turn | none |
-| Prompt tokens, first request | 7,515 (7,424 cached by the gateway) | 6,556 (0 cached) |
+| Prompt tokens, first request | 7,515 (7,424 cached by the gateway) | 6,556 (0 cached), including ~2.4k estimated tokens of `AGENTS.md`; ~4.1k without |
+
+**Contamination in the Fontaine column.** The Fontaine runs had their working directory inside this repository, and Fontaine loads the `AGENTS.md` of every ancestor of the cwd (`fontaine-core/src/instructions/mod.rs:204-212`), so the system message carries a `Instructions from <repo>/AGENTS.md:` block (9,645 B). Removing that block from the captured request leaves 3,507 B of text, so **on the wire Fontaine's own framing is about a third of omp's 10,678 B, not heavier**; the raw 13,494 B vs 10,678 B comparison measures this repository's `AGENTS.md`, not the harness. The ~2.4k-token figure is estimated from the byte ratio (9,645 B at the ~3.9 B/token both requests show); I did not re-run. The scripts now run Fontaine from a workspace outside the repo; the captures predate that (`README.md`). The same block is in every Fontaine request in E3, E4 and E11, and in the guardian prompts.
 
 The gateway rejected omp's first request with `400 … Request is missing x-opencode-session` until the header was added to
 `models.yml`; omp's opencode-go code sends that header for usage polling and discovery (`docs/install-id.md@dcafcef6`), and a custom
@@ -448,8 +452,9 @@ refused, and none of the marker files existed afterwards (capture `e5_patterns_w
 allow rule is conservative: anything with shell control falls through to a prompt, which matches the "unparseable falls through"
 property Fontaine's pre-classifier requires. It is still matching on command text.
 
-Interceptor (E5, `bashInterceptor.enabled: true`): `cat .env`, `head -1 .env`, `grep API .env` and `sed -i` were blocked with a
-"Use the `read` tool instead" message; **`/bin/cat .env` and `python3 -c "print(open('.env').read())"` ran** (capture
+Interceptor (E5, `bashInterceptor.enabled: true`): `cat .env`, `head -1 .env`, `grep API .env` and `sed -i` were blocked, with a
+per-tool message: `cat`/`head` got "Use the `read` tool instead of cat/head/tail", `grep` "Use the `grep` tool instead of grep/rg", and
+`sed -i` "Use the `edit` tool instead of sed -i"; **`/bin/cat .env` and `python3 -c "print(open('.env').read())"` ran** (capture
 `e5_interceptor.txt`). It is a nudge, as its own header says, and is not a control.
 
 Tool deadline: `timeout: 0` lifts the ceiling (4.1).
@@ -618,9 +623,12 @@ about the guardian model, a bordered `message · Enter sends · Alt+Enter new li
 `commands` list (`/add-dir <path>  add a workspace root`, `/agents`, `/branch [name]`, `/clear`, `/compact`, `/config`, `/context`, `/copy`)
 with `↑/↓ select · Tab complete · Enter run · Esc close`. `/resume` picker: `sessions started in this directory` with a type-to-filter line
 (no all-projects toggle). Tool calls are **one-line summaries** in the transcript (`• read stats.py ✓`, `• shell python3 -m unittest -q … ✓`,
-`· edit allowed once`); no inline output, no diff. The approval prompt is a bordered `approval` box (`Allow shell?`, the command, `[y] allow
-once / [s] allow session / [a] always allow / [n] deny`, "rule the lasting answers would add: edit(//…/stats.py)", "Enter on deny adds a
-reason"); no diff for `edit`. Task progress is one line (`Tasks 1/3 · ▶ Fix the failing test/code`). A busy indicator is the
+`· edit allowed once`); no inline output, no diff. The approval prompt is a bordered `approval` box. The `Allow edit?` prompt shows the path, `[y] allow once / [s] allow session / [a] always
+allow / [n] deny`, "rule the lasting answers would add: edit(/…/stats.py)" and "Enter on deny adds a reason", with no diff. An `Allow shell?`
+prompt shows the command; for a simple `python3 -m unittest -q …` it listed only `[y] allow once` and `[n] deny`, and for a
+multi-line `python3 -c` it listed all four options and a `shell(…)` rule line (captures `e11_fontaine/03_` and `06_approval_prompt.txt` vs `07_`; the edit prompt is `05_`). Task
+progress is one line (`Tasks 0/3 · ▶ Investigate the failing test_median_even test and stats.py median implementation`, later
+`Tasks 2/3 · ▶ Verify with python3 -m unittest -q`, finally `Tasks 3/3`). A busy indicator is the
 word `working · esc to interrupt` in the status line. At 60 columns the layout reflows and truncates the status line. (A first Fontaine
 capture was taken while the trust dialog was still up and shows garbled interleaved frames; I did not reproduce garbling in the clean
 rerun, so it is not claimed as a bug.)
@@ -717,7 +725,7 @@ Setbacks, in order, because they are findings:
 |---|---|---|
 | E1 | Build; interactive TUI idle 25 s with no prompt (`e1-idle`); `omp -p` with one prompt (`e1-ok`); `omp config list` | Boots with the source-built addon. Default tools in `-p`: 11 (+ `xd://` devices). Defaults: `tools.approvalMode=yolo`, `telemetry.otlpExportEnabled=true` (inert without an endpoint), `dev.autoqa=true`, `startup.checkUpdate=true`, `startup.setupWizard=true` (first run shows a 5-step provider sign-in wizard). Egress (DNS only): `catalog.stencil.so`, `api.kilo.ai`, `api.venice.ai`, `api.commandcode.ai`, `coding-intl.dashscope.aliyuncs.com`, `hyper.charm.land`, `zenmux.ai` when interactive; `hyper.charm.land` in `-p`; plus loopback probes of Ollama/LM Studio/llama.cpp. No install-id file written. Session path claim confirmed (4.8). |
 | E2 | Read-only question, omp vs Fontaine | `e2_framing_compare.txt`, request bodies committed. 4.3. |
-| E3 | Plain fix; identical-call (`threshold: 3`, 7× `false`); deadline (`maxTimeout: 8`, `sleep 600`); smart stop detection; auto-repair; TTSR; `/goal` in `-p` | Plain fix: omp 6 requests, 10 tool calls, 50,614 prompt tokens; Fontaine 5, 6, 35,464 (not a quality comparison: the models' exploration differed). Mechanisms: 4.1. Did not fire: empty-stop retry, malformed-call retry, thinking-loop guard, streaming-edit abort (not enabled), soft-tool requirement. Unexpected-stop nudge did not fire, its judge ran and said NO. |
+| E3 | Plain fix; identical-call (`threshold: 3`, 7× `false`); deadline (`maxTimeout: 8`, `sleep 600`); smart stop detection; auto-repair; TTSR; `/goal` in `-p` | Plain fix: omp 6 requests, 10 tool calls, 50,614 prompt tokens; Fontaine 5, 6, 35,464 (includes ~9.6 KB, ~2.4k estimated tokens, of this repo's `AGENTS.md` per request, so ~12k of the total; 4.3) (not a quality comparison: the models' exploration differed). Mechanisms: 4.1. Did not fire: empty-stop retry, malformed-call retry, thinking-loop guard, streaming-edit abort (not enabled), soft-tool requirement. Unexpected-stop nudge did not fire, its judge ran and said NO. |
 | E4 | Four edit tasks × {hashline, replace, Fontaine}; LSP with pylsp | 4.2. DAP not driven. |
 | E5 | Four risky actions × {yolo, write, always-ask}; `bash.patterns` probe; interceptor probe | 4.7. |
 | E6 | `compaction.thresholdTokens: 14000`, long log read, 60,000-line output | 4.4. |

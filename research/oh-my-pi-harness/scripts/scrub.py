@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Scrub or check files for literal secrets. stdlib only; run with `python3 -I`.
 Literal values come from: the dummy key, the go account's access/refresh tokens, email and org id in credentials.toml,
-and every every runs/*/**/install-id. Values are never printed.
+and every runs/*/**/install-id. Values are never printed.
   scrub.py PATH...            replace each literal with [REDACTED] in place
   scrub.py --check PATH...    report file:line for each hit, exit 1 if any (also flags credential-shaped Bearer tokens)"""
 import os, re, sys, tomllib

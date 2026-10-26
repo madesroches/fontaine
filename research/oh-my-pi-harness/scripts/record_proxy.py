@@ -92,6 +92,7 @@ def make_handler(kind):
 
         def _handle(self):
             t0 = time.time()
+            rdir = cur_dir()  # resolved on arrival: the run may be switched before a slow response finishes
             n = int(self.headers.get("content-length") or 0)
             raw = self.rfile.read(n) if n else b""
             hdrs = {k: v for k, v in self.headers.items()}
@@ -123,7 +124,7 @@ def make_handler(kind):
                 self.send_response(503); self.send_header("content-type", "application/json")
                 self.send_header("content-length", str(len(out))); self.end_headers(); self.wfile.write(out)
                 rec.update(status=503, resp_body=err, proxy_error=True)
-                self._write(rec); return
+                self._write(rec, rdir); return
             url = A.upstream.rstrip("/") + self.path
             req = urllib.request.Request(url, data=raw if self.command != "GET" else None, headers=fwd, method=self.command)
             chunks = []
@@ -163,12 +164,12 @@ def make_handler(kind):
                 except Exception: pass
             rec["resp_body"] = scrub_obj(body_to_obj(body, None), secrets())
             rec["elapsed"] = round(time.time() - t0, 3)
-            self._write(rec)
+            self._write(rec, rdir)
 
-        def _write(self, rec):
+        def _write(self, rec, rdir):
             with LOCK:
-                os.makedirs(cur_dir(), exist_ok=True)
-                with open(os.path.join(cur_dir(), "exchanges.jsonl"), "a") as f:
+                os.makedirs(rdir, exist_ok=True)
+                with open(os.path.join(rdir, "exchanges.jsonl"), "a") as f:
                     f.write(json.dumps(rec) + "\n")
 
         do_GET = do_POST = do_PUT = do_DELETE = _handle
