@@ -40,18 +40,23 @@ cannot (see Permissions and security).
 
 ### Native search
 
-For an `anthropic` account, the agent request carries a rig `ProviderToolDefinition` (`provider_tool` on
-`AgentBuilder`; rig merges it into the request `tools`) with kind `web_search_20250305`, the version every
-Anthropic hosting accepts (Azure supports only that one). rig-core 0.45.0 already round-trips
-`server_tool_use` and `web_search_tool_result` blocks through history, resumes a `pause_turn`, maps
-`web_search_result_location` citations and reads `usage.server_tool_use.web_search_requests`
-(`providers/anthropic/{wire,streaming,extension}.rs`), so no custom history handling is needed.
+For an `anthropic` account, the agent request carries the server tool `web_search_20250305` (the version every
+Anthropic hosting accepts; Azure supports only that one), set through
+`AgentBuilder::additional_params(json!({"tools": [{"type": "web_search_20250305", "name": "web_search"}]}))`
+(`provider_tool` exists only on rig-core's `CompletionRequest`, not on rig-agent's `AgentBuilder`).
+`additional_params` replaces the whole value, so the tool entry is merged into any params already set on the
+main agent builder rather than overwriting them. rig-core 0.45.0 already round-trips `server_tool_use` and
+`web_search_tool_result` blocks through history, resumes a `pause_turn` and maps `web_search_result_location`
+citations (`providers/anthropic/{wire,streaming,extension}.rs`), so no custom history handling is needed.
 
 - Attached where the builder is finished (`finish_builder` in `rust/fontaine-core/src/agent/build.rs`),
   decided per request from the current mode and rules, so a mode switch or rule change takes effect on the
   next turn.
 - Only for accounts whose `base_url` is the Anthropic API (Databricks and other hosts are unverified), unless
-  `[websearch] native = "on"` opts in. `native = "off"` forces the client-side backend. Default `auto`.
+  `[websearch] native = "on"` opts in. `finish_builder`'s `Parts` carries only `config` and `models`, and
+  `ModelHandle` has no account or `base_url`, so a helper resolves the main model's account from
+  `models.main.reference` via `config.accounts` and compares its `base_url` (empty filtered) to the Anthropic
+  provider's `default_endpoint()` (`https://api.anthropic.com`, `providers/anthropic.rs`). `native = "off"` forces the client-side backend. Default `auto`.
 - Offered only when no `deny` or `ask` rule covers `websearch` (a bare `websearch` rule, or its `WebSearch`
   alias). In `auto` and `plan` it is offered otherwise; in `manual`, `acceptEdits` and `dontAsk` (where a
   non-allowed `websearch` call would ask or be denied) it is offered only when an `allow` rule for
@@ -61,9 +66,9 @@ Anthropic hosting accepts (Azure supports only that one). rig-core 0.45.0 alread
   other versions), Fontaine drops the tool, retries the request once without it, and keeps native off for the
   rest of the session, so the client-side tool takes over when a backend is configured. Any other error is not
   retried.
-- Native searches are not tool calls in Fontaine, so they emit no tool events. They are logged from the
-  response: each `server_tool_use` block is recorded in the debug log, and `usage.server_tool_use` counts are
-  added to the session's usage record.
+- Native searches are not visible to Fontaine's tool events, audit or usage record: rig's generic `Usage` has
+  no server-tool field and the turn loop drops non-text, non-tool-call content. They appear only in the
+  model's text and citations.
 
 ### Tool
 
@@ -99,11 +104,17 @@ enum Backend { Tavily { api_key }, Searxng { base_url } }
   `content`). The instance must have the `json` format enabled; a 403 is reported with that hint.
   - **Launch on demand.** With `command` set, Fontaine starts the instance itself: fixed argv, no shell, run
     with `tokio::process::Command` and `kill_on_drop(true)` and the scrubbed environment of the MCP stdio
-    launcher (`rust/fontaine-mcp/src/servers.rs`, `BASE_ENV`), whose rmcp `TokioChildProcess` is the same
-    kill-on-drop lifecycle; there is no other shared child-process manager (`user_hooks.rs` and the guardian
+    launcher, whose rmcp `TokioChildProcess` is the same kill-on-drop lifecycle. The env allowlist `BASE_ENV`
+    (private in `rust/fontaine-mcp/src/servers.rs`) moves into `fontaine-tools`, exported, and `fontaine-mcp`
+    imports it; there is no other shared child-process manager (`user_hooks.rs` and the guardian
     scanner are one-shot). The first search starts it, then polls `base_url` until it answers or
-    `startup_timeout_secs` elapses; later searches reuse it. It is stopped when the session ends, including
-    on interrupt, by dropping the handle. A spawn failure or readiness timeout is a search error with the
+    `startup_timeout_secs` elapses; later searches reuse it. `AgentRuntime::rebuild()` (on `/add-dir`,
+    `/output-style`, model switch) re-runs `tools::registry` and replaces tools by name, so the child handle
+    is a shared `Arc` created once outside `tools::registry`, carried in `RegistryParams`, and passed into every
+    rebuilt `Websearch`; a handle owned by `Websearch` would be killed and relaunched mid-session. The runtime
+    holds the `Arc` like it holds the MCP `Connected` handles, and the child is stopped by an explicit shutdown
+    call on the normal exit and interrupt paths (`std::process::exit` skips drops), with `kill_on_drop` as the
+    backstop. A spawn failure or readiness timeout is a search error with the
     cause chain (and the child's stderr tail); there is no fallback to another backend. SearXNG remains an
     external HTTP service, never bundled.
 
@@ -152,8 +163,9 @@ decision.
 - Resolved in `config.rs` next to `resolve_telemetry`; exposed in `config_catalog.rs` so `/config` shows it,
   with the key redacted if shown at all.
 - `command` validation: non-empty argv, only with `searxng`, and `startup_timeout_secs` only with `command`.
-- `RegistryParams` (`fontaine-core/src/tools.rs`) gains `websearch: Option<WebsearchConfig>`, passed into
-  `BuiltinEnv`, and `builtins::build` registers the tool when it is `Some`.
+- `RegistryParams` (`fontaine-core/src/tools.rs`) gains `websearch: Option<WebsearchConfig>` and the shared
+  launcher handle, passed into `BuiltinEnv`, and `builtins::build` registers the tool when it is `Some`. The
+  hard-coded "cannot set up the webfetch tool" error at `tools.rs:~129` is generalized to name the failing tool.
 - The system prompt is left unchanged: the tool is conditionally registered, so a static line would name a
   tool that may be absent; the model gets the description from the registry.
 
@@ -162,7 +174,7 @@ decision.
 - Descriptor row: `websearch`, `RiskClass::Arbitrary`, `path_free: false` (as `webfetch`), `Destructive::Always`,
   `Specifier::None`, aliases `&["WebSearch"]`. A bare `websearch` rule is how Claude Code's `WebSearch`
   rules map; the `domain:` form does not apply because the destination is the configured backend, not a
-  model-chosen host.
+  model-chosen host; the webfetch-`domain:` message at `permission_rules.rs:~218` is generalized to cover it.
 - `Destructive::Always` plus `Arbitrary` means: never the read-only fast path, `auto` mode sends it to the
   guardian, `manual` asks. The guardian sees the query through `summarize`: `"websearch" => text("query")`.
 - The deterministic floor and deny/ask rules apply as for any tool. No regex over the query.
@@ -175,7 +187,7 @@ decision.
 
 ### Claude Code mapping
 
-`map_tool_entry("WebSearch")` in `extensions.rs` now resolves through the descriptor alias. A skill or agent
+`map_tool_entry("WebSearch")` in `extensions.rs` now resolves through the descriptor alias (the `extensions.rs:~468` assertion that rejects it is a test, to be flipped). A skill or agent
 that lists `WebSearch` in `allowed-tools` / `disallowedTools` gets the Fontaine tool. When no backend is
 configured the tool is absent, so an allow entry is inert and a disallow entry still parses.
 
@@ -184,35 +196,42 @@ configured the tool is absent, so an allow entry is inert and a disallow entry s
 1. `fontaine-tools`: add `websearch.rs` (args, `WebsearchConfig`, `Backend`, request builders, parsers,
    domain filter, formatter, `Tool` impl) and `pub mod websearch` in `lib.rs`.
 2. `fontaine-tools`: add the `websearch` row to `descriptor.rs`; register it in `builtins::build` when
-   `BuiltinEnv.websearch` is `Some`; add the lazily started, kill-on-drop SearXNG process handle.
+   `BuiltinEnv.websearch` is `Some`; add the lazily started, kill-on-drop SearXNG process handle (shared `Arc`, see Launch on demand), and move
+   `BASE_ENV` from `fontaine-mcp` into `fontaine-tools`.
 3. `fontaine-core`: add `WebsearchSection`, its merge into `Config`, validation and resolution (backend
-   shape, key present) in `config.rs`; the `user_or_cli` scope rule in `config_scope.rs`; catalog rows in
-   `config_catalog.rs`; `Credentials::websearch()` in `credentials.rs`.
+   shape, key present) in `config.rs`; the `user_or_cli` scope rule (a `Rule::user_or_cli("websearch", ...)` row in `RULES`) in `config_scope.rs`; catalog rows in
+   `config_catalog.rs`; `Credentials::websearch()` and a `websearch: Option<Entry>` field on the `File` struct in `credentials.rs`.
 4. `fontaine-core`: thread `websearch` through `RegistryParams` in `tools.rs` and its call sites; add
-   `"websearch"` to `permissions::summarize`.
-5. Update `extensions.rs` test and `docs/extensions.md` (alias table at line 63 and the unsupported list at
+   `"websearch"` to `permissions::summarize`; generalize the webfetch-specific error text in `tools.rs` and
+   the `domain:` message in `permission_rules.rs`.
+5. Flip the `extensions.rs` test assertion (~468) and update `docs/extensions.md` (alias table at line 63 and the unsupported list at
    line 81) for the `WebSearch` mapping.
 6. Tests (see below), including: `BuiltinEnv` literals in `rust/fontaine-tools/tests/result_pipeline.rs`
    (~40, ~122); `RegistryParams` literals in `rust/fontaine-core/tests/extensions.rs` (~315) and
-   `rust/fontaine-core/src/agent/build.rs` (~144); the `rows_are_pinned` bump (`[Pinned; 17]` -> 18) and the
+   `rust/fontaine-core/src/agent/build.rs` (~144), `rust/fontaine-core/tests/choke_point.rs` (`params()`, ~147)
+   and `rust/fontaine-tools/tests/common/mod.rs` (`BuiltinEnv`, ~66); the `rows_are_pinned` bump (`[Pinned; 17]` -> 18) and the
    new expected-table row in `descriptor.rs`; a `websearch` entry in the `SNIPPETS` table in
    `config_scope.rs` (~368, test `every_row_has_a_snippet_and_no_snippet_lacks_a_row`); one `row!` per
    `websearch.*` leaf in `config_catalog.rs`; a `websearch`/`WebSearch` entry in `TOOL_NAMES` in
-   `rust/fontaine-evals/src/baseline.rs:34-46`.
-7. `fontaine-core`: in `agent/build.rs`, attach the Anthropic `web_search_20250305` provider tool when the
-   native gate allows; log `server_tool_use` blocks and usage counts.
+   `rust/fontaine-evals/src/baseline.rs:34-46` (length 8 -> 9); `EXPECTED: [(..); 8]` in
+   `rust/fontaine-tools/tests/choke_point.rs` (the tool is unregistered there unless configured, so unaffected
+   unless a configured case is added).
+7. `fontaine-core`: in `agent/build.rs`, merge the Anthropic `web_search_20250305` tool entry into the main
+   builder's `additional_params` when the native gate allows (including the account/`base_url` helper).
 8. Docs and changelog.
 
 ## Files to Modify
 
 - `rust/fontaine-tools/src/websearch.rs` (new), `lib.rs`, `descriptor.rs`, `builtins.rs`
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`, `credentials.rs`, `tools.rs`,
-  `agent/build.rs` (`finish_builder`: provider tool), `permissions.rs`, `extensions.rs`
+  `agent/build.rs` (`finish_builder`: `additional_params` tool entry), `permissions.rs`, `permission_rules.rs`,
+  `extensions.rs`
+- `rust/fontaine-mcp/src/servers.rs` (import the moved `BASE_ENV`)
 - `rust/fontaine-evals/src/baseline.rs` (`TOOL_NAMES`)
 - Tests: `rust/fontaine-tools/tests/websearch.rs` (new), `tests/common/mod.rs`, `tests/result_pipeline.rs`,
   both `choke_point.rs`, `scope.rs`; `rust/fontaine-core/tests/config.rs`, `permission_rules.rs`,
   `extensions.rs`, `destructive.rs`
-- `docs/tools.md`, `docs/configuration.md`, `docs/permissions.md`, `docs/extensions.md`, `docs/guardian.md`
+- `docs/tools.md`, `docs/configuration.md`, `docs/permissions.md` (also the plan-mode sentence at ~18 that names webfetch), `docs/extensions.md`, `docs/guardian.md`
   (list `websearch` among network-reaching tools), `docs/architecture.md` (~108-113, tool list),
   `CHANGELOG.md`, `research/research-claude-code-parity.md`
 
@@ -225,6 +244,8 @@ configured the tool is absent, so an allow entry is inert and a disallow entry s
   Responses `web_search`, xAI, Gemini grounding) are follow-up issues.
 - 2026-10-26: SearXNG may be launched on demand by a fixed-argv `command` (user/CLI scope, lazy start, stopped
   at session end, no fallback on failure); the user asked for this. It stays an external service.
+- 2026-10-26: Native searches are not logged or counted in usage: rig's generic `Usage` and the turn loop do not
+  surface server-tool blocks.
 - 2026-10-26: First backends are SearXNG and Tavily (Brave's free tier needs a card); Brave is a follow-up.
 
 ## Documentation
@@ -253,12 +274,11 @@ All offline: `wiremock` stands in for the backends.
   401/403/429/500 mapped to distinct messages; SearXNG JSON-disabled 403 hint; malformed body; timeout;
   redirect returned as an error for both backends; the key absent from every error; one short test that a
   search goes through the configured `[network]` proxy (like `webfetch_goes_through_the_configured_proxy`).
-- Native search (`fontaine-core`): the request carries the `web_search_20250305` provider tool only when the
+- Native search (`fontaine-core`): the request carries the `web_search_20250305` tool entry (merged with any existing `additional_params`) only when the
   gate allows (per mode, including the allow-rule requirement); a `deny` or `ask` rule removes it; non-Anthropic
   account kinds and non-Anthropic `base_url` (unless `native = "on"`) use the client-side backend; `native =
-  "off"` does too; a wiremock Anthropic response with `server_tool_use` + `web_search_tool_result` blocks (and
-  `usage.server_tool_use`) round-trips through history and the next request replays them; `server_tool_use`
-  blocks are logged and usage counts recorded; a 400 naming the tool is retried once without it and keeps
+  "off"` does too; a wiremock Anthropic response with `server_tool_use` + `web_search_tool_result` blocks
+  round-trips through history and the next request replays them; a 400 naming the tool is retried once without it and keeps
   native off for the session, while another 400 is not retried.
 - SearXNG launch (`fontaine-tools/tests/websearch.rs`): a fake child script that serves the responder
   starts once across several searches, is terminated when the tool is dropped, and a script that exits
