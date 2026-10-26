@@ -50,7 +50,11 @@ unarmed `get_cursor_position()` (`screen.rs:96-110`), and `CrosstermBackend` imp
 `crossterm::terminal::size()` (tty ioctl) and `crossterm::cursor::position()` (stdin round trip);
 `Screen::new` and every `draw_frame` call `size()`. So the helper defines a small test `Backend`
 wrapper around `CrosstermBackend<SharedBuf>` that overrides `size`, `window_size` and
-`get_cursor_position` from the emulator, and drives a real `Screen<Anchored<ThatWrapper>>`.
+`get_cursor_position` from the emulator, and drives a real `Screen<Anchored<ThatWrapper>>`. The wrapper must also forward `append_lines`,
+`scroll_region_up` and `scroll_region_down` to the inner backend: `ratatui-core`'s `append_lines`
+default is a no-op, which would silently drop the scrolling newlines, and `scrolling-regions` is
+enabled. `Screen` needs a `placeholder: fn() -> B`, so the helper wraps `Anchored<Wrapper>` and
+creates the shared `SharedBuf` / emulator state through an `Arc` inside that fn (or a static).
 `SharedBuf` collects the written bytes; the helper feeds them to the emulator after each `render`
 and exposes two screens:
 
@@ -86,8 +90,10 @@ because ratatui is built with `scrolling-regions`.
 The fix is not designed until step 2 names the cause; whichever it is must keep the properties
 in `screen.rs`'s module comment (live area ends on the bottom row, settled rows written once).
 Fix direction per candidate: (1) scroll with an explicit region instead of newlines; (2) leave
-the last column empty in `entry_lines`'s `Tool` arm; (3) measure with `unicode-width` in
-`truncate` and `wrap`, which `ratatui-core` already depends on. If the cause is a terminal-specific behavior that cannot be modeled, the fallback is a full
+the last column empty in `entry_lines`'s `Tool` arm; (3) measure with `unicode-width` (which
+`ratatui-core` already depends on) via one width helper that replaces every `chars().count()` width
+measurement in `transcript.rs` (`truncate`, `prefixed_body`, assistant row wrapping, the detail
+truncate) and is used by `wrap` (defined in `input.rs:197`). If the cause is a terminal-specific behavior that cannot be modeled, the fallback is a full
 repaint after every rebuild: clear each viewport row and redraw every cell, not only the diff.
 
 ### 4. Regression test
@@ -105,11 +111,12 @@ named for issue 217. CI also runs a small strided matrix (every 4th height, ever
    helper (`fontaine-tui/src/screen.rs` tests, or a `tests/common` module if the integration
    tests need it); check `vt100`'s DECSTBM and scrollback handling; confirm `cargo deny check`
    passes.
-2. Write the full sweep from Design 2 as an `#[ignore]` test and run it until it fails; record the failing frame and the
-   cause under `## Decisions`.
-3. Implement the fix for that cause (Design 3).
-4. Add the regression test (Design 4) and the model-level test if applicable; run the full sweep
-   locally green and keep the strided matrix in CI.
+2. Write the full sweep from Design 2 as an `#[ignore]` test and run it until it fails; record the
+   failing frame and the cause under `## Decisions`. Add that specific failing scenario as a normal
+   (non-ignored) test so it is red before the fix.
+3. Implement the fix for that cause (Design 3); the step 2 scenario test goes green.
+4. Keep the strided matrix (Design 4) in CI and the model-level test if applicable; run the full
+   sweep locally green.
 5. Run the existing `fontaine-tui` tests, clippy and fmt.
 
 ## Files to Modify
@@ -119,7 +126,8 @@ named for issue 217. CI also runs a small strided matrix (every 4th height, ever
   resolves, and in fontaine-tui `[dependencies]`)
 - `rust/fontaine-tui/src/screen.rs` (fix and tests, if the cause is in `rebuild`, ~line 203;
   `draw_frame` is ~line 172)
-- `rust/fontaine-tui/src/transcript.rs` (only if the cause is in row width)
+- `rust/fontaine-tui/src/transcript.rs` and `rust/fontaine-tui/src/input.rs` (`wrap`) (only if the
+  cause is in row width)
 - `CHANGELOG.md` (fix entry)
 
 ## Trade-offs
