@@ -195,6 +195,8 @@ fn create_empty(path: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     fn lookup<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
@@ -254,10 +256,10 @@ mod tests {
                 .any(|(k, v)| k == "FONTAINE_SH_COMMAND" && v == "vim \"$1\"")
         );
         let path = command.env.iter().find(|(k, _)| k == "PATH").unwrap();
-        assert!(
-            path.1
-                .to_string_lossy()
-                .starts_with("/git/usr/bin:/git/bin")
+        let entries: Vec<PathBuf> = std::env::split_paths(&path.1).take(2).collect();
+        assert_eq!(
+            entries,
+            [PathBuf::from("/git/usr/bin"), PathBuf::from("/git/bin")]
         );
     }
 
