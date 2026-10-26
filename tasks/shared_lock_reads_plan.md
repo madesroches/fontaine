@@ -11,7 +11,7 @@ can get `NotFound` or `PermissionDenied` for a few milliseconds instead of the o
 it. The bug matters in production: `config::load` maps `NotFound` on the user `config.toml` to "no
 settings", so a session starting while another session writes an "always allow" rule silently runs
 without the user's deny rules. No rename flavor closes the window. This plan makes readers of the
-lock-guarded files take a **shared** lock on the sibling `.lock` file that every writer already holds
+user settings and trust files take a **shared** lock on the sibling `.lock` file that every writer already holds
 exclusively across read, edit and replace, so a reader can never observe a replace in progress.
 
 ## Current State
@@ -31,10 +31,12 @@ exclusively across read, edit and replace, so a reader can never observe a repla
     before `remove_account` takes the lock (`:319`): a replace during that read lets the "account in
     use by a model" guard pass wrongly.
   - `Credentials::load` (`credentials.rs:100`), called from `config.rs:1910`, `accounts.rs:140`,
-    `models.rs:33`, `fontaine/src/telemetry/mod.rs:145`, and `token_source.rs:235`.
-- Two readers run **while their caller holds the exclusive lock** in the same process:
-  `approve_server` calls `server_approved` after `lock` (`trust.rs:148-151`), and
-  `refresh_serialized` calls `Credentials::load` while holding `credentials::lock`. A shared lock
+    `models.rs:33`, `fontaine/src/telemetry/mod.rs:145`, and `token_source.rs:235`. It stays
+    unlocked (see Decisions): `refresh_serialized` holds `credentials::lock` across the OAuth HTTP
+    refresh (up to 30 s), and a missed read only yields an empty store, which fails loudly as "not
+    signed in" / "no ingestion key" rather than loosening any decision.
+- One reader runs **while its caller holds the exclusive lock** in the same process:
+  `approve_server` calls `server_approved` after `lock` (`trust.rs:148-151`). A shared lock
   taken through a second handle would deadlock there (`flock` and `LockFileEx` conflict across
   handles even within one process).
 - `owner_only::replace` (`owner_only.rs:57`) renames with `std::fs::rename`, retrying 5 × 20 ms on
@@ -80,10 +82,8 @@ reader wraps it with `read_shared`:
 - **Trust** (`trust.rs`): `load` reads through `file_lock::read_shared`. `approve_server` drops its
   `server_approved` early-out under the lock and instead checks the `TrustFile` it already parses
   from the text it reads under the lock (the same shape as `record`'s `parsed.trusted` check).
-- **Credentials** (`credentials.rs`): `Credentials::load` reads through `read_shared`. Add
-  `Credentials::load_locked(data_dir, &Lock)`, the proof-of-holding variant matching
-  `store_oauth_locked`, which reads plainly; `refresh_serialized` uses it. A shared private
-  `from_text(path, io::Result<String>)` keeps the `NotFound` → empty and parse mapping in one place.
+- **Credentials** (`credentials.rs`): unchanged; `Credentials::load` keeps its plain read (see
+  Decisions), so `refresh_serialized`'s read under its own lock needs no locked variant.
 - **Settings** (`config.rs`): the user layer reads through `read_shared`; project, local and
   `--settings` files keep the plain read. `read_optional` takes the read function
   (`fn(&Path) -> io::Result<String>`) so the `NotFound` → `None` mapping is not duplicated.
@@ -100,17 +100,14 @@ briefly find the file missing or access denied. No rename change.
 
 1. `file_lock.rs`: private lock-path helper; `read_shared` as above.
 2. `trust.rs`: `load` via `read_shared`; `approve_server` early-out from the locked parse.
-3. `credentials.rs`: `from_text`, `Credentials::load` via `read_shared`, `load_locked`;
-   `token_source.rs:235` calls `load_locked(&self.data_dir, &file_lock)`.
-4. `config.rs`: `read_optional` takes the reader; user layer passes `file_lock::read_shared`.
-5. `user_config.rs`: `model_key_naming` reads via `file_lock::read_shared`.
-6. `owner_only.rs`: doc comment on `write_atomic`.
-7. Tests (below), `docs/configuration.md`, `CHANGELOG.md` (`## [Unreleased]` fix entry).
+3. `config.rs`: `read_optional` takes the reader; user layer passes `file_lock::read_shared`.
+4. `user_config.rs`: `model_key_naming` reads via `file_lock::read_shared`.
+5. `owner_only.rs`: doc comment on `write_atomic`.
+6. Tests (below), `docs/configuration.md`, `CHANGELOG.md` (`## [Unreleased]` fix entry).
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/file_lock.rs`, `trust.rs`, `credentials.rs`, `config.rs`,
-  `user_config.rs`, `owner_only.rs`, `providers/token_source.rs`
+- `rust/fontaine-core/src/file_lock.rs`, `trust.rs`, `config.rs`, `user_config.rs`, `owner_only.rs`
 - `rust/fontaine-core/tests/owner_only.rs` (and a `#[cfg(test)] mod tests` in `file_lock.rs`)
 - `docs/configuration.md`
 - `CHANGELOG.md`
@@ -133,12 +130,20 @@ briefly find the file missing or access denied. No rename change.
   with no cross-process writer lock, where a missed read only empties a list for one session.
 - 2026-10-25: a read creates the sibling `.lock` file when its directory exists; the files are
   already documented and created on the first edit.
+- AFK: 2026-10-25: `Credentials::load` keeps its unlocked read (no `read_shared`, no `load_locked`),
+  because `refresh_serialized` holds `credentials.lock` across a network refresh of up to 30 s that
+  every UI and model-resolution reader would wait on, while a missed credentials read only fails
+  loudly (empty store → "not signed in") and never loosens a permission decision.
+- AFK: 2026-10-25: `model_key_naming` stays a separate public check read through `read_shared`
+  rather than moving into `remove_account` under the exclusive lock, because the issue is the torn
+  read and the check-then-act window is pre-existing and needs no signature or test changes.
 
 ## Documentation
 
-`docs/configuration.md`: the lock-file row (line 32) and the trust/credentials paragraphs (~780,
-~830) say sessions also take the lock briefly when reading these files, so a read waits for an edit
-in progress instead of seeing it half-done.
+`docs/configuration.md`: the lock-file row (line 32) and the trust/settings paragraph (~780) say
+sessions also take `trust.lock` and `config.lock` briefly when reading those files, so a read waits
+for an edit in progress instead of seeing it half-done. The credentials paragraph (~830) is
+unchanged: credential reads take no lock.
 
 ## Testing Strategy
 
@@ -164,8 +169,8 @@ real threads on the real filesystem, run on all three OSes.
   - existing directory, missing file → `NotFound`;
   - `#[cfg(unix)]`: a read-only directory holding the file (mode 0555, no `.lock` present) still
     reads it.
-- No-deadlock coverage: the existing `approve_server` tests and `token_source` refresh tests would
-  hang if an exclusive holder took the shared lock; they run unchanged. The existing approve-twice test
+- No-deadlock coverage: the existing `approve_server` tests would hang if an exclusive holder took
+  the shared lock; they run unchanged. The existing approve-twice test
   (`tests/project_origins.rs:135-139`, "Approving twice writes it once") covers the moved early-out.
 
 ## Open Questions
