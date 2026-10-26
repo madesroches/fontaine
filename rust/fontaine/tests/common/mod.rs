@@ -471,6 +471,8 @@ pub struct Sandbox {
     pub work: PathBuf,
     pub config: PathBuf,
     pub data: PathBuf,
+    /// Stands in for `$XDG_RUNTIME_DIR`, where the session scratch directories go.
+    pub runtime: PathBuf,
     env: Vec<(String, String)>,
 }
 
@@ -499,10 +501,16 @@ impl Sandbox {
             work: root.join("work"),
             config: root.join("config"),
             data: root.join("data"),
+            runtime: root.join("runtime"),
             _tmp: tmp,
             env: Vec::new(),
         };
-        for dir in [&sandbox.work, &sandbox.config, &sandbox.data] {
+        for dir in [
+            &sandbox.work,
+            &sandbox.config,
+            &sandbox.data,
+            &sandbox.runtime,
+        ] {
             std::fs::create_dir_all(dir).unwrap();
         }
         sandbox
@@ -546,6 +554,7 @@ impl Sandbox {
             .current_dir(&self.work)
             .env("FONTAINE_CONFIG_DIR", &self.config)
             .env("FONTAINE_DATA_DIR", &self.data)
+            .env("XDG_RUNTIME_DIR", &self.runtime)
             .env_remove("FONTAINE_LOG")
             .env_remove("MICROMEGAS_TELEMETRY_URL")
             .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")

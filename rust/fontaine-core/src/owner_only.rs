@@ -31,6 +31,23 @@ pub fn create_dir(path: &Path) -> io::Result<()> {
     imp::create_dir(path)
 }
 
+/// Removes the directory tree at `path`; a missing one is success. Windows reports a file a
+/// scanner or a just-exited child still has open as access denied, so that is retried briefly.
+pub fn remove_dir_all_retrying(path: &Path) -> io::Result<()> {
+    let attempts = if cfg!(windows) { 5 } else { 1 };
+    for attempt in 1..=attempts {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if attempt < attempts && e.kind() == io::ErrorKind::PermissionDenied => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the last attempt returns")
+}
+
 /// The current user's SID in string form; what a current-user-only DACL must name.
 #[cfg(windows)]
 pub use imp::current_user_sid;

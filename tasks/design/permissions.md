@@ -76,7 +76,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               in `auto`, broad code-execution rules and hooks are suspended (§Permission rules);
               in `plan`, edit-class calls never get here
            5b. file tool (read/ls/glob/grep/write/edit) with a path outside every root → Deny with
-              the `/add-dir` hint (file tools are confined to the roots, so an approved call
+              the per-session scratch directory and the `/add-dir` hint (file tools are confined to the roots, so an approved call
               would still be refused); never reaches the prompt
            6. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
            7. mode == auto → the composed guardian (`fontaine_guardian::cascade::adjudicate`):

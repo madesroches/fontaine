@@ -480,10 +480,9 @@ async fn a_nonexistent_add_dir_and_a_nonexistent_config_entry_are_skipped_with_a
         .await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let init = &out.lines()[0];
-    assert_eq!(
-        init["workspace_roots"],
-        json!([s.work.display().to_string()])
-    );
+    let roots = init["workspace_roots"].as_array().unwrap();
+    assert_eq!(roots.len(), 2, "{roots:?}");
+    assert_eq!(roots[0], s.work.display().to_string());
     let flag_warning = out
         .stderr
         .lines()
@@ -692,4 +691,49 @@ async fn a_configured_autocompact_window_summarizes_before_the_turn() {
     assert_ne!(requests[3]["stream"], json!(true), "the summarizer call");
     assert!(requests[3].to_string().contains("<conversation>"));
     assert!(requests[4].to_string().contains("the summary"));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_scratch_root_is_the_last_root_and_is_gone_after_the_run() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let out = s.headless(&["--output-format", "stream-json", "hi"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let init = &out.lines()[0];
+    let roots = init["workspace_roots"].as_array().unwrap();
+    assert_eq!(roots.len(), 2);
+    let scratch = Path::new(roots[1].as_str().unwrap());
+    assert!(
+        scratch.starts_with(s.runtime.join("fontaine")),
+        "{scratch:?}"
+    );
+    assert!(!scratch.exists());
+    let left: Vec<_> = std::fs::read_dir(s.runtime.join("fontaine"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn startup_sweeps_the_scratch_directories_of_dead_sessions() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let parent = s.runtime.join("fontaine");
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&parent)
+            .unwrap();
+    }
+    std::fs::create_dir(parent.join("dead-session")).unwrap();
+    std::fs::write(parent.join("dead-session").join("helper.sh"), "x").unwrap();
+    std::fs::write(parent.join("dead-session.lock"), "").unwrap();
+    let out = s.headless(&["hi"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert!(!parent.join("dead-session").exists());
+    assert!(!parent.join("dead-session.lock").exists());
 }
