@@ -156,6 +156,14 @@ named for issue 217. CI also runs a small strided matrix (every 4th height, ever
   `draw_frame` erases the viewport (`clear_region(AfterCursor)` from its top) before the
   `insert_before` calls, so no live text is left to show through.
 
+- 2026-10-26: the emulator missed the larger cause under tmux, which moves the visible screen into
+  scrollback when the display is erased from its top-left corner. `rebuild`, the pre-insert erase
+  and `Terminal::clear()` all did that whenever the viewport top was row 0, so every full-screen
+  frame left a copy of the box and transcript in history. Found by running the real `Screen` in
+  tmux and reading the captured bytes. Fix: `erase_rows` blanks rows one at a time, `clear()` is
+  replaced by `rebuild`, and the harness fails any erase from the top-left corner. The tmux recipe
+  is in `tasks/design/testing.md`.
+
 ## Documentation
 
 No user docs change: the fix restores documented behavior. `CHANGELOG.md` gets a fix entry.

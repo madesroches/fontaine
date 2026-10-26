@@ -357,7 +357,9 @@ All notable changes are recorded here. The format follows
   one or zero rows from the top of the screen used a one-row scroll region, which terminals ignore,
   so the whole screen scrolled with the box in it; the live area is now repainted after such a
   write, and erased beforehand so stale live-row text no longer shows through blank cells of the
-  settled lines (#217).
+  settled lines. Under tmux the live area also no longer leaves copies of the prompt box and
+  transcript in the scrollback: erasing the screen from its top-left corner makes tmux move
+  everything visible into history, so the live area is now erased row by row (#217).
 - Reading the user settings or `trust.toml` while another session replaces it no longer fails on
   Windows, where a session could miss the file and start without the user's deny rules. Those
   reads now wait on the same lock the edits hold (#200).

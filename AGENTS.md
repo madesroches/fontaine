@@ -112,6 +112,8 @@ all tests pass:
 - `claude -p` may be run manually or from `evals/` to capture Claude Code baselines and
   compare Fontaine's behavior as features land — never from unit/integration tests or CI.
 - Integration tests drive the core through the headless `fontaine -p` surface.
+- Terminal layout bugs (live area, scrollback) must be reproduced in a real tmux, not only in
+  `TestBackend`: see `tasks/design/testing.md`, "Reproducing terminal layout bugs".
 - New shell-pre-classifier behavior must keep the soundness property: anything it cannot
   fully parse as one simple command falls through to the guardian (see the golden adversarial set
   in `tasks/design/testing.md`).

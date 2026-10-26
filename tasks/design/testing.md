@@ -121,6 +121,29 @@ container-mode benign cases (`minimal-benign`) — scored on the minimal-profile
 Manual smoke: real TUI session against Anthropic + one OpenAI-compatible endpoint (Ollama) —
 catches terminal-rendering and streaming-latency issues no unit test can.
 
+## Reproducing terminal layout bugs
+
+`TestBackend` and the vt100 harness in `fontaine-tui/src/screen.rs` model the screen, not the
+terminal. Bugs in how the live area interacts with scrollback (rows duplicated into history,
+a box overwritten, stale cells) depend on what the terminal does with the bytes, and tmux differs
+from the model: erasing the display from the top-left corner moves everything visible into its
+history, which the harness cannot see. So reproduce in the terminal that reported it:
+
+1. `cargo build -p fontaine-tui --example live_area` (it needs no provider or session).
+2. Run it in a detached tmux on its own server, so the geometry is yours:
+   `env -u TMUX tmux -L repro -f /dev/null new-session -d -s repro -x 80 -y 12
+   target/debug/examples/live_area`
+3. When it prints `DONE`, dump the visible screen plus all history:
+   `env -u TMUX tmux -L repro capture-pane -p -t repro -S - -E -`. A healthy run holds each
+   `note N` and `wordN` once and one `message ·` box, the live one. A bug shows as repeated
+   boxes or lines.
+4. To see which escape sequences cause it, wrap the program in `script -q -f -c <program> log`
+   inside the tmux command and read `log`: a frame is the bytes between `ESC[?2026h` and
+   `ESC[?2026l`.
+
+Whatever the cause, pin it in the vt100 harness where the model can express it (the harness
+fails any erase from the top-left corner), and keep the tmux steps as the manual check.
+
 ## Manual Verification
 
 End-to-end checks, each owned by the phase's definition of done (owner in parens):

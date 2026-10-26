@@ -123,6 +123,18 @@ impl<B: Backend> Backend for Anchored<B> {
     }
 }
 
+/// Blanks the rows from `top` down one at a time and leaves the cursor on the last. Erasing from
+/// the top row to the end of the screen in one go makes tmux move everything visible into its
+/// scrollback, which is where the prompt box and live rows would otherwise pile up.
+fn erase_rows<B: Backend>(backend: &mut B, top: u16) -> Result<(), B::Error> {
+    let bottom = backend.size()?.height;
+    for row in top..bottom {
+        backend.set_cursor_position(Position::new(0, row))?;
+        backend.clear_region(ClearType::CurrentLine)?;
+    }
+    Ok(())
+}
+
 pub struct Screen<B: Backend + Anchor> {
     terminal: Terminal<B>,
     height: u16,
@@ -192,9 +204,7 @@ impl<B: Backend + Anchor> Screen<B> {
         // wherever the line has a blank cell, because ratatui's diff skips blank cells.
         let one_row_region = self.terminal.get_frame().area().y <= 1 && !lines.is_empty();
         if one_row_region {
-            let backend = self.terminal.backend_mut();
-            backend.set_cursor_position(Position::new(0, top))?;
-            backend.clear_region(ClearType::AfterCursor)?;
+            erase_rows(self.terminal.backend_mut(), top)?;
         }
         for chunk in lines.chunks(INSERT_CHUNK) {
             let rows = chunk.to_vec();
@@ -203,9 +213,7 @@ impl<B: Backend + Anchor> Screen<B> {
             })?;
         }
         if one_row_region {
-            let top = self.terminal.get_frame().area().y;
-            self.terminal.backend_mut().arm(Position::new(0, top));
-            self.terminal.clear()?;
+            self.rebuild(self.height)?;
         }
         self.terminal.draw(|frame| view::draw(frame, app))?;
         Ok(())
@@ -215,8 +223,8 @@ impl<B: Backend + Anchor> Screen<B> {
     fn rebuild(&mut self, height: u16) -> Result<(), B::Error> {
         let top = Position::new(0, self.terminal.get_frame().area().y);
         let backend = self.terminal.backend_mut();
+        erase_rows(backend, top.y)?;
         backend.set_cursor_position(top)?;
-        backend.clear_region(ClearType::AfterCursor)?;
         let mut real = mem::replace(backend, (self.placeholder)());
         real.arm(top);
         let terminal = Terminal::with_options(
@@ -236,8 +244,8 @@ impl<B: Backend + Anchor> Screen<B> {
     pub fn clear_live(&mut self) -> Result<(), B::Error> {
         let top = self.terminal.get_frame().area().y;
         let backend = self.terminal.backend_mut();
+        erase_rows(backend, top)?;
         backend.set_cursor_position(Position::new(0, top))?;
-        backend.clear_region(ClearType::AfterCursor)?;
         backend.flush()
     }
 
@@ -746,11 +754,25 @@ mod tests {
 
         type Emulator = Arc<Mutex<vt100::Parser>>;
 
-        struct Sink(Emulator);
+        /// Set when the screen is erased from its top-left corner, which tmux answers by moving
+        /// everything visible into its scrollback.
+        type Erased = Arc<std::sync::atomic::AtomicBool>;
+
+        struct Sink(Emulator, Erased);
 
         impl Write for Sink {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.0.lock().unwrap().process(bytes);
+                let mut parser = self.0.lock().unwrap();
+                let mut rest = bytes;
+                while let Some(at) = rest.windows(3).position(|w| w == b"\x1b[J") {
+                    parser.process(&rest[..at]);
+                    if parser.screen().cursor_position() == (0, 0) {
+                        self.1.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    parser.process(b"\x1b[J");
+                    rest = &rest[at + 3..];
+                }
+                parser.process(rest);
                 Ok(bytes.len())
             }
 
@@ -766,9 +788,9 @@ mod tests {
         }
 
         impl Emu {
-            fn with(emulator: Emulator) -> Self {
+            fn with(emulator: Emulator, erased: Erased) -> Self {
                 Emu {
-                    inner: CrosstermBackend::new(Sink(emulator.clone())),
+                    inner: CrosstermBackend::new(Sink(emulator.clone(), erased)),
                     emulator,
                 }
             }
@@ -851,16 +873,16 @@ mod tests {
 
         /// A stand-in whose drop writes go to a throwaway emulator.
         fn spare() -> Real {
-            Anchored::new(Emu::with(Arc::new(Mutex::new(vt100::Parser::new(
-                nz(1),
-                nz(1),
-                0,
-            )))))
+            Anchored::new(Emu::with(
+                Arc::new(Mutex::new(vt100::Parser::new(nz(1), nz(1), 0))),
+                Erased::default(),
+            ))
         }
 
         pub struct Harness {
             pub screen: Screen<Real>,
             emulator: Emulator,
+            erased: Erased,
             height: u16,
         }
 
@@ -868,10 +890,12 @@ mod tests {
             pub fn new(width: u16, height: u16) -> Self {
                 let emulator =
                     Arc::new(Mutex::new(vt100::Parser::new(nz(height), nz(width), 1000)));
-                let backend = Anchored::new(Emu::with(emulator.clone()));
+                let erased = Erased::default();
+                let backend = Anchored::new(Emu::with(emulator.clone(), erased.clone()));
                 Harness {
                     screen: Screen::new(backend, spare).unwrap(),
                     emulator,
+                    erased,
                     height,
                 }
             }
@@ -939,6 +963,10 @@ mod tests {
             /// place above the status row.
             pub fn render(&mut self, app: &mut App, what: &str) {
                 self.screen.render(app).unwrap();
+                assert!(
+                    !self.erased.load(std::sync::atomic::Ordering::Relaxed),
+                    "{what}: the screen was erased from its top-left corner"
+                );
                 let area = self.screen.area();
                 let model = self.model(app);
                 let real = self.real();
