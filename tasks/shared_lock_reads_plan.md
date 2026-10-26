@@ -26,6 +26,10 @@ exclusively across read, edit and replace, so a reader can never observe a repla
   - `config::load` → `read_optional(&user_path)` (`config.rs:1657`, `:1940`). The project and local
     settings files are never written by Fontaine; the `--settings` file (`:1687`) neither.
   - `trust::load` (`trust.rs:64`) behind `read_file` → `is_trusted`, `server_approved`, `unreadable`.
+  - `user_config::model_key_naming` (`user_config.rs:146`) via `read_document` (which maps
+    `NotFound` to an empty document, `:184`), called from `accounts::remove` (`accounts.rs:314`)
+    before `remove_account` takes the lock (`:319`): a replace during that read lets the "account in
+    use by a model" guard pass wrongly.
   - `Credentials::load` (`credentials.rs:100`), called from `config.rs:1910`, `accounts.rs:140`,
     `models.rs:33`, `fontaine/src/telemetry/mod.rs:145`, and `token_source.rs:235`.
 - Two readers run **while their caller holds the exclusive lock** in the same process:
@@ -61,7 +65,9 @@ pub fn read_shared(target: &Path) -> io::Result<String>
    edit already does). If the open fails with `PermissionDenied` or `ReadOnlyFilesystem`, read
    without the lock: a directory this process cannot create a file in is also one its writers
    cannot replace a file in, and a read-only mounted config must keep loading.
-4. `file.lock_shared()`, then `std::fs::read_to_string(target)`, then release on drop (reuse
+4. `file.lock_shared()`; if it fails with `Unsupported` or an uncategorized error (ENOLCK on NFS),
+   read without the lock as in step 3, since today's reads never touch the lock. Otherwise
+   `std::fs::read_to_string(target)`, then release on drop (reuse
    `FileLock` so unlock-on-drop lives in one place).
 
 Errors propagate unchanged, so callers keep mapping `NotFound` to "absent".
@@ -81,7 +87,8 @@ reader wraps it with `read_shared`:
 - **Settings** (`config.rs`): the user layer reads through `read_shared`; project, local and
   `--settings` files keep the plain read. `read_optional` takes the read function
   (`fn(&Path) -> io::Result<String>`) so the `NotFound` → `None` mapping is not duplicated.
-  `user_config`'s mutators already read plainly under the exclusive lock and are unchanged.
+  `user_config`'s mutators already read plainly under the exclusive lock and are unchanged;
+  `model_key_naming`, which runs outside any lock, reads through `read_shared`.
 
 ### `write_atomic`'s contract (`owner_only.rs`)
 
@@ -96,13 +103,14 @@ briefly find the file missing or access denied. No rename change.
 3. `credentials.rs`: `from_text`, `Credentials::load` via `read_shared`, `load_locked`;
    `token_source.rs:235` calls `load_locked(&self.data_dir, &file_lock)`.
 4. `config.rs`: `read_optional` takes the reader; user layer passes `file_lock::read_shared`.
-5. `owner_only.rs`: doc comment on `write_atomic`.
-6. Tests (below), `docs/configuration.md`.
+5. `user_config.rs`: `model_key_naming` reads via `file_lock::read_shared`.
+6. `owner_only.rs`: doc comment on `write_atomic`.
+7. Tests (below), `docs/configuration.md`.
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/file_lock.rs`, `trust.rs`, `credentials.rs`, `config.rs`,
-  `owner_only.rs`, `providers/token_source.rs`
+  `user_config.rs`, `owner_only.rs`, `providers/token_source.rs`
 - `rust/fontaine-core/tests/owner_only.rs` (and a `#[cfg(test)] mod tests` in `file_lock.rs`)
 - `docs/configuration.md`
 
@@ -140,22 +148,27 @@ The bug is a real concurrency failure seen in CI, so it is pinned at the tier th
 real threads on the real filesystem, run on all three OSes.
 
 - `tests/owner_only.rs`: `concurrent_atomic_writes_to_one_path_leave_one_complete_file` keeps its
-  original purpose (unique temp names; one complete file, no `.tmp` leftovers) with unlocked writers
-  and no reader. A new `a_shared_lock_reader_never_sees_a_replace_in_progress` runs 4 writers × 10,
+  original purpose (unique temp names; one complete file, no `.tmp` leftovers) with unlocked writers,
+  and keeps a light unlocked reader that tolerates `NotFound`/`PermissionDenied` (asserting content
+  only on success) while every `write_atomic` is still `unwrap()`ed: the regression test that a
+  replace succeeds while an unlocked reader holds the target open. A new `a_shared_lock_reader_never_sees_a_replace_in_progress` runs 4 writers × 10,
   each under `file_lock::lock` + `write_atomic`, against a reader looping `read_shared` that asserts
   every read succeeds with complete content. With `read_shared` reading unlocked this test fails on
   Windows as the old one did.
 - `file_lock.rs` unit tests:
-  - a reader blocks while another handle holds the exclusive lock: a thread takes `lock`, signals,
-    writes new content with `write_atomic`, then drops the lock; a `read_shared` started after the
-    signal returns the new content;
+  - a reader blocks while another handle holds the exclusive lock (pattern of
+    `tests/credentials_oauth.rs:97-118`): the main thread holds `lock`, a spawned thread calls
+    `read_shared`, sleep, `assert!(!handle.is_finished())`, then `write_atomic` new content, drop the
+    lock, join, and assert the reader returned the new content;
+  - `lock_shared()` failure falls back to an unlocked read (unit test if a failing lock can be
+    constructed portably; it cannot be on most filesystems, so this branch is left to review);
   - missing parent directory → `NotFound`, and the directory is not created;
   - existing directory, missing file → `NotFound`;
   - `#[cfg(unix)]`: a read-only directory holding the file (mode 0555, no `.lock` present) still
     reads it.
 - No-deadlock coverage: the existing `approve_server` tests and `token_source` refresh tests would
-  hang if an exclusive holder took the shared lock; they run unchanged. Add one `approve_server` test
-  that approving an already-approved server is a no-op (exercises the moved early-out).
+  hang if an exclusive holder took the shared lock; they run unchanged. The existing approve-twice test
+  (`tests/project_origins.rs:135-139`, "Approving twice writes it once") covers the moved early-out.
 
 ## Open Questions
 
