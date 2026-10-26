@@ -22,7 +22,8 @@ repo-controlled files to the workspace. It pins exactly which files feed the gua
   one framed layer (`Instructions from <path>:`) in `layers()` (`prompt.rs:96-110`).
 - The loader is called in three places, each re-reading the disk:
   - `agent/build.rs:113` `prompt_layers`, which runs on every agent rebuild, i.e. at the
-    explicit boundaries (`/clear`, compaction, `/add-dir`, model switch, …).
+    rebuild points: model switch, output-style change and `/add-dir` (`AgentRuntime::rebuild`).
+    `/clear` and compaction do not rebuild the agent.
   - `agent/setup.rs:191` `session_state`, which computes the guardian's
     `AutoContext::project_instructions` once per session through
     `adjudication::project_instructions` (`adjudication.rs:44-54`: `From <path>:` blocks, capped
@@ -39,8 +40,9 @@ repo-controlled files to the workspace. It pins exactly which files feed the gua
 - `permission_rules::matches(rule, &CallContext { tool, args, scope, home }, Posture::Deny)`
   evaluates a deny rule against a constructed call. `SessionState::rules()` returns the live
   rules.
-- `trust.rs:232` `discover(dir)` finds the enclosing git work tree with `gix` (no `git` spawn,
-  safe options). It is private. Folder trust is already bounded at that work-tree root.
+- `trust.rs:256` `boundary(dir)` finds the enclosing git work tree with `gix` (no `git` spawn,
+  safe options) and returns a `Boundary`. It is private. Folder trust is already bounded at that
+  work-tree root (`trust.rs:289`).
 - `floor.rs:14` `PROTECTED_DIRS` lists `.git`, `.vscode`, `.idea`, `.husky` and `.fontaine`;
   `.claude` is absent because Fontaine never read it (`docs/extensions.md`: "`.claude/` itself
   is not read").
@@ -148,8 +150,8 @@ Who controls a file decides how far it may reach:
 
 - **Repo-controlled** files: a file is repo-controlled when its path, as found, lies inside the
   **confinement set**. That set is the canonicalized workspace roots plus the enclosing git work
-  tree of the primary root, from `trust.rs` `discover`, made `pub(crate)` as
-  `work_tree_root(dir) -> Option<PathBuf>`. The work tree bounds folder trust today too, and it
+  tree of the primary root, from a new `pub(crate) fn work_tree_root(dir) -> Option<PathBuf>` in
+  `trust.rs`: `match boundary(dir) { Boundary::WorkTree(p) => Some(p), _ => None }`. The work tree bounds folder trust today too, and it
   covers a monorepo launched from a subdirectory. Rules:
   - The file itself must canonicalize inside the confinement set. This covers a checked-in
     `CLAUDE.md -> ~/.ssh/id_rsa` and symlinked rules directories.
@@ -160,14 +162,13 @@ Who controls a file decides how far it may reach:
   file's, because a writable ancestor such as `/tmp` may hold another local user's file.
 - **User-tier** files: they and their imports are unconfined, as in Claude Code (user files are
   the user's own configuration).
-- **Every** import, on-demand file and rule file, user tier included, is skipped with a warning
+- **Every** candidate file (directory-walk files such as `./CLAUDE.md`, `CLAUDE.local.md`,
+  `AGENTS.md` and ancestors, imports, on-demand files and rule files), user tier included, is
+  skipped with a warning
   when the session's `deny` rules deny `read` of its path. The check calls
   `permission_rules::matches(rule, &CallContext { tool: "read", args: {"path": …}, scope, home },
   Posture::Deny)` for each deny rule. A deny rule written for the read tool therefore also keeps
   that file out of the prompt.
-
-Claude Code shows an approval dialog for external imports; Fontaine skips them and warns. That
-deviation goes in the Decisions. Users who want such a file move the import to a user-tier file.
 
 Walking the `rules/` directories follows symlinks and remembers visited canonical directories,
 which breaks cycles.
@@ -189,8 +190,8 @@ Files whose effective text is blank are dropped, as today.
 
 ### Path-scoped rules and on-demand files
 
-Rule frontmatter goes through `frontmatter::parse`. A `paths` value may be a `List` or a comma
-`Scalar` (`split_commas`). Other keys are ignored. A parse error means no `paths`, and the rule
+Rule frontmatter goes through `frontmatter::parse`. `paths` is read through `Document::list`
+(`frontmatter.rs:57`), which handles a list or a comma string. Other keys are ignored. A parse error means no `paths`, and the rule
 loads unconditionally as in Claude Code. Patterns compile with `globset` (new exact-pinned
 workspace dependency, the version `ignore` already pulls in) with `literal_separator(true)`, so
 `*.md` matches only at the base and `**` crosses directories. Braces are supported natively, so
@@ -220,7 +221,9 @@ Instructions from <path>:
 
 Bookkeeping is **per agent** (`CallView::agent`), in a lock-protected map from agent id to
 loaded paths and digests. Each agent's entry is seeded with the launch set, and the main agent's
-entry is reset by `/clear` and by compaction so files load again on demand. The lock feeds no
+entry is reset by `/clear` and by compaction so files load again on demand. The stage has a
+`reseed(&Loaded)` entry point that `build_agent` calls with the rebuilt `Loaded`: it replaces the
+path rules and resets the main agent's seed. The lock feeds no
 permission decision, so it uses `lock_recovering`, with a one-line reason.
 
 Its `StageKind::Instructions` sits between `Notifications` and `Scanner`, so the tool-result
@@ -233,13 +236,12 @@ reads for side effects.
 
 | Consumer | Files | When read |
 |---|---|---|
-| Main agent system prompt | The launch set (user tier, then the directory walk, imports in place) | At every agent build (the existing boundaries) |
+| Main agent system prompt | The launch set (user tier, then the directory walk, imports in place) | At every agent build (model switch, output-style change, `/add-dir`, a new session) |
 | Subagent preamble | The same launch set | When the subagent starts (as now) |
 | Tool results (any agent) | On-demand nested files and matched path rules | After the triggering call |
 | Guardian `project_instructions` | The launch set **as it stood at session start**, most specific first (primary-root level, then each ancestor toward `/`, then the user tier), imports kept after their importer, capped at 16,000 characters | Once, in `session_state` |
 
-The guardian never sees on-demand files. Its snapshot is fixed at session start, so an agent
-that edits `FONTAINE.md` mid-session cannot change what the guardian reads. The
+The guardian never sees on-demand files. Its snapshot is fixed at session start. The
 most-specific-first order means the cap drops the broadest files, not the repo's own.
 
 ### Types and module layout
@@ -262,7 +264,9 @@ most-specific-first order means the cap drops the broadest files, not the repo's
 
 The three call sites build `Sources` from `AgentSetup` / `SessionState`:
 
-- `build_agent` reports `Loaded::warnings` through `Approver::warn`, once per build.
+- `build_agent` reports `Loaded::warnings` through `Approver::warn`, each distinct warning once
+  per session (shown warnings are remembered, like the `take_warning` pattern), so rebuilds do not
+  repeat them.
 - `session_state` and the preamble ignore the warnings, because the same files raise the same
   warnings in `build_agent`.
 - `setup.rs` attaches `InstructionStage` in `result_pipeline`, with the launch `Loaded`.
@@ -277,7 +281,8 @@ passes 40,000 characters, the build warns once, naming the largest files.
 `.claude` joins `PROTECTED_DIRS`. Fontaine now reads `.claude/CLAUDE.md` and `.claude/rules/`
 into future system prompts, so a model write there is a persistence vector exactly like
 `.fontaine/`. Claude Code also protects `.claude`. Root-level `FONTAINE.md`/`CLAUDE.md`/
-`AGENTS.md` stay unprotected, as in Claude Code, so `/init` works without a prompt in every mode.
+`AGENTS.md` stay unprotected, as in Claude Code, so `/init` on them needs no protected-path prompt. A
+`.claude/CLAUDE.md` target goes through the protected-path floor.
 
 ### `/memory`
 
@@ -291,7 +296,12 @@ into future system prompts, so a model write there is a persistence vector exact
   - `$VISUAL`, then `$EDITOR`, else `vi` (Unix) or `notepad` (Windows).
   - On Unix it runs as `sh -c '<editor> "$1"' editor <path>`, as git does, so `code --wait`
     works.
-  - On Windows the editor string is split on whitespace.
+  - On Windows the same `sh -c '<editor> "$1"' editor <path>` form runs through Git Bash, as user
+    command strings do (`user_hooks.rs`, `fontaine-tools/src/git_bash.rs`), so
+    `C:\Program Files\…` paths survive. The editor string is split on whitespace only when Git
+    Bash is absent.
+- `run()` passes a suspend/resume handle (screen plus the `read_terminal` pause flag) into
+  `drive()` (`fontaine-tui/src/lib.rs:177-184`, `372-378`), and `/memory` dispatch calls it.
 - While the editor runs, the TUI:
   1. pauses `read_terminal` (a new pause flag beside the stop flag);
   2. clears the live area;
@@ -299,12 +309,11 @@ into future system prompts, so a model write there is a persistence vector exact
   4. waits for the child;
   5. re-enters raw mode and redraws.
 - In the linear (screen-reader) interface, the same flow runs without the live-area steps.
-- Afterwards a notice says edits apply at the next `/clear`, compaction or session. The guardian
+- Afterwards a notice says edits apply at the next model switch, output-style change, `/add-dir` or new session. The guardian
   keeps its session-start snapshot.
 
 The editor is the user's own program, started by the user's own command, so it is not gated,
-like `!` shell commands. A numbered list replaces Claude Code's interactive picker, following
-the `/copy [n]` pattern.
+like `!` shell commands.
 
 ### `/init`
 
@@ -329,7 +338,7 @@ takes no argument and is TUI-only, like the other built-ins.
    `imports(text) -> Vec<String>` (fence- and span-aware, `\ ` escapes, start/whitespace rule).
 2. **Rules** — `instructions/rules.rs`:
    - the symlink-following, cycle-safe walk, sorted by relative path;
-   - frontmatter `paths` (list or comma scalar; a parse error means unconditional);
+   - frontmatter `paths` via `Document::list` (a parse error means unconditional);
    - `PathRule` with `globset` (add `globset = "=<ignore's version>"` to `rust/Cargo.toml`
      `[workspace.dependencies]` and to `fontaine-core/Cargo.toml`; `cargo deny check`).
 3. **Imports, confinement, dedup** — `instructions/imports.rs`:
@@ -341,7 +350,8 @@ takes no argument and is TUI-only, like the other built-ins.
    Expose `trust::work_tree_root`.
 4. **Discovery** — `instructions/mod.rs` `load`: user tier, AGENTS-mode test, the root-down walk
    with per-directory order, blank-drop, 40k-character warning, and `guardian_order`. Move
-   `InstructionFile` here and re-export it from `prompt.rs`. Delete `load_instructions`.
+   `InstructionFile` here and re-export it from `prompt.rs`. Delete `load_instructions`, and move
+   its tests in `tests/system_prompt.rs` to `instructions::load`.
 5. **Call sites** — `agent/build.rs` `prompt_layers` and `build_agent` (warnings),
    `agent/setup.rs` `session_state` (guardian order) and the `child_runner` preamble.
    `adjudication::project_instructions` keeps its signature, and its caller passes the
@@ -351,10 +361,11 @@ takes no argument and is TUI-only, like the other built-ins.
      `Notifications` and `Scanner`;
    - write `instructions/on_demand.rs` `InstructionStage`, attached in `setup.rs`
      `result_pipeline`;
-   - reset the main agent's entry from `Session::clear` and the compaction path
-     (`session.rs:402` `compact`) through a handle kept on the runtime.
-7. **Protected dir** — add `.claude` to `floor::PROTECTED_DIRS` (array length 6). Update any eval
-   dataset cases or tests that write under `.claude/`.
+   - add `InstructionStage::reseed`, called by `build_agent` with the rebuilt `Loaded`;
+   - keep the reset handle on `Session`, fired inside `Session::compact` (`session.rs:402`) only
+     on `CompactResult::Compacted` and inside `Session::clear` (`session.rs:488`), so no caller
+     changes.
+7. **Protected dir** — add `.claude` to `floor::PROTECTED_DIRS` (array length 6).
 8. **`/memory`**:
    - `Command::Memory(String)` and a `BUILTINS` entry (`hint: "[n]"`) in
      `fontaine-tui/src/commands.rs`;
@@ -362,7 +373,7 @@ takes no argument and is TUI-only, like the other built-ins.
    - the editor resolution and command builder (pure, unit-tested);
    - the terminal suspend/resume helper in `fontaine-tui/src/lib.rs` or `screen.rs`, with a pause
      flag for `read_terminal`;
-   - dispatch in `ui/mod.rs`.
+   - dispatch in `ui/mod.rs`, using the suspend/resume handle `run()` passes into `drive()`.
    The runtime exposes the launch `Loaded` and the main agent's on-demand list.
 9. **`/init`**:
    - `prompts/init.md` and a `prompt::init_prompt(target)` that fills `{{target}}`;
@@ -372,7 +383,9 @@ takes no argument and is TUI-only, like the other built-ins.
 10. **Master plan** — add the dated Decisions listed under `## Decisions` below to
     `tasks/fontaine_harness_plan.md`. Mark the 2026-10-21 "no hierarchy or imports" line as
     superseded by a new dated line rather than editing it. Update the
-    `research/research-claude-code-parity.md` row (`partial` → `done`, noting the deviations).
+    `research/research-claude-code-parity.md` row (`partial` → `done`, and the `backlog`
+    priority column, noting the deviations), `tasks/design/permissions.md`,
+    `tasks/design/config.md` and `CHANGELOG.md`.
 11. **Docs** (see Documentation).
 
 ## Files to Modify
@@ -387,10 +400,11 @@ takes no argument and is TUI-only, like the other built-ins.
   (and a new `ui/commands/memory.rs`)
 - `rust/Cargo.toml`, `rust/fontaine-core/Cargo.toml`
 - Tests: `rust/fontaine-core/tests/system_prompt.rs` (+ snapshot),
-  `rust/fontaine/tests/headless_tools.rs`, `rust/fontaine-core/tests/docs.rs`
-- Docs: `docs/{index,guardian,tui,extensions,configuration,permissions}.md`, `README.md` if it
-  mentions `FONTAINE.md`
-- Plans: `tasks/fontaine_harness_plan.md`, `research/research-claude-code-parity.md`
+  `rust/fontaine/tests/{headless_tools,auto_headless}.rs`, `rust/fontaine-core/tests/docs.rs`,
+  `rust/fontaine-tui/tests/tui.rs`
+- Docs: `docs/{index,guardian,tui,extensions,configuration,permissions}.md`
+- Plans: `tasks/fontaine_harness_plan.md`, `tasks/design/{permissions,config}.md`,
+  `research/research-claude-code-parity.md`, `CHANGELOG.md`
 
 ## Trade-offs
 
@@ -418,6 +432,18 @@ takes no argument and is TUI-only, like the other built-ins.
 - 2026-10-26: Claude Code walks ancestor `.claude/rules/` at launch and injects nested
   `CLAUDE.md` plus matching path rules into the tool result after a Read (observed with
   `claude -p`); the design copies both.
+- 2026-10-26: External imports from repo-controlled files are skipped with a warning instead of
+  approved; an approval dialog needs persisted per-project state and a headless story.
+- 2026-10-26: `/memory` is a numbered list with `/memory <n>`, not an interactive picker; it
+  reuses the `/copy [n]` pattern and works in the linear interface.
+- 2026-10-26: Shell reads (`cat`) do not trigger on-demand loading; Fontaine does not parse shell
+  commands into file reads.
+- 2026-10-26: The `FONTAINE*` names count toward AGENTS mode like their `CLAUDE*` twins, so a
+  repo with native files does not also load `AGENTS.md`.
+- 2026-10-26: The guardian's `project_instructions` is a snapshot taken at session start, so
+  mid-session edits and on-demand files cannot steer it.
+- 2026-10-26: `.claude` joins the protected directories because Fontaine now reads it into
+  system prompts, matching Claude Code.
 
 ## Documentation
 
@@ -433,6 +459,9 @@ takes no argument and is TUI-only, like the other built-ins.
 - `docs/permissions.md`: `.claude` in the protected directories; deny rules on `read` also keep
   files out of the instructions.
 - `docs/configuration.md:794`: the trust paragraph names the new instruction locations.
+- `tasks/design/permissions.md` (protected directories list, ~lines 120-123) gains `.claude`;
+  `tasks/design/config.md:39` (prompt content) names the instruction hierarchy.
+- `CHANGELOG.md`: an Unreleased entry.
 - `docs/index.md` links the new page; `rust/fontaine-core/tests/docs.rs` lists it.
 
 ## Testing Strategy
@@ -468,6 +497,7 @@ All unit tests use `tempfile` directories. No live APIs.
   - the full order across the user tier, ancestors and the root, with Claude-before-Fontaine
     within a location;
   - AGENTS mode on and off, with each of the six counting names toggling it;
+  - a deny rule keeps a root `CLAUDE.local.md` out;
   - `CLAUDE.md` with `@AGENTS.md` loads `AGENTS.md` once;
   - identical `CLAUDE.md`/`FONTAINE.md` load once;
   - `~/.claude/CLAUDE.md` is met once when the walk crosses home;
@@ -490,10 +520,14 @@ All unit tests use `tempfile` directories. No live APIs.
   - `/memory` and `/init` parse;
   - the menu lists them;
   - the `reports::memory` rendering includes "not created" entries;
-  - editor resolution covers `$VISUAL` over `$EDITOR`, the fallback, and the Unix `sh -c` argv
-    shape;
-  - `init_target` picks an existing file over creating `FONTAINE.md`.
-- Integration (`fontaine -p` with a wiremock endpoint, `headless_tools.rs`):
+  - editor resolution covers `$VISUAL` over `$EDITOR`, the fallback, the `sh -c` argv shape, and
+    the Windows whitespace-split fallback;
+  - `init_target` picks an existing file over creating `FONTAINE.md`;
+  - `fontaine-tui/tests/tui.rs`: `/memory` lists entries including "not created", and `/init`
+    dispatches a hidden prompt carrying the target while the ledger records
+    `/init: create or improve <target>`.
+- Integration (`fontaine -p` with a wiremock endpoint; `headless_tools.rs`, and the guardian
+  snapshot case in `auto_headless.rs`, which has the two-endpoint guardian fixture):
   - the system prompt carries markers from an ancestor `CLAUDE.md`, a root `AGENTS.md` (AGENTS
     mode), an `@import`ed file and a `.claude/rules` file;
   - a scripted `read` of `sub/f.txt` produces a second request whose tool result carries the
@@ -502,29 +536,19 @@ All unit tests use `tempfile` directories. No live APIs.
     one.
   This is the only tier that proves the stage is actually wired into the live pipeline and that
   the guardian snapshot excludes on-demand text, which is a silent security property.
-- `system_prompt.rs` snapshot updated for the new loader.
+- `system_prompt.rs` snapshot updated for the new loader. The tests at `system_prompt.rs:142-160`
+  that call `prompt::load_instructions` move to `instructions::load`, and the one asserting
+  nested/parent `FONTAINE.md` is "never read" is inverted or removed.
 
 ## Manual Verification
 
 The editor handoff needs a real terminal (raw mode, the live area, a child taking the TTY), which
 no test harness here drives.
 
-1. `cargo run -p fontaine`, then `/memory`. Expected: a numbered list including
-   `<config dir>/FONTAINE.md (not created)` when absent.
-2. `EDITOR=nano` then `/memory 1`. Expected: nano opens the file. Saving and quitting returns to
+1. `EDITOR=nano` then `/memory 1`. Expected: nano opens the file. Saving and quitting returns to
    an intact TUI with the transcript redrawn, and a notice says when edits apply.
-3. In a scratch repo with no instruction file, `/init`. Expected: the agent writes `FONTAINE.md`
-   after the usual permission flow. A second `/init` edits it rather than replacing it.
+2. A second `/init` in a scratch repo improves the existing file rather than replacing it.
 
 ## Open Questions
 
-None. Every open point was settled against Claude Code's documentation or the `claude -p` probe
-above. The remaining deviations are recorded in `## Decisions` once implementation lands them in
-the master plan:
-
-- external imports are skipped instead of approved;
-- `/memory` is a numbered list;
-- shell reads do not trigger on-demand loading;
-- the `FONTAINE*` names count toward AGENTS mode;
-- the guardian snapshot is taken at session start;
-- `.claude` is protected.
+None.
