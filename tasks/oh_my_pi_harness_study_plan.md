@@ -11,7 +11,7 @@ features (led by those that let the model iterate) and ideas to adopt or adapt, 
 security implications under Fontaine's invariants. It is a research spike in the pattern of the
 DeepSeek study (`completed/deepseek_harness_study_plan.md`, #154): read the pinned source, run
 the harness in a disposable container, record every finding including negative ones, and file
-follow-up issues. No product crate changes. Unlike the DeepSeek study there is no vendor model
+follow-up issues. The terminal UI is in scope too (user direction): its renderer, layout, theming, keybindings and interaction patterns are studied for what Fontaine's TUI (`fontaine-tui`) could adopt. No product crate changes. Unlike the DeepSeek study there is no vendor model
 to support, so the model-specific questions become "how does it adjust per provider, and what
 matters for Fontaine's rig path".
 
@@ -56,6 +56,9 @@ the day of the clone), so every citation in the doc is `path@dcafcef6`. The repo
   `docs/session.md`, `session-tree-plan.md`, `session-operations-export-share-fork-resume.md`.
   Third-party sources claim JSONL under `~/.omp/agent/sessions/`; the doc must confirm or
   correct.
+- UI: `packages/tui` (renderer), `packages/coding-agent/src/modes/`, `docs/tui.md`,
+  `tui-core-renderer.md`, `tui-runtime-internals.md`, `theme.md`, `keybindings.md`,
+  `slash-command-internals.md`, `job-widgets/`, `startup-splash.ts`.
 - Telemetry: `telemetry-export*.ts`, `packages/agent/src/telemetry.ts`, `docs/install-id.md`,
   `src/stats/`, `src/live/`, `src/collab/`.
 - Providers: `docs/providers.md`, `provider-quirks.md`, `provider-compat-reference.md`,
@@ -123,6 +126,7 @@ failing test) under `fixtures/` where needed, and a results section in the doc.
 | E8 | Resume and fork the E3 session, then inspect the on-disk log (format, one record type per line?, tree structure, what is stored for tool results and blobs), plus export | session log, resume/branch/review |
 | E9 | A project-scoped extension, hook, skill and MCP config planted in the fixture, to see what loads without a prompt and what a project can loosen | extension trust model vs Fontaine's "project scope can only tighten" |
 | E10 | Where omp's behaviour might differ from Claude Code, capture the baseline with `claude -p` on the same fixture (never from tests or CI) | the "Claude Code does it?" column |
+| E11 | Drive the interactive TUI in the container under `tmux` (fixed size, e.g. 120x40), run the E3 task, and capture panes as text (`tmux capture-pane -p`) at: startup, streaming, tool-call rendering (edit diff, bash output, todo), approval prompt, slash-command menu, session picker, narrow width. Record the key bindings, themes, and what each widget shows. Compare with `fontaine` captured the same way | TUI rendering, layout, information shown per tool call, interaction patterns; vs `fontaine-tui` |
 
 Provider handling (E2 plus source): read `provider-quirks.md`, `provider-compat-reference.md`
 and `ai-schema-normalize.md`, list each per-model adjustment, and mark each as relevant or not to
@@ -137,14 +141,14 @@ Fontaine's rig provider path by checking `rust/fontaine-core` provider code.
 3. Architecture and turn flow.
 4. One section per issue question (iteration; tools and editing; framing; context management;
    tasks and subagents; extensibility; safety; session log; telemetry and privacy; provider
-   handling). Each has "What omp does", "Claude Code", "Fontaine today", evidence, verdict.
+   handling; terminal UI). Each has "What omp does", "Claude Code", "Fontaine today", evidence, verdict.
 5. **Desirable features**, the centrepiece, led by those that let the model iterate. Each entry:
    what omp does; evidence; the Fontaine issue it feeds or a new one (or skip with reason);
    whether Claude Code does it.
 6. **Ideas to adopt or adapt**: each with the security implication under Fontaine's invariants
    (guardian fail-closed, floor gates every mode, no regex on tool arguments, child never looser,
    project scope only tightens, every tool has a risk class).
-7. Experiment log (E1–E10), with commands, results and failures.
+7. Experiment log (E1–E11), with commands, results and failures.
 8. Not tried, and why.
 
 ### Follow-ups and decisions
@@ -167,7 +171,7 @@ Fontaine's rig provider path by checking `rust/fontaine-core` provider code.
 3. **Tooling** under `scripts/`: `omp.Dockerfile`, `net.Dockerfile` (`socat`, `tcpdump`),
    `record_proxy.py`, `scrub.py` (stdlib only), `run_omp.sh` (network setup, sidecars, run,
    teardown), `run_fontaine.sh`, and the fixture repos.
-4. **E1–E9** on omp in order, recording each result in the doc as it lands.
+4. **E1–E9 and E11** on omp in order, recording each result in the doc as it lands.
 5. **E10** `claude -p` baselines for rows where the Claude Code behaviour is in doubt.
 6. **Write the doc**: summary, both lists, experiment log, Not tried.
 7. **Follow-ups.** File and comment on issues; link them from the lists; add `## Decisions`
@@ -200,6 +204,8 @@ Fontaine's rig provider path by checking `rust/fontaine-core` provider code.
 
 - 2026-10-26: The study pins `can1357/oh-my-pi` at `dcafcef6422c6a260649b879d75a5aabb1ea778e`; the repo moves daily and all citations use that commit.
 - 2026-10-26: AFK: omp runs only in Docker with a dummy key and a host recording proxy that injects real auth and redacts it, because omp defaults to `yolo` approval and hostile-command experiments must find no real credential.
+
+- 2026-10-26: The study also covers omp's terminal UI (E11 and a UI section in the doc), per user direction.
 
 ## Documentation
 
