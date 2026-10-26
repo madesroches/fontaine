@@ -326,7 +326,11 @@ async fn export_writes_the_conversation_once_and_never_overwrites() {
         ui.send("/export notes.md");
         ui.wait_for("notes.md already exists").await;
         ui.send("/export");
-        ui.wait_for("fontaine-00000000.md").await;
+        // The default path is long on a temp dir, so the notice wraps; count the notices.
+        ui.wait_until("a second export notice", |s| {
+            s.matches("exported the conversation to").count() >= 2
+        })
+        .await;
     })
     .await;
     let text = std::fs::read_to_string(w.work.join("notes.md")).unwrap();

@@ -364,7 +364,10 @@ async fn list_reports_each_session_newest_first_for_its_root_and_skips_unreadabl
         .unwrap();
     // A ledger that does not begin as one, a torn record and a directory that is no session.
     let foreign = Session::create(&w.data, D).unwrap();
-    std::fs::write(foreign.ledger.path(), "not json\n").unwrap();
+    let foreign_ledger = foreign.ledger.path().to_path_buf();
+    // Windows refuses to write a file another handle holds open.
+    drop(foreign);
+    std::fs::write(foreign_ledger, "not json\n").unwrap();
     std::fs::create_dir_all(w.data.join("sessions").join("not a session id")).unwrap();
     std::fs::create_dir_all(w.data.join("sessions").join("empty-dir")).unwrap();
 
