@@ -328,13 +328,18 @@ impl ConfigPanel {
         if live && let Some(value) = live_value {
             row.effective = value.to_string();
         }
-        let status = saved_status(
-            row.key.applies,
-            overridden_by,
-            &file,
-            (!live).then_some(row.effective.as_str()),
-        );
-        let pending = (!live).then(|| label.to_string());
+        let unchanged = !live && overridden_by.is_none() && row.effective == label;
+        let status = if unchanged {
+            format!("saved to {file}; unchanged from the running value")
+        } else {
+            saved_status(
+                row.key.applies,
+                overridden_by,
+                &file,
+                (!live).then_some(row.effective.as_str()),
+            )
+        };
+        let pending = (!live && !unchanged).then(|| label.to_string());
         row.pending = pending.clone();
         self.status = Some(status);
         pending

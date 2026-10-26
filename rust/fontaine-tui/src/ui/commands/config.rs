@@ -87,24 +87,26 @@ impl<R: FnMut(&mut App)> Ui<R> {
             theme.as_str()
         });
         let overridden = overriding_scope(&runtime.config, path);
-        let pending = (row.applies == Applies::NextLaunch).then(|| label.clone());
-        match &pending {
-            Some(pending) => {
-                self.config_pending
-                    .insert(path.to_string(), pending.clone());
-            }
-            None => {
-                self.config_pending.remove(path);
-            }
-        }
+        let mut pending = (row.applies == Applies::NextLaunch).then(|| label.clone());
         match &mut self.app.config {
             Some(panel) => {
-                panel.saved(path, &label, live, overridden);
+                let saved = panel.saved(path, &label, live, overridden);
+                if pending.is_some() {
+                    pending = saved;
+                }
             }
             None => {
                 let message =
                     saved_status(row.applies, overridden, &file.display().to_string(), None);
                 self.app.transcript.notice(format!("{path}: {message}"));
+            }
+        }
+        match pending {
+            Some(pending) => {
+                self.config_pending.insert(path.to_string(), pending);
+            }
+            None => {
+                self.config_pending.remove(path);
             }
         }
     }
