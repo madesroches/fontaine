@@ -110,13 +110,11 @@ enum Backend { Tavily { api_key }, Searxng { base_url } }
     scanner are one-shot). The first search starts it, then polls `base_url` until it answers or
     `startup_timeout_secs` elapses; later searches reuse it. `AgentRuntime::rebuild()` (on `/add-dir`,
     `/output-style`, model switch) re-runs `tools::registry` and replaces tools by name, so the child handle
-    is a shared `Arc` created once outside `tools::registry`, carried in `RegistryParams`, and passed into every
-    rebuilt `Websearch`; a handle owned by `Websearch` would be killed and relaunched mid-session. The runtime
-    holds the `Arc` like it holds the MCP `Connected` handles, and the child is stopped by an explicit shutdown
-    call on the normal exit and interrupt paths (`std::process::exit` skips drops), with `kill_on_drop` as the
-    backstop. A spawn failure or readiness timeout is a search error with the
-    cause chain (and the child's stderr tail); there is no fallback to another backend. SearXNG remains an
-    external HTTP service, never bundled.
+    is a shared `Arc` held as a field of `AgentRuntime`, created once where `RegistryParams` is first built
+    and passed into every rebuilt `Websearch`; a handle owned by `Websearch` would be killed and relaunched
+    mid-session. The child dies via `kill_on_drop` when the runtime is dropped on normal return. A spawn
+    failure or readiness timeout is a search error with the
+    cause chain (and the child's stderr tail); there is no fallback to another backend.
 
 Each backend maps to the common `Hit { title, url, snippet }` list in one function, so domain filtering,
 capping and formatting are shared. Brave and others are follow-ups (one more enum arm and one parser each).
@@ -124,9 +122,8 @@ capping and formatting are shared. Brave and others are follow-ups (one more enu
 `Websearch::new(config, &LoadedNetwork)` passes a closure to `tls::build_client` that sets
 `.redirect(Policy::none())`, `.timeout(..)` and `.user_agent(FONTAINE_USER_AGENT)`, since `build_client`
 sets none of them. Any redirect, for either backend, is returned as an error (stricter than `webfetch`,
-which follows same-host redirects manually): reqwest does not strip custom headers such as the
-`Authorization` header on a cross-host redirect, so `Policy::none()` is what keeps the key from being sent
-to another host. A non-JSON or schema-mismatched body is an error that names the backend.
+which follows same-host redirects manually): a followed redirect would send the query (and a POST body) to a
+host other than the configured backend. A non-JSON or schema-mismatched body is an error that names the backend.
 
 ### Configuration
 
@@ -197,7 +194,8 @@ configured the tool is absent, so an allow entry is inert and a disallow entry s
    domain filter, formatter, `Tool` impl) and `pub mod websearch` in `lib.rs`.
 2. `fontaine-tools`: add the `websearch` row to `descriptor.rs`; register it in `builtins::build` when
    `BuiltinEnv.websearch` is `Some`; add the lazily started, kill-on-drop SearXNG process handle (shared `Arc`, see Launch on demand), and move
-   `BASE_ENV` from `fontaine-mcp` into `fontaine-tools`.
+   `BASE_ENV` from `fontaine-mcp` into `fontaine-tools`. Add `tokio.workspace = true` to
+   `rust/fontaine-tools/Cargo.toml` `[dependencies]` (dev-only today).
 3. `fontaine-core`: add `WebsearchSection`, its merge into `Config`, validation and resolution (backend
    shape, key present) in `config.rs`; the `user_or_cli` scope rule (a `Rule::user_or_cli("websearch", ...)` row in `RULES`) in `config_scope.rs`; catalog rows in
    `config_catalog.rs`; `Credentials::websearch()` and a `websearch: Option<Entry>` field on the `File` struct in `credentials.rs`.
@@ -218,11 +216,13 @@ configured the tool is absent, so an allow entry is inert and a disallow entry s
    unless a configured case is added).
 7. `fontaine-core`: in `agent/build.rs`, merge the Anthropic `web_search_20250305` tool entry into the main
    builder's `additional_params` when the native gate allows (including the account/`base_url` helper).
-8. Docs and changelog.
+8. `fontaine-core`: add the shared launcher `Arc` as a field of `AgentRuntime` (`agent.rs`), created once
+   where `RegistryParams` is first built (~271) and cloned into every rebuild's `RegistryParams`.
+9. Docs and changelog.
 
 ## Files to Modify
 
-- `rust/fontaine-tools/src/websearch.rs` (new), `lib.rs`, `descriptor.rs`, `builtins.rs`
+- `rust/fontaine-tools/src/websearch.rs` (new), `Cargo.toml`, `lib.rs`, `descriptor.rs`, `builtins.rs`
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`, `credentials.rs`, `tools.rs`,
   `agent/build.rs` (`finish_builder`: `additional_params` tool entry), `permissions.rs`, `permission_rules.rs`,
   `extensions.rs`
@@ -244,16 +244,15 @@ configured the tool is absent, so an allow entry is inert and a disallow entry s
   Responses `web_search`, xAI, Gemini grounding) are follow-up issues.
 - 2026-10-26: SearXNG may be launched on demand by a fixed-argv `command` (user/CLI scope, lazy start, stopped
   at session end, no fallback on failure); the user asked for this. It stays an external service.
-- 2026-10-26: Native searches are not logged or counted in usage: rig's generic `Usage` and the turn loop do not
-  surface server-tool blocks.
+- 2026-10-26: The SearXNG child is stopped only by drop of the runtime on normal return; a kill by signal or
+  `process::exit` can orphan it (accepted).
 - 2026-10-26: First backends are SearXNG and Tavily (Brave's free tier needs a card); Brave is a follow-up.
 
 ## Documentation
 
 - `docs/tools.md`: a "Web search" section (native vs client-side preference order, arguments, output shape,
   caps, backends, the `command` launch option; queries are sent to the provider or configured backend) beside "Web fetch", and a row in the tool table (`arbitrary`). Recommend
-  `docker run searxng/searxng` on localhost with `base_url` (or the same as `command`) as the free, no-account path; SearXNG is AGPL
-  and stays an external HTTP service, never bundled.
+  `docker run searxng/searxng` on localhost with `base_url` (or the same as `command`) as the free, no-account path.
 - `docs/configuration.md`: the `[websearch]` table (noting queries are sent to the configured backend; keys `command`,
   `startup_timeout_secs`, `native`), the credentials entry, scope (user/CLI only; scope table ~95-115), `websearch` in the rule-tool-name list
   (~527-530), and the rule that no backend means no client-side tool (native search needs no config).
@@ -277,8 +276,7 @@ All offline: `wiremock` stands in for the backends.
 - Native search (`fontaine-core`): the request carries the `web_search_20250305` tool entry (merged with any existing `additional_params`) only when the
   gate allows (per mode, including the allow-rule requirement); a `deny` or `ask` rule removes it; non-Anthropic
   account kinds and non-Anthropic `base_url` (unless `native = "on"`) use the client-side backend; `native =
-  "off"` does too; a wiremock Anthropic response with `server_tool_use` + `web_search_tool_result` blocks
-  round-trips through history and the next request replays them; a 400 naming the tool is retried once without it and keeps
+  "off"` does too; a 400 naming the tool is retried once without it and keeps
   native off for the session, while another 400 is not retried.
 - SearXNG launch (`fontaine-tools/tests/websearch.rs`): a fake child script that serves the responder
   starts once across several searches, is terminated when the tool is dropped, and a script that exits
