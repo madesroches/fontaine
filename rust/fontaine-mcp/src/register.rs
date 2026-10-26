@@ -111,11 +111,15 @@ impl<S> GuardedSink<S> {
         )
     }
 
+    /// Sorted by name: a server's `tools/list` order is its own, and the tool array is the front
+    /// of every request, so a reordered list would invalidate the provider's cached prefix.
     fn wrap_all(&self, tools: Vec<DynamicTool>) -> Vec<DynamicTool> {
-        tools
+        let mut wrapped: Vec<DynamicTool> = tools
             .into_iter()
             .filter_map(|tool| self.wrap(tool))
-            .collect()
+            .collect();
+        wrapped.sort_by_cached_key(|tool| tool.definition().name.to_string());
+        wrapped
     }
 }
 

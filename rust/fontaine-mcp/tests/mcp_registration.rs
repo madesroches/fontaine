@@ -56,6 +56,46 @@ async fn tools_register_under_the_claude_code_names_and_run_only_after_the_gate(
 }
 
 #[tokio::test]
+async fn any_tools_list_order_registers_the_same_definition_sequence() {
+    let orders = [
+        vec![echo_tool(), lookup_tool(), grant_access_tool()],
+        vec![grant_access_tool(), lookup_tool(), echo_tool()],
+        vec![lookup_tool(), grant_access_tool(), echo_tool()],
+    ];
+    let mut sequences = Vec::new();
+    for tools in orders {
+        let handle = tool_server();
+        let (connection, _task) = serve(
+            "double",
+            Double::with_tools(tools),
+            Gate::new(true),
+            handle.clone(),
+        )
+        .await;
+        let sequence: Vec<String> = handle
+            .snapshot()
+            .definitions()
+            .iter()
+            .map(|d| d.name.to_string())
+            .collect();
+        sequences.push(sequence);
+        connection.close().await;
+    }
+    assert_eq!(
+        sequences[0],
+        [
+            "mcp__double__echo",
+            "mcp__double__grant_access",
+            "mcp__double__lookup"
+        ]
+    );
+    assert!(
+        sequences.iter().all(|s| s == &sequences[0]),
+        "{sequences:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_denied_call_never_reaches_the_server() {
     let gate = Gate::new(false);
     let handle = tool_server();

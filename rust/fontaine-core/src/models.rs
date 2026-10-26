@@ -127,6 +127,25 @@ impl ModelHandle {
     /// A handle on `reference`, completing through `client`.
     pub fn from_client(reference: ModelRef, kind: AccountKind, client: &dyn AccountClient) -> Self {
         let completion = client.completion(&reference.model);
+        Self::resolved(reference, kind, completion, client)
+    }
+
+    /// A handle for the guardian: the same model, with only the static prefix cacheable.
+    pub fn guardian_from_client(
+        reference: ModelRef,
+        kind: AccountKind,
+        client: &dyn AccountClient,
+    ) -> Self {
+        let completion = client.guardian_completion(&reference.model);
+        Self::resolved(reference, kind, completion, client)
+    }
+
+    fn resolved(
+        reference: ModelRef,
+        kind: AccountKind,
+        completion: DynModel<Completion>,
+        client: &dyn AccountClient,
+    ) -> Self {
         let thinking_off = client.thinking_off(&reference.model);
         ModelHandle {
             reference,
@@ -529,7 +548,7 @@ fn build_guardian(
             .and_then(|network| client_for(&reference.account, account, env, stored, &network)),
     };
     Ok(match client {
-        Ok(client) => GuardianModel::Ready(ModelHandle::from_client(
+        Ok(client) => GuardianModel::Ready(ModelHandle::guardian_from_client(
             reference,
             account.kind,
             client.as_ref(),

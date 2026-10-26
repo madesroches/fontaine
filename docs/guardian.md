@@ -135,6 +135,12 @@ first: an `ask` rule or a critical path still asks.
 - A verdict is cached for 60 seconds (`[guardian] cache`). The key covers the call, the model, the rules, the environment, your messages, the session's
   recent actions and its denials, so any change misses. An identical call therefore reuses a verdict only when nothing else has happened in the session since (in practice consecutive identical calls under the minimal profile, or retries); this is deliberate, so an Allow is not reused after a security-relevant change. Only verdicts the model returned are cached,
   never a fail-closed outcome; the confidence rewrite applies after every lookup.
+- On an account that caches prompts (`prompt_caching`, on by default for `anthropic`), the
+  guardian's static prefix, its verdict tool and system prompt, is marked cacheable; the per-call
+  message is not. The system prompt holds the profile, the rules and the environment and no
+  per-call text, so it is identical across calls until the rules change. A provider caches a
+  prefix only above a model-dependent minimum length (about 1024 tokens on Sonnet and Opus, more
+  on Haiku), so on some guardian models this saves nothing.
 - Calls are adjudicated one at a time, in order. The guardian is on the critical path, so a fast
   model matters.
 

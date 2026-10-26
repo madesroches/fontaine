@@ -27,8 +27,8 @@ use super::device_flow::{
 };
 use super::token_source::{Refresher, TokenSource};
 use super::{
-    AccountClient, Billing, ConnectContext, CredentialPolicy, Provider, SignIn, SignInError,
-    SignInProgress, SignInStep,
+    AccountClient, Billing, CacheScope, ConnectContext, CredentialPolicy, PromptCaching, Provider,
+    SignIn, SignInError, SignInProgress, SignInStep,
 };
 use crate::config::{Account, Wire};
 use crate::credentials::{self, OAuthTokens, StoredCredential};
@@ -84,6 +84,10 @@ impl Provider for OpencodeGo {
     }
 
     fn accepts_wires(&self) -> bool {
+        true
+    }
+
+    fn accepts_prompt_caching(&self) -> bool {
         true
     }
 
@@ -145,6 +149,7 @@ impl Provider for OpencodeGo {
                 .connect(http(AuthPlacement::GoogleKey)?),
             listing: openai(None, format!("{base}/v1"))?,
             overrides: ctx.account.wires.clone().unwrap_or_default(),
+            caching: PromptCaching::of(ctx.account),
         }))
     }
 
@@ -193,16 +198,30 @@ struct GoClient {
     gemini: Gemini,
     listing: OpenAI,
     overrides: BTreeMap<String, Wire>,
+    caching: PromptCaching,
+}
+
+impl GoClient {
+    fn completion_in(&self, model: &str, scope: CacheScope) -> DynModel<Completion> {
+        match wire(model, &self.overrides) {
+            Wire::Chat => self.chat.completion(model).erase(),
+            Wire::Responses => self.responses.completion(model).erase(),
+            Wire::Messages => self
+                .caching
+                .apply(self.messages.completion(model), scope)
+                .erase(),
+            Wire::Gemini => self.gemini.completion(model).erase(),
+        }
+    }
 }
 
 impl AccountClient for GoClient {
     fn completion(&self, model: &str) -> DynModel<Completion> {
-        match wire(model, &self.overrides) {
-            Wire::Chat => self.chat.completion(model).erase(),
-            Wire::Responses => self.responses.completion(model).erase(),
-            Wire::Messages => self.messages.completion(model).erase(),
-            Wire::Gemini => self.gemini.completion(model).erase(),
-        }
+        self.completion_in(model, CacheScope::Conversation)
+    }
+
+    fn guardian_completion(&self, model: &str) -> DynModel<Completion> {
+        self.completion_in(model, CacheScope::StaticPrefix)
     }
 
     fn thinking_off(&self, model: &str) -> Option<serde_json::Value> {

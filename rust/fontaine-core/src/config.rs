@@ -289,6 +289,16 @@ pub enum Wire {
     Gemini,
 }
 
+/// How long a provider keeps a cached prompt prefix.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+pub enum CacheTtl {
+    #[default]
+    #[serde(rename = "5m")]
+    FiveMinutes,
+    #[serde(rename = "1h")]
+    OneHour,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum GuardianProfile {
@@ -335,6 +345,11 @@ pub struct Account {
     pub context_tokens: Option<u32>,
     /// `ollama` only: `false` asks a thinking model to answer without reasoning.
     pub think: Option<bool>,
+    /// `anthropic` and `opencode-go` only: whether requests on the Messages wire carry cache
+    /// breakpoints. Unset means the kind's default.
+    pub prompt_caching: Option<bool>,
+    /// `anthropic` and `opencode-go` only: the lifetime of a cached prefix; `"5m"` when unset.
+    pub cache_ttl: Option<CacheTtl>,
     /// Each network key replaces the `[network]` value for this account only. Declared here
     /// rather than flattened from `NetworkSection`, since `deny_unknown_fields` and `flatten`
     /// do not combine.
@@ -811,6 +826,17 @@ pub(crate) fn check_account(name: &str, account: &Account) -> Result<(), (String
             format!("accounts.{name}.wires"),
             format!("not used by kind = \"{}\"", provider.name()),
         ));
+    }
+    for (key, set) in [
+        ("prompt_caching", account.prompt_caching.is_some()),
+        ("cache_ttl", account.cache_ttl.is_some()),
+    ] {
+        if set && !provider.accepts_prompt_caching() {
+            return Err((
+                format!("accounts.{name}.{key}"),
+                format!("not used by kind = \"{}\"", provider.name()),
+            ));
+        }
     }
     for (key, set) in [
         ("context_tokens", account.context_tokens.is_some()),

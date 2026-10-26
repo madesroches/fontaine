@@ -273,6 +273,33 @@ mod tests {
     }
 
     #[test]
+    fn the_system_prompt_ignores_everything_that_varies_per_call() {
+        let base = request();
+        let mut other = request();
+        other.task_intent = "Something else".into();
+        other.recent_user_messages = vec!["another message".into()];
+        other.project_instructions = Some("different instructions".into());
+        other.tool_call = ToolCallSummary {
+            tool: "write".into(),
+            args: json!({"path": "/tmp/x"}),
+            args_digest: "def456".into(),
+            destructive: false,
+            annotations: Some("readOnlyHint".into()),
+        };
+        other.session_facts = SessionFacts::default();
+        other.hook_context = vec!["another hook note".into()];
+        other.prior_denials = Vec::new();
+        for profile in [Profile::Full, Profile::Minimal] {
+            assert_eq!(
+                system_prompt(profile, &base),
+                system_prompt(profile, &other)
+            );
+        }
+        assert_ne!(user_message(&base), user_message(&other));
+        assert!(user_message(&other).contains("/tmp/x"));
+    }
+
+    #[test]
     fn a_touched_path_cannot_forge_a_fact_line() {
         let mut req = request();
         req.session_facts.touched_paths[0].path =

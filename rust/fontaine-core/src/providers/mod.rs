@@ -6,10 +6,13 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use rig_core::DynModel;
+use rig_core::driver::Model;
 use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
+use rig_core::providers::anthropic::Messages;
+use rig_core::providers::anthropic::completion::CacheTtl as RigTtl;
 
-use crate::config::Account;
+use crate::config::{Account, CacheTtl};
 use crate::credentials::StoredCredential;
 use fontaine_tools::tls::LoadedNetwork;
 
@@ -82,6 +85,16 @@ pub trait Provider: Send + Sync + 'static {
 
     /// Whether the account may set `context_tokens` and `think`.
     fn accepts_model_options(&self) -> bool {
+        false
+    }
+
+    /// Whether the account may set `prompt_caching` and `cache_ttl`.
+    fn accepts_prompt_caching(&self) -> bool {
+        false
+    }
+
+    /// Whether requests carry cache breakpoints when the account sets no `prompt_caching`.
+    fn default_prompt_caching(&self) -> bool {
         false
     }
 
@@ -162,7 +175,59 @@ pub trait AccountClient: Send + Sync {
     fn thinking_off(&self, _model: &str) -> Option<serde_json::Value> {
         None
     }
+    /// The guardian's completion model. Its final message is per-call and never reused, so only
+    /// the static prefix may carry a cache breakpoint.
+    fn guardian_completion(&self, model: &str) -> DynModel<Completion> {
+        self.completion(model)
+    }
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>>;
+}
+
+/// The cache settings of one account, resolved against its kind's default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PromptCaching {
+    pub enabled: bool,
+    pub ttl: CacheTtl,
+}
+
+impl PromptCaching {
+    pub(crate) fn of(account: &Account) -> Self {
+        PromptCaching {
+            enabled: account
+                .prompt_caching
+                .unwrap_or_else(|| account.kind.provider().default_prompt_caching()),
+            ttl: account.cache_ttl.unwrap_or_default(),
+        }
+    }
+
+    /// The Messages wire with this account's breakpoints: the whole request for the main agent,
+    /// only the tools and system prompt for the guardian.
+    pub(crate) fn apply(self, mut model: Model<Messages>, scope: CacheScope) -> Model<Messages> {
+        if !self.enabled {
+            return model;
+        }
+        let wire = model.wire;
+        let wire = match scope {
+            CacheScope::Conversation => wire.with_prompt_caching(),
+            CacheScope::StaticPrefix => wire,
+        };
+        // Always explicit for the guardian, where the prefix marker is the only one.
+        let wire = match (scope, self.ttl) {
+            (_, CacheTtl::OneHour) => wire.with_static_prefix_cache_ttl(RigTtl::OneHour),
+            (CacheScope::StaticPrefix, CacheTtl::FiveMinutes) => {
+                wire.with_static_prefix_cache_ttl(RigTtl::FiveMinutes)
+            }
+            (CacheScope::Conversation, CacheTtl::FiveMinutes) => wire,
+        };
+        model.wire = wire;
+        model
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CacheScope {
+    Conversation,
+    StaticPrefix,
 }
 
 pub struct ConnectContext<'a> {

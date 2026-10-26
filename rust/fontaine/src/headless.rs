@@ -200,6 +200,8 @@ async fn open_input(options: &mut Options) -> Result<Input, String> {
 struct Totals {
     input_tokens: u64,
     output_tokens: u64,
+    cache_read_input_tokens: u64,
+    cache_creation_input_tokens: u64,
     cost_usd: Option<f64>,
     model_calls: u64,
 }
@@ -209,6 +211,8 @@ impl Totals {
         self.model_calls += 1;
         self.input_tokens += usage.input_tokens.unwrap_or(0);
         self.output_tokens += usage.output_tokens.unwrap_or(0);
+        self.cache_read_input_tokens += usage.cached_input_tokens.unwrap_or(0);
+        self.cache_creation_input_tokens += usage.cache_creation_input_tokens.unwrap_or(0);
         if let Some(cost) = usage.cost {
             *self.cost_usd.get_or_insert(0.0) += cost.total;
         }
@@ -281,6 +285,8 @@ fn result_event(
             "main": {
                 "input_tokens": totals.input_tokens,
                 "output_tokens": totals.output_tokens,
+                "cache_read_input_tokens": totals.cache_read_input_tokens,
+                "cache_creation_input_tokens": totals.cache_creation_input_tokens,
                 "cost_usd": totals.cost_usd,
             },
             "guardian": {
@@ -691,7 +697,8 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
 
 #[cfg(test)]
 mod tests {
-    use super::session_cost;
+    use super::{Outcome, Subtype, Totals, result_event, session_cost};
+    use fontaine_core::gate::GuardianUsage;
 
     #[test]
     fn session_cost_adds_the_guardian_and_subagents_and_is_null_only_when_none_is_priced() {
@@ -704,5 +711,30 @@ mod tests {
             session_cost(Some(0.5), Some(0.25), Some(0.125)),
             Some(0.875)
         );
+    }
+
+    #[test]
+    fn cache_tokens_reach_the_result_usage() {
+        let mut totals = Totals::default();
+        for (read, written) in [(Some(800), Some(100)), (Some(900), None), (None, None)] {
+            let mut usage = rig_core::completion::Usage::new();
+            usage.input_tokens = Some(1000);
+            usage.cached_input_tokens = read;
+            usage.cache_creation_input_tokens = written;
+            totals.add(&usage);
+        }
+        let outcome = Outcome {
+            subtype: Subtype::Success,
+            text: String::new(),
+            structured: None,
+            error: None,
+            started: std::time::Instant::now(),
+            denials: Vec::new(),
+        };
+        let none = GuardianUsage::default();
+        let result = result_event("s", &outcome, &totals, &none, &none);
+        assert_eq!(result["usage"]["main"]["input_tokens"], 3000);
+        assert_eq!(result["usage"]["main"]["cache_read_input_tokens"], 1700);
+        assert_eq!(result["usage"]["main"]["cache_creation_input_tokens"], 100);
     }
 }

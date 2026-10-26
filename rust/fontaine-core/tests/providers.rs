@@ -71,6 +71,65 @@ fn wires_belong_to_opencode_go_only() {
 }
 
 #[test]
+fn prompt_caching_keys_belong_to_the_kinds_that_accept_them() {
+    for kind in ["anthropic", "opencode-go"] {
+        let ok = parse(&format!(
+            "[accounts.x]\nkind = \"{kind}\"\nprompt_caching = true\ncache_ttl = \"1h\"\n"
+        ))
+        .unwrap_or_else(|e| panic!("{kind}: {e}"));
+        let account = ok.accounts.unwrap()["x"].clone();
+        assert_eq!(account.prompt_caching, Some(true));
+        assert_eq!(
+            account.cache_ttl,
+            Some(fontaine_core::config::CacheTtl::OneHour)
+        );
+    }
+    for kind in ["openai", "gemini", "openai-compatible", "ollama"] {
+        for key in ["prompt_caching = false", "cache_ttl = \"5m\""] {
+            let err = parse(&format!(
+                "[accounts.x]\nkind = \"{kind}\"\nbase_url = \"http://localhost:1\"\n{key}\n"
+            ))
+            .unwrap_err();
+            let name = key.split(' ').next().unwrap();
+            assert!(err.contains(&format!("accounts.x.{name}")), "{kind}: {err}");
+        }
+    }
+    assert!(parse("[accounts.x]\nkind = \"anthropic\"\ncache_ttl = \"2h\"\n").is_err());
+}
+
+#[test]
+fn prompt_caching_defaults_per_kind() {
+    for (kind, default) in [
+        ("anthropic", true),
+        ("opencode-go", false),
+        ("openai", false),
+        ("gemini", false),
+        ("openai-compatible", false),
+        ("ollama", false),
+    ] {
+        let provider = providers::find(kind).unwrap();
+        assert_eq!(provider.default_prompt_caching(), default, "{kind}");
+        assert_eq!(
+            provider.accepts_prompt_caching(),
+            matches!(kind, "anthropic" | "opencode-go"),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn project_scope_cannot_set_prompt_caching() {
+    let err = parse_settings(
+        "[accounts.x]\nkind = \"anthropic\"\nprompt_caching = false\n",
+        Path::new("project.toml"),
+        Column::Project,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("accounts"), "{err}");
+}
+
+#[test]
 fn openai_compatible_still_needs_a_base_url() {
     let err = parse("[accounts.x]\nkind = \"openai-compatible\"\n").unwrap_err();
     assert!(err.contains("accounts.x.base_url"), "{err}");

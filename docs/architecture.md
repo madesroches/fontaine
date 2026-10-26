@@ -205,6 +205,23 @@ credentials and endpoints. Each kind is a module in the provider registry; resol
 listing only talk to the registry. [Configuration](configuration.md#accountsname) describes the
 kinds, the credential sources and model discovery.
 
+### Prompt caching
+
+Providers reuse a request prefix only when it is byte-identical from the start. Nothing before the
+latest message therefore changes between the requests of a session: the system prompt and the tool
+array are fixed, and conversation history is only appended. Runtime state (queued steering,
+schedule notes, the task list, denial notices) reaches the model as appended messages or tool
+results, never as an edit to the front. A change that has to edit the front is allowed only at an
+explicit boundary and costs one lost cache read: `/add-dir`, `/output-style`, a model switch, an
+MCP server connecting (including on-demand approval and a `tools/list_changed` refresh), `/clear`
+and compaction. An MCP server's tools are sorted by name so the order does not depend on the
+server's `tools/list`.
+
+On the Anthropic Messages wire Fontaine asks for the cache explicitly (`prompt_caching` and
+`cache_ttl` in [Configuration](configuration.md#accountsname)); the other wires cache by prefix
+automatically. The cache read and write token counts of the main model are in the headless
+[`usage`](headless.md) output.
+
 ## Tracing
 
 Every crate instruments with the `tracing` facade only. No crate other than the `fontaine` binary

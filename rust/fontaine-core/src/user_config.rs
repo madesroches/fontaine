@@ -348,6 +348,8 @@ mod tests {
             models: None,
             wires: None,
             context_tokens: None,
+            prompt_caching: None,
+            cache_ttl: None,
             think: None,
             https_proxy: None,
             http_proxy: None,

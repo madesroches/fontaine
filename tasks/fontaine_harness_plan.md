@@ -520,6 +520,10 @@ scorecard run (see `## Remaining work`).
 - 2026-10-25: The list tool is `cron_jobs`, not `cron_list`, because the choke-point test bans tool names containing list/status/kill/interrupt/stop; its Claude alias stays `CronList` (#16).
 - 2026-10-25: `/loop` accepts only even cadences (minute steps 1, 2, 5, 10, 15, 20, 30; hours 1, 2, 3, 4, 6, 8, 12; days 1-31 via `*/n` day-of-month, approximate at month ends) and rounds anything else to the nearest, ties down (`7m` -> `5m`, `90m` -> `1h`), stating the cadence chosen; the minute steps omit 3, 4, 6 and 12 so that `7m` rounds to `5m` as pinned, and cadences are wall-clock aligned (#16).
 - 2026-10-25: `[schedule] enabled` is user-scope only (user file and `--settings`); a project file cannot set it, because scheduled prompts run without the user typing them (#16).
+- 2026-10-25: Anything before the latest message is append-only within a session; front edits (system prompt, tool set) happen only at explicit boundaries (`/add-dir`, `/output-style`, model switch, MCP connect or refresh, `/clear`, compaction), each accepted as one lost cache read (#13).
+- 2026-10-25: `prompt_caching` has a per-kind provider default (true for `anthropic`, false for `opencode-go` until its Messages route is measured live), is user-scope only and is accepted only by kinds where `accepts_prompt_caching()` is true; `cache_ttl = "1h"` is opt-in because extended TTL costs more per write (#13).
+- 2026-10-25: The guardian handle marks only its static prefix (tools and system prompt), never the per-call final message, so it pays no write premium on a tail that is never reused; its prefix is near provider minimum lengths, so savings are model-dependent (#13).
+- 2026-10-25: Headless `usage.main` gains cache read and write tokens; `guardian` and `subagents` (`GuardianUsage`) carry no cache fields and are not extended (#13).
 
 ## Open Questions
 
