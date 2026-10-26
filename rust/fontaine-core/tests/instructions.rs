@@ -153,18 +153,14 @@ fn a_deny_rule_covers_the_user_tier_and_imports() {
         ["user", "root\n@secrets/x.md\n@ok.md", "fine"]
     );
     assert!(warned(&loaded, "secrets/x.md"));
+    // Windows canonical paths are verbatim (`\\?\C:\...`); absolute rules are written `//C:/...`.
+    let config = w.config.display().to_string();
+    let config = config.trim_start_matches(r"\\?\").replace('\\', "/");
     let denied_user = instructions::load(&sources_with(
         &w,
         None,
         &[],
-        &[&format!(
-            "read(//{}/**)",
-            w.config
-                .display()
-                .to_string()
-                .replace('\\', "/")
-                .trim_start_matches('/')
-        )],
+        &[&format!("read(//{}/**)", config.trim_start_matches('/'))],
     ));
     assert!(!texts(&w, &denied_user).contains(&"user".to_string()));
 }
