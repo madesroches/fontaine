@@ -816,7 +816,7 @@ async fn handle_message(
 
 /// Runs the headless session and returns the process exit code: 0 completed, 1 run error or a
 /// `/goal` that did not end met, 2 usage error.
-pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -> u8 {
+pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Path) -> u8 {
     let mut input = match open_input(&mut options).await {
         Ok(input) => input,
         Err(message) => {
@@ -846,6 +846,12 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
                 return 2;
             }
         };
+        if let Err(e) = runtime.refresh_native_search() {
+            runtime.approver().warn(&format!(
+                "the provider's web search could not be updated: {}",
+                fontaine_tools::error_chain::chain(&e)
+            ));
+        }
         let handled = handle_message(&runtime, &options, &mut totals, stream_events, text).await;
         let outcome = &handled.outcome;
         let failed = outcome.subtype != Subtype::Success;

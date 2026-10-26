@@ -16,6 +16,7 @@ result passes one post-call step before the model sees it.
 | `edit` | workspace write | Replaces text in a file. The file must have been read first. |
 | `shell` | arbitrary | Runs a shell command. |
 | `webfetch` | arbitrary | Fetches one web page. |
+| `websearch` | arbitrary | Searches the web through the backend set in [`[websearch]`](configuration.md#websearch); registered only when one is configured. Arguments: `query`, `allowed_domains`, `blocked_domains`. |
 | `agent` | arbitrary | Starts a [subagent](agents.md) and returns its report, or an id when it runs in the background. |
 | `skill` | read-only | Loads a [skill](extensions.md#skills) by name into the conversation. |
 | `ask_user_question` | read-only | Asks you 1 to 4 multiple-choice questions and returns your answers; see [Questions](tui.md#questions-from-the-model). Only the main conversation can ask. |
@@ -141,6 +142,58 @@ are resolved.
   instead of the system's, or `[network] ca_bundle` to trust extra ones as well.
 - It honors [`[network]`](configuration.md#network): the proxy, extra CA roots and client
   certificate. Without a proxy key it still follows `HTTPS_PROXY` and `NO_PROXY`.
+
+## Web search
+
+Search reaches the model in one of two ways, in this order:
+
+1. **The provider's own search**, when the account supports it. The first release has it for
+   `anthropic` accounts on the Anthropic API (`api.anthropic.com`, the default). The search runs
+   inside the model's response, and the model cites what it found. Other hosts of the kind (a
+   gateway, Databricks) are unverified, so they use it only with `[websearch] native = "on"`, and
+   `native = "off"` never uses it. It is offered only while no `deny` or `ask` rule covers
+   `websearch`; in `manual`, `acceptEdits` and `dontAsk` it also needs an `allow` rule for
+   `websearch`, since a call there would otherwise ask or be denied. Switching modes or adding a
+   rule takes effect on the next turn. If the endpoint rejects the request because of the search
+   tool, the failure message says to set `native = "off"`; nothing retries without it.
+2. **The `websearch` tool**, when `[websearch] backend` is set. Every other account kind uses it,
+   and so does an `anthropic` account when the provider's search is not offered. With no backend
+   there is no `websearch` tool at all.
+
+The tool takes a `query` and, optionally, one of `allowed_domains` or `blocked_domains` (giving both
+is an error). Fontaine applies the domain lists to the results itself, so they work the same for
+every backend: a result is kept or dropped when its host is the domain or a subdomain of it.
+
+- The result is a numbered list of title, URL and snippet. It holds at most `max_results` entries
+  (default 10) and 100,000 characters, and says so when it cuts. A query with no results is a
+  plain answer, not an error.
+- Backends are **Tavily** (a POST to `api.tavily.com` with a bearer key) and **SearXNG** (a GET to
+  your instance's `/search?format=json`; the instance must have the `json` format enabled, and a
+  403 is reported with that hint). A 401, 403 or 429 is reported with its status.
+- A redirect from the backend is an error and is never followed, because it would send the query to
+  another host.
+- The queries go to the provider or to the configured backend. They are checked like any other call
+  by the [permission pipeline](permissions.md), and the result passes the result scanner.
+
+SearXNG is the free, no-account path: run an instance on localhost and set `base_url`, or let
+Fontaine start it with `command`:
+
+```toml
+[websearch]
+backend = "searxng"
+base_url = "http://127.0.0.1:8080"
+command = ["docker", "run", "--rm", "-p", "127.0.0.1:8080:8080", "searxng/searxng"]
+```
+
+With `command`, the first search starts the process (an argv, no shell, a cleared environment
+that keeps only what a program needs to find itself) and waits up to `startup_timeout_secs` for
+`base_url` to answer. Later searches, and the rebuilds that `/add-dir` and `/model` cause, reuse
+it, and it stops when the session ends. A start that fails or times out is a search error with the
+process's last stderr lines; there is no fallback to another backend. A session killed by a signal
+can leave the process running. The image's default settings do not enable the `json` format; give
+the instance a `settings.yml` with `json` under `search.formats`.
+
+Provider-native search is outside the [guardian](guardian.md) and the result scanner.
 
 ## Permissions
 

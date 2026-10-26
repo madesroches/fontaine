@@ -74,6 +74,12 @@ pub trait Provider: Send + Sync + 'static {
         None
     }
 
+    /// The server-side search tool this kind's API accepts, as the entry the request's `tools`
+    /// array carries; `None` when the kind has none.
+    fn native_web_search(&self) -> Option<serde_json::Value> {
+        None
+    }
+
     fn base_url_policy(&self) -> BaseUrlPolicy {
         BaseUrlPolicy::Fixed
     }

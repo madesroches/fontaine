@@ -318,7 +318,7 @@ only, the file format becomes a second, competing definition path.
 |---|---|---|---|---|
 | Read / Write / Edit / Bash / Glob / Grep | [tools-reference](https://code.claude.com/docs/en/tools-reference) | planned | — | Phase 2 (`read`/`write`/`edit`/`shell`/`glob`/`grep` + `ls`) via rig-tools with risk classes. |
 | WebFetch | [tools-reference#webfetch-tool-behavior](https://code.claude.com/docs/en/tools-reference#webfetch-tool-behavior) | planned | — | Phase 2 `webfetch` (Arbitrary). |
-| WebSearch | [tools-reference#websearch-tool-behavior](https://code.claude.com/docs/en/tools-reference#websearch-tool-behavior) | missing | backlog | Issue: "WebSearch tool". |
+| WebSearch | [tools-reference#websearch-tool-behavior](https://code.claude.com/docs/en/tools-reference#websearch-tool-behavior) | done | — | Shipped as `websearch` (client-side Tavily or SearXNG backend, optionally launched on demand) plus the provider-native server tool for `anthropic` accounts; see [Web search](../docs/tools.md#web-search) (#19). |
 | NotebookEdit (Jupyter cells) | [tools-reference#notebookedit-tool-behavior](https://code.claude.com/docs/en/tools-reference#notebookedit-tool-behavior) | missing | backlog | Issue: "NotebookEdit tool for Jupyter notebooks". |
 | Read of images and PDFs; image paste into prompt | [tools-reference#read-tool-behavior](https://code.claude.com/docs/en/tools-reference#read-tool-behavior) | missing | backlog | Issue: "Multimodal input: images/PDFs in read, image paste in the TUI". |
 | Task list tools (TaskCreate/Get/List/Update; legacy TodoWrite) | [tools-reference](https://code.claude.com/docs/en/tools-reference) | missing | backlog | Issue: "Task/todo list tools with TUI rendering". |

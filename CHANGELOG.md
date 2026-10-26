@@ -11,6 +11,15 @@ All notable changes are recorded here. The format follows
 - The approval prompt for `edit` and `write` shows the change as a diff (line numbers, `+`/`-`
   lines, three lines of context, scrollable) before you decide; in the linear renderer it is plain
   text. It is display-only and absent when the file cannot be read or the edit would fail (#45).
+- Web search. An `anthropic` account on the Anthropic API gets the provider's own search; every
+  other account gets a `websearch` tool when `[websearch] backend` names Tavily or a SearXNG
+  instance, which Fontaine can start on demand with `[websearch] command`. The tool takes `query`,
+  `allowed_domains` and `blocked_domains`, returns titles, URLs and snippets, and is judged by the
+  permission pipeline and scanned like any other call (`WebSearch` in skill and agent files maps to
+  it). Provider-native search runs inside the model's response, so the guardian and the scanner do
+  not see it; it is withheld while a `deny` or `ask` rule covers `websearch`, and
+  `[websearch] native = "off"` turns it off. The Tavily key is `api_key_env` or the `[websearch]`
+  entry of `credentials.toml` (#19).
 - `/goal <condition>` keeps the session working until a separate model judges the condition met, in
   the terminal UI and as `fontaine -p "/goal ..."`. After each turn the evaluator (the guardian's
   model) answers met, not met or impossible; not met starts another turn as a harness note, never a

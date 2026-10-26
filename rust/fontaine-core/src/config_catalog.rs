@@ -453,6 +453,41 @@ pub const KEYS: &[KeyRow] = &[
     row!("telemetry.resource_attributes", Map, |c, _| names(
         c.telemetry.resource_attributes.keys()
     )),
+    row!("websearch.backend", Scalar, |c, _| {
+        c.websearch
+            .backend
+            .map_or_else(|| "unset".to_string(), lowercase_debug)
+    }),
+    row!("websearch.base_url", Scalar, |c, _| {
+        c.websearch
+            .base_url
+            .as_deref()
+            .map_or_else(|| "unset".to_string(), redacted_url)
+    }),
+    row!("websearch.command", Scalar, |c, _| {
+        c.websearch
+            .command
+            .as_ref()
+            .map_or_else(|| "unset".to_string(), |argv| argv.join(" "))
+    }),
+    row!("websearch.startup_timeout_secs", Scalar, |c, _| opt(c
+        .websearch
+        .startup_timeout_secs)),
+    row!("websearch.native", Scalar, |c, _| lowercase_debug(
+        c.websearch.native
+    )),
+    row!("websearch.api_key_env", Scalar, |c, _| opt(c
+        .websearch
+        .api_key_env
+        .as_deref())),
+    row!("websearch.max_results", Scalar, |c, _| c
+        .websearch
+        .max_results
+        .to_string()),
+    row!("websearch.timeout_secs", Scalar, |c, _| c
+        .websearch
+        .timeout_secs
+        .to_string()),
     row!("env", Map, |c, _| names(c.env.keys())),
 ];
 

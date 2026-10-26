@@ -19,6 +19,7 @@ use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::lock::write_recovering;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::RiskClass;
+use fontaine_tools::websearch::SearxngChild;
 use rig_agent::prelude::*;
 use rig_agent::tool::server::ToolServerHandle;
 use rig_core::completion::ToolDefinition;
@@ -35,6 +36,7 @@ use crate::gate::SessionState;
 use crate::instructions::{self, InstructionStage, Loaded, MemoryEntry};
 use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
 use crate::models::{AccountListing, Models, SharedSwitcher, Switcher};
+use crate::native_search;
 use crate::notice::Notice;
 use crate::permissions::{Approver, PermissionPipeline};
 use crate::prompt;
@@ -167,6 +169,8 @@ pub struct AgentRuntime {
     mcp: Vec<Connected>,
     /// What `model_listings` has fetched this session.
     listings: Vec<AccountListing>,
+    /// Whether the agent was built with the provider's search tool.
+    native_search: bool,
 }
 
 /// The parts of the setup a rebuild needs again.
@@ -187,6 +191,9 @@ pub(crate) struct Setup {
     confirm_project_servers: bool,
     scheduling: bool,
     env: EnvLookup,
+    /// The SearXNG process `[websearch] command` starts, created once so a registry rebuild
+    /// reuses it. Dropping the runtime stops it.
+    searxng: Arc<SearxngChild>,
 }
 
 impl AgentRuntime {
@@ -218,10 +225,9 @@ impl AgentRuntime {
         );
         let seen = Seen::default();
         let steering = Steering::default();
-        let scope = state.scope();
-        let (agent, prompt_pieces, launch_instructions) = build_agent(&Parts {
+        let (agent, pieces, loaded, native) = build_agent(&Parts {
             setup: &retained,
-            roots: scope.roots(),
+            roots: state.scope().roots(),
             pipeline: &pipeline,
             state: &state,
             seen: &seen,
@@ -240,8 +246,8 @@ impl AgentRuntime {
         })?;
         Ok(AgentRuntime {
             agent,
-            prompt_pieces,
-            launch_instructions,
+            prompt_pieces: pieces,
+            launch_instructions: loaded,
             instruction_stage,
             state,
             session: setup.session,
@@ -270,6 +276,7 @@ impl AgentRuntime {
             output_style: None,
             mcp: Vec::new(),
             listings: Vec::new(),
+            native_search: native,
         })
     }
 
@@ -277,7 +284,7 @@ impl AgentRuntime {
     /// session store, so a new agent continues it.
     fn rebuild(&mut self) -> Result<(), RuntimeError> {
         let scope = self.state.scope();
-        let (agent, prompt_pieces, launch_instructions) = build_agent(&Parts {
+        let (agent, prompt_pieces, launch_instructions, native_search) = build_agent(&Parts {
             setup: &self.setup,
             roots: scope.roots(),
             pipeline: &self.pipeline,
@@ -296,10 +303,30 @@ impl AgentRuntime {
             steering: &self.steering,
             instructions: &self.instruction_stage,
         })?;
+        self.native_search = native_search;
         self.agent = agent;
         self.prompt_pieces = prompt_pieces;
         self.launch_instructions = launch_instructions;
         Ok(())
+    }
+
+    fn native_search_entry(&self) -> Option<serde_json::Value> {
+        native_search::offered(&self.config, &self.models, &self.state)
+    }
+
+    /// Rebuilds the agent when the live mode and rules change whether the provider's search
+    /// tool is offered. The tool is part of the built agent, which a mode switch or a session
+    /// rule does not rebuild, so the turn drivers call this before each turn.
+    pub fn refresh_native_search(&mut self) -> Result<(), RuntimeError> {
+        if self.native_search_entry().is_some() == self.native_search {
+            return Ok(());
+        }
+        self.rebuild()
+    }
+
+    /// Whether the agent carries the provider's search tool now.
+    pub fn native_search_active(&self) -> bool {
+        self.native_search
     }
 
     fn output_style_text(&self) -> Option<(String, String)> {

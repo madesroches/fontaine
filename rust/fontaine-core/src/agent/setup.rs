@@ -389,6 +389,7 @@ pub(super) fn retained(setup: &AgentSetup) -> Result<Setup, RuntimeError> {
         confirm_project_servers: setup.confirm_project_servers,
         scheduling: setup.scheduling,
         env: setup.env.clone(),
+        searxng: Arc::default(),
     })
 }
 

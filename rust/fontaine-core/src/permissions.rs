@@ -1703,6 +1703,7 @@ pub fn summarize(tool: &str, args: &Value) -> String {
         "shell" => text("command").map(str::to_string),
         "read" | "write" | "edit" => text("path").map(str::to_string),
         "webfetch" => text("url").map(str::to_string),
+        "websearch" => text("query").map(str::to_string),
         "glob" => text("pattern").map(str::to_string),
         "grep" => text("pattern").map(str::to_string),
         "ls" => Some(text("path").unwrap_or(".").to_string()),

@@ -122,6 +122,14 @@ pub static TOOLS: &[ToolDescriptor] = &[
         &["WebFetch"],
     ),
     row(
+        "websearch",
+        RiskClass::Arbitrary,
+        false,
+        Destructive::Always,
+        Specifier::None,
+        &["WebSearch"],
+    ),
+    row(
         "agent",
         RiskClass::Arbitrary,
         false,
@@ -254,7 +262,7 @@ mod tests {
         use RiskClass as R;
         use Specifier as S;
         type Pinned = (&'static str, R, bool, D, S, &'static [&'static str]);
-        let expected: [Pinned; 17] = [
+        let expected: [Pinned; 18] = [
             ("shell", R::Arbitrary, false, D::Shell, S::Shell, &["Bash"]),
             ("read", R::ReadOnly, false, D::Never, S::Path, &["Read"]),
             (
@@ -283,6 +291,14 @@ mod tests {
                 D::Always,
                 S::Domain,
                 &["WebFetch"],
+            ),
+            (
+                "websearch",
+                R::Arbitrary,
+                false,
+                D::Always,
+                S::None,
+                &["WebSearch"],
             ),
             (
                 "agent",

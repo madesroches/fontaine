@@ -22,6 +22,7 @@ pub mod goal;
 pub mod instructions;
 pub mod ledger;
 pub mod models;
+pub mod native_search;
 pub mod notice;
 pub mod owner_only;
 pub mod permission_rules;

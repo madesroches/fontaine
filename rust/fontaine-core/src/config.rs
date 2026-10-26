@@ -64,6 +64,10 @@ pub enum ConfigError {
     Telemetry {
         message: String,
     },
+    /// A `[websearch]` section that is inconsistent or cannot be resolved (a missing key).
+    Websearch {
+        message: String,
+    },
     /// A `[network]` or per-account network setting that cannot be loaded.
     Network {
         key: String,
@@ -156,6 +160,7 @@ impl fmt::Display for ConfigError {
                 "cannot determine the {what} directory; set {var} to a directory"
             ),
             ConfigError::Telemetry { message } => write!(f, "invalid [telemetry]: {message}"),
+            ConfigError::Websearch { message } => write!(f, "invalid [websearch]: {message}"),
             ConfigError::Network { key, source } => write!(
                 f,
                 "invalid network settings in `{key}`: {}",
@@ -610,6 +615,38 @@ pub struct TelemetrySection {
     pub resource_attributes: Option<BTreeMap<String, String>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WebsearchBackend {
+    Tavily,
+    Searxng,
+}
+
+/// Whether the provider's own search is offered to the model.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum NativeSearch {
+    /// Where the provider supports it, on the provider's own API.
+    #[default]
+    Auto,
+    /// Also on other hosts of a supported provider kind.
+    On,
+    Off,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WebsearchSection {
+    pub backend: Option<WebsearchBackend>,
+    pub base_url: Option<String>,
+    pub command: Option<Vec<String>>,
+    pub startup_timeout_secs: Option<u64>,
+    pub native: Option<NativeSearch>,
+    pub api_key_env: Option<String>,
+    pub max_results: Option<u32>,
+    pub timeout_secs: Option<u64>,
+}
+
 /// A terminal colour theme, by name.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -745,6 +782,7 @@ pub struct Settings {
     pub goal: Option<GoalSection>,
     pub shell_preclassifier: Option<ShellPreclassifierSection>,
     pub telemetry: Option<TelemetrySection>,
+    pub websearch: Option<WebsearchSection>,
     pub env: Option<BTreeMap<String, EnvValue>>,
 }
 
@@ -1151,6 +1189,47 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
     {
         return bad("telemetry.endpoint", "must not be empty");
     }
+    if let Some(w) = &s.websearch
+        && let Err((key, message)) = check_websearch_values(w)
+    {
+        return bad(&format!("websearch.{key}"), &message);
+    }
+    Ok(())
+}
+
+pub const WEBSEARCH_MAX_RESULTS_LIMIT: u32 = 20;
+
+fn check_websearch_values(w: &WebsearchSection) -> Result<(), (String, String)> {
+    let err = |key: &str, message: &str| Err((key.to_string(), message.to_string()));
+    if let Some(url) = w.base_url.as_deref() {
+        let usable = url::Url::parse(url)
+            .is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.has_host());
+        if !usable {
+            return err("base_url", "must be an http or https URL with a host");
+        }
+    }
+    if let Some(command) = &w.command
+        && (command.is_empty() || command.iter().any(String::is_empty))
+    {
+        return err("command", "must be a non-empty argv with no empty element");
+    }
+    if w.startup_timeout_secs == Some(0) {
+        return err("startup_timeout_secs", "must be at least 1");
+    }
+    if w.timeout_secs == Some(0) {
+        return err("timeout_secs", "must be at least 1");
+    }
+    if w.api_key_env.as_deref() == Some("") {
+        return err("api_key_env", "must not be empty");
+    }
+    if let Some(n) = w.max_results
+        && !(1..=WEBSEARCH_MAX_RESULTS_LIMIT).contains(&n)
+    {
+        return err(
+            "max_results",
+            &format!("must be between 1 and {WEBSEARCH_MAX_RESULTS_LIMIT}"),
+        );
+    }
     Ok(())
 }
 
@@ -1258,6 +1337,20 @@ impl Telemetry {
                 || self.log_tool_details
                 || self.log_tool_content)
     }
+}
+
+/// The merged `[websearch]` section.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Websearch {
+    /// `None`: no client-side `websearch` tool.
+    pub backend: Option<WebsearchBackend>,
+    pub base_url: Option<String>,
+    pub command: Option<Vec<String>>,
+    pub startup_timeout_secs: Option<u64>,
+    pub native: NativeSearch,
+    pub api_key_env: Option<String>,
+    pub max_results: u32,
+    pub timeout_secs: u64,
 }
 
 /// Fontaine's own variable namespace (`FONTAINE_SH_COMMAND`, `FONTAINE_PROJECT_DIR`).
@@ -1372,6 +1465,7 @@ pub struct Config {
     pub goal: Goal,
     pub shell_preclassifier_allow_extra: Vec<String>,
     pub telemetry: Telemetry,
+    pub websearch: Websearch,
     pub tui: Tui,
     /// `[env]`: variables set on every tool and extension subprocess.
     pub env: BTreeMap<String, EnvValue>,
@@ -1442,6 +1536,16 @@ impl Config {
                 log_tool_content: false,
                 content_max_bytes: 61_440,
                 resource_attributes: BTreeMap::new(),
+            },
+            websearch: Websearch {
+                backend: None,
+                base_url: None,
+                command: None,
+                startup_timeout_secs: None,
+                native: NativeSearch::Auto,
+                api_key_env: None,
+                max_results: 10,
+                timeout_secs: 30,
             },
             env: BTreeMap::new(),
         }
@@ -1661,6 +1765,33 @@ impl Config {
             }
             for (k, v) in tel.resource_attributes.iter().flatten() {
                 t.resource_attributes.insert(k.clone(), v.clone());
+            }
+        }
+        if let Some(web) = &s.websearch {
+            let w = &mut self.websearch;
+            if let Some(v) = web.backend {
+                w.backend = Some(v);
+            }
+            if let Some(v) = &web.base_url {
+                w.base_url = Some(v.clone());
+            }
+            if let Some(v) = &web.command {
+                w.command = Some(v.clone());
+            }
+            if let Some(v) = web.startup_timeout_secs {
+                w.startup_timeout_secs = Some(v);
+            }
+            if let Some(v) = web.native {
+                w.native = v;
+            }
+            if let Some(v) = &web.api_key_env {
+                w.api_key_env = Some(v.clone());
+            }
+            if let Some(v) = web.max_results {
+                w.max_results = v;
+            }
+            if let Some(v) = web.timeout_secs {
+                w.timeout_secs = v;
             }
         }
         for (k, v) in s.env.iter().flatten() {
@@ -1936,6 +2067,8 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
     check_scanner(&config.guardian, &user_path)?;
     check_screen(&mut config, &user_path)?;
     resolve_telemetry(&config.telemetry, params)?;
+    check_websearch(&config.websearch)?;
+    config.websearch_config(params.env, params.data_dir)?;
     Ok(config)
 }
 
@@ -2078,6 +2211,115 @@ fn resolve_telemetry(t: &Telemetry, params: &LoadParams<'_>) -> Result<(), Confi
         }
     }
     Ok(())
+}
+
+/// The cross-key rules of `[websearch]`, checked on the merged section since its keys may come
+/// from different files. It is user-or-CLI only, so no file path is named.
+fn check_websearch(w: &Websearch) -> Result<(), ConfigError> {
+    let fail = |message: &str| {
+        Err(ConfigError::Websearch {
+            message: message.to_string(),
+        })
+    };
+    match w.backend {
+        None => {
+            if w.base_url.is_some() || w.command.is_some() || w.api_key_env.is_some() {
+                return fail("`base_url`, `command` and `api_key_env` need a `backend`");
+            }
+        }
+        Some(WebsearchBackend::Tavily) => {
+            if w.base_url.is_some() {
+                return fail("`base_url` is only for `backend = \"searxng\"`");
+            }
+            if w.command.is_some() {
+                return fail("`command` is only for `backend = \"searxng\"`");
+            }
+        }
+        Some(WebsearchBackend::Searxng) => {
+            if w.base_url.is_none() {
+                return fail("`backend = \"searxng\"` requires `base_url`");
+            }
+            if w.api_key_env.is_some() {
+                return fail("`api_key_env` is only for `backend = \"tavily\"`");
+            }
+        }
+    }
+    if w.startup_timeout_secs.is_some() && w.command.is_none() {
+        return fail("`startup_timeout_secs` needs `command`");
+    }
+    Ok(())
+}
+
+/// The key a `tavily` backend uses: the variable `api_key_env` names, else the stored
+/// credential. Config loading and tool construction both resolve through here, so they cannot
+/// disagree.
+fn websearch_key(
+    w: &Websearch,
+    env: EnvLookup<'_>,
+    data_dir: &Path,
+) -> Result<fontaine_tools::websearch::ApiKey, ConfigError> {
+    let fail = |message: String| Err(ConfigError::Websearch { message });
+    let key = match &w.api_key_env {
+        Some(var) => match env(var).and_then(|v| v.into_string().ok()) {
+            Some(key) if !key.is_empty() => key,
+            _ => {
+                return fail(format!(
+                    "`backend = \"tavily\"` requires an API key, but `api_key_env` names {var}, which is unset or empty"
+                ));
+            }
+        },
+        None => {
+            let stored = credentials::Credentials::load(data_dir)?;
+            match stored.websearch() {
+                Some(key) => key.to_string(),
+                None => {
+                    return fail(format!(
+                        "`backend = \"tavily\"` requires an API key: set `api_key_env` or store one under [websearch] in {}",
+                        credentials::credentials_path(data_dir).display()
+                    ));
+                }
+            }
+        }
+    };
+    Ok(fontaine_tools::websearch::ApiKey::new(key))
+}
+
+impl Config {
+    /// The client-side search tool's settings; `None` when no backend is configured.
+    pub fn websearch_config(
+        &self,
+        env: EnvLookup<'_>,
+        data_dir: &Path,
+    ) -> Result<Option<fontaine_tools::websearch::WebsearchConfig>, ConfigError> {
+        use fontaine_tools::websearch::{BackendConfig, Launch, WebsearchConfig};
+        let w = &self.websearch;
+        let Some(backend) = w.backend else {
+            return Ok(None);
+        };
+        let backend = match backend {
+            WebsearchBackend::Tavily => BackendConfig::tavily(websearch_key(w, env, data_dir)?),
+            WebsearchBackend::Searxng => BackendConfig::Searxng {
+                base_url: url::Url::parse(
+                    w.base_url
+                        .as_deref()
+                        .expect("a searxng backend without base_url is rejected at load"),
+                )
+                .expect("base_url is validated as a URL at load"),
+                launch: w.command.as_ref().map(|argv| Launch {
+                    argv: argv.clone(),
+                    startup_timeout: w.startup_timeout_secs.map_or(
+                        fontaine_tools::websearch::DEFAULT_STARTUP_TIMEOUT,
+                        std::time::Duration::from_secs,
+                    ),
+                    env: fontaine_tools::child_env::base_env(env),
+                }),
+            },
+        };
+        let mut config = WebsearchConfig::new(backend);
+        config.max_results = w.max_results as usize;
+        config.timeout = std::time::Duration::from_secs(w.timeout_secs);
+        Ok(Some(config))
+    }
 }
 
 fn demotion_hint(why: &ProjectDemotion, data_dir: &Path) -> Option<String> {

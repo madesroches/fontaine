@@ -61,6 +61,7 @@ The body is the subagent's instructions.
 | `Glob`, `Grep`, `LS` | `glob`, `grep`, `ls` |
 | `Bash` | `shell` |
 | `WebFetch` | `webfetch` |
+| `WebSearch` | `websearch` |
 | `Task`, `Agent` | `agent` |
 | `Skill` | `skill` |
 | `SendMessage` | `send_message` |
@@ -78,7 +79,7 @@ limits that tool: the subagent may use `shell` only as `git status`, and a `disa
 with a specifier forbids just the calls it matches.
 
 **Anything else is an error that stops startup with exit code 2 and names the file**: a Claude Code
-tool Fontaine does not have (`WebSearch`, `NotebookEdit`), the colon form
+tool Fontaine does not have (`NotebookEdit`), the colon form
 `Bash(git add:*)`, which is not Fontaine's rule syntax, and a `model` such as `sonnet`, which is an
 alias and not a model reference. So are keys that would run something or change permissions from
 inside a file: `hooks` and `mcpServers` in an agent or skill file, and `permissionMode` in a

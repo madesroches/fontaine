@@ -105,12 +105,12 @@ pipeline before the model sees it:
    +----------------------------------------------+
         |
         v
-   ls  read  glob  grep  write  edit  shell  webfetch  agent  skill  send_message  ask_user_question  mcp__*
+   ls  read  glob  grep  write  edit  shell  webfetch  websearch  agent  skill  send_message  ask_user_question  mcp__*
 ```
 
 A deny goes back to the model as the tool result and the run goes on. The registry is built at
 session start (and rebuilt between turns by `/add-dir`); each file tool and `shell` has one confined
-instance per workspace root, and `webfetch` has one. MCP tools join the registry as their servers
+instance per workspace root, and `webfetch` has one; `websearch` joins only when a backend is configured. MCP tools join the registry as their servers
 connect, wrapped by the same gate. A subagent gets a copy of the registry cut down to its type's
 tools, so its calls reach the same gate. See [Tools](tools.md).
 

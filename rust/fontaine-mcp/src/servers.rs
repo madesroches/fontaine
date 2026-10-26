@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Stdio;
 
+use fontaine_tools::child_env::BASE_ENV;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::guarded::Guard;
 use fontaine_tools::tls::{LoadedNetwork, build_client};
@@ -71,37 +72,6 @@ pub struct Connected {
     pub connection: McpConnection,
     pub kind: &'static str,
 }
-
-/// Variables every server gets so it can find programs and its home, and nothing that names a
-/// credential.
-const BASE_ENV: &[&str] = &[
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TERM",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "TZ",
-    "SYSTEMROOT",
-    "SYSTEMDRIVE",
-    "COMSPEC",
-    "PATHEXT",
-    "USERPROFILE",
-    "APPDATA",
-    "LOCALAPPDATA",
-    "PROGRAMFILES",
-    "PROGRAMDATA",
-    "WINDIR",
-    "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME",
-    "XDG_CACHE_HOME",
-];
 
 fn client_config() -> ClientConfig {
     ClientConfig::new(

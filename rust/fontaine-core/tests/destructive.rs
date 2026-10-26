@@ -248,6 +248,11 @@ fn network_and_mcp_and_unknown_tools_are_destructive() {
         &json!({"url": "https://example.com"}),
         &facts
     ));
+    assert!(derive(
+        "websearch",
+        &json!({"query": "rust 2024 edition"}),
+        &facts
+    ));
     assert!(derive("mcp__github__list_issues", &json!({}), &facts));
     assert!(derive("agent", &json!({}), &facts));
     for tool in ["read", "ls", "glob", "grep", "skill", "todo_write"] {

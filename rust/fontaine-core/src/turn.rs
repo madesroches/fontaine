@@ -155,6 +155,27 @@ fn error_class(error: &PromptError) -> Option<&'static str> {
     }
 }
 
+/// The failure as shown to the user. A 400 whose body names `web_search` means the endpoint
+/// rejected the provider's built-in search tool; nothing retries without it, so the text says
+/// how to turn it off.
+fn failure_text(error: &PromptError) -> String {
+    let mut text = error.to_string();
+    let rejected_search = error
+        .provider_response_status()
+        .is_some_and(|status| status.as_u16() == 400)
+        && error
+            .provider_response_body()
+            .is_some_and(|body| body.contains("web_search"));
+    if rejected_search {
+        text.push_str(
+            "\nThe request carried the provider's built-in web search, which this endpoint \
+             rejected. Set `native = \"off\"` under `[websearch]` to use the configured search \
+             backend instead.",
+        );
+    }
+    text
+}
+
 async fn next_decision(feed: &mut Option<&mut DecisionFeed>) -> Option<DecisionRecord> {
     match feed {
         Some(feed) => feed.next().await,
@@ -298,7 +319,7 @@ pub async fn drive(
         }
         match e {
             e @ PromptError::MaxTurns { .. } => TurnOutcome::MaxTurns(e.to_string()),
-            other => TurnOutcome::Failed(other.to_string()),
+            other => TurnOutcome::Failed(failure_text(&other)),
         }
     } else if let Some(response) = final_response {
         TurnOutcome::Answer(response.output())
