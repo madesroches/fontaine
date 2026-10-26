@@ -31,38 +31,71 @@ deterministic floor, the guardian and the shell path are unchanged.
   Unix and a current-user-only DACL on Windows. `file_lock` provides advisory locks. There is no
   existing runtime/temp-dir code and no session-end hook.
 - Dirs: `Dirs { config, data }` (`rust/fontaine-core/src/dirs.rs`), already overridable by
-  `FONTAINE_DATA_DIR`.
+  `FONTAINE_DATA_DIR`. `agent/setup.rs:211-214` sets `protected_dirs = [config_dir, data_dir]`,
+  and `floor::protected_path` (`floor.rs:71-94`) returns "Fontaine's own config or data
+  directory" for any write/edit under them, ahead of the root-relative checks. A scratch dir under
+  the data dir would therefore always hit the forced protected-path prompt.
+- `owner_only::create_dir` requires the parent to exist (`CreateDirectoryW` / `DirBuilder` are not
+  recursive); `open_lock` does not create the parent either.
 
 ## Design
 
 ### Location and lifetime
 
-`<data>/scratch/<session-id>/`, created with `owner_only::create_dir` (parent created owner-only
-the same way). One path rule on every platform; no `XDG_RUNTIME_DIR` branch, no `mkdtemp`
-fallback, and Windows needs no special case beyond the existing DACL helper. Keying on the
-session id means a resumed session reuses its path. `/add-dir` extends the existing scope
-(`agent.rs:552-579`), so the scratch root persists across it.
+The scratch dir is `<scratch-parent>/<session-id>/`, deliberately outside the config and data
+directories so the protected-path floor never sees it as Fontaine's own state. The parent is
+resolved once, per platform:
+
+- **Unix, `XDG_RUNTIME_DIR` set, absolute and an existing directory**:
+  `$XDG_RUNTIME_DIR/fontaine/`.
+- **Unix otherwise (macOS, no runtime dir)**: `<temp_dir>/fontaine-<uid>/`, the temp dir being
+  `std::env::temp_dir()` (honours `TMPDIR`).
+- **Windows**: `<temp_dir>\fontaine-<sid>\` (`%TEMP%` is already per-user), with `<sid>` from
+  `owner_only::current_user_sid`.
+
+The parent is created with `owner_only::create_dir` (0700 / current-user-only DACL; its own
+parent exists in all three cases), treating `AlreadyExists` as success only after verifying the
+existing entry: `symlink_metadata` says a real directory (not a symlink), on Unix owned by the
+current user (uid taken from the owner of a file the process just created, to avoid a new
+dependency) with no group/other mode bits. A parent that fails the check (a squatted `/tmp` name)
+is an error, so the session runs without a scratch root. On Windows the per-user `%TEMP%` plus
+the SID in the name stands in for that check, since the DACL is not inspected.
+
+The session dir and `<id>.lock` are siblings in this parent. Keying on the session id means a
+resumed session reuses its path. `/add-dir` extends the existing scope (`agent.rs:552-579`), so
+the scratch root persists across it.
+
+**Canonical and outside the protected dirs.** `create` canonicalizes the parent after creating it
+(so macOS `/var` -> `/private/var` and a symlinked `TMPDIR` resolve) and returns the canonical
+child path. It then refuses, as a creation error, any scratch path that is under either the raw
+or the canonical form of the config or data dir (`FONTAINE_DATA_DIR` pointing into the temp dir
+or the runtime dir), so the floor never classifies the scratch root as owned. `create` therefore
+takes the protected dirs as an argument. Tests and sandboxes redirect the parent through
+`XDG_RUNTIME_DIR` (the resolver takes an env closure, as `dirs::resolve` does); there is no new
+config key or env var.
 
 New module `rust/fontaine-core/src/scratch.rs`:
 
 ```
 pub struct Scratch { dir: PathBuf, lock: File }   // Drop: best-effort remove dir + lock file
 impl Scratch {
-    pub fn create(data: &Path, session_id: &str) -> io::Result<Scratch>;
+    pub fn create(env: &dyn Fn(&str) -> Option<OsString>, protected: &[PathBuf],
+                  session_id: &str) -> io::Result<Scratch>;
     pub fn path(&self) -> &Path;                   // canonical
 }
-pub fn sweep_stale(data: &Path) -> Vec<String>;    // returns warnings
+pub fn sweep_stale(env: &dyn Fn(&str) -> Option<OsString>) -> Vec<String>; // warnings
 ```
 
 - Beside each directory sits `<id>.lock`, held with an exclusive advisory lock for the life of
   the `Scratch`. The lock file is outside the root so the model cannot touch it.
 - `file_lock.rs` has only a blocking `lock()` and `read_shared`, so a `try_lock` helper is added
   (`owner_only::open_lock` plus `File::try_lock`); `open_lock` does not create the parent, so
-  `create` makes `<data>/scratch/` owner-only first.
+  `create` makes the verified owner-only scratch parent first.
 - `create` takes the lock first, then creates the directory, then re-checks that the lock path
   still refers to the locked file (same file identity) and retries if a sweep unlinked it in
   between. `sweep_stale` tolerates a lock with no directory.
-- `sweep_stale` runs at startup (before creating the new scratch): for each `<id>.lock` it tries
+- `sweep_stale` runs at startup (before creating the new scratch) over the scratch parent (it
+  does nothing if the parent does not exist): for each `<id>.lock` it tries
   to take the lock; if it succeeds, the owner is dead (crash, `kill -9`), so remove `<id>/` (if
   present) and the lock file. A held lock means a live session; it is skipped. This covers
   crash/kill without timestamps or PID checks.
@@ -104,8 +137,10 @@ pub fn sweep_stale(data: &Path) -> Vec<String>;    // returns warnings
 
 ### Security properties (unchanged)
 
-- No floor exception: `deny → ask → critical-path → protected-path` still gates every call.
-  Protected-path rules apply inside the scratch root as in any root.
+- No floor exception: `deny → ask → critical-path → protected-path` still gates every call, and
+  `protected_dirs` is untouched. The scratch root is not under it by construction, so a
+  `write`/`edit` there is not a protected-path hit; protected file names (`.bashrc`, ...) inside
+  the root still are, as in any root.
 - The fast path is still earned by Fontaine-enforced containment; the scratch root is enforced
   containment (private, 0700, the session owns it), unlike `/tmp`.
 - Shell policy is unchanged, but the scratch path is an ordinary root there too: read-only
@@ -121,10 +156,10 @@ pub fn sweep_stale(data: &Path) -> Vec<String>;    // returns warnings
 ## Implementation Steps
 
 1. `rust/fontaine-core/src/scratch.rs` (+ `pub mod scratch;` in `lib.rs`), the `try_lock` helper
-   in `file_lock.rs`, the `remove_dir_all` retry in `owner_only.rs`: `Scratch`, `sweep_stale`,
-   unit tests.
+   in `file_lock.rs`, the `remove_dir_all` retry in `owner_only.rs`: parent resolution and
+   verification, `Scratch`, `sweep_stale`, unit tests.
 2. `rust/fontaine/src/lib.rs`: call `sweep_stale` at startup, create `Scratch` in
-   `prepare_session`, append the root last, return the guard to the loop and drop it per
+   `prepare_session` (passing the protected dirs), append the root last, return the guard to the loop and drop it per
    iteration. Update tests that assert the root list: `fontaine/tests/headless_contract.rs`
    (`:484-487` `workspace_roots == [work]`, `:101-105` indexes `roots[1]`) and
    `fontaine/tests/headless_tools.rs:160` (`roots.len() == 2`).
@@ -169,10 +204,14 @@ pub fn sweep_stale(data: &Path) -> Vec<String>;    // returns warnings
 
 ## Trade-offs
 
-- **`$XDG_RUNTIME_DIR` with `mkdtemp` fallback** (the issue's example) gives tmpfs and OS-managed
-  cleanup, but needs two code paths plus a Windows answer. A directory under the data dir uses
-  one path everywhere and the existing owner-only helper; crash cleanup is handled by the lock
-  sweep either way.
+- **`$XDG_RUNTIME_DIR` with an owner-only temp-dir fallback** (the issue's example; chosen): tmpfs
+  and OS-managed cleanup where available, and a per-user owner-only directory under the OS temp
+  dir elsewhere, at the cost of a per-platform parent rule and a squat check. It is chosen over
+  `<data>/scratch/<id>` because `protected_dirs` covers the data dir, so a scratch root there
+  would force the protected-path prompt on every write, and carving it out would be a floor
+  exception exposing the sibling sessions, ledger and credentials. Crash cleanup is handled by
+  the lock sweep either way.
+- **Carve the scratch path out of `protected_dirs`**: rejected; a floor exception.
 - **Allow `/tmp` or a `[permissions]` allowlist**: rejected in the issue (shared, world-writable,
   would let writes skip the guardian).
 - **Scratch special-cased in the permission pipeline** instead of being a root: rejected; being
@@ -182,24 +221,35 @@ pub fn sweep_stale(data: &Path) -> Vec<String>;    // returns warnings
 
 ## Decisions
 
-- 2026-10-26: Each session gets a private scratch directory, `<data>/scratch/<session-id>/`,
-  added to the workspace roots automatically and removed on exit, so file-tool writes of helper
+- 2026-10-26: Each session gets a private scratch directory,
+  `$XDG_RUNTIME_DIR/fontaine/<session-id>/` (else `<temp>/fontaine-<uid>/<session-id>/`; on
+  Windows `<temp>\fontaine-<sid>\<session-id>\`), added to the workspace roots automatically and removed on exit, so file-tool writes of helper
   files work without a prompt (Claude Code prompts for out-of-root writes and Fontaine denies
   them, 2026-10-22; this is a further deviation); reason: the denial protected nothing once the
   model wrote the file through `shell`, and a private owner-only root keeps the floor intact.
+- AFK: The scratch dir lives outside the config and data dirs (`XDG_RUNTIME_DIR`, else an
+  owner-only per-user dir under the OS temp dir, verified against squatting, canonicalized, and
+  refused if under a protected dir) rather than under `<data>`, and the protected-path floor gets
+  no exception; reason: `protected_dirs` covers the data dir, so `<data>/scratch` would defeat
+  the feature or require a floor exception.
 - 2026-10-26: Subagents share the parent's scratch directory; reason: one shared `Scope`, and a
   child's mode is already capped by its parent's.
 
 ## Documentation
 
 Update `docs/tools.md`, `docs/permissions.md` and `docs/configuration.md` as listed above:
-what the scratch root is, where it lives, that it is removed on exit and swept after a crash,
+what the scratch root is, where it lives per platform, that it is removed on exit and swept after a crash,
 that shell commands in it still go through the guardian, and the deviation from Claude Code.
 
 ## Testing Strategy
 
 Unit tests (`rust/fontaine-core/src/scratch.rs`, temp data dir):
-- `create` makes an owner-only (0700 on Unix) directory and returns a canonical path.
+- `create` makes an owner-only (0700 on Unix) directory and returns a canonical path; with the
+  parent reached through a symlinked `TMPDIR`, the returned path is the resolved one.
+- Parent resolution: `XDG_RUNTIME_DIR` is used when set and valid, else the temp-dir fallback; an
+  existing parent that is a symlink or has group/other bits is rejected.
+- The scratch path is not under the config or data dirs, including when `FONTAINE_DATA_DIR`
+  points into the temp dir or the runtime dir (then `create` errors rather than returning it).
 - Drop removes the directory and lock file.
 - `sweep_stale` removes a dir whose lock is free and skips one whose lock is held; a lock with no
   dir is removed without error.
@@ -207,16 +257,17 @@ Unit tests (`rust/fontaine-core/src/scratch.rs`, temp data dir):
 - `create` for an id whose directory already exists (resume after crash) succeeds.
 
 Integration (`rust/fontaine-core/tests/permissions.rs`, `tests/workspace.rs`):
-- `write`/`edit` to a path in the scratch root is allowed; a path in `/tmp` is denied and the
-  message names the scratch dir and `/add-dir`.
+- Pipeline test (`tests/common/pipeline.rs`, with `protected_dirs` set as `agent/setup.rs` does):
+  `write`/`edit` to a path in the scratch root is allowed (Tier is not `ProtectedPath`); a path in
+  `/tmp` is denied and the message names the scratch dir and `/add-dir`.
 - A protected file name (e.g. `.bashrc`) in the scratch root still hits the protected-path floor.
 - The prompt names the scratch path and no longer claims only the user can add a root.
-- Headless `fontaine -p` run leaves no directory under `<data>/scratch/` afterwards.
-- Headless test (`Sandbox` in `fontaine/tests/common/mod.rs`) seeds a stale `<id>.lock` and
-  `<id>/` under the sandbox data dir's `scratch/` and asserts the startup sweep removed them.
+- Headless `fontaine -p` run leaves no directory under the scratch parent afterwards.
+- Headless test (`Sandbox` in `fontaine/tests/common/mod.rs`, which sets `XDG_RUNTIME_DIR` to a
+  sandbox dir) seeds a stale `<id>.lock` and `<id>/` under `$XDG_RUNTIME_DIR/fontaine/` and
+  asserts the startup sweep removed them.
 - Updated headless tests expect the scratch root appended last in `workspace_roots`.
 
 ## Open Questions
 
-None the code cannot settle; the Windows path follows from using the data dir and the existing
-DACL helper.
+None.
