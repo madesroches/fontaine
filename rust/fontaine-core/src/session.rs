@@ -259,6 +259,40 @@ impl Session {
         })
     }
 
+    /// Whether [`open`](Self::open) would succeed on `id`, decided without writing: `open` repairs
+    /// a torn ledger tail and starts the audit log, which a session that is then not used must not get.
+    pub fn check_openable(data_dir: &Path, id: &str) -> Result<(), SessionError> {
+        if !is_session_id(id) {
+            return Err(SessionError::Missing(id.to_string()));
+        }
+        let dir = data_dir.join(SESSIONS_DIR).join(id);
+        let path = dir
+            .join(crate::ledger::LEDGER_DIR)
+            .join(crate::ledger::LEDGER_FILE);
+        if !dir.join(crate::ledger::LEDGER_DIR).is_dir() {
+            return Err(SessionError::Missing(id.to_string()));
+        }
+        let io_error = |source| SessionError::Io {
+            op: SessionOp::Open,
+            path: dir.clone(),
+            source,
+        };
+        let text = std::fs::read_to_string(&path).map_err(io_error)?;
+        let mut lines = text.split_inclusive('\n').peekable();
+        while let Some(raw) = lines.next() {
+            if raw.trim().is_empty() {
+                continue;
+            }
+            let torn_tail = lines.peek().is_none() && !raw.ends_with('\n');
+            if let Err(e) = serde_json::from_str::<crate::ledger::Entry>(raw)
+                && !torn_tail
+            {
+                return Err(io_error(io::Error::other(e)));
+            }
+        }
+        Ok(())
+    }
+
     /// Copies the session `source` under the new id `id` and opens the copy. The audit log
     /// starts empty: it records what this session decides.
     pub fn fork(data_dir: &Path, source: &str, id: &str) -> Result<Session, SessionError> {

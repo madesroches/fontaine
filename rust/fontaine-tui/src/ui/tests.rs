@@ -146,3 +146,28 @@ fn a_finished_turn_leaves_no_call_pending() {
         }
     )));
 }
+
+#[test]
+fn a_session_whose_ledger_cannot_be_read_is_refused_in_the_live_session() {
+    use fontaine_core::session::Session;
+    const THEIRS: &str = "00000000-0000-4000-8000-0000000000aa";
+    let data = tempfile::tempdir().expect("a temp dir");
+    let theirs = Session::create(data.path(), THEIRS).expect("create the session");
+    let ledger = theirs.ledger.path().to_path_buf();
+    drop(theirs);
+    std::fs::write(&ledger, "{\"kind\":\"from_a_newer_build\"}\n{}\n").expect("write the ledger");
+
+    let (_prompts_tx, prompts) = unbounded_channel();
+    let mut ui = ui(prompts);
+    ui.data_dir = data.path().to_path_buf();
+    assert!(ui.switch_from("current", THEIRS).is_continue());
+    assert!(ui.switch.is_none());
+    let shown: String = ui
+        .app
+        .transcript
+        .lines(80, &crate::theme::Theme::default())
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+        .collect();
+    assert!(shown.contains("/resume:"), "{shown}");
+}

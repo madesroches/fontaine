@@ -181,6 +181,7 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
 
 ## Decisions
 
+- 2026-10-26: The `/resume` picker leaves out sessions with no name and no first prompt (every launch writes a start, so they are noise); `--continue` and resolve by id still reach them.
 - Picker and `--continue` scope: the current workspace root only, because that is the existing
   `--continue` scope and avoids showing sessions from unrelated projects. Claude Code's all-projects
   toggle is not added.

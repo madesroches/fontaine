@@ -17,6 +17,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let others = session::list(&self.data_dir, Some(&self.app.primary_root))
                 .into_iter()
                 .filter(|info| info.id != runtime.session.id)
+                // Every launch writes a start, so a session nothing was said in is only noise.
+                .filter(|info| info.name.is_some() || info.first_prompt.is_some())
                 .collect();
             self.app.resume = Some(ResumePicker::new(others, SystemTime::now()));
             return Continue(());
@@ -26,14 +28,23 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     /// Leaves for the session `text` names (an id or a name), once it is known to exist.
     pub(crate) fn switch_to(&mut self, runtime: &AgentRuntime, text: &str) -> ControlFlow<()> {
+        self.switch_from(&runtime.session.id, text)
+    }
+
+    pub(crate) fn switch_from(&mut self, current: &str, text: &str) -> ControlFlow<()> {
         match session::resolve(&self.data_dir, &self.app.primary_root, text) {
-            Ok(id) if id == runtime.session.id => {
+            Ok(id) if id == current => {
                 self.app
                     .transcript
                     .notice("this is the session you are in already");
                 Continue(())
             }
             Ok(id) => {
+                // Once the run is torn down a session that cannot open ends the process.
+                if let Err(e) = Session::check_openable(&self.data_dir, &id) {
+                    self.app.transcript.error(format!("/resume: {}", chain(&e)));
+                    return Continue(());
+                }
                 self.switch = Some(SessionTarget {
                     source: id,
                     record_resume: true,
