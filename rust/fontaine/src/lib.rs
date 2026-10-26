@@ -60,9 +60,13 @@ impl Host {
 
 pub const EXIT_CONFIG: u8 = fontaine_core::config::CONFIG_EXIT_CODE;
 
-fn usage(message: impl std::fmt::Display) -> ExitCode {
+fn usage_code(message: impl std::fmt::Display) -> u8 {
     eprintln!("fontaine: {message}");
-    ExitCode::from(EXIT_CONFIG)
+    EXIT_CONFIG
+}
+
+fn usage(message: impl std::fmt::Display) -> ExitCode {
+    ExitCode::from(usage_code(message))
 }
 
 /// Loads the settings, and the directories they come from.
@@ -96,16 +100,16 @@ fn load_config(
 }
 
 /// The name `--name` asks for, validated.
-fn session_name(cli: &Cli) -> Result<Option<String>, ExitCode> {
+fn session_name(cli: &Cli) -> Result<Option<String>, u8> {
     cli.name
         .as_deref()
-        .map(|name| session::validate_name(name).map_err(|e| usage(format!("--name: {e}"))))
+        .map(|name| session::validate_name(name).map_err(|e| usage_code(format!("--name: {e}"))))
         .transpose()
 }
 
 /// What the session flags ask for.
 fn check_session_flags(cli: &Cli) -> Result<(), ExitCode> {
-    session_name(cli)?;
+    session_name(cli).map_err(ExitCode::from)?;
     let continuing = cli.continue_session || cli.resume.is_some();
     if cli.fork_session && !continuing {
         return Err(usage("--fork-session needs --continue or --resume"));
@@ -278,7 +282,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
             Ok(prep) => prep,
             Err(code) => {
                 print_warnings(&ax_warnings);
-                return code;
+                return ExitCode::from(code);
             }
         };
     // Headless has no conversation to show them in. Printing now, before models are resolved,
@@ -332,7 +336,13 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
             drop(session);
             let target = match outcome {
                 Outcome::Done(code) => break code,
-                Outcome::Switch(target) => target,
+                Outcome::Switch(target, added) => {
+                    // Accounts the setup screen added belong to the next session too.
+                    if let Some(added) = added {
+                        config = *added;
+                    }
+                    target
+                }
             };
             cli = Cli {
                 resume: Some(target.source),
@@ -353,8 +363,8 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
             ) {
                 Ok(prep) => prep,
                 Err(code) => {
-                    export.finish(1);
-                    return code;
+                    export.finish(code);
+                    return ExitCode::from(code);
                 }
             };
         },
@@ -373,7 +383,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
 enum Outcome {
     Done(u8),
     /// The interactive session asked for another one to take its place.
-    Switch(fontaine_tui::SessionTarget),
+    Switch(fontaine_tui::SessionTarget, Option<Box<Config>>),
 }
 
 /// The session's permission mode: `--permission-mode`, then `default_mode`, then what the
@@ -466,10 +476,10 @@ fn open_session(
     dirs: &Dirs,
     record_resume: bool,
     warnings: &mut Vec<Notice>,
-) -> Result<(Session, SessionOrigin, &'static str), ExitCode> {
+) -> Result<(Session, SessionOrigin, &'static str), u8> {
     let fail = |e: SessionError| {
         eprintln!("fontaine: {e}");
-        ExitCode::from(e.exit_code())
+        e.exit_code()
     };
     let name = session_name(cli)?;
     let mut name_it = |session: &Session| {
@@ -487,9 +497,8 @@ fn open_session(
     };
     let requested = match cli.session_id.as_deref() {
         None => Uuid::new_v4(),
-        Some(text) => {
-            Uuid::parse_str(text).map_err(|e| usage(format!("--session-id must be a UUID: {e}")))?
-        }
+        Some(text) => Uuid::parse_str(text)
+            .map_err(|e| usage_code(format!("--session-id must be a UUID: {e}")))?,
     }
     .hyphenated()
     .to_string();
@@ -497,7 +506,7 @@ fn open_session(
         (Some(text), _) => {
             let id = session::resolve(&dirs.data, &config.workspace, text).map_err(|e| {
                 eprintln!("fontaine: {e}");
-                ExitCode::from(e.exit_code())
+                e.exit_code()
             })?;
             (Some(id), "resume")
         }
@@ -549,7 +558,7 @@ fn prepare_session(
     mode: PermissionMode,
     project_executables: bool,
     record_resume: bool,
-) -> Result<SessionPrep, ExitCode> {
+) -> Result<SessionPrep, u8> {
     let git_bash = git_bash(host)?;
 
     let added = cli
@@ -586,7 +595,7 @@ fn prepare_session(
     .map_err(|e| {
         print_warnings(&warnings);
         eprintln!("fontaine: {e}");
-        ExitCode::from(e.exit_code())
+        e.exit_code()
     })?;
     let home = (host.env)(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .filter(|value| !value.is_empty())
@@ -610,18 +619,18 @@ fn prepare_session(
 
 /// The shell tool runs through Git Bash on Windows; elsewhere it needs none.
 #[cfg(windows)]
-fn git_bash(host: &Host) -> Result<Option<GitBash>, ExitCode> {
+fn git_bash(host: &Host) -> Result<Option<GitBash>, u8> {
     let probe = fontaine_tools::git_bash::Probe {
         env: &*host.env,
         is_file: &|path| path.is_file(),
     };
     fontaine_tools::git_bash::discover(&probe)
         .map(Some)
-        .map_err(usage)
+        .map_err(usage_code)
 }
 
 #[cfg(not(windows))]
-fn git_bash(_host: &Host) -> Result<Option<GitBash>, ExitCode> {
+fn git_bash(_host: &Host) -> Result<Option<GitBash>, u8> {
     Ok(None)
 }
 
@@ -861,10 +870,10 @@ async fn run_interactive(
             return Outcome::Done(error.exit_code());
         }
     };
-    let config = added.as_ref().unwrap_or(config);
+    let effective = added.as_ref().unwrap_or(config);
     let launch = Launch {
         cli,
-        config,
+        config: effective,
         dirs,
         host,
     };
@@ -873,7 +882,9 @@ async fn run_interactive(
     let setup = agent_setup(&launch, prep, models, scanner, false, None);
     match fontaine_tui::run(setup, host.cwd.clone(), screen_reader, ax_warnings).await {
         Ok(fontaine_tui::DriveOutcome::Exit) => Outcome::Done(0),
-        Ok(fontaine_tui::DriveOutcome::Switch(target)) => Outcome::Switch(target),
+        Ok(fontaine_tui::DriveOutcome::Switch(target)) => {
+            Outcome::Switch(target, added.map(Box::new))
+        }
         Err(message) => {
             print_warnings(&pending.0);
             print_warnings(&pending.1);

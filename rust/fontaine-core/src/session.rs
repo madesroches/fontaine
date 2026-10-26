@@ -315,6 +315,18 @@ impl Session {
         name: Option<&str>,
     ) -> Result<Session, SessionError> {
         let copy = Session::fork(data_dir, source, id)?;
+        match copy.name_the_branch(name) {
+            Ok(()) => Ok(copy),
+            Err(e) => {
+                // An unnamed copy would carry the source's name and make `resolve` ambiguous.
+                let _ = std::fs::remove_dir_all(&copy.dir);
+                Err(e)
+            }
+        }
+    }
+
+    fn name_the_branch(&self, name: Option<&str>) -> Result<(), SessionError> {
+        let copy = self;
         let name = match name {
             Some(name) => Some(name.to_string()),
             None => copy
@@ -337,7 +349,7 @@ impl Session {
                 source: io::Error::other(e),
             })?;
         }
-        Ok(copy)
+        Ok(())
     }
 
     /// Names the session, or renames it; the latest name wins. Returns the name as recorded.
@@ -351,7 +363,7 @@ impl Session {
 
     /// The session's name, if it has one.
     pub fn name(&self) -> io::Result<Option<String>> {
-        Ok(scan_ledger(self.ledger.path())?.name)
+        Ok(scan_ledger(self.ledger.path(), None)?.name)
     }
 
     /// The name `/rename` gives with no argument: drawn from the first thing the human said
@@ -717,7 +729,7 @@ pub struct SessionInfo {
     /// When the ledger was last written.
     pub updated: std::time::SystemTime,
     pub primary_root: String,
-    /// The session this one was forked from, when its last continuation was a fork.
+    /// The session this one was last forked from, if it is a branch.
     pub branched_from: Option<String>,
 }
 
@@ -731,12 +743,20 @@ struct Scan {
     branched_from: Option<String>,
 }
 
-fn scan_ledger(path: &Path) -> io::Result<Scan> {
+/// Streams the ledger. With `wanted` (a `path_key`), stops at the first start whose root differs,
+/// so the caller can discard the session without reading the rest.
+fn scan_ledger(path: &Path, wanted: Option<&str>) -> io::Result<Scan> {
     use crate::ledger::{Entry, Record};
-    let text = std::fs::read_to_string(path)?;
+    use std::io::BufRead;
+    let reader = std::io::BufReader::new(std::fs::File::open(path)?);
     let mut scan = Scan::default();
-    for line in text.lines() {
-        let Ok(Entry { record, .. }) = serde_json::from_str(line) else {
+    for line in reader.lines() {
+        let line = line?;
+        // The file index can hold tens of thousands of paths and says nothing a listing wants.
+        if line.contains(r#""kind":"file_index""#) {
+            continue;
+        }
+        let Ok(Entry { record, .. }) = serde_json::from_str(&line) else {
             continue;
         };
         match record {
@@ -745,6 +765,11 @@ fn scan_ledger(path: &Path) -> io::Result<Scan> {
             } => {
                 if scan.primary_root.is_none() {
                     scan.primary_root = workspace_roots.into_iter().next();
+                    if let (Some(root), Some(wanted)) = (&scan.primary_root, wanted)
+                        && crate::ledger::path_key(root) != wanted
+                    {
+                        return Ok(scan);
+                    }
                 }
             }
             Record::SessionNamed { name } => scan.name = Some(name),
@@ -794,7 +819,7 @@ pub fn list(data_dir: &Path, root: Option<&Path>) -> Vec<SessionInfo> {
         let Ok(updated) = std::fs::metadata(&ledger).and_then(|m| m.modified()) else {
             continue;
         };
-        let Ok(scan) = scan_ledger(&ledger) else {
+        let Ok(scan) = scan_ledger(&ledger, wanted.as_deref()) else {
             continue;
         };
         let Some(primary_root) = scan.primary_root else {
