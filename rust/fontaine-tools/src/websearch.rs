@@ -249,7 +249,7 @@ fn command(
     command
 }
 
-/// Runs `argv` in its own session with no stdio, neither awaited nor killed with the runtime, so
+/// Runs `argv` in its own process group with no stdio, neither awaited nor killed with the runtime, so
 /// it finishes even when Fontaine exits first. The thread only reaps it; `Drop` never waits.
 fn spawn_detached(argv: &[String], env: &[(OsString, OsString)]) {
     let Some((program, args)) = argv.split_first() else {

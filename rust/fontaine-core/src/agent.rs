@@ -127,6 +127,9 @@ pub struct AgentSetup {
     pub origin: SessionOrigin,
     /// The process environment, for the variables MCP servers are given by name.
     pub env: EnvLookup,
+    /// Whether to say that web search is unavailable. A `/resume` or `/branch` builds another
+    /// runtime in the same process, so the launcher turns this off after the first.
+    pub warn_no_search: bool,
 }
 
 pub struct AgentRuntime {
@@ -199,7 +202,8 @@ pub(crate) struct Setup {
 /// One line when the main model has no way to search: no provider search for its account, no
 /// configured backend and no container runtime for the default one.
 fn warn_if_no_search(setup: &AgentSetup) {
-    if !native_search::provider_available(&setup.config, &setup.models)
+    if setup.warn_no_search
+        && !native_search::provider_available(&setup.config, &setup.models)
         && setup.config.websearch.backend.is_none()
         && setup.config.default_search_runtime(&*setup.env).is_none()
     {

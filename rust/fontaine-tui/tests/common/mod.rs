@@ -381,6 +381,7 @@ impl World {
             confirm_project_servers: self.confirm_servers,
             origin: fontaine_core::agent::SessionOrigin::Fresh,
             env,
+            warn_no_search: true,
         }
     }
 

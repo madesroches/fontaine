@@ -27,6 +27,7 @@ use fontaine_tui::theme::Theme;
 use rig_core::schemars::Schema;
 use std::io::IsTerminal;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
 use cli::{Cli, InputFormat, OutputFormat};
@@ -758,8 +759,11 @@ fn agent_setup(
         scheduling: !headless,
         origin: prep.origin,
         env: lookup,
+        warn_no_search: !NO_SEARCH_WARNED.swap(true, Ordering::Relaxed),
     }
 }
+
+static NO_SEARCH_WARNED: AtomicBool = AtomicBool::new(false);
 
 async fn run_headless(
     cli: &Cli,

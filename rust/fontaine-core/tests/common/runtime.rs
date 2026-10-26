@@ -197,6 +197,7 @@ pub fn build_with_env(
         confirm_project_servers: false,
         origin: SessionOrigin::Fresh,
         env,
+        warn_no_search: true,
     };
     AgentRuntime::new(setup).unwrap()
 }

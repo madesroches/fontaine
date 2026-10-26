@@ -208,7 +208,7 @@ gets the minimal environment plus `DOCKER_HOST`, `DOCKER_CONFIG`, `XDG_RUNTIME_D
 `CONTAINER_HOST` when they are set, so it can reach its daemon. The command is fixed by Fontaine; it
 is not configurable and never comes from a project file.
 
-Without a container runtime there is no default: Fontaine warns once at startup that web search
+Without a container runtime there is no default: Fontaine warns once per process, at startup, that web search
 is unavailable, unless the provider's own search applies or `backend` is set (to `"off"` as well).
 `backend = "off"` disables the tool and the warning.
 
