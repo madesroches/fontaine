@@ -33,7 +33,6 @@ pub mod view;
 
 use crate::config_panel::ConfigKey;
 use std::collections::VecDeque;
-use std::io::Stdout;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -50,9 +49,7 @@ use futures::future::BoxFuture;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
-use ratatui::crossterm::terminal::{
-    BeginSynchronizedUpdate, EndSynchronizedUpdate, disable_raw_mode, enable_raw_mode,
-};
+use ratatui::crossterm::terminal::{EndSynchronizedUpdate, disable_raw_mode, enable_raw_mode};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 
@@ -64,7 +61,7 @@ use model_picker::PickerPurpose;
 use provider_dialog::DialogKey;
 use recent::RecentModels;
 use reports::McpState;
-use screen::{Anchored, Screen};
+use screen::{Anchored, FrameWriter, Screen, Tty};
 use theme::Theme;
 
 /// The session a `/resume` or `/branch` asks the caller to start in place of this one.
@@ -336,7 +333,7 @@ pub async fn drive(
         .map_or(DriveOutcome::Exit, DriveOutcome::Switch))
 }
 
-type LiveScreen = Screen<Anchored<CrosstermBackend<Stdout>>>;
+type LiveScreen = Screen<Anchored<CrosstermBackend<FrameWriter>>>;
 
 /// Undoes what `run` set up, apart from the live area.
 pub(crate) fn restore_terminal() {
@@ -428,8 +425,8 @@ pub async fn run(
         None
     } else {
         match Screen::new(
-            Anchored::new(CrosstermBackend::new(std::io::stdout())),
-            || Anchored::new(CrosstermBackend::new(std::io::stdout())),
+            Anchored::new(CrosstermBackend::new(FrameWriter::stdout())),
+            || Anchored::new(CrosstermBackend::new(FrameWriter::discarding(Tty::std()))),
         ) {
             Ok(screen) => Some(Arc::new(Mutex::new(screen))),
             Err(e) => {
@@ -496,19 +493,12 @@ pub async fn run(
         move |app| {
             let rendered = match &screen {
                 Some(screen) => match screen.lock() {
-                    Ok(mut screen) => {
-                        // A rebuild clears rows before redrawing them; one frame hides that.
-                        let mut out = std::io::stdout();
-                        let _ = ratatui::crossterm::execute!(out, BeginSynchronizedUpdate);
-                        let ok = if app.flush {
-                            screen.commit_all(app)
-                        } else {
-                            screen.render(app)
-                        }
-                        .is_ok();
-                        let _ = ratatui::crossterm::execute!(out, EndSynchronizedUpdate);
-                        ok
+                    Ok(mut screen) => if app.flush {
+                        screen.commit_all(app)
+                    } else {
+                        screen.render(app)
                     }
+                    .is_ok(),
                     Err(_) => false,
                 },
                 None => linear.render(app).is_ok(),

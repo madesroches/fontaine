@@ -6,25 +6,21 @@
 use fontaine_core::config::PermissionMode;
 use fontaine_core::turn::SessionEvent;
 use fontaine_tui::app::App;
-use fontaine_tui::screen::{Anchored, Screen};
+use fontaine_tui::screen::{Anchored, FrameWriter, Screen, Tty};
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::terminal::{
-    BeginSynchronizedUpdate, EndSynchronizedUpdate, disable_raw_mode, enable_raw_mode,
-};
-use std::io::stdout;
+use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use std::time::Duration;
 
 fn main() {
     enable_raw_mode().expect("raw mode");
-    let mut screen = Screen::new(Anchored::new(CrosstermBackend::new(stdout())), || {
-        Anchored::new(CrosstermBackend::new(stdout()))
-    })
+    let mut screen = Screen::new(
+        Anchored::new(CrosstermBackend::new(FrameWriter::stdout())),
+        || Anchored::new(CrosstermBackend::new(FrameWriter::discarding(Tty::std()))),
+    )
     .expect("the terminal answers the cursor query");
     let mut app = App::new(PermissionMode::Manual, "model".into());
     let draw = |app: &mut App, screen: &mut Screen<_>| {
-        let _ = ratatui::crossterm::execute!(stdout(), BeginSynchronizedUpdate);
         screen.render(app).expect("render");
-        let _ = ratatui::crossterm::execute!(stdout(), EndSynchronizedUpdate);
         std::thread::sleep(Duration::from_millis(15));
     };
     draw(&mut app, &mut screen);
