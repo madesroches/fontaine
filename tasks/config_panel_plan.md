@@ -37,7 +37,7 @@ somewhere else.
   in key-routing precedence order. The closest list-overlay precedents are `AgentsPanel`
   (`agents_panel.rs`) and `ModelPicker` (`model_picker.rs`, which also has a linear/screen-reader
   body). `/theme` (`ui/commands/appearance.rs`) shows the live-switch-and-persist path, including
-  `finish_switch` for reporting a persist error.
+  `finish_switch` (`ui/commands/model.rs:153`) for reporting a persist error.
 - **Precedent decisions.** The master plan's Decisions make `/permissions`, `/status` and similar
   commands read-only notices (2026-10-24, #47). Rule editing stays in the config files
   (2026-10-21). `/autocompact` was folded into config only, "which belongs with `/config`"
@@ -52,7 +52,7 @@ Add a provenance map to `Config`:
 ```rust
 /// For each settings key a layer set, the layers that set it, highest precedence first.
 /// Tables add a segment; arrays (including arrays of tables such as `hooks.pre_tool_use`) and
-/// scalars are leaves; map sections yield one `section.<name>` path per entry.
+/// scalars are leaves, so `accounts.work.kind` and `env.HTTPS_PROXY` are leaves.
 pub sources: BTreeMap<String, Vec<Slot>>,
 ```
 
@@ -62,9 +62,10 @@ user, project and CLI layers to get theirs. After the merge it walks each loaded
 from the highest-precedence layer down and appends the layer's `Slot` to every leaf path it
 holds. Keeping all contributing slots answers both questions the panel asks: a scalar's winner is
 `sources[path][0]`, and a list key (deny, ask, env…) shows every scope that contributed. The walk
-is a standalone function over the raw TOML. Map sections (`accounts`, `mcp.servers`, `env`,
-`agents.types`, `telemetry.resource_attributes`) yield one `section.<name>` path per entry; other
-tables add a segment. It is generic, so `Config::apply` is unchanged and a new key needs no provenance
+is a standalone function over the raw TOML. It walks every table generically: tables add a
+segment, arrays and scalars are leaves. A map-section summary row (`accounts`, `mcp.servers`,
+`agents.types`, `env`, `telemetry.resource_attributes`) takes as its source label the union of
+slots over every `sources` key with prefix `<section>.`, highest precedence first. It is generic, so `Config::apply` is unchanged and a new key needs no provenance
 code. CLI flag rules (`--allowed-tools`, `--disallowed-tools`) are already folded into the CLI
 layer's `Settings` before the merge. A flags-only CLI layer has no raw table, so the walk starts it
 from an empty `toml::Table` and adds `permissions.allow` / `permissions.deny`, so they show up as
@@ -132,10 +133,6 @@ Editable rows (all other rows are read-only, with the footer naming the file to 
 Choice strings map to typed TOML values per row (`true`/`false` → bool, theme → string). Cycling
 onto `unset` emits `ConfigKey::Reset(path)`.
 
-Permission, guardian-tuning, auto-mode, account, network, telemetry, env, hook and MCP keys stay
-read-only. Those keys loosen or redirect the security pipeline or send data off the machine, so
-changing them takes a deliberate edit of the file (Decisions).
-
 An in-crate unit test (moving `schema_nodes` from `config_scope`'s tests into a shared
 `#[cfg(test)]` helper; `Config::defaults` becomes `pub(crate)` if needed) fails when a `Settings`
 leaf, or a map/section node, has no catalog row.
@@ -185,10 +182,14 @@ user file fail to load (e.g. `autocompact_window = 0`) is refused with the confi
     launch"; NextLaunch rows: "saved, but `<scope>` sets this key and wins, so the value stays
     `<value>`";
   - saved; applies from the next launch (row shows `pending`);
+  - a model pick made through a picker reports the same way, and the picker completion path
+    (so `/model` and `/guardian-model` too) appends "`<scope>` sets this key and wins from the next
+    launch" when `runtime.config.sources[path][0]` is not `Slot::User`;
   - not saved: the error chain (`fontaine_tools::error_chain::chain`), or "there is no user
     settings file" when `user_config` is `None`.
-- `App.config: Option<ConfigPanel>`, routed in `App::handle_key` and drawn in `view::overlay`
-  next to the agents panel. It sits after the model picker and provider dialog, so a picker opened
+- `App.config: Option<ConfigPanel>`, routed in `App::handle_key`, counted in `App::covered()`
+  (`app.rs:466-475`, the any-overlay-open check gating paste, slash menu, @-completion, input
+  dimming and Ctrl+C), and drawn in `view::overlay` next to the agents panel. It sits after the model picker and provider dialog, so a picker opened
   from the panel takes the keys. A `body_as(linear)` variant renders one plain line per row for the
   screen-reader renderer, like `ModelPicker`.
 - `Command::Config` in `BUILTINS` (`/config`, alias `/settings`, as in Claude Code), no
@@ -216,10 +217,13 @@ key ─► ConfigPanel::handle_key ─► ConfigKey::Save{path,value}
    `schema_nodes` test helper and the coverage test. Export it from `lib.rs`.
 4. **`config_panel.rs`** in `fontaine-tui`: state, filtering, key handling, body/footer/linear
    body. Unit tests in the file.
-5. **Wiring**: `Command::Config` + `BUILTINS` row; `App.config`, key routing, `view::overlay`
-   branch; `Ui::config` and the `ConfigKey` handler in a new `ui/commands/config.rs`, reusing
-   `theme`'s switch (factor the "apply theme" part out of `Ui::theme`) and the picker-opening
-   code from `Ui::model` / `Ui::guardian_model`.
+5. **Wiring**: `Command::Config` + `BUILTINS` row; `App.config`, key routing, `App::covered()`,
+   `view::overlay` branch; `Ui::config` and the `ConfigKey` handler in a new
+   `ui/commands/config.rs`, reusing `theme`'s switch (factor the "apply theme" part out of
+   `Ui::theme`; the helper only switches `app.theme`, with no persistence or reporting, so `/theme`
+   keeps calling `finish_switch` and the panel sets `panel.status`) and the picker-opening code
+   from `Ui::model` / `Ui::guardian_model`. The picker completion path appends the
+   higher-scope-override sentence from §4.
 6. **Docs** (below), then `CHANGELOG.md`, the parity matrix row, and the master plan Decisions.
 
 ## Files to Modify
@@ -235,7 +239,7 @@ key ─► ConfigPanel::handle_key ─► ConfigKey::Save{path,value}
 - `rust/fontaine-tui/src/ui/mod.rs`, `ui/commands/mod.rs`, `ui/commands/config.rs` (new),
   `ui/commands/appearance.rs`, `ui/commands/model.rs`
 - `rust/fontaine-tui/tests/tui.rs`
-- `docs/tui.md`, `docs/configuration.md`
+- `docs/tui.md`, `docs/configuration.md`, `docs/index.md`
 - `CHANGELOG.md`, `research/research-claude-code-parity.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
@@ -247,12 +251,6 @@ key ─► ConfigPanel::handle_key ─► ConfigKey::Save{path,value}
   catalog but cannot show defaults or the merged result of lists/maps. A catalog with an
   `effective` renderer over `Config` shows what is actually running, and the coverage test keeps
   it complete, as `RULES`' test does.
-- **Re-reading files on open vs. the startup `Config`.** The panel shows the running session's
-  values. It marks values saved for the next launch as `pending`, so it never shows a value that
-  isn't actually running as if it were.
-- **Narrow edit set vs. every key.** Claude Code's menu exposes a curated list of preferences,
-  not every setting. Fontaine's settings include the guardian and permission policy, so the
-  panel's edit set is limited to preferences that cannot loosen a decision.
 
 ## Decisions
 
@@ -281,8 +279,9 @@ key ─► ConfigPanel::handle_key ─► ConfigKey::Save{path,value}
   section covering keys, the source column, which keys are editable, overridden-by-scope and
   next-launch behavior.
 - `docs/configuration.md`: one paragraph saying the TUI's `/config` shows each key's effective
-  value and source and edits a few preferences in the user file. Link from the scope-stack
+  value and source and edits a few preferences in the user file. Link from the "The settings scope stack"
   section.
+- `docs/index.md`: update its slash-command summary (lines ~27-31) to mention `/config`.
 - `CHANGELOG.md` entry. `research/research-claude-code-parity.md:280` → `partial`/`done` with
   the deviations. Master plan Decisions get the lines above.
 
