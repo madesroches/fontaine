@@ -314,6 +314,9 @@ All notable changes are recorded here. The format follows
 - Research
   - A docs-based study of Claude on Microsoft Foundry and Databricks Model Serving, with a
     central list of model-specific support and follow-ups #165–#170 (#157).
+  - A study of the oh-my-pi harness, with experiments in Docker behind a recording proxy and a tmux
+    comparison of its terminal UI with Fontaine's: what lets the model iterate, what its safety posture
+    gets wrong, and the follow-ups (#213).
 - Distribution
   - Release binaries for Linux, macOS and Windows built with `pg2` by cargo-dist on a `vX.Y.Z`
     tag, each archive carrying the license, readme and changelog; `cargo install --git

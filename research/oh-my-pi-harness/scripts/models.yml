@@ -1,0 +1,14 @@
+providers:
+  go:
+    baseUrl: http://fwd:18090/v1
+    apiKey: OMP_STUDY_KEY
+    api: openai-completions
+    headers:
+      x-opencode-session: omp-study-session
+    models:
+      - id: deepseek-v4.1-flash
+        name: DeepSeek V4.1 Flash (via gateway)
+        reasoning: true
+        input: [text]
+        contextWindow: 128000
+        maxTokens: 16384

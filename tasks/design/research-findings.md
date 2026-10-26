@@ -174,6 +174,27 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   reproduce through the Go gateway on either wire; cache behaviour and the usage fields were
   measured; the rest needs a direct key (#164).
 
+### oh-my-pi (omp) — a TypeScript/Rust coding-agent harness (full study: `research-oh-my-pi-harness.md`)
+
+- **What it is**: `can1357/oh-my-pi`, MIT, a fork of pi-mono, Bun plus a Rust N-API addon, pinned at `dcafcef6`. It was built, run in
+  Docker against the opencode Go gateway behind a recording proxy on an internal network, and its TUI was driven under tmux next to
+  Fontaine's. The npm prebuilt addon is older than the checkout and does not load; the addon was built from source.
+- **What lets the model iterate** (measured): diagnostics from a language server delivered as a late notice after a write; an
+  identical-call redirect (three identical failing calls (threshold lowered from the default 5), then a stop-and-diagnose); a deadline that promotes a command to a background
+  job with a wake-up; pruned results left as pointers the model pages back; a stale-edit recovery message. A judge-based
+  unexpected-stop check cost a model request per turn and never fired.
+- **Not copied**: `yolo` as the default approval mode, project config that can loosen approval, everything a project defines loading
+  with no trust prompt, in every mode (extensions, hooks including `.claude/hooks`, stdio MCP servers, rules), subagents that are always `yolo` (a
+  parent in `always-ask` spawned a child that ran `bash`), regexes on command text as the safety check, a model-liftable tool deadline
+  (`timeout: 0`), prompt-only plan mode (shell ran in plan mode), and project rules that interrupt the model with system authority.
+- **Claude Code** (one `claude -p`): project hooks, project MCP servers and project allow rules also take effect in `-p`; Fontaine's
+  tighten-only project scope is stricter than both; its workspace trust prompt gates project executables in the TUI only, and
+  headless `-p` loads them like Claude Code.
+- **Edit format**: hashline (file-version tags) worked and recovered a stale edit, but four edit tasks did not separate it from
+  text-anchored edits (n=1); not adopted.
+- **Terminal UI**: framed tool cards with output panes and edit diffs, a segmented status line, an approval prompt that ignores Enter for
+  500 ms (Fontaine already has a 400 ms answer grace period); follow-ups in the research doc.
+
 ### Ecosystem / dependencies — reuse-first (user requirement)
 
 - **rig** (MIT, v0.45.0, Oct 2026, 0xPlaygrounds) — the Rust LLM framework, now split into exactly

@@ -1,0 +1,11 @@
+== e1-ok
+{"timestamp":"2026-10-26T17:25:47.207+00:00","level":"warn","pid":7,"message":"model discovery failed for provider","provider":"ollama","url":"http://127.0.0.1:11434/","error":"ECONNREFUSED: Unable to connect. Is the computer able to access the url?"}
+{"timestamp":"2026-10-26T17:25:47.209+00:00","level":"warn","pid":7,"message":"model discovery failed for provider","provider":"lm-studio","url":"http://127.0.0.1:1234/v1","error":"ECONNREFUSED: Unable to connect. Is the computer able to access the url?"}
+{"timestamp":"2026-10-26T17:25:47.431+00:00","level":"warn","pid":7,"message":"model discovery failed for provider","provider":"llama.cpp","url":"http://127.0.0.1:8080/","error":"ECONNREFUSED: Unable to connect. Is the computer able to access the url?"}
+{"timestamp":"2026-10-26T17:26:08.398+00:00","level":"warn","pid":7,"message":"model discovery failed for provider","provider":"ollama","url":"http://127.0.0.1:11434/","error":"ECONNREFUSED: Unable to connect. Is the computer able to access the url?"}
+{"timestamp":"2026-10-26T17:26:08.400+00:00","level":"warn","pid":7,"message":"model discovery failed for provider","provider":"lm-studio","url":"http://127.0.0.1:1234/v1","error":"ECONNREFUSED: Unable to connect. Is the computer able to access the url?"}
+{"timestamp":"2026-10-26T17:26:08.400+00:00","level":"warn","pid":7,"message":"model discovery failed for provider","provider":"llama.cpp","url":"http://127.0.0.1:8080/","error":"ECONNREFUSED: Unable to connect. Is the computer able to access the url?"}
+== e1-idle
+{"timestamp":"2026-10-26T17:27:07.710+00:00","level":"warn","pid":19,"message":"model discovery failed for provider","provider":"ollama","url":"http://127.0.0.1:11434/","error":"ECONNREFUSED: Unable to connect. Is the computer able to access the url?"}
+{"timestamp":"2026-10-26T17:27:07.711+00:00","level":"warn","pid":19,"message":"model discovery failed for provider","provider":"lm-studio","url":"http://127.0.0.1:1234/v1","error":"ECONNREFUSED: Unable to connect. Is the computer able to access the url?"}
+{"timestamp":"2026-10-26T17:27:07.937+00:00","level":"warn","pid":19,"message":"model discovery failed for provider","provider":"llama.cpp","url":"http://127.0.0.1:8080/","error":"ECONNREFUSED: Unable to connect. Is the computer able to access the url?"}

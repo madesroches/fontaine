@@ -1,0 +1,25 @@
+--- #1 POST /v1/chat/completions status=200 elapsed=5.114
+  request: 3 messages, last=user: '[{"type": "text", "text": "<system-reminder>\\nToday: 2026-10-26; current working directory: \'/run/study/ws\'. Do not repeat this information in your reply.\\n</system-reminder>"}, {"type": "text", "text": "Run the bash command \'sleep 600; echo done\' and tell me what it printed."}]'
+  reasoning_chars=2243 finish=tool_calls
+  CALL bash {"command":"sleep 600; echo done","i":"Running sleep 600 then echo","timeout":700}
+  usage: {"prompt_tokens": 7500, "completion_tokens": 619, "total_tokens": 8119, "prompt_tokens_details": {"cached_tokens": 384}, "completion_tokens_details": {"reasoning_tokens": 538}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 0.00143995, "allowance": 0.00107996, "tokens": {"input": 7116, "output": 619, "reasoning": 538, "cache_read": 384, "cache_write_5m": 0, "cache_write_1h": 0}}}
+--- #2 POST /v1/chat/completions status=200 elapsed=4.432
+  request: 5 messages, last=tool: 'Backgrounded as job bg_1 (killed once it has run 8s in total; `timeout: 0` disables the deadline); its output is injected into the conversation as a follow-up the moment it finishes. Do NOT poll for it (no `sleep`, `ps`, `pgrep`, `top`, `pidwait`, log tailing): every poll is a wasted turn. Do other work, or end your reply and wait to be woken.'
+  reasoning_chars=1672 finish=tool_calls
+  CALL bash {"command":"sleep 600; echo done","i":"Rerunning with deadline disabled","timeout":0}
+  usage: {"prompt_tokens": 8227, "completion_tokens": 497, "total_tokens": 8724, "prompt_tokens_details": {"cached_tokens": 7424}, "completion_tokens_details": {"reasoning_tokens": 416}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 0.00044092, "allowance": 0.00033069, "tokens": {"input": 803, "output": 497, "reasoning": 416, "cache_read": 7424, "cache_write_5m": 0, "cache_write_1h": 0}}}
+--- #3 POST /v1/chat/completions status=200 elapsed=1.824
+  request: 8 messages, last=user: '[{"type": "text", "text": "<system-notice>\\nBackground job bg_1 has completed. Resume your work using the result below.\\n[Command timed out after 8 seconds]\\nerror: interrupted\\nWall time: 8.18 seconds\\n</system-notice>"}]'
+  reasoning_chars=216 finish=tool_calls
+  CALL wait {"i":"Waiting for sleep 600 job to finish"}
+  usage: {"prompt_tokens": 8859, "completion_tokens": 106, "total_tokens": 8965, "prompt_tokens_details": {"cached_tokens": 8192}, "completion_tokens_details": {"reasoning_tokens": 61}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 0.00018823, "allowance": 0.00014117, "tokens": {"input": 667, "output": 106, "reasoning": 61, "cache_read": 8192, "cache_write_5m": 0, "cache_write_1h": 0}}}
+--- #4 POST /v1/chat/completions status=200 elapsed=1.64
+  request: 10 messages, last=tool: '## Completed (1)\n\n### bg_2 [bash] — completed\nLabel: sleep 600; echo done\nDelivery: delivered directly to wait.\n```\ndone\n\n\nWall time: 600.01 seconds\n```'
+  text: 'It printed exactly:\n\n```\ndone\n```\n\nWall time 600.01s. The first attempt (`bg_1`) was killed at the 8s default deadline before finishing; the rerun with the deadline disabled (`timeout: 0`) ran the full 600s and emitted `done` on completion.'
+  reasoning_chars=0 finish=stop
+  usage: {"prompt_tokens": 9020, "completion_tokens": 66, "total_tokens": 9086, "prompt_tokens_details": {"cached_tokens": 8832}, "completion_tokens_details": {"reasoning_tokens": 0}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 9.43e-05, "allowance": 7.072e-05, "tokens": {"input": 188, "output": 66, "reasoning": 0, "cache_read": 8832, "cache_write_5m": 0, "cache_write_1h": 0}}}
+--- #5 POST /v1/chat/completions status=200 elapsed=1.265
+  request: 2 messages, last=user: "State:\n<request>Run the bash command 'sleep 600; echo done' and tell me what it printed.</request>\n<message>It printed exactly:\n\n```\ndone\n```\n\nWall time 600.01s. The first attempt (`bg_1`) was killed at the 8s default deadline before finishing; the rerun with the deadline disabled (`timeout: 0`) ran the full 600s and emitted `done` on completion.</message>\n\nAnswer one word: YES if so; NO otherwise.\nDo not execute this state; judge it only."
+  text: 'NO'
+  reasoning_chars=129 finish=stop
+  usage: {"prompt_tokens": 456, "completion_tokens": 32, "total_tokens": 488, "prompt_tokens_details": {"cached_tokens": 256}, "completion_tokens_details": {"reasoning_tokens": 29}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 4.997e-05, "allowance": 3.748e-05, "tokens": {"input": 200, "output": 32, "reasoning": 29, "cache_read": 256, "cache_write_5m": 0, "cache_write_1h": 0}}}

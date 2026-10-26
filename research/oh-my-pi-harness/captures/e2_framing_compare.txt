@@ -1,0 +1,10 @@
+omp: params={'model': 'deepseek-v4.1-flash', 'stream': True, 'stream_options': {'include_usage': True}, 'store': False, 'max_completion_tokens': 16384, 'reasoning_effort': 'high'}
+  tools=['read', 'bash', 'edit', 'eval', 'glob', 'grep', 'task', 'wait', 'todo', 'web_search', 'write'] tools_bytes=17754
+  messages=[('system', 10166), ('system', 512), ('user', 363)]
+  headers={'accept': 'text/event-stream', 'content-type': 'application/json', 'user-agent': 'omp/18.13.0', 'x-stainless-timeout': '300', 'x-opencode-session': 'omp-study-session', 'connection': 'keep-alive', 'host': 'fwd:18090', 'accept-encoding': 'gzip, deflate, br, zstd'}
+fontaine: params={'model': 'deepseek-v4.1-flash', 'stream_options': {'include_usage': True}, 'stream': True}
+  tools=['read', 'ls', 'glob', 'grep', 'write', 'edit', 'shell', 'webfetch', 'agent', 'skill', 'send_message', 'ask_user_question', 'todo_write'] tools_bytes=12195
+  messages=[('system', 13494), ('user', 158)]
+  headers={'content-type': 'application/json', 'accept': 'text/event-stream', 'user-agent': 'fontaine/0.1.0 (+https://github.com/madesroches/fontaine)', 'x-opencode-session': 'e8e86c79-56d5-4a98-a322-d931707772f6', 'host': '172.17.0.1:18091'}
+omp: first-request usage={"prompt_tokens": 7515, "completion_tokens": 57, "total_tokens": 7572, "prompt_tokens_details": {"cached_tokens": 7424}, "completion_tokens_details": {"reasoning_tokens": 0}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 7.012e-05, "allowance": 5.259e-05, "tokens": {"input": 91, "output": 57, "reasoning": 0, "cache_read": 7424, "cache_write_5m": 0, "cache_write_1h": 0}}}
+fontaine: first-request usage={"prompt_tokens": 6556, "completion_tokens": 44, "total_tokens": 6600, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens_details": {"reasoning_tokens": 0}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 0.0010098, "allowance": 0.00075735, "tokens": {"input": 6556, "output": 44, "reasoning": 0, "cache_read": 0, "cache_write_5m": 0, "cache_write_1h": 0}}}

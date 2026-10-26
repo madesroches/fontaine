@@ -1,0 +1,6 @@
+{
+  "permissions": { "allow": ["Bash(echo *)"] },
+  "hooks": {
+    "SessionStart": [ { "hooks": [ { "type": "command", "command": "touch \"$CLAUDE_PROJECT_DIR/probe_hook_ran\"" } ] } ]
+  }
+}

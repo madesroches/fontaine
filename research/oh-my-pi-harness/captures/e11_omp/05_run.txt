@@ -1,0 +1,40 @@
+                                              Tip: Please use nerdfont 😭.
+
+
+
+ Use the todo tool to plan: investigate, fix, verify. Fix the failing unit test in this directory (run python3 -m
+ unittest -q) and make sure it passes.
+
+
+ I'll start by exploring the workspace and running the failing tests.
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ $ ls -la && python3 -m unittest -q 2>&1 | tail -40                                                                   │
+├─── Output ───────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ … (9 earlier lines, showing 10 of 19) ⟦Ctrl+O: Expand⟧                                                               │
+│ ----------------------------------------------------------------------                                               │
+│ Traceback (most recent call last):                                                                                   │
+│   File "/run/study/ws/test_stats.py", line 14, in test_median_even                                                   │
+│     self.assertEqual(median([4, 1, 3, 2]), 2.5)                                                                      │
+│ AssertionError: 3 != 2.5                                                                                             │
+│                                                                                                                      │
+│ ----------------------------------------------------------------------                                               │
+│ Ran 4 tests in 0.001s                                                                                                │
+│                                                                                                                      │
+│ FAILED (failures=1)                                                                                                  │
+╰─── Wall: 0.12s · Timeout: 300s ──────────────────────────────────────────────────────────────────────────────────────╯
+
+ • Read (2)
+   ├─ stats.py
+   └─ test_stats.py
+
+ Fix median for even-length sequences: average two middle values. Note Python 3 division produces float 2.5. For odd
+ returns 2 (int) — test expects 2, equality works with 2.0 as well.
+
+ Let me plan with todo, then edit and verify.
+
+⏳ Todo
+
+  ⎋ Reading tests                                                                    🐍 UNIT: Fix failing unittest suite
+ ⠧ 11s > ◒ DeepSeek V4.1 Flash (via gateway) > 📁 /run/study/ws > ⑂ master > $0.00 ▶──7%───────────────────╎──┃────128K─
+╰─

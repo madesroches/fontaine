@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+⚠ Guardian is running on your main model `go/deepseek-v4.1-flash`
+  No benchmark-validated guardian model is available on your accounts — set `[guardian] model` or run /guardian-model
+┌ resume ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│sessions started in this directory                                                                                    │
+│    Use the todo tool to plan: investigate, fix, verify. Fix the failing unit test in this directory (ru…  4m ago     │
+│filter: ▏                                                                                                             │
+│type to filter · ↑/↓ select · Enter resume · Esc cancel                                                               │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ message · Enter sends · Alt+Enter new line ──────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ manual · go/deepseek-v4.1-flash · shift+tab mode · /add-dir · /denied · /model · ctrl+t agents · /exit

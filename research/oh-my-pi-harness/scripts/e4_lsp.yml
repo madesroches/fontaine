@@ -1,0 +1,6 @@
+modelRoles:
+  default: go/deepseek-v4.1-flash
+  smol: go/deepseek-v4.1-flash
+lsp:
+  diagnosticsOnEdit: true
+  lazy: false

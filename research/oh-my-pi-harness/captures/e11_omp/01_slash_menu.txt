@@ -1,0 +1,22 @@
+
+                                            ████████████
+                                               ██  ██       ▄▀▀▄ █▀▄▀▄ █▀▀▄
+                                               ██  ██       ▀▄▄▀ █ █ █ █▄▄▀
+                                               ▒▒  ██                  █
+                                                   ██       v18.13.0
+
+                                              Tip: Please use nerdfont 😭.
+
+
+ π > ◒ DeepSeek V4.1 Flash (via gateway) > 📁 /run/study/ws > ⑂ master ▶──6%────────────────────────────╎────┃─────128K─
+╰─ /
+❯ 🛡  security          Plan, run, inspect, import, and compare OMP-native security scans                               █
+  🎛  settings          Open settings menu                                                                              │
+  ⚙  setup             Open provider setup                                                                             │
+  🗺  plan              Plan: off                                                                                       │
+  🗺  plan-review       Plan review: plan mode inactive                                                                 │
+  ∿  vibe              Vibe: off                                                                                       │
+  🎯 goal              Goal: off                                                                                       │
+  🧭 guided-goal       Have the agent interview you in chat, then set up goal mode                                     │
+  ↻  loop              Loop: off                                                                                       │
+  📥 queue             Queue a message for after the agent yields                                                      │

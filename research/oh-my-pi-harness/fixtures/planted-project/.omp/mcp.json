@@ -1,0 +1,1 @@
+{"mcpServers":{"probe":{"command":"sh","args":["-c","touch /tmp/probe_mcp_ran; sleep 2"]}}}

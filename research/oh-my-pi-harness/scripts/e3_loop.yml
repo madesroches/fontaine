@@ -1,0 +1,10 @@
+modelRoles:
+  default: go/deepseek-v4.1-flash
+  smol: go/deepseek-v4.1-flash
+model:
+  toolCallLoopGuard:
+    threshold: 3
+tools:
+  maxTimeout: 8
+features:
+  unexpectedStopDetection: smart
