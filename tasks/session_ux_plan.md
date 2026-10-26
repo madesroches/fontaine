@@ -51,8 +51,9 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
   `Resumed` record whose `how` starts with `fork`; the copy's id is its directory name, not the
   `SessionStart` id copied from the source). `Session::fork` copies the whole tree, so `list` takes
   the id from the directory name and reads the last `SessionNamed` and `Resumed` records as the
-  copy's own; a copy that has never been started has none of its own yet, so it shows no branch
-  marker until it is opened. It reads each ledger once, tolerating a torn
+  copy's own. The TUI fork step appends the copy's own `Resumed` (`how` `fork (branch)`) and, when
+  named, `SessionNamed` at fork time, so neither `list` nor `resolve` ever sees an inherited record
+  as the copy's. It reads each ledger once, tolerating a torn
   or unreadable one by skipping it. `latest_for_root` becomes `list(.., Some(root))` first-by-
   recency, so there is one scan, not two.
 - `session::resolve(data_dir, root, text) -> Result<String, ResolveError>` for `--resume` and
@@ -67,7 +68,8 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
 ### CLI
 
 - `--name`/`-n <name>`: names the session being started, including the copy made by
-  `--fork-session`. With plain `--resume`/`--continue` (no fork) it renames the reopened session
+  `--fork-session`; `open_session` applies it on every path that returns a session (fresh,
+  `--session-id`, and `--continue` falling through to a fresh session). With plain `--resume`/`--continue` (no fork) it renames the reopened session
   (appends `SessionNamed`); `check_session_flags` needs no new rule for it. Invalid names are a
   usage error. Every fork writes its own `SessionNamed` for the copy, since the copied ledger
   carries the source's: the given name, else the source's name plus ` (branch)` when the source has
@@ -88,30 +90,37 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
   picker. Only between turns.
 - `/branch [name]` (alias `/fork`): `Session::fork` of the live session under a fresh id (named as
   for `--fork-session`), then switches into the copy. The original is left as it was. Only between
-  turns, like `/resume`, with the scheduler quiet during the copy. Refused while a subagent runs,
-  as `/clear` is, because the copy would not carry the subagent's in-flight state.
+  turns, like `/resume`; the fork runs synchronously on the TUI task. Refused under the same two
+  conditions as `/clear` (`agents.any_running() || agents.has_notifications(ROOT_AGENT)`), because the copy would not carry the subagent's in-flight state.
 - `/rename [name]`: appends `SessionNamed`. Without an argument the name is derived
   deterministically from the first entry of `ledger.view().user_messages` (first line, truncated
   to 60 chars); with none to
   derive from it is an error. No model call.
 - `/export [path]`: writes the conversation as Markdown. The text comes from the rig-memory
   conversation log (the same load `Session::clear` does), so compaction summaries appear as the
-  summaries they are. Tool calls, read from the conversation log, are one line each
+  summaries they are: the exporter reads `conversation.entries()` (author and asides) and labels
+  a user entry authored by `rig_memory::summary_author` with a COMPACTED aside as a compaction
+  summary, and uses a wildcard arm for the `#[non_exhaustive]` `AssistantContent`. After `/clear`
+  the export covers only the post-clear conversation. Tool calls, read from the conversation log, are one line each
   (`adjudication::action_summary(tool, &Value)` supplies the text);
   tool results are omitted except their length. Default path is `fontaine-<id8>.md` in the launch
   directory; a relative path resolves against it. The write is `create_new` and owner-only, since
   a transcript may hold secrets: an existing file is an error rather than an overwrite. The path is
   user-typed, so it is not a model tool call and passes no scope validator; the command is not
   reachable by the model.
-- Switching: `fontaine_tui::drive` returns an outcome instead of `()`: `Exit` or
-  `Switch(SessionTarget { source, origin, name })`, where `origin` is `None` for `/resume` and
-  `Some { source: <original id>, how: "fork (branch)" }` for `/branch`. The TUI resolves and
-  validates the target before returning `Switch`, and for `/branch` performs the `Session::fork`
-  itself (`source` is then the copy's id), so a failure is shown in the live session, which is
-  untouched. After `Switch` the old run is torn down (agents killed, terminal restored, grants,
-  mode and transcript gone), so the loop only opens an already-validated session with
-  `Session::open`, using `SessionOrigin::Continued` from `origin` (else from `how` = `resume`), so
-  `record_session_start` writes the copy's own `Resumed` when it starts. The loop sits in `run` (`fontaine/src/lib.rs`) around the runtime block, because `run`
+- Switching: `fontaine_tui::drive` returns `Result<DriveOutcome, String>` instead of `()`, where
+  `DriveOutcome` is `Exit` or `Switch(SessionTarget { source, record_resume })`; the result is
+  propagated through `fontaine_tui::run` and `run_interactive`. `record_resume` is true for
+  `/resume` and false for `/branch`. The TUI resolves and validates the target before returning
+  `Switch`, and for `/branch` performs the `Session::fork` itself (`source` is then the copy's id)
+  and appends the copy's `Resumed` and `SessionNamed` there, so a failure is shown in the live
+  session, which is untouched. After `Switch` the old run is torn down (agents killed, terminal
+  restored, grants, mode and transcript gone), so the loop only opens an already-validated session
+  with `Session::open`; `record_session_start` writes `Resumed` (`how` = `resume`) only when
+  `record_resume` is true, so the copy never gets a second one. Each iteration re-runs
+  `prepare_session` with the derived `Cli`, rebuilds the `fontaine.session` span, and redoes
+  `models::resolve`, the scanner start and `agent_setup`; the telemetry guard, config load and
+  trust decision stay outside the loop. The loop sits in `run` (`fontaine/src/lib.rs`) around the runtime block, because `run`
   owns the telemetry guard, the config load and the trust prompt, and `export.finish` is called
   once; the trust decision and telemetry carry across iterations and each iteration enters a new
   `fontaine.session` span with `start_type` `resume`. `prepare_session`/`open_session` read
@@ -123,7 +132,7 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
 
 ```
 /resume ─▶ picker ─▶ Enter ─▶ drive returns Switch(src) ─▶ run loop ─▶ Session::open(src) ─▶ drive
-/branch ───────────────────▶ Session::fork(src,new) ─▶ drive returns Switch(new, origin) ─▶ Session::open(new) ─▶ drive
+/branch ───────────────────▶ Session::fork(src,new) ─▶ drive returns Switch(new) ─▶ Session::open(new) ─▶ drive
 ```
 
 ## Implementation Steps
@@ -143,7 +152,7 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
    available yet" message in `ui/commands/context.rs`.
 5. **Switch loop**: `drive` returns the outcome (callers in `fontaine-tui/tests/common/mod.rs`
    change with it); `run` in `lib.rs` loops around the runtime block with a derived session
-   selection per iteration, as in Design.
+   selection per iteration, as in Design. `World::run` and `run_linear` return `drive`'s outcome.
 6. **Docs and decisions** (below).
 
 ## Files to Modify
@@ -154,8 +163,9 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
   ui/commands/*.rs}`, new `resume_picker.rs`
 - `rust/fontaine/tests/resume.rs`, `rust/fontaine-core` unit tests, `rust/fontaine-tui` tests
   including the shared rig `rust/fontaine-tui/tests/common/mod.rs`
-- `docs/tui.md`, `docs/headless.md`, `docs/configuration.md`, `docs/telemetry.md`,
-  `docs/architecture.md`, `tasks/design/sessions.md`,
+- `docs/tui.md` (~91, ~485, ~507-526), `docs/headless.md` (~36-39, ~75), `docs/index.md` (~29),
+  `docs/configuration.md`, `docs/telemetry.md`, `docs/architecture.md`,
+  `tasks/design/sessions.md`, `tasks/design/observability.md` (~56),
   `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Trade-offs
@@ -174,7 +184,7 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
 - Picker and `--continue` scope: the current workspace root only, because that is the existing
   `--continue` scope and avoids showing sessions from unrelated projects. Claude Code's all-projects
   toggle is not added.
-- 2026-10-26: `/branch` forks in the TUI but the copy's `Resumed` (`fork (branch)`) is written by `record_session_start` when the loop opens it as `SessionOrigin::Continued`; `SessionTarget` carries that origin.
+- 2026-10-26: `/branch` forks in the TUI, which also writes the copy's `Resumed` (`fork (branch)`) and `SessionNamed` at fork time; the loop's `record_session_start` skips `Resumed` for it (`SessionTarget.record_resume` is false).
 - `/branch` carries no grants and starts in the default mode, like every resume/fork.
 - `/clear` still refuses a name for the old conversation; with `/resume` available its docs point
   there instead of saying "not available yet". This plan supersedes the master plan's 2026-10-24
@@ -215,7 +225,8 @@ Integration (`fontaine -p`, `fontaine/tests/resume.rs`): `--name` then `--resume
 reopens it; `--fork-session --name` names the copy only; ambiguous name exits 2 and lists ids;
 bare `--resume` under `-p` is a usage error. The TUI switch loop is tested with the existing
 `fontaine-tui` test rig by driving `/branch` and asserting the returned `Switch` outcome and the
-copy on disk.
+copy on disk; the rig (`World::run`, `run_linear` in `fontaine-tui/tests/common/mod.rs`) returns
+`drive`'s outcome and the test reads the copy's id from it.
 
 ## Manual Verification
 
