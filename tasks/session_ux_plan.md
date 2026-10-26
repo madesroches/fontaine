@@ -47,10 +47,12 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
 - `session::list(data_dir, root: Option<&Path>) -> Vec<SessionInfo>`; `SessionInfo` holds `id`,
   `name: Option<String>`, `first_prompt: Option<String>` (the first entry of `ledger.view().user_messages`, the
   same source `/rename` derives from, so it is the first message since the last clear; truncated
-  for display), `updated` (ledger mtime), `primary_root`, `branched_from: Option<String>` (from the copy's own last
-  `Resumed` record whose `how` starts with `fork`). `Session::fork` copies the whole tree, so `list`
-  takes the first `SessionStart` and ignores `Resumed` and `SessionNamed` records inherited from the
-  source. It reads each ledger once, tolerating a torn
+  for display), `updated` (ledger mtime), `primary_root`, `branched_from: Option<String>` (the `source` of the last
+  `Resumed` record whose `how` starts with `fork`; the copy's id is its directory name, not the
+  `SessionStart` id copied from the source). `Session::fork` copies the whole tree, so `list` takes
+  the id from the directory name and reads the last `SessionNamed` and `Resumed` records as the
+  copy's own; a copy that has never been started has none of its own yet, so it shows no branch
+  marker until it is opened. It reads each ledger once, tolerating a torn
   or unreadable one by skipping it. `latest_for_root` becomes `list(.., Some(root))` first-by-
   recency, so there is one scan, not two.
 - `session::resolve(data_dir, root, text) -> Result<String, ResolveError>` for `--resume` and
@@ -102,11 +104,14 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
   user-typed, so it is not a model tool call and passes no scope validator; the command is not
   reachable by the model.
 - Switching: `fontaine_tui::drive` returns an outcome instead of `()`: `Exit` or
-  `Switch(SessionTarget { source, fork, name })`. The TUI resolves and validates the target before
-  returning `Switch`, and for `/branch` performs the `Session::fork` itself, so a failure is shown
-  in the live session, which is untouched. After `Switch` the old run is torn down (agents killed,
-  terminal restored, grants, mode and transcript gone), so the loop only opens an already-validated
-  session. The loop sits in `run` (`fontaine/src/lib.rs`) around the runtime block, because `run`
+  `Switch(SessionTarget { source, origin, name })`, where `origin` is `None` for `/resume` and
+  `Some { source: <original id>, how: "fork (branch)" }` for `/branch`. The TUI resolves and
+  validates the target before returning `Switch`, and for `/branch` performs the `Session::fork`
+  itself (`source` is then the copy's id), so a failure is shown in the live session, which is
+  untouched. After `Switch` the old run is torn down (agents killed, terminal restored, grants,
+  mode and transcript gone), so the loop only opens an already-validated session with
+  `Session::open`, using `SessionOrigin::Continued` from `origin` (else from `how` = `resume`), so
+  `record_session_start` writes the copy's own `Resumed` when it starts. The loop sits in `run` (`fontaine/src/lib.rs`) around the runtime block, because `run`
   owns the telemetry guard, the config load and the trust prompt, and `export.finish` is called
   once; the trust decision and telemetry carry across iterations and each iteration enters a new
   `fontaine.session` span with `start_type` `resume`. `prepare_session`/`open_session` read
@@ -118,7 +123,7 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
 
 ```
 /resume ─▶ picker ─▶ Enter ─▶ drive returns Switch(src) ─▶ run loop ─▶ Session::open(src) ─▶ drive
-/branch ───────────────────▶ drive returns Switch(src, fork) ──────▶ Session::fork(src,new) ─▶ drive
+/branch ───────────────────▶ Session::fork(src,new) ─▶ drive returns Switch(new, origin) ─▶ Session::open(new) ─▶ drive
 ```
 
 ## Implementation Steps
@@ -169,6 +174,7 @@ the copy), and `/export` (the conversation as a text file). Issue #10.
 - Picker and `--continue` scope: the current workspace root only, because that is the existing
   `--continue` scope and avoids showing sessions from unrelated projects. Claude Code's all-projects
   toggle is not added.
+- 2026-10-26: `/branch` forks in the TUI but the copy's `Resumed` (`fork (branch)`) is written by `record_session_start` when the loop opens it as `SessionOrigin::Continued`; `SessionTarget` carries that origin.
 - `/branch` carries no grants and starts in the default mode, like every resume/fork.
 - `/clear` still refuses a name for the old conversation; with `/resume` available its docs point
   there instead of saying "not available yet". This plan supersedes the master plan's 2026-10-24
