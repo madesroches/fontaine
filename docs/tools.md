@@ -191,9 +191,10 @@ With `command`, the first search starts the process (an argv, no shell, a cleare
 that keeps only what a program needs to find itself) and waits up to `startup_timeout_secs` for
 `base_url` to answer. Later searches, and the rebuilds that `/add-dir` and `/model` cause, reuse
 it, and it is stopped when the session ends: Fontaine puts it in its own process group and sends
-SIGTERM to the group, waits up to 10 seconds, then sends SIGKILL (on Windows it is killed). A
-`docker run` forwards SIGTERM to its container, so `--rm` removes it. Shutdown waits for that
-exit, so a command that ignores SIGTERM delays the end of the session by the 10 seconds. A start that fails or times out is a search error with the
+SIGTERM to the group, and a background task sends SIGKILL if it has not exited after 10 seconds
+(on Windows it is killed). A `docker run` forwards SIGTERM to its container, so `--rm` removes it.
+Stopping never blocks the session, so a command that ignores SIGTERM can outlive a session that
+exits within those 10 seconds. A start that fails or times out is a search error with the
 process's last stderr lines; there is no fallback to another backend. A session killed by a signal
 can leave the process running (and, for `docker run`, the container). The image's default settings do not enable the `json` format; give
 the instance a `settings.yml` with `json` under `search.formats`.

@@ -117,20 +117,58 @@ const STOP_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Debug)]
 struct Running {
-    child: Child,
+    // Taken by `drop`, which hands the child to a detached task.
+    child: Option<Child>,
+    // Recorded at spawn: tokio's `Child::id` is None once the leader has been reaped, but a
+    // wrapper that backgrounded the server leaves the group alive.
+    pid: Option<u32>,
     grace: Duration,
 }
 
-impl Drop for Running {
-    /// Blocks up to the grace period, and only when the process ignores SIGTERM or is slow to
-    /// stop; there is no async drop. A session killed by a signal never gets here.
-    fn drop(&mut self) {
-        terminate(&self.child);
-        let deadline = Instant::now() + self.grace;
-        while matches!(self.child.try_wait(), Ok(None)) && Instant::now() < deadline {
-            std::thread::sleep(STOP_POLL);
+impl Running {
+    fn new(child: Child, grace: Duration) -> Self {
+        Running {
+            pid: child.id(),
+            child: Some(child),
+            grace,
         }
-        force_kill(&mut self.child);
+    }
+
+    fn child(&mut self) -> &mut Child {
+        self.child
+            .as_mut()
+            .expect("the child is only taken by drop")
+    }
+}
+
+impl Drop for Running {
+    /// SIGTERM goes out now; waiting out the grace and the SIGKILL run detached, because the
+    /// task dropping this (the TUI's, on Esc) must not block.
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let (pid, grace) = (self.pid, self.grace);
+        terminate(pid);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                settle(&mut child, pid, grace).await;
+            });
+        } else {
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + grace;
+                while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
+                    std::thread::sleep(STOP_POLL);
+                }
+                force_kill(&mut child, pid);
+                for _ in 0..20 {
+                    if !matches!(child.try_wait(), Ok(None)) {
+                        break;
+                    }
+                    std::thread::sleep(STOP_POLL);
+                }
+            });
+        }
     }
 }
 
@@ -156,27 +194,28 @@ fn command(
 
 /// SIGTERM to the process group: a `docker run` CLI forwards it to the container, which SIGKILL
 /// to the CLI alone could not.
-fn terminate(child: &Child) {
+fn terminate(pid: Option<u32>) {
     #[cfg(unix)]
-    signal_group(child, "TERM");
+    signal_group(pid, "TERM");
     #[cfg(not(unix))]
-    let _ = child;
+    let _ = pid;
 }
 
-/// Kills the group, and the child itself where there is no group to signal. Does nothing to a
-/// process that already exited.
-fn force_kill(child: &mut Child) {
-    if matches!(child.try_wait(), Ok(Some(_))) {
-        return;
-    }
+/// Kills the group, even when the leader already exited (a wrapper may have left the server
+/// running), and the child itself where there is no group to signal.
+fn force_kill(child: &mut Child, pid: Option<u32>) {
     #[cfg(unix)]
-    signal_group(child, "KILL");
-    let _ = child.start_kill();
+    signal_group(pid, "KILL");
+    #[cfg(not(unix))]
+    let _ = pid;
+    if !matches!(child.try_wait(), Ok(Some(_))) {
+        let _ = child.start_kill();
+    }
 }
 
 #[cfg(unix)]
-fn signal_group(child: &Child, signal: &str) {
-    let Some(pid) = child.id() else { return };
+fn signal_group(pid: Option<u32>, signal: &str) {
+    let Some(pid) = pid else { return };
     // Best effort: the group may already be gone.
     let _ = std::process::Command::new("kill")
         .args(["-s", signal, "--", &format!("-{pid}")])
@@ -186,13 +225,18 @@ fn signal_group(child: &Child, signal: &str) {
         .status();
 }
 
-async fn stop(child: &mut Child, grace: Duration) {
-    terminate(child);
+async fn stop(child: &mut Child, pid: Option<u32>, grace: Duration) {
+    terminate(pid);
+    settle(child, pid, grace).await;
+}
+
+/// Waits for the exit that a SIGTERM already asked for, then kills what is left.
+async fn settle(child: &mut Child, pid: Option<u32>, grace: Duration) {
     let deadline = Instant::now() + grace;
     while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
         tokio::time::sleep(STOP_POLL).await;
     }
-    force_kill(child);
+    force_kill(child, pid);
     let _ = child.wait().await;
 }
 
@@ -208,7 +252,7 @@ impl SearxngChild {
     pub async fn is_running(&self) -> bool {
         let mut slot = self.slot.lock().await;
         slot.as_mut()
-            .is_some_and(|running| matches!(running.child.try_wait(), Ok(None)))
+            .is_some_and(|running| matches!(running.child().try_wait(), Ok(None)))
     }
 }
 
@@ -480,7 +524,7 @@ impl Websearch {
     ) -> Result<(), ToolExecutionError> {
         let mut slot = self.child.slot.lock().await;
         if let Some(running) = slot.as_mut() {
-            if matches!(running.child.try_wait(), Ok(None)) {
+            if matches!(running.child().try_wait(), Ok(None)) {
                 return Ok(());
             }
             *slot = None;
@@ -497,12 +541,9 @@ impl Websearch {
         })?;
         // Guarded from the spawn on, so a dropped future or an early return still stops the
         // process group; `kill_on_drop` alone would only kill a `docker run` CLI, not its container.
-        let mut running = Running {
-            child,
-            grace: STOP_GRACE,
-        };
+        let mut running = Running::new(child, STOP_GRACE);
         let stderr = Arc::new(Mutex::new(String::new()));
-        let drain = running.child.stderr.take().map(|pipe| {
+        let drain = running.child().stderr.take().map(|pipe| {
             let tail_buffer = stderr.clone();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(pipe).lines();
@@ -520,7 +561,7 @@ impl Websearch {
         });
         let started = Instant::now();
         loop {
-            let exited = running.child.try_wait().map_err(|e| {
+            let exited = running.child().try_wait().map_err(|e| {
                 ToolExecutionError::other(format!(
                     "cannot check the SearXNG process: {}",
                     chain(&e)
@@ -541,7 +582,8 @@ impl Websearch {
                 break;
             }
             if started.elapsed() >= launch.startup_timeout {
-                stop(&mut running.child, STOP_GRACE).await;
+                let pid = running.pid;
+                stop(running.child(), pid, STOP_GRACE).await;
                 if let Some(drain) = drain {
                     let _ = tokio::time::timeout(Duration::from_millis(500), drain).await;
                 }
@@ -679,7 +721,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn dropping_the_child_sends_sigterm_and_waits_for_it() {
+    async fn dropping_the_child_sends_sigterm() {
         let dir = tempfile::tempdir().unwrap();
         let (ready, termed) = (dir.path().join("ready"), dir.path().join("termed"));
         let script = format!(
@@ -687,15 +729,16 @@ mod tests {
             termed.display(),
             ready.display()
         );
-        let running = Running {
-            child: spawn_script(&script),
-            grace: Duration::from_secs(20),
-        };
+        let running = Running::new(spawn_script(&script), Duration::from_secs(20));
         until_ready(&ready).await;
-        let started = Instant::now();
         drop(running);
-        assert!(termed.exists(), "the child saw SIGTERM");
-        assert!(started.elapsed() < Duration::from_secs(10));
+        for _ in 0..100 {
+            if termed.exists() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the child never saw SIGTERM");
     }
 
     #[cfg(unix)]
@@ -708,11 +751,48 @@ mod tests {
             ready.display()
         );
         let mut child = spawn_script(&script);
+        let pid = child.id();
         until_ready(&ready).await;
         let started = Instant::now();
-        stop(&mut child, Duration::from_millis(300)).await;
+        stop(&mut child, pid, Duration::from_millis(300)).await;
         assert!(started.elapsed() >= Duration::from_millis(300));
         assert!(matches!(child.try_wait(), Ok(Some(_))));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_returns_at_once_and_the_group_is_killed_after_the_grace() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ready, pidfile) = (dir.path().join("ready"), dir.path().join("pid"));
+        // The inner shell is the grandchild a wrapper would leave behind.
+        let script = format!(
+            "sh -c 'trap \"\" TERM; echo $$ > {}; while :; do sleep 0.05; done' & trap '' TERM; echo x > {}; wait",
+            pidfile.display(),
+            ready.display()
+        );
+        let running = Running::new(spawn_script(&script), Duration::from_millis(600));
+        until_ready(&ready).await;
+        until_ready(&pidfile).await;
+        let grandchild: i32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let alive = || std::path::Path::new(&format!("/proc/{grandchild}")).exists();
+        let started = Instant::now();
+        drop(running);
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "drop blocked"
+        );
+        assert!(alive(), "SIGTERM is ignored, so it lives through the grace");
+        for _ in 0..100 {
+            if !alive() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the process group was not killed after the grace");
     }
 
     #[test]

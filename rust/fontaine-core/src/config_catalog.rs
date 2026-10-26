@@ -465,10 +465,14 @@ pub const KEYS: &[KeyRow] = &[
             .map_or_else(|| "unset".to_string(), redacted_url)
     }),
     row!("websearch.command", Scalar, |c, _| {
-        c.websearch
-            .command
-            .as_ref()
-            .map_or_else(|| "unset".to_string(), |argv| argv.join(" "))
+        c.websearch.command.as_ref().map_or_else(
+            || "unset".to_string(),
+            |argv| {
+                // Arguments can carry inline secrets (docker `-e NAME=value`).
+                let program = argv.first().map_or("", String::as_str);
+                format!("{program} (+{} args)", argv.len().saturating_sub(1))
+            },
+        )
     }),
     row!("websearch.startup_timeout_secs", Scalar, |c, _| opt(c
         .websearch
@@ -582,6 +586,20 @@ mod tests {
             effective("guardian.model", &c),
             "unset (best validated, else main model)"
         );
+    }
+
+    #[test]
+    fn the_searxng_command_shows_the_program_but_not_its_arguments() {
+        let mut c = defaults();
+        assert_eq!(effective("websearch.command", &c), "unset");
+        c.websearch.command = Some(
+            ["docker", "run", "-e", "SEARXNG_SECRET=hunter2"]
+                .map(String::from)
+                .to_vec(),
+        );
+        let shown = effective("websearch.command", &c);
+        assert_eq!(shown, "docker (+3 args)");
+        assert!(!shown.contains("hunter2"));
     }
 
     #[test]

@@ -559,7 +559,15 @@ mod launch {
         .await;
         assert!(cancelled.is_err(), "the search should still be starting");
         assert!(ready.exists(), "the fake child never started");
-        assert!(dir.path().join("termed").exists(), "the child saw SIGTERM");
+        // The group is stopped by a detached task, so the trap may run just after the drop.
+        let termed = dir.path().join("termed");
+        for _ in 0..100 {
+            if termed.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(termed.exists(), "the child saw SIGTERM");
     }
 
     #[tokio::test]

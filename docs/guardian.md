@@ -366,8 +366,9 @@ valid for the dataset it was scored on.
 - **Provider-native search is outside the guardian and the scanner.** When the provider's own web
   search is offered (see [Web search](tools.md#web-search)), it runs inside the model's response:
   the guardian never sees a query and the scanner never sees a result. Fontaine withholds it while
-  a `deny` or `ask` rule covers `websearch`, and `[websearch] native = "off"` turns it off; the
-  client-side `websearch` tool is judged and scanned like any other call.
+  a `deny` or `ask` rule or a `pre_tool_use` hook could cover `websearch`, and in `manual`,
+  `acceptEdits` and `dontAsk` unless an `allow` rule exists; `[websearch] native = "off"` turns it
+  off. The client-side `websearch` tool is judged and scanned like any other call.
 
 The [scorecard](evals.md) reports the measured catch and false-deny rates per model.
 

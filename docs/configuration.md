@@ -430,7 +430,7 @@ runs. See [Web search](tools.md#web-search) for how the two ways of searching ar
 |---|---|---|
 | `backend` | `tavily` or `searxng`. Without it there is no client-side `websearch` tool. | unset |
 | `base_url` | The SearXNG instance, an `http` or `https` URL. Required for `searxng`; refused for `tavily`. | unset |
-| `command` | `searxng` only: the argv (no shell) that starts the instance serving `base_url`, such as `["docker", "run", "--rm", "-p", "127.0.0.1:8080:8080", "searxng/searxng"]`. Started by the first search with a minimal environment and stopped with the session (SIGTERM to its process group, then SIGKILL after 10 seconds). | unset: Fontaine does not start it |
+| `command` | `searxng` only: the argv (no shell) that starts the instance serving `base_url`, such as `["docker", "run", "--rm", "-p", "127.0.0.1:8080:8080", "searxng/searxng"]`. Started by the first search with a minimal environment and stopped with the session (SIGTERM to its process group, then SIGKILL after 10 seconds from a background task, so a session that ends sooner can leave a process that ignores SIGTERM running). | unset: Fontaine does not start it |
 | `startup_timeout_secs` | How long to wait for `base_url` to answer after starting `command`. Needs `command`. | `60` |
 | `native` | `auto` uses the provider's own search where supported (`anthropic` accounts on the Anthropic API); `on` also uses it for other hosts of a supported kind; `off` never does. | `auto` |
 | `api_key_env` | `tavily` only: the environment variable holding the key. Omit it to use the stored credential. | unset |
@@ -799,7 +799,9 @@ RUST_LOG = "warn"
 - Values are never logged and never appear in a configuration error, and the settings debug output
   hides them. The [guardian](guardian.md) is told the names that are set, never the values.
 - Fontaine's own process is not affected: provider, telemetry and scanner-command lookups keep
-  using the variables they name, and the `scanner = "command"` program does not get `[env]`.
+  using the variables they name, and neither the `scanner = "command"` program nor the `[websearch] command` SearXNG launch gets `[env]`. The
+  SearXNG child's environment is deliberately the minimal one; pass it variables inline in the
+  argv (for `docker run`, `-e NAME=value`).
 - User-trust scopes only (see [Trust asymmetry](#trust-asymmetry)).
 
 ### `[tui]`

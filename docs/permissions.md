@@ -167,7 +167,9 @@ Deny and ask rules fail toward matching; allow rules fail toward not matching:
   `websearch`, or its matcher cannot be read), it is not offered to the model, and in `manual`, `acceptEdits` and `dontAsk`
   it is offered only when an `allow` rule exists. In `auto` and `plan` it is offered otherwise.
   Because it runs inside the model's response, an offered provider search is checked once, when the
-  request is built, not per query; see [Web search](tools.md#web-search).
+  request is built, not per query. A mode switch or a new rule takes effect on the next turn, so
+  tightening the mode mid-turn (Shift+Tab, or the fallback when the guardian is unavailable) leaves
+  the provider's search attached until that turn ends; see [Web search](tools.md#web-search).
 - A `webfetch` never follows a redirect to another host: the redirect is returned to the model and
   a follow-up fetch is judged on its own host.
 
