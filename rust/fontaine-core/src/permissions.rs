@@ -35,6 +35,7 @@ use crate::permission_rules::{
     CallContext, Posture, RuleSource, SourcedRule, is_broad_code_execution, matches, parse_rule,
     propose,
 };
+use crate::preview::{self, DiffPreview};
 use crate::runtime_error::RuntimeError;
 use crate::tier::Tier;
 use crate::user_config;
@@ -57,6 +58,8 @@ pub struct ApprovalRequest {
     pub offers: Offers,
     /// The exact rule "allow session" and "always allow" would add.
     pub proposed_rule: Option<String>,
+    /// The change an `edit` or `write` call would make, for the human to see.
+    pub preview: Option<DiffPreview>,
 }
 
 /// Which answers beyond "allow once" and "deny" the prompt offers. Prompts forced by the floor
@@ -1528,6 +1531,13 @@ impl PermissionPipeline {
             session: proposed.is_some(),
             always: proposed.is_some() && self.user_config.is_some(),
         };
+        let preview = {
+            let (tool, args, scope) = (call.tool.to_string(), args.clone(), scope.clone());
+            tokio::task::spawn_blocking(move || preview::preview(&tool, &args, &scope))
+                .await
+                .ok()
+                .flatten()
+        };
         let request = ApprovalRequest {
             tool: call.tool.to_string(),
             agent: call.agent.to_string(),
@@ -1538,6 +1548,7 @@ impl PermissionPipeline {
             reason: prompt.reason.clone(),
             offers,
             proposed_rule: proposed.as_ref().map(ToString::to_string),
+            preview,
         };
         let _waiting = self.state.wait_on_human(call.agent);
         let answer = self

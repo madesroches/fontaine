@@ -162,7 +162,7 @@ What is printed:
 | `tool error: <tool> <summary> — failed: ...` | A tool call that failed, or `— denied: ...` for one that was refused. |
 | `error: ...`, `notice: ...` and `warning: ...` | Errors, notices and warnings. A warning's advice follows on its own `hint: ...` line. |
 | `shell: <command>` | A `!` command you ran, followed by its output. |
-| `Permission Required:` | An approval prompt opened. Its question, the call, the choices and the rule the lasting answers would add follow. |
+| `Permission Required:` | An approval prompt opened. Its question, the call (for an `edit` or `write`, its diff as plain text: line numbers, then `+` or `-` and the line), the choices and the rule the lasting answers would add follow. |
 | `<name>:` | Another dialog opened, for example `model:`, `providers:`, `denied:` or `MCP server:`. |
 | `selected: ...` | The highlighted row of the open dialog. |
 | `[plan mode on]` | The mode changed: `[manual mode on]`, `[accept edits on]`, `[plan mode on]`, `[auto mode on]` or `[dontAsk mode on]`, however it changed. |

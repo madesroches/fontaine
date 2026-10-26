@@ -8,6 +8,9 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- The approval prompt for `edit` and `write` shows the change as a diff (line numbers, `+`/`-`
+  lines, three lines of context, scrollable) before you decide; in the linear renderer it is plain
+  text. It is display-only and absent when the file cannot be read or the edit would fail (#45).
 - `/goal <condition>` keeps the session working until a separate model judges the condition met, in
   the terminal UI and as `fontaine -p "/goal ..."`. After each turn the evaluator (the guardian's
   model) answers met, not met or impossible; not met starts another turn as a harness note, never a

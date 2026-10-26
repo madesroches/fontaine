@@ -173,6 +173,17 @@ When a call needs approval, a prompt lists the call and why it asked:
 - `n` deny. Enter on the deny row opens an optional reason, which is sent to the model with the
   denial.
 
+For an `edit` or `write` call the prompt also shows the change as a diff, above the reason: a
+`path  +added -removed` header, then the changed lines with three lines of context, each behind
+its line number, added lines marked `+` and removed lines `-` (in green and red). Long lines wrap
+under a blank gutter, and PageUp and PageDown scroll the diff like any long call. At most 200 rows
+are shown; the rest is summarized as `… N more changed lines (not shown)`. The diff is computed
+from the file as it is when the prompt opens, so it is advisory: the tool applies the edit to the
+file as it is when it runs. No diff appears, and the prompt shows only the path, for other tools,
+for a path outside the workspace roots, for a file that is missing (`edit`), not UTF-8 or larger
+than 1 MiB, and for an edit that matches nowhere or more than once. Control characters in file
+content are blanked and credential-shaped text is redacted before it is shown.
+
 When several agents ask at once their prompts queue and are shown one at a time, and a prompt that
 belongs to a subagent names it: `Allow shell (agent-2)?`. A prompt whose agent was killed goes away.
 

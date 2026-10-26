@@ -488,6 +488,7 @@ mod tests {
             reason: "needs approval".into(),
             offers: Offers::default(),
             proposed_rule: None,
+            preview: None,
         }
     }
 

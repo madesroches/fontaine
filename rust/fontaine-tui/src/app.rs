@@ -1043,6 +1043,7 @@ mod tests {
             reason: "r".into(),
             offers: fontaine_core::permissions::Offers::default(),
             proposed_rule: None,
+            preview: None,
         };
         Approval::new(request, reply)
     }
