@@ -11,48 +11,10 @@ use ratatui::Viewport;
 use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Rect, Size};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
 use crate::app::App;
 use crate::view;
-
-/// Pads `line` to `columns` and gives every space a hidden modifier, so none equals the blank
-/// cell that ratatui's diff skips.
-fn unblank(line: Line<'static>, columns: usize) -> Line<'static> {
-    let hidden = Modifier::HIDDEN;
-    let mut spans = Vec::new();
-    let mut width = 0;
-    for span in line.spans {
-        width += span.width();
-        let mut run = String::new();
-        let mut blank = false;
-        for c in span.content.chars() {
-            if (c == ' ') != blank && !run.is_empty() {
-                let style = if blank {
-                    span.style.add_modifier(hidden)
-                } else {
-                    span.style
-                };
-                spans.push(Span::styled(mem::take(&mut run), style));
-            }
-            blank = c == ' ';
-            run.push(c);
-        }
-        if !run.is_empty() {
-            let style = if blank {
-                span.style.add_modifier(hidden)
-            } else {
-                span.style
-            };
-            spans.push(Span::styled(run, style));
-        }
-    }
-    let pad = " ".repeat(columns.saturating_sub(width));
-    spans.push(Span::styled(pad, Style::default().add_modifier(hidden)));
-    Line { spans, ..line }
-}
 
 /// Rows handed to `insert_before` at a time, so the count always fits a `u16`.
 const INSERT_CHUNK: usize = 512;
@@ -225,19 +187,15 @@ impl<B: Backend + Anchor> Screen<B> {
         }
         // ratatui scrolls the rows above the viewport as a region, and a one-row region is
         // invalid DECSTBM that terminals ignore, so the whole screen scrolls with the viewport
-        // still in it. The viewport is repainted from scratch to undo that, and the row each
-        // settled line is drawn over still holds a live row, which ratatui's diff leaves
-        // showing wherever the line has a blank cell, because the diff skips them. Hidden spaces
-        // differ from the blank cell, so they overwrite it.
+        // still in it. The viewport is repainted from scratch to undo that. Its live rows are
+        // erased first: the row each settled line is drawn over would otherwise keep that text
+        // wherever the line has a blank cell, because ratatui's diff skips blank cells.
         let one_row_region = self.terminal.get_frame().area().y <= 1 && !lines.is_empty();
-        let lines = if one_row_region {
-            lines
-                .into_iter()
-                .map(|line| unblank(line, columns))
-                .collect()
-        } else {
-            lines
-        };
+        if one_row_region {
+            let backend = self.terminal.backend_mut();
+            backend.set_cursor_position(Position::new(0, top))?;
+            backend.clear_region(ClearType::AfterCursor)?;
+        }
         for chunk in lines.chunks(INSERT_CHUNK) {
             let rows = chunk.to_vec();
             self.terminal.insert_before(chunk.len() as u16, |buf| {

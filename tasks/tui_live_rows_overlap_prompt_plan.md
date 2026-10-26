@@ -150,6 +150,11 @@ named for issue 217. CI also runs a small strided matrix (every 4th height, ever
   (`Terminal::clear`) after any insert at a viewport top of 0 or 1, instead of replacing the
   inline viewport. The emulator regression test and strided matrix run in CI; the full sweep
   (heights 6..24, widths 20..80, 1..4 calls) is green.
+- 2026-10-26: the repaint left a second symptom: the row each settled line is drawn over still held
+  a live row, and ratatui's diff skips blank cells, so stale live-row text stayed in settled lines
+  and scrollback wherever the line had a blank cell. Fix: when the viewport top is at row 0 or 1,
+  `draw_frame` erases the viewport (`clear_region(AfterCursor)` from its top) before the
+  `insert_before` calls, so no live text is left to show through.
 
 ## Documentation
 
