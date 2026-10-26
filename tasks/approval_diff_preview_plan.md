@@ -22,8 +22,8 @@ already met and need no code (see Current State); they are recorded in Decisions
   `[Rule] explanation` reason (`docs/tui.md`, "An `escalate` verdict opens the usual approval prompt").
 - Edit args are `{path, edits: [{old_text, new_text, replace_all}]}`; write args are `{path, content}`.
   `rig_tools::edit::apply(path, text, &[Replacement])` applies edits to a string without touching the
-  file, exactly as the tool will, returning the new text and a `FileChange` with hunks; it errors
-  when an edit matches nowhere or more than once.
+  file, exactly as the tool will, returning `Applied { text, change, replaced, notes }` (`change` is a `FileChange` with hunks); it preserves BOM and CRLF, and errors
+  when an edit matches nowhere or more than once, or when the edits change nothing.
 - `similar` 2.7 is already in `Cargo.lock` (transitively). Paths resolve through `Scope`
   (`rust/fontaine-tools/src/scope.rs`), which knows the workspace roots.
 
@@ -35,7 +35,7 @@ New `rust/fontaine-core/src/preview.rs`:
 
 ```
 pub struct DiffPreview { pub path: String, pub added: usize, pub removed: usize,
-                         pub lines: Vec<DiffLine>, pub truncated: bool }
+                         pub lines: Vec<DiffLine>, pub hidden: usize /* changed lines not shown */ }
 pub struct DiffLine { pub kind: DiffKind /* Context | Added | Removed | Gap */,
                       pub old_no: Option<usize>, pub new_no: Option<usize>, pub text: String }
 pub fn preview(tool: &str, args: &Value, scope: &Scope) -> Option<DiffPreview>
@@ -48,12 +48,12 @@ pub fn preview(tool: &str, args: &Value, scope: &Scope) -> Option<DiffPreview>
   tools.
 - Returns `None` (prompt falls back to today's path-only text) when: the tool is not `edit`/`write`;
   the path resolves outside the scope roots (no reading files the call could not touch anyway);
-  the file is unreadable, non-UTF-8 or over the limit; `apply` fails (the tool will fail the same
+  the file is unreadable, non-UTF-8 or over the limit; `apply` fails, including when the edits change nothing (the tool will fail the same
   way, so there is nothing to approve that a diff could show); or args do not parse.
 - Display safety: `preview.rs` has its own sanitizer (`action_summary` is a single-line summarizer
   and does not expand tabs): expand tabs, replace other control chars with spaces, so file content
-  cannot inject terminal escapes, then `redact::text` so credential-shaped text is not painted.
-  Total lines are capped (200); past that `truncated` is set and the TUI says so.
+  cannot inject terminal escapes, then `rig_core::redact::text` so credential-shaped text is not painted.
+  Total lines are capped (200); past that `hidden` counts the changed lines not shown and the TUI says so.
 - The file read happens inside async `ask_human`, so the preview is computed with
   `tokio::task::spawn_blocking` and a preview-specific size cap constant `PREVIEW_MAX_BYTES`
   (1 MiB), much smaller than rig-tools' `MAX_FILE_BYTES` (16 MiB).
@@ -68,13 +68,13 @@ pub fn preview(tool: &str, args: &Value, scope: &Scope) -> Option<DiffPreview>
   `fontaine-tui` `approval.rs` tests (~286), `linear.rs`, `screen.rs`, `app.rs`, `ui/tests.rs`) add `preview: None`.
 - `Approval::body` renders, after the question and summary and before the reason, a header
   `path  +A -R` followed by the diff lines: line-number gutter (width from the largest number), `+`/`-`
-  prefix, added lines in `theme.success`, removed in `theme.error`, context and gaps dim. Lines are
-  scrolling (PageUp/PageDown) works unchanged. The existing `wrap` (`input.rs:197-207`) just chunks
+  prefix, added lines in `theme.success`, removed in `theme.error`, context and gaps dim. Scrolling
+  (PageUp/PageDown) works unchanged. The existing `wrap` (`input.rs:197-207`) just chunks
   chars by width and knows nothing about prefixes, so diff text is wrapped to `width - gutter_width - 1`;
   continuation rows get a blank gutter and a space in place of the sign.
   Colors come from the existing `Theme`; no new theme fields. The linear (non-fullscreen) renderer
   (`linear.rs`) prints the same lines via the shared `body`.
-- A `truncated` preview ends with `… N more changed lines (not shown)`.
+- A preview with `hidden > 0` ends with `… N more changed lines (not shown)`, N = `hidden`.
 
 ## Implementation Steps
 
@@ -130,11 +130,12 @@ Unit tests in `preview.rs` (constructed inputs against a tempdir):
   over the size limit, an edit that matches nowhere.
 - Escape injection: a file line containing `\x1b[31m` renders with no control characters; a
   credential-shaped string is redacted.
-- Truncation at the line cap sets `truncated`.
+- Truncation at the line cap sets `hidden` to the number of changed lines not shown.
+- CRLF and lone `\r` in file content are sanitized; an edit on a BOM/CRLF file previews without error.
 
 TUI tests (`TestBackend`, plain assertions, in `fontaine-tui/src/view.rs` and `approval.rs` where
 rendering tests live): a prompt with a preview shows gutter, `+`/`-` lines and header; a long diff
-scrolls with PageDown; a request without a preview renders exactly the same rows as before. A `fontaine-core` pipeline test asserts that the
+scrolls with PageDown; at a narrow width, diff text wraps to `width - gutter_width - 1` with a blank gutter and space sign on continuation rows (`Approval::body(narrow_width, theme)` in `approval.rs`); a request without a preview renders exactly the same rows as before. A `fontaine-core` pipeline test asserts that the
 request handed to the approver for an `edit` call carries a preview and that denying/allowing is
 unaffected by it.
 
@@ -142,7 +143,7 @@ unaffected by it.
 
 1. Run `cargo run -p fontaine`, in manual mode ask the model to edit a file in the workspace.
    Expect the `Allow edit?` box to show the diff above the choices. Not automated: only a real
-   terminal shows whether the box looks right at narrow widths (tmux, per `tasks/design/testing.md`).
+   terminal shows the colors and overall look (tmux, per `tasks/design/testing.md`).
 2. Repeat in a short terminal (a few rows tall): the approval body is capped at about half the
    screen height (`view.rs` `shown_body_rows`), so the diff scrolls with PageUp/PageDown and the
    footer choices stay visible.
