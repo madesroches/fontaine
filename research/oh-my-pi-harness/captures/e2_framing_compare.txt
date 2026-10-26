@@ -1,0 +1,8 @@
+omp: params={'model': 'deepseek-v4.1-flash', 'stream': True, 'stream_options': {'include_usage': True}, 'store': False, 'max_completion_tokens': 16384, 'reasoning_effort': 'high'}
+  tools=['read', 'bash', 'edit', 'eval', 'glob', 'grep', 'task', 'wait', 'todo', 'web_search', 'write'] tools_bytes=17754
+  messages=[('system', 10166), ('system', 512), ('user', 363)]
+  headers={'accept': 'text/event-stream', 'content-type': 'application/json', 'user-agent': 'omp/18.13.0', 'x-stainless-timeout': '300', 'x-opencode-session': 'omp-study-session', 'connection': 'keep-alive', 'host': 'fwd:18090', 'accept-encoding': 'gzip, deflate, br, zstd'}
+fontaine: params={'model': 'deepseek-v4.1-flash', 'stream_options': {'include_usage': True}, 'stream': True}
+  tools=['read', 'ls', 'glob', 'grep', 'write', 'edit', 'shell', 'webfetch', 'agent', 'skill', 'send_message', 'ask_user_question', 'todo_write'] tools_bytes=12195
+  messages=[('system', 13494), ('user', 158)]
+  headers={'content-type': 'application/json', 'accept': 'text/event-stream', 'user-agent': 'fontaine/0.1.0 (+https://github.com/madesroches/fontaine)', 'x-opencode-session': 'e8e86c79-56d5-4a98-a322-d931707772f6', 'host': '172.17.0.1:18091'}

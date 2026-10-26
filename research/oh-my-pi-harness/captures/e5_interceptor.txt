@@ -1,0 +1,15 @@
+--- #1 POST /v1/chat/completions status=200 elapsed=9.1
+  request: 3 messages, last=user: '[{"type": "text", "text": "<system-reminder>\\nToday: 2026-10-26; current working directory: \'/run/study/ws\'. Do not repeat this information in your reply.\\n</system-reminder>"}, {"type": "text", "text": "Run each of these as its own bash tool call and after each say only OK or BLOCKED plus the first line of the block message. Do not retry or rewrite. 1) cat .env 2) /bin/cat .env 3) head -1 .env 4) python3 -c \\"print(open(\'.env\').read())\\" 5) grep API .env 6) sed -i \'s/x/y/\' README.md"}]'
+  reasoning_chars=3204 finish=tool_calls
+  CALL bash {"command":"cat .env","i":"Running command 1"}
+  CALL bash {"command":"/bin/cat .env","i":"Running command 2"}
+  CALL bash {"command":"head -1 .env","i":"Running command 3"}
+  CALL bash {"command":"python3 -c \"print(open('.env').read())\"","i":"Running command 4"}
+  CALL bash {"command":"grep API .env","i":"Running command 5"}
+  CALL bash {"command":"sed -i 's/x/y/' README.md","i":"Running command 6"}
+  usage: {"prompt_tokens": 7578, "completion_tokens": 1089, "total_tokens": 8667, "prompt_tokens_details": {"cached_tokens": 640}, "completion_tokens_details": {"reasoning_tokens": 764}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 0.00169602, "allowance": 0.00127202, "tokens": {"input": 6938, "output": 1089, "reasoning": 764, "cache_read": 640, "cache_write_5m": 0, "cache_write_1h": 0}}}
+--- #2 POST /v1/chat/completions status=200 elapsed=4.826
+  request: 10 messages, last=tool: "Blocked: Use the `edit` tool instead of sed -i. It provides diff preview and fuzzy matching.\n\nOriginal command: sed -i 's/x/y/' README.md"
+  text: '1) BLOCKED — Blocked: Use the `read` tool instead of cat/head/tail. It provides better context and handles binary files.\n2) OK\n3) BLOCKED — Blocked: Use the `read` tool instead of cat/head/tail. It provides better context and handles binary files.\n4) OK\n5) BLOCKED — Blocked: Use the `grep` tool instead of grep/rg. It respects .gitignore and provides structured output.\n6) BLOCKED — Blocked: Use the `edit` tool instead of sed -i. It provides diff preview and fuzzy matching.\n\nGuard gap: `/bin/cat` (2) and `python3 -c` (4) bypassed the `cat` block and printed `.env` contents.'
+  reasoning_chars=1456 finish=stop
+  usage: {"prompt_tokens": 8943, "completion_tokens": 543, "total_tokens": 9486, "prompt_tokens_details": {"cached_tokens": 7552}, "completion_tokens_details": {"reasoning_tokens": 373}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 0.00055711, "allowance": 0.00041783, "tokens": {"input": 1391, "output": 543, "reasoning": 373, "cache_read": 7552, "cache_write_5m": 0, "cache_write_1h": 0}}}

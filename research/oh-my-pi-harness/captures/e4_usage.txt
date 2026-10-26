@@ -1,0 +1,15 @@
+run                                reqs toolcalls  prompt  compl
+e4-dup-fontaine                       5         3   34632    514
+e4-dup-omp-default                    6         5   47635    596
+e4-dup-omp-hashline                   6         5   49766    640
+e4-lsp3                               5         4   40079    889
+e4-lsp4                               4         4   33422    794
+e4-multi-fontaine                     5         5   34576    539
+e4-multi-omp-default                  5         7   41576   1060
+e4-multi-omp-hashline                 4         3   32824    456
+e4-stale-fontaine                     6         3   27270    512
+e4-stale-omp-default                  5         4   39302    553
+e4-stale-omp-hashline                 4         3   32226    574
+e4-tabs-fontaine                      7         6   50077    883
+e4-tabs-omp-default                   6         5   47915    894
+e4-tabs-omp-hashline                  4         3   32893    626

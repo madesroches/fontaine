@@ -1,0 +1,28 @@
+== e1-idle (interactive TUI started, no prompt, 25 s)
+DNS queries (name, type, count):
+  api.commandcode.ai A x2
+  api.commandcode.ai.home A x2
+  api.kilo.ai A x2
+  api.kilo.ai.home A x2
+  api.venice.ai A x2
+  api.venice.ai.home A x2
+  catalog.stencil.so A x2
+  catalog.stencil.so.home A x2
+  coding-intl.dashscope.aliyuncs.com A x2
+  coding-intl.dashscope.aliyuncs.com.home A x2
+  hyper.charm.land A x2
+  hyper.charm.land.home A x2
+  zenmux.ai A x2
+  zenmux.ai.home A x2
+destinations (proto, ip, port, packets):
+   udp 224.0.0.251 5353 x13
+
+== e1-ok (one headless prompt)
+DNS queries (name, type, count):
+  fwd A x1
+  hyper.charm.land A x2
+  hyper.charm.land.home A x2
+destinations (proto, ip, port, packets):
+   tcp 172.18.0.2 18090 x14
+   tcp 172.18.0.3 56188 x12
+   udp 224.0.0.251 5353 x12

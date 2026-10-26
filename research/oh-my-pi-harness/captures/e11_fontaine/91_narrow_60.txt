@@ -1,0 +1,30 @@
+· shell allowed once
+• shell python3 -c " ✓
+· shell allowed once
+• todo_write 3 tasks, 3 done ✓
+Done.
+
+**What was wrong:** `stats.median` always returned `ordered[
+mid]`. That is correct only for odd-length input; for even-l
+ength input it returned the upper middle element (`3` for `[
+4, 1, 3, 2]`) instead of the mean of the two middle elements
+ (`2.5`).
+
+**Fix** (`stats.py`):
+```python
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+```
+
+**Verification:** `python3 -m unittest -q` → 4 tests, `OK`,
+exit 0. I also spot-checked edge cases directly: single elem
+ent → `1`, two elements → `1.5`, odd length → `3`, even leng
+th of six → `3.5`.
+Tasks 3/3
+┌ message · Enter sends · Alt+Enter new line ──────────────┐
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ manual · go/deepseek-v4.1-flash · shift+tab mode · /add-dir

@@ -1,0 +1,4 @@
+tools:
+  approvalMode: always-ask
+  approval:
+    task: allow

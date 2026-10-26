@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+⚠ Guardian is running on your main model `go/deepseek-v4.1-flash`
+  No benchmark-validated guardian model is available on your accounts — set `[guardian] model` or run /guardian-model
+┌ message · Enter sends · Alt+Enter new line ──────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ manual · go/deepseek-v4.1-flash · shift+tab mode · /add-dir · /denied · /model · ctrl+t agents · /exit

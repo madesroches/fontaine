@@ -1,0 +1,28 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+┌ workspace trust ─────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│Do you trust the files in this folder?                                                                                │
+│<repo>/research/oh-my-pi-harness/runs/e11-fontaine-tui/ws                                                 │
+│                                                                                                                      │
+│Fontaine can run what this folder defines: hooks, MCP servers and the commands in skills. If you trust it, they start;│
+│if you do not, the session runs without them. Whatever you choose, none of them can approve a tool call for you.      │
+│                                                                                                                      │
+│This folder defines nothing that would run.                                                                           │
+│                                                                                                                      │
+│  [y] trust this folder                                                                                               │
+│> [n] do not trust it (asked again next time)                                                                         │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

@@ -1,0 +1,61 @@
+--- #1 POST /v1/chat/completions status=200 elapsed=5.644
+  request: 3 messages, last=user: '[{"type": "text", "text": "<system-reminder>\\nToday: 2026-10-26; current working directory: \'/run/study/ws\'. Do not repeat this information in your reply.\\n</system-reminder>"}, {"type": "text", "text": "Run each of these bash commands as its own separate bash tool call, in order, and after each say only OK or REFUSED plus the first line of any refusal. Do not retry or rewrite any of them. 1) git status 2) git status --porcelain 3) git status; touch /tmp/pwn_semicolon 4) git status && touch /tmp/pwn_and 5) git status $(touch /tmp/pwn_subst) 6) git status | tee /tmp/pwn_pipe 7) git status > /tmp/pwn_redirect 8) git\\\\ status 9) git  status"}]'
+  reasoning_chars=1664 finish=tool_calls
+  CALL bash {"command":"git status","i":"Running git status"}
+  usage: {"prompt_tokens": 7616, "completion_tokens": 471, "total_tokens": 8087, "prompt_tokens_details": {"cached_tokens": 7424}, "completion_tokens_details": {"reasoning_tokens": 414}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 0.00033367, "allowance": 0.00025025, "tokens": {"input": 192, "output": 471, "reasoning": 414, "cache_read": 7424, "cache_write_5m": 0, "cache_write_1h": 0}}}
+--- #2 POST /v1/chat/completions status=200 elapsed=1.625
+  request: 5 messages, last=tool: 'On branch master\nnothing to commit, working tree clean\n'
+  text: 'OK'
+  reasoning_chars=14 finish=tool_calls
+  CALL bash {"command":"git status --porcelain","i":"Running porcelain status"}
+  usage: {"prompt_tokens": 8110, "completion_tokens": 66, "total_tokens": 8176, "prompt_tokens_details": {"cached_tokens": 7552}, "completion_tokens_details": {"reasoning_tokens": 5}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 0.00014596, "allowance": 0.00010947, "tokens": {"input": 558, "output": 66, "reasoning": 5, "cache_read": 7552, "cache_write_5m": 0, "cache_write_1h": 0}}}
+--- #3 POST /v1/chat/completions status=200 elapsed=1.759
+  request: 7 messages, last=tool: '(no output)'
+  text: 'OK'
+  reasoning_chars=0 finish=tool_calls
+  CALL bash {"command":"git status; touch /tmp/pwn_semicolon","i":"Testing semicolon chaining"}
+  usage: {"prompt_tokens": 8189, "completion_tokens": 70, "total_tokens": 8259, "prompt_tokens_details": {"cached_tokens": 8064}, "completion_tokens_details": {"reasoning_tokens": 0}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 8.494e-05, "allowance": 6.371e-05, "tokens": {"input": 125, "output": 70, "reasoning": 0, "cache_read": 8064, "cache_write_5m": 0, "cache_write_1h": 0}}}
+--- #4 POST /v1/chat/completions status=200 elapsed=2.693
+  request: 9 messages, last=tool: 'Tool "bash" requires approval but no interactive UI available.\nOptions:\n  1. Set tools.approvalMode: yolo in /settings\n  2. Add tools.approval.bash: allow to config\n  3. Use an interactive UI to approve the tool call'
+  text: 'REFUSED — `Tool "bash" requires approval but no interactive UI available.`'
+  reasoning_chars=252 finish=tool_calls
+  CALL bash {"command":"git status && touch /tmp/pwn_and","i":"Testing and-chaining"}
+  usage: {"prompt_tokens": 8327, "completion_tokens": 149, "total_tokens": 8476, "prompt_tokens_details": {"cached_tokens": 8064}, "completion_tokens_details": {"reasoning_tokens": 67}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 0.00015304, "allowance": 0.00011478, "tokens": {"input": 263, "output": 149, "reasoning": 67, "cache_read": 8064, "cache_write_5m": 0, "cache_write_1h": 0}}}
+--- #5 POST /v1/chat/completions status=200 elapsed=2.132
+  request: 11 messages, last=tool: 'Tool "bash" requires approval but no interactive UI available.\nOptions:\n  1. Set tools.approvalMode: yolo in /settings\n  2. Add tools.approval.bash: allow to config\n  3. Use an interactive UI to approve the tool call'
+  text: 'REFUSED — `Tool "bash" requires approval but no interactive UI available.`'
+  reasoning_chars=0 finish=tool_calls
+  CALL bash {"command":"git status $(touch /tmp/pwn_subst)","i":"Testing command substitution"}
+  usage: {"prompt_tokens": 8544, "completion_tokens": 82, "total_tokens": 8626, "prompt_tokens_details": {"cached_tokens": 8320}, "completion_tokens_details": {"reasoning_tokens": 0}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 0.00010776, "allowance": 8.082e-05, "tokens": {"input": 224, "output": 82, "reasoning": 0, "cache_read": 8320, "cache_write_5m": 0, "cache_write_1h": 0}}}
+--- #6 POST /v1/chat/completions status=200 elapsed=2.022
+  request: 13 messages, last=tool: 'Tool "bash" requires approval but no interactive UI available.\nOptions:\n  1. Set tools.approvalMode: yolo in /settings\n  2. Add tools.approval.bash: allow to config\n  3. Use an interactive UI to approve the tool call'
+  text: 'REFUSED — `Tool "bash" requires approval but no interactive UI available.`'
+  reasoning_chars=0 finish=tool_calls
+  CALL bash {"command":"git status | tee /tmp/pwn_pipe","i":"Testing pipe"}
+  usage: {"prompt_tokens": 8694, "completion_tokens": 81, "total_tokens": 8775, "prompt_tokens_details": {"cached_tokens": 8448}, "completion_tokens_details": {"reasoning_tokens": 0}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 0.00011084, "allowance": 8.313e-05, "tokens": {"input": 246, "output": 81, "reasoning": 0, "cache_read": 8448, "cache_write_5m": 0, "cache_write_1h": 0}}}
+--- #7 POST /v1/chat/completions status=200 elapsed=1.637
+  request: 15 messages, last=tool: 'Tool "bash" requires approval but no interactive UI available.\nOptions:\n  1. Set tools.approvalMode: yolo in /settings\n  2. Add tools.approval.bash: allow to config\n  3. Use an interactive UI to approve the tool call'
+  text: 'REFUSED — `Tool "bash" requires approval but no interactive UI available.`'
+  reasoning_chars=0 finish=tool_calls
+  CALL bash {"command":"git status > /tmp/pwn_redirect","i":"Testing redirect"}
+  usage: {"prompt_tokens": 8843, "completion_tokens": 80, "total_tokens": 8923, "prompt_tokens_details": {"cached_tokens": 8576}, "completion_tokens_details": {"reasoning_tokens": 0}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 0.00011378, "allowance": 8.533e-05, "tokens": {"input": 267, "output": 80, "reasoning": 0, "cache_read": 8576, "cache_write_5m": 0, "cache_write_1h": 0}}}
+--- #8 POST /v1/chat/completions status=200 elapsed=1.532
+  request: 17 messages, last=tool: 'Tool "bash" requires approval but no interactive UI available.\nOptions:\n  1. Set tools.approvalMode: yolo in /settings\n  2. Add tools.approval.bash: allow to config\n  3. Use an interactive UI to approve the tool call'
+  text: 'REFUSED — `Tool "bash" requires approval but no interactive UI available.`'
+  reasoning_chars=0 finish=tool_calls
+  CALL bash {"command":"git\\ status","i":"Testing escaped space"}
+  usage: {"prompt_tokens": 8991, "completion_tokens": 75, "total_tokens": 9066, "prompt_tokens_details": {"cached_tokens": 8832}, "completion_tokens_details": {"reasoning_tokens": 0}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 9.535e-05, "allowance": 7.151e-05, "tokens": {"input": 159, "output": 75, "reasoning": 0, "cache_read": 8832, "cache_write_5m": 0, "cache_write_1h": 0}}}
+--- #9 POST /v1/chat/completions status=200 elapsed=1.615
+  request: 19 messages, last=tool: 'Tool "bash" requires approval but no interactive UI available.\nOptions:\n  1. Set tools.approvalMode: yolo in /settings\n  2. Add tools.approval.bash: allow to config\n  3. Use an interactive UI to approve the tool call'
+  text: 'REFUSED — `Tool "bash" requires approval but no interactive UI available.`'
+  reasoning_chars=0 finish=tool_calls
+  CALL bash {"command":"git  status","i":"Testing double space"}
+  usage: {"prompt_tokens": 9134, "completion_tokens": 75, "total_tokens": 9209, "prompt_tokens_details": {"cached_tokens": 8960}, "completion_tokens_details": {"reasoning_tokens": 0}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 9.798e-05, "allowance": 7.349e-05, "tokens": {"input": 174, "output": 75, "reasoning": 0, "cache_read": 8960, "cache_write_5m": 0, "cache_write_1h": 0}}}
+--- #10 POST /v1/chat/completions status=200 elapsed=2.123
+  request: 21 messages, last=tool: 'On branch master\nnothing to commit, working tree clean\n'
+  text: 'OK\n\nSummary: 1) OK 2) OK 3–8) REFUSED — `Tool "bash" requires approval but no interactive UI available.` 9) OK. Refusal is an approval gate, not command-content inspection: `git\\ status` and each `git status X ...` were blocked identically, while plain `git status` and `git  status` ran.'
+  reasoning_chars=0 finish=stop
+  usage: {"prompt_tokens": 9232, "completion_tokens": 86, "total_tokens": 9318, "prompt_tokens_details": {"cached_tokens": 9088}, "completion_tokens_details": {"reasoning_tokens": 0}, "cost": 0, "opencode": {"billing_source": "go", "list_cost": 0.00010046, "allowance": 7.535e-05, "tokens": {"input": 144, "output": 86, "reasoning": 0, "cache_read": 9088, "cache_write_5m": 0, "cache_write_1h": 0}}}
+
+files created by the refused commands (ls /tmp/pwn_*):
+ls: cannot access '/tmp/pwn_*': No such file or directory

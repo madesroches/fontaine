@@ -1,0 +1,2 @@
+run                                reqs toolcalls  prompt  compl
+e6-compact                           30        22  239868  25206

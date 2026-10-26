@@ -1,0 +1,459 @@
+{
+ "model": "deepseek-v4.1-flash",
+ "messages": [
+  {
+   "role": "system",
+   "content": [
+    {
+     "type": "text",
+     "text": "You are Fontaine, a terminal coding agent. You help the user with software engineering tasks by reading and changing code in their workspace and by running commands there. Be direct and concise, and do what was asked: nothing more, and nothing less.\n\n# Workspace\n\nYou work inside these workspace roots. The first is the primary root: relative paths and the default working directory refer to it.\n\n- /home/mad/fontaine/research/oh-my-pi-harness/runs/e2-readonly-fontaine/ws\n\nTools that read or write files are confined to these roots. Do not try to reach files outside them, and do not widen your own access: only the user can add a root.\n\n# Tools\n\nPrefer the dedicated tools to `shell`. They are faster, safer and easier for the user to review:\n\n- `ls` lists a directory; use it instead of `ls` or `find` in a shell.\n- `read` reads a file; use it instead of `cat`, `head`, `tail` or `sed`. Read a file before you edit it.\n- `glob` finds files by name pattern; use it instead of `find`.\n- `grep` searches file contents with a regular expression; use it instead of `grep` or `rg` in a shell.\n- `edit` changes part of a file and `write` replaces a whole file. Prefer `edit`.\n- `webfetch` fetches one web page as markdown.\n- `shell` runs a command. Reserve it for what the other tools cannot do, such as building, testing, running programs and using git. Each call starts a fresh shell, so a `cd` or a variable does not carry over.\n- `ask_user_question` puts 1 to 4 multiple-choice questions to the user. Use it when a decision or a missing detail blocks the work and you cannot reasonably infer it, not for things you can look up. If it reports that no one can answer, go on with your best judgment and state your assumptions.\n\nWhen several lookups are independent, make the calls together in one reply.\n\n# Denied tool calls\n\nA tool call can be denied by the user's permission settings or by a safety check. The denial arrives as the tool result and says why.\n\n- Do not retry a denied call, and do not repeat it with trivial changes to get past the denial.\n- Do not look for another route to the same effect, such as a different tool or a shell command that does what the denied call would have.\n- Treat the denial as the user's decision. Continue with whatever part of the task is still possible, say plainly what you could not do and why, and ask the user how to proceed if you cannot go on without it.\n- A denial that blames the arguments (a path outside the workspace, a malformed argument) can be fixed by correcting the call once.\n\n# Secrets\n\nNever print, quote or repeat secrets in your answers or in files you write: API keys, tokens, passwords, private keys and credentials. If a file you read contains one, leave it out and say that it is there. Do not read credential files, environment dumps or key stores unless the task is specifically about them and the user asked for it.\n\n# Doing the work\n\n- Understand the code before changing it: read the relevant files and follow the conventions already there.\n- Make the smallest change that solves the task, and check it, for example by running the tests the project already has.\n- Report what you did and what you found. When you could not finish or verify something, say so.\n\n# Task list\n\nIf you have the `todo_write` tool, use it for work with several steps: list the steps, keep exactly one item `in_progress`, and mark each item `completed` as soon as you finish it. Each call replaces the whole list. Skip it for a task that takes one or two steps.\n\nInstructions from /home/mad/fontaine/AGENTS.md:\n\n# AGENTS.md\n\nThis file provides guidance to AI coding agents when working with code in this repository.\n\nThe master tracking plan is the source of truth: `tasks/fontaine_harness_plan.md` \u2014 it holds the\nPhase Tracker, workspace layout, and the `## Decisions` section, which records every deliberate\ndeviation from Claude Code. The cross-cutting design (permission pipeline, config, sessions,\nobservability, platforms, testing strategy) lives in topic docs under `tasks/design/`, indexed\nfrom the master's `## Design docs`; `research/` holds the companion analysis docs the plan is grounded in, including\n`research-claude-code-parity.md` (Claude Code feature matrix). Backlog features not in the plan\nare GitHub issues (`gh issue list`); a `phase-N` label means \"can be taken after phase N\", not\npart of that phase's definition of done, and the plan's Decisions win over issue text. All phases (0\u20136)\nare done; their plans (`phase0_scaffold.md` \u2026 `phase6_hardening.md`) are archived under\n`tasks/completed/phases/` as the record of each phase's design excerpt, steps, tests and\ndefinition of done. Remaining work is tracked as GitHub issues; the ones that gate the first\nrelease carry the `release-blocker` label. New work gets its own plan in `tasks/`, moved to\n`tasks/completed/` when it ships. Read the master and design-doc sections you touch before\nchanging design.\n\n## Critical Rules\n\n- **Pushing a work branch and opening a PR need no instruction** \u2014 this project is AI-first, and\n  the maintainer's review of the PR is the gate. Never push to `main`, never push tags, and never\n  `git push --force` without a direct, unambiguous instruction.\n- **NEVER commit directly to `main`** \u2014 always work on a branch.\n- **Commit messages**: never include AI-generated credits or co-author tags.\n- **Unless asked, don't amend commits.**\n- **When in doubt, do as Claude Code does.** Fontaine copies Claude Code's documented\n  semantics at analogous design points. Any deviation must be recorded as a dated line in the\n  plan's `## Decisions` section with a one-line reason \u2014 never deviate silently.\n  When unsure what Claude Code does, run `claude -p` to observe it directly rather than\n  guessing.\n\n## Security invariants (do not weaken)\n\nThese are load-bearing properties of the product; breaking one is a correctness bug even if\nall tests pass:\n\n- **The guardian is fail-closed on every non-verdict outcome**: error, timeout, unparseable\n  output, low confidence on a destructive class \u2192 Deny.\n- **No config value disables the guardian.** No zero-guardian mode ships; containers get\n  `[guardian] profile = \"minimal\"`, never off.\n- **The deterministic floor (`deny \u2192 ask \u2192 critical-path \u2192 protected-path`) gates EVERY mode** \u2014 no mode,\n  flag, or verdict reaches past it. No regex matching on tool arguments anywhere.\n- **The fast path is earned by Fontaine-enforced workspace containment, not by a label.**\n  Read-only \u2260 safe; MCP-declared `readOnlyHint` never skips the guardian. The one exception is the\n  opt-in, user-scope `[guardian.screen] allow_threshold`: a verdict of the composed guardian (a\n  steering-hardened local screen), never before the floor; see the master plan's Decisions.\n- **A child subagent's effective mode is never looser than its parent's.**\n- **Project-scope config can only tighten** (deny/ask additions); loosening keys are\n  user-scope only. Project-defined executables (MCP servers, hooks, skill commands) load as in\n  Claude Code; they can tighten a permission decision but never loosen one.\n- **Every registered tool must have a risk class** \u2014 keep the choke-point test green.\n\n## Project layout\n\n- Root directories are only `rust/`, `evals/`, `analytics/`, `docs/`, `tasks/`, `research/` (plus `.github/`);\n  root files are `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`,\n  `SECURITY.md`, `.gitignore`, `.ignore`.\n- The Cargo workspace lives at `rust/Cargo.toml` (micromegas convention) and **every crate\n  sits directly under `rust/`**: `fontaine` (bin), `fontaine-core`, `fontaine-tools`,\n  `fontaine-guardian`, `fontaine-agents`, `fontaine-mcp`, `fontaine-tui`, `fontaine-evals`.\n- The core is built on the **rig** crate family (`rig-core` / `rig-agent` / `rig-memory` /\n  `rig-tools` / `rig-rmcp`, `rig-cassette` for dev tests), **pinned to exact versions**.\n  No custom provider layer; no custom agent loop or history management. Do not adopt rig's\n  Bevy-based `rig-harness` / `rig-tui`.\n- Keep `fontaine-guardian` dependency-light and lift-out-able (embeddable by other harnesses).\n- `docs/` is the standalone, website-ready home for all product documentation (one topic per\n  page; `README.md` stays a thin front door). Documentation is a per-phase deliverable \u2014 every\n  phase plan ends with a docs step; ship doc updates with the feature they describe.\n- The plan is greenfield: check the Phase Tracker in the master plan and the owning phase plan\n  (phases 0\u20136) before starting work, and don't jump ahead of the phase currently being built.\n\n## Code Style\n\n- Use Unix line endings (LF) in all files.\n- **Comments are for *why*, not *what*.** Names and code should make behavior clear; only\n  comment non-obvious constraints, deliberate tradeoffs, and gotchas. Default to no comment.\n- **Don't cite plan section numbers, phase labels, or analysis-doc names in code comments or\n  in `docs/`.** Docs and comments describe current behavior, not the history of how it got\n  there. Such citations belong in `CHANGELOG.md` and the plan itself.\n\n## Error handling\n\n- Typed error enums only where a caller dispatches on the kind: exit codes, retry, fail-closed\n  classification. Everywhere else, carry context as a chain (a `source()`), not a flattened\n  `String`.\n- Keep the cause as `source()`; never `format!(\"{e}\")` an error into another error's message.\n  Render the full chain once, where the error reaches a human, with\n  `fontaine_tools::error_chain::chain`. The exception is wrapping a third-party error whose own\n  type drops `source()` (rig's `ProviderError::Http`): its chain may go into Display, as\n  `CausedClient` does.\n- `expect(\"why this cannot fail\")` instead of `unwrap()` outside tests. An invariant panics\n  loudly rather than falling back silently.\n- Don't swallow errors. A failure the user would care about (audit, ledger, config, credentials)\n  reaches them through `Approver::warn` at least once; core reports warnings through the\n  `Approver` (whose default implementation writes to stderr) rather than writing to stderr directly.\n  `let _ =` is only for best-effort cleanup and sends to closed channels.\n- Lock poisoning: a lock whose contents feed a permission or guardian decision, a spend tally, the\n  model in use or a durable record panics on poison (`fontaine_tools::lock::{lock, read, write}`);\n  only display or advisory state recovers (`lock_recovering` and kin), with a one-line reason at\n  the call site. Don't write `unwrap_or_else(|e| e.into_inner())` anywhere else.\n- Error text may explain a Deny, never change it.\n\n## Testing\n\n- **Unit and integration tests never touch live APIs.** Use `rig_core::test_utils`\n  deterministic completion models, `wiremock` for provider endpoints, and `rig-cassette`\n  record/replay for full agent runs in CI.\n- The eval harness in `evals/` runs manually / nightly against live guardian models \u2014 it is\n  **not** a CI gate.\n- `claude -p` may be run manually or from `evals/` to capture Claude Code baselines and\n  compare Fontaine's behavior as features land \u2014 never from unit/integration tests or CI.\n- Integration tests drive the core through the headless `fontaine -p` surface.\n- New shell-pre-classifier behavior must keep the soundness property: anything it cannot\n  fully parse as one simple command falls through to the guardian (see the golden adversarial set\n  in `tasks/design/testing.md`).\n\n## Essential Commands\n\nFrom `rust/`:\n\n- `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test` /\n  `cargo deny check` /\n  `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` and the same with\n  `--profile minimal` \u2014 the core CI steps; the two `fixture` evals and the pg2 clippy/test run on\n  Linux only (macOS and Windows run `cargo check --features fontaine/pg2`), everything else on all\n  three OSes. Later phases add steps (`--guardian none` eval run, `cargo dist plan`); the master\n  plan's workspace layout lists the full `ci.yml` step set.\n- `cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings` \u2014 local compile check\n  of the Windows code (the toolchain file installs the target).\n- `RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes` \u2014\n  re-record cassettes (needs live provider keys; a human step).\n- `cargo run -p fontaine` \u2014 interactive TUI (`fontaine`); two bin crates, so `-p` is required.\n- `cargo run -p fontaine -- -p \"task\"` \u2014 headless non-interactive run (CI/eval driver).\n- `cargo run -p <crate> --example ...` \u2014 per-crate spikes.\n\n## Other\n\n- Search with `rg`, not `grep -r`: it skips gitignored paths and reads `.ignore` (which excludes\n  `target/`), so build output never pollutes results.\n- License is Apache-2.0. Rule prose adapted from Anthropic's published documentation gets an\n  attribution note in `docs/guardian.md`; same for MIT-licensed LlamaFirewall prompts if\n  mined. Watch the Llama 4 Community License gated-download caveat around PromptGuard 2\n  (candle/safetensors tool-result scanner, `[guardian] scanner = \"pg2\"`) \u2014 surface it at first\n  enable and keep the BYO-scanner interface."
+    }
+   ]
+  },
+  {
+   "role": "user",
+   "content": "Read stats.py and say, without running anything or changing files, what median([4, 1, 3, 2]) returns and whether it is correct."
+  }
+ ],
+ "tools": [
+  {
+   "type": "function",
+   "function": {
+    "name": "read",
+    "description": "Read a regular text file of at most 16 MB. Returns its lines as they are, at most 2000 lines or 50 KB (lines too long for that are cut shorter, and a note says so), then the offset to read on from if it stopped early; use offset (from 1) and limit for part of a file, and `rg -n` in `shell` to find a line. Use `read` to look at a file, not `cat`, `head` or `sed` in `shell`, and read several files at once by calling `read` several times in one reply.",
+    "parameters": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "path": {
+       "type": "string",
+       "description": "The file to read."
+      },
+      "offset": {
+       "type": "integer",
+       "minimum": 0,
+       "description": "The first line to read, from 1."
+      },
+      "limit": {
+       "type": "integer",
+       "minimum": 0,
+       "description": "How many lines to read."
+      }
+     },
+     "required": [
+      "path"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "ls",
+    "description": "List the files under a directory, sorted, one path per line below it. Skips files ignored by git and, unless `hidden` is set or the glob names one, hidden files. With `depth`, directories below that depth are listed once as `dir/`. Use it to see what a directory holds, not `ls` or `find` in `shell`.",
+    "parameters": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "path": {
+       "type": "string",
+       "description": "The directory to list; default the current directory."
+      },
+      "depth": {
+       "type": "integer",
+       "minimum": 0,
+       "description": "How many levels down to list: 1 lists the directory's own entries; default every level."
+      },
+      "glob": {
+       "type": "string",
+       "description": "Only files matching this glob, such as `*.rs`."
+      },
+      "hidden": {
+       "type": "boolean",
+       "description": "Also hidden files and directories (named with a leading `.`), such as `.github/`; files git ignores stay out."
+      }
+     }
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "glob",
+    "description": "Find files whose path matches a glob pattern such as `src/**/*.rs`. Skips files ignored by git and hidden files unless the pattern names one. Returns one path per line, at most 1000. `path` is the directory to search (default: the working root). Use it to find files by name, not `find` in `shell`.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "pattern": {
+       "type": "string",
+       "description": "The glob pattern to match, such as `**/*.rs`."
+      },
+      "path": {
+       "type": "string",
+       "description": "The directory to search; default the working root."
+      }
+     },
+     "required": [
+      "pattern"
+     ],
+     "additionalProperties": false
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "grep",
+    "description": "Search file contents with a regular expression (Rust regex syntax; prefix the pattern with `(?i)` to ignore case). Skips files ignored by git and, unless `hidden` is set or the glob names one, hidden files. Returns `path:line: text`, at most 200 matches; with `files`, only the paths of the files with a match. Use it to find code, not `grep` or `rg` in `shell`.",
+    "parameters": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "pattern": {
+       "type": "string",
+       "description": "The regular expression; with `files`, empty lists every file."
+      },
+      "path": {
+       "type": "string",
+       "description": "The directory or file to search; default the current directory."
+      },
+      "glob": {
+       "type": "string",
+       "description": "Only files matching this glob, such as `*.rs`."
+      },
+      "hidden": {
+       "type": "boolean",
+       "description": "Also hidden files and directories (named with a leading `.`), such as `.github/`; files git ignores stay out."
+      },
+      "files": {
+       "type": "boolean",
+       "description": "Only the paths of the files with a match, one per line."
+      }
+     },
+     "required": [
+      "pattern"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "write",
+    "description": "Write a file with the given content, replacing it if it exists and creating parent directories. Use it for new files and complete rewrites only; change part of a file with `edit`.",
+    "parameters": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "path": {
+       "type": "string",
+       "description": "The file to write."
+      },
+      "content": {
+       "type": "string",
+       "description": "The whole new content."
+      }
+     },
+     "required": [
+      "path",
+      "content"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "edit",
+    "description": "Replace text in one file. Each entry of `edits` replaces `old_text` with `new_text`. Copy each `old_text` from the file as `read` showed it, with just enough lines around the change to match one place, or set `replace_all` to replace every exact match. Text with no exact match still matches line by line once trailing whitespace and typographic quotes, dashes and spaces are evened out, but only where exactly one place matches that way, and the result says so. Make all changes to one file in one call, one entry per change: the entries apply in order, each to the text the ones before it left, and all of them or none. Returns the lines that now hold the changed text, and those lines and a few around each as the file now holds them, so there is no need to read it again.",
+    "parameters": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "path": {
+       "type": "string",
+       "description": "The file to edit."
+      },
+      "edits": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "old_text": {
+          "description": "The text to replace, copied from the file.",
+          "type": "string"
+         },
+         "new_text": {
+          "description": "The replacement.",
+          "type": "string"
+         },
+         "replace_all": {
+          "description": "Replace every match instead of exactly one.",
+          "type": "boolean"
+         }
+        },
+        "additionalProperties": false,
+        "required": [
+         "old_text",
+         "new_text"
+        ]
+       },
+       "description": "The replacements, in order: each matches the text the ones before it left.",
+       "minItems": 1
+      }
+     },
+     "required": [
+      "path",
+      "edits"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "shell",
+    "description": "Run a shell command with `sh -c` in the current directory, or in cwd. stdin is empty. Returns the exit code and stdout and stderr interleaved line by line; past 2000 lines or 50 KB, its first and last lines and the lines with errors or failures from between. The command is killed after timeout_secs (default 120, at most 600), or once it printed more than 10 MB; with the default, also once it printed nothing for 60s, so name timeout_secs for a build or wait that is quiet for long; a quick command needs none. Use it to build, test, run programs and use git. Each call starts a fresh `sh`: a `cd` or a variable does not carry over to the next call. Do not start programs that wait for input or never end, such as editors, pagers or servers in the foreground. Do not assume a git repository: a failed `git` command ends a `&&` chain. Check formatting only of files you changed.",
+    "parameters": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "command": {
+       "type": "string",
+       "description": "The command line."
+      },
+      "timeout_secs": {
+       "type": "integer",
+       "minimum": 0,
+       "description": "Seconds before the command is killed."
+      },
+      "cwd": {
+       "type": "string",
+       "description": "The directory to run it in, relative to the working directory; default the working directory."
+      }
+     },
+     "required": [
+      "command"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "webfetch",
+    "description": "Fetch a web page with one GET and return it as markdown (HTML is converted; other text is returned as it is). Takes only a `url` (http or https). Reads at most 10 MB and returns at most 100000 characters, saying so when it cuts. A redirect to another host is not followed: the new URL is returned, and you may call again with it. Times out after 30 seconds.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "url": {
+       "type": "string",
+       "description": "The http or https URL to fetch."
+      }
+     },
+     "required": [
+      "url"
+     ],
+     "additionalProperties": false
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "agent",
+    "description": "Start a subagent: a separate conversation with its own context that works on one task and returns a report. Give it everything it needs in `prompt`; it cannot see this conversation. By default the call waits for the report and returns it; with `background` set it returns an `agent_id` at once and the report arrives later as a notification. A subagent has a subset of your tools and never more authority than you, and every call it makes passes the same permission checks. Agent types:\n- `explore`: Reads and searches the workspace; cannot change anything.\n- `worker`: Reads, edits and writes files and runs shell commands.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "agent_type": {
+       "type": "string",
+       "enum": [
+        "explore",
+        "worker"
+       ],
+       "description": "Which kind of subagent to start."
+      },
+      "prompt": {
+       "type": "string",
+       "description": "The task, with all the context it needs."
+      },
+      "model": {
+       "type": "string",
+       "description": "Optional model for this agent: `$main`, `$guardian_default` or `<account>/<model>`. Defaults to the agent type's model."
+      },
+      "background": {
+       "type": "boolean",
+       "description": "Return an agent_id at once and deliver the report later."
+      }
+     },
+     "required": [
+      "agent_type",
+      "prompt"
+     ],
+     "additionalProperties": false
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "skill",
+    "description": "Load a skill: instructions for a kind of task, named in the skill list of the system prompt. Takes the skill's `name` and returns its text, which you then follow.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "name": {
+       "type": "string",
+       "description": "The skill's name, from the skill list."
+      }
+     },
+     "required": [
+      "name"
+     ],
+     "additionalProperties": false
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "send_message",
+    "description": "Send a message to another running agent: your parent, one of your subagents, a sibling (another subagent of your parent) or `main`, the main conversation. The message is queued and the recipient reads it at its next turn, marked with your agent id. Returns `{\"status\":\"queued\"}`, or an error when the agent is not running.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "to": {
+       "type": "string",
+       "description": "An agent id, or `main`."
+      },
+      "message": {
+       "type": "string",
+       "description": "What to tell it."
+      }
+     },
+     "required": [
+      "to",
+      "message"
+     ],
+     "additionalProperties": false
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "ask_user_question",
+    "description": "Ask the user 1 to 4 multiple-choice questions when you need a decision or a missing detail that you cannot reasonably infer. Each question has a short `header`, 2 to 4 `options` (a `label` and a `description` each) and `multiSelect`. The user can always type their own answer, so do not add an \"Other\" option. Returns the answers. In a session nobody can answer, it says so and you must proceed on your best judgment.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "questions": {
+       "type": "array",
+       "minItems": 1,
+       "maxItems": 4,
+       "description": "The questions to ask, in order.",
+       "items": {
+        "type": "object",
+        "properties": {
+         "question": {
+          "type": "string",
+          "description": "The complete question, ending with a question mark."
+         },
+         "header": {
+          "type": "string",
+          "maxLength": 12,
+          "description": "A very short label shown as a chip."
+         },
+         "options": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 4,
+          "items": {
+           "type": "object",
+           "properties": {
+            "label": {
+             "type": "string",
+             "description": "The choice, in a few words."
+            },
+            "description": {
+             "type": "string",
+             "description": "What choosing it means."
+            }
+           },
+           "required": [
+            "label",
+            "description"
+           ],
+           "additionalProperties": false
+          }
+         },
+         "multiSelect": {
+          "type": "boolean",
+          "description": "Whether more than one option may be chosen."
+         }
+        },
+        "required": [
+         "question",
+         "header",
+         "options"
+        ],
+        "additionalProperties": false
+       }
+      }
+     },
+     "required": [
+      "questions"
+     ],
+     "additionalProperties": false
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "todo_write",
+    "description": "Keep a task list for multi-step work. Each call replaces the whole list, so send every item each time, with its current status. At most one item may be in_progress. Up to 50 items of 500 characters; an empty list clears it.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "todos": {
+       "type": "array",
+       "description": "The complete task list.",
+       "items": {
+        "type": "object",
+        "properties": {
+         "content": {
+          "type": "string",
+          "description": "What the task is."
+         },
+         "status": {
+          "type": "string",
+          "enum": [
+           "pending",
+           "in_progress",
+           "completed"
+          ]
+         }
+        },
+        "required": [
+         "content",
+         "status"
+        ],
+        "additionalProperties": false
+       }
+      }
+     },
+     "required": [
+      "todos"
+     ],
+     "additionalProperties": false
+    }
+   }
+  }
+ ],
+ "stream_options": {
+  "include_usage": true
+ },
+ "stream": true
+}

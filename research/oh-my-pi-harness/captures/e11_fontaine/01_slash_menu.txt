@@ -1,0 +1,40 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+⚠ Guardian is running on your main model `go/deepseek-v4.1-flash`
+  No benchmark-validated guardian model is available on your accounts — set `[guardian] model` or run /guardian-model
+┌ commands ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│> /add-dir <path>  add a workspace root                                                                               │
+│  /agents  the background agents panel                                                                                │
+│  /branch [name]  carry on in a copy of this session                                                                  │
+│  /clear  start over with an empty context                                                                            │
+│  /compact [focus]  summarize the conversation to free context                                                        │
+│  /config  browse the settings and change a few preferences                                                           │
+│  /context [all]  show what fills the context window                                                                  │
+│  /copy [n]  copy the latest assistant reply to the clipboard                                                         │
+│↑/↓ select · Tab complete · Enter run · Esc close                                                                     │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ message · Enter sends · Alt+Enter new line ──────────────────────────────────────────────────────────────────────────┐
+│/                                                                                                                     │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ manual · go/deepseek-v4.1-flash · shift+tab mode · /add-dir · /denied · /model · ctrl+t agents · /exit

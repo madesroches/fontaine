@@ -1,0 +1,6 @@
+tools:
+  approvalMode: write
+bash:
+  patterns:
+    - match: "git status*"
+      approval: allow

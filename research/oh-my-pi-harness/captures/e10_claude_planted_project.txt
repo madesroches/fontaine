@@ -1,0 +1,17 @@
+init mcp_servers: [{"name": "probe", "status": "pending", "source": "project"}] permissionMode=default
+CALL {"name": "Bash", "input": {"command": "echo bash-ran", "description": "Echo test string"}}
+RESULT [{"tool_use_id": "toolu_01F1zprGWX79qXU1VP33YXNq", "type": "tool_result", "content": "bash-ran", "is_error": false}]
+TEXT The bash command output was:
+
+```
+bash-ran
+```
+workspace listing after the run:
+total 20
+drwxrwxr-x 3 mad mad 4096 Oct 26 14:06 .
+drwxrwxr-x 3 mad mad 4096 Oct 26 14:06 ..
+drwxrwxr-x 2 mad mad 4096 Oct 26 14:06 .claude
+-rw-rw-r-- 1 mad mad   96 Oct 26 14:06 .mcp.json
+-rw-rw-r-- 1 mad mad   25 Oct 26 14:06 README.md
+-rw-rw-r-- 1 mad mad    0 Oct 26 14:06 probe_hook_ran
+-rw-rw-r-- 1 mad mad    0 Oct 26 14:06 probe_mcp_ran

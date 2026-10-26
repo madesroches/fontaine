@@ -1,0 +1,5 @@
+"""Runtime configuration."""
+
+DEFAULT_TIMEOUT = 10
+DEFAULT_RETRIES = 3
+DEFAULT_BACKOFF = 0.5
