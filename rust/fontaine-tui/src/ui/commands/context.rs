@@ -14,6 +14,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             );
             return;
         }
+        let had_goal = runtime.session.goal().is_active();
         match runtime.clear_conversation().await {
             Ok(()) => {
                 self.app.transcript.clear();
@@ -23,6 +24,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.app.transcript.notice(
                     "cleared the conversation; the session, its permissions and its mode carry on",
                 );
+                if had_goal {
+                    self.app.transcript.notice("the goal was cleared with it");
+                }
             }
             Err(e) => self
                 .app
@@ -61,12 +65,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.running = true;
         let mut closed = false;
         let result = {
-            let mut run = Box::pin(runtime.session.compact_logged(
-                &runtime.models.main.completion,
-                runtime.models.main.catalog_billed(),
-                CompactReason::Asked { focus },
-                runtime.approver(),
-            ));
+            let mut run = Box::pin(runtime.compact_with(CompactReason::Asked { focus }));
             match self.serve_while(runtime, &mut run, Serve::Queueing).await {
                 Ok(result) => Some(result),
                 Err(end) => {

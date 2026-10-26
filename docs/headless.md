@@ -47,9 +47,9 @@ A headless run takes its credentials from `api_key_env` or from a `credentials.t
 data directory; it never prompts. Store them in the terminal UI with `/login`, or provision the
 file in CI. See [Credentials](configuration.md#credentials).
 
-The budget is checked between model calls. A call that pushes the spend over the cap stops the
+The budget is checked between model calls, and before each goal evaluation and goal turn. A call that pushes the spend over the cap stops the
 run before its tool calls execute; an answer that was already complete is kept. The spend includes
-the guardian's calls and the subagents' model calls.
+the guardian's calls, the goal evaluator's calls and the subagents' model calls.
 
 ## Scheduled prompts
 
@@ -57,11 +57,31 @@ A headless run exits after its answer, so a scheduled task could never fire: the
 (`cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup`) are not registered and `/loop` does
 not exist. See [Scheduled prompts](tui.md#scheduled-prompts) for the terminal UI.
 
+## Goals
+
+`-p "/goal <condition>"` runs a [goal](tui.md#goals) to its end in one invocation. It is the only
+slash command headless understands, and only as a message that starts with `/goal` followed by a
+space or the end of the text. The first turn works on the condition; after each turn the evaluator
+(the guardian's model) judges it, and *not met* runs another turn, until the condition is *met* or
+*impossible*, or the goal pauses on `[goal] max_turns`, `[goal] max_cost_usd`, `--max-turns`,
+`--max-budget-usd`, the no-progress cap, a failed turn or an evaluator that gave no verdict. The
+spend of the evaluator counts toward `--max-budget-usd` and `total_cost_usd`.
+
+`-p "/goal"` prints the goal's status and `-p "/goal clear"` removes it; neither calls a model, and
+the `result` has `num_turns` 0. A goal restored by `--continue` or `--resume` is evaluated after the
+message's turn ends, whatever the message was.
+
+With `stream-json`, each evaluation prints a `goal` event, and the `result` gains a `goal` object
+(see [Output](#output)). The exit code is 0 only when the goal ended *met*; a goal that ended
+*impossible* or paused exits 1, with `subtype` unchanged. With `--output-format text`, such a run
+prints `fontaine: goal impossible: <reason>` or `fontaine: goal paused: <why>` on stderr instead of
+the last answer.
+
 ## Sessions
 
 Each run is a session, named by a UUID: the one given with `--session-id`, or a fresh one. Its
 files live in `<data dir>/sessions/<session id>/`, created readable by the current user only. The
-conversation and the task list (`todos.json`) are kept there between turns, and the conversation is compacted by a summarizing call when it
+conversation, the task list (`todos.json`) and the [goal](#goals) (`goal.json`) are kept there between turns, and the conversation is compacted by a summarizing call when it
 outgrows the model's context window less a reserve, or earlier when
 [`[context] autocompact_window`](configuration.md#context) is set (only for a model the catalog
 lists, and, without that setting, only when its window is known; the summarizing call counts
@@ -95,7 +115,7 @@ their reports.
 | Code | Meaning |
 |---|---|
 | 0 | The run completed. Denied tool calls do not change this. |
-| 1 | A run error: a provider or model failure, or a stop from `--max-turns` or `--max-budget-usd`. |
+| 1 | A run error: a provider or model failure, a stop from `--max-turns` or `--max-budget-usd`, or a [goal](#goals) that ended impossible or paused. |
 | 2 | A configuration or usage error. |
 
 ## Questions
@@ -145,6 +165,7 @@ these is one line, in this order:
 | `tool_call` | The model called a tool | `tool_use_id`, `tool`, `args` |
 | `gate_decision` | A tool call was adjudicated | `tool_use_id`, `agent_id` (`root` for the main conversation, `agent-N` for a subagent), `tier`, `decision`, `rule`; for guardian decisions also `explanation`, `confidence`, `guardian_model` and, when the guardian failed closed, `fail_closed_reason` (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`); when a `[guardian.screen]` stage scored the call also `screen_risk`, `screen_allow_risk` and `screen_steering` (the allow reads, when they ran) and `screen_outcome` (`stop`, `allow`, `pass` or `unavailable`) |
 | `tool_result` | A tool answered | `tool_use_id`, `tool`, `success`, `text` (what the model received) |
+| `goal` | The evaluator judged a [goal](#goals) | `verdict` (`met`, `not_met`, `impossible`, or `failed` when no verdict arrived), `reason`, `evaluations` (verdicts so far) |
 | `result` | At the end of every turn | see below |
 
 `tier` is the stage of the permission pipeline that decided: `deny_rule`, `ask_rule`,
@@ -162,9 +183,10 @@ The `result` object:
 | `structured_output` | With `--json-schema`, the answer parsed as JSON |
 | `num_turns` | Model calls made so far in the session |
 | `duration_ms` | Wall time of the turn |
-| `total_cost_usd` | Spend so far, main model plus guardian plus subagents, or null when none is priced |
-| `usage` | `main`, `guardian` and `subagents`, each with `input_tokens`, `output_tokens` and `cost_usd`; `main` also has `cache_read_input_tokens` and `cache_creation_input_tokens`, the parts of its input read from and written to the provider's prompt cache (0 when the provider reports none); `guardian` totals every adjudication that reached the model, subagents' included (cached verdicts cost nothing); `subagents` is their model calls |
+| `total_cost_usd` | Spend so far, main model plus guardian plus goal evaluator plus subagents, or null when none is priced |
+| `usage` | `main`, `guardian` and `subagents`, each with `input_tokens`, `output_tokens` and `cost_usd`; `main` also has `cache_read_input_tokens` and `cache_creation_input_tokens`, the parts of its input read from and written to the provider's prompt cache (0 when the provider reports none); `guardian` totals every adjudication that reached the model, subagents' included (cached verdicts cost nothing); `subagents` is their model calls; `goal` is the goal evaluator's calls, including attempts that gave no verdict |
 | `denials` | One entry per denied call: `tool`, `tier`, `rule`, `explanation` |
+| `goal` | Only when a goal was set, continued, queried or cleared: `condition`, `status` (`active`, `met`, `impossible`, `paused` or `cleared`), `evaluations` and `reason` (the evaluator's last reason, or why it paused) |
 
 Usage and cost accumulate over the session, so each turn's `result` reports the totals so far.
 

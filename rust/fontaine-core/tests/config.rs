@@ -1480,3 +1480,63 @@ mod provenance {
         assert_eq!(slots, [Slot::Cli, Slot::User]);
     }
 }
+
+#[test]
+fn the_goal_limits_default_and_only_the_user_scopes_set_them() {
+    let w = World::new();
+    let goal = w.load().unwrap().goal;
+    assert_eq!((goal.max_turns, goal.max_cost_usd), (50, None));
+
+    w.user_file("[goal]\nmax_turns = 10\nmax_cost_usd = 2.5\n");
+    let goal = w.load().unwrap().goal;
+    assert_eq!((goal.max_turns, goal.max_cost_usd), (10, Some(2.5)));
+    let cli = w.cli_file("[goal]\nmax_turns = 3\n");
+    let goal = w.load_with_settings(&cli).unwrap().goal;
+    assert_eq!((goal.max_turns, goal.max_cost_usd), (3, Some(2.5)));
+
+    for text in [
+        "[goal]\nmax_turns = 1000\n",
+        "[goal]\nmax_cost_usd = 0\n",
+        "[goal]\nmax_cost_usd = 5.0\n",
+    ] {
+        user_ok(text);
+    }
+}
+
+#[test]
+fn a_repository_cannot_lengthen_an_unattended_goal_run() {
+    for column in [Column::Project, Column::ProjectLocal] {
+        for text in [
+            "[goal]\nmax_turns = 1000\n",
+            "[goal]\nmax_cost_usd = 1000.0\n",
+        ] {
+            let err = parse_settings(text, Path::new("p.toml"), column).unwrap_err();
+            assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
+        }
+    }
+    let w = World::new();
+    w.project_file("[goal]\nmax_turns = 1000\n");
+    assert!(matches!(w.load(), Err(ConfigError::Scope { .. })));
+}
+
+#[test]
+fn the_goal_limits_are_validated() {
+    for (text, key) in [
+        ("[goal]\nmax_turns = 0\n", "goal.max_turns"),
+        ("[goal]\nmax_turns = 1001\n", "goal.max_turns"),
+        ("[goal]\nmax_cost_usd = -1.0\n", "goal.max_cost_usd"),
+        ("[goal]\nmax_cost_usd = nan\n", "goal.max_cost_usd"),
+        ("[goal]\nmax_cost_usd = inf\n", "goal.max_cost_usd"),
+    ] {
+        let err = parse_settings(text, Path::new("u.toml"), Column::User).unwrap_err();
+        assert!(err.to_string().contains(key), "{text}: {err}");
+    }
+    assert!(
+        parse_settings(
+            "[goal]\nmodel = \"a/b\"\n",
+            Path::new("u.toml"),
+            Column::User
+        )
+        .is_err()
+    );
+}

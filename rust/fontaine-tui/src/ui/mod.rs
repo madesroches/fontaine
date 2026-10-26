@@ -1,4 +1,5 @@
 mod commands;
+mod goal;
 pub(crate) use commands::Launcher;
 mod mcp;
 mod providers;
@@ -38,6 +39,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let scheduling = runtime.config.schedule.enabled;
         self.app.scheduled = if scheduling { scheduler.count() } else { 0 };
         self.app.wakeup_pending = scheduling && scheduler.wakeup_pending();
+        self.app.goal = runtime.session.goal().indicator();
         // The completion index is advisory: a stale list only misses a suggestion.
         let files = read_recovering(&runtime.files).clone();
         self.app.set_files(files);
@@ -212,6 +214,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.show_scheduler_warning(runtime);
                 tick = scheduler.until_next_wake().map(|wait| wait.min(IDLE_POLL));
             }
+            if let Some(flow) = self.goal_step(runtime).await {
+                if flow.is_break() {
+                    return;
+                }
+                continue;
+            }
             self.draw(runtime);
             let action = tokio::select! {
                 input = self.input.recv() => match input {
@@ -316,6 +324,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
             Some(Command::Loop(argument)) => {
                 return self.loop_command(runtime, &text, &argument).await;
+            }
+            Some(Command::Goal(argument)) => {
+                return self.goal_command(runtime, &text, &argument).await;
             }
             Some(Command::Plan(description)) => {
                 runtime.state.set_mode(PermissionMode::Plan);

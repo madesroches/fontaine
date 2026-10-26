@@ -9,6 +9,7 @@
     { "$ref": "#/$defs/tool_call" },
     { "$ref": "#/$defs/gate_decision" },
     { "$ref": "#/$defs/tool_result" },
+    { "$ref": "#/$defs/goal" },
     { "$ref": "#/$defs/result" },
     { "$ref": "#/$defs/user_input" }
   ],
@@ -199,6 +200,21 @@
         }
       ]
     },
+    "goal": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        {
+          "type": "object",
+          "required": ["type", "verdict", "reason", "evaluations"],
+          "properties": {
+            "type": { "const": "goal" },
+            "verdict": { "enum": ["met", "not_met", "impossible", "failed"] },
+            "reason": { "type": "string" },
+            "evaluations": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
     "result": {
       "allOf": [
         { "$ref": "#/$defs/envelope" },
@@ -238,7 +254,18 @@
               "properties": {
                 "main": { "$ref": "#/$defs/main_usage_bucket" },
                 "guardian": { "$ref": "#/$defs/usage_bucket" },
-                "subagents": { "$ref": "#/$defs/usage_bucket" }
+                "subagents": { "$ref": "#/$defs/usage_bucket" },
+                "goal": { "$ref": "#/$defs/usage_bucket" }
+              }
+            },
+            "goal": {
+              "type": "object",
+              "required": ["condition", "status", "evaluations", "reason"],
+              "properties": {
+                "condition": { "type": "string" },
+                "status": { "enum": ["active", "met", "impossible", "paused", "cleared"] },
+                "evaluations": { "type": "integer", "minimum": 0 },
+                "reason": { "type": ["string", "null"] }
               }
             },
             "denials": {

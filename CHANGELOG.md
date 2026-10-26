@@ -8,6 +8,13 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `/goal <condition>` keeps the session working until a separate model judges the condition met, in
+  the terminal UI and as `fontaine -p "/goal ..."`. After each turn the evaluator (the guardian's
+  model) answers met, not met or impossible; not met starts another turn as a harness note, never a
+  user message. Unattended stretches are bounded by `[goal] max_turns`, an optional
+  `[goal] max_cost_usd` and a no-progress cap, a failed turn or evaluator pauses the goal, and the
+  goal is restored on `--continue`/`--resume`. Headless adds a `goal` event, `result.goal` and
+  `usage.goal`, and exits 1 when the goal ends impossible or paused (#17).
 - Agent and models
   - The agent loop runs over rig. Models come from `[accounts.<name>]` entries mapped to provider
     clients (Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible endpoints) and are named

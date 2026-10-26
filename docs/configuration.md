@@ -107,6 +107,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[agents]` keys and `[agents.types]` | no | yes | yes |
 | `[context] autocompact_window` | no | yes | yes |
 | `[schedule] enabled` | no | no | yes |
+| `[goal]` keys | no | no | yes |
 | `[shell_preclassifier] allow_extra` | no | yes | yes |
 | Agent files `agents/*.md` | narrowing only | n/a | n/a |
 | `[[hooks.*]]` | yes, after workspace trust; `allow` ignored | yes, after workspace trust | yes |
@@ -684,6 +685,22 @@ autocompact_window = 150000
 enabled = false
 ```
 
+### `[goal]`
+
+| Key | Meaning | Default |
+|---|---|---|
+| `max_turns` | Goal turns in one unattended stretch, 1 to 1000. Reaching it [pauses the goal](tui.md#goals); your next message starts a fresh stretch. | `50` |
+| `max_cost_usd` | The stretch's spend (the main model, compaction, the guardian, the goal evaluator and subagents) that pauses the goal, zero or more. Inactive for a model with no known price. | unset |
+
+A goal turn runs with nobody typing, so only the user file and `--settings` can set these. The
+no-progress cap (8 verdicts in a row after turns that called no tool) is fixed.
+
+```toml
+[goal]
+max_turns = 50
+max_cost_usd = 5.0
+```
+
 ### `[shell_preclassifier]`
 
 | Key | Meaning | Default |
@@ -891,5 +908,5 @@ with code 2 and names the variable or flag.
 | Code | Meaning |
 |---|---|
 | 0 | Success. A headless run that finished exits 0 even when tool calls were denied. |
-| 1 | A run error: a provider or model failure, a failed model listing, or a run stopped by `--max-turns` or `--max-budget-usd`. |
+| 1 | A run error: a provider or model failure, a failed model listing, a run stopped by `--max-turns` or `--max-budget-usd`, or a headless [goal](tui.md#goals) that ended impossible or paused. |
 | 2 | Configuration or usage error. |

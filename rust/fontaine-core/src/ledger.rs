@@ -125,6 +125,23 @@ pub enum Record {
         cron: String,
         recurring: bool,
     },
+    /// A `/goal` was set, ended or paused. The condition is not recorded: it is in the
+    /// `UserMessage` of the line that set it, and a goal turn is a harness note, never something
+    /// the human said.
+    Goal {
+        event: GoalEvent,
+        evaluations: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalEvent {
+    Set,
+    Met,
+    Impossible,
+    Cleared,
+    Paused,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,7 +288,8 @@ impl LedgerView {
             | Record::Agent { .. }
             | Record::UserShell { .. }
             | Record::Scheduled { .. }
-            | Record::SessionNamed { .. } => {}
+            | Record::SessionNamed { .. }
+            | Record::Goal { .. } => {}
         }
     }
 }

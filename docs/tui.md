@@ -62,7 +62,7 @@ tools are checked like any `arbitrary` tool. A headless run does not ask and loa
 
 ## Status bar
 
-The bar shows the permission mode, the model, how many subagents are running, `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, and a key hint. The mode labels are `manual`,
+The bar shows the permission mode, the model, how many subagents are running, `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, `◎ goal 12m` while a [goal](#goals) is active (`◎ goal paused` when it waits for you), and a key hint. The mode labels are `manual`,
 `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on` and `dontAsk`.
 
 ## Keys
@@ -282,6 +282,7 @@ since a transcript can hold secrets, and an existing file is an error: an export
 | `/denied` | Lists the calls the guardian denied this session, with their rule label and explanation. Up and Down select; `r` approves the selected call once, as if you had approved it at a prompt, and tells the agent on its next turn that it may retry exactly that call. The retry runs without asking the guardian, never enters the verdict cache and does not count toward the denial limits. The deterministic floor still runs first, so an `ask` rule or a critical path still prompts. Esc closes the list. |
 | `/exit`, `/quit` | Leave. |
 | `/export [<path>]` | Writes the conversation to a Markdown file, owner-only, never over an existing file. See [Sessions](#sessions). |
+| `/goal [<condition> \| clear]` | Keeps working until the condition is met; see [Goals](#goals). Bare `/goal` shows the goal's status. |
 | `/guardian-model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model) limited to the models the guardian could be. With one, pins the guardian to that model for the live session and saves it as `[guardian] model`. A model whose account has no credential becomes an unavailable guardian, which the next adjudication reports. When a higher scope (`--settings` or a project-local file) sets `[guardian] model`, the notice adds that the scope wins from the next launch. |
 | `/help` | Lists the built-in commands, your user-invocable skills and the main keys. |
 | `/hooks` | Lists the [hooks](hooks.md) by event with their matcher, command and scope, and marks a repository's hooks that did not load because the workspace is not trusted. |
@@ -570,6 +571,53 @@ task, because it drops the intent they were scheduled under. A headless run does
 have them, and `[schedule] enabled = false` turns them off; see
 [Configuration](configuration.md#schedule). There is no random delay: a task runs at its scheduled
 minute.
+
+## Goals
+
+`/goal <condition>` keeps the session working without a prompt per step. It starts a turn at once
+with the condition as the directive. After each turn a separate model, the guardian's, reads the
+condition and the conversation and answers *met*, *not met* or *impossible* with a reason:
+
+- *Not met* starts another turn. The transcript shows `goal: not met — <reason>` and the next turn
+  is told the reason.
+- *Met* ends the goal: `Goal achieved: <condition> (3 evaluations, 4m, 182k tokens)`.
+- *Impossible* ends it too, with the reason: `Goal impossible: <reason>`.
+
+The condition is at most 4,000 characters and states something the transcript can show, such as "the
+tests in `src/parser` pass and `cargo clippy` is clean": the evaluator calls no tools and judges
+only from what the conversation displays. Setting a new goal replaces the old one.
+
+- `/goal` alone shows the condition, how long it has run, the evaluations, the tokens spent and the
+  last reason, or `No goal set` and the last goal that was achieved.
+- `/goal clear` (also `stop`, `off`, `reset`, `none`, `cancel`) removes it. `/clear` removes it too.
+
+A goal turn is announced by its verdict and carries a note saying it is a goal turn and not you. It
+is not a user message, so what you typed in the `/goal` line stays the only intent the guardian
+reads, and the note says it does not widen what you asked. Calls a goal turn makes go through the
+same permission pipeline and mode as any other; manual mode still asks. The evaluator's reason is
+model output derived from tool results, so it passes through the tool-result scanner and is cut to
+1,000 characters before the main model reads it.
+
+**Pausing.** A goal runs unattended, so every stretch is bounded. The goal pauses, staying set,
+when:
+
+- `[goal] max_turns` goal turns (50 by default) have run since you last sent a message;
+- the spend of the stretch passes `[goal] max_cost_usd`, when that is set and the model is priced;
+- 8 verdicts in a row came after turns that called no tool;
+- a turn fails or is interrupted with Esc, or Esc interrupts the evaluation; or
+- the evaluator gives no verdict (an error, a timeout, an unreadable answer, or a guardian model
+  that is unavailable).
+
+The transcript then says `Goal paused: <why>. Send a message to continue.` The next message you
+send starts a fresh stretch and the goal is evaluated again after its turn. Text you type while a
+goal turn or an evaluation runs is queued as for any turn, and is sent as your next turn ahead of
+the goal's.
+
+A goal is saved with the session (`goal.json`) and comes back on `--continue`, `--resume` and
+`--fork-session` with its counters reset: the clock, the evaluations and the spend baseline start
+again. While background subagents run, the goal waits and is evaluated after the turn that reads
+their reports. Headless runs accept `-p "/goal <condition>"`; see
+[Headless runs](headless.md#goals). The limits are under [Configuration](configuration.md#goal).
 
 ## The agents panel
 

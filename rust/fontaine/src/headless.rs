@@ -1,6 +1,8 @@
 //! The non-interactive surface, `fontaine -p`. Its output is a versioned contract: see
 //! `docs/headless.md` and `docs/schemas/headless-v1.schema.json`.
 
+mod goal;
+
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 
@@ -8,6 +10,7 @@ use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::{Decision, DecisionRecord};
 use fontaine_core::config::PermissionMode;
 use fontaine_core::gate::GuardianUsage;
+use fontaine_core::goal::{GoalArg, Step, first_turn_prompt};
 use fontaine_core::ledger::Record;
 use fontaine_core::trust;
 use fontaine_core::turn::{
@@ -248,12 +251,19 @@ struct Outcome {
     denials: Vec<Value>,
 }
 
-/// Session spend: the main model, the guardian and the subagents' models. Null only when none
-/// is priced.
-fn session_cost(main: Option<f64>, guardian: Option<f64>, subagents: Option<f64>) -> Option<f64> {
-    match (main, guardian, subagents) {
-        (None, None, None) => None,
-        (m, g, s) => Some(m.unwrap_or(0.0) + g.unwrap_or(0.0) + s.unwrap_or(0.0)),
+/// Session spend: the main model, the guardian, the goal evaluator and the subagents' models.
+/// Null only when none is priced.
+fn session_cost(
+    main: Option<f64>,
+    guardian: Option<f64>,
+    goal: Option<f64>,
+    subagents: Option<f64>,
+) -> Option<f64> {
+    match (main, guardian, goal, subagents) {
+        (None, None, None, None) => None,
+        (m, g, e, s) => {
+            Some(m.unwrap_or(0.0) + g.unwrap_or(0.0) + e.unwrap_or(0.0) + s.unwrap_or(0.0))
+        }
     }
 }
 
@@ -262,17 +272,36 @@ fn spent(runtime: &AgentRuntime, totals: &Totals) -> Option<f64> {
     session_cost(
         totals.cost_usd,
         runtime.state.guardian_usage().cost_usd,
+        runtime.state.goal_usage().cost_usd,
         runtime.state.subagent_usage().cost_usd,
     )
+}
+
+/// What the models other than the main one have cost.
+struct Others {
+    guardian: GuardianUsage,
+    goal: GuardianUsage,
+    subagents: GuardianUsage,
+}
+
+impl Others {
+    fn of(runtime: &AgentRuntime) -> Others {
+        Others {
+            guardian: runtime.state.guardian_usage(),
+            goal: runtime.state.goal_usage(),
+            subagents: runtime.state.subagent_usage(),
+        }
+    }
 }
 
 fn result_event(
     session_id: &str,
     outcome: &Outcome,
     totals: &Totals,
-    guardian: &GuardianUsage,
-    subagents: &GuardianUsage,
+    others: &Others,
+    goal: Option<&goal::GoalReport>,
 ) -> Value {
+    let (guardian, subagents) = (&others.guardian, &others.subagents);
     let mut fields = json!({
         "subtype": outcome.subtype.name(),
         "is_error": outcome.subtype != Subtype::Success,
@@ -280,7 +309,12 @@ fn result_event(
         "error": outcome.error,
         "num_turns": totals.model_calls,
         "duration_ms": outcome.started.elapsed().as_millis() as u64,
-        "total_cost_usd": session_cost(totals.cost_usd, guardian.cost_usd, subagents.cost_usd),
+        "total_cost_usd": session_cost(
+            totals.cost_usd,
+            guardian.cost_usd,
+            others.goal.cost_usd,
+            subagents.cost_usd,
+        ),
         "usage": {
             "main": {
                 "input_tokens": totals.input_tokens,
@@ -299,11 +333,19 @@ fn result_event(
                 "output_tokens": subagents.output_tokens,
                 "cost_usd": subagents.cost_usd,
             },
+            "goal": {
+                "input_tokens": others.goal.input_tokens,
+                "output_tokens": others.goal.output_tokens,
+                "cost_usd": others.goal.cost_usd,
+            },
         },
         "denials": outcome.denials,
     });
     if let (Some(structured), Some(map)) = (&outcome.structured, fields.as_object_mut()) {
         map.insert("structured_output".into(), structured.clone());
+    }
+    if let (Some(goal), Some(map)) = (goal, fields.as_object_mut()) {
+        map.insert("goal".into(), goal.json());
     }
     event("result", session_id, fields)
 }
@@ -562,8 +604,218 @@ async fn wait_for_news(runtime: &AgentRuntime, over_cap: &dyn Fn() -> bool) -> N
     }
 }
 
-/// Runs the headless session and returns the process exit code: 0 completed, 1 run error,
-/// 2 usage error.
+fn over_cap(runtime: &AgentRuntime, options: &Options, totals: &Totals) -> bool {
+    matches!(
+        (options.max_budget_usd, spent(runtime, totals)),
+        (Some(cap), Some(spent)) if spent > cap
+    )
+}
+
+fn budget_stop() -> Outcome {
+    Outcome {
+        subtype: Subtype::MaxBudget,
+        text: String::new(),
+        structured: None,
+        error: Some("the run's spend exceeded --max-budget-usd".to_string()),
+        started: std::time::Instant::now(),
+        denials: Vec::new(),
+    }
+}
+
+/// What must hold before a paid call starts: a text-only answer that crossed the cap ends its
+/// own turn as a success, so the cap is enforced here, and again after the summarizing call
+/// that may precede a turn, which is paid too. `Some` is the stop that replaces the call.
+async fn stop_before_call(
+    runtime: &AgentRuntime,
+    options: &Options,
+    totals: &mut Totals,
+) -> Option<Outcome> {
+    if over_cap(runtime, options, totals) {
+        return Some(budget_stop());
+    }
+    let compaction = runtime.compact_if_needed().await;
+    if let Some(usage) = compaction.usage() {
+        totals.add(usage);
+    }
+    over_cap(runtime, options, totals).then(budget_stop)
+}
+
+/// Appends a further turn's outcome to the message's: its denials join the earlier ones and the
+/// message keeps the time it started.
+fn merge(earlier: Outcome, mut next: Outcome) -> Outcome {
+    next.started = earlier.started;
+    next.denials = earlier.denials.into_iter().chain(next.denials).collect();
+    next
+}
+
+/// One turn, started once `stop_before_call` finds nothing to stop it.
+async fn guarded_turn(
+    runtime: &AgentRuntime,
+    options: &Options,
+    totals: &mut Totals,
+    stream_events: bool,
+    prompt: String,
+) -> Outcome {
+    if let Some(stop) = stop_before_call(runtime, options, totals).await {
+        runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
+        return stop;
+    }
+    let outcome = run_one(runtime, options, prompt, totals, stream_events).await;
+    runtime.goal_turn_ended(Some(&goal::turn_end(&outcome)));
+    outcome
+}
+
+/// Background subagents still running when the answer comes are waited for: their reports
+/// reach the main conversation as notifications, each a turn of its own, until none is running.
+/// A run stopped by a limit kills them and drops their reports.
+async fn settle(
+    runtime: &AgentRuntime,
+    options: &Options,
+    totals: &mut Totals,
+    stream_events: bool,
+    mut outcome: Outcome,
+) -> Outcome {
+    while outcome.subtype == Subtype::Success {
+        match wait_for_news(runtime, &|| over_cap(runtime, options, totals)).await {
+            News::Prompt(prompt) => {
+                let next = run_one(runtime, options, prompt, totals, stream_events).await;
+                runtime.goal_turn_ended(Some(&goal::turn_end(&next)));
+                outcome = merge(outcome, next);
+            }
+            News::OverBudget => {
+                let stop = budget_stop();
+                runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
+                outcome = merge(outcome, stop);
+            }
+            News::Done => break,
+        }
+    }
+    outcome
+}
+
+/// What a message came to.
+struct Handled {
+    outcome: Outcome,
+    goal: Option<goal::GoalReport>,
+    /// The message ran turns under a goal, so how the goal ended says how the run did.
+    goal_ran: bool,
+}
+
+/// One user message. `/goal <condition>` keeps running turns after the first until the
+/// evaluator finds the condition met, or the goal ends or pauses.
+async fn handle_message(
+    runtime: &AgentRuntime,
+    options: &Options,
+    totals: &mut Totals,
+    stream_events: bool,
+    text: String,
+) -> Handled {
+    let session_id = runtime.session.id.clone();
+    let mut involved = runtime.session.goal().is_active();
+    let prompt = match goal::command(&text) {
+        None => {
+            runtime.append(Record::UserMessage { text: text.clone() });
+            text
+        }
+        Some(GoalArg::Status) => {
+            let (outcome, goal) = goal::status_outcome(runtime);
+            return Handled {
+                outcome,
+                goal,
+                goal_ran: false,
+            };
+        }
+        Some(GoalArg::Clear) => {
+            let (outcome, goal) = goal::clear_outcome(runtime);
+            return Handled {
+                outcome,
+                goal,
+                goal_ran: false,
+            };
+        }
+        Some(GoalArg::Set(condition)) => {
+            if let Err(e) = runtime.set_goal(&condition) {
+                let outcome = Outcome {
+                    subtype: Subtype::Execution,
+                    text: String::new(),
+                    structured: None,
+                    error: Some(fontaine_tools::error_chain::chain(&e)),
+                    started: std::time::Instant::now(),
+                    denials: Vec::new(),
+                };
+                return Handled {
+                    outcome,
+                    goal: None,
+                    goal_ran: false,
+                };
+            }
+            involved = true;
+            runtime.append(Record::UserMessage { text });
+            first_turn_prompt(&condition)
+        }
+    };
+    runtime.goal_user_prompt();
+    let outcome = guarded_turn(runtime, options, totals, stream_events, prompt).await;
+    let mut outcome = settle(runtime, options, totals, stream_events, outcome).await;
+    let mut ended = None;
+    while involved && outcome.subtype == Subtype::Success {
+        let Some(pending) = runtime.next_goal_step() else {
+            break;
+        };
+        if let Some(stop) = stop_before_call(runtime, options, totals).await {
+            runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
+            outcome = merge(outcome, stop);
+            break;
+        }
+        let Some(applied) = runtime.evaluate_goal(&pending).await else {
+            break;
+        };
+        if stream_events {
+            emit_line(&goal::evaluation_event(
+                &session_id,
+                applied.judgment,
+                &applied.reason,
+                applied.evaluations,
+            ));
+        }
+        match applied.step {
+            Step::Continue(next) => {
+                let prompt = runtime.goal_prompt(&next).await;
+                let turn = guarded_turn(runtime, options, totals, stream_events, prompt).await;
+                outcome = settle(
+                    runtime,
+                    options,
+                    totals,
+                    stream_events,
+                    merge(outcome, turn),
+                )
+                .await;
+            }
+            Step::Done { event, summary } => {
+                ended = Some(goal::Ended {
+                    event,
+                    summary,
+                    reason: applied.reason,
+                });
+                break;
+            }
+            Step::Pause(_) => break,
+        }
+    }
+    let goal = if involved {
+        goal::report(runtime, ended)
+    } else {
+        None
+    };
+    Handled {
+        outcome,
+        goal,
+        goal_ran: involved,
+    }
+}
+
+/// Runs the headless session and returns the process exit code: 0 completed, 1 run error or a
+/// `/goal` that did not end met, 2 usage error.
 pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -> u8 {
     let mut input = match open_input(&mut options).await {
         Ok(input) => input,
@@ -582,7 +834,8 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
     }
 
     let mut totals = Totals::default();
-    let mut last: Option<Outcome> = None;
+    let mut last: Option<Handled> = None;
+    let mut goal_failure: Option<String> = None;
     let mut code = 0u8;
     loop {
         let text = match input.next().await {
@@ -593,78 +846,30 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
                 return 2;
             }
         };
-        runtime.append(Record::UserMessage { text: text.clone() });
-        // A text-only answer that crossed the cap ends its own turn as a success, so the cap is
-        // enforced here before a further paid call starts. The summarizing call that may
-        // precede a turn is paid too, so the cap is checked again after it.
-        let over_cap = |totals: &Totals| {
-            matches!(
-                (options.max_budget_usd, spent(&runtime, totals)),
-                (Some(cap), Some(spent)) if spent > cap
-            )
-        };
-        let budget_stop = || Outcome {
-            subtype: Subtype::MaxBudget,
-            text: String::new(),
-            structured: None,
-            error: Some("the run's spend exceeded --max-budget-usd".to_string()),
-            started: std::time::Instant::now(),
-            denials: Vec::new(),
-        };
-        let mut outcome = if over_cap(&totals) {
-            budget_stop()
-        } else {
-            let compaction = runtime
-                .session
-                .compact_if_needed(
-                    &runtime.models.main.completion,
-                    runtime.models.main.catalog_billed(),
-                    runtime.approver(),
-                )
-                .await;
-            if let Some(usage) = compaction.usage() {
-                totals.add(usage);
-            }
-            if over_cap(&totals) {
-                budget_stop()
-            } else {
-                run_one(&runtime, &options, text, &mut totals, stream_events).await
-            }
-        };
-        // Background subagents still running when the answer comes are waited for: their
-        // reports reach the main conversation as notifications, each a turn of its own, until
-        // none is running. A run stopped by a limit kills them and drops their reports.
-        while outcome.subtype == Subtype::Success {
-            match wait_for_news(&runtime, &|| over_cap(&totals)).await {
-                News::Prompt(prompt) => {
-                    let earlier = std::mem::take(&mut outcome.denials);
-                    let started = outcome.started;
-                    outcome = run_one(&runtime, &options, prompt, &mut totals, stream_events).await;
-                    outcome.started = started;
-                    let later = std::mem::take(&mut outcome.denials);
-                    outcome.denials = earlier.into_iter().chain(later).collect();
-                }
-                News::OverBudget => {
-                    outcome = budget_stop();
-                }
-                News::Done => break,
-            }
-        }
+        let handled = handle_message(&runtime, &options, &mut totals, stream_events, text).await;
+        let outcome = &handled.outcome;
         let failed = outcome.subtype != Subtype::Success;
+        // A goal that ended impossible or paused did not finish the task, even when the turn
+        // itself answered. A failed turn already says why.
+        goal_failure = handled
+            .goal
+            .as_ref()
+            .and_then(goal::GoalReport::failure)
+            .filter(|_| handled.goal_ran && !failed);
         if failed {
             runtime.state.agents().kill_all();
         }
         if stream_events {
             emit_line(&result_event(
                 &session_id,
-                &outcome,
+                outcome,
                 &totals,
-                &runtime.state.guardian_usage(),
-                &runtime.state.subagent_usage(),
+                &Others::of(&runtime),
+                handled.goal.as_ref(),
             ));
         }
-        last = Some(outcome);
-        if failed {
+        last = Some(handled);
+        if failed || goal_failure.is_some() {
             code = 1;
             break;
         }
@@ -679,16 +884,18 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
         OutputFormat::StreamJson => {}
         OutputFormat::Json => emit_line(&result_event(
             &session_id,
-            &last,
+            &last.outcome,
             &totals,
-            &runtime.state.guardian_usage(),
-            &runtime.state.subagent_usage(),
+            &Others::of(&runtime),
+            last.goal.as_ref(),
         )),
         OutputFormat::Text => {
-            if let Some(error) = &last.error {
+            if let Some(failure) = &goal_failure {
+                eprintln!("fontaine: {failure}");
+            } else if let Some(error) = &last.outcome.error {
                 eprintln!("fontaine: {error}");
             } else {
-                let _ = writeln!(std::io::stdout().lock(), "{}", last.text);
+                let _ = writeln!(std::io::stdout().lock(), "{}", last.outcome.text);
             }
         }
     }
@@ -697,19 +904,20 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
 
 #[cfg(test)]
 mod tests {
-    use super::{Outcome, Subtype, Totals, result_event, session_cost};
+    use super::{Others, Outcome, Subtype, Totals, result_event, session_cost};
     use fontaine_core::gate::GuardianUsage;
 
     #[test]
     fn session_cost_adds_the_guardian_and_subagents_and_is_null_only_when_none_is_priced() {
-        assert_eq!(session_cost(None, None, None), None);
-        assert_eq!(session_cost(Some(0.5), None, None), Some(0.5));
-        assert_eq!(session_cost(None, Some(0.25), None), Some(0.25));
-        assert_eq!(session_cost(Some(0.5), Some(0.25), None), Some(0.75));
-        assert_eq!(session_cost(None, None, Some(0.125)), Some(0.125));
+        assert_eq!(session_cost(None, None, None, None), None);
+        assert_eq!(session_cost(Some(0.5), None, None, None), Some(0.5));
+        assert_eq!(session_cost(None, Some(0.25), None, None), Some(0.25));
+        assert_eq!(session_cost(Some(0.5), Some(0.25), None, None), Some(0.75));
+        assert_eq!(session_cost(None, None, None, Some(0.125)), Some(0.125));
+        assert_eq!(session_cost(None, None, Some(0.0625), None), Some(0.0625));
         assert_eq!(
-            session_cost(Some(0.5), Some(0.25), Some(0.125)),
-            Some(0.875)
+            session_cost(Some(0.5), Some(0.25), Some(0.0625), Some(0.125)),
+            Some(0.9375)
         );
     }
 
@@ -731,8 +939,13 @@ mod tests {
             started: std::time::Instant::now(),
             denials: Vec::new(),
         };
-        let none = GuardianUsage::default();
-        let result = result_event("s", &outcome, &totals, &none, &none);
+        let none = || GuardianUsage::default();
+        let others = Others {
+            guardian: none(),
+            goal: none(),
+            subagents: none(),
+        };
+        let result = result_event("s", &outcome, &totals, &others, None);
         assert_eq!(result["usage"]["main"]["input_tokens"], 3000);
         assert_eq!(result["usage"]["main"]["cache_read_input_tokens"], 1700);
         assert_eq!(result["usage"]["main"]["cache_creation_input_tokens"], 100);

@@ -401,7 +401,8 @@ where
             return;
         };
         // A model call made while a guardian adjudication is open is the guardian's own, one
-        // under a scan is the scanner's, and one under a subagent's span is that subagent's.
+        // under a scan is the scanner's, one under a goal evaluation is the goal's, and one
+        // under a subagent's span is that subagent's.
         let query_source = if span
             .scope()
             .skip(1)
@@ -410,6 +411,12 @@ where
             "guardian"
         } else if span.scope().skip(1).any(|p| p.name() == "fontaine.scanner") {
             "scanner"
+        } else if span
+            .scope()
+            .skip(1)
+            .any(|p| p.name() == "fontaine.goal_evaluation")
+        {
+            "goal"
         } else if span
             .scope()
             .skip(1)
@@ -722,6 +729,25 @@ mod tests {
             .map(|e| e.fields["query_source"].clone())
             .collect();
         assert_eq!(sources, ["scanner"]);
+    }
+
+    #[test]
+    fn a_model_call_under_a_goal_evaluation_span_is_attributed_to_the_goal() {
+        let (_recorder, capture, subscriber) = harness();
+        tracing::subscriber::with_default(subscriber, || {
+            let goal = tracing::info_span!(target: TARGET, "fontaine.goal_evaluation");
+            goal.in_scope(|| {
+                let agent = tracing::info_span!(target: "rig::agent_chat", "invoke_agent");
+                agent.in_scope(|| completion("openai", "gpt-4o-mini"));
+            });
+        });
+        let events = capture.events();
+        let sources: Vec<_> = events
+            .iter()
+            .filter(|e| e.message() == "api_request")
+            .map(|e| e.fields["query_source"].clone())
+            .collect();
+        assert_eq!(sources, ["goal"]);
     }
 
     fn dropped_decision(priced: bool) {

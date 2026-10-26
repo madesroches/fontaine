@@ -552,6 +552,16 @@ scorecard run (see `## Remaining work`).
 - 2026-10-26: A rebuild (model switch, output style, `/add-dir`) unions the launch set into each agent's on-demand entry instead of resetting it; the conversation survives the rebuild, so a reset would re-inject files earlier tool results already carry (#7).
 - 2026-10-26: Per-agent on-demand entries are never evicted, so the map grows by one entry per subagent for the session's life, bounded like the agent tree's own node map (#7).
 - 2026-10-26: User-tier rules carry `Origin::User`, not `Origin::Rule`, so the guardian's ordering places them with the user tier (#7).
+- 2026-10-26 Deviation: unattended stretches are capped by `[goal] max_turns` (default 50) and an optional `[goal] max_cost_usd`; Claude Code has only the no-progress cap. The issue requires a bounded loop.
+- 2026-10-26 Deviation: a failed turn pauses the goal instead of clearing or retrying it, and there are no idle check-ins for background work; Fontaine's turn failures are untyped strings.
+- 2026-10-26 Deviation: an evaluator failure (error, timeout, unreadable answer, no guardian model) pauses the goal; a judgment that never arrived must not start an unattended turn.
+- 2026-10-26 Deviation: the evaluator runs on the guardian's model (the cheap model the user chose for out-of-band judgments, as the LLM scanner does), not a dedicated small-fast-model setting; no `[goal] model` key.
+- 2026-10-26 Deviation: verdicts are shown with their reason inline as transcript notices; Claude Code shows the reason behind Ctrl+O.
+- 2026-10-26 Deviation: headless exits 1 when a goal it ran ends impossible or paused.
+- 2026-10-26 `[goal]` is `user_or_cli` like `schedule.enabled`, not `user_trust` like `[agents]` (`config_scope.rs:167-168`): goal turns run unattended, so only the user decides how long they may run.
+- 2026-10-26 AFK: headless gets a `goal_failed` flag beside `failed` that sets `code = 1` and breaks, and text mode prints `fontaine: goal impossible: <reason>` / `fontaine: goal paused: <why>` on stderr instead of the last answer; without it the decided exit 1 never fires and a failure would be silent.
+- 2026-10-26 AFK: `span_bridge.rs` reports model calls under `fontaine.goal_evaluation` as `query_source = "goal"` (the span carries `model.priced`), documented in `docs/telemetry.md`; otherwise evaluator spend is misreported as `main`, unlike the guardian's and scanner's.
+- 2026-10-26 AFK: "made a tool call" is a per-turn `made_call` flag set in `after_turn` from the change in root-agent ledger actions since the previous `after_turn`, and counts actions only (no `agent` added to `DenialEntry`); a turn whose calls were all denied counts as idle, so the no-progress cap can only pause sooner.
 
 ## Open Questions
 

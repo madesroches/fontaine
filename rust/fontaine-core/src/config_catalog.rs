@@ -401,6 +401,11 @@ pub const KEYS: &[KeyRow] = &[
         .agents
         .session_cost_budget_usd)),
     row!("agents.types", Map, |c, _| names(c.agents.types.keys())),
+    row!("goal.max_turns", Scalar, |c, _| c
+        .goal
+        .max_turns
+        .to_string()),
+    row!("goal.max_cost_usd", Scalar, |c, _| opt(c.goal.max_cost_usd)),
     row!("shell_preclassifier.allow_extra", List, |c, _| entries(
         c.shell_preclassifier_allow_extra.len()
     )),

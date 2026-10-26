@@ -2,6 +2,7 @@
 //! them: `manual`, `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on`, `dontAsk`.
 
 use fontaine_core::config::PermissionMode;
+use fontaine_core::goal;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -63,12 +64,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         0 => String::new(),
         n => format!(" · ⏱ {n}"),
     };
+    let goal = match app.goal {
+        None => String::new(),
+        Some((_, true)) => " · ◎ goal paused".to_string(),
+        Some((age, false)) => format!(" · ◎ goal {}", goal::duration_text(age)),
+    };
     let line = Line::from(vec![
         Span::styled(
             format!(" {} ", mode_label(app.mode)),
             mode_style(app.mode, &app.theme),
         ),
-        Span::styled(format!("· {}{agents}{scheduled} · {hint}", app.model), dim),
+        Span::styled(
+            format!("· {}{agents}{scheduled}{goal} · {hint}", app.model),
+            dim,
+        ),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }

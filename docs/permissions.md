@@ -117,6 +117,12 @@ model reads it. Calls the task's turn makes go through the same pipeline as any 
 cancels every scheduled task, because it drops the intent they were scheduled under. See
 [Scheduled prompts](tui.md#scheduled-prompts).
 
+A [goal](tui.md#goals) turn is a harness turn in the same way: the evaluator's reason and the goal's
+condition arrive behind a note saying they are not you and do not widen what you asked, no goal turn
+is recorded as a user message, and only the `/goal` line you typed counts as your intent. The
+evaluator's reason passes through the tool-result scanner first. A goal does not change the mode,
+and its calls go through the same pipeline.
+
 ## Your own shell commands
 
 A command you run in the terminal UI with `!` is your own action, not a tool call: it bypasses the

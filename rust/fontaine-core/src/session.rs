@@ -1,4 +1,4 @@
-//! A session's two stores, plus its task list and schedule files. rig-memory holds the model context, which compaction
+//! A session's two stores, plus its task list, schedule and goal files. rig-memory holds the model context, which compaction
 //! may rewrite; the ledger beside it is append-only. Both live in `<data dir>/sessions/<session id>/`.
 
 use std::fmt;
@@ -19,6 +19,7 @@ use rig_memory::{
 };
 
 use crate::audit::AuditLog;
+use crate::goal::SessionGoal;
 use crate::ledger::Ledger;
 use crate::owner_only;
 use crate::permissions::Approver;
@@ -172,6 +173,7 @@ pub struct Session {
     pub audit: Arc<AuditLog>,
     todos: Arc<SessionTodos>,
     scheduler: Arc<Scheduler>,
+    goal: Arc<SessionGoal>,
     store: DirStore,
     policy: CompactionPolicy,
     autocompact_window: Option<u64>,
@@ -211,6 +213,7 @@ impl Session {
         Ok(Session {
             id: id.to_string(),
             scheduler: Arc::new(Scheduler::new(&dir, ledger.clone(), Arc::new(SystemClock))),
+            goal: Arc::new(SessionGoal::new(&dir, ledger.clone())),
             ledger,
             audit: Arc::new(audit),
             todos: Arc::new(SessionTodos::new(&dir)),
@@ -248,6 +251,7 @@ impl Session {
         Ok(Session {
             id: id.to_string(),
             scheduler: Arc::new(Scheduler::load(&dir, ledger.clone(), Arc::new(SystemClock))),
+            goal: Arc::new(SessionGoal::load(&dir, ledger.clone())),
             ledger,
             audit: Arc::new(audit),
             todos: Arc::new(SessionTodos::load(&dir)),
@@ -414,6 +418,11 @@ impl Session {
     /// The scheduled prompts of this session, shared by every clone of it.
     pub fn scheduler(&self) -> &Arc<Scheduler> {
         &self.scheduler
+    }
+
+    /// The goal of this session, shared by every clone of it.
+    pub fn goal(&self) -> &Arc<SessionGoal> {
+        &self.goal
     }
 
     /// Runs the schedule on `clock` instead of the wall clock, reloading what is saved. A seam

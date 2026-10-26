@@ -33,6 +33,8 @@ pub enum Command {
     Skills,
     /// `/loop [interval] <prompt>`, `/loop list` or `/loop stop [id]`.
     Loop(String),
+    /// `/goal <condition>`, `/goal` or `/goal clear`.
+    Goal(String),
     /// `/plan [description]`.
     Plan(String),
     /// `/copy [n]`.
@@ -149,6 +151,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: Some("[path]"),
         description: "write the conversation to a Markdown file",
         command: Command::Export,
+    },
+    Builtin {
+        name: "goal",
+        aliases: &[],
+        hint: Some("[<condition> | clear]"),
+        description: "keep working until a condition is met",
+        command: Command::Goal,
     },
     Builtin {
         name: "guardian-model",
@@ -670,6 +679,11 @@ mod tests {
             Some(Command::Loop("5m check the build".into()))
         );
         assert_eq!(parse_command("/loop"), Some(Command::Loop(String::new())));
+        assert_eq!(
+            parse_command("/goal  all tests pass "),
+            Some(Command::Goal("all tests pass".into()))
+        );
+        assert_eq!(parse_command("/goal"), Some(Command::Goal(String::new())));
         assert_eq!(parse_command("/theme"), Some(Command::Theme(String::new())));
         assert_eq!(
             parse_command("/theme  dark-ansi "),
