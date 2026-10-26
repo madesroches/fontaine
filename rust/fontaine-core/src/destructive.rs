@@ -270,8 +270,8 @@ fn destructive_argv(program: &str, args: &[String], depth: usize) -> bool {
 }
 
 /// The absolute paths a call touches, as the scope validator resolves them. A file tool names
-/// its path; a shell command's literal words that look like paths are resolved against the
-/// call's working directory.
+/// its path; a shell command's redirect targets and literal words that look like paths are
+/// resolved against the call's working directory.
 pub fn touched_paths(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
     const LIMIT: usize = 16;
     let text = |key: &str| args.get(key).and_then(Value::as_str);
@@ -301,7 +301,25 @@ pub fn touched_paths(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
                 Some(cwd) => scope.resolved(cwd),
                 None => scope.primary().to_path_buf(),
             };
-            for simple in &analyze(command).commands {
+            let join = |literal: &str| {
+                if Path::new(literal).is_absolute() {
+                    scope.resolved(literal)
+                } else {
+                    scope.resolved(&base.join(literal).to_string_lossy())
+                }
+            };
+            let analysis = analyze(command);
+            // First, so the targets survive the cap: a redirect target is a file by construction.
+            for literal in analysis
+                .output_targets
+                .iter()
+                .filter_map(|w| w.literal.as_deref())
+            {
+                if !literal.is_empty() {
+                    out.push(join(literal).to_string_lossy().into_owned());
+                }
+            }
+            for simple in &analysis.commands {
                 for word in simple.words.iter().skip(1) {
                     let Some(literal) = word.literal.as_deref() else {
                         continue;
@@ -309,11 +327,7 @@ pub fn touched_paths(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
                     if literal.is_empty() || literal.starts_with('-') {
                         continue;
                     }
-                    let joined = if Path::new(literal).is_absolute() {
-                        scope.resolved(literal)
-                    } else {
-                        scope.resolved(&base.join(literal).to_string_lossy())
-                    };
+                    let joined = join(literal);
                     let pathlike = literal.contains(['/', '\\']) || literal.starts_with('.');
                     if pathlike || joined.exists() {
                         out.push(joined.to_string_lossy().into_owned());
