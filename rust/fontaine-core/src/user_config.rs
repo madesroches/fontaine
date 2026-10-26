@@ -61,22 +61,22 @@ pub fn append_allow_rule(path: &Path, rule: &str) -> io::Result<()> {
 
 /// Sets `[model] model` in the settings file at `path` to `reference` (`<account>/<model>`).
 pub fn set_model(path: &Path, reference: &str) -> io::Result<()> {
-    set_value(path, &["model", "model"], Some(reference.into()))
+    set_value(path, &["model", "model"], Some(reference.into())).map(|_| ())
 }
 
 /// Sets `[guardian] model` in the settings file at `path` to `reference` (`<account>/<model>`).
 pub fn set_guardian_model(path: &Path, reference: &str) -> io::Result<()> {
-    set_value(path, &["guardian", "model"], Some(reference.into()))
+    set_value(path, &["guardian", "model"], Some(reference.into())).map(|_| ())
 }
 
 /// Sets `[tui] theme` in the settings file at `path`.
 pub fn set_theme(path: &Path, name: ThemeName) -> io::Result<()> {
-    set_value(path, &["tui", "theme"], Some(name.as_str().into()))
+    set_value(path, &["tui", "theme"], Some(name.as_str().into())).map(|_| ())
 }
 
 /// Sets or, for `None`, removes the setting at the dotted `key` (`tui.theme`) in the settings
-/// file at `path`.
-pub fn set_config_value(path: &Path, key: &str, value: Option<Value>) -> io::Result<()> {
+/// file at `path`. `false` means a removal found nothing to remove.
+pub fn set_config_value(path: &Path, key: &str, value: Option<Value>) -> io::Result<bool> {
     let segments: Vec<&str> = key.split('.').collect();
     set_value(path, &segments, value)
 }
@@ -84,7 +84,7 @@ pub fn set_config_value(path: &Path, key: &str, value: Option<Value>) -> io::Res
 /// Sets the key at `key_path` to `value`, or removes it when `None` (dropping any table the
 /// removal leaves empty), creating the file and the tables as needed and touching nothing else
 /// in the file. An edit that would leave the file unloadable is refused and nothing is written.
-pub fn set_value(path: &Path, key_path: &[&str], value: Option<Value>) -> io::Result<()> {
+pub fn set_value(path: &Path, key_path: &[&str], value: Option<Value>) -> io::Result<bool> {
     let (leaf, parents) = key_path
         .split_last()
         .expect("a settings key path has at least one segment");
@@ -108,13 +108,14 @@ pub fn set_value(path: &Path, key_path: &[&str], value: Option<Value>) -> io::Re
         }
         None => {
             if !remove_key(doc.as_table_mut(), parents, leaf) {
-                return Ok(());
+                return Ok(false);
             }
         }
     }
     crate::config::validate_settings(&doc.to_string(), path, Column::User)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    write_document(path, &doc)
+    write_document(path, &doc)?;
+    Ok(true)
 }
 
 /// Removes `parents.leaf` and every table the removal empties; `false` when the key is not there.
@@ -301,10 +302,10 @@ mod tests {
     fn removing_an_absent_key_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        set_config_value(&path, "tui.theme", None).unwrap();
+        assert!(!set_config_value(&path, "tui.theme", None).unwrap());
         assert!(!path.exists());
         std::fs::write(&path, "[model]\nmodel = \"a/b\"\n").unwrap();
-        set_config_value(&path, "tui.theme", None).unwrap();
+        assert!(!set_config_value(&path, "tui.theme", None).unwrap());
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "[model]\nmodel = \"a/b\"\n"

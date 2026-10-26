@@ -183,7 +183,7 @@ user file fail to load (e.g. `autocompact_window = 0`) is refused with the confi
   (first pair if neither matches), and saves it. On a `PositiveInt` row it opens a text
   field, where Enter saves and Esc cancels. On a `Picker` row it closes the panel and opens the
   existing model picker. Del on a `Choice` or `PositiveInt` row removes the key from the user file
-  (reset); on a Live row (`tui.theme`) the running theme also switches to the default. Del is
+  (reset); on a Live row (`tui.theme`) the running theme also switches to the theme the other scopes give (the default if none sets one). Del is
   ignored on `Picker` rows (reset `model.model` / `guardian.model` by editing the file) and on
   read-only rows. Backspace on an empty filter does
   nothing, as in the model picker. Esc closes.
@@ -272,7 +272,7 @@ user file fail to load (e.g. `autocompact_window = 0`) is refused with the confi
 - 2026-10-25: AFK: the panel shows only config-layer provenance; `--model`, the screen-reader flag and `FONTAINE_AX_SCREEN_READER` overrides outside `Config` are not named as sources (the model rows still render the running model), because those are per-launch overrides rather than config scopes, which is what the issue asks the panel to show, and plumbing their sources into the panel adds state for little gain.
 - 2026-10-25: AFK: `load` appends the `--allowed-tools` / `--disallowed-tools` rules to the CLI layer's raw table in every case, starting from an empty table only without `--settings`, because otherwise a `--settings` file plus flag rules would omit `cli` from those rules' sources.
 - 2026-10-25: AFK: Enter on a `Choice` row cycles from the row's pending value, else its effective value, because with pending kept across opens this avoids re-saving an overriding scope's value without reading the user file.
-- 2026-10-25: AFK: Del resets `Choice`/`PositiveInt` rows only (a `tui.theme` reset also switches the running theme to the default) and is ignored on `Picker` and read-only rows, because removing `model.model` sends the next launch to the setup screen and a live `guardian.model` reset has no defined switch path.
+- 2026-10-25: AFK: Del resets `Choice`/`PositiveInt` rows only (a `tui.theme` reset also switches the running theme to what the other scopes give, else the default) and is ignored on `Picker` and read-only rows, because removing `model.model` sends the next launch to the setup screen and a live `guardian.model` reset has no defined switch path.
 - 2026-10-25: AFK: provenance comes from walking each layer's raw TOML rather than tracking in `Config::apply`, and the panel renders through a catalog over `Config` rather than raw TOML, because the walk needs no per-field code and only the merged `Config` shows defaults and merged lists; this replaces the plan's Trade-offs section.
 
 ## Documentation

@@ -30,6 +30,7 @@ pub mod trust_prompt;
 mod ui;
 pub mod view;
 
+use crate::config_panel::ConfigKey;
 use std::collections::VecDeque;
 use std::io::Stdout;
 use std::path::PathBuf;
@@ -156,6 +157,8 @@ struct Ui<R> {
     /// Settings saved from `/config` that apply from the next launch, by key, as the label the
     /// panel shows; they outlive the panel so reopening it still shows them.
     config_pending: std::collections::BTreeMap<String, String>,
+    /// Panel changes and picker requests made while a turn ran, carried out once it is over.
+    pending_config: VecDeque<ConfigKey>,
     /// Requests the provider dialog made while a turn ran, carried out once it is over.
     pending_provider: VecDeque<DialogKey>,
     data_dir: PathBuf,
@@ -205,6 +208,7 @@ pub async fn drive(
         recent,
         pending_pick: None,
         config_pending: Default::default(),
+        pending_config: VecDeque::new(),
         pending_provider: VecDeque::new(),
         data_dir,
         user_config,

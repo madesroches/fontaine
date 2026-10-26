@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use crate::config_panel::ConfigKey;
 use crate::provider_dialog::{
     DialogKey, Outcome, ProviderDialog, Secret, log_out_summary, sign_in_failure,
     stored_key_summary,
@@ -226,15 +227,17 @@ impl<R: FnMut(&mut App)> Ui<R> {
                                 self.pending_pick = Some((purpose, reference));
                             }
                             Action::Providers(request) => self.queue_provider(request),
+                            Action::Config(change) => self.pending_config.push_back(change),
+                            Action::OpenPicker(slot) => {
+                                self.pending_config.push_back(ConfigKey::OpenPicker(slot));
+                            }
                             Action::Server(_)
                             | Action::None
                             | Action::Submit(_)
                             | Action::Queue(_)
                             | Action::EditQueued
                             | Action::Shell(_)
-                            | Action::CancelWakeup
-                            | Action::Config(_)
-                            | Action::OpenPicker(_) => {}
+                            | Action::CancelWakeup => {}
                         },
                     },
                     Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),

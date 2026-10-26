@@ -9,6 +9,7 @@ mod turn;
 use std::path::Path;
 
 use crate::agents_panel::{AgentsPanel, Detail, PanelRow};
+use crate::config_panel::ConfigKey;
 use crate::denials::{DeniedList, UnavailablePrompt};
 use crate::ui::schedule::IDLE_POLL;
 use crate::ui::turn::TurnEnd;
@@ -171,6 +172,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
             changed.as_mut().enable();
             if let Some((purpose, reference)) = self.pending_pick.take() {
                 self.apply_pick(runtime, purpose, &reference).await;
+            }
+            while let Some(change) = self.pending_config.pop_front() {
+                match change {
+                    ConfigKey::OpenPicker(slot) => self.open_config_picker(runtime, slot).await,
+                    change => self.config_change(runtime, change),
+                }
             }
             while let Some(request) = self.pending_provider.pop_front() {
                 self.provider_request(runtime, request).await;

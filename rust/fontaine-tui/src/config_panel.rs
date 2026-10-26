@@ -247,8 +247,12 @@ impl ConfigPanel {
                             value: Value::from(n),
                         }
                     }
-                    _ => {
+                    Ok(_) => {
                         self.status = Some("enter a whole number above zero".to_string());
+                        ConfigKey::None
+                    }
+                    Err(_) => {
+                        self.status = Some("number too large".to_string());
                         ConfigKey::None
                     }
                 };
@@ -310,6 +314,12 @@ impl ConfigPanel {
         row.pending = pending.clone();
         self.status = Some(status);
         pending
+    }
+
+    /// Records that a reset found the key already absent from the user file.
+    pub fn not_set(&mut self) {
+        let file = self.user_file.clone().unwrap_or_default();
+        self.status = Some(format!("not set in {file}"));
     }
 
     /// Records that a change could not be written.

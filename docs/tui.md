@@ -372,7 +372,7 @@ editing stays in the files too; see [Permissions](permissions.md).
 | `guardian.model` | Closes the panel and opens the guardian picker | At once, as `/guardian-model` |
 
 Del removes the key from the user file (a reset); resetting `tui.theme` also switches to the
-default theme. Del does nothing on the two model rows, since removing `model.model` would send the
+theme the other settings files give, or the default theme when none sets one. Del does nothing on the two model rows, since removing `model.model` would send the
 next launch to the setup screen; and it does nothing on read-only rows.
 
 A change is always written to your user settings file, with its comments and layout kept, and never

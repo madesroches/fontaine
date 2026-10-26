@@ -51,11 +51,20 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
             return;
         };
-        if let Err(e) = user_config::set_config_value(&file, path, value.clone()) {
-            if let Some(panel) = &mut self.app.config {
-                panel.failed(&fontaine_tools::error_chain::chain(&e));
+        match user_config::set_config_value(&file, path, value.clone()) {
+            Ok(true) => {}
+            Ok(false) => {
+                if let Some(panel) = &mut self.app.config {
+                    panel.not_set();
+                }
+                return;
             }
-            return;
+            Err(e) => {
+                if let Some(panel) = &mut self.app.config {
+                    panel.failed(&fontaine_tools::error_chain::chain(&e));
+                }
+                return;
+            }
         }
         let Some(row) = config_catalog::find(path) else {
             return;
@@ -64,11 +73,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
             .as_ref()
             .map_or_else(|| "unset".to_string(), value_label);
         let live = (row.applies == Applies::Live && path == "tui.theme").then(|| {
-            let theme = value
-                .as_ref()
-                .and_then(|v| v.as_str())
-                .and_then(ThemeName::parse)
-                .unwrap_or_default();
+            // A reset falls back to what the other scopes give, not to the built-in default.
+            let theme = match &value {
+                Some(v) => v.as_str().and_then(ThemeName::parse).unwrap_or_default(),
+                None if overriding_scope(&runtime.config, path).is_some() => {
+                    runtime.config.tui.theme
+                }
+                None => ThemeName::default(),
+            };
             self.apply_theme(theme);
             theme.as_str()
         });
