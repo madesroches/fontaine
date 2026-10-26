@@ -46,7 +46,7 @@ The request is built from the ledger and the call itself:
 | `project_instructions` | The instruction files the agent had at launch (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and their imports), as they stood when the session started: the primary root's level first, then each directory above it, then yours, cut at 16,000 characters. Files loaded later on demand never reach it. See [Instruction files](instructions.md#what-the-guardian-reads). |
 | `environment`, `rules` | The `[auto_mode]` prose lists, with the shipped defaults spliced in. |
 | `tool_call` | The tool, its full arguments, a digest of them, and `destructive`, derived by Fontaine from the call itself (below). |
-| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status of only the paths this call touches (for a shell command, its redirect targets and path-like arguments) (`pre_existing`, `created_this_session` or `unindexed`; never the file index), and the last 20 actions of the session. |
+| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session` or `unindexed`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets and path-like arguments, and the last 20 actions of the session. |
 | `hook_context` | Notes from `pre_tool_use` hooks, in an untrusted block. |
 | `prior_denials` | Reason-coded denials earlier in the session, for loop detection. |
 

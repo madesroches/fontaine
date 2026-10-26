@@ -991,9 +991,6 @@ mod tests {
             assert!(!analyze(text).output_redirect, "{text}");
             assert!(analyze(text).output_targets.is_empty(), "{text}");
         }
-        for text in ["cat < in", "cat <<< w"] {
-            assert!(analyze(text).output_targets.is_empty(), "{text}");
-        }
     }
 
     #[test]
@@ -1019,9 +1016,12 @@ mod tests {
             "echo $(echo x > f)",
             "sh -c 'echo x > f'",
         ] {
-            let got = targets(text);
-            assert!(got.last() == f().last(), "{text}: {got:?}");
+            assert_eq!(targets(text), f(), "{text}");
         }
+        assert_eq!(
+            targets("{ echo x > a; } > b"),
+            vec![Some("a".to_string()), Some("b".to_string())]
+        );
         assert_eq!(targets("echo x > f"), f());
         assert_eq!(targets("{ echo x; } > f"), f());
         assert_eq!(targets("sh -c 'echo x > f'"), f());
