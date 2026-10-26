@@ -127,6 +127,12 @@ Fontaine also uses bold, dim and reversed text, for example to mark the selected
 `NO_COLOR` environment variable is set, colour is dropped, and the terminal library may drop that
 emphasis with it, so a selected row can lose its highlight. Most selected rows also carry a `>` marker, which stays.
 
+## ASCII glyphs
+
+Notices start with `·` and warnings with `⚠`. Where the terminal or its font cannot draw them, set
+`FONTAINE_ASCII_GLYPHS=1` and they start with `-` and `!` instead. Any value except empty or `0`
+turns it on; it is read once at startup, and there is no settings key.
+
 ## Screen-reader mode
 
 Screen-reader mode replaces the live area with plain, labelled lines appended in order, which a
@@ -154,7 +160,7 @@ What is printed:
 | `assistant: ...` | The model's reply, printed a line at a time as it streams. The label appears once. |
 | `tool: <tool> <summary> — done` | A tool call that finished; `— interrupted` for one that did not. |
 | `tool error: <tool> <summary> — failed: ...` | A tool call that failed, or `— denied: ...` for one that was refused. |
-| `error: ...` and `notice: ...` | Errors and notices. |
+| `error: ...`, `notice: ...` and `warning: ...` | Errors, notices and warnings. A warning's advice follows on its own `hint: ...` line. |
 | `shell: <command>` | A `!` command you ran, followed by its output. |
 | `Permission Required:` | An approval prompt opened. Its question, the call, the choices and the rule the lasting answers would add follow. |
 | `<name>:` | Another dialog opened, for example `model:`, `providers:`, `denied:` or `MCP server:`. |

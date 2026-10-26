@@ -17,6 +17,7 @@ use crate::{reports, statusbar};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::config::PermissionMode;
 use fontaine_core::ledger::Record;
+use fontaine_core::notice::Notice;
 use fontaine_tools::gate::ROOT_AGENT;
 use fontaine_tools::lock::read_recovering;
 
@@ -104,7 +105,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.app
                     .begin_unavailable(UnavailablePrompt::new(*info, candidates, reply));
             }
-            Prompt::Notice(message) => self.app.transcript.notice(message),
+            Prompt::Notice(severity, message) => self.app.transcript.push_notice(Notice {
+                severity,
+                headline: message,
+                hint: None,
+            }),
         }
     }
 
@@ -113,7 +118,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
     fn drain_prompts(&mut self) {
         while let Ok(prompt) = self.prompts.try_recv() {
             match prompt {
-                Prompt::Notice(message) => self.app.transcript.notice(message),
+                Prompt::Notice(severity, message) => self.app.transcript.push_notice(Notice {
+                    severity,
+                    headline: message,
+                    hint: None,
+                }),
                 // A background agent's call is still waiting for its answer.
                 Prompt::Ask(request, reply)
                     if request.agent != ROOT_AGENT && !reply.is_closed() =>

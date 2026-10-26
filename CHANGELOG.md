@@ -190,6 +190,16 @@ All notable changes are recorded here. The format follows
     (or completes a command that needs an argument) and Esc closes it. Matching covers names and
     aliases, prefix matches first and then substrings, and the list shows at most eight rows
     (#71).
+  - Startup warnings are styled conversation entries (#82). Notices carry a severity and split
+    into a headline and an actionable hint: a warning starts with `⚠` in the theme's warning
+    colour, with the hint dimmed underneath and its backticked spans and `/commands` in bold;
+    informational notices keep the dim `·` line. The configuration-root warnings and an ignored
+    `FONTAINE_AX_SCREEN_READER` value, which used to print to stderr before the screen opened, now
+    open the conversation, and the screen-reader renderer labels them `warning:` and `hint:`.
+    `FONTAINE_ASCII_GLYPHS=1` switches the marks to `!` and `-`. A short transcript now sits
+    directly above the input box instead of at the top of the screen: lines move to scrollback only
+    once they no longer fit, and leaving the UI or `/clear` writes the held ones there. The
+    headless stderr text of the guardian-on-main-model notice is now "headline — hint".
   - Terminal polish (#50): six colour themes (`dark-ansi` by default, `light-ansi`, `dark`,
     `light`, `dark-daltonized`, `light-daltonized`) chosen with `/theme` or `[tui] theme`; a
     screen-reader mode (`--ax-screen-reader`, `FONTAINE_AX_SCREEN_READER`, `[tui] screen_reader`)

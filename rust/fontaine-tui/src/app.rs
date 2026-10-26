@@ -120,6 +120,8 @@ pub struct App {
     /// Harness notes the next message to the agent carries, such as a retry the human approved.
     /// They are not the user's words and never enter the ledger as such.
     pub pending_notices: Vec<String>,
+    /// Set as the session ends: the next render writes out everything still held back.
+    pub flush: bool,
     /// A `!` command is running; nothing can be queued or sent until it ends.
     pub shell_running: bool,
     /// Messages waiting for the agent's next tool result, copied from the session.
@@ -178,6 +180,7 @@ impl App {
             denied: None,
             unavailable: None,
             pending_notices: Vec::new(),
+            flush: false,
             shell_running: false,
             queued: Vec::new(),
             history: History::in_memory(""),
@@ -974,7 +977,7 @@ mod tests {
 
     fn last_notice(app: &App) -> Option<&str> {
         match app.transcript.entries.last() {
-            Some(crate::transcript::Entry::Notice(text)) => Some(text),
+            Some(crate::transcript::Entry::Notice { headline, .. }) => Some(headline),
             _ => None,
         }
     }

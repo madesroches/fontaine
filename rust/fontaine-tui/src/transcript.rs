@@ -2,13 +2,14 @@
 //! with its outcome, and notices.
 
 use fontaine_core::audit::Decision;
+use fontaine_core::notice::{Notice, Severity};
 use fontaine_core::turn::SessionEvent;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::input::wrap;
-use crate::theme::Theme;
+use crate::theme::{Glyphs, Theme};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolStatus {
@@ -32,7 +33,11 @@ pub enum Entry {
         summary: String,
         status: ToolStatus,
     },
-    Notice(String),
+    Notice {
+        severity: Severity,
+        headline: String,
+        hint: Option<String>,
+    },
     Error(String),
     /// A `!` command the human ran. `output` already ends with the line saying how it ended.
     Shell {
@@ -49,6 +54,11 @@ pub struct Transcript {
     committed: usize,
     /// Chars of `entries[committed]`'s text already written, when it is a streaming reply.
     committed_chars: usize,
+    /// Entries that `/clear` removed before they reached scrollback, with the chars of each
+    /// already written. The screen writes them out before anything newer so the conversation
+    /// that was on display is not lost from the terminal.
+    retired: Vec<(Entry, usize)>,
+    pub glyphs: Glyphs,
 }
 
 const SUMMARY_KEYS: &[&str] = &["command", "path", "file_path", "url", "pattern", "query"];
@@ -81,16 +91,33 @@ impl Transcript {
     }
 
     /// Empties the transcript after `/clear`. What was already written stays in the terminal's
-    /// scrollback.
+    /// scrollback; what was held back moves to `retired` for the screen to write.
     pub fn clear(&mut self) {
+        let skip = self.committed_chars;
+        let held = self.entries.drain(self.committed..);
+        for (i, entry) in held.enumerate() {
+            self.retired.push((entry, if i == 0 { skip } else { 0 }));
+        }
         self.entries.clear();
         self.committed = 0;
         self.committed_chars = 0;
     }
 
     pub fn notice(&mut self, text: impl Into<String>) {
+        self.push_notice(Notice::info(text));
+    }
+
+    pub fn warning(&mut self, headline: impl Into<String>, hint: Option<String>) {
+        self.push_notice(Notice::warning(headline, hint));
+    }
+
+    pub fn push_notice(&mut self, notice: Notice) {
         self.finish_streaming();
-        self.entries.push(Entry::Notice(text.into()));
+        self.entries.push(Entry::Notice {
+            severity: notice.severity,
+            headline: notice.headline,
+            hint: notice.hint,
+        });
     }
 
     pub fn shell(&mut self, command: String, output: String, exit_code: Option<i32>) {
@@ -248,7 +275,7 @@ impl Transcript {
     pub fn lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let mut out = Vec::new();
         for entry in &self.entries {
-            entry_lines(entry, width, 0, theme, &mut out);
+            entry_lines(entry, width, 0, theme, self.glyphs, &mut out);
         }
         out
     }
@@ -292,6 +319,7 @@ impl Transcript {
     /// streaming reply is committed a row at a time, keeping its last row live.
     pub fn commit(&mut self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let mut out = Vec::new();
+        let glyphs = self.glyphs;
         for settled in self.commit_entries(Cut::Rows(width)) {
             match (settled.entry, settled.end) {
                 (Entry::Assistant { text, .. }, Some(_)) => {
@@ -299,7 +327,7 @@ impl Transcript {
                     rows.pop();
                     out.extend(rows.into_iter().map(|(line, _)| line));
                 }
-                (entry, _) => entry_lines(entry, width, settled.skip, theme, &mut out),
+                (entry, _) => entry_lines(entry, width, settled.skip, theme, glyphs, &mut out),
             }
         }
         out
@@ -314,8 +342,74 @@ impl Transcript {
             } else {
                 0
             };
-            entry_lines(entry, width, skip, theme, &mut out);
+            entry_lines(entry, width, skip, theme, self.glyphs, &mut out);
         }
+        out
+    }
+
+    /// The rows `/clear` retired, for the terminal's scrollback.
+    pub fn take_retired(&mut self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        let mut out = Vec::new();
+        for (entry, skip) in std::mem::take(&mut self.retired) {
+            entry_lines(&entry, width, skip, theme, self.glyphs, &mut out);
+        }
+        out
+    }
+
+    /// Commits the oldest rows that fit `budget`, which is how many rows the live area is over
+    /// by; nothing is committed while the transcript fits. Entries commit whole, so the last
+    /// one may release more than asked. A pending call or a streaming reply that would keep the
+    /// live area over budget is released too, so the tail the screen shows never hides rows
+    /// that are not in scrollback. A streaming reply is cut at a row, keeping its last row live.
+    pub fn commit_within(
+        &mut self,
+        width: usize,
+        theme: &Theme,
+        mut budget: usize,
+    ) -> Vec<Line<'static>> {
+        let mut out = Vec::new();
+        while budget > 0 {
+            let Some(entry) = self.entries.get(self.committed) else {
+                break;
+            };
+            if let Entry::Assistant {
+                text,
+                streaming: true,
+            } = entry
+            {
+                let rows = Cut::Budget {
+                    width,
+                    rows: budget,
+                }
+                .rows(text, self.committed_chars);
+                if let Some((_, end)) = rows.last() {
+                    self.committed_chars = *end;
+                    out.extend(rows.into_iter().map(|(line, _)| line));
+                }
+                break;
+            }
+            let before = out.len();
+            entry_lines(
+                entry,
+                width,
+                self.committed_chars,
+                theme,
+                self.glyphs,
+                &mut out,
+            );
+            budget = budget.saturating_sub(out.len() - before);
+            self.committed += 1;
+            self.committed_chars = 0;
+        }
+        out
+    }
+
+    /// Everything not in scrollback yet, whether settled or not.
+    pub fn commit_all(&mut self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        let mut out = self.take_retired(width, theme);
+        out.extend(self.live_lines(width, theme));
+        self.committed = self.entries.len();
+        self.committed_chars = 0;
         out
     }
 }
@@ -327,9 +421,22 @@ pub(crate) enum Cut {
     Rows(usize),
     /// Whole lines, up to the last `\n`; the terminal does the wrapping.
     Lines,
+    /// At most this many whole wrapped rows at this width, keeping the last row live.
+    Budget { width: usize, rows: usize },
 }
 
 impl Cut {
+    /// The rows a budgeted cut releases.
+    fn rows(self, text: &str, from: usize) -> Vec<(Line<'static>, usize)> {
+        let Cut::Budget { width, rows } = self else {
+            return Vec::new();
+        };
+        let mut all = assistant_rows(text, from, width);
+        all.pop();
+        all.truncate(rows);
+        all
+    }
+
     /// The char offset in `text` that a commit starting at `from` runs to.
     fn end(self, text: &str, from: usize) -> usize {
         match self {
@@ -338,6 +445,7 @@ impl Cut {
                 rows.pop();
                 rows.last().map_or(from, |(_, end)| *end)
             }
+            Cut::Budget { .. } => self.rows(text, from).last().map_or(from, |(_, end)| *end),
             Cut::Lines => text
                 .chars()
                 .skip(from)
@@ -428,6 +536,7 @@ fn entry_lines(
     width: usize,
     skip: usize,
     theme: &Theme,
+    glyphs: Glyphs,
     out: &mut Vec<Line<'static>>,
 ) {
     let dim = Style::default().add_modifier(Modifier::DIM);
@@ -479,7 +588,14 @@ fn entry_lines(
                 Span::styled(detail, style),
             ]));
         }
-        Entry::Notice(text) => prefixed(text, width, "· ", dim, out),
+        Entry::Notice {
+            severity: Severity::Info,
+            headline,
+            ..
+        } => prefixed(headline, width, glyphs.info, dim, out),
+        Entry::Notice { headline, hint, .. } => {
+            warning_lines(headline, hint.as_deref(), width, theme, glyphs, out)
+        }
         Entry::Error(text) => prefixed(text, width, "! ", Style::default().fg(theme.error), out),
         Entry::Shell {
             command, output, ..
@@ -493,6 +609,100 @@ fn entry_lines(
             out.push(Line::default());
         }
     }
+}
+
+fn warning_lines(
+    headline: &str,
+    hint: Option<&str>,
+    width: usize,
+    theme: &Theme,
+    glyphs: Glyphs,
+    out: &mut Vec<Line<'static>>,
+) {
+    let style = Style::default().fg(theme.warning);
+    let indent = " ".repeat(glyphs.warning.chars().count());
+    let body = width.saturating_sub(indent.chars().count());
+    let mut first = true;
+    for line in headline.split('\n') {
+        for piece in wrap(line, body) {
+            let prefix = if first {
+                glyphs.warning
+            } else {
+                indent.as_str()
+            };
+            first = false;
+            out.push(Line::from(vec![
+                Span::styled(prefix.to_string(), style),
+                Span::styled(piece, style),
+            ]));
+        }
+    }
+    let Some(hint) = hint else {
+        return;
+    };
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    // Backticks pair up across the whole hint, so a span that wraps stays bold on both rows.
+    let mut in_ticks = false;
+    for line in hint.split('\n') {
+        for piece in wrap(line, body) {
+            let mut spans = vec![Span::styled(indent.clone(), dim)];
+            spans.extend(hint_spans(&piece, &mut in_ticks, dim, bold));
+            out.push(Line::from(spans));
+        }
+    }
+}
+
+/// Splits one wrapped row of a hint into dim text and bold actionable spans: what sits between
+/// backticks (the backticks included) and `/command` words. `in_ticks` carries across rows.
+fn hint_spans(piece: &str, in_ticks: &mut bool, dim: Style, bold: Style) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_bold = *in_ticks;
+    let flush = |run: &mut String, run_bold: bool, spans: &mut Vec<Span<'static>>| {
+        if !run.is_empty() {
+            spans.push(Span::styled(
+                std::mem::take(run),
+                if run_bold { bold } else { dim },
+            ));
+        }
+    };
+    let chars: Vec<char> = piece.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let command = !*in_ticks
+            && c == '/'
+            && (i == 0 || chars[i - 1].is_whitespace())
+            && chars.get(i + 1).is_some_and(|n| n.is_alphanumeric());
+        if c == '`' {
+            if *in_ticks {
+                run.push(c);
+                *in_ticks = false;
+                flush(&mut run, true, &mut spans);
+                run_bold = false;
+            } else {
+                flush(&mut run, run_bold, &mut spans);
+                *in_ticks = true;
+                run_bold = true;
+                run.push(c);
+            }
+            i += 1;
+        } else if command {
+            flush(&mut run, run_bold, &mut spans);
+            let end = chars[i + 1..]
+                .iter()
+                .position(|n| !(n.is_alphanumeric() || *n == '-' || *n == '_'))
+                .map_or(chars.len(), |p| i + 1 + p);
+            spans.push(Span::styled(chars[i..end].iter().collect::<String>(), bold));
+            i = end;
+        } else {
+            run.push(c);
+            i += 1;
+        }
+    }
+    flush(&mut run, run_bold, &mut spans);
+    spans
 }
 
 #[cfg(test)]
@@ -777,5 +987,183 @@ mod tests {
         t.on_event(SessionEvent::Assistant("one\ntwo\n".into()));
         let rest = t.commit_entries(Cut::Lines);
         assert_eq!((rest[0].skip, rest[0].end), (8, None));
+    }
+
+    fn bold_text(line: &Line<'static>) -> String {
+        line.spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    fn warned(width: usize, glyphs: Glyphs, theme: &Theme) -> Vec<Line<'static>> {
+        let mut t = Transcript {
+            glyphs,
+            ..Transcript::default()
+        };
+        t.warning(
+            "Guardian is running on your main model",
+            Some("Set `[guardian] model` or run /guardian-model now".into()),
+        );
+        t.lines(width, theme)
+    }
+
+    #[test]
+    fn a_warning_has_its_own_glyph_and_colour_and_its_hint_sits_under_the_headline() {
+        use ratatui::style::Color;
+        let lines = warned(80, Glyphs::UNICODE, &theme());
+        assert_eq!(
+            text(&lines),
+            vec![
+                "⚠ Guardian is running on your main model",
+                "  Set `[guardian] model` or run /guardian-model now"
+            ]
+        );
+        assert_eq!(span_fg(&lines[0], "⚠"), Some(Color::Yellow));
+        assert_eq!(span_fg(&lines[0], "Guardian"), Some(Color::Yellow));
+        assert_eq!(span_fg(&lines[1], "Set"), None);
+        let mut info = Transcript::default();
+        info.notice("fyi");
+        let info = info.lines(80, &theme());
+        assert_eq!(text(&info), vec!["· fyi"]);
+        assert_eq!(span_fg(&info[0], "fyi"), None);
+    }
+
+    #[test]
+    fn the_warning_follows_the_theme() {
+        use fontaine_core::config::ThemeName;
+        let theme = Theme::preset(ThemeName::LightAnsi);
+        assert_ne!(theme.warning, Theme::default().warning);
+        let lines = warned(80, Glyphs::UNICODE, &theme);
+        assert_eq!(span_fg(&lines[0], "⚠"), Some(theme.warning));
+        assert_eq!(span_fg(&lines[0], "Guardian"), Some(theme.warning));
+    }
+
+    #[test]
+    fn backticked_spans_and_commands_in_a_hint_are_bold() {
+        let lines = warned(80, Glyphs::UNICODE, &theme());
+        assert_eq!(bold_text(&lines[1]), "`[guardian] model`/guardian-model");
+        assert_eq!(bold_text(&lines[0]), "");
+    }
+
+    #[test]
+    fn a_hint_wraps_under_the_headline_and_a_span_crossing_a_row_stays_bold() {
+        let lines = warned(24, Glyphs::UNICODE, &theme());
+        let rows = text(&lines);
+        assert!(rows.len() > 3, "{rows:?}");
+        assert!(rows.iter().all(|r| r.chars().count() <= 24), "{rows:?}");
+        assert!(rows[1..].iter().all(|r| r.starts_with("  ")), "{rows:?}");
+        let tick_row = rows.iter().position(|r| r.contains('`')).unwrap();
+        let bold_rows: Vec<usize> = (1..lines.len())
+            .filter(|i| !bold_text(&lines[*i]).is_empty())
+            .collect();
+        assert!(bold_rows.len() >= 2, "{rows:?}");
+        let span: String = bold_rows
+            .iter()
+            .take_while(|i| **i <= tick_row + 1)
+            .map(|i| bold_text(&lines[*i]))
+            .collect();
+        assert!(span.contains("[guardian]"), "{span}");
+        let all: String = (1..lines.len()).map(|i| bold_text(&lines[i])).collect();
+        assert!(all.starts_with("`[guardian] model`/guardian-mode"), "{all}");
+    }
+
+    #[test]
+    fn ascii_glyphs_replace_both_marks() {
+        let lines = warned(80, Glyphs::ASCII, &theme());
+        assert!(text(&lines)[0].starts_with("! Guardian"));
+        let mut t = Transcript {
+            glyphs: Glyphs::ASCII,
+            ..Transcript::default()
+        };
+        t.notice("fyi");
+        assert_eq!(text(&t.lines(80, &theme())), vec!["- fyi"]);
+        assert_eq!(Glyphs::from_env(None), Glyphs::UNICODE);
+        assert_eq!(Glyphs::from_env(Some("")), Glyphs::UNICODE);
+        assert_eq!(Glyphs::from_env(Some("0")), Glyphs::UNICODE);
+        assert_eq!(Glyphs::from_env(Some("1")), Glyphs::ASCII);
+    }
+
+    #[test]
+    fn a_budgeted_commit_releases_nothing_while_the_transcript_fits() {
+        let mut t = Transcript::default();
+        t.notice("a");
+        t.notice("b");
+        assert!(t.commit_within(40, &theme(), 0).is_empty());
+        assert_eq!(t.live_lines(40, &theme()).len(), 2);
+    }
+
+    #[test]
+    fn a_budgeted_commit_takes_whole_oldest_entries() {
+        let mut t = Transcript::default();
+        t.user("q".into());
+        t.notice("b");
+        t.notice("c");
+        // The user entry is two rows; one row of budget still releases all of it.
+        assert_eq!(text(&t.commit_within(40, &theme(), 1)), vec!["> q", ""]);
+        assert_eq!(text(&t.live_lines(40, &theme())), vec!["· b", "· c"]);
+        assert_eq!(text(&t.commit_within(40, &theme(), 2)), vec!["· b", "· c"]);
+    }
+
+    #[test]
+    fn the_stream_budget_counts_rows_older_entries_already_used() {
+        let mut t = Transcript::default();
+        t.notice("old");
+        delta(&mut t, "abcdefghijklmnopqrstuvwx");
+        let out = text(&t.commit_within(8, &theme(), 2));
+        assert_eq!(out, vec!["· old", "abcdefgh"]);
+        assert_eq!(
+            text(&t.live_lines(8, &theme())),
+            vec!["ijklmnop", "qrstuvwx"]
+        );
+    }
+
+    #[test]
+    fn a_stream_cut_by_a_row_budget_advances_by_at_most_that_many_rows() {
+        let mut t = Transcript::default();
+        delta(&mut t, "abcdefghijkl");
+        let first = t.commit_within(4, &theme(), 1);
+        assert_eq!(text(&first), vec!["abcd"]);
+        let second = t.commit_within(4, &theme(), 5);
+        assert_eq!(text(&second), vec!["efgh"]);
+        assert_eq!(text(&t.live_lines(4, &theme())), vec!["ijkl"]);
+        let end = Cut::Budget { width: 4, rows: 1 }.end("abcdefghijkl", 8);
+        assert_eq!(end, 8, "the last row stays live");
+    }
+
+    #[test]
+    fn a_pending_call_is_released_when_the_budget_demands_it() {
+        let mut t = Transcript::default();
+        call(&mut t, "a", "shell");
+        t.notice("after");
+        assert_eq!(text(&t.commit_within(40, &theme(), 1)), vec!["• shell a …"]);
+        assert_eq!(text(&t.live_lines(40, &theme())), vec!["· after"]);
+    }
+
+    #[test]
+    fn clearing_retires_what_was_not_committed_with_a_streaming_offset() {
+        let mut t = Transcript::default();
+        t.notice("old");
+        delta(&mut t, "abcdefghijklmnop");
+        assert_eq!(t.commit_within(8, &theme(), 2).len(), 2);
+        delta(&mut t, "qrst");
+        t.clear();
+        t.notice("new");
+        assert_eq!(text(&t.take_retired(8, &theme())), vec!["ijklmnop", "qrst"]);
+        assert!(t.take_retired(8, &theme()).is_empty());
+        assert_eq!(text(&t.live_lines(8, &theme())), vec!["· new"]);
+    }
+
+    #[test]
+    fn commit_all_writes_unsettled_entries_too() {
+        let mut t = Transcript::default();
+        call(&mut t, "a", "shell");
+        delta(&mut t, "abcdefghijklmnopqrstuvwx");
+        assert_eq!(
+            text(&t.commit_all(12, &theme())),
+            vec!["• shell a …", "abcdefghijkl", "mnopqrstuvwx"]
+        );
+        assert!(t.live_lines(12, &theme()).is_empty());
     }
 }

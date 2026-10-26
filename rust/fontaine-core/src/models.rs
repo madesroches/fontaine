@@ -246,7 +246,7 @@ pub struct Models {
     pub guardian: Option<GuardianModel>,
     pub guardian_choice: GuardianChoice,
     /// Things the user should be told once at startup.
-    pub notices: Vec<String>,
+    pub notices: Vec<crate::notice::Notice>,
 }
 
 pub struct ResolveParams<'a> {
@@ -510,8 +510,9 @@ pub async fn resolve_with(
         ) {
             Some(guardian) => (guardian, GuardianChoice::Default),
             None => {
-                notices.push(format!(
-                    "no benchmark-validated guardian model is available on your accounts, so the guardian runs on your main model `{main_ref}`; set `[guardian] model` or use /guardian-model to choose one"
+                notices.push(crate::notice::Notice::warning(
+                    format!("Guardian is running on your main model `{main_ref}`"),
+                    Some("No benchmark-validated guardian model is available on your accounts — set `[guardian] model` or run /guardian-model".into()),
                 ));
                 (
                     GuardianModel::Ready(main.guardian_scoped()),

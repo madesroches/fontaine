@@ -76,6 +76,10 @@ pub struct World {
     routed: bool,
     /// The session has no user settings file to save choices to.
     pub without_user_config: bool,
+    /// Warnings gathered before the session started, as the binary hands them over.
+    pub startup_warnings: Vec<fontaine_core::Notice>,
+    /// Warnings the caller of `run` shows first (the ignored screen-reader setting).
+    pub startup: Vec<fontaine_core::Notice>,
     /// How many times the interface has been driven.
     runs: Cell<usize>,
     /// The time the session's scheduler sees, which a test moves itself.
@@ -134,6 +138,8 @@ impl World {
             confirm_servers: true,
             routed: false,
             without_user_config: false,
+            startup_warnings: Vec::new(),
+            startup: Vec::new(),
             runs: Cell::new(0),
             clock: Arc::new(ManualClock::new(CLOCK_START_MS)),
         };
@@ -356,6 +362,7 @@ impl World {
             user_config: (!self.without_user_config).then(|| self.user_config.clone()),
             guardian_profile: fontaine_guardian::Profile::Full,
             notices: Vec::new(),
+            startup_warnings: self.startup_warnings.clone(),
             scanner: Default::default(),
             switcher: Some(switcher),
             extensions,
@@ -380,7 +387,11 @@ impl World {
         let mut inline = Screen::new(TestBackend::new(120, 40), || TestBackend::new(1, 1)).unwrap();
         let (shown, shown_live) = (screen.clone(), live.clone());
         let render = move |app: &mut fontaine_tui::App| {
-            inline.render(app).unwrap();
+            if app.flush {
+                inline.commit_all(app).unwrap();
+            } else {
+                inline.render(app).unwrap();
+            }
             let area = inline.area();
             let backend = inline.backend();
             let mut rows = text_rows(backend.scrollback());
@@ -403,7 +414,14 @@ impl World {
             copied,
         };
         let (result, ()) = tokio::join!(
-            drive(self.setup(), self.work.clone(), rx, render, clipboard),
+            drive(
+                self.setup(),
+                self.work.clone(),
+                self.startup.clone(),
+                rx,
+                render,
+                clipboard
+            ),
             script(ui)
         );
         result.unwrap();
@@ -435,6 +453,7 @@ impl World {
             drive(
                 self.setup(),
                 self.work.clone(),
+                self.startup.clone(),
                 rx,
                 render,
                 |_: &str| Ok(())

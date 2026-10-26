@@ -206,7 +206,9 @@ of your accounts offers (see [The guardian](guardian.md#choosing-the-guardian-mo
 offers a model when its `models` list contains it, when it is the main model's account and the
 listing already fetched contains it, or, for any other account without a list, when its `kind`
 matches and a credential is present; no listing call is made with a guardian credential. When no
-account qualifies, the main model is the guardian and the start prints a notice.
+account qualifies, the main model is the guardian and the start shows a warning ("Guardian is
+running on your main model `<account>/<model>`", with the advice to set `[guardian] model` or run
+`/guardian-model`): in the conversation in the terminal UI, on stderr in a headless run.
 
 #### Worked examples
 
@@ -548,8 +550,9 @@ additional_directories = ["/home/me/shared-libs"]
 The workspace is an ordered set of roots: the primary root, then every `--add-dir <path>` and every
 `additional_directories` entry. File tools reach a path that lies inside any root. A relative entry
 is resolved against the launch directory. An entry that does not exist, is not a directory or
-cannot be resolved is left out, with a warning on stderr naming the path and whether it came from
-`--add-dir` or the settings, and the run continues.
+cannot be resolved is left out, with a warning naming the path and whether it came from
+`--add-dir` or the settings, and the run continues. The terminal UI shows the warning in the
+conversation; a headless run prints it on stderr.
 
 Roots grant file access, not configuration: settings, hooks, MCP servers and extension files load
 from the primary root only. A `.fontaine/settings.toml` in an added root is not read. See
@@ -867,7 +870,7 @@ for any reason other than not existing, is a configuration error naming the path
 | `--continue`, `--resume <id>`, `--fork-session` | Reopen the latest session of the launch directory, reopen one by id, or copy the one that would have been reopened under a new id. See [Headless runs](headless.md#continuing-a-session). |
 | `--allowed-tools <rule>`, `--disallowed-tools <rule>` | Adds an allow or deny rule for the session (CLI scope). Repeatable. |
 | `--ax-screen-reader` | Prints the interface as plain labelled lines for a screen reader instead of drawing it, and prints `[Screen Reader Mode: on via flag]` first. A headless run ignores it. |
-| `FONTAINE_AX_SCREEN_READER` | `1` turns screen-reader mode on and `0` keeps it off even when `[tui] screen_reader` is `true`; the flag still turns it on. Any other value is ignored with a warning. |
+| `FONTAINE_AX_SCREEN_READER` | `1` turns screen-reader mode on and `0` keeps it off even when `[tui] screen_reader` is `true`; the flag still turns it on. Any other value is ignored, with a warning in the conversation (or on stderr when the UI cannot start). |
 | `FONTAINE_LOG` | An `EnvFilter` directive that replaces the default `debug` filter of the debug file. On its own it creates no file and prints nothing. |
 | `FONTAINE_CONFIG_DIR`, `FONTAINE_DATA_DIR` | Directory overrides, described above. |
 

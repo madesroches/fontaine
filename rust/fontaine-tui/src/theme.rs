@@ -4,6 +4,40 @@
 use fontaine_core::config::ThemeName;
 use ratatui::style::Color;
 
+/// The marks that start a notice, with an ASCII set for terminals and fonts without `⚠`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Glyphs {
+    pub info: &'static str,
+    pub warning: &'static str,
+}
+
+impl Glyphs {
+    pub const UNICODE: Glyphs = Glyphs {
+        info: "· ",
+        warning: "⚠ ",
+    };
+    pub const ASCII: Glyphs = Glyphs {
+        info: "- ",
+        warning: "! ",
+    };
+
+    /// ASCII when `FONTAINE_ASCII_GLYPHS` is set to anything but empty or `0`.
+    pub fn from_env(value: Option<&str>) -> Glyphs {
+        match value {
+            Some(v) if !v.is_empty() && v != "0" => Glyphs::ASCII,
+            _ => Glyphs::UNICODE,
+        }
+    }
+}
+
+impl Default for Glyphs {
+    fn default() -> Self {
+        Glyphs::UNICODE
+    }
+}
+
+pub const ASCII_GLYPHS_VAR: &str = "FONTAINE_ASCII_GLYPHS";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Theme {
     /// Your `>` messages.

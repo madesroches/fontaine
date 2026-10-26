@@ -8,6 +8,7 @@ use std::path::Path;
 use fontaine_guardian::Profile;
 
 use crate::config::GuardianProfile;
+use crate::notice::Notice;
 
 /// Substrings of `/proc/1/cgroup` that mark a container runtime.
 const CGROUP_MARKERS: [&str; 5] = ["docker", "kubepods", "containerd", "libpod", "lxc"];
@@ -42,7 +43,7 @@ pub fn detect() -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolved {
     pub profile: Profile,
-    pub notice: Option<String>,
+    pub notice: Option<Notice>,
 }
 
 /// `minimal` needs both the user's assertion and a positive probe; anything else is `full`,
@@ -71,8 +72,11 @@ pub fn resolve(configured: GuardianProfile, in_container_flag: bool, probed: boo
             };
             Resolved {
                 profile: Profile::Full,
-                notice: Some(format!(
-                    "`[guardian] profile = \"minimal\"` is not in effect: {why}; running the full guardian"
+                notice: Some(Notice::warning(
+                    format!(
+                        "`[guardian] profile = \"minimal\"` is not in effect: {why}; running the full guardian"
+                    ),
+                    None,
                 )),
             }
         }

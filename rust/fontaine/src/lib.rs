@@ -14,6 +14,7 @@ use fontaine_core::containment;
 use fontaine_core::dirs::{self, Dirs};
 use fontaine_core::extensions::{self, Extensions};
 use fontaine_core::models::{self, Models, ResolveParams, Switcher};
+use fontaine_core::notice::Notice;
 use fontaine_core::permissions::DenyAll;
 use fontaine_core::scanner_stage::{self, ScannerStart};
 use fontaine_core::session::{self, Session, SessionError};
@@ -142,17 +143,34 @@ fn trust_summary(config: &Config) -> fontaine_tui::trust_prompt::Summary {
     }
 }
 
-/// Whether screen-reader mode is on, from the flag, the environment and the settings. The
-/// confirmation is printed here, before the terminal changes mode.
-fn screen_reader_mode(cli: &Cli, config: &Config, host: &Host) -> Option<accessibility::Source> {
+/// Prints startup warnings that never reached the conversation, because the process is about to
+/// exit or has no conversation.
+fn print_warnings(warnings: &[Notice]) {
+    for warning in warnings {
+        eprintln!("fontaine: warning: {warning}");
+    }
+}
+
+/// Whether screen-reader mode is on, from the flag, the environment and the settings, and the
+/// warning for an environment value that was ignored. The confirmation is printed here, before
+/// the terminal changes mode.
+fn screen_reader_mode(
+    cli: &Cli,
+    config: &Config,
+    host: &Host,
+) -> (Option<accessibility::Source>, Vec<Notice>) {
     let env = (host.env)(accessibility::ENV_VAR).map(|v| v.to_string_lossy().into_owned());
+    let mut warnings = Vec::new();
     if let Some(value) = env.as_deref()
         && !accessibility::env_is_valid(value)
     {
-        eprintln!(
-            "fontaine: warning: {}={value} is ignored; use 1 to turn screen-reader mode on or 0 to keep it off",
-            accessibility::ENV_VAR
-        );
+        warnings.push(Notice::warning(
+            format!(
+                "{}={value} is ignored; use 1 to turn screen-reader mode on or 0 to keep it off",
+                accessibility::ENV_VAR
+            ),
+            None,
+        ));
     }
     let source = accessibility::resolve(
         cli.ax_screen_reader,
@@ -162,7 +180,7 @@ fn screen_reader_mode(cli: &Cli, config: &Config, host: &Host) -> Option<accessi
     if let Some(source) = source {
         println!("{}", source.announcement());
     }
-    source
+    (source, warnings)
 }
 
 pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
@@ -199,8 +217,8 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     if !cli.print && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         return usage("the interactive UI needs a terminal; use `fontaine -p` for scripted runs");
     }
-    let screen_reader = if cli.print {
-        None
+    let (screen_reader, ax_warnings) = if cli.print {
+        (None, Vec::new())
     } else {
         screen_reader_mode(&cli, &config, &host)
     };
@@ -216,6 +234,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
         ) {
             Ok(fontaine_tui::trust_prompt::Choice::Trust) => {
                 if let Err(e) = trust::record(&dirs.data, &config.workspace) {
+                    print_warnings(&ax_warnings);
                     eprintln!("fontaine: could not save the trust decision: {e}");
                     return ExitCode::from(1);
                 }
@@ -223,6 +242,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
                 match load_config(&cli, &host, sink.as_ref()) {
                     Ok((reloaded, _)) => config = reloaded,
                     Err(e) => {
+                        print_warnings(&ax_warnings);
                         eprintln!("fontaine: {e}");
                         return ExitCode::from(e.exit_code());
                     }
@@ -230,6 +250,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
             }
             Ok(fontaine_tui::trust_prompt::Choice::DontTrust) => project_executables = false,
             Err(e) => {
+                print_warnings(&ax_warnings);
                 eprintln!("fontaine: cannot show the trust prompt: {e}");
                 return ExitCode::from(1);
             }
@@ -243,10 +264,18 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     } else {
         None
     };
-    let prep = match prepare_session(&cli, &config, &host, &dirs, mode, project_executables) {
+    let mut prep = match prepare_session(&cli, &config, &host, &dirs, mode, project_executables) {
         Ok(prep) => prep,
-        Err(code) => return code,
+        Err(code) => {
+            print_warnings(&ax_warnings);
+            return code;
+        }
     };
+    // Headless has no conversation to show them in. Printing now, before models are resolved,
+    // keeps them on stderr when a later startup check exits.
+    if headless.is_some() {
+        print_warnings(&std::mem::take(&mut prep.warnings));
+    }
 
     let export = telemetry::install(
         sink.as_ref(),
@@ -268,7 +297,18 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
         Ok(runtime) => runtime.block_on(async {
             match headless {
                 Some(options) => run_headless(&cli, options, prep, &config, &dirs, &host).await,
-                None => run_interactive(&cli, prep, &config, &dirs, &host, screen_reader).await,
+                None => {
+                    run_interactive(
+                        &cli,
+                        prep,
+                        &config,
+                        &dirs,
+                        &host,
+                        screen_reader,
+                        ax_warnings,
+                    )
+                    .await
+                }
             }
         }),
         Err(e) => {
@@ -359,6 +399,9 @@ pub struct SessionPrep {
     pub project_executables: bool,
     /// Claude Code's `start_type`: `fresh`, `resume` or `continue`.
     pub start_type: &'static str,
+    /// Non-fatal warnings from reading the configuration. Headless prints them to stderr; the
+    /// interactive surface shows them in the conversation.
+    pub warnings: Vec<Notice>,
 }
 
 /// Opens, copies or creates the session the flags ask for.
@@ -432,11 +475,16 @@ fn prepare_session(
                 .map(|dir| (RootSource::Settings, PathBuf::from(dir))),
         );
     let roots = workspace::resolve(&config.workspace, &host.cwd, added);
-    for warning in &roots.warnings {
-        eprintln!("fontaine: warning: {warning}");
-    }
+    let warnings: Vec<Notice> = roots
+        .warnings
+        .iter()
+        .map(|warning| Notice::warning(warning.clone(), None))
+        .collect();
 
-    let (session, origin, start_type) = open_session(cli, config, dirs)?;
+    // The caller only gets the warnings back on success, so a failure prints them here.
+    let (session, origin, start_type) = open_session(cli, config, dirs).inspect_err(|_| {
+        print_warnings(&warnings);
+    })?;
     // Declined trust keeps a repository's servers from starting, but its agent files may still
     // name their tools: toolset cutting drops them.
     let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
@@ -446,6 +494,7 @@ fn prepare_session(
         servers: &servers,
     })
     .map_err(|e| {
+        print_warnings(&warnings);
         eprintln!("fontaine: {e}");
         ExitCode::from(e.exit_code())
     })?;
@@ -465,6 +514,7 @@ fn prepare_session(
         origin,
         project_executables,
         start_type,
+        warnings,
     })
 }
 
@@ -595,6 +645,7 @@ fn agent_setup(
         user_config: Some(dirs.config.join(config::USER_FILE)),
         guardian_profile: resolved.profile,
         notices,
+        startup_warnings: prep.warnings,
         scanner,
         switcher: Some(switcher),
         extensions: prep.extensions,
@@ -667,7 +718,13 @@ async fn run_interactive(
     dirs: &Dirs,
     host: &Host,
     screen_reader: Option<accessibility::Source>,
+    ax_warnings: Vec<Notice>,
 ) -> u8 {
+    // Every exit before the screen draws leaves the warnings nowhere else to go.
+    let bail = |prep: &SessionPrep| {
+        print_warnings(&ax_warnings);
+        print_warnings(&prep.warnings);
+    };
     let resolved = models::resolve(&ResolveParams {
         config,
         data_dir: &dirs.data,
@@ -693,10 +750,12 @@ async fn run_interactive(
             match fontaine_tui::setup::run(params).await {
                 Ok(Some((models, config))) => (models, Some(config)),
                 Ok(None) => {
+                    bail(&prep);
                     eprintln!("fontaine: {error}");
                     return error.exit_code();
                 }
                 Err(e) => {
+                    bail(&prep);
                     eprintln!(
                         "fontaine: cannot show the setup screen: {}",
                         fontaine_tools::error_chain::chain(&e)
@@ -707,6 +766,7 @@ async fn run_interactive(
             }
         }
         Err(error) => {
+            bail(&prep);
             eprintln!("fontaine: {error}");
             return error.exit_code();
         }
@@ -719,10 +779,13 @@ async fn run_interactive(
         host,
     };
     let scanner = start_scanner(&launch, &prep, &models).await;
+    let pending = (ax_warnings.clone(), prep.warnings.clone());
     let setup = agent_setup(&launch, prep, models, scanner, false, None);
-    match fontaine_tui::run(setup, host.cwd.clone(), screen_reader).await {
+    match fontaine_tui::run(setup, host.cwd.clone(), screen_reader, ax_warnings).await {
         Ok(()) => 0,
         Err(message) => {
+            print_warnings(&pending.0);
+            print_warnings(&pending.1);
             eprintln!("fontaine: {message}");
             1
         }

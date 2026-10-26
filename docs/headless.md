@@ -118,6 +118,11 @@ is a denial with the rule `GuardianUnavailable`; the `init` event reports `guard
 false` and a line on stderr names the model and the reason, so the run does not look like a
 guardian that judged everything unsafe.
 
+Warnings about the configuration that do not stop the run, such as an additional directory that
+was skipped, go to stderr as `fontaine: warning: ...` before the model is resolved, so a run that
+then exits early (a usage error, for instance) still shows them. In `auto` and `plan` a guardian
+running on the main model prints its notice as one line, headline and advice joined by a dash.
+
 Every adjudicated call emits a `gate_decision` event, and the `result` event's `denials` lists each
 denied call as `{tool, tier, rule, explanation}`, where `rule` names the rule and the scope it came
 from when a rule decided and `explanation` is what the model was told.

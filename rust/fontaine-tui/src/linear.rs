@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::io::{self, Write};
 
 use fontaine_core::config::PermissionMode;
+use fontaine_core::notice::Severity;
 use fontaine_tools::todo::TodoItem;
 use ratatui::style::Modifier;
 use ratatui::text::Line;
@@ -256,7 +257,17 @@ fn label(settled: &Settled<'_>, out: &mut Vec<String>) {
             };
             out.push(line);
         }
-        Entry::Notice(text) => labelled("notice:", text, out),
+        Entry::Notice {
+            severity: Severity::Info,
+            headline,
+            ..
+        } => labelled("notice:", headline, out),
+        Entry::Notice { headline, hint, .. } => {
+            labelled("warning:", headline, out);
+            if let Some(hint) = hint {
+                labelled("hint:", hint, out);
+            }
+        }
         Entry::Error(text) => labelled("error:", text, out),
         Entry::Shell {
             command, output, ..
@@ -770,6 +781,19 @@ mod tests {
         rig.render();
         rig.app.transcript.notice("heads up");
         assert_eq!(rig.render(), "\r\nnotice: heads up\r\n> draft");
+    }
+
+    #[test]
+    fn a_warning_is_labelled_in_words_with_its_hint_on_its_own_line() {
+        let mut rig = Rig::new();
+        rig.render();
+        rig.app
+            .transcript
+            .warning("careful", Some("do `this`".into()));
+        assert_eq!(
+            rig.render(),
+            "\r\x1b[2Kwarning: careful\r\nhint: do `this`\r\n> "
+        );
     }
 
     #[test]

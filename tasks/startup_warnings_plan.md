@@ -223,6 +223,7 @@ only when they no longer fit above the input.
 - 2026-10-25 AFK: Bottom-anchoring is in scope, per the issue's comment "Also: conversation is anchored to the top of the screen" and its screen-test acceptance.
 - 2026-10-25 AFK: `/clear` retires uncommitted entries into a `Transcript` list that the next `Screen::render` commits to scrollback before the new notice, because `Ui` can only reach `App` through the render closure and `clear()` resets `committed`.
 - 2026-10-25 AFK: Pre-TUI root warnings use a separate `AgentSetup.startup_warnings` list rather than `scanner_notices`, which is shown in every mode and would reorder them after the history/notices.
+- 2026-10-25 AFK: The `Glyphs` choice is stored on `Transcript` (set by `drive` from the session env) instead of `App`, because the transcript's row-producing methods are the only consumers and keep their signatures.
 - 2026-10-25 AFK: Only Info and Warning severities are implemented (issue says "for example"); an Error notice would duplicate `Entry::Error` and nothing produces one.
 
 ## Documentation

@@ -13,6 +13,7 @@ use fontaine_core::agent::EnvLookup;
 use fontaine_core::config::Config;
 use fontaine_core::dirs::Dirs;
 use fontaine_core::models::{self, Models, ResolveParams, Switcher};
+use fontaine_core::notice::Notice;
 use fontaine_core::user_config;
 use fontaine_tools::error_chain::chain;
 use ratatui::Frame;
@@ -420,7 +421,9 @@ impl Setup {
         self.status = None;
         Ok(match resolved {
             Ok(mut models) => {
-                models.notices.append(&mut self.warnings);
+                models
+                    .notices
+                    .extend(self.warnings.drain(..).map(|w| Notice::warning(w, None)));
                 Some(Box::new((models, self.config.clone())))
             }
             Err(e) => {

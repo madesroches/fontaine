@@ -263,6 +263,34 @@ async fn a_budget_with_no_known_price_is_a_usage_error() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn root_warnings_stay_on_stderr_when_a_later_startup_check_exits() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let missing = s.work.parent().unwrap().join("no-such-dir");
+    let out = s
+        .headless(&[
+            "--add-dir",
+            missing.to_str().unwrap(),
+            "--max-budget-usd",
+            "1",
+            "go",
+        ])
+        .await;
+    assert_eq!(out.code, Some(2), "{}", out.stderr);
+    let warning = out
+        .stderr
+        .lines()
+        .position(|l| l.starts_with("fontaine: warning:") && l.contains("--add-dir"))
+        .unwrap_or_else(|| panic!("{}", out.stderr));
+    let exit = out
+        .stderr
+        .lines()
+        .position(|l| l.contains("price"))
+        .unwrap_or_else(|| panic!("{}", out.stderr));
+    assert!(warning < exit, "{}", out.stderr);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn stream_json_input_drives_a_two_turn_run() {
     let endpoint = Endpoint::start_with(
         Wire::Chat,

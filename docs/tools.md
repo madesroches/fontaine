@@ -84,8 +84,9 @@ More roots come from the repeatable `--add-dir <path>` flag and from
   `cwd`. The tool's own confinement and Fontaine's check use the same rule, so they cannot
   disagree.
 - A relative `--add-dir` or configuration entry is resolved against the launch directory. An entry
-  that does not exist, is not a directory or cannot be resolved is left out, with a warning on
-  stderr that names the path and where it came from, and the run continues with the other roots.
+  that does not exist, is not a directory or cannot be resolved is left out, with a warning that
+  names the path and where it came from (in the conversation in the terminal UI, on stderr in a
+  headless run), and the run continues with the other roots.
   A bad entry never widens the workspace.
 - Roots grant file access, not configuration. Settings, hooks, MCP servers and extension files are
   read from the primary root only; a `.fontaine/settings.toml` in an added root is ignored.

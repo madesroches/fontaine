@@ -43,8 +43,10 @@ fn input_view(buffer: &InputBuffer, width: usize) -> InputView {
     }
 }
 
-/// The rows the live area needs for the next frame, at most `max_height`.
-pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
+/// The rows of the live area that are not transcript: overlay, queue, task list, message box and
+/// status line. Unclamped, since the caller budgets the transcript against what is left of the
+/// screen.
+pub fn chrome(app: &App, width: u16, max_height: u16) -> usize {
     let inner_width = usize::from(width.saturating_sub(2)).max(1);
     let Overlay { body, footer, .. } = overlay(app, inner_width, max_height, false);
     let overlay_rows = if body.is_empty() {
@@ -63,11 +65,16 @@ pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
             queued_lines(app, inner_width).len(),
         )
         .len();
+    overlay_rows + input_rows + 1
+}
+
+/// The rows the live area needs for the next frame, at most `max_height`.
+pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
     let live = app
         .transcript
         .live_lines(usize::from(width).max(1), &app.theme)
         .len();
-    let total = live + overlay_rows + input_rows + 1;
+    let total = live + chrome(app, width, max_height);
     u16::try_from(total).unwrap_or(u16::MAX).min(max_height)
 }
 
@@ -392,7 +399,11 @@ fn draw_transcript(frame: &mut Frame, area: Rect, app: &App) {
         .transcript
         .live_lines(usize::from(area.width).max(1), &app.theme);
     let start = lines.len().saturating_sub(usize::from(area.height));
-    frame.render_widget(Paragraph::new(lines[start..].to_vec()), area);
+    let shown = lines[start..].to_vec();
+    // A short transcript sits on the row above the input; the empty rows are above it.
+    let spare = usize::from(area.height).saturating_sub(shown.len()) as u16;
+    let area = Rect::new(area.x, area.y + spare, area.width, area.height - spare);
+    frame.render_widget(Paragraph::new(shown), area);
 }
 
 fn draw_approval(

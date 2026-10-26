@@ -16,6 +16,7 @@ use futures::future::BoxFuture;
 
 use crate::config::{Config, Scanner as ScannerKind};
 use crate::models::GuardianModel;
+use crate::notice::Notice;
 
 /// A scanner that is on, or the reason it cannot be asked.
 #[derive(Clone)]
@@ -30,7 +31,7 @@ pub enum Backend {
 #[derive(Clone, Default)]
 pub struct ScannerStart {
     pub backend: Option<Backend>,
-    pub notices: Vec<String>,
+    pub notices: Vec<Notice>,
 }
 
 pub struct ScannerStage {
@@ -183,8 +184,11 @@ fn ready(scanner: Arc<dyn Scanner>) -> ScannerStart {
 
 fn unavailable(reason: String) -> ScannerStart {
     ScannerStart {
-        notices: vec![format!(
-            "the tool-result scanner is unavailable ({reason}); every tool result will be marked unscanned and suspect"
+        notices: vec![Notice::warning(
+            format!(
+                "the tool-result scanner is unavailable ({reason}); every tool result will be marked unscanned and suspect"
+            ),
+            None,
         )],
         backend: Some(Backend::Unavailable(reason)),
     }
@@ -204,10 +208,15 @@ async fn start_pg2(params: &StartParams<'_>, timeout: Duration) -> ScannerStart 
 
     let guardian = &params.config.guardian;
     let token_var = guardian.scanner_hf_token_env.as_str();
-    let notices = vec![LICENSE_NOTICE.to_string()];
-    let fail = |mut notices: Vec<String>, cause: String| {
-        notices.push(format!(
-            "the tool-result scanner is unavailable ({cause}); every tool result will be marked unscanned and suspect. To fix it, accept the Llama 4 Community License for the PromptGuard 2 model on Hugging Face and put your token in ${token_var}, or point `scanner_model_path` at a local copy."
+    let notices = vec![Notice::info(LICENSE_NOTICE)];
+    let fail = |mut notices: Vec<Notice>, cause: String| {
+        notices.push(Notice::warning(
+            format!(
+                "the tool-result scanner is unavailable ({cause}); every tool result will be marked unscanned and suspect"
+            ),
+            Some(format!(
+                "To fix it, accept the Llama 4 Community License for the PromptGuard 2 model on Hugging Face and put your token in ${token_var}, or point `scanner_model_path` at a local copy."
+            )),
         ));
         ScannerStart {
             backend: Some(Backend::Unavailable(cause)),
