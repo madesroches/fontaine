@@ -42,7 +42,10 @@ fn texts(w: &World, loaded: &Loaded) -> Vec<String> {
 }
 
 fn warned(loaded: &Loaded, needle: &str) -> bool {
-    loaded.warnings.iter().any(|w| w.contains(needle))
+    loaded
+        .warnings
+        .iter()
+        .any(|w| w.replace('\\', "/").contains(needle))
 }
 
 #[test]
@@ -155,8 +158,12 @@ fn a_deny_rule_covers_the_user_tier_and_imports() {
         None,
         &[],
         &[&format!(
-            "read({}/**)",
-            w.config.display().to_string().replacen('/', "//", 1)
+            "read(//{}/**)",
+            w.config
+                .display()
+                .to_string()
+                .replace('\\', "/")
+                .trim_start_matches('/')
         )],
     ));
     assert!(!texts(&w, &denied_user).contains(&"user".to_string()));

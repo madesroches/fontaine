@@ -188,7 +188,12 @@ mod tests {
         std::os::unix::fs::symlink(root, root.join("b/loop")).unwrap();
         let names: Vec<String> = rule_files(root)
             .iter()
-            .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().into_owned())
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
             .collect();
         assert_eq!(names, ["a.md", "b/c.md", "z.md"]);
     }

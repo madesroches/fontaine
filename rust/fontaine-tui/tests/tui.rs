@@ -1701,10 +1701,21 @@ async fn config_reads_one_plain_line_per_key_in_screen_reader_mode() {
     );
 }
 
+/// A path as it reads inside Debug- or JSON-encoded text, where backslashes are doubled.
+fn escaped(path: &std::path::Path) -> String {
+    path.display().to_string().replace('\\', "\\\\")
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn memory_lists_the_instruction_files_and_opens_one_after_creating_it() {
     let mut w = World::new(vec![]);
-    w.env.push(("EDITOR".to_string(), "true".to_string()));
+    // Succeeds with the file path appended, under `sh` and under Windows' word splitting alike.
+    let editor = if cfg!(windows) {
+        "git --version"
+    } else {
+        "true"
+    };
+    w.env.push(("EDITOR".to_string(), editor.to_string()));
     std::fs::write(w.work.join("CLAUDE.md"), "project rules\n").unwrap();
     let project = w.work.join("FONTAINE.md");
     w.run(|ui| async move {
@@ -1740,13 +1751,13 @@ async fn init_sends_a_hidden_prompt_naming_the_target_and_records_the_intent() {
     assert!(
         requests.contains(&format!(
             "Create the project instruction file at {}",
-            target.display()
+            escaped(&target)
         )),
         "{requests}"
     );
     assert!(
         w.ledger_text()
-            .contains(&format!("/init: create or improve {}", target.display())),
+            .contains(&format!("/init: create or improve {}", escaped(&target))),
         "{}",
         w.ledger_text()
     );
@@ -1768,7 +1779,7 @@ async fn init_improves_an_existing_instruction_file_instead_of_creating_one() {
     assert!(
         requests.contains(&format!(
             "Improve the project instruction file at {}",
-            target.display()
+            escaped(&target)
         )),
         "{requests}"
     );
