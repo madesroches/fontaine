@@ -48,6 +48,19 @@
         "cost_usd": { "type": ["number", "null"], "minimum": 0 }
       }
     },
+    "main_usage_bucket": {
+      "allOf": [
+        { "$ref": "#/$defs/usage_bucket" },
+        {
+          "type": "object",
+          "required": ["cache_read_input_tokens", "cache_creation_input_tokens"],
+          "properties": {
+            "cache_read_input_tokens": { "type": "integer", "minimum": 0 },
+            "cache_creation_input_tokens": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
     "init": {
       "allOf": [
         { "$ref": "#/$defs/envelope" },
@@ -223,7 +236,7 @@
               "type": "object",
               "required": ["main", "guardian", "subagents"],
               "properties": {
-                "main": { "$ref": "#/$defs/usage_bucket" },
+                "main": { "$ref": "#/$defs/main_usage_bucket" },
                 "guardian": { "$ref": "#/$defs/usage_bucket" },
                 "subagents": { "$ref": "#/$defs/usage_bucket" }
               }

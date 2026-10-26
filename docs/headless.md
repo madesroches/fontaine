@@ -156,7 +156,7 @@ The `result` object:
 | `num_turns` | Model calls made so far in the session |
 | `duration_ms` | Wall time of the turn |
 | `total_cost_usd` | Spend so far, main model plus guardian plus subagents, or null when none is priced |
-| `usage` | `main`, `guardian` and `subagents`, each with `input_tokens`, `output_tokens` and `cost_usd`; `guardian` totals every adjudication that reached the model, subagents' included (cached verdicts cost nothing); `subagents` is their model calls |
+| `usage` | `main`, `guardian` and `subagents`, each with `input_tokens`, `output_tokens` and `cost_usd`; `main` also has `cache_read_input_tokens` and `cache_creation_input_tokens`, the parts of its input read from and written to the provider's prompt cache (0 when the provider reports none); `guardian` totals every adjudication that reached the model, subagents' included (cached verdicts cost nothing); `subagents` is their model calls |
 | `denials` | One entry per denied call: `tool`, `tier`, `rule`, `explanation` |
 
 Usage and cost accumulate over the session, so each turn's `result` reports the totals so far.

@@ -48,6 +48,13 @@ All notable changes are recorded here. The format follows
     stdio MCP server, after the credential scrub. It loads only from the user-trust scopes,
     rejects `FONTAINE_*` names, never shows a value in a configuration error, and the guardian
     sees the variable names, not their values (#5).
+- Prompt caching (#13)
+  - Anthropic accounts, and `opencode-go` models on the Messages wire when opted in, send cache
+    breakpoints on the tools, the system prompt and the latest message. `prompt_caching` (on for
+    `anthropic`, off for `opencode-go`) and `cache_ttl` (`"5m"` or `"1h"`) are user-scope account
+    keys. The guardian's request marks only its static prefix.
+  - Anything before the latest message is append-only within a session, an MCP server's tools are
+    registered sorted by name, and the headless `usage.main` reports cache read and write tokens.
 - Task list (#22)
   - The `todo_write` tool keeps a session task list the model replaces whole on each call. It is
     read-only and takes the fast path, and is kept in `todos.json` in the session directory so

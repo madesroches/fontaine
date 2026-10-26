@@ -198,6 +198,8 @@ fn late_account() -> Account {
         wires: None,
         context_tokens: None,
         think: None,
+        prompt_caching: None,
+        cache_ttl: None,
         https_proxy: None,
         http_proxy: None,
         no_proxy: None,
@@ -259,4 +261,166 @@ async fn an_account_in_use_cannot_be_removed() {
         Err(AccountsError::InUse { .. })
     ));
     assert!(runtime.removable("spare").is_ok());
+}
+
+async fn messages_gateway() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "m1",
+            "content": [{"type": "text", "text": "hello"}],
+            "stop_reason": "end_turn", "stop_sequence": null,
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+fn caching_request() -> CompletionRequest {
+    CompletionRequest::new("hi")
+        .preamble("You are a test.")
+        .max_tokens(64)
+        .tools([
+            rig_core::completion::ToolDefinition::new(
+                rig_core::message::ToolName::new("first").unwrap(),
+                "one",
+                json!({"type": "object", "properties": {}}),
+            ),
+            rig_core::completion::ToolDefinition::new(
+                rig_core::message::ToolName::new("last").unwrap(),
+                "two",
+                json!({"type": "object", "properties": {}}),
+            ),
+        ])
+}
+
+/// The JSON body of the last request the gateway saw.
+async fn last_body(server: &MockServer) -> serde_json::Value {
+    let requests = server.received_requests().await.unwrap();
+    serde_json::from_slice(&requests.last().expect("a request").body).unwrap()
+}
+
+async fn anthropic_session(w: &World, server: &MockServer, extra: &str) -> AgentRuntime {
+    w.user_file(&format!(
+        "[accounts.main]\nkind = \"anthropic\"\nbase_url = \"{}\"\nmodels = [\"m1\"]\n{extra}\n[accounts.judge]\nkind = \"anthropic\"\nbase_url = \"{}\"\nmodels = [\"g1\"]\n{extra}\n[model]\nmodel = \"main/m1\"\n\n[guardian]\nmodel = \"judge/g1\"\n",
+        server.uri(),
+        server.uri()
+    ));
+    credentials::store(&w.data, "main", "sk-main").unwrap();
+    credentials::store(&w.data, "judge", "sk-judge").unwrap();
+    session(w).await
+}
+
+fn markers(body: &serde_json::Value) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
+    let tools = body["tools"].as_array().unwrap();
+    (
+        tools[0]["cache_control"].clone(),
+        tools[tools.len() - 1]["cache_control"].clone(),
+        body["system"].as_array().unwrap().last().unwrap()["cache_control"].clone(),
+    )
+}
+
+#[tokio::test]
+async fn an_anthropic_account_marks_the_prefix_and_the_tail_by_default() {
+    let server = messages_gateway().await;
+    let w = World::new();
+    let runtime = anthropic_session(&w, &server, "").await;
+    runtime
+        .models
+        .main
+        .completion
+        .call(caching_request())
+        .await
+        .unwrap();
+    let body = last_body(&server).await;
+    let (first, last, system) = markers(&body);
+    assert!(first.is_null(), "{body}");
+    assert_eq!(last, json!({"type": "ephemeral"}), "{body}");
+    assert_eq!(system, json!({"type": "ephemeral"}), "{body}");
+    let message = body["messages"].as_array().unwrap().last().unwrap();
+    assert!(
+        message["content"].as_array().unwrap().last().unwrap()["cache_control"].is_object(),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn prompt_caching_false_sends_no_cache_control() {
+    let server = messages_gateway().await;
+    let w = World::new();
+    let runtime =
+        anthropic_session(&w, &server, "prompt_caching = false\ncache_ttl = \"1h\"\n").await;
+    runtime
+        .models
+        .main
+        .completion
+        .call(caching_request())
+        .await
+        .unwrap();
+    let body = last_body(&server).await;
+    assert!(!body.to_string().contains("cache_control"), "{body}");
+}
+
+#[tokio::test]
+async fn the_one_hour_ttl_applies_only_when_the_account_asks_for_it() {
+    let server = messages_gateway().await;
+    let w = World::new();
+    let runtime = anthropic_session(&w, &server, "cache_ttl = \"1h\"\n").await;
+    runtime
+        .models
+        .main
+        .completion
+        .call(caching_request())
+        .await
+        .unwrap();
+    let (_, last, system) = markers(&last_body(&server).await);
+    let hour = json!({"type": "ephemeral", "ttl": "1h"});
+    assert_eq!(last, hour);
+    assert_eq!(system, hour);
+}
+
+#[tokio::test]
+async fn the_guardian_handle_marks_only_its_static_prefix() {
+    let server = messages_gateway().await;
+    let w = World::new();
+    let runtime = anthropic_session(&w, &server, "").await;
+    let Some(fontaine_core::models::GuardianModel::Ready(handle)) = &runtime.models.guardian else {
+        panic!("the guardian is ready");
+    };
+    handle.completion.call(caching_request()).await.unwrap();
+    let body = last_body(&server).await;
+    let (_, last, system) = markers(&body);
+    assert!(last.is_object() && system.is_object(), "{body}");
+    let message = body["messages"].as_array().unwrap().last().unwrap();
+    assert!(
+        !message.to_string().contains("cache_control"),
+        "the per-call message carries no marker: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_guardian_on_the_main_model_marks_only_its_static_prefix() {
+    let server = messages_gateway().await;
+    let w = World::new();
+    w.user_file(&format!(
+        "[accounts.main]\nkind = \"anthropic\"\nbase_url = \"{}\"\nmodels = [\"m1\"]\n[model]\nmodel = \"main/m1\"\n",
+        server.uri()
+    ));
+    credentials::store(&w.data, "main", "sk-main").unwrap();
+    let runtime = session(&w).await;
+    assert_eq!(
+        runtime.models.guardian_choice,
+        fontaine_core::models::GuardianChoice::MainFallback
+    );
+    let Some(fontaine_core::models::GuardianModel::Ready(handle)) = &runtime.models.guardian else {
+        panic!("the guardian is ready");
+    };
+    handle.completion.call(caching_request()).await.unwrap();
+    let body = last_body(&server).await;
+    let (_, last, system) = markers(&body);
+    assert!(last.is_object() && system.is_object(), "{body}");
+    let message = body["messages"].as_array().unwrap().last().unwrap();
+    assert!(!message.to_string().contains("cache_control"), "{body}");
 }

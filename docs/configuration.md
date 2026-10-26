@@ -145,6 +145,8 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 | `models` | Explicit model list. Without it the provider is asked which models it offers. | unset |
 | `wires` | `opencode-go` only: a table from model id to the wire it is served on (`chat`, `responses`, `messages` or `gemini`), for a model the built-in routing gets wrong. | unset |
 | `context_tokens` | `ollama` only: the context window requested with every call (`options.num_ctx`), at least 2048. | `16384` |
+| `prompt_caching` | `anthropic` and `opencode-go` only: whether requests on the Messages wire carry cache breakpoints (tools, system prompt and the latest message), so the provider reuses the unchanged prefix at a fraction of the input price. On `opencode-go` it affects only models served on the Messages wire; the other wires cache by prefix on their own. User scope only, because it changes spend and what the provider stores. | `true` for `anthropic`, `false` for `opencode-go` |
+| `cache_ttl` | `anthropic` and `opencode-go` only: how long a cached prefix lives, `"5m"` or `"1h"`. The one-hour lifetime costs more per cache write. Has no effect when `prompt_caching` is off. User scope only. | `"5m"` |
 | `think` | `ollama` only: `false` asks a thinking model to answer without reasoning, which is much faster. `true` and unset leave the model's default. | unset |
 | `https_proxy`, `http_proxy`, `no_proxy`, `ca_bundle`, `client_cert`, `client_key` | Override the same key of [`[network]`](#network) for this account only. | the `[network]` value |
 
