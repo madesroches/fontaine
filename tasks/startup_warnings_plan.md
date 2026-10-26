@@ -104,8 +104,9 @@ is fatal and stays on stderr, as do fatal errors, which keep `eprintln!` and exi
   rows, so a backticked span that crosses a row break stays bold on both rows.
 - Theme: no hard-coded colours. Warning reuses `theme.warning`; no new
   slot is needed because Info keeps the dim style (decision below).
-- Glyph fallback: a small `Glyphs` choice (`⚠`/`·` vs `!`/`-`) selected once at startup by
-  locale (non-UTF-8 `LC_ALL`/`LC_CTYPE`/`LANG` → ASCII) and stored on `App` next to the theme.
+- Glyph fallback: a small `Glyphs` choice (`⚠`/`·` vs `!`/`-`) selected once at startup by the
+  `FONTAINE_ASCII_GLYPHS` env var (set and not `0` or empty → ASCII) and stored on `App` next to
+  the theme.
 - Linear renderer: `notice:` for Info, `warning:` for Warning, headline
   and hint on separate labelled lines, so screen readers announce severity in words.
 
@@ -151,10 +152,12 @@ only when they no longer fit above the input.
   (`screen.commit_all(&mut app)` via the render closure, while `App` is alive) before returning;
   `TerminalGuard::drop` only calls `clear_live` (it holds just the `LiveScreen`), so the
   conversation stays in the terminal after quitting, as today.
-- `/clear` calls `commit_all` before `transcript.clear()` (`ui/commands/context.rs:19`, which
-  resets `committed`), so held entries reach scrollback instead of vanishing; scrollback is kept as
-  before; resizing recomputes `R` each
-  frame, committing entries that stop fitting.
+- `/clear` (`ui/commands/context.rs:19`) cannot reach `Screen`, and `transcript.clear()` resets
+  `committed`, so `Transcript::clear` moves the entries not yet committed (with the
+  `committed_chars` offset of a streaming reply) into a `retired` list; the next `Screen::render`
+  drains it and commits it all to scrollback before the budgeted commit of the new entries, so held
+  entries reach scrollback instead of vanishing; scrollback is kept as before; resizing recomputes
+  `R` each frame, committing entries that stop fitting.
 - The linear renderer has no live area and is unaffected.
 
 ## Implementation Steps
@@ -176,12 +179,12 @@ only when they no longer fit above the input.
    `fontaine-evals/src/runner.rs:731` (scanner notice printing); the full `AgentSetup` struct
    literal in `fontaine-tui/tests/common/mod.rs`; `fontaine_tui::run`/`drive` signatures and their callers; `Prompt::Notice(Severity, String)`; `ChannelApprover::{notice,warn}`; `Entry::Notice`
    variant, `Transcript::{warning,push_notice}`; `entry_lines` rendering with hint wrapping and
-   bold actionable spans; `Glyphs` + locale detection; `lib.rs` startup loop pushes
+   bold actionable spans; `Glyphs` + `FONTAINE_ASCII_GLYPHS` read; `lib.rs` startup loop pushes
    `startup_warnings`, notices and scanner notices as `Notice`s; `app.rs` test helper
    `last_notice` and `linear.rs` labels.
 4. Bottom-anchoring: budgeted commit in `transcript.rs`, `Screen::render` sizing,
    `draw_transcript` bottom alignment, `Screen::commit_all` called at the end of `drive`/`run`
-   (before `TerminalGuard::drop` runs `clear_live`) and before `transcript.clear()` on `/clear`.
+   (before `TerminalGuard::drop` runs `clear_live`) and and `Transcript::clear` retiring uncommitted entries for the next `Screen::render` to commit on `/clear`.
 5. Docs and changelog (see Documentation).
 
 ## Files to Modify
@@ -190,7 +193,7 @@ only when they no longer fit above the input.
   tests under `rust/fontaine-core/tests/` including `tests/common/runtime.rs`
 - `rust/fontaine/src/{lib.rs,headless.rs}`; `rust/fontaine-evals/src/runner.rs`
 - `rust/fontaine-tui/src/{lib.rs,transcript.rs,view.rs,screen.rs,linear.rs,app.rs,theme.rs
-  (only if a slot proves needed),setup.rs,ui/mod.rs,ui/tests.rs,ui/commands/context.rs}`; `tests/common/mod.rs`
+  (only if a slot proves needed),setup.rs,ui/mod.rs,ui/tests.rs}`; `tests/common/mod.rs`
 - `docs/tui.md`, `docs/terminal.md`, `docs/headless.md`, `docs/configuration.md`, `docs/tools.md`,
   `CHANGELOG.md`
 
@@ -216,15 +219,17 @@ only when they no longer fit above the input.
   Code; both are requested by issue #82.
 - 2026-10-25 AFK: The headless guardian-fallback stderr text changes from one sentence to
   "headline — hint" because the notice is now split structurally; root-warning text is unchanged.
-- 2026-10-25 AFK: ASCII glyph fallback is selected by locale rather than a new config key, to
-  avoid a settings surface for a cosmetic switch.
+- 2026-10-25 AFK: ASCII glyph fallback is switched by the single `FONTAINE_ASCII_GLYPHS` env var (no config key, no locale sniffing), the smallest mechanism that satisfies the issue's "keep an ASCII fallback".
+- 2026-10-25 AFK: Bottom-anchoring is in scope, per the issue's comment "Also: conversation is anchored to the top of the screen" and its screen-test acceptance.
+- 2026-10-25 AFK: `/clear` retires uncommitted entries into a `Transcript` list that the next `Screen::render` commits to scrollback before the new notice, because `Ui` can only reach `App` through the render closure and `clear()` resets `committed`.
+- 2026-10-25 AFK: Pre-TUI root warnings use a separate `AgentSetup.startup_warnings` list rather than `scanner_notices`, which is shown in every mode and would reorder them after the history/notices.
+- 2026-10-25 AFK: Only Info and Warning severities are implemented (issue says "for example"); an Error notice would duplicate `Entry::Error` and nothing produces one.
 
 ## Documentation
 
 - `docs/tui.md`: notice severities, warning glyph/colour, bottom-anchored transcript; revise the
   top-down / scrollback / narrowing paragraphs (~lines 10-27).
-- `docs/terminal.md`: update the label table (~line 157); add a new glyph/locale section for the
-  ASCII fallback and its locale rule.
+- `docs/terminal.md`: update the label table (~line 157); document `FONTAINE_ASCII_GLYPHS` and the ASCII fallback glyphs.
 - `docs/headless.md`: add that config-root warnings go to stderr.
 - `docs/configuration.md` (~551, ~870, ~209) and `docs/tools.md` (~87): the additional-directory
   warning (~551, tools.md ~87), the invalid `FONTAINE_AX_SCREEN_READER` "ignored with a warning"
@@ -240,7 +245,7 @@ All unit/`TestBackend` screen tests; nothing needs a live service.
   (update `tests/models.rs`).
 - Transcript rendering (`transcript.rs` tests): warning entry has `⚠ ` prefix and
   `theme.warning` colour, distinct from Info; hint wraps under the headline at narrow widths;
-  backticked and `/command` spans are bold, including a backticked span crossing a row break; ASCII glyph fallback; one test with a non-default
+  backticked and `/command` spans are bold, including a backticked span crossing a row break; ASCII glyph fallback (`FONTAINE_ASCII_GLYPHS` set and unset); one test with a non-default
   theme draws the warning in that theme's `warning` colour.
 - Linear renderer: `warning:` label.
 - Bottom anchoring (`screen.rs` tests, the issue's acceptance): a transcript shorter than the
@@ -249,15 +254,19 @@ All unit/`TestBackend` screen tests; nothing needs a live service.
   nothing lost or duplicated, ending with `commit_all` then `clear_live` leaving the full
   transcript in scrollback; a streaming reply across the boundary keeps held warnings anchored;
   a pending tool call pinning an over-budget transcript force-commits the overflow so no row is lost from view; an overlay/approval growing the chrome so
-  held entries commit; `/clear` commits held entries first; resize.
+  held entries commit; resize. The `/clear` test (held entries reach scrollback, not lost) is in `fontaine-tui/tests/` through the drive harness.
 - Pre-TUI warnings: a `tests/tui.rs` (or `ui/tests.rs`) test that root warnings handed to the
   startup path appear as warning entries; a headless test that they still go to stderr in every
   mode, including when a later startup check exits early.
 - Regression: these `screen.rs` tests are rewritten for held-back commits:
   `first_commits_fill_from_the_top`, `committed_lines_stay_contiguous`, the `late` notices test,
   `clear_live_keeps_scrollback_and_blanks_the_live_rows`, and `scripted()`'s `area.height`
-  assertion. The row-budgeted stream cut is a new `Cut` variant with a partial `committed_chars`
-  advance, tested separately; the remaining scrollback tests stay green.
+  assertion, `settled_lines_go_to_scrollback_and_the_live_area_holds_the_input`,
+  `a_streaming_reply_commits_only_completed_rows`, `the_live_area_always_ends_on_the_bottom_row`;
+  in `fontaine-tui/tests/tui.rs`, `finished_replies_scroll_above_the_live_area`. Other
+  `live()`-absence assertions in `fontaine-tui/tests/` (`todos.rs`, `schedule.rs`, `providers.rs`,
+  `tui.rs`) are re-run and adjusted. The row-budgeted stream cut is a new `Cut` variant with a
+  partial `committed_chars` advance, tested separately.
 
 ## Open Questions
 
