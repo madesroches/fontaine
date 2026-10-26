@@ -110,16 +110,26 @@ written at the top and the live area below it is padding. Change: settled lines 
 only when they no longer fit above the input.
 
 - `Screen::render` computes `chrome`, the non-live rows (overlay, queue, todo panel, input box,
-  status line), from a new `view` helper split out of `view::height`'s `content - live`.
+  status line), from a new `view` helper split out of `view::height`'s `content - live`. The
+  helper returns the unclamped total: `view::height` clamps to `max_height`, which would make the
+  budget wrong under a large overlay. The order in `render` becomes: chrome, budgeted commit,
+  `view::height` (today the commit runs before the height is computed).
   `Transcript` gets a commit that takes this budget. Invariant: after each frame's commit, held
   rows + chrome <= term_h (committing c rows moves `top` down by c, and `wanted = max(content,
   free)` absorbs the remainder); whole oldest entries are committed until it holds, and an entry
-  taller than the budget commits whole. `commit_entries` stops at the first unsettled entry, so
-  a pending tool call or stream pins later entries (accepted, as today). The streaming cut gets
-  the same budget as a new `Cut` variant that advances `committed_chars` partially: stream rows
-  commit oldest-first only while the invariant is violated, so the first streamed row does not
-  force held settled entries (the warnings) to scrollback. The existing `Cut::Rows`/`Cut::Lines`
-  path stays for the linear renderer.
+  taller than the budget commits whole. `commit_entries` has no per-entry row count, so the
+  budgeted commit derives it at the current width: an entry's rows are `entry_lines` at that width
+  offset by `committed_chars` (`assistant_rows(text, skip, width)` for a streaming reply). The
+  budget is the rows still releasable (held + chrome - term_h, if positive) and each commit
+  subtracts the rows it releases, so rows consumed by older entries in the same call count against
+  what a later entry or the stream may release. `commit_entries` stops at the first unsettled
+  entry, so a pending tool call or stream pins later entries (accepted, as today). The streaming
+  cut gets the same budget as a new `Cut` variant carrying that remaining row budget; it advances
+  `committed_chars` partially, by at most that many rows. Commit is oldest-first, so once the
+  stream overflows the budget the older settled entries (the warnings) commit before any stream
+  row; nothing is forced out while everything still fits. `commit(width, theme)` and
+  `Cut::Rows`/`Cut::Lines` stay unchanged for the linear renderer and the existing `transcript.rs`
+  unit tests.
 - Held-back settled entries are drawn as live lines, so `draw_transcript` bottom-aligns: when
   `lines.len() < area.height` it renders into the bottom `lines.len()` rows of the area.
 - `wanted`/`free` are computed after the commit, unchanged.
@@ -145,9 +155,10 @@ only when they no longer fit above the input.
    print collected warnings on every `Err` path of `prepare_session` and on interactive early
    exits before the TUI starts; thread them from `SessionPrep` into `AgentSetup` on the
    interactive path only; `screen_reader_mode` returns its
-   warning as a `Notice` passed to `run_interactive`; `headless::announce` `Display`s `Notice`s as
-   before. Update `tests/scanner_headless.rs`, `parallel_agents.rs`,
-   `telemetry_micromegas.rs` expectations only if text changes (it should not).
+   warning as a `Notice` passed to `run_interactive`; `headless::announce` `Display`s `Notice`s (the guardian-fallback
+   stderr text changes to headline — hint; root-warning text is unchanged). Update
+   `tests/scanner_headless.rs`, `parallel_agents.rs`, `telemetry_micromegas.rs` expectations that
+   match the guardian-fallback text.
 3. `fontaine-tui`: convert `setup.rs` `warnings` into `Notice`s where appended to
    `models.notices`; update `ui/tests.rs:106` (`Prompt::Notice` construction) and
    `fontaine-evals/src/runner.rs:731` (scanner notice printing); the full `AgentSetup` struct
@@ -190,6 +201,8 @@ only when they no longer fit above the input.
 - 2026-10-25 AFK: Claude Code's interactive startup notices cannot be observed through `claude -p`
   (headless prints none); matched from its documented behaviour (yellow warning line above the
   prompt). No deviation recorded beyond the dim Info style, which is kept for non-warning notices.
+- 2026-10-25 AFK: The headless guardian-fallback stderr text changes from one sentence to
+  "headline — hint" because the notice is now split structurally; root-warning text is unchanged.
 - 2026-10-25 AFK: ASCII glyph fallback is selected by locale rather than a new config key, to
   avoid a settings surface for a cosmetic switch.
 
