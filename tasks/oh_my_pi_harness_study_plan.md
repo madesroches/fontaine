@@ -208,6 +208,7 @@ Fontaine's rig provider path by checking `rust/fontaine-core` provider code.
 - 2026-10-26: AFK: omp runs only in Docker with a dummy key and a host recording proxy that injects real auth and redacts it, because omp defaults to `yolo` approval and hostile-command experiments must find no real credential.
 
 - 2026-10-26: The study also covers omp's terminal UI (E11 and a UI section in the doc), per user direction.
+- 2026-10-26: AFK: omp is pointed at the opencode-go gateway's OpenAI-compatible route through the recording proxy; if omp cannot take a custom base URL, the wire-dependent experiments (E2-E8) fall back to source-only and the doc records that, because no direct provider key is available and the conservative path adds no new credential exposure.
 
 ## Documentation
 
@@ -227,9 +228,5 @@ for the literal dummy key, the current upstream tokens and omp's install-id must
 
 ## Open Questions
 
-- Which provider/base URL can omp be pointed at with the credentials available here? The
-  expected route is the opencode-go gateway's OpenAI-compatible endpoint; if omp's provider
-  config cannot take a custom base URL, E2-E8 fall back to the nearest supported path or to
-  source-only, and the doc says so.
 - Can the LSP and DAP integrations be exercised inside the image (language servers installable
   offline from the build)? If not, E4 records them as source-only.
