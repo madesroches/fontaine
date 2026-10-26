@@ -341,6 +341,11 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
                     if let Some(added) = added {
                         config = *added;
                     }
+                    // `/theme` and `/config` save the theme to the settings file; the config in
+                    // hand predates them.
+                    if let Ok((fresh, _)) = load_config(&cli, &host, sink.as_ref()) {
+                        config.tui.theme = fresh.tui.theme;
+                    }
                     target
                 }
             };
