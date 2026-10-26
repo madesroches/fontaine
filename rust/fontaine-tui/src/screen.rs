@@ -11,10 +11,48 @@ use ratatui::Viewport;
 use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Rect, Size};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
 use crate::app::App;
 use crate::view;
+
+/// Pads `line` to `columns` and gives every space a hidden modifier, so none equals the blank
+/// cell that ratatui's diff skips.
+fn unblank(line: Line<'static>, columns: usize) -> Line<'static> {
+    let hidden = Modifier::HIDDEN;
+    let mut spans = Vec::new();
+    let mut width = 0;
+    for span in line.spans {
+        width += span.width();
+        let mut run = String::new();
+        let mut blank = false;
+        for c in span.content.chars() {
+            if (c == ' ') != blank && !run.is_empty() {
+                let style = if blank {
+                    span.style.add_modifier(hidden)
+                } else {
+                    span.style
+                };
+                spans.push(Span::styled(mem::take(&mut run), style));
+            }
+            blank = c == ' ';
+            run.push(c);
+        }
+        if !run.is_empty() {
+            let style = if blank {
+                span.style.add_modifier(hidden)
+            } else {
+                span.style
+            };
+            spans.push(Span::styled(run, style));
+        }
+    }
+    let pad = " ".repeat(columns.saturating_sub(width));
+    spans.push(Span::styled(pad, Style::default().add_modifier(hidden)));
+    Line { spans, ..line }
+}
 
 /// Rows handed to `insert_before` at a time, so the count always fits a `u16`.
 const INSERT_CHUNK: usize = 512;
@@ -187,8 +225,19 @@ impl<B: Backend + Anchor> Screen<B> {
         }
         // ratatui scrolls the rows above the viewport as a region, and a one-row region is
         // invalid DECSTBM that terminals ignore, so the whole screen scrolls with the viewport
-        // still in it. The viewport is repainted from scratch to undo that.
+        // still in it. The viewport is repainted from scratch to undo that, and the row each
+        // settled line is drawn over still holds a live row, which ratatui's diff leaves
+        // showing wherever the line has a blank cell, because the diff skips them. Hidden spaces
+        // differ from the blank cell, so they overwrite it.
         let one_row_region = self.terminal.get_frame().area().y <= 1 && !lines.is_empty();
+        let lines = if one_row_region {
+            lines
+                .into_iter()
+                .map(|line| unblank(line, columns))
+                .collect()
+        } else {
+            lines
+        };
         for chunk in lines.chunks(INSERT_CHUNK) {
             let rows = chunk.to_vec();
             self.terminal.insert_before(chunk.len() as u16, |buf| {
@@ -196,6 +245,8 @@ impl<B: Backend + Anchor> Screen<B> {
             })?;
         }
         if one_row_region {
+            let top = self.terminal.get_frame().area().y;
+            self.terminal.backend_mut().arm(Position::new(0, top));
             self.terminal.clear()?;
         }
         self.terminal.draw(|frame| view::draw(frame, app))?;
@@ -877,6 +928,41 @@ mod tests {
                     .collect()
             }
 
+            /// Every row that has left the visible screen, oldest first, trailing blanks trimmed.
+            pub fn scrollback(&self) -> Vec<String> {
+                let mut parser = self.emulator.lock().unwrap();
+                let rows = usize::from(self.height);
+                let mut out = Vec::new();
+                let mut offset = 0;
+                loop {
+                    offset += rows;
+                    parser.screen_mut().set_scrollback(offset);
+                    let reached = parser.screen().scrollback();
+                    let screen = parser.screen();
+                    let page: Vec<String> = screen
+                        .rows(0, screen.size().1.get())
+                        .map(|r| r.trim_end().to_string())
+                        .collect();
+                    let new = reached.saturating_sub(offset - rows);
+                    out.splice(0..0, page[..new.min(rows)].to_vec());
+                    if reached < offset {
+                        break;
+                    }
+                }
+                parser.screen_mut().set_scrollback(0);
+                out
+            }
+
+            /// Writes `text` over a row as a stale live row, leaving ratatui unaware of it.
+            pub fn paint(&mut self, row: u16, text: &str) {
+                let bytes = format!("\x1b7\x1b[{};1H\x1b[2K{text}\x1b8", row + 1);
+                self.emulator.lock().unwrap().process(bytes.as_bytes());
+            }
+
+            pub fn render_unchecked(&mut self, app: &mut App) {
+                self.screen.render(app).unwrap();
+            }
+
             /// ratatui's idea of the rows: blank above the viewport, its buffer below.
             fn model(&mut self, app: &App) -> Vec<String> {
                 let area = self.screen.area();
@@ -965,6 +1051,49 @@ mod tests {
         for n in order {
             finished(&mut app, n);
             harness.render(&mut app, &format!("finish {n}"));
+        }
+    }
+
+    /// A terminal that ignores the one-row scroll region ratatui uses scrolls the whole screen,
+    /// so the row a settled line is drawn over still holds the live row last painted there.
+    #[test]
+    fn issue_217_settled_lines_keep_no_stale_live_row_text() {
+        for height in 6..=12 {
+            let mut harness = emulated::Harness::new(60, height);
+            let mut app = app();
+            for i in 0..usize::from(height) + 4 {
+                app.transcript.notice(format!("note {i}"));
+                harness.render(&mut app, "filling");
+            }
+            for n in 0..usize::from(height) {
+                started(&mut app, n);
+                harness.render(&mut app, &format!("start {n}"));
+            }
+            for n in 0..usize::from(height) {
+                finished(&mut app, n);
+                harness.render(&mut app, &format!("finish {n}"));
+            }
+            for row in 0..height - 4 {
+                harness.paint(row, &format!("STALE LIVE ROW {row} {}", "x".repeat(30)));
+            }
+            for i in 0..usize::from(height) {
+                app.transcript.notice(format!("short {i}"));
+            }
+            harness.render_unchecked(&mut app);
+            let history = harness.scrollback();
+            let stale: Vec<_> = history
+                .iter()
+                .filter(|r| {
+                    let short = r
+                        .strip_prefix("· short ")
+                        .is_some_and(|n| n.parse::<u8>().is_ok());
+                    !(short
+                        || r.starts_with("· note ")
+                        || (r.starts_with("• shell sleep ")
+                            && (r.ends_with(" …") || r.ends_with(" ✓"))))
+                })
+                .collect();
+            assert!(stale.is_empty(), "height {height}: {stale:?}");
         }
     }
 
