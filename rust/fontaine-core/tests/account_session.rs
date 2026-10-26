@@ -399,3 +399,28 @@ async fn the_guardian_handle_marks_only_its_static_prefix() {
         "the per-call message carries no marker: {body}"
     );
 }
+
+#[tokio::test]
+async fn a_guardian_on_the_main_model_marks_only_its_static_prefix() {
+    let server = messages_gateway().await;
+    let w = World::new();
+    w.user_file(&format!(
+        "[accounts.main]\nkind = \"anthropic\"\nbase_url = \"{}\"\nmodels = [\"m1\"]\n[model]\nmodel = \"main/m1\"\n",
+        server.uri()
+    ));
+    credentials::store(&w.data, "main", "sk-main").unwrap();
+    let runtime = session(&w).await;
+    assert_eq!(
+        runtime.models.guardian_choice,
+        fontaine_core::models::GuardianChoice::MainFallback
+    );
+    let Some(fontaine_core::models::GuardianModel::Ready(handle)) = &runtime.models.guardian else {
+        panic!("the guardian is ready");
+    };
+    handle.completion.call(caching_request()).await.unwrap();
+    let body = last_body(&server).await;
+    let (_, last, system) = markers(&body);
+    assert!(last.is_object() && system.is_object(), "{body}");
+    let message = body["messages"].as_array().unwrap().last().unwrap();
+    assert!(!message.to_string().contains("cache_control"), "{body}");
+}

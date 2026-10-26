@@ -122,7 +122,7 @@ impl AgentRuntime {
             .set_root_model(self.models.main.reference.to_string());
         let guardian_followed = self.models.guardian_choice == GuardianChoice::MainFallback;
         if guardian_followed {
-            let model = GuardianModel::Ready(self.models.main.clone());
+            let model = GuardianModel::Ready(self.models.main.guardian_scoped());
             self.install_guardian(&model);
             self.models.guardian = Some(model);
         }

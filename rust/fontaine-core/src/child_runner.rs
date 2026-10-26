@@ -175,6 +175,7 @@ impl ChildContext {
             ModelSpec::Main => Ok(main.handle),
             ModelSpec::GuardianDefault => Ok(switcher
                 .and_then(|s| s.guardian_default(&main.handle.reference, &main.listing))
+                .map(|handle| handle.conversation_scoped())
                 .unwrap_or(main.handle)),
             ModelSpec::Model(text) => {
                 let Some(switcher) = switcher else {

@@ -30,9 +30,13 @@ fn no_env(_: &str) -> Option<OsString> {
 }
 
 fn signed_in_world(server: &MockServer) -> World {
+    signed_in_world_with(server, "")
+}
+
+fn signed_in_world_with(server: &MockServer, extra: &str) -> World {
     let w = World::new();
     w.user_file(&format!(
-        "[accounts.go]\nkind = \"opencode-go\"\nbase_url = \"{}/\"\n",
+        "[accounts.go]\nkind = \"opencode-go\"\nbase_url = \"{}/\"\n{extra}",
         server.uri()
     ));
     credentials::store_oauth(
@@ -541,4 +545,112 @@ async fn claude_guardian_requests_carry_no_thinking_parameter() {
         let body = messages_guardian_body(model).await;
         assert!(body.get("thinking").is_none(), "{model}: {body}");
     }
+}
+
+fn caching_request() -> CompletionRequest {
+    CompletionRequest::new("hi")
+        .preamble("You are a test.")
+        .max_tokens(64)
+        .tools([rig_core::completion::ToolDefinition::new(
+            rig_core::message::ToolName::new("first").unwrap(),
+            "one",
+            json!({"type": "object", "properties": {}}),
+        )])
+}
+
+async fn mount_messages(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/anthropic/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-haiku-5-5",
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 3, "output_tokens": 4},
+        })))
+        .mount(server)
+        .await;
+}
+
+/// The body of the one request `handle` sends for `caching_request`, on `route`.
+async fn caching_body(server: &MockServer, handle: &ModelHandle, route: &str) -> serde_json::Value {
+    handle.completion.call(caching_request()).await.unwrap();
+    serde_json::from_slice(&only_request(server, route).await.body).unwrap()
+}
+
+#[tokio::test]
+async fn the_messages_route_sends_no_cache_control_by_default() {
+    let server = gateway().await;
+    mount_messages(&server).await;
+    let w = signed_in_world(&server);
+    let handle = resolve(&w, "claude-haiku-5-5").await.unwrap();
+    let body = caching_body(&server, &handle, "/anthropic/v1/messages").await;
+    assert!(!body.to_string().contains("cache_control"), "{body}");
+}
+
+#[tokio::test]
+async fn the_messages_route_marks_the_request_when_prompt_caching_is_on() {
+    let server = gateway().await;
+    mount_messages(&server).await;
+    let w = signed_in_world_with(&server, "prompt_caching = true\n");
+    let handle = resolve(&w, "claude-haiku-5-5").await.unwrap();
+    let body = caching_body(&server, &handle, "/anthropic/v1/messages").await;
+    assert!(body["tools"][0]["cache_control"].is_object(), "{body}");
+    let system = body["system"].as_array().unwrap();
+    assert!(
+        system.last().unwrap()["cache_control"].is_object(),
+        "{body}"
+    );
+    let message = body["messages"].as_array().unwrap().last().unwrap();
+    assert!(message.to_string().contains("cache_control"), "{body}");
+}
+
+#[tokio::test]
+async fn the_messages_guardian_marks_only_its_static_prefix() {
+    let server = gateway().await;
+    mount_messages(&server).await;
+    let w = signed_in_world(&server);
+    w.user_file(&format!(
+        "[accounts.go]\nkind = \"opencode-go\"\nbase_url = \"{}/\"\nprompt_caching = true\n\n[guardian]\nmodel = \"go/claude-haiku-5-5\"\n",
+        server.uri()
+    ));
+    let config = w.load().unwrap();
+    let resolved = models::resolve(&ResolveParams {
+        config: &config,
+        data_dir: &w.data,
+        env: &no_env,
+        model_override: Some("go/kimi-k3"),
+        session_id: Some(SESSION.to_string()),
+    })
+    .await
+    .unwrap();
+    let Some(GuardianModel::Ready(handle)) = &resolved.guardian else {
+        panic!("the guardian is ready");
+    };
+    let body = caching_body(&server, handle, "/anthropic/v1/messages").await;
+    assert!(body["tools"][0]["cache_control"].is_object(), "{body}");
+    assert!(
+        body["system"].as_array().unwrap().last().unwrap()["cache_control"].is_object(),
+        "{body}"
+    );
+    let message = body["messages"].as_array().unwrap().last().unwrap();
+    assert!(!message.to_string().contains("cache_control"), "{body}");
+}
+
+#[tokio::test]
+async fn a_chat_model_sends_no_cache_control_even_when_prompt_caching_is_on() {
+    let server = gateway().await;
+    Mock::given(method("POST"))
+        .and(path("/openai/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "c1", "object": "chat.completion", "created": 1, "model": "kimi-k3",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "hi"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+        })))
+        .mount(&server)
+        .await;
+    let w = signed_in_world_with(&server, "prompt_caching = true\n");
+    let handle = resolve(&w, "kimi-k3").await.unwrap();
+    let body = caching_body(&server, &handle, "/openai/v1/chat/completions").await;
+    assert!(!body.to_string().contains("cache_control"), "{body}");
 }

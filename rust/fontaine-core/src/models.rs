@@ -112,6 +112,15 @@ pub struct ModelHandle {
     /// Request parameters that turn the model's thinking off, for the calls that force a tool
     /// call (the guardian and the scanner).
     pub thinking_off: Option<serde_json::Value>,
+    /// The same model's completions with conversation-wide and static-prefix-only caching, when
+    /// it was built from a client.
+    scopes: Option<Scopes>,
+}
+
+#[derive(Clone, Debug)]
+struct Scopes {
+    conversation: DynModel<Completion>,
+    guardian: DynModel<Completion>,
 }
 
 impl ModelHandle {
@@ -121,13 +130,38 @@ impl ModelHandle {
             kind,
             completion,
             thinking_off: None,
+            scopes: None,
         }
     }
 
     /// A handle on `reference`, completing through `client`.
     pub fn from_client(reference: ModelRef, kind: AccountKind, client: &dyn AccountClient) -> Self {
-        let completion = client.completion(&reference.model);
-        Self::resolved(reference, kind, completion, client)
+        let mut handle = Self::guardian_from_client(reference, kind, client);
+        handle.completion = handle.conversation_completion();
+        handle
+    }
+
+    fn conversation_completion(&self) -> DynModel<Completion> {
+        self.scopes
+            .as_ref()
+            .map_or_else(|| self.completion.clone(), |s| s.conversation.clone())
+    }
+
+    /// This model with only the static prefix cacheable, for a guardian that falls back to the
+    /// main model.
+    pub fn guardian_scoped(&self) -> Self {
+        let mut handle = self.clone();
+        if let Some(scopes) = &self.scopes {
+            handle.completion = scopes.guardian.clone();
+        }
+        handle
+    }
+
+    /// This model with its whole request cacheable, for a subagent that runs on it.
+    pub fn conversation_scoped(&self) -> Self {
+        let mut handle = self.clone();
+        handle.completion = self.conversation_completion();
+        handle
     }
 
     /// A handle for the guardian: the same model, with only the static prefix cacheable.
@@ -136,22 +170,18 @@ impl ModelHandle {
         kind: AccountKind,
         client: &dyn AccountClient,
     ) -> Self {
-        let completion = client.guardian_completion(&reference.model);
-        Self::resolved(reference, kind, completion, client)
-    }
-
-    fn resolved(
-        reference: ModelRef,
-        kind: AccountKind,
-        completion: DynModel<Completion>,
-        client: &dyn AccountClient,
-    ) -> Self {
+        let guardian = client.guardian_completion(&reference.model);
         let thinking_off = client.thinking_off(&reference.model);
+        let conversation = client.completion(&reference.model);
         ModelHandle {
             reference,
             kind,
-            completion,
+            completion: guardian.clone(),
             thinking_off,
+            scopes: Some(Scopes {
+                conversation,
+                guardian,
+            }),
         }
     }
 
@@ -484,7 +514,7 @@ pub async fn resolve_with(
                     "no benchmark-validated guardian model is available on your accounts, so the guardian runs on your main model `{main_ref}`; set `[guardian] model` or use /guardian-model to choose one"
                 ));
                 (
-                    GuardianModel::Ready(main.clone()),
+                    GuardianModel::Ready(main.guardian_scoped()),
                     GuardianChoice::MainFallback,
                 )
             }
