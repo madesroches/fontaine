@@ -185,11 +185,18 @@ impl<B: Backend + Anchor> Screen<B> {
         if wanted != self.height {
             self.rebuild(wanted)?;
         }
+        // ratatui scrolls the rows above the viewport as a region, and a one-row region is
+        // invalid DECSTBM that terminals ignore, so the whole screen scrolls with the viewport
+        // still in it. The viewport is repainted from scratch to undo that.
+        let one_row_region = self.terminal.get_frame().area().y <= 1 && !lines.is_empty();
         for chunk in lines.chunks(INSERT_CHUNK) {
             let rows = chunk.to_vec();
             self.terminal.insert_before(chunk.len() as u16, |buf| {
                 Paragraph::new(rows).render(buf.area, buf);
             })?;
+        }
+        if one_row_region {
+            self.terminal.clear()?;
         }
         self.terminal.draw(|frame| view::draw(frame, app))?;
         Ok(())
@@ -714,6 +721,291 @@ mod tests {
             step(screen, &mut app);
         }
         expected
+    }
+
+    /// A terminal emulator behind the real crossterm backend, so a test sees what a terminal does
+    /// with the bytes ratatui writes rather than what ratatui believes it wrote.
+    mod emulated {
+        use super::*;
+        use ratatui::backend::CrosstermBackend;
+        use std::io::{self, Write};
+        use std::sync::{Arc, Mutex};
+
+        fn nz(n: u16) -> std::num::NonZeroU16 {
+            std::num::NonZeroU16::new(n).expect("the emulator needs at least one row and column")
+        }
+
+        type Emulator = Arc<Mutex<vt100::Parser>>;
+
+        struct Sink(Emulator);
+
+        impl Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().process(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        /// Answers every query from the emulator instead of a tty.
+        pub struct Emu {
+            inner: CrosstermBackend<Sink>,
+            emulator: Emulator,
+        }
+
+        impl Emu {
+            fn with(emulator: Emulator) -> Self {
+                Emu {
+                    inner: CrosstermBackend::new(Sink(emulator.clone())),
+                    emulator,
+                }
+            }
+        }
+
+        impl Backend for Emu {
+            type Error = io::Error;
+
+            fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+            where
+                I: Iterator<Item = (u16, u16, &'a Cell)>,
+            {
+                self.inner.draw(content)
+            }
+
+            fn append_lines(&mut self, n: u16) -> io::Result<()> {
+                self.inner.append_lines(n)
+            }
+
+            fn hide_cursor(&mut self) -> io::Result<()> {
+                self.inner.hide_cursor()
+            }
+
+            fn show_cursor(&mut self) -> io::Result<()> {
+                self.inner.show_cursor()
+            }
+
+            fn get_cursor_position(&mut self) -> io::Result<Position> {
+                let (row, col) = self.emulator.lock().unwrap().screen().cursor_position();
+                Ok(Position::new(col, row))
+            }
+
+            fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+                self.inner.set_cursor_position(position)
+            }
+
+            fn clear(&mut self) -> io::Result<()> {
+                self.inner.clear()
+            }
+
+            fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+                self.inner.clear_region(clear_type)
+            }
+
+            fn size(&self) -> io::Result<Size> {
+                let (rows, cols) = self.emulator.lock().unwrap().screen().size();
+                Ok(Size::new(cols.get(), rows.get()))
+            }
+
+            fn window_size(&mut self) -> io::Result<WindowSize> {
+                let size = self.size()?;
+                Ok(WindowSize {
+                    columns_rows: size,
+                    pixels: Size::new(0, 0),
+                })
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Backend::flush(&mut self.inner)
+            }
+
+            fn scroll_region_up(
+                &mut self,
+                region: std::ops::Range<u16>,
+                line_count: u16,
+            ) -> io::Result<()> {
+                self.inner.scroll_region_up(region, line_count)
+            }
+
+            fn scroll_region_down(
+                &mut self,
+                region: std::ops::Range<u16>,
+                line_count: u16,
+            ) -> io::Result<()> {
+                self.inner.scroll_region_down(region, line_count)
+            }
+        }
+
+        pub type Real = Anchored<Emu>;
+
+        /// A stand-in whose drop writes go to a throwaway emulator.
+        fn spare() -> Real {
+            Anchored::new(Emu::with(Arc::new(Mutex::new(vt100::Parser::new(
+                nz(1),
+                nz(1),
+                0,
+            )))))
+        }
+
+        pub struct Harness {
+            pub screen: Screen<Real>,
+            emulator: Emulator,
+            height: u16,
+        }
+
+        impl Harness {
+            pub fn new(width: u16, height: u16) -> Self {
+                let emulator =
+                    Arc::new(Mutex::new(vt100::Parser::new(nz(height), nz(width), 1000)));
+                let backend = Anchored::new(Emu::with(emulator.clone()));
+                Harness {
+                    screen: Screen::new(backend, spare).unwrap(),
+                    emulator,
+                    height,
+                }
+            }
+
+            /// The emulator's visible rows, trailing blanks trimmed.
+            pub fn real(&self) -> Vec<String> {
+                let parser = self.emulator.lock().unwrap();
+                let screen = parser.screen();
+                screen
+                    .rows(0, screen.size().1.get())
+                    .map(|r| r.trim_end().to_string())
+                    .collect()
+            }
+
+            /// ratatui's idea of the rows: blank above the viewport, its buffer below.
+            fn model(&mut self, app: &App) -> Vec<String> {
+                let area = self.screen.area();
+                let mut drawn = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+                drawn.draw(|frame| view::draw(frame, app)).unwrap();
+                let mut all = vec![String::new(); usize::from(area.top())];
+                all.extend(
+                    rows(drawn.backend().buffer())
+                        .into_iter()
+                        .map(|r| r.trim_end().to_string()),
+                );
+                all
+            }
+
+            /// Renders, then checks the emulator against ratatui's model and the input box's
+            /// place above the status row.
+            pub fn render(&mut self, app: &mut App, what: &str) {
+                self.screen.render(app).unwrap();
+                let area = self.screen.area();
+                let model = self.model(app);
+                let real = self.real();
+                let top = usize::from(area.top());
+                let ctx = || {
+                    format!(
+                        "{what} ({}x{})\nmodel:\n{}\nreal:\n{}",
+                        area.width,
+                        self.height,
+                        model.join("\n"),
+                        real.join("\n")
+                    )
+                };
+                assert_eq!(area.bottom(), self.height, "{}", ctx());
+                assert_eq!(real[top..], model[top..], "{}", ctx());
+                let h = usize::from(self.height);
+                let box_top = &real[h - 4];
+                assert!(box_top.contains("message ·"), "{}", ctx());
+                assert!(real[h - 3].starts_with('│'), "{}", ctx());
+                assert!(
+                    real[h - 2].starts_with('└') || real[h - 2].starts_with('╰'),
+                    "{}",
+                    ctx()
+                );
+            }
+        }
+    }
+
+    fn started(app: &mut App, n: usize) {
+        app.on_event(SessionEvent::ToolCall {
+            id: format!("t{n}"),
+            tool: "shell".into(),
+            args: serde_json::json!({ "command": format!("sleep {} # a long argument", 20 + n) }),
+        });
+    }
+
+    fn finished(app: &mut App, n: usize) {
+        app.on_event(SessionEvent::ToolResult {
+            id: format!("t{n}"),
+            tool: "shell".into(),
+            success: true,
+            text: "done".into(),
+        });
+    }
+
+    /// Fills the terminal's history, starts `calls` tool calls (one render each, or in one batch)
+    /// and finishes them in order or reversed, checking every frame against the emulator.
+    fn live_rows_scenario(width: u16, height: u16, calls: usize, batch: bool, reversed: bool) {
+        let mut harness = emulated::Harness::new(width, height);
+        let mut app = app();
+        for i in 0..usize::from(height) + 4 {
+            app.transcript.notice(format!("note {i}"));
+            harness.render(&mut app, "filling");
+        }
+        if batch {
+            (0..calls).for_each(|n| started(&mut app, n));
+            harness.render(&mut app, "batch start");
+        } else {
+            for n in 0..calls {
+                started(&mut app, n);
+                harness.render(&mut app, &format!("start {n}"));
+            }
+        }
+        let mut order: Vec<usize> = (0..calls).collect();
+        if reversed {
+            order.reverse();
+        }
+        for n in order {
+            finished(&mut app, n);
+            harness.render(&mut app, &format!("finish {n}"));
+        }
+    }
+
+    #[test]
+    fn issue_217_live_tool_rows_stay_above_the_prompt_box() {
+        for calls in 1..=3 {
+            for batch in [false, true] {
+                for reversed in [false, true] {
+                    live_rows_scenario(40, 10, calls, batch, reversed);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn issue_217_strided_matrix() {
+        for height in (6..=24).step_by(4) {
+            for width in (20..=80).step_by(10) {
+                for calls in 1..=3 {
+                    live_rows_scenario(width, height, calls, false, false);
+                    live_rows_scenario(width, height, calls, true, true);
+                }
+            }
+        }
+    }
+
+    /// The full local diagnostic: `cargo test -p fontaine-tui -- --ignored issue_217_full_sweep`.
+    #[test]
+    #[ignore]
+    fn issue_217_full_sweep() {
+        for height in 6..=24 {
+            for width in 20..=80 {
+                for calls in 1..=4 {
+                    for batch in [false, true] {
+                        for reversed in [false, true] {
+                            live_rows_scenario(width, height, calls, batch, reversed);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

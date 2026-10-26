@@ -24,3 +24,4 @@ rig-agent = { workspace = true, features = ["test-utils"] }
 rig-core = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true
 wiremock.workspace = true
+vt100.workspace = true

@@ -142,6 +142,14 @@ named for issue 217. CI also runs a small strided matrix (every 4th height, ever
 
 - 2026-10-26: a `TestBackend` reproduction of the issue's scenario did not fail, so the plan
   starts with the emulator oracle rather than a presumed fix.
+- 2026-10-26: cause found by the emulator sweep (candidates 1-3 of Design 2 were not it). When the
+  viewport top is at row 0 or 1, ratatui's `insert_before` (`scrolling-regions`) scrolls a one-row
+  region (`CSI 1;1 r`, `CSI 1 S`). A one-row DECSTBM is invalid and terminals (vt100, xterm, tmux)
+  ignore it, so the whole screen scrolls with the live area still in it and the rows below the
+  inserted lines are one row off from ratatui's model. Fix: `draw_frame` repaints the live area
+  (`Terminal::clear`) after any insert at a viewport top of 0 or 1, instead of replacing the
+  inline viewport. The emulator regression test and strided matrix run in CI; the full sweep
+  (heights 6..24, widths 20..80, 1..4 calls) is green.
 
 ## Documentation
 

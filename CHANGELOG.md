@@ -353,6 +353,10 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- In-flight tool rows no longer overwrite the prompt box. Writing settled lines above a live area
+  one or zero rows from the top of the screen used a one-row scroll region, which terminals ignore,
+  so the whole screen scrolled with the box in it; the live area is now repainted after such a
+  write (#217).
 - Reading the user settings or `trust.toml` while another session replaces it no longer fails on
   Windows, where a session could miss the file and start without the user's deny rules. Those
   reads now wait on the same lock the edits hold (#200).
