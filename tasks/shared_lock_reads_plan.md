@@ -65,8 +65,8 @@ pub fn read_shared(target: &Path) -> io::Result<String>
    edit already does). If the open fails with `PermissionDenied` or `ReadOnlyFilesystem`, read
    without the lock: a directory this process cannot create a file in is also one its writers
    cannot replace a file in, and a read-only mounted config must keep loading.
-4. `file.lock_shared()`; if it fails with `Unsupported` or an uncategorized error (ENOLCK on NFS),
-   read without the lock as in step 3, since today's reads never touch the lock. Otherwise
+4. `file.lock_shared()`; if it fails with any error (`Unsupported`, or ENOLCK on NFS, which std
+   leaves uncategorized), read without the lock as in step 3, since today's reads never touch the lock. Otherwise
    `std::fs::read_to_string(target)`, then release on drop (reuse
    `FileLock` so unlock-on-drop lives in one place).
 
@@ -131,7 +131,7 @@ briefly find the file missing or access denied. No rename change.
 
 ## Decisions
 
-- 2026-10-25: the TUI's `recent.json` and `history.jsonl` keep unlocked reads: best-effort files
+- 2026-10-25: the TUI's `recent_models.json` and `history.jsonl` keep unlocked reads: best-effort files
   with no cross-process writer lock, where a missed read only empties a list for one session.
 - 2026-10-25: a read creates the sibling `.lock` file when its directory exists; the files are
   already documented and created on the first edit.
@@ -153,14 +153,14 @@ real threads on the real filesystem, run on all three OSes.
   only on success) while every `write_atomic` is still `unwrap()`ed: the regression test that a
   replace succeeds while an unlocked reader holds the target open. A new `a_shared_lock_reader_never_sees_a_replace_in_progress` runs 4 writers × 10,
   each under `file_lock::lock` + `write_atomic`, against a reader looping `read_shared` that asserts
-  every read succeeds with complete content. With `read_shared` reading unlocked this test fails on
-  Windows as the old one did.
+  every read succeeds with complete content. It is an intermittent stress check; the
+  deterministic blocking unit test in `file_lock.rs` is the regression pin.
 - `file_lock.rs` unit tests:
   - a reader blocks while another handle holds the exclusive lock (pattern of
     `tests/credentials_oauth.rs:97-118`): the main thread holds `lock`, a spawned thread calls
     `read_shared`, sleep, `assert!(!handle.is_finished())`, then `write_atomic` new content, drop the
     lock, join, and assert the reader returned the new content;
-  - `lock_shared()` failure falls back to an unlocked read (unit test if a failing lock can be
+  - any `lock_shared()` error falls back to an unlocked read (unit test if a failing lock can be
     constructed portably; it cannot be on most filesystems, so this branch is left to review);
   - missing parent directory → `NotFound`, and the directory is not created;
   - existing directory, missing file → `NotFound`;
