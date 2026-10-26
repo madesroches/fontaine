@@ -49,12 +49,19 @@ pub struct Notice { pub severity: Severity, pub headline: String, pub hint: Opti
 `Notice::info(text)`, `Notice::warning(headline, hint)` constructors; `Display`/`text()` joins
 headline and hint with " — " for the plain surfaces (headless stderr, tests that match on
 content). `Models::notices`, `AgentSetup.notices`, `AgentRuntime::notices()`, and the scanner
-notices become `Vec<Notice>`. `fontaine-tui/src/setup.rs` keeps `warnings: Vec<String>` and
+notices become `Vec<Notice>`; `containment::Resolved.notice` becomes `Option<Notice>`. `fontaine-tui/src/setup.rs` keeps `warnings: Vec<String>` and
 converts them to `Notice::warning` where it appends them into `models.notices` (`:423,435`). The guardian fallback becomes headline "Guardian is running on
 your main model `kimi/kimi-for-coding`", hint "No benchmark-validated guardian model is
-available on your accounts — set `[guardian] model` or run /guardian-model". The containment and
-scanner notices keep their text as a headline (`Warning` for failures/fallbacks, `Info`
-otherwise) with a hint only where the text already has a natural action clause.
+available on your accounts — set `[guardian] model` or run /guardian-model". The other
+notices keep their text, with these severities and hints: containment (`containment.rs`) =
+`Warning`, no hint; scanner `LICENSE_NOTICE` = `Info`; the scanner-unavailable notice in
+`unavailable` (`scanner_stage.rs:~186`) = `Warning`, no hint; the scanner-unavailable notice in
+`start_pg2`'s `fail` (`:~209`) = `Warning` with its "To fix it..." clause as the hint; guardian
+fallback = `Warning` with hint. Notice order is preserved (`scanner_model.rs:319` asserts
+`notices[0]` is the license notice).
+
+`app.pending_notices` (`app.rs:122`, `ui/turn.rs:201`, `commands/model.rs:174`,
+`commands/workspace.rs:55`, `commands/context.rs:22`) stays `Vec<String>` and renders as Info.
 
 `Approver::notice` stays `Info`, `Approver::warn` is `Warning`; `ChannelApprover` forwards the
 severity: `Prompt::Notice(Severity, String)`. The trait signatures do not change (open/closed
@@ -67,12 +74,14 @@ Vec<Notice>` (severity `Warning`). Headless prints them to stderr, with the unch
 `fontaine: warning: ...` text, in `main` right after `prepare_session` (lib.rs:246) when
 `headless.is_some()`, taking them out of `prep` (`std::mem::take`) so `run_headless` and
 `agent_setup` see none; this is before `resolve_models`, the `--max-budget-usd` check and
-`open_input`, so early exits keep them and headless ordering does not change. Warnings collected
-inside `prepare_session` are not lost on its `Err` paths (`git_bash(host)?`, `open_session`, the
-`extensions::load` error exit): each `Err` return first prints the collected warnings to stderr.
-Interactive early exits before the TUI starts (e.g. the model-resolution failure in
-`run_interactive`) likewise print `prep.warnings` and the screen-reader warning to stderr before
-returning. The interactive path carries them on: `run_interactive` and `agent_setup` both take `SessionPrep`, and `AgentSetup`
+`open_input`, so early exits keep them and headless ordering does not change. One rule: every
+return before the TUI draws prints the pending root warnings and the screen-reader warning to
+stderr. That covers the `Err` paths inside `prepare_session` (`open_session`, the
+`extensions::load` error exit; `git_bash(host)?` is its first statement and has no warnings yet),
+the trust-record, reload and trust-prompt failures before `run_interactive`, and in
+`run_interactive` the model-resolution failure, the `setup::run` `Ok(None)` cancel, a setup-screen
+error and a `fontaine_tui::run` `Err`. The setup screen does not show them; they appear in the
+transcript once setup completes. The interactive path carries them on: `run_interactive` and `agent_setup` both take `SessionPrep`, and `AgentSetup`
 gets a `startup_warnings` list beside `scanner_notices`. The TUI shows them first in the
 transcript, then the history/recent errors, notices and scanner notices in the existing order.
 `screen_reader_mode` runs before any `Launch` exists, so it returns its ignored-env-value warning
@@ -85,7 +94,8 @@ is fatal and stays on stderr, as do fatal errors, which keep `eprintln!` and exi
   `Transcript::notice(text)` keeps its signature (Info, no hint) so the 57 existing non-test call sites
   are untouched; `Transcript::warning(headline, hint)` and `Transcript::push_notice(Notice)` are
   new. `fontaine_tui::run` and `drive` take the extra startup `Notice`s (screen-reader warning;
-  `AgentSetup.startup_warnings` carries the rest), and the `tests/tui.rs` callers are updated.
+  `AgentSetup.startup_warnings` carries the rest), and their callers (`fontaine-tui/src/lib.rs`,
+  `fontaine-tui/tests/common/mod.rs:406,435`) are updated.
 - `entry_lines` renders: Info = the existing dim `· ` style (unchanged look); Warning = `⚠ `
   in `theme.warning` with the headline in `theme.warning`. The
   hint wraps on its own lines indented under the headline in the dim style. Spans inside
@@ -123,7 +133,10 @@ only when they no longer fit above the input.
   budget is the rows still releasable (held + chrome - term_h, if positive) and each commit
   subtracts the rows it releases, so rows consumed by older entries in the same call count against
   what a later entry or the stream may release. `commit_entries` stops at the first unsettled
-  entry, so a pending tool call or stream pins later entries (accepted, as today). The streaming
+  entry, so a pending tool call or stream pins later entries. When that pinned prefix, or chrome
+  alone, makes the invariant impossible (held rows + chrome > term_h with nothing committable),
+  the pinned prefix is force-committed oldest-first until the held rows fit, so `draw_transcript`'s
+  tail view never hides uncommitted rows. The streaming
   cut gets the same budget as a new `Cut` variant carrying that remaining row budget; it advances
   `committed_chars` partially, by at most that many rows. Commit is oldest-first, so once the
   stream overflows the budget the older settled entries (the warnings) commit before any stream
@@ -134,9 +147,10 @@ only when they no longer fit above the input.
   `lines.len() < area.height` it renders into the bottom `lines.len()` rows of the area.
 - `wanted`/`free` are computed after the commit, unchanged.
 - Exit: `clear_live` erases the live area, which now may hold uncommitted transcript.
-  `TerminalGuard` therefore flushes everything still held back to scrollback (a
-  `Screen::commit_all`) before `clear_live`, so the conversation stays in the terminal after
-  quitting, as today.
+  `drive`/`run` therefore flush everything still held back to scrollback
+  (`screen.commit_all(&mut app)` via the render closure, while `App` is alive) before returning;
+  `TerminalGuard::drop` only calls `clear_live` (it holds just the `LiveScreen`), so the
+  conversation stays in the terminal after quitting, as today.
 - `/clear` calls `commit_all` before `transcript.clear()` (`ui/commands/context.rs:19`, which
   resets `committed`), so held entries reach scrollback instead of vanishing; scrollback is kept as
   before; resizing recomputes `R` each
@@ -150,36 +164,33 @@ only when they no longer fit above the input.
    scanner stage notices (`scanner_stage.rs`) to `Notice`; add `startup_warnings` (and update the full `AgentSetup` struct literal in
    `fontaine-core/tests/common/runtime.rs`). Split the guardian-fallback text. Update the tests that match on notice text (`tests/models.rs`,
    `tests/scanner_model.rs`, `tests/scanner.rs`) to use `Notice` accessors.
-2. `fontaine` crate: containment notice as `Notice`; `prepare_session` returns warnings in
+2. `fontaine` crate: containment notice as `Notice` (`fontaine-core/src/containment.rs`, appended at `fontaine/src/lib.rs:563-564`); `prepare_session` returns warnings in
    `SessionPrep.warnings`; headless prints them in `main` right after `prepare_session` and takes them out of `prep`;
-   print collected warnings on every `Err` path of `prepare_session` and on interactive early
-   exits before the TUI starts; thread them from `SessionPrep` into `AgentSetup` on the
+   print pending warnings on every return before the TUI draws (rule above); thread them from `SessionPrep` into `AgentSetup` on the
    interactive path only; `screen_reader_mode` returns its
    warning as a `Notice` passed to `run_interactive`; `headless::announce` `Display`s `Notice`s (the guardian-fallback
    stderr text changes to headline — hint; root-warning text is unchanged). Update
-   `tests/scanner_headless.rs`, `parallel_agents.rs`, `telemetry_micromegas.rs` expectations that
-   match the guardian-fallback text.
+   the `tests/auto_headless.rs` expectation that matches the guardian-fallback text.
 3. `fontaine-tui`: convert `setup.rs` `warnings` into `Notice`s where appended to
    `models.notices`; update `ui/tests.rs:106` (`Prompt::Notice` construction) and
    `fontaine-evals/src/runner.rs:731` (scanner notice printing); the full `AgentSetup` struct
-   literal in `fontaine-tui/tests/common/mod.rs`; `fontaine_tui::run`/`drive` signatures and the
-   `tests/tui.rs` callers; `Prompt::Notice(Severity, String)`; `ChannelApprover::{notice,warn}`; `Entry::Notice`
+   literal in `fontaine-tui/tests/common/mod.rs`; `fontaine_tui::run`/`drive` signatures and their callers; `Prompt::Notice(Severity, String)`; `ChannelApprover::{notice,warn}`; `Entry::Notice`
    variant, `Transcript::{warning,push_notice}`; `entry_lines` rendering with hint wrapping and
    bold actionable spans; `Glyphs` + locale detection; `lib.rs` startup loop pushes
    `startup_warnings`, notices and scanner notices as `Notice`s; `app.rs` test helper
    `last_notice` and `linear.rs` labels.
 4. Bottom-anchoring: budgeted commit in `transcript.rs`, `Screen::render` sizing,
-   `draw_transcript` bottom alignment, `Screen::commit_all` called from `TerminalGuard::drop`
-   before `clear_live` and before `transcript.clear()` on `/clear`.
+   `draw_transcript` bottom alignment, `Screen::commit_all` called at the end of `drive`/`run`
+   (before `TerminalGuard::drop` runs `clear_live`) and before `transcript.clear()` on `/clear`.
 5. Docs and changelog (see Documentation).
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/{lib.rs,models.rs,agent.rs,scanner_stage.rs}`, new `notice.rs`;
+- `rust/fontaine-core/src/{lib.rs,models.rs,agent.rs,scanner_stage.rs,containment.rs}`, new `notice.rs`;
   tests under `rust/fontaine-core/tests/` including `tests/common/runtime.rs`
 - `rust/fontaine/src/{lib.rs,headless.rs}`; `rust/fontaine-evals/src/runner.rs`
 - `rust/fontaine-tui/src/{lib.rs,transcript.rs,view.rs,screen.rs,linear.rs,app.rs,theme.rs
-  (only if a slot proves needed),setup.rs,ui/mod.rs,ui/tests.rs,ui/commands/context.rs}`; `tests/tui.rs`, `tests/common/mod.rs`
+  (only if a slot proves needed),setup.rs,ui/mod.rs,ui/tests.rs,ui/commands/context.rs}`; `tests/common/mod.rs`
 - `docs/tui.md`, `docs/terminal.md`, `docs/headless.md`, `docs/configuration.md`, `docs/tools.md`,
   `CHANGELOG.md`
 
@@ -200,7 +211,9 @@ only when they no longer fit above the input.
 
 - 2026-10-25 AFK: Claude Code's interactive startup notices cannot be observed through `claude -p`
   (headless prints none); matched from its documented behaviour (yellow warning line above the
-  prompt). No deviation recorded beyond the dim Info style, which is kept for non-warning notices.
+  prompt). The dim Info style is kept for non-warning notices.
+- 2026-10-25 AFK: The headline/hint split and bold actionable spans are not shown to match Claude
+  Code; both are requested by issue #82.
 - 2026-10-25 AFK: The headless guardian-fallback stderr text changes from one sentence to
   "headline — hint" because the notice is now split structurally; root-warning text is unchanged.
 - 2026-10-25 AFK: ASCII glyph fallback is selected by locale rather than a new config key, to
@@ -235,7 +248,7 @@ All unit/`TestBackend` screen tests; nothing needs a live service.
   above the first entry; adding entries until it overflows commits the oldest to scrollback with
   nothing lost or duplicated, ending with `commit_all` then `clear_live` leaving the full
   transcript in scrollback; a streaming reply across the boundary keeps held warnings anchored;
-  a pending tool call holding an over-budget transcript; an overlay/approval growing the chrome so
+  a pending tool call pinning an over-budget transcript force-commits the overflow so no row is lost from view; an overlay/approval growing the chrome so
   held entries commit; `/clear` commits held entries first; resize.
 - Pre-TUI warnings: a `tests/tui.rs` (or `ui/tests.rs`) test that root warnings handed to the
   startup path appear as warning entries; a headless test that they still go to stderr in every
