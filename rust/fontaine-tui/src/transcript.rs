@@ -128,22 +128,29 @@ fn keep_output(tool: &str, text: &str) -> Option<ToolOutput> {
     if matches!(tool, "todo_write" | "read") || text.trim().is_empty() {
         return None;
     }
-    let (kept, clipped) = if text.len() <= OUTPUT_KEEP_BYTES {
-        (text.to_string(), false)
-    } else {
-        let mut head = OUTPUT_KEEP_BYTES / 2;
-        while !text.is_char_boundary(head) {
-            head -= 1;
-        }
-        let mut tail = text.len() - OUTPUT_KEEP_BYTES / 2;
-        while !text.is_char_boundary(tail) {
-            tail += 1;
-        }
-        (format!("{}\n{}", &text[..head], &text[tail..]), true)
-    };
+    // Redact before clipping: a cut through a credential would leave a prefix the redactor
+    // no longer recognises.
+    let safe = display_text(text.trim_end_matches('\n'));
+    let half = OUTPUT_KEEP_BYTES / 2;
+    if safe.len() <= OUTPUT_KEEP_BYTES {
+        return Some(ToolOutput {
+            text: safe,
+            clipped: false,
+        });
+    }
+    let mut head = half;
+    while !safe.is_char_boundary(head) {
+        head -= 1;
+    }
+    head = safe[..head].rfind('\n').unwrap_or(head);
+    let mut tail = safe.len() - half;
+    while !safe.is_char_boundary(tail) {
+        tail += 1;
+    }
+    tail = safe[tail..].find('\n').map_or(tail, |i| tail + i + 1);
     Some(ToolOutput {
-        text: display_text(kept.trim_end_matches('\n')),
-        clipped,
+        text: format!("{}\n{}", &safe[..head], &safe[tail..]),
+        clipped: true,
     })
 }
 
@@ -845,16 +852,29 @@ fn tool_lines(
     if let Some(output) = output.as_ref().filter(|_| show_diff.is_none()) {
         let gutter = glyphs.gutter;
         let body = width.saturating_sub(2 + gutter.chars().count()).max(1);
-        let rows: Vec<String> = output
-            .text
-            .split('\n')
-            .flat_map(|l| wrap(l, body))
-            .collect();
-        let skipped = if full {
-            0
-        } else {
-            rows.len().saturating_sub(OUTPUT_ROWS)
-        };
+        // Only the last OUTPUT_ROWS rows show, so wrap lines from the end until they are
+        // filled and count the rest at one row per `body` characters.
+        let lines: Vec<&str> = output.text.split('\n').collect();
+        let mut taken = if full { 0 } else { lines.len() };
+        let mut tail: Vec<Vec<String>> = Vec::new();
+        let mut count = 0;
+        while taken > 0 && count < OUTPUT_ROWS {
+            taken -= 1;
+            let wrapped = wrap(lines[taken], body);
+            count += wrapped.len();
+            tail.push(wrapped);
+        }
+        if full {
+            tail = lines.iter().rev().map(|l| wrap(l, body)).collect();
+        }
+        let rows: Vec<String> = tail.into_iter().rev().flatten().collect();
+        let hidden = rows.len().saturating_sub(OUTPUT_ROWS);
+        let before: usize = lines[..taken]
+            .iter()
+            .map(|l| l.chars().count().div_ceil(body).max(1))
+            .sum();
+        let skipped = if full { 0 } else { before + hidden };
+        let rows = &rows[if full { 0 } else { hidden }..];
         let mut push = |text: &str| {
             out.push(Line::from(vec![
                 Span::styled(format!("  {gutter}"), dim),
@@ -865,7 +885,7 @@ fn tool_lines(
             cut = true;
             push(&format!("… {skipped} earlier rows"));
         }
-        for row in &rows[skipped..] {
+        for row in rows {
             push(row);
         }
         if output.clipped {
@@ -1622,6 +1642,25 @@ mod tests {
             panic!("a tool entry");
         };
         assert_eq!(call, "echo  [2J\nok");
+    }
+
+    #[test]
+    fn a_credential_straddling_the_clip_is_redacted_whole() {
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+        let key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";
+        let lead = format!("{} ", "x".repeat(OUTPUT_KEEP_BYTES / 2 - 11));
+        let body = format!("{lead}{key} {}", "y".repeat(OUTPUT_KEEP_BYTES));
+        result_with(&mut t, "a", "shell", true, &body);
+        let Entry::Tool {
+            output: Some(output),
+            ..
+        } = &t.entries[0]
+        else {
+            panic!("a kept output");
+        };
+        assert!(output.clipped);
+        assert!(!output.text.contains("sk-ant") && !output.text.contains("abcdefghij"));
     }
 
     #[test]
