@@ -44,8 +44,7 @@ For an `anthropic` account, the agent request carries the server tool `web_searc
 Anthropic hosting accepts; Azure supports only that one), set through
 `AgentBuilder::additional_params(json!({"tools": [{"type": "web_search_20250305", "name": "web_search"}]}))`
 (`provider_tool` exists only on rig-core's `CompletionRequest`, not on rig-agent's `AgentBuilder`).
-`additional_params` replaces the whole value, so the tool entry is merged into any params already set on the
-main agent builder rather than overwriting them. rig-core 0.45.0 already round-trips `server_tool_use` and
+rig-core 0.45.0 already round-trips `server_tool_use` and
 `web_search_tool_result` blocks through history, resumes a `pause_turn` and maps `web_search_result_location`
 citations (`providers/anthropic/{wire,streaming,extension}.rs`), so no custom history handling is needed.
 
@@ -110,8 +109,8 @@ enum Backend { Tavily { api_key }, Searxng { base_url } }
     scanner are one-shot). The first search starts it, then polls `base_url` until it answers or
     `startup_timeout_secs` elapses; later searches reuse it. `AgentRuntime::rebuild()` (on `/add-dir`,
     `/output-style`, model switch) re-runs `tools::registry` and replaces tools by name, so the child handle
-    is a shared `Arc` held as a field of `AgentRuntime`, created once where `RegistryParams` is first built
-    and passed into every rebuilt `Websearch`; a handle owned by `Websearch` would be killed and relaunched
+    is a shared `Arc` held as a field of `AgentRuntime`, created once in `AgentRuntime::new`, carried
+    through `Parts` into `register_tools`, and passed into every rebuilt `Websearch`; a handle owned by `Websearch` would be killed and relaunched
     mid-session. The child dies via `kill_on_drop` when the runtime is dropped on normal return. A spawn
     failure or readiness timeout is a search error with the
     cause chain (and the child's stderr tail); there is no fallback to another backend.
@@ -217,7 +216,8 @@ configured the tool is absent, so an allow entry is inert and a disallow entry s
 7. `fontaine-core`: in `agent/build.rs`, merge the Anthropic `web_search_20250305` tool entry into the main
    builder's `additional_params` when the native gate allows (including the account/`base_url` helper).
 8. `fontaine-core`: add the shared launcher `Arc` as a field of `AgentRuntime` (`agent.rs`), created once
-   where `RegistryParams` is first built (~271) and cloned into every rebuild's `RegistryParams`.
+   in `AgentRuntime::new`, carried through a new `Parts` field (`agent/build.rs`) into `register_tools`, and
+   cloned into every rebuild's `RegistryParams`.
 9. Docs and changelog.
 
 ## Files to Modify
@@ -273,7 +273,7 @@ All offline: `wiremock` stands in for the backends.
   401/403/429/500 mapped to distinct messages; SearXNG JSON-disabled 403 hint; malformed body; timeout;
   redirect returned as an error for both backends; the key absent from every error; one short test that a
   search goes through the configured `[network]` proxy (like `webfetch_goes_through_the_configured_proxy`).
-- Native search (`fontaine-core`): the request carries the `web_search_20250305` tool entry (merged with any existing `additional_params`) only when the
+- Native search (`fontaine-core`): the request carries the `web_search_20250305` tool entry only when the
   gate allows (per mode, including the allow-rule requirement); a `deny` or `ask` rule removes it; non-Anthropic
   account kinds and non-Anthropic `base_url` (unless `native = "on"`) use the client-side backend; `native =
   "off"` does too; a 400 naming the tool is retried once without it and keeps
