@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use fontaine_core::permissions::{Answer, ApprovalRequest, Offers};
+use fontaine_core::preview::{DiffKind, DiffPreview};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -229,13 +230,18 @@ impl Approval {
             format!("Allow {}{who}?", self.request.tool),
             bold.fg(theme.heading),
         )];
-        for text in [&self.request.summary, &self.request.reason] {
+        let wrapped = |text: &str, out: &mut Vec<Line<'static>>| {
             for line in text.lines() {
                 for piece in wrap(line, width) {
                     out.push(Line::raw(piece));
                 }
             }
+        };
+        wrapped(&self.request.summary, &mut out);
+        if let Some(preview) = &self.request.preview {
+            diff_rows(preview, width, theme, &mut out);
         }
+        wrapped(&self.request.reason, &mut out);
         out
     }
 
@@ -278,6 +284,53 @@ impl Approval {
     }
 }
 
+/// The diff as rows: a header, then each line behind a line-number gutter and a sign. Wrapped
+/// text continues under itself with a blank gutter.
+fn diff_rows(preview: &DiffPreview, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let header = format!("{}  +{} -{}", preview.path, preview.added, preview.removed);
+    for piece in wrap(&header, width) {
+        out.push(Line::styled(
+            piece,
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+    }
+    let digits = preview
+        .lines
+        .iter()
+        .flat_map(|l| [l.old_no, l.new_no])
+        .flatten()
+        .max()
+        .map_or(1, |n| n.to_string().len());
+    let text_width = width.saturating_sub(digits + 2).max(1);
+    for line in &preview.lines {
+        let (sign, style) = match line.kind {
+            DiffKind::Added => ('+', Style::default().fg(theme.success)),
+            DiffKind::Removed => ('-', Style::default().fg(theme.error)),
+            DiffKind::Context | DiffKind::Gap => (' ', dim),
+        };
+        let number = match line.kind {
+            DiffKind::Removed => line.old_no,
+            _ => line.new_no,
+        };
+        let no = number.map_or_else(|| " ".repeat(digits), |n| format!("{n:>digits$}"));
+        for (i, piece) in wrap(&line.text, text_width).into_iter().enumerate() {
+            let (no, sign) = if i == 0 {
+                (no.clone(), sign)
+            } else {
+                (" ".repeat(digits), ' ')
+            };
+            out.push(Line::styled(format!("{no} {sign}{piece}"), style));
+        }
+    }
+    if preview.hidden > 0 {
+        out.push(Line::styled(
+            format!("… {} more changed lines (not shown)", preview.hidden),
+            dim,
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +346,7 @@ mod tests {
             reason: "r".into(),
             offers: Offers::default(),
             proposed_rule: None,
+            preview: None,
         }
     }
 
@@ -324,6 +378,78 @@ mod tests {
                 always: true
             }),
             [Choice::Once, Choice::Session, Choice::Always, Choice::Deny]
+        );
+    }
+
+    fn previewed(text: &str, hidden: usize) -> Approval {
+        use fontaine_core::preview::DiffLine;
+        let mut req = request();
+        req.tool = "edit".into();
+        req.preview = Some(DiffPreview {
+            path: "a.rs".into(),
+            added: 1,
+            removed: 1,
+            lines: vec![
+                DiffLine {
+                    kind: DiffKind::Removed,
+                    old_no: Some(9),
+                    new_no: None,
+                    text: "gone".into(),
+                },
+                DiffLine {
+                    kind: DiffKind::Added,
+                    old_no: None,
+                    new_no: Some(10),
+                    text: text.into(),
+                },
+            ],
+            hidden,
+        });
+        Approval::new(req, oneshot::channel().0)
+    }
+
+    fn plain(lines: &[Line<'_>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn body_puts_the_diff_between_the_summary_and_the_reason() {
+        let rows = plain(&previewed("fresh", 0).body(40, &Theme::default()));
+        assert_eq!(
+            rows,
+            [
+                "Allow edit?",
+                "ls",
+                "a.rs  +1 -1",
+                " 9 -gone",
+                "10 +fresh",
+                "r"
+            ]
+        );
+    }
+
+    #[test]
+    fn wrapped_diff_text_continues_under_a_blank_gutter() {
+        // A two-digit gutter, a space and the sign leave 7 of 11 columns for text.
+        let rows = plain(&previewed("abcdefghijklmnop", 0).body(11, &Theme::default()));
+        assert_eq!(&rows[4..7], ["10 +abcdefg", "    hijklmn", "    op"]);
+    }
+
+    #[test]
+    fn hidden_lines_are_announced() {
+        let rows = plain(&previewed("x", 7).body(60, &Theme::default()));
+        assert!(rows.contains(&"… 7 more changed lines (not shown)".to_string()));
+    }
+
+    #[test]
+    fn a_request_without_a_preview_has_no_diff_rows() {
+        let approval = Approval::new(request(), oneshot::channel().0);
+        assert_eq!(
+            plain(&approval.body(40, &Theme::default())),
+            ["Allow shell?", "ls", "r"]
         );
     }
 }

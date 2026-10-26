@@ -661,3 +661,24 @@ async fn fontaines_own_directories_are_protected() {
         }
     }
 }
+
+#[tokio::test]
+async fn an_edit_prompt_carries_a_preview_that_decides_nothing() {
+    let rig = Rig::new(Manual);
+    std::fs::write(rig.world.work.join("a.txt"), "one\ntwo\n").unwrap();
+    let args = json!({"path": "a.txt", "edits": [{"old_text": "two", "new_text": "2"}]});
+
+    rig.approver.answer(Answer::AllowOnce);
+    assert!(allowed(&rig.check("edit", args.clone()).await));
+    let preview = rig.approver.last_request().preview.expect("a preview");
+    assert_eq!((preview.added, preview.removed), (1, 1));
+
+    // The same call with nothing to preview is asked and decided the same way.
+    std::fs::remove_file(rig.world.work.join("a.txt")).unwrap();
+    rig.approver.answer(Answer::AllowOnce);
+    assert!(allowed(&rig.check("edit", args.clone()).await));
+    assert!(rig.approver.last_request().preview.is_none());
+
+    assert!(!allowed(&rig.check("edit", args).await));
+    assert_eq!(rig.approver.asked(), 3);
+}

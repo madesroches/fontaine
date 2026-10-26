@@ -63,6 +63,7 @@ fn ask() -> (Prompt, oneshot::Receiver<Answer>) {
         reason: "r".into(),
         offers: Offers::default(),
         proposed_rule: None,
+        preview: None,
     };
     (Prompt::Ask(Box::new(request), reply), answer)
 }

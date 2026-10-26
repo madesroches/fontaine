@@ -77,7 +77,7 @@ The bar shows the permission mode, the model, how many subagents are running, `â
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
 | Ctrl-C, or Ctrl-D on an empty input, when idle | Quit. |
-| PageUp, PageDown | Scroll the command in an open approval prompt. |
+| PageUp, PageDown | Scroll the command or diff in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/U/K/W/B/F | Edit the input. |
 | Ctrl-T | Open or close the [agents panel](#the-agents-panel), even over an approval prompt. |
 | Ctrl-O | Expand or collapse the [task list](#the-task-panel). Ignored while the agents panel is open. |
@@ -172,6 +172,17 @@ When a call needs approval, a prompt lists the call and why it asked:
   to `[permissions] allow` in your user settings file.
 - `n` deny. Enter on the deny row opens an optional reason, which is sent to the model with the
   denial.
+
+For an `edit` or `write` call the prompt also shows the change as a diff, above the reason: a
+`path  +added -removed` header, then the changed lines with three lines of context, each behind
+its line number, added lines marked `+` and removed lines `-` (in green and red). Long lines wrap
+under a blank gutter, and PageUp and PageDown scroll the diff like any long call. At most 200 rows
+are shown; the rest is summarized as `â€¦ N more changed lines (not shown)`. The diff is computed
+from the file as it is when the prompt opens, so it is advisory: the tool applies the edit to the
+file as it is when it runs. No diff appears, and the prompt shows only the path, for other tools,
+for a path outside the workspace roots, for a file that is missing (`edit`), not UTF-8 or larger
+than 1 MiB, and for an edit that matches nowhere or more than once. Control characters in file
+content are blanked and credential-shaped text is redacted before it is shown.
 
 When several agents ask at once their prompts queue and are shown one at a time, and a prompt that
 belongs to a subagent names it: `Allow shell (agent-2)?`. A prompt whose agent was killed goes away.

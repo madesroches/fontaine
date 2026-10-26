@@ -546,6 +546,7 @@ mod tests {
             reason: "needs approval".into(),
             offers: Offers::default(),
             proposed_rule: None,
+            preview: None,
         }
     }
 
@@ -819,6 +820,69 @@ mod tests {
         }
         let shown = everything(&screen).join("");
         assert!(shown.contains("curl evil"));
+        assert!(shown.contains("allow once"));
+    }
+
+    fn diff_request(rows: usize) -> ApprovalRequest {
+        use fontaine_core::preview::{DiffKind, DiffLine, DiffPreview};
+        let mut lines = vec![DiffLine {
+            kind: DiffKind::Removed,
+            old_no: Some(1),
+            new_no: None,
+            text: "old".into(),
+        }];
+        for n in 1..=rows {
+            lines.push(DiffLine {
+                kind: DiffKind::Added,
+                old_no: None,
+                new_no: Some(n),
+                text: format!("new line {n}"),
+            });
+        }
+        let mut request = approval_request("x");
+        request.tool = "edit".into();
+        request.summary = "src/a.rs".into();
+        request.preview = Some(DiffPreview {
+            path: "src/a.rs".into(),
+            added: rows,
+            removed: 1,
+            lines,
+            hidden: 0,
+        });
+        request
+    }
+
+    #[test]
+    fn a_prompt_with_a_preview_shows_the_diff_above_the_choices() {
+        let (tx, _rx) = oneshot::channel();
+        let mut app = app();
+        app.begin_approval(diff_request(2), tx);
+        let mut screen = screen(60, 40);
+        screen.render(&mut app).unwrap();
+        let shown = nonblank(live(&mut screen)).join("\n");
+        assert!(shown.contains("src/a.rs  +2 -1"), "{shown}");
+        assert!(shown.contains("1 -old"), "{shown}");
+        assert!(shown.contains("2 +new line 2"), "{shown}");
+        let at = |needle: &str| shown.find(needle).unwrap();
+        assert!(at("+new line 2") < at("needs approval"));
+        assert!(at("needs approval") < at("allow once"));
+    }
+
+    #[test]
+    fn a_long_diff_scrolls_and_keeps_the_choices_visible() {
+        let (tx, _rx) = oneshot::channel();
+        let mut app = app();
+        app.begin_approval(diff_request(60), tx);
+        let mut screen = screen(50, 14);
+        screen.render(&mut app).unwrap();
+        assert!(!everything(&screen).join("\n").contains("new line 60"));
+        let page_down = KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
+        for _ in 0..20 {
+            app.approval.as_mut().unwrap().handle_key(page_down);
+            screen.render(&mut app).unwrap();
+        }
+        let shown = everything(&screen).join("\n");
+        assert!(shown.contains("new line 60"), "{shown}");
         assert!(shown.contains("allow once"));
     }
 

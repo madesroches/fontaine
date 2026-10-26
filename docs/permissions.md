@@ -192,6 +192,9 @@ The approval prompt can create allow rules:
 - **Always allow** appends the same rule to `[permissions] allow` in your user settings file,
   keeping the file's comments and layout, and applies it at once.
 
+The diff an `edit` or `write` prompt shows is display-only: it is not sent to the guardian, hooks,
+telemetry or the ledger, and it changes no decision.
+
 The proposed rule is the narrowest that covers the call: the exact command words for `shell`, the
 resolved absolute path for a file tool, the host for `webfetch`. Prompts that the floor forced, and
 `shell` calls that are not one literal simple command, offer only allow once and deny, because no

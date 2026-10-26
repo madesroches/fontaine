@@ -565,6 +565,7 @@ scorecard run (see `## Remaining work`).
 - 2026-10-26 AFK: headless gets a `goal_failed` flag beside `failed` that sets `code = 1` and breaks, and text mode prints `fontaine: goal impossible: <reason>` / `fontaine: goal paused: <why>` on stderr instead of the last answer; without it the decided exit 1 never fires and a failure would be silent.
 - 2026-10-26 AFK: `span_bridge.rs` reports model calls under `fontaine.goal_evaluation` as `query_source = "goal"` (the span carries `model.priced`), documented in `docs/telemetry.md`; otherwise evaluator spend is misreported as `main`, unlike the guardian's and scanner's.
 - 2026-10-26 AFK: "made a tool call" is a per-turn `made_call` flag set in `after_turn` from the change in root-agent ledger actions since the previous `after_turn`, and counts actions only (no `agent` added to `DenialEntry`); a turn whose calls were all denied counts as idle, so the no-progress cap can only pause sooner.
+- 2026-10-26: The approval prompt for `edit` and `write` shows a diff computed from the file at prompt time from rig-tools' `FileChange` hunks (display-only, advisory, capped at 200 rows and 1 MiB, absent when unreadable or the edit would fail); shell and guardian explanations already reach the prompt, and MCP tools get no preview (#45).
 
 ## Open Questions
 

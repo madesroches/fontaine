@@ -26,6 +26,7 @@ pub mod notice;
 pub mod owner_only;
 pub mod permission_rules;
 pub mod permissions;
+pub mod preview;
 pub mod prompt;
 pub mod providers;
 pub mod questions;
