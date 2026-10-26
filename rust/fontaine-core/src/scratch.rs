@@ -28,11 +28,7 @@ impl Scratch {
     /// lives. `protected` are the directories the permission floor treats as Fontaine's own; a
     /// scratch directory under one of them is refused.
     pub fn create(env: Env<'_>, protected: &[PathBuf], session_id: &str) -> io::Result<Scratch> {
-        if session_id.is_empty()
-            || session_id == "."
-            || session_id == ".."
-            || session_id.contains(['/', '\\'])
-        {
+        if !is_valid_id(session_id) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("`{session_id}` is not usable as a directory name"),
@@ -104,6 +100,12 @@ impl Drop for Scratch {
     }
 }
 
+/// An id becomes a path component and is joined to the parent for removal, so `.`, `..` and
+/// separators must never get through, from a session or from a planted `*.lock` name.
+fn is_valid_id(id: &str) -> bool {
+    !(id.is_empty() || id == "." || id == ".." || id.contains(['/', '\\']))
+}
+
 /// Removes the scratch directories of sessions that died without cleaning up: those whose lock
 /// is free. A held lock is a live session and is left alone. Returns a warning per failure.
 pub fn sweep_stale(env: Env<'_>) -> Vec<String> {
@@ -144,7 +146,7 @@ pub fn sweep_stale(env: Env<'_>) -> Vec<String> {
         let Some(id) = name.to_str().and_then(|n| n.strip_suffix(".lock")) else {
             continue;
         };
-        if id.is_empty() || !entry.file_type().is_ok_and(|t| t.is_file()) {
+        if !is_valid_id(id) || !entry.file_type().is_ok_and(|t| t.is_file()) {
             continue;
         }
         if let Err(e) = sweep_one(&parent, id) {
@@ -492,6 +494,24 @@ mod tests {
         assert!(!parent.join("orphan.lock").exists());
         assert!(live.path().is_dir());
         assert!(parent.join("live.lock").exists());
+    }
+
+    #[test]
+    fn sweep_ignores_lock_files_whose_id_is_a_dot_path() {
+        let runtime = tempfile::tempdir().unwrap();
+        let env = env_for(runtime.path());
+        let live = Scratch::create(&env, &[], "live").unwrap();
+        let parent = live.path().parent().unwrap().to_path_buf();
+        std::fs::write(parent.join("..lock"), b"").unwrap();
+        std::fs::write(parent.join("...lock"), b"").unwrap();
+        let bystander = runtime.path().join("bystander");
+        std::fs::write(&bystander, b"x").unwrap();
+
+        sweep_stale(&env);
+
+        assert!(live.path().is_dir());
+        assert!(bystander.is_file());
+        assert!(parent.join("..lock").is_file());
     }
 
     #[test]

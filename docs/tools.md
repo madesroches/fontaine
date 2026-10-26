@@ -107,8 +107,9 @@ a path outside every root points at it.
 | Windows | `%TEMP%\fontaine-<sid>\<session id>\` |
 
 - It is readable by the current user only (mode 0700; a current-user-only ACL on Windows), and
-  the directory above it is checked before use: a name someone else created, a symlink or a
-  directory open to other users is refused. The path is canonical, and it is never inside
+  the directory above it is checked before use: on Unix, a name someone else created, a symlink or
+  a directory open to other users is refused (on Windows the per-user `%TEMP%` and the SID in the
+  directory name stand in for that). The path is canonical, and it is never inside
   Fontaine's config or data directory, so those stay protected.
 - It is an ordinary root. The deterministic floor still applies (a protected file name such as
   `.bashrc` still asks), the guardian still judges `shell` commands that run there, and it appears
