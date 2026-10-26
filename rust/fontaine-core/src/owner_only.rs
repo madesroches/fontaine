@@ -36,8 +36,10 @@ pub fn write(path: &Path, contents: &[u8]) -> io::Result<()> {
     file.flush()
 }
 
-/// Replaces the content of `path` all at once: a reader sees the old or the new content, and a
-/// failed write leaves the old file in place. The result is owner-only.
+/// Replaces the content of `path` all at once: a reader holding the file's shared lock
+/// ([`crate::file_lock::read_shared`]) sees the old or the new content, and a failed write leaves
+/// the old file in place. On Windows an unlocked reader can briefly find the file missing or
+/// access denied. The result is owner-only.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     replace(path, Access::OwnerOnly, |file| file.write_all(contents))
 }

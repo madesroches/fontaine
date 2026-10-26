@@ -308,6 +308,9 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- Reading the user settings or `trust.toml` while another session replaces it no longer fails on
+  Windows, where a session could miss the file and start without the user's deny rules. Those
+  reads now wait on the same lock the edits hold (#200).
 - A tool call from an agent the session no longer knows (an id that was never reserved, was
   released, or sits under a released ancestor) is denied in every mode, with rule `agent registry`,
   before hooks or the guardian see it, instead of being judged with the root's mode (#184).

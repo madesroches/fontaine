@@ -99,7 +99,7 @@ fn set_string(path: &Path, table: &str, key: &str, value: &str) -> io::Result<()
 /// overwritten: it is an `AlreadyExists` error.
 pub fn add_account(path: &Path, name: &str, account: &Account) -> io::Result<()> {
     let _lock = locked(path)?;
-    let mut doc = read_document(path)?;
+    let mut doc = read_document(path, |p| std::fs::read_to_string(p))?;
     if doc.get("accounts").is_none() {
         let mut accounts = Table::new();
         accounts.set_implicit(true);
@@ -127,7 +127,7 @@ pub fn add_account(path: &Path, name: &str, account: &Account) -> io::Result<()>
 /// such table, in which case it is not written.
 pub fn remove_account(path: &Path, name: &str) -> io::Result<bool> {
     let _lock = locked(path)?;
-    let mut doc = read_document(path)?;
+    let mut doc = read_document(path, |p| std::fs::read_to_string(p))?;
     let Some(accounts) = doc.get_mut("accounts").and_then(Item::as_table_like_mut) else {
         return Ok(false);
     };
@@ -144,7 +144,7 @@ pub fn remove_account(path: &Path, name: &str) -> io::Result<bool> {
 /// The settings key in the file at `path` whose model reference names account `name`, if any.
 /// `None` when the file does not define the account, since there is nothing to remove from it.
 pub fn model_key_naming(path: &Path, name: &str) -> io::Result<Option<&'static str>> {
-    let doc = read_document(path)?;
+    let doc = read_document(path, crate::file_lock::read_shared)?;
     if doc.get("accounts").and_then(|a| a.get(name)).is_none() {
         return Ok(None);
     }
@@ -181,8 +181,8 @@ fn locked(path: &Path) -> io::Result<crate::file_lock::FileLock> {
     crate::file_lock::lock(path)
 }
 
-fn read_document(path: &Path) -> io::Result<DocumentMut> {
-    let text = match std::fs::read_to_string(path) {
+fn read_document(path: &Path, read: fn(&Path) -> io::Result<String>) -> io::Result<DocumentMut> {
+    let text = match read(path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
