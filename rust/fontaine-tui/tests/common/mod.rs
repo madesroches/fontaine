@@ -22,7 +22,7 @@ use fontaine_core::schedule::ManualClock;
 use fontaine_core::session::Session;
 use fontaine_tui::linear::Linear;
 use fontaine_tui::screen::Screen;
-use fontaine_tui::{Input, drive};
+use fontaine_tui::{DriveOutcome, Input, drive};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -385,8 +385,8 @@ impl World {
     }
 
     /// Runs the interface on a test terminal while `script` plays the human. The interface
-    /// quits when the script ends.
-    pub async fn run<F, Fut>(&self, script: F)
+    /// quits when the script ends. Returns how it ended.
+    pub async fn run<F, Fut>(&self, script: F) -> DriveOutcome
     where
         F: FnOnce(Ui) -> Fut,
         Fut: Future<Output = ()>,
@@ -436,12 +436,12 @@ impl World {
             ),
             script(ui)
         );
-        result.unwrap();
+        result.unwrap()
     }
 
     /// Like [`World::run`], with the linear screen-reader renderer writing to `bytes`. The
     /// script's `screen()` is everything written so far.
-    pub async fn run_linear<F, Fut>(&self, bytes: Rc<RefCell<Vec<u8>>>, script: F)
+    pub async fn run_linear<F, Fut>(&self, bytes: Rc<RefCell<Vec<u8>>>, script: F) -> DriveOutcome
     where
         F: FnOnce(Ui) -> Fut,
         Fut: Future<Output = ()>,
@@ -473,7 +473,7 @@ impl World {
             ),
             script(ui)
         );
-        result.unwrap();
+        result.unwrap()
     }
 
     /// What the scripted guardian was asked, one entry per request.

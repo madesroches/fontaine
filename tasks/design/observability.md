@@ -54,7 +54,8 @@ them via `record_content_telemetry`.
   `fontaine.guardian`, `fontaine.tool.blocked_on_user`) + rig `execute_tool`; `fontaine.subagent`
   parented to the spawning tool call; `fontaine.mcp.call`. Both backends export this as a tree.
 - Metrics: `fontaine.session.count` (`start_type` = fresh/resume/continue, as Claude Code — a fork
-  takes the value of the flag it forks from; `headless` = true/false), `fontaine.token.usage` (`type` =
+  takes the value of the flag it forks from, and a `/resume` or `/branch` switch inside the TUI
+  starts another session span with `resume`; `headless` = true/false), `fontaine.token.usage` (`type` =
   input/output/cacheRead/cacheCreation/reasoning, `model`, `query_source` =
   main/guardian/subagent/scanner), `fontaine.cost.usage` (USD; absent when rig has no price),
   `fontaine.tool_decision.count` (`tier`, `decision`), `fontaine.guardian.latency` (ms),

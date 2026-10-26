@@ -226,6 +226,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             Action::PickModel(purpose, reference) => {
                                 self.pending_pick = Some((purpose, reference));
                             }
+                            Action::ResumeSession(id) => self.pending_resume = Some(id),
                             Action::Providers(request) => self.queue_provider(request),
                             Action::Config(change) => self.pending_config.push_back(change),
                             Action::OpenPicker(slot) => {

@@ -115,7 +115,7 @@ the token counts. Source file paths and thread names are not exported.
 
 | Metric | Unit | Attributes |
 |---|---|---|
-| `fontaine.session.count` | `{session}` | `start_type` (`fresh`, `resume` or `continue`; a fork takes the value of the flag it forks from, and `--continue` with nothing to continue is `fresh`), `headless` (`true` or `false`) |
+| `fontaine.session.count` | `{session}` | `start_type` (`fresh`, `resume` or `continue`; a fork takes the value of the flag it forks from, `--continue` with nothing to continue is `fresh`, and a `/resume` or `/branch` inside the terminal UI starts a new session span with `resume`), `headless` (`true` or `false`) |
 | `fontaine.token.usage` | `{token}` | `type` (`input`, `output`, `cacheRead`, `cacheCreation`, `reasoning`), `model`, `query_source`; `estimated` (`true`) on the guardian spend estimate only |
 | `fontaine.cost.usage` | USD | `model`, `query_source`; `estimated` (`true`) on the guardian spend estimate only |
 | `fontaine.tool_decision.count` | `{decision}` | `tier`, `decision` |

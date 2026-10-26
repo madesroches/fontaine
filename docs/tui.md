@@ -226,10 +226,46 @@ unknown account), nothing is substituted silently. A prompt offers:
 ## Resuming
 
 `fontaine --continue` reopens the most recently updated session that was started in this folder,
-`--resume <id>` a session by id, and `--fork-session` with either starts a copy under a new id. The
-transcript starts empty with a note saying which session continues; the model has the earlier
-conversation. The session starts in the mode your settings give, with no grants from before. See
-[Headless runs](headless.md#continuing-a-session) for the details.
+`--resume <id-or-name>` a session by id or by name, and `--fork-session` with either starts a copy
+under a new id. `--name <name>` names the session you start (the copy, with `--fork-session`) so
+`--resume` can find it later. The transcript starts empty with a note saying which session
+continues; the model has the earlier conversation. The session starts in the mode your settings
+give, with no grants from before. See [Headless runs](headless.md#continuing-a-session) for the
+details.
+
+Inside a running session, `/rename` names it, `/resume` switches to another session of this folder
+and `/branch` carries on in a copy; see [Sessions](#sessions). A switch is a fresh start of the
+chosen session, just as `--resume` would give: the default permission mode, no grants, and the MCP
+servers and the tool-result scanner started again. What the old session was doing is stopped, so a
+switch happens only between turns.
+
+### Sessions
+
+`/resume` with no argument opens a picker of the sessions that were started in this folder, newest
+first, without the one you are in. Each row shows the session's name, or its first message when it
+has no name, and how long ago it was last used; `⎇` marks a session that is a branch of another.
+Type to narrow the list by name, first message or id, Up and Down select, Enter switches and Esc
+closes the picker. In screen-reader mode the rows are plain lines that say `branch` instead of
+showing the mark and end with the first eight characters of the id. `/resume <name-or-id>` skips the
+picker: an id is taken whatever folder it was started in, a name is matched without regard to case
+among this folder's sessions, and two sessions with one name are an error that lists their ids.
+
+A name is 1 to 80 characters with no control characters. `/rename <name>` records it in the
+session's ledger; the latest name wins. `/rename` alone draws a name from the first line of your
+first message since the last `/clear`, cut to 60 characters; it makes no model call, and is an error
+when there is no message yet.
+
+`/branch [<name>]` (also `/fork`) copies the session under a new id and carries on in the copy,
+leaving the original as it was. The copy is named `<name>`, or the original's name followed by
+` (branch)`, or nothing when the original has none. `/branch` is refused while a subagent is
+running or has a report to deliver, since the copy would not carry the subagent's state.
+
+`/export [<path>]` writes the conversation as Markdown. The default is `fontaine-<first 8 characters
+of the session id>.md` in the folder you launched from; a relative path is relative to that folder.
+The text is the model's conversation, so after a compaction the summary stands where the older
+messages were (labelled as one), and after `/clear` only the conversation since is in it. A tool
+call is one line, and a tool result appears only as its length. The file is readable by you alone,
+since a transcript can hold secrets, and an existing file is an error: an export never overwrites.
 
 ## Commands
 
@@ -237,13 +273,15 @@ conversation. The session starts in the mode your settings give, with no grants 
 |---|---|
 | `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Until then a file-tool call outside the roots is denied with a hint naming this command. Only between turns. |
 | `/agents`, `/tasks` | Opens the [agents panel](#the-agents-panel). |
-| `/clear`, `/reset`, `/new` | Starts over with an empty context. See [Context](#context). It takes no name for the old conversation; that needs `/resume`, which is not available yet. |
+| `/branch [<name>]`, `/fork` | Copies the session under a new id and carries on in the copy; the original is left as it was. Only between turns, and refused while a subagent runs. See [Sessions](#sessions). |
+| `/clear`, `/reset`, `/new` | Starts over with an empty context. See [Context](#context). It takes no name for the old conversation; `/rename` names a session, and `/resume` returns to one later. |
 | `/compact [<focus>]` | Summarizes the conversation so far to free context; the optional focus tells the summary what to keep above all. See [Context](#context). |
 | `/config`, `/settings` | Opens the [settings panel](#settings-panel): every settings key with its effective value and the scope that supplied it, and a few preferences you can change. |
 | `/context [all]` | Shows what fills the context window. See [Context](#context). |
 | `/copy [<n>]` | Copies the latest assistant reply, or the `n`th latest, to the system clipboard. A reply is the text between tool calls, so a turn that calls a tool and then answers has two; `/copy` takes the last one. It is an error when there is no such reply. |
 | `/denied` | Lists the calls the guardian denied this session, with their rule label and explanation. Up and Down select; `r` approves the selected call once, as if you had approved it at a prompt, and tells the agent on its next turn that it may retry exactly that call. The retry runs without asking the guardian, never enters the verdict cache and does not count toward the denial limits. The deterministic floor still runs first, so an `ask` rule or a critical path still prompts. Esc closes the list. |
 | `/exit`, `/quit` | Leave. |
+| `/export [<path>]` | Writes the conversation to a Markdown file, owner-only, never over an existing file. See [Sessions](#sessions). |
 | `/guardian-model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model) limited to the models the guardian could be. With one, pins the guardian to that model for the live session and saves it as `[guardian] model`. A model whose account has no credential becomes an unavailable guardian, which the next adjudication reports. When a higher scope (`--settings` or a project-local file) sets `[guardian] model`, the notice adds that the scope wins from the next launch. |
 | `/help` | Lists the built-in commands, your user-invocable skills and the main keys. |
 | `/hooks` | Lists the [hooks](hooks.md) by event with their matcher, command and scope, and marks a repository's hooks that did not load because the workspace is not trusted. |
@@ -256,6 +294,8 @@ conversation. The session starts in the mode your settings give, with no grants 
 | `/output-style [<name>\|none]` | Without an argument, lists the [output styles](extensions.md#output-styles). With one, switches to it for the next turn; `none` removes it. |
 | `/permissions` | Shows the permission mode and the `deny`, `ask` and `allow` rules in force, each with the scope that contributed it (session and always grants included), the workspace roots and the settings file where rules are edited. It is read-only; see [Permissions](permissions.md). |
 | `/plan [<description>]` | Switches to plan mode, as Shift+Tab does. With a description it also sends it as your next message, so `/plan fix the auth bug` plans the fix. |
+| `/rename [<name>]` | Names the session. Without a name, draws one from the first line of your first message. See [Sessions](#sessions). |
+| `/resume [<name-or-id>]` | Switches to another session started in this folder: the picker without an argument, that session with one. Sessions where nothing was said and that have no name are not listed. Only between turns. See [Sessions](#sessions). |
 | `/skills` | Lists every loaded [skill](extensions.md#skills) with its scope, marking those only the model can use, those only you can run, and those a built-in command hides. |
 | `/status` | Shows the version, the session id, the workspace roots, the permission mode, the main model, the guardian (or why it is unavailable) with its profile, the output style, and how many MCP servers are connected. |
 | `/theme [<name>]` | Without an argument, lists the colour themes, marks the current one and names the file the choice is saved to. With a name, switches to that theme at once and saves it as `[tui] theme` in your user settings file. An unknown name is an error that lists the themes. See [Terminal setup](terminal.md#colours). |

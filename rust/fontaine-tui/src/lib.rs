@@ -19,6 +19,7 @@ pub mod provider_dialog;
 pub mod question;
 pub mod recent;
 pub mod reports;
+pub mod resume_picker;
 pub mod screen;
 pub mod server_prompt;
 pub mod setup;
@@ -65,6 +66,22 @@ use recent::RecentModels;
 use reports::McpState;
 use screen::{Anchored, Screen};
 use theme::Theme;
+
+/// The session a `/resume` or `/branch` asks the caller to start in place of this one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionTarget {
+    /// The id of the session to open, which already exists on disk.
+    pub source: String,
+    /// Whether opening it appends a `Resumed` record. A copy made by `/branch` has its own.
+    pub record_resume: bool,
+}
+
+/// How [`drive`] ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DriveOutcome {
+    Exit,
+    Switch(SessionTarget),
+}
 
 /// What the permission pipeline sends to the interface.
 enum Prompt {
@@ -188,6 +205,8 @@ struct Ui<R> {
     /// A model picked while a turn ran, applied once the turn is over: only the idle loop owns
     /// the runtime mutably.
     pending_pick: Option<(PickerPurpose, String)>,
+    /// A session picked in `/resume` while a turn ran, switched to once it is over.
+    pending_resume: Option<String>,
     /// Settings saved from `/config` that apply from the next launch, by key, as the label the
     /// panel shows; they outlive the panel so reopening it still shows them.
     config_pending: std::collections::BTreeMap<String, String>,
@@ -205,6 +224,8 @@ struct Ui<R> {
     /// Runs the editor `/memory` opens with the terminal handed over.
     suspend: Suspend,
     launcher: ui::Launcher,
+    /// Set by `/resume` and `/branch`: the session the caller starts once this one has ended.
+    switch: Option<SessionTarget>,
 }
 
 /// Runs the interface until the user quits or `input` closes. `render` is called with the
@@ -219,7 +240,7 @@ pub async fn drive(
     render: impl FnMut(&mut App),
     clipboard: impl FnMut(&str) -> std::io::Result<()> + 'static,
     suspend: Suspend,
-) -> Result<(), String> {
+) -> Result<DriveOutcome, String> {
     let (tx, prompts) = unbounded_channel();
     setup.approver = Arc::new(ChannelApprover { tx });
     let model = setup.models.main.reference.to_string();
@@ -246,6 +267,7 @@ pub async fn drive(
         render,
         recent,
         pending_pick: None,
+        pending_resume: None,
         config_pending: Default::default(),
         pending_config: VecDeque::new(),
         pending_provider: VecDeque::new(),
@@ -256,6 +278,7 @@ pub async fn drive(
         clipboard: Box::new(clipboard),
         suspend,
         launcher,
+        switch: None,
     };
     ui.app.theme = theme;
     ui.app.transcript.glyphs = theme::Glyphs::from_env(
@@ -283,7 +306,7 @@ pub async fn drive(
     {
         ui.app.transcript.push_notice(notice);
     }
-    if let fontaine_core::agent::SessionOrigin::Continued { source, how } = runtime.origin() {
+    if let fontaine_core::agent::SessionOrigin::Continued { source, how, .. } = runtime.origin() {
         ui.app.transcript.notice(format!(
             "continuing session {source} ({how}) in {mode} mode, with no grants carried over",
             mode = mode.as_str()
@@ -307,7 +330,10 @@ pub async fn drive(
     runtime.state.agents().kill_all();
     ui.app.flush = true;
     (ui.render)(&mut ui.app);
-    Ok(())
+    Ok(ui
+        .switch
+        .take()
+        .map_or(DriveOutcome::Exit, DriveOutcome::Switch))
 }
 
 type LiveScreen = Screen<Anchored<CrosstermBackend<Stdout>>>;
@@ -385,7 +411,7 @@ pub async fn run(
     launch_dir: PathBuf,
     screen_reader: Option<accessibility::Source>,
     startup: Vec<Notice>,
-) -> Result<(), String> {
+) -> Result<DriveOutcome, String> {
     enable_raw_mode().map_err(|e| {
         format!(
             "could not start the terminal UI: {}",

@@ -12,6 +12,7 @@ pub mod context;
 pub mod credentials;
 pub mod destructive;
 pub mod dirs;
+pub mod export;
 pub mod extensions;
 pub mod file_lock;
 pub mod floor;

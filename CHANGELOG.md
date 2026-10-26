@@ -70,6 +70,12 @@ All notable changes are recorded here. The format follows
     asked. Tasks persist in `schedule.json`, come back on resume without replaying missed runs, are
     capped at 50 and expire after 7 days, and `/clear` cancels them. `[schedule] enabled` (user
     scope) turns the feature off.
+- Session UX (#10)
+  - Sessions can be named with `--name`/`-n` or `/rename [name]`; `--resume` takes an id or a name.
+  - `/resume [name-or-id]` opens a picker of this folder's sessions, `/branch [name]` (`/fork`)
+    copies the live session and carries on in the copy, and `/export [path]` writes the
+    conversation as an owner-only Markdown file. Switching sessions drops grants and returns to
+    the default mode, like any resume.
 - Cascade screen stage (#130)
   - An optional `[guardian.screen]` stage (user file only) asks a small local Ollama model one
     yes/no question per call in `auto` and `plan` mode and reads `p(yes)` from its first-token

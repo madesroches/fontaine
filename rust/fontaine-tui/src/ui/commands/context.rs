@@ -9,9 +9,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// `/clear`: empties the model's context and the transcript, and keeps the session.
     pub(crate) async fn clear(&mut self, runtime: &AgentRuntime, name: &str) {
         if !name.is_empty() {
-            self.app
-                .transcript
-                .error("naming the cleared conversation needs /resume, which is not available yet");
+            self.app.transcript.error(
+                "/clear takes no name; /rename names this session, and /resume returns to a session later",
+            );
             return;
         }
         match runtime.clear_conversation().await {

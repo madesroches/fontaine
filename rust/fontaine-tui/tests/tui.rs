@@ -1433,8 +1433,7 @@ async fn clear_with_a_name_and_context_with_a_bad_argument_are_errors() {
     w.run(|ui| async move {
         idle(&ui).await;
         ui.send("/clear my old work");
-        ui.wait_for("needs /resume, which is not available yet")
-            .await;
+        ui.wait_for("/clear takes no name").await;
         ui.send("/context bogus");
         ui.wait_for("/context takes no argument or `all`").await;
     })

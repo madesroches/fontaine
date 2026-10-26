@@ -31,8 +31,8 @@ describe what the current build does; each page covers one topic.
   `/denied`, `/login`, `/model`, `/guardian-model`, `/add-dir`, `/output-style`, `/help`,
   `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plan`, `/copy`, `/memory`, `/init`,
   `/clear`, `/compact`,
-  `/context`, `/config`, `/theme`, `/loop` and scheduled prompts, the agents panel and the workspace trust
-  prompt.
+  `/context`, `/config`, `/theme`, `/loop` and scheduled prompts, `/resume`, `/branch`, `/rename`
+  and `/export`, the agents panel and the workspace trust prompt.
 - [Terminal setup](terminal.md): newline keys for each terminal, tmux, Option as Meta on macOS,
   colour themes and `NO_COLOR`, and screen-reader mode.
 - [Headless runs](headless.md): `fontaine -p`, its flags, exit codes, and the versioned JSON output

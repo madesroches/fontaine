@@ -60,9 +60,13 @@ impl Host {
 
 pub const EXIT_CONFIG: u8 = fontaine_core::config::CONFIG_EXIT_CODE;
 
-fn usage(message: impl std::fmt::Display) -> ExitCode {
+fn usage_code(message: impl std::fmt::Display) -> u8 {
     eprintln!("fontaine: {message}");
-    ExitCode::from(EXIT_CONFIG)
+    EXIT_CONFIG
+}
+
+fn usage(message: impl std::fmt::Display) -> ExitCode {
+    ExitCode::from(usage_code(message))
 }
 
 /// Loads the settings, and the directories they come from.
@@ -95,8 +99,17 @@ fn load_config(
     })
 }
 
+/// The name `--name` asks for, validated.
+fn session_name(cli: &Cli) -> Result<Option<String>, u8> {
+    cli.name
+        .as_deref()
+        .map(|name| session::validate_name(name).map_err(|e| usage_code(format!("--name: {e}"))))
+        .transpose()
+}
+
 /// What the session flags ask for.
 fn check_session_flags(cli: &Cli) -> Result<(), ExitCode> {
+    session_name(cli).map_err(ExitCode::from)?;
     let continuing = cli.continue_session || cli.resume.is_some();
     if cli.fork_session && !continuing {
         return Err(usage("--fork-session needs --continue or --resume"));
@@ -264,13 +277,14 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     } else {
         None
     };
-    let mut prep = match prepare_session(&cli, &config, &host, &dirs, mode, project_executables) {
-        Ok(prep) => prep,
-        Err(code) => {
-            print_warnings(&ax_warnings);
-            return code;
-        }
-    };
+    let mut prep =
+        match prepare_session(&cli, &config, &host, &dirs, mode, project_executables, true) {
+            Ok(prep) => prep,
+            Err(code) => {
+                print_warnings(&ax_warnings);
+                return ExitCode::from(code);
+            }
+        };
     // Headless has no conversation to show them in. Printing now, before models are resolved,
     // keeps them on stderr when a later startup check exits.
     if headless.is_some() {
@@ -285,32 +299,80 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
             data_dir: &dirs.data,
         },
     );
-    let session = tracing::info_span!(
-        target: telemetry::span_bridge::TARGET,
-        "fontaine.session",
-        start_type = prep.start_type,
-        headless = cli.print,
-    );
-    let entered = session.enter();
-
+    let mut cli = cli;
+    let mut headless = headless;
+    let mut ax_warnings = ax_warnings;
     let code = match export.runtime() {
-        Ok(runtime) => runtime.block_on(async {
-            match headless {
-                Some(options) => run_headless(&cli, options, prep, &config, &dirs, &host).await,
-                None => {
-                    run_interactive(
-                        &cli,
-                        prep,
-                        &config,
-                        &dirs,
-                        &host,
-                        screen_reader,
-                        ax_warnings,
-                    )
-                    .await
+        // A `/resume` or `/branch` ends the run and starts another in the same process, so the
+        // telemetry guard, the configuration and the trust decision carry across.
+        Ok(runtime) => loop {
+            let session = tracing::info_span!(
+                target: telemetry::span_bridge::TARGET,
+                "fontaine.session",
+                start_type = prep.start_type,
+                headless = cli.print,
+            );
+            let entered = session.enter();
+            let outcome = runtime.block_on(async {
+                match headless.take() {
+                    Some(options) => Outcome::Done(
+                        run_headless(&cli, options, prep, &config, &dirs, &host).await,
+                    ),
+                    None => {
+                        run_interactive(
+                            &cli,
+                            prep,
+                            &config,
+                            &dirs,
+                            &host,
+                            screen_reader,
+                            std::mem::take(&mut ax_warnings),
+                        )
+                        .await
+                    }
                 }
-            }
-        }),
+            });
+            drop(entered);
+            drop(session);
+            let target = match outcome {
+                Outcome::Done(code) => break code,
+                Outcome::Switch(target, added) => {
+                    // Accounts the setup screen added belong to the next session too.
+                    if let Some(added) = added {
+                        config = *added;
+                    }
+                    // `/theme` and `/config` save the theme to the settings file; the config in
+                    // hand predates them.
+                    if let Ok((fresh, _)) = load_config(&cli, &host, sink.as_ref()) {
+                        config.tui.theme = fresh.tui.theme;
+                    }
+                    target
+                }
+            };
+            cli = Cli {
+                resume: Some(target.source),
+                continue_session: false,
+                fork_session: false,
+                session_id: None,
+                name: None,
+                ..cli
+            };
+            prep = match prepare_session(
+                &cli,
+                &config,
+                &host,
+                &dirs,
+                mode,
+                project_executables,
+                target.record_resume,
+            ) {
+                Ok(prep) => prep,
+                Err(code) => {
+                    export.finish(code);
+                    return ExitCode::from(code);
+                }
+            };
+        },
         Err(e) => {
             print_warnings(&ax_warnings);
             print_warnings(&prep.warnings);
@@ -318,10 +380,15 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
             1
         }
     };
-    drop(entered);
-    drop(session);
     export.finish(code);
     ExitCode::from(code)
+}
+
+/// How a run of the session ended.
+enum Outcome {
+    Done(u8),
+    /// The interactive session asked for another one to take its place.
+    Switch(fontaine_tui::SessionTarget, Option<Box<Config>>),
 }
 
 /// The session's permission mode: `--permission-mode`, then `default_mode`, then what the
@@ -406,26 +473,48 @@ pub struct SessionPrep {
     pub warnings: Vec<Notice>,
 }
 
-/// Opens, copies or creates the session the flags ask for.
+/// Opens, copies or creates the session the flags ask for. `record_resume` is whether starting
+/// it appends the `Resumed` record; a copy made by `/branch` has its own already.
 fn open_session(
     cli: &Cli,
     config: &Config,
     dirs: &Dirs,
-) -> Result<(Session, SessionOrigin, &'static str), ExitCode> {
+    record_resume: bool,
+    warnings: &mut Vec<Notice>,
+) -> Result<(Session, SessionOrigin, &'static str), u8> {
     let fail = |e: SessionError| {
         eprintln!("fontaine: {e}");
-        ExitCode::from(e.exit_code())
+        e.exit_code()
+    };
+    let name = session_name(cli)?;
+    let mut name_it = |session: &Session| {
+        if let Some(name) = &name
+            && let Err(e) = session.rename(name)
+        {
+            warnings.push(Notice::warning(
+                format!(
+                    "the session was not named: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                ),
+                None,
+            ));
+        }
     };
     let requested = match cli.session_id.as_deref() {
         None => Uuid::new_v4(),
-        Some(text) => {
-            Uuid::parse_str(text).map_err(|e| usage(format!("--session-id must be a UUID: {e}")))?
-        }
+        Some(text) => Uuid::parse_str(text)
+            .map_err(|e| usage_code(format!("--session-id must be a UUID: {e}")))?,
     }
     .hyphenated()
     .to_string();
     let (source, start_type) = match (&cli.resume, cli.continue_session) {
-        (Some(id), _) => (Some(id.clone()), "resume"),
+        (Some(text), _) => {
+            let id = session::resolve(&dirs.data, &config.workspace, text).map_err(|e| {
+                eprintln!("fontaine: {e}");
+                e.exit_code()
+            })?;
+            (Some(id), "resume")
+        }
         (None, true) => (
             session::latest_for_root(&dirs.data, &config.workspace),
             "continue",
@@ -435,22 +524,33 @@ fn open_session(
     let Some(source) = source else {
         // `--continue` with nothing to continue is a fresh start.
         let session = Session::create(&dirs.data, &requested).map_err(fail)?;
+        name_it(&session);
         return Ok((session, SessionOrigin::Fresh, "fresh"));
     };
     if cli.fork_session {
-        let session = Session::fork(&dirs.data, &source, &requested).map_err(fail)?;
+        let session =
+            Session::fork_named(&dirs.data, &source, &requested, name.as_deref()).map_err(fail)?;
         let how = format!("fork ({start_type})");
         return Ok((
             session,
-            SessionOrigin::Continued { source, how },
+            SessionOrigin::Continued {
+                source,
+                how,
+                record_resume,
+            },
             start_type,
         ));
     }
     let session = Session::open(&dirs.data, &source).map_err(fail)?;
-    let how = start_type.to_string();
+    name_it(&session);
+    let how = if record_resume { start_type } else { "branch" }.to_string();
     Ok((
         session,
-        SessionOrigin::Continued { source, how },
+        SessionOrigin::Continued {
+            source,
+            how,
+            record_resume,
+        },
         start_type,
     ))
 }
@@ -462,7 +562,8 @@ fn prepare_session(
     dirs: &Dirs,
     mode: PermissionMode,
     project_executables: bool,
-) -> Result<SessionPrep, ExitCode> {
+    record_resume: bool,
+) -> Result<SessionPrep, u8> {
     let git_bash = git_bash(host)?;
 
     let added = cli
@@ -477,16 +578,17 @@ fn prepare_session(
                 .map(|dir| (RootSource::Settings, PathBuf::from(dir))),
         );
     let roots = workspace::resolve(&config.workspace, &host.cwd, added);
-    let warnings: Vec<Notice> = roots
+    let mut warnings: Vec<Notice> = roots
         .warnings
         .iter()
         .map(|warning| Notice::warning(warning.clone(), None))
         .collect();
 
     // The caller only gets the warnings back on success, so a failure prints them here.
-    let (session, origin, start_type) = open_session(cli, config, dirs).inspect_err(|_| {
-        print_warnings(&warnings);
-    })?;
+    let (session, origin, start_type) =
+        open_session(cli, config, dirs, record_resume, &mut warnings).inspect_err(|_| {
+            print_warnings(&warnings);
+        })?;
     // Declined trust keeps a repository's servers from starting, but its agent files may still
     // name their tools: toolset cutting drops them.
     let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
@@ -498,7 +600,7 @@ fn prepare_session(
     .map_err(|e| {
         print_warnings(&warnings);
         eprintln!("fontaine: {e}");
-        ExitCode::from(e.exit_code())
+        e.exit_code()
     })?;
     let home = (host.env)(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .filter(|value| !value.is_empty())
@@ -522,18 +624,18 @@ fn prepare_session(
 
 /// The shell tool runs through Git Bash on Windows; elsewhere it needs none.
 #[cfg(windows)]
-fn git_bash(host: &Host) -> Result<Option<GitBash>, ExitCode> {
+fn git_bash(host: &Host) -> Result<Option<GitBash>, u8> {
     let probe = fontaine_tools::git_bash::Probe {
         env: &*host.env,
         is_file: &|path| path.is_file(),
     };
     fontaine_tools::git_bash::discover(&probe)
         .map(Some)
-        .map_err(usage)
+        .map_err(usage_code)
 }
 
 #[cfg(not(windows))]
-fn git_bash(_host: &Host) -> Result<Option<GitBash>, ExitCode> {
+fn git_bash(_host: &Host) -> Result<Option<GitBash>, u8> {
     Ok(None)
 }
 
@@ -721,7 +823,7 @@ async fn run_interactive(
     host: &Host,
     screen_reader: Option<accessibility::Source>,
     ax_warnings: Vec<Notice>,
-) -> u8 {
+) -> Outcome {
     // Every exit before the screen draws leaves the warnings nowhere else to go.
     let bail = |prep: &SessionPrep| {
         print_warnings(&ax_warnings);
@@ -754,7 +856,7 @@ async fn run_interactive(
                 Ok(None) => {
                     bail(&prep);
                     eprintln!("fontaine: {error}");
-                    return error.exit_code();
+                    return Outcome::Done(error.exit_code());
                 }
                 Err(e) => {
                     bail(&prep);
@@ -763,20 +865,20 @@ async fn run_interactive(
                         fontaine_tools::error_chain::chain(&e)
                     );
                     eprintln!("fontaine: {error}");
-                    return error.exit_code();
+                    return Outcome::Done(error.exit_code());
                 }
             }
         }
         Err(error) => {
             bail(&prep);
             eprintln!("fontaine: {error}");
-            return error.exit_code();
+            return Outcome::Done(error.exit_code());
         }
     };
-    let config = added.as_ref().unwrap_or(config);
+    let effective = added.as_ref().unwrap_or(config);
     let launch = Launch {
         cli,
-        config,
+        config: effective,
         dirs,
         host,
     };
@@ -784,12 +886,15 @@ async fn run_interactive(
     let pending = (ax_warnings.clone(), prep.warnings.clone());
     let setup = agent_setup(&launch, prep, models, scanner, false, None);
     match fontaine_tui::run(setup, host.cwd.clone(), screen_reader, ax_warnings).await {
-        Ok(()) => 0,
+        Ok(fontaine_tui::DriveOutcome::Exit) => Outcome::Done(0),
+        Ok(fontaine_tui::DriveOutcome::Switch(target)) => {
+            Outcome::Switch(target, added.map(Box::new))
+        }
         Err(message) => {
             print_warnings(&pending.0);
             print_warnings(&pending.1);
             eprintln!("fontaine: {message}");
-            1
+            Outcome::Done(1)
         }
     }
 }

@@ -190,6 +190,14 @@ of the copy starts empty. A resumed schedule keeps its tasks that are still wort
 re-arms them from now, so nothing replays what came due while the session was closed; the rest
 are dropped from the file and reported once at startup, when scheduling is enabled (see [Scheduled prompts](tui.md#scheduled-prompts)).
 
+A session can carry a name, recorded in its ledger and changed by appending another; `--resume`
+and `/resume` find a session by id, or by name among those started in the same directory, by
+reading each ledger once. In the terminal UI `/resume` and `/branch` end the running session and
+start the chosen one in the same process: the interface returns which session it wants, and the
+caller opens it exactly as `--resume` would, with the telemetry, configuration and workspace-trust
+decision carried over and the agents, MCP servers and scanner started again. `/branch` makes the
+copy itself, before leaving, so a failure is shown in the session that is still running.
+
 ### Subagents in the ledger
 
 A subagent tree has one source of intent, the human messages in the root session's ledger. The

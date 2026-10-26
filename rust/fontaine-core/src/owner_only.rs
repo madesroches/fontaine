@@ -11,6 +11,12 @@ pub fn open(path: &Path, append: bool) -> io::Result<File> {
     imp::open(path, append)
 }
 
+/// Creates the file `path` for writing, readable only by the current user. An existing file is
+/// an `AlreadyExists` error, so the caller never writes into one it did not create.
+pub fn create_new(path: &Path) -> io::Result<File> {
+    imp::create_new(path)
+}
+
 /// Opens the append-mode lock file at `path`. Unlike `open`, other handles may hold it open for
 /// writing too: on Windows a write-denying share mode would fail a second holder's open with a
 /// sharing violation instead of letting `File::lock` block, so only the lock decides ownership.
@@ -187,6 +193,14 @@ mod imp {
         Ok(())
     }
 
+    pub fn create_new(path: &Path) -> io::Result<File> {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+    }
+
     pub fn open(path: &Path, append: bool) -> io::Result<File> {
         let mut options = OpenOptions::new();
         options.write(true).create(true).mode(0o600);
@@ -227,8 +241,8 @@ mod imp {
         TokenUser,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        OPEN_ALWAYS, SetFileAttributesW,
+        CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_ALWAYS, SetFileAttributesW,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -305,6 +319,15 @@ mod imp {
         open_shared(path, true, FILE_SHARE_READ | FILE_SHARE_WRITE)
     }
 
+    pub fn create_new(path: &Path) -> io::Result<File> {
+        let sd = descriptor(false)?;
+        // CREATE_NEW fails with ERROR_FILE_EXISTS, which std maps to `AlreadyExists`; the
+        // descriptor in the creation attributes is then the file's whole DACL.
+        let result = unsafe { open_with(path, false, FILE_SHARE_READ, CREATE_NEW, sd) };
+        unsafe { LocalFree(sd) };
+        result
+    }
+
     pub fn clear_temporary(path: &Path) -> io::Result<()> {
         let wide_path = wide(path);
         if unsafe { SetFileAttributesW(wide_path.as_ptr(), FILE_ATTRIBUTE_NORMAL) } == 0 {
@@ -315,7 +338,7 @@ mod imp {
 
     fn open_shared(path: &Path, append: bool, share: u32) -> io::Result<File> {
         let sd = descriptor(false)?;
-        let result = unsafe { open_with(path, append, share, sd) };
+        let result = unsafe { open_with(path, append, share, OPEN_ALWAYS, sd) };
         unsafe { LocalFree(sd) };
         result
     }
@@ -342,6 +365,7 @@ mod imp {
         path: &Path,
         append: bool,
         share: u32,
+        disposition: u32,
         sd: *mut c_void,
     ) -> io::Result<File> {
         let wide_path = wide(path);
@@ -356,7 +380,7 @@ mod imp {
                 GENERIC_WRITE,
                 share,
                 &attributes,
-                OPEN_ALWAYS,
+                disposition,
                 FILE_ATTRIBUTE_NORMAL,
                 null_mut(),
             )
