@@ -11,6 +11,7 @@ pub mod commands;
 pub mod complete;
 pub mod config_panel;
 pub mod denials;
+pub mod diff;
 pub mod history;
 pub mod input;
 pub mod linear;

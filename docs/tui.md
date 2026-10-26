@@ -19,12 +19,33 @@ terminal. Scroll back with the terminal or with tmux copy mode, and select text 
 in any shell program.
 
 The input box title says what Enter does: it sends a message, or, when the input starts with `!`,
-runs it as a shell command. The transcript shows your messages (`>`), the streaming answer, and one line per tool call with its
-status: pending, done, failed, denied with the reason, or interrupted. A call the guardian refused
-shows its rule label and the guardian's own explanation on lines of their own, for example
-`[Download+Execute] pipes a download into a shell`. A line is written to scrollback once it has
+runs it as a shell command. The transcript shows your messages (`>`), the streaming answer, and a
+card per tool call with its status: pending, done, failed, denied with the reason, or interrupted. A
+call the guardian refused shows its rule label and the guardian's own explanation on lines of their
+own, for example `[Download+Execute] pipes a download into a shell`. A line is written to scrollback once it has
 settled and no longer fits above the input; a call still pending when the screen is full is written
-as pending, and its outcome (failed, denied or interrupted) follows as a line of its own. A long command under approval scrolls inside
+as pending, and its card (outcome, output, diff) follows after it once it settles.
+
+A call that has finished shows more than its one line. A command that is multi-line or wider than
+the screen is shown under the `•` row, folded to three rows with `… (+N rows)` for the rest. The
+tool's output follows, dim behind a `│` gutter: the last ten rows, with `… N earlier rows` when
+more were cut. An `edit` or `write` call shows its diff instead (a `path  +added -removed` header,
+then up to 20 lines in the same form as the approval prompt, with `… N more changed lines`), for
+every allowed call, not only the ones you were asked about. A failed call keeps its `✗ failed:`
+reason on the first row and shows its output. `read` and `todo_write` calls and calls with empty
+output stay one line. Output is made safe before it is kept: control characters are blanked, tabs
+expanded, a line redrawn with a carriage return keeps its last drawing and credential-shaped text is
+redacted. At most 64 KiB of a result is kept (its start and its end), so the transcript stays small
+after a huge `cat`.
+
+When a card was cut, its last row reads `expand: /expand N`. `/expand [n]` prints call `n` in
+full as new transcript lines (the whole command, all the retained output and the whole diff);
+without a number it prints the latest call. Numbers count the session's calls from 1 and are not
+reset by `/clear`, which empties the transcript, so a cleared call is an unknown call. It does not
+touch the model's context. In screen-reader mode a call is still one labelled line, followed by
+the last ten lines of its output as plain lines and the same `expand:` hint.
+
+A long command under approval scrolls inside
 half the screen, so the call it asks about stays visible above the input.
 
 ### Notices
@@ -179,7 +200,7 @@ its line number, added lines marked `+` and removed lines `-` (in green and red)
 under a blank gutter, and PageUp and PageDown scroll the diff like any long call. At most 200 rows
 are shown; the rest is summarized as `… N more changed lines (not shown)`. The diff is computed
 from the file as it is when the prompt opens, so it is advisory: the tool applies the edit to the
-file as it is when it runs. No diff appears, and the prompt shows only the path, for other tools,
+file as it is when it runs. The transcript card of an allowed call shows the same diff. No diff appears, and the prompt shows only the path, for other tools,
 for a path outside the workspace roots, for a file that is missing (`edit`), not UTF-8 or larger
 than 1 MiB, and for an edit that matches nowhere or more than once. Control characters in file
 content are blanked and credential-shaped text is redacted before it is shown.
@@ -292,6 +313,7 @@ since a transcript can hold secrets, and an existing file is an error: an export
 | `/copy [<n>]` | Copies the latest assistant reply, or the `n`th latest, to the system clipboard. A reply is the text between tool calls, so a turn that calls a tool and then answers has two; `/copy` takes the last one. It is an error when there is no such reply. |
 | `/denied` | Lists the calls the guardian denied this session, with their rule label and explanation. Up and Down select; `r` approves the selected call once, as if you had approved it at a prompt, and tells the agent on its next turn that it may retry exactly that call. The retry runs without asking the guardian, never enters the verdict cache and does not count toward the denial limits. The deterministic floor still runs first, so an `ask` rule or a critical path still prompts. Esc closes the list. |
 | `/exit`, `/quit` | Leave. |
+| `/expand [<n>]` | Prints tool call `n` in full (command, retained output, diff) as new transcript lines; the latest call without a number. `n` is the number in the card's `expand:` hint, counted from the start of the session. It is an error for a call that does not exist or that `/clear` removed. |
 | `/export [<path>]` | Writes the conversation to a Markdown file, owner-only, never over an existing file. See [Sessions](#sessions). |
 | `/goal [<condition> \| clear]` | Keeps working until the condition is met; see [Goals](#goals). Bare `/goal` shows the goal's status. |
 | `/guardian-model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model) limited to the models the guardian could be. With one, pins the guardian to that model for the live session and saves it as `[guardian] model`. A model whose account has no credential becomes an unavailable guardian, which the next adjudication reports. When a higher scope (`--settings` or a project-local file) sets `[guardian] model`, the notice adds that the scope wins from the next launch. |

@@ -369,6 +369,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             // Decisions the cut-short calls already made belong to this turn, not the next.
             let mut feed = runtime.state.feed().await;
             while feed.try_next().is_some() {}
+            while feed.try_next_preview().is_some() {}
         }
     }
 

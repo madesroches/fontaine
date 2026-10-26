@@ -5,12 +5,12 @@ use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use fontaine_core::permissions::{Answer, ApprovalRequest, Offers};
-use fontaine_core::preview::{DiffKind, DiffPreview};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use tokio::sync::oneshot;
 
+use crate::diff::diff_rows;
 use crate::input::{InputBuffer, wrap};
 use crate::theme::Theme;
 
@@ -239,7 +239,7 @@ impl Approval {
         };
         wrapped(&self.request.summary, &mut out);
         if let Some(preview) = &self.request.preview {
-            diff_rows(preview, width, theme, &mut out);
+            diff_rows(preview, width, theme, None, " (not shown)", &mut out);
         }
         wrapped(&self.request.reason, &mut out);
         out
@@ -284,56 +284,10 @@ impl Approval {
     }
 }
 
-/// The diff as rows: a header, then each line behind a line-number gutter and a sign. Wrapped
-/// text continues under itself with a blank gutter.
-fn diff_rows(preview: &DiffPreview, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    let header = format!("{}  +{} -{}", preview.path, preview.added, preview.removed);
-    for piece in wrap(&header, width) {
-        out.push(Line::styled(
-            piece,
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
-    }
-    let digits = preview
-        .lines
-        .iter()
-        .flat_map(|l| [l.old_no, l.new_no])
-        .flatten()
-        .max()
-        .map_or(1, |n| n.to_string().len());
-    let text_width = width.saturating_sub(digits + 2).max(1);
-    for line in &preview.lines {
-        let (sign, style) = match line.kind {
-            DiffKind::Added => ('+', Style::default().fg(theme.success)),
-            DiffKind::Removed => ('-', Style::default().fg(theme.error)),
-            DiffKind::Context | DiffKind::Gap => (' ', dim),
-        };
-        let number = match line.kind {
-            DiffKind::Removed => line.old_no,
-            _ => line.new_no,
-        };
-        let no = number.map_or_else(|| " ".repeat(digits), |n| format!("{n:>digits$}"));
-        for (i, piece) in wrap(&line.text, text_width).into_iter().enumerate() {
-            let (no, sign) = if i == 0 {
-                (no.clone(), sign)
-            } else {
-                (" ".repeat(digits), ' ')
-            };
-            out.push(Line::styled(format!("{no} {sign}{piece}"), style));
-        }
-    }
-    if preview.hidden > 0 {
-        out.push(Line::styled(
-            format!("… {} more changed lines (not shown)", preview.hidden),
-            dim,
-        ));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fontaine_core::preview::{DiffKind, DiffPreview};
 
     fn request() -> ApprovalRequest {
         ApprovalRequest {

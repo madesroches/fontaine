@@ -336,6 +336,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
             }
             Some(Command::Copy(argument)) => self.copy(&argument),
+            Some(Command::Expand(argument)) => self.expand(&argument),
             Some(Command::Memory(argument)) => self.memory(runtime, &argument),
             Some(Command::Init(argument)) => return self.init(runtime, &argument).await,
             Some(Command::Resume(argument)) => return self.resume(runtime, &argument),

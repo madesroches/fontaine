@@ -8,6 +8,10 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Tool calls in the transcript are cards: a long or multi-line command folded to three rows, the
+  last ten rows of the output behind a gutter, and for `edit` and `write` the diff of the change,
+  also when no prompt asked about it. `/expand [n]` prints a call in full as new lines. Output is
+  sanitised and redacted before it is kept, and at most 64 KiB of a result is retained (#222).
 - The approval prompt for `edit` and `write` shows the change as a diff (line numbers, `+`/`-`
   lines, three lines of context, scrollable) before you decide; in the linear renderer it is plain
   text. It is display-only and absent when the file cannot be read or the edit would fail (#45).

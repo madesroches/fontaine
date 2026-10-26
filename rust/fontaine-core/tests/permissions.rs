@@ -682,3 +682,98 @@ async fn an_edit_prompt_carries_a_preview_that_decides_nothing() {
     assert!(!allowed(&rig.check("edit", args).await));
     assert_eq!(rig.approver.asked(), 3);
 }
+
+fn preview_edit(old: &str, new: &str) -> Value {
+    json!({"path": "a.txt", "edits": [{"old_text": old, "new_text": new, "replace_all": false}]})
+}
+
+#[tokio::test]
+async fn an_edit_allowed_without_a_prompt_publishes_its_diff_apart_from_the_audit_record() {
+    for options in [
+        Options::new(AcceptEdits),
+        Options::new(Manual).settings("[permissions]\nallow = [\"edit\"]\n"),
+    ] {
+        let rig = Rig::with(options);
+        std::fs::write(rig.work().join("a.txt"), "one\ntwo\n").unwrap();
+        let d = rig.check("edit", preview_edit("two", "2")).await;
+        assert!(allowed(&d));
+        assert_eq!(rig.approver.asked(), 0);
+        let mut feed = rig.state.feed().await;
+        let (id, preview) = feed.try_next_preview().expect("a preview");
+        assert_eq!(id, "call-1");
+        assert_eq!((preview.added, preview.removed), (1, 1));
+        assert!(feed.try_next_preview().is_none());
+        drop(feed);
+        let raw = std::fs::read_to_string(rig.session.audit.path()).unwrap();
+        assert!(
+            !raw.contains("preview") && !raw.contains("\"lines\""),
+            "{raw}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_prompted_edit_publishes_the_diff_it_was_shown() {
+    let rig = Rig::new(Manual);
+    std::fs::write(rig.work().join("a.txt"), "one\ntwo\n").unwrap();
+    rig.approver.answer(Answer::AllowOnce);
+    let d = rig.check("edit", preview_edit("two", "2")).await;
+    assert!(allowed(&d));
+    let shown = rig
+        .approver
+        .last_request()
+        .preview
+        .expect("the prompt's diff");
+    let mut feed = rig.state.feed().await;
+    let (_, preview) = feed.try_next_preview().expect("a preview");
+    assert_eq!(preview, shown);
+}
+
+#[tokio::test]
+async fn an_interrupted_prompt_leaves_no_diff_for_the_next_call() {
+    let rig = Rig::new(Manual);
+    std::fs::write(rig.work().join("a.txt"), "one\ntwo\n").unwrap();
+    rig.approver
+        .hang
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let interrupted = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        rig.check("edit", preview_edit("two", "2")),
+    )
+    .await;
+    assert!(interrupted.is_err());
+    assert_eq!(rig.approver.asked(), 1);
+
+    rig.state.set_mode(AcceptEdits);
+    let d = rig.check("edit", preview_edit("one", "1")).await;
+    assert!(allowed(&d));
+    let (id, preview) = rig
+        .state
+        .feed()
+        .await
+        .try_next_preview()
+        .expect("a preview");
+    assert_eq!(id, "call-2");
+    assert!(preview.lines.iter().any(|l| l.text == "1"));
+    assert!(preview.lines.iter().all(|l| l.text != "2"));
+}
+
+#[tokio::test]
+async fn a_denied_edit_and_other_tools_publish_no_diff() {
+    let rig = Rig::new(DontAsk);
+    std::fs::write(rig.work().join("a.txt"), "one\ntwo\n").unwrap();
+    let d = rig.check("edit", preview_edit("two", "2")).await;
+    assert!(!allowed(&d));
+    let manual = Rig::new(Manual);
+    std::fs::write(manual.work().join("a.txt"), "one\ntwo\n").unwrap();
+    manual.approver.answer(Answer::Deny { feedback: None });
+    assert!(!allowed(
+        &manual.check("edit", preview_edit("two", "2")).await
+    ));
+    assert!(allowed(
+        &manual.check("read", json!({"path": "a.txt"})).await
+    ));
+    for r in [&rig, &manual] {
+        assert!(r.state.feed().await.try_next_preview().is_none());
+    }
+}

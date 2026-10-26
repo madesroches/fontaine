@@ -4,8 +4,9 @@
 //! paths) in every mode, then the read-only fast path, the shell pre-classifier, allow rules and
 //! finally what the mode does with a call nobody pre-approved.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use fontaine_guardian::cascade::{Decided, ScreenInput};
@@ -15,6 +16,7 @@ use fontaine_guardian::{
 use fontaine_tools::ask_user::{Question, QuestionReply};
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
+use fontaine_tools::lock::lock;
 use fontaine_tools::preclassify::{Environment, Preclassifier, analyze};
 use fontaine_tools::risk::RiskClass;
 use fontaine_tools::scope::Scope;
@@ -335,6 +337,9 @@ pub struct PermissionPipeline {
     denied_hooks: Vec<Arc<dyn PermissionDeniedHook>>,
     preclassifier: Preclassifier,
     user_config: Option<PathBuf>,
+    /// The diff an approval prompt already built, by agent, so the allowed call does not read
+    /// the file a second time. Calls run one at a time per agent.
+    prompted: Mutex<HashMap<String, DiffPreview>>,
 }
 
 #[derive(Default)]
@@ -483,6 +488,7 @@ impl PermissionPipeline {
             hooks: params.hooks,
             denied_hooks: params.denied_hooks,
             user_config: params.user_config,
+            prompted: Mutex::default(),
         }
     }
 
@@ -1538,6 +1544,10 @@ impl PermissionPipeline {
                 .ok()
                 .flatten()
         };
+        if let Some(preview) = &preview {
+            lock(&self.prompted, "prompted previews")
+                .insert(call.agent.to_string(), preview.clone());
+        }
         let request = ApprovalRequest {
             tool: call.tool.to_string(),
             agent: call.agent.to_string(),
@@ -1646,6 +1656,35 @@ impl PermissionPipeline {
         }
     }
 
+    /// Shows the human the diff of an allowed `edit` or `write` after the fact, whether or not
+    /// they were asked. Display only: it feeds no decision, and failing to compute it just leaves
+    /// the call without a diff.
+    async fn publish_preview(&self, tool: &str, agent: &str, decision: &GateDecision) {
+        let prompted = lock(&self.prompted, "prompted previews").remove(agent);
+        let GateDecision::Allow { args } = decision else {
+            return;
+        };
+        if !matches!(tool, "edit" | "write") {
+            return;
+        }
+        let Some(id) = self.state.current_call(agent) else {
+            return;
+        };
+        let preview = match prompted {
+            Some(preview) => Some(preview),
+            None => {
+                let (tool, args, scope) = (tool.to_string(), args.clone(), self.state.scope());
+                tokio::task::spawn_blocking(move || preview::preview(&tool, &args, &scope))
+                    .await
+                    .ok()
+                    .flatten()
+            }
+        };
+        if let Some(preview) = preview {
+            self.state.publish_preview(id, preview);
+        }
+    }
+
     /// Audit log first, then the telemetry event, then whoever follows the decision feed.
     fn emit(&self, record: DecisionRecord) {
         record_decision(&self.state, &record);
@@ -1737,6 +1776,14 @@ impl ToolGate for PermissionPipeline {
             tier = tracing::field::Empty,
             decision = tracing::field::Empty,
         );
-        Box::pin(self.adjudicate(call).instrument(span))
+        let (tool, agent) = (call.tool, call.agent);
+        Box::pin(async move {
+            // A prompt cut short by an interrupt drops this future before `publish_preview`
+            // clears the entry, and it must not outlive its call.
+            lock(&self.prompted, "prompted previews").remove(agent);
+            let decision = self.adjudicate(call).instrument(span).await;
+            self.publish_preview(tool, agent, &decision).await;
+            decision
+        })
     }
 }

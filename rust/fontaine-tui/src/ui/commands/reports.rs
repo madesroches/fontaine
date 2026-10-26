@@ -75,4 +75,18 @@ impl<R: FnMut(&mut App)> Ui<R> {
             )),
         }
     }
+
+    /// `/expand`: prints call `n` (the latest by default) in full, as new transcript lines.
+    pub(crate) fn expand(&mut self, argument: &str) {
+        let n = match commands::call_number(argument) {
+            Ok(n) => n,
+            Err(e) => {
+                self.app.transcript.error(e);
+                return;
+            }
+        };
+        if let Err(e) = self.app.transcript.expand(n) {
+            self.app.transcript.error(e);
+        }
+    }
 }
