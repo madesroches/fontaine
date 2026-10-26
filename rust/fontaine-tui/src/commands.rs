@@ -13,6 +13,8 @@ pub enum Command {
     Clear(String),
     /// `/compact [focus]`.
     Compact(String),
+    /// `/config` (`/settings`): the settings panel.
+    Config,
     /// `/context [all]`.
     Context(String),
     OutputStyle(String),
@@ -86,6 +88,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: Some("[focus]"),
         description: "summarize the conversation to free context",
         command: Command::Compact,
+    },
+    Builtin {
+        name: "config",
+        aliases: &["settings"],
+        hint: None,
+        description: "browse the settings and change a few preferences",
+        command: |_| Command::Config,
     },
     Builtin {
         name: "context",
@@ -604,6 +613,10 @@ mod tests {
                 Some(Command::Clear(String::new()))
             );
         }
+        for name in ["config", "settings"] {
+            assert_eq!(parse_command(&format!("/{name}")), Some(Command::Config));
+        }
+        assert!(builtin_menu().iter().any(|e| e.name == "config"));
         assert_eq!(
             parse_command("/clear old work"),
             Some(Command::Clear("old work".into()))

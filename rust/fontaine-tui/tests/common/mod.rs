@@ -80,6 +80,8 @@ pub struct World {
     pub startup_warnings: Vec<fontaine_core::Notice>,
     /// Warnings the caller of `run` shows first (the ignored screen-reader setting).
     pub startup: Vec<fontaine_core::Notice>,
+    /// A `--settings` file, as the command line would name one.
+    pub settings_file: Option<PathBuf>,
     /// How many times the interface has been driven.
     runs: Cell<usize>,
     /// The time the session's scheduler sees, which a test moves itself.
@@ -140,6 +142,7 @@ impl World {
             without_user_config: false,
             startup_warnings: Vec::new(),
             startup: Vec::new(),
+            settings_file: None,
             runs: Cell::new(0),
             clock: Arc::new(ManualClock::new(CLOCK_START_MS)),
         };
@@ -167,6 +170,14 @@ impl World {
     /// A pinned guardian whose account has no credential.
     pub fn with_unavailable_guardian(mut self, reference: &str, reason: &str) -> World {
         self.guardian_unavailable = Some(format!("{reference}\n{reason}"));
+        self
+    }
+
+    /// Starts the session with `text` as the file `--settings` names.
+    pub fn with_cli_settings(mut self, text: &str) -> World {
+        let path = self.config_dir.with_file_name("cli-settings.toml");
+        std::fs::write(&path, text).unwrap();
+        self.settings_file = Some(path);
         self
     }
 
@@ -267,7 +278,7 @@ impl World {
             launch_dir: &self.work,
             config_dir: &self.config_dir,
             data_dir: &self.data,
-            settings_file: None,
+            settings_file: self.settings_file.as_deref(),
             cli_rules: Default::default(),
             env: &|_| None,
         })

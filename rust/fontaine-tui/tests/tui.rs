@@ -1586,3 +1586,117 @@ async fn a_turn_with_an_approval_reads_as_labelled_lines_in_screen_reader_mode()
         "hello"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn config_changes_the_theme_now_and_writes_the_user_file() {
+    let w = World::new(vec![]).with_config("# mine\n[model]\nmodel = \"a/b\"\n");
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/config");
+        ui.wait_for("Settings").await;
+        let screen = ui.screen();
+        assert!(
+            screen.contains("tui.theme") && screen.contains("dark-ansi"),
+            "{screen}"
+        );
+        ui.type_text("tui.theme");
+        ui.press(KeyCode::Enter);
+        ui.wait_for("saved to").await;
+        ui.press(KeyCode::Esc);
+        ui.send("/theme");
+        ui.wait_for("light-ansi (current)").await;
+    })
+    .await;
+    let saved = std::fs::read_to_string(&w.user_config).unwrap();
+    assert!(saved.contains("# mine"), "{saved}");
+    assert!(saved.contains("[tui]\ntheme = \"light-ansi\""), "{saved}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn config_never_writes_a_project_file_when_a_higher_scope_sets_the_key() {
+    let w = World::new(vec![])
+        .with_project_settings("[permissions]\ndeny = [\"shell(rm)\"]\n")
+        .with_cli_settings("[context]\nautocompact_window = 150000\n");
+    let project = w.work.join(".fontaine/settings.toml");
+    let project_before = std::fs::read(&project).unwrap();
+    let cli_before = std::fs::read(w.settings_file.as_ref().unwrap()).unwrap();
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/settings");
+        ui.wait_for("Settings").await;
+        ui.type_text("context.autocompact");
+        let screen = ui.screen();
+        assert!(
+            screen.contains("150000") && screen.contains("cli"),
+            "{screen}"
+        );
+        ui.press(KeyCode::Enter);
+        ui.type_text("5000");
+        ui.press(KeyCode::Enter);
+        ui.wait_for("cli sets this key and wins").await;
+        assert!(ui.screen().contains("stays 150000"), "{}", ui.screen());
+    })
+    .await;
+    let saved = std::fs::read_to_string(&w.user_config).unwrap();
+    assert!(saved.contains("autocompact_window = 5000"), "{saved}");
+    assert_eq!(std::fs::read(&project).unwrap(), project_before);
+    assert_eq!(
+        std::fs::read(w.settings_file.as_ref().unwrap()).unwrap(),
+        cli_before
+    );
+    assert!(!w.work.join(".fontaine/settings.local.toml").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn config_keeps_a_next_launch_value_across_reopening_and_resets_with_delete() {
+    let w = World::new(vec![]);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/config");
+        ui.wait_for("Settings").await;
+        ui.type_text("schedule.enabled");
+        ui.press(KeyCode::Enter);
+        ui.wait_for("applies from the next launch").await;
+        ui.press(KeyCode::Esc);
+        ui.send("/config");
+        ui.wait_for("next launch: false").await;
+        ui.type_text("schedule.enabled");
+        ui.press(KeyCode::Delete);
+        ui.wait_for("next launch: unset").await;
+    })
+    .await;
+    let saved = std::fs::read_to_string(&w.user_config).unwrap_or_default();
+    assert!(!saved.contains("schedule"), "{saved}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn config_without_a_user_file_says_nothing_was_saved() {
+    let mut w = World::new(vec![]);
+    w.without_user_config = true;
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/config");
+        ui.wait_for("Settings").await;
+        ui.press(KeyCode::Enter);
+        ui.wait_for("there is no user settings file").await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn config_reads_one_plain_line_per_key_in_screen_reader_mode() {
+    let w = World::new(vec![]);
+    let bytes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    w.run_linear(bytes.clone(), |ui| async move {
+        ui.send("/config");
+        ui.wait_for("tui.theme: dark-ansi, from default, editable")
+            .await;
+    })
+    .await;
+    let out = String::from_utf8(bytes.borrow().clone()).unwrap();
+    assert!(out.contains("selected: "), "{out:?}");
+    assert!(
+        out.chars().all(|c| !('\u{2500}'..='\u{257f}').contains(&c)),
+        "box drawing in {out:?}"
+    );
+}

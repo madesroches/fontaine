@@ -9,6 +9,7 @@ pub mod approval;
 pub mod clipboard;
 pub mod commands;
 pub mod complete;
+pub mod config_panel;
 pub mod denials;
 pub mod history;
 pub mod input;
@@ -152,6 +153,9 @@ struct Ui<R> {
     /// A model picked while a turn ran, applied once the turn is over: only the idle loop owns
     /// the runtime mutably.
     pending_pick: Option<(PickerPurpose, String)>,
+    /// Settings saved from `/config` that apply from the next launch, by key, as the label the
+    /// panel shows; they outlive the panel so reopening it still shows them.
+    config_pending: std::collections::BTreeMap<String, String>,
     /// Requests the provider dialog made while a turn ran, carried out once it is over.
     pending_provider: VecDeque<DialogKey>,
     data_dir: PathBuf,
@@ -200,6 +204,7 @@ pub async fn drive(
         render,
         recent,
         pending_pick: None,
+        config_pending: Default::default(),
         pending_provider: VecDeque::new(),
         data_dir,
         user_config,

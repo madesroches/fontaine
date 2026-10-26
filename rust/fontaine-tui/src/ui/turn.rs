@@ -273,7 +273,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         | Action::None
                         | Action::Submit(_)
                         | Action::Shell(_)
-                        | Action::CancelWakeup => {}
+                        | Action::CancelWakeup
+                        | Action::Config(_)
+                        | Action::OpenPicker(_) => {}
                     },
                 },
                 Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),

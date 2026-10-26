@@ -241,18 +241,15 @@ fn visit(
     }
 }
 
+/// The `Settings` schema as dotted paths, shared by the tests that pin a table to the settings
+/// keys.
 #[cfg(test)]
-mod tests {
-    use std::path::Path;
-
+pub(crate) mod schema {
     use serde_json::Value;
 
-    use super::*;
-    use crate::config::{ConfigError, Settings, parse_settings};
+    use crate::config::Settings;
 
-    const PROJECT_COLUMNS: [Column; 3] = [Column::Project, Column::ProjectLocal, Column::Cli];
-
-    fn is_prefix(prefix: &str, path: &str) -> bool {
+    pub(crate) fn is_prefix(prefix: &str, path: &str) -> bool {
         path == prefix
             || path
                 .strip_prefix(prefix)
@@ -261,7 +258,7 @@ mod tests {
 
     /// Every node of the `Settings` schema as a dotted path, with whether it is a leaf. Map keys
     /// are `*` and array elements add no segment.
-    fn schema_nodes() -> Vec<(String, bool)> {
+    pub(crate) fn schema_nodes() -> Vec<(String, bool)> {
         let schema = schemars::schema_for!(Settings);
         let root = schema.as_value().clone();
         let mut out = Vec::new();
@@ -313,6 +310,17 @@ mod tests {
             collect(root, v, &child, out);
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::schema::{is_prefix, schema_nodes};
+    use super::*;
+    use crate::config::{ConfigError, parse_settings};
+
+    const PROJECT_COLUMNS: [Column; 3] = [Column::Project, Column::ProjectLocal, Column::Cli];
 
     #[test]
     fn every_settings_leaf_has_a_row() {

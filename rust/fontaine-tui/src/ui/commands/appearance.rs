@@ -5,11 +5,21 @@ use fontaine_core::config::ThemeName;
 use fontaine_core::user_config;
 
 impl<R: FnMut(&mut App)> Ui<R> {
+    /// The preset the screen is drawn in, when it is one.
+    pub(crate) fn current_theme(&self) -> Option<ThemeName> {
+        ThemeName::ALL
+            .into_iter()
+            .find(|t| Theme::preset(*t) == self.app.theme)
+    }
+
+    /// Switches the screen to `name`; saving and reporting are the caller's.
+    pub(crate) fn apply_theme(&mut self, name: ThemeName) {
+        self.app.theme = Theme::preset(name);
+    }
+
     /// `/theme`: lists the themes, or switches to one and saves the choice.
     pub(crate) fn theme(&mut self, name: &str) {
-        let current = ThemeName::ALL
-            .into_iter()
-            .find(|t| Theme::preset(*t) == self.app.theme);
+        let current = self.current_theme();
         if name.is_empty() {
             let names: Vec<String> = ThemeName::ALL
                 .iter()
@@ -39,7 +49,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             ));
             return;
         };
-        self.app.theme = Theme::preset(chosen);
+        self.apply_theme(chosen);
         let persist_error = match &self.user_config {
             Some(path) => user_config::set_theme(path, chosen).err().map(|e| {
                 format!(
@@ -50,7 +60,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }),
             None => Some("there is no user settings file to save it to".to_string()),
         };
-        self.finish_switch(format!("theme is now {}", chosen.as_str()), persist_error);
+        self.finish_switch(
+            format!("theme is now {}", chosen.as_str()),
+            persist_error,
+            None,
+        );
     }
 
     /// `/output-style`: shows the styles, or switches to one for the next turn.

@@ -241,6 +241,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.apply_pick(runtime, purpose, &reference).await;
                 }
                 Action::Providers(request) => self.provider_request(runtime, request).await,
+                Action::Config(change) => self.config_change(runtime, change),
+                Action::OpenPicker(slot) => self.open_config_picker(runtime, slot).await,
                 Action::Server(_) | Action::None | Action::Interrupt | Action::Queue(_) => {}
             }
         }
@@ -265,6 +267,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(Command::Denied) => {
                 self.app.denied = Some(DeniedList::new(runtime.state.denied_calls()));
             }
+            Some(Command::Config) => self.open_config(runtime),
             Some(Command::Agents) => self.app.agents = Some(AgentsPanel::new()),
             Some(Command::Todos) => self.app.todos.toggle(),
             Some(Command::OutputStyle(name)) => self.output_style(runtime, &name),

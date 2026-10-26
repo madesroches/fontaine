@@ -1392,3 +1392,91 @@ fn an_account_that_breaks_the_network_rules_names_itself() {
     );
     assert!(network_error(&w).contains("`network`"));
 }
+
+mod provenance {
+    use super::common::World;
+    use fontaine_core::config::{CliRules, LoadParams, Slot, load};
+
+    fn load_with_rules(
+        w: &World,
+        settings: Option<&std::path::Path>,
+        deny: &[String],
+    ) -> Vec<Slot> {
+        let config = load(&LoadParams {
+            launch_dir: &w.work,
+            config_dir: &w.config,
+            data_dir: &w.data,
+            settings_file: settings,
+            cli_rules: CliRules { allow: &[], deny },
+            env: &super::common::no_env,
+        })
+        .unwrap();
+        config.sources["permissions.deny"].clone()
+    }
+
+    #[test]
+    fn a_key_set_in_one_layer_names_that_layer() {
+        let w = World::new();
+        w.user_file("[tui]\ntheme = \"dark\"\n");
+        let c = w.load().unwrap();
+        assert_eq!(c.sources["tui.theme"], [Slot::User]);
+    }
+
+    #[test]
+    fn layers_are_listed_highest_precedence_first() {
+        let w = World::new();
+        w.trusted_repo();
+        w.user_file("[context]\nautocompact_window = 100\n");
+        w.local_file("[context]\nautocompact_window = 200\n");
+        let c = w.load().unwrap();
+        assert_eq!(
+            c.sources["context.autocompact_window"],
+            [Slot::ProjectLocal, Slot::User]
+        );
+    }
+
+    #[test]
+    fn a_list_names_every_contributing_layer() {
+        let w = World::new();
+        w.user_file("[permissions]\ndeny = [\"shell(rm)\"]\n");
+        w.project_file("[permissions]\ndeny = [\"shell(dd)\"]\n");
+        let c = w.load().unwrap();
+        assert_eq!(c.sources["permissions.deny"], [Slot::Project, Slot::User]);
+    }
+
+    #[test]
+    fn an_unset_key_has_no_entry() {
+        let w = World::new();
+        w.user_file("[tui]\ntheme = \"dark\"\n");
+        let c = w.load().unwrap();
+        assert!(!c.sources.contains_key("tui.screen_reader"));
+        assert!(!c.sources.contains_key("context.autocompact_window"));
+    }
+
+    #[test]
+    fn env_and_account_entries_are_leaves_by_name() {
+        let w = World::new();
+        w.user_file("[env]\nHTTPS_PROXY = \"http://p\"\n\n[accounts.work]\nkind = \"anthropic\"\n");
+        let c = w.load().unwrap();
+        assert_eq!(c.sources["env.HTTPS_PROXY"], [Slot::User]);
+        assert_eq!(c.sources["accounts.work.kind"], [Slot::User]);
+    }
+
+    #[test]
+    fn flag_rules_are_cli_provenance() {
+        let w = World::new();
+        assert_eq!(
+            load_with_rules(&w, None, &["shell(rm)".to_string()]),
+            [Slot::Cli]
+        );
+    }
+
+    #[test]
+    fn flag_rules_join_a_settings_file_under_cli() {
+        let w = World::new();
+        w.user_file("[permissions]\ndeny = [\"shell(dd)\"]\n");
+        let cli = w.cli_file("[tui]\ntheme = \"dark\"\n");
+        let slots = load_with_rules(&w, Some(&cli), &["shell(rm)".to_string()]);
+        assert_eq!(slots, [Slot::Cli, Slot::User]);
+    }
+}

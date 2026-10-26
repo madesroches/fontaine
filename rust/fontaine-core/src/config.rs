@@ -744,7 +744,7 @@ pub struct Settings {
 /// environment: schema, per-scope key rules and value shapes. Phase-gated value rules and
 /// env/credential resolution are left to [`load`].
 pub fn parse_settings(text: &str, path: &Path, column: Column) -> Result<Settings, ConfigError> {
-    parse_settings_with_hint(text, path, column, None)
+    parse_settings_with_hint(text, path, column, None).map(|(settings, _)| settings)
 }
 
 /// Schema and scope validation only; the entry point docs checks use.
@@ -757,7 +757,7 @@ fn parse_settings_with_hint(
     path: &Path,
     column: Column,
     hint: Option<&str>,
-) -> Result<Settings, ConfigError> {
+) -> Result<(Settings, toml::Table), ConfigError> {
     // toml's `Display` quotes the offending source line, which for an `[env]` entry would echo
     // a secret; report the position and toml's bare message instead.
     let settings: Settings = toml::from_str(text).map_err(|e| ConfigError::Parse {
@@ -775,7 +775,7 @@ fn parse_settings_with_hint(
         });
     }
     validate_values(&settings, path)?;
-    Ok(settings)
+    Ok((settings, table))
 }
 
 pub(crate) fn bare_toml_message(
@@ -1313,6 +1313,11 @@ pub struct Tui {
 pub struct Config {
     pub workspace: PathBuf,
     pub scopes: Vec<ScopeEntry>,
+    /// For each settings key a layer set, the layers that set it, highest precedence first.
+    /// Tables add a segment; arrays (including arrays of tables such as `hooks.pre_tool_use`) and
+    /// scalars are leaves, so `accounts.work.kind` and `env.HTTPS_PROXY` are leaves. A key no
+    /// layer set is absent and comes from the built-in default.
+    pub sources: BTreeMap<String, Vec<Slot>>,
     pub accounts: BTreeMap<String, Account>,
     /// Accounts defined by more than one scope, where the higher scope's definition won.
     pub shadowed_accounts: std::collections::BTreeSet<String>,
@@ -1337,10 +1342,11 @@ pub struct Config {
 }
 
 impl Config {
-    fn defaults(workspace: PathBuf) -> Self {
+    pub(crate) fn defaults(workspace: PathBuf) -> Self {
         Config {
             workspace,
             scopes: Vec::new(),
+            sources: BTreeMap::new(),
             accounts: BTreeMap::new(),
             shadowed_accounts: Default::default(),
             network: NetworkSettings::default(),
@@ -1689,6 +1695,43 @@ struct Layer {
     column: Column,
     path: PathBuf,
     settings: Option<Settings>,
+    /// The layer's text as parsed, for provenance.
+    table: Option<toml::Table>,
+}
+
+/// Every settings key path the table holds. Tables add a segment; arrays (including arrays of
+/// tables) and scalars are leaves.
+fn leaf_paths(table: &toml::Table) -> Vec<String> {
+    fn walk(table: &toml::Table, prefix: &str, out: &mut Vec<String>) {
+        for (key, value) in table {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            match value {
+                toml::Value::Table(inner) => walk(inner, &path, out),
+                _ => out.push(path),
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(table, "", &mut out);
+    out
+}
+
+/// For each leaf path any layer holds, the slots of the layers that hold it, highest precedence
+/// first. `layers` must already be in that order.
+fn collect_sources<'a>(
+    layers: impl IntoIterator<Item = (Slot, &'a toml::Table)>,
+) -> BTreeMap<String, Vec<Slot>> {
+    let mut sources: BTreeMap<String, Vec<Slot>> = BTreeMap::new();
+    for (slot, table) in layers {
+        for path in leaf_paths(table) {
+            sources.entry(path).or_default().push(slot);
+        }
+    }
+    sources
 }
 
 pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
@@ -1700,12 +1743,12 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
 
     let user_path = params.config_dir.join(USER_FILE);
     let user = read_optional(&user_path, crate::file_lock::read_shared)?
-        .map(|text| parse_settings(&text, &user_path, Column::User))
+        .map(|text| parse_settings_with_hint(&text, &user_path, Column::User, None))
         .transpose()?;
 
     let project_path = workspace.join(PROJECT_DIR).join(PROJECT_FILE);
     let project = read_optional(&project_path, |p| std::fs::read_to_string(p))?
-        .map(|text| parse_settings(&text, &project_path, Column::Project))
+        .map(|text| parse_settings_with_hint(&text, &project_path, Column::Project, None))
         .transpose()?;
 
     let local_path = workspace.join(PROJECT_DIR).join(PROJECT_LOCAL_FILE);
@@ -1733,21 +1776,23 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
                 path: path.to_path_buf(),
                 source,
             })?;
-            Some(parse_settings(&text, path, Column::Cli)?)
+            Some(parse_settings_with_hint(&text, path, Column::Cli, None)?)
         }
     };
     let flag_rules = !params.cli_rules.allow.is_empty() || !params.cli_rules.deny.is_empty();
     let cli = if flag_rules {
-        let mut settings = cli.unwrap_or_default();
+        let (mut settings, mut table) = cli.unwrap_or_default();
         let permissions = settings.permissions.get_or_insert_with(Default::default);
-        for (flag, from, into) in [
+        for (flag, key, from, into) in [
             (
                 "--allowed-tools",
+                "allow",
                 params.cli_rules.allow,
                 &mut permissions.allow,
             ),
             (
                 "--disallowed-tools",
+                "deny",
                 params.cli_rules.deny,
                 &mut permissions.deny,
             ),
@@ -1755,37 +1800,55 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
             for text in from {
                 parse_rule(text).map_err(|e| ConfigError::usage(format!("{flag}: {e}")))?;
                 into.get_or_insert_with(Vec::new).push(text.clone());
+                table
+                    .entry("permissions")
+                    .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+                    .as_table_mut()
+                    .expect("a CLI settings file's `permissions` already parsed as a table")
+                    .entry(key)
+                    .or_insert_with(|| toml::Value::Array(Vec::new()))
+                    .as_array_mut()
+                    .expect("a CLI settings file's rule list already parsed as an array")
+                    .push(toml::Value::String(text.clone()));
             }
         }
-        Some(settings)
+        Some((settings, table))
     } else {
         cli
     };
 
+    let (cli, cli_table): (Option<Settings>, Option<toml::Table>) = cli.unzip();
+    let (local, local_table): (Option<Settings>, Option<toml::Table>) = local.unzip();
+    let (project, project_table): (Option<Settings>, Option<toml::Table>) = project.unzip();
+    let (user, user_table): (Option<Settings>, Option<toml::Table>) = user.unzip();
     let layers = [
         Layer {
             slot: Slot::Cli,
             column: Column::Cli,
             path: cli_path.map(Path::to_path_buf).unwrap_or_default(),
             settings: cli,
+            table: cli_table,
         },
         Layer {
             slot: Slot::ProjectLocal,
             column: local_column,
             path: local_path,
             settings: local,
+            table: local_table,
         },
         Layer {
             slot: Slot::Project,
             column: Column::Project,
             path: project_path,
             settings: project,
+            table: project_table,
         },
         Layer {
             slot: Slot::User,
             column: Column::User,
             path: user_path.clone(),
             settings: user,
+            table: user_table,
         },
     ];
 
@@ -1815,6 +1878,11 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
         };
         config.apply(settings, layer.slot, layer.column);
     }
+    config.sources = collect_sources(
+        layers
+            .iter()
+            .filter_map(|l| l.table.as_ref().map(|t| (l.slot, t))),
+    );
 
     check_network(&config)?;
     check_scanner(&config.guardian, &user_path)?;
