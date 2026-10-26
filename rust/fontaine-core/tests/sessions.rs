@@ -391,9 +391,12 @@ async fn list_reports_each_session_newest_first_for_its_root_and_skips_unreadabl
 
     // A record cut short in the middle of the file is skipped, not fatal.
     use std::io::Write as _;
+    let old_ledger = old.ledger.path().to_path_buf();
+    // Windows refuses a second handle while the session holds the ledger open.
+    drop(old);
     let mut file = std::fs::OpenOptions::new()
         .append(true)
-        .open(old.ledger.path())
+        .open(old_ledger)
         .unwrap();
     file.write_all(b"{\"seq\":99,\"kind\":\"user_mes\n")
         .unwrap();
