@@ -55,13 +55,17 @@ pub(crate) fn end_of_turn(end: &TurnEnd, retracted: Vec<String>) -> EndOfTurn {
 impl<R: FnMut(&mut App)> Ui<R> {
     /// Brings the provider's search tool in line with the mode and rules now in force, which a
     /// mode switch or a session rule may have changed since the agent was built.
-    fn refresh_native_search(&mut self, runtime: &mut AgentRuntime) {
-        if let Err(e) = runtime.refresh_native_search() {
-            self.app.transcript.error(format!(
-                "the provider's web search could not be updated: {}",
-                fontaine_tools::error_chain::chain(&e)
-            ));
-        }
+    ///
+    /// When the agent cannot be rebuilt to drop a search tool the gate now withholds, the turn
+    /// must not run: this returns how it ends instead.
+    fn refresh_native_search(&mut self, runtime: &mut AgentRuntime) -> Option<TurnEnd> {
+        let e = runtime.refresh_native_search().err()?;
+        let message = format!(
+            "the provider's web search could not be turned off, so the turn did not run: {}",
+            fontaine_tools::error_chain::chain(&e)
+        );
+        self.app.transcript.error(message.clone());
+        Some(TurnEnd::Finished(TurnOutcome::Failed(message)))
     }
 
     /// A turn on what the background agents reported. It is not the user speaking, so it is not
@@ -71,7 +75,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
         runtime: &mut AgentRuntime,
     ) -> Option<TurnEnd> {
         let prompt = runtime.notification_prompt().await?;
-        self.refresh_native_search(runtime);
+        if let Some(end) = self.refresh_native_search(runtime) {
+            return Some(end);
+        }
         self.app
             .transcript
             .notice("a background agent reported back");
@@ -91,8 +97,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app
             .transcript
             .notice(format!("scheduled: {}", fired.job.id));
-        self.refresh_native_search(runtime);
-        let end = self.turn(runtime, prompt, None).await;
+        let end = match self.refresh_native_search(runtime) {
+            Some(end) => end,
+            None => self.turn(runtime, prompt, None).await,
+        };
         if matches!(end, TurnEnd::InputClosed) {
             return Break(());
         }
@@ -118,8 +126,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue as Go};
         let prompt = runtime.goal_prompt(&next).await;
-        self.refresh_native_search(runtime);
-        let end = self.turn(runtime, prompt, None).await;
+        let end = match self.refresh_native_search(runtime) {
+            Some(end) => end,
+            None => self.turn(runtime, prompt, None).await,
+        };
         if matches!(end, TurnEnd::InputClosed) {
             return Break(());
         }
@@ -217,10 +227,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
             self.app.transcript.user(text.clone());
             // A prompt from the user resumes a paused goal.
             runtime.goal_user_prompt();
-            self.refresh_native_search(runtime);
-            let end = match expanded.take() {
-                Some(prompt) => self.turn(runtime, prompt, None).await,
-                None => self.turn(runtime, text.clone(), Some(&text)).await,
+            let end = match self.refresh_native_search(runtime) {
+                Some(end) => end,
+                None => match expanded.take() {
+                    Some(prompt) => self.turn(runtime, prompt, None).await,
+                    None => self.turn(runtime, text.clone(), Some(&text)).await,
+                },
             };
             if matches!(end, TurnEnd::InputClosed) {
                 return Break(());

@@ -846,13 +846,24 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
                 return 2;
             }
         };
-        if let Err(e) = runtime.refresh_native_search() {
-            runtime.approver().warn(&format!(
-                "the provider's web search could not be updated: {}",
-                fontaine_tools::error_chain::chain(&e)
-            ));
-        }
-        let handled = handle_message(&runtime, &options, &mut totals, stream_events, text).await;
+        let handled = match runtime.refresh_native_search() {
+            Ok(()) => handle_message(&runtime, &options, &mut totals, stream_events, text).await,
+            Err(e) => Handled {
+                outcome: Outcome {
+                    subtype: Subtype::Execution,
+                    text: String::new(),
+                    structured: None,
+                    error: Some(format!(
+                        "the provider's web search could not be turned off, so the message was not run: {}",
+                        fontaine_tools::error_chain::chain(&e)
+                    )),
+                    started: std::time::Instant::now(),
+                    denials: Vec::new(),
+                },
+                goal: None,
+                goal_ran: false,
+            },
+        };
         let outcome = &handled.outcome;
         let failed = outcome.subtype != Subtype::Success;
         // A goal that ended impossible or paused did not finish the task, even when the turn

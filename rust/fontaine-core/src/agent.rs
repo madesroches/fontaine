@@ -317,11 +317,26 @@ impl AgentRuntime {
     /// Rebuilds the agent when the live mode and rules change whether the provider's search
     /// tool is offered. The tool is part of the built agent, which a mode switch or a session
     /// rule does not rebuild, so the turn drivers call this before each turn.
+    ///
+    /// A failed rebuild is an error only when the old agent would keep a search tool the gate now
+    /// withholds, so the caller must not run the turn; failing to newly offer it is warned about
+    /// and the turn runs without it.
     pub fn refresh_native_search(&mut self) -> Result<(), RuntimeError> {
-        if self.native_search_entry().is_some() == self.native_search {
+        let offered = self.native_search_entry().is_some();
+        if offered == self.native_search {
             return Ok(());
         }
-        self.rebuild()
+        match self.rebuild() {
+            Err(e) if !offered => Err(e),
+            Err(e) => {
+                self.approver.warn(&format!(
+                    "the provider's web search could not be updated: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                ));
+                Ok(())
+            }
+            Ok(()) => Ok(()),
+        }
     }
 
     /// Whether the agent carries the provider's search tool now.

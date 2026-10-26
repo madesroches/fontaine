@@ -187,6 +187,28 @@ async fn a_deny_or_ask_rule_withholds_it_even_with_an_allow_rule() {
 }
 
 #[tokio::test]
+async fn a_pre_tool_use_hook_covering_it_withholds_it() {
+    for matcher in ["matcher = \"websearch\"\n", ""] {
+        let w = world(&format!(
+            "{ANTHROPIC}[[hooks.pre_tool_use]]\n{matcher}command = \"true\"\n"
+        ));
+        let built = build(&w, PermissionMode::Auto, "anthropic", vec![answer()]);
+        assert!(!built.runtime.native_search_active(), "{matcher:?}");
+        turn(&built).await;
+        assert!(sent_tools(&built).is_empty(), "{matcher:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_pre_tool_use_hook_for_another_tool_does_not() {
+    let w = world(&format!(
+        "{ANTHROPIC}[[hooks.pre_tool_use]]\nmatcher = \"shell\"\ncommand = \"true\"\n"
+    ));
+    let built = build(&w, PermissionMode::Auto, "anthropic", vec![answer()]);
+    assert!(built.runtime.native_search_active());
+}
+
+#[tokio::test]
 async fn other_account_kinds_never_carry_it() {
     let w = world("[accounts.test]\nkind = \"openai\"\n");
     let built = build(&w, PermissionMode::Auto, "openai", vec![answer()]);
@@ -268,4 +290,37 @@ async fn other_failures_keep_their_text() {
         };
         assert!(!text.contains("native"), "{status}: {text}");
     }
+}
+
+fn tavily_world() -> World {
+    let w = world(&format!("{ANTHROPIC}[websearch]\nbackend = \"tavily\"\n"));
+    common::write(
+        &w.data.join("credentials.toml"),
+        "[websearch]\napi_key = \"k\"\n",
+    );
+    w
+}
+
+#[tokio::test]
+async fn a_failed_rebuild_that_must_withhold_it_is_an_error() {
+    let w = tavily_world();
+    let mut built = build(&w, PermissionMode::Auto, "anthropic", vec![answer()]);
+    assert!(built.runtime.native_search_active());
+    std::fs::remove_file(w.data.join("credentials.toml")).unwrap();
+
+    built.runtime.state.set_mode(PermissionMode::Manual);
+    assert!(built.runtime.refresh_native_search().is_err());
+    assert!(built.runtime.native_search_active());
+}
+
+#[tokio::test]
+async fn a_failed_rebuild_that_would_only_offer_it_is_not() {
+    let w = tavily_world();
+    let mut built = build(&w, PermissionMode::Manual, "anthropic", vec![answer()]);
+    assert!(!built.runtime.native_search_active());
+    std::fs::remove_file(w.data.join("credentials.toml")).unwrap();
+
+    built.runtime.state.set_mode(PermissionMode::Auto);
+    built.runtime.refresh_native_search().unwrap();
+    assert!(!built.runtime.native_search_active());
 }

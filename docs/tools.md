@@ -152,7 +152,9 @@ Search reaches the model in one of two ways, in this order:
    inside the model's response, and the model cites what it found. Other hosts of the kind (a
    gateway, Databricks) are unverified, so they use it only with `[websearch] native = "on"`, and
    `native = "off"` never uses it. It is offered only while no `deny` or `ask` rule covers
-   `websearch`; in `manual`, `acceptEdits` and `dontAsk` it also needs an `allow` rule for
+   `websearch` and no [`pre_tool_use` hook](hooks.md) could (one with no `matcher`, a `matcher`
+   naming `websearch`, or one whose matcher cannot be read), since a hook never sees a search the
+   provider runs; in `manual`, `acceptEdits` and `dontAsk` it also needs an `allow` rule for
    `websearch`, since a call there would otherwise ask or be denied. Switching modes or adding a
    rule takes effect on the next turn. If the endpoint rejects the request because of the search
    tool, the failure message says to set `native = "off"`; nothing retries without it.
@@ -188,9 +190,12 @@ command = ["docker", "run", "--rm", "-p", "127.0.0.1:8080:8080", "searxng/searxn
 With `command`, the first search starts the process (an argv, no shell, a cleared environment
 that keeps only what a program needs to find itself) and waits up to `startup_timeout_secs` for
 `base_url` to answer. Later searches, and the rebuilds that `/add-dir` and `/model` cause, reuse
-it, and it stops when the session ends. A start that fails or times out is a search error with the
+it, and it is stopped when the session ends: Fontaine puts it in its own process group and sends
+SIGTERM to the group, waits up to 10 seconds, then sends SIGKILL (on Windows it is killed). A
+`docker run` forwards SIGTERM to its container, so `--rm` removes it. Shutdown waits for that
+exit, so a command that ignores SIGTERM delays the end of the session by the 10 seconds. A start that fails or times out is a search error with the
 process's last stderr lines; there is no fallback to another backend. A session killed by a signal
-can leave the process running. The image's default settings do not enable the `json` format; give
+can leave the process running (and, for `docker run`, the container). The image's default settings do not enable the `json` format; give
 the instance a `settings.yml` with `json` under `search.formats`.
 
 Provider-native search is outside the [guardian](guardian.md) and the result scanner.

@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::config::{Config, NativeSearch, PermissionMode};
 use crate::gate::{Rules, SessionState};
 use crate::models::Models;
-use crate::permission_rules::SourcedRule;
+use crate::permission_rules::{SourcedRule, parse_rule};
 
 const TOOL: &str = "websearch";
 
@@ -16,7 +16,7 @@ fn names_tool(rules: &[SourcedRule]) -> bool {
 }
 
 /// Whether the live mode and rules let a search run without a decision of Fontaine's. A `deny`
-/// or `ask` rule for `websearch` always withholds it. Where a non-allowed call would ask or be
+/// or `ask` rule for `websearch` always withholds it (so does a covering hook, see `offered`). Where a non-allowed call would ask or be
 /// denied (`manual`, `acceptEdits`, `dontAsk`) it needs an `allow` rule.
 pub(crate) fn permitted(mode: PermissionMode, rules: &Rules) -> bool {
     if names_tool(&rules.deny) || names_tool(&rules.ask) {
@@ -28,6 +28,17 @@ pub(crate) fn permitted(mode: PermissionMode, rules: &Rules) -> bool {
             names_tool(&rules.allow)
         }
     }
+}
+
+/// Whether a `pre_tool_use` hook could cover `websearch`. The provider runs its search inside
+/// the model's response, so a hook would never see it; a hook that cannot be read counts as
+/// covering, as it runs for every call.
+fn hook_covers(config: &Config) -> bool {
+    config.hooks.pre_tool_use.iter().any(|hook| {
+        hook.matcher
+            .as_deref()
+            .is_none_or(|text| parse_rule(text).map_or(true, |rule| rule.tool == TOOL))
+    })
 }
 
 /// The provider's search tool entry when the main model's account supports it and
@@ -52,6 +63,9 @@ fn provider_entry(config: &Config, models: &Models) -> Option<Value> {
 /// serves searches.
 pub(crate) fn offered(config: &Config, models: &Models, state: &SessionState) -> Option<Value> {
     let entry = provider_entry(config, models)?;
+    if hook_covers(config) {
+        return None;
+    }
     permitted(state.mode(), &state.rules()).then_some(entry)
 }
 
@@ -70,6 +84,28 @@ mod tests {
             deny: list(deny),
             ask: list(ask),
             allow: list(allow),
+        }
+    }
+
+    fn config_with_hook(matcher: Option<&str>) -> Config {
+        let mut config = Config::defaults(std::path::PathBuf::new());
+        config.hooks.pre_tool_use.push(crate::config::Hook {
+            matcher: matcher.map(str::to_string),
+            command: "true".to_string(),
+            timeout_secs: None,
+            origin: Default::default(),
+        });
+        config
+    }
+
+    #[test]
+    fn a_hook_that_could_cover_websearch_withholds_it() {
+        assert!(!hook_covers(&Config::defaults(std::path::PathBuf::new())));
+        for covering in [Some("websearch"), Some("websearch(x)"), None, Some("((")] {
+            assert!(hook_covers(&config_with_hook(covering)), "{covering:?}");
+        }
+        for other in ["shell", "webfetch(domain:example.com)"] {
+            assert!(!hook_covers(&config_with_hook(Some(other))), "{other}");
         }
     }
 

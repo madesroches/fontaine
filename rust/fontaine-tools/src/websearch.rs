@@ -110,9 +110,90 @@ pub struct WebsearchArgs {
     pub blocked_domains: Option<Vec<String>>,
 }
 
+/// How long a stopped SearXNG command has to exit after SIGTERM before it is killed. A
+/// `docker run` needs the time to stop its container, which `--rm` then removes.
+const STOP_GRACE: Duration = Duration::from_secs(10);
+const STOP_POLL: Duration = Duration::from_millis(50);
+
 #[derive(Debug)]
 struct Running {
     child: Child,
+    grace: Duration,
+}
+
+impl Drop for Running {
+    /// Blocks up to the grace period, and only when the process ignores SIGTERM or is slow to
+    /// stop; there is no async drop. A session killed by a signal never gets here.
+    fn drop(&mut self) {
+        terminate(&self.child);
+        let deadline = Instant::now() + self.grace;
+        while matches!(self.child.try_wait(), Ok(None)) && Instant::now() < deadline {
+            std::thread::sleep(STOP_POLL);
+        }
+        force_kill(&mut self.child);
+    }
+}
+
+fn command(
+    program: &str,
+    args: &[String],
+    env: &[(OsString, OsString)],
+) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(program);
+    command
+        .args(args)
+        .env_clear()
+        .envs(env.iter().map(|(k, v)| (k, v)))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    // Its own group, so the signals reach what a wrapper script started too.
+    #[cfg(unix)]
+    command.process_group(0);
+    command
+}
+
+/// SIGTERM to the process group: a `docker run` CLI forwards it to the container, which SIGKILL
+/// to the CLI alone could not.
+fn terminate(child: &Child) {
+    #[cfg(unix)]
+    signal_group(child, "TERM");
+    #[cfg(not(unix))]
+    let _ = child;
+}
+
+/// Kills the group, and the child itself where there is no group to signal. Does nothing to a
+/// process that already exited.
+fn force_kill(child: &mut Child) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
+    #[cfg(unix)]
+    signal_group(child, "KILL");
+    let _ = child.start_kill();
+}
+
+#[cfg(unix)]
+fn signal_group(child: &Child, signal: &str) {
+    let Some(pid) = child.id() else { return };
+    // Best effort: the group may already be gone.
+    let _ = std::process::Command::new("kill")
+        .args(["-s", signal, "--", &format!("-{pid}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+async fn stop(child: &mut Child, grace: Duration) {
+    terminate(child);
+    let deadline = Instant::now() + grace;
+    while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
+        tokio::time::sleep(STOP_POLL).await;
+    }
+    force_kill(child);
+    let _ = child.wait().await;
 }
 
 /// The SearXNG instance Fontaine started, shared by every `Websearch` a session builds so a
@@ -408,21 +489,12 @@ impl Websearch {
             .argv
             .split_first()
             .expect("a launch command is validated as non-empty");
-        let mut child = tokio::process::Command::new(program)
-            .args(args)
-            .env_clear()
-            .envs(launch.env.iter().map(|(k, v)| (k, v)))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| {
-                ToolExecutionError::other(format!(
-                    "cannot start the SearXNG command `{program}`: {}",
-                    chain(&e)
-                ))
-            })?;
+        let mut child = command(program, args, &launch.env).spawn().map_err(|e| {
+            ToolExecutionError::other(format!(
+                "cannot start the SearXNG command `{program}`: {}",
+                chain(&e)
+            ))
+        })?;
         let stderr = Arc::new(Mutex::new(String::new()));
         let drain = child.stderr.take().map(|pipe| {
             let tail_buffer = stderr.clone();
@@ -463,7 +535,7 @@ impl Websearch {
                 break;
             }
             if started.elapsed() >= launch.startup_timeout {
-                let _ = child.kill().await;
+                stop(&mut child, STOP_GRACE).await;
                 if let Some(drain) = drain {
                     let _ = tokio::time::timeout(Duration::from_millis(500), drain).await;
                 }
@@ -477,7 +549,10 @@ impl Websearch {
             }
             tokio::time::sleep(PROBE_INTERVAL).await;
         }
-        *slot = Some(Running { child });
+        *slot = Some(Running {
+            child,
+            grace: STOP_GRACE,
+        });
         Ok(())
     }
 
@@ -577,6 +652,64 @@ impl Tool for Websearch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn spawn_script(script: &str) -> Child {
+        let env = vec![(OsString::from("PATH"), std::env::var_os("PATH").unwrap())];
+        command("sh", &["-c".to_string(), script.to_string()], &env)
+            .spawn()
+            .unwrap()
+    }
+
+    /// Waits until the script has installed its trap, so the signal is not sent before it.
+    #[cfg(unix)]
+    async fn until_ready(marker: &std::path::Path) {
+        for _ in 0..100 {
+            if marker.exists() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the fake child never started");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_the_child_sends_sigterm_and_waits_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ready, termed) = (dir.path().join("ready"), dir.path().join("termed"));
+        let script = format!(
+            "trap 'echo x > {}; exit 0' TERM; echo x > {}; while :; do sleep 0.05; done",
+            termed.display(),
+            ready.display()
+        );
+        let running = Running {
+            child: spawn_script(&script),
+            grace: Duration::from_secs(20),
+        };
+        until_ready(&ready).await;
+        let started = Instant::now();
+        drop(running);
+        assert!(termed.exists(), "the child saw SIGTERM");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_child_that_ignores_sigterm_is_killed_after_the_grace_period() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
+        let script = format!(
+            "trap '' TERM; echo x > {}; while :; do sleep 0.05; done",
+            ready.display()
+        );
+        let mut child = spawn_script(&script);
+        until_ready(&ready).await;
+        let started = Instant::now();
+        stop(&mut child, Duration::from_millis(300)).await;
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert!(matches!(child.try_wait(), Ok(Some(_))));
+    }
 
     #[test]
     fn a_domain_matches_itself_and_its_subdomains_only() {
