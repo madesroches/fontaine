@@ -530,6 +530,81 @@ mod launch {
     }
 
     #[tokio::test]
+    async fn a_search_dropped_during_startup_terminates_the_process_group() {
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}", listener.local_addr().unwrap())
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let start = script(
+            dir.path(),
+            "trap.sh",
+            "trap 'echo x > \"$1/termed\"; exit 0' TERM\necho x > \"$1/ready\"\nwhile :; do sleep 0.05; done",
+        );
+        let config = WebsearchConfig::new(BackendConfig::Searxng {
+            base_url: closed.parse().unwrap(),
+            launch: Some(Launch {
+                argv: vec![
+                    start.display().to_string(),
+                    dir.path().display().to_string(),
+                ],
+                startup_timeout: Duration::from_secs(60),
+                env: fontaine_tools::child_env::base_env(&|name| std::env::var_os(name)),
+            }),
+        });
+        let ready = dir.path().join("ready");
+        let cancelled = tokio::time::timeout(Duration::from_millis(1500), async {
+            let _ = run(config, args("x")).await;
+        })
+        .await;
+        assert!(cancelled.is_err(), "the search should still be starting");
+        assert!(ready.exists(), "the fake child never started");
+        assert!(dir.path().join("termed").exists(), "the child saw SIGTERM");
+    }
+
+    #[tokio::test]
+    async fn a_5xx_answer_does_not_count_as_up_until_it_turns_into_a_real_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(502))
+            .up_to_n_times(2)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(2)
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200))
+            .with_priority(3)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample()))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let start = script(dir.path(), "start.sh", "exec sleep 300");
+        let config = launching(&server, &start, dir.path(), Duration::from_secs(20));
+        run(config, args("x")).await.unwrap();
+        let probes = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == "/")
+            .count();
+        assert_eq!(probes, 5, "four 5xx answers were polled past");
+    }
+
+    #[tokio::test]
     async fn a_command_that_cannot_be_spawned_names_it_and_its_cause() {
         let server = serve_searxng(sample()).await;
         let config = WebsearchConfig::new(BackendConfig::Searxng {

@@ -489,14 +489,20 @@ impl Websearch {
             .argv
             .split_first()
             .expect("a launch command is validated as non-empty");
-        let mut child = command(program, args, &launch.env).spawn().map_err(|e| {
+        let child = command(program, args, &launch.env).spawn().map_err(|e| {
             ToolExecutionError::other(format!(
                 "cannot start the SearXNG command `{program}`: {}",
                 chain(&e)
             ))
         })?;
+        // Guarded from the spawn on, so a dropped future or an early return still stops the
+        // process group; `kill_on_drop` alone would only kill a `docker run` CLI, not its container.
+        let mut running = Running {
+            child,
+            grace: STOP_GRACE,
+        };
         let stderr = Arc::new(Mutex::new(String::new()));
-        let drain = child.stderr.take().map(|pipe| {
+        let drain = running.child.stderr.take().map(|pipe| {
             let tail_buffer = stderr.clone();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(pipe).lines();
@@ -514,7 +520,7 @@ impl Websearch {
         });
         let started = Instant::now();
         loop {
-            let exited = child.try_wait().map_err(|e| {
+            let exited = running.child.try_wait().map_err(|e| {
                 ToolExecutionError::other(format!(
                     "cannot check the SearXNG process: {}",
                     chain(&e)
@@ -535,7 +541,7 @@ impl Websearch {
                 break;
             }
             if started.elapsed() >= launch.startup_timeout {
-                stop(&mut child, STOP_GRACE).await;
+                stop(&mut running.child, STOP_GRACE).await;
                 if let Some(drain) = drain {
                     let _ = tokio::time::timeout(Duration::from_millis(500), drain).await;
                 }
@@ -549,21 +555,19 @@ impl Websearch {
             }
             tokio::time::sleep(PROBE_INTERVAL).await;
         }
-        *slot = Some(Running {
-            child,
-            grace: STOP_GRACE,
-        });
+        *slot = Some(running);
         Ok(())
     }
 
-    /// Any HTTP answer counts: the instance is up even if it has no page at its root.
+    /// Any non-5xx answer counts: the instance is up even if it has no page at its root, but a
+    /// proxy's 502/503 while SearXNG is still booting is not.
     async fn probe(&self, base_url: &Url) -> bool {
         self.client
             .get(base_url.clone())
             .timeout(PROBE_TIMEOUT)
             .send()
             .await
-            .is_ok()
+            .is_ok_and(|response| !response.status().is_server_error())
     }
 }
 
