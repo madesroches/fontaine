@@ -117,9 +117,9 @@ a `BUILTINS` entry (`commands.rs:77`) register it in `/help`; the handler lives 
 
 The diff must be computed before the tool runs and must exist for calls that were not prompted:
 
-- In the permission pipeline (`permissions.rs`), the preview is awaited inside `adjudicate`/`check`
-  immediately before returning Allow for `edit`/`write` (one wrapper around the Allow results, not
-  per site), on a blocking task, reusing the preview `ask_human` already built if it exists. It uses
+- In the permission pipeline (`permissions.rs`), the returned `GateDecision::Allow` is post-processed
+  in `check` (~:1728-1740, which wraps `adjudicate`; the single point, not per site) for `edit`/`write`,
+  awaiting the preview on a blocking task, reusing the preview `ask_human` already built if it exists. It uses
   the final Allow args (hooks can rewrite them) and is skipped when `tool_use_id` is `None`. It is
   published to the TUI keyed by `tool_use_id`. `SessionState::publish` (`gate.rs:642`) feeds
   `DecisionFeed { rx: UnboundedReceiver<DecisionRecord> }` (`gate.rs:195`), and the record is
@@ -131,7 +131,9 @@ The diff must be computed before the tool runs and must exist for calls that wer
   interrupt drain at `ui/turn.rs:371`, forwarding `SessionEvent::ToolPreview { id, preview }`.
   `Transcript::on_event` attaches it to the `Entry::Tool` with that id only (`find_tool`,
   `transcript.rs:143`, falls back to the latest Pending by tool name, so it is not used here:
-  subagent previews on the root feed would attach to the wrong card); unknown ids are ignored.
+  subagent previews on the root feed would attach to the wrong card); unknown ids are ignored. A preview that arrives before its `ToolCall` entry is likewise ignored
+  (no diff on the card); tool calls run one at a time (`gate.rs:624-625`), so the single per-agent
+  `current_call` slot is enough.
   Headless (`headless.rs:459`) and `child_runner.rs:378` ignore the new variant, like `Usage`.
   A diff computed from the result text was rejected: the tool result carries no hunks.
 - Display-only, like the approval preview: it feeds no decision, guardian, hook or ledger, and a
@@ -144,7 +146,7 @@ The tool output reaches the screen, and the TUI does not sanitise tool result te
 `linear.rs:318` strips control characters; `redact` is not used in `fontaine-tui`). `preview::sanitize`
 (`preview.rs:160`) is private and single-line (it trims trailing `\n`/`\r` and blanks every control
 character including `\n`), so it cannot be exposed as is. `pub fn display_text` in core applies, per
-line (split on `\n`, `\r` redraws handled as `linear::terminal_text`, `linear.rs:64`, does), tab
+line (split on `\n`; `\r` handled by reimplementing in core the same `\r` semantics as `linear::terminal_text`, which is `pub(crate)` in `fontaine-tui` so core cannot call it), tab
 expansion, control blanking and `redact::text`. It is applied to both `call` and `output` once at
 store time, not at paint time. No regex matching on tool arguments for any decision: this is purely display.
 
@@ -157,11 +159,13 @@ store time, not at paint time. No regex matching on tool arguments for any decis
    and forward it as `ToolPreview` (parallel preview channel as above); drain it in the `ui/turn.rs` interrupt path. Reuse the prompt's preview.
 3. `fontaine-tui/src/diff.rs`: move `diff_rows` from `approval.rs`, adding the row-cap and footer parameters; `approval.rs` calls it. Tests move.
 4. `transcript.rs`: new `Entry::Tool` fields, capped/clipped output, `call` builder, card rendering
-   in `entry_lines`, `ToolPreview` handling, `ordinal` counter, lookup for `/expand`, and the existing `Entry::Tool` constructor in `ui/tests.rs:144`.
+   in `entry_lines`, `ToolPreview` handling, `ordinal` counter, lookup for `/expand`. `entry_lines` (`transcript.rs`) and `linear::label` (`linear.rs`) need arms for the new `Entry` variant.
 5. `commands.rs`: `Command` variant and `BUILTINS` entry for `/expand [n]`; handler in `ui/commands/`, wiring in `ui/mod.rs`.
-6. `linear.rs`: capped output lines for screen-reader mode; `Glyphs`: gutter glyph.
+6. `linear.rs`: capped output lines for screen-reader mode; `theme.rs`: the `Glyphs` gutter glyph.
 7. Docs: `docs/tui.md` (transcript paragraph at line 22;
+   the approval-diff paragraph at ~:176-184, which says the diff appears only in the prompt and not for other tools;
    screen-reader mentions are scattered ~:259, :443, :539, the commands table ~:298),
+   `docs/index.md` (slash command list at :32, add `/expand`),
    `docs/terminal.md` (the `tool:` rows in the table ~:161-162), `CHANGELOG.md`. Record the Decisions
    line below in the master plan's `## Decisions`.
 
@@ -169,10 +173,10 @@ store time, not at paint time. No regex matching on tool arguments for any decis
 
 - `rust/fontaine-core/src/preview.rs`, `permissions.rs`, `gate.rs`, `turn.rs`, `child_runner.rs`
 - `rust/fontaine/src/headless.rs`
-- `rust/fontaine-tui/src/transcript.rs`, `approval.rs`, `linear.rs`, `commands.rs`, `theme.rs`, `app.rs`,
+- `rust/fontaine-tui/src/transcript.rs`, `approval.rs`, `linear.rs`, `commands.rs`, `theme.rs`,
   `ui/mod.rs`, `ui/turn.rs`, `ui/tests.rs`, `ui/commands/`
 - new `rust/fontaine-tui/src/diff.rs`
-- `docs/tui.md`, `docs/terminal.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions)
+- `docs/tui.md`, `docs/index.md`, `docs/terminal.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions)
 - `rust/fontaine-tui/examples/live_area.rs` (print cards for the manual check)
 
 ## Decisions
@@ -181,7 +185,8 @@ store time, not at paint time. No regex matching on tool arguments for any decis
 
 ## Documentation
 
-`docs/tui.md` (transcript description, `/expand` in the commands table, screen-reader behaviour),
+`docs/tui.md` (transcript description, the approval-diff paragraph, `/expand` in the commands table, screen-reader behaviour),
+`docs/index.md` (add `/expand` to the slash command list),
 `CHANGELOG.md`, and the master plan's Decisions.
 
 ## Testing Strategy
