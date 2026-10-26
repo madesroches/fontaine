@@ -272,20 +272,23 @@ mod tests {
     fn nothing_to_show_gives_none() {
         let (dir, scope) = setup();
         put(&dir, "a.txt", b"one\n");
-        put(&dir, "bin.dat", &[0xff, 0xfe, 0x00]);
-        let big = vec![b'a'; PREVIEW_MAX_BYTES as usize + 1];
+        put(&dir, "bin.dat", b"a\xff");
+        let mut big = vec![b'a'; PREVIEW_MAX_BYTES as usize];
+        big.push(b'Z');
         put(&dir, "big.txt", &big);
         let ok = edit("a.txt", &[("one", "1")]);
         assert!(preview("read", &ok, &scope).is_none());
         assert!(preview("edit", &edit("missing.txt", &[("a", "b")]), &scope).is_none());
         assert!(preview("edit", &edit("/etc/hostname", &[("a", "b")]), &scope).is_none());
         assert!(preview("edit", &edit("bin.dat", &[("a", "b")]), &scope).is_none());
-        assert!(preview("edit", &edit("big.txt", &[("a", "b")]), &scope).is_none());
+        assert!(preview("edit", &edit("big.txt", &[("Z", "Y")]), &scope).is_none());
         assert!(preview("edit", &edit("a.txt", &[("absent", "b")]), &scope).is_none());
         assert!(preview("edit", &edit("a.txt", &[("one", "one")]), &scope).is_none());
         assert!(preview("edit", &json!({"path": "a.txt"}), &scope).is_none());
         let outside = json!({"path": "/etc/hostname", "content": "x"});
         assert!(preview("write", &outside, &scope).is_none());
+        let huge = "x".repeat(PREVIEW_MAX_BYTES as usize + 1);
+        assert!(preview("write", &json!({"path": "a.txt", "content": huge}), &scope).is_none());
     }
 
     #[test]

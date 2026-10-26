@@ -77,7 +77,7 @@ The bar shows the permission mode, the model, how many subagents are running, `â
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
 | Ctrl-C, or Ctrl-D on an empty input, when idle | Quit. |
-| PageUp, PageDown | Scroll the command in an open approval prompt. |
+| PageUp, PageDown | Scroll the command or diff in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/U/K/W/B/F | Edit the input. |
 | Ctrl-T | Open or close the [agents panel](#the-agents-panel), even over an approval prompt. |
 | Ctrl-O | Expand or collapse the [task list](#the-task-panel). Ignored while the agents panel is open. |
