@@ -7,9 +7,9 @@
 `an_enforced_stop_drops_the_guardian` failed once in CI on `main` (`left: 0, right: 1` at
 `cascade.rs:134`). The test asserts the guardian endpoint has already received its request when
 `adjudicate` returns, but nothing orders the two: the screen answers instantly, so on a loaded
-runner `adjudicate` can return before the concurrently polled guardian request has reached the mock
-server. This plan makes the assertion wait for the request to arrive, in both tests that share the
-pattern.
+runner `adjudicate` can return before the guardian request has reached the mock server. This plan
+makes the screen server hold its answer until the guardian endpoint has received its request, in
+both tests that share the pattern, so the race cannot happen.
 
 ## Current State
 
@@ -17,55 +17,48 @@ pattern.
 future and `select!`s them. The guardian future is polled first, but its HTTP request still has to
 be built, connected and written before the mock server records it. A screen with zero delay can
 finish first; the enforced `Stop` / `Allow` arm then drops the guardian future, cancelling the
-request. The doc comment on `Composed::dropped_input_tokens` already says the request "has usually
-been sent", not "has been sent".
+request before it is ever sent. The doc comment on `Composed::dropped_input_tokens` already says
+the request "has usually been sent", not "has been sent".
 
 Two tests assert the opposite as a hard fact, with `endpoint.calls().await` read once, immediately
 after `adjudicate` returns:
 
-- `an_enforced_stop_drops_the_guardian` (`tests/cascade.rs:134`), the observed failure.
-- `an_enforced_allow_drops_the_guardian` (`tests/cascade.rs:158`), identical setup (zero-delay
-  screen, 3 s guardian) and the same unguarded assertion.
+- `an_enforced_stop_drops_the_guardian`, the observed failure.
+- `an_enforced_allow_drops_the_guardian`, identical setup (zero-delay screen, 3 s guardian) and
+  the same unguarded assertion.
 
-`Endpoint::calls` (`tests/common/mod.rs:131`) is a point-in-time count of the mock server's
-received requests. The other `calls()` assertions in `tests/guardian.rs` run after the guardian
-call has been awaited to completion, so they are not racy; `guardian.rs:555` asserts `0` for an
-estimate that sends nothing, which is also not a race.
+The other `calls()` assertions in `tests/guardian.rs` run after the guardian call has been awaited
+to completion, so they are not racy.
 
 ## Design
 
-Keep the production code as is (see Decisions); only the tests' assumption changes.
+Keep the production code as is (see Decisions); only the tests' setup changes. Polling the count
+after `adjudicate` returns cannot fix this (see Trade-offs): a guardian future dropped before it
+sent never sends, so the count stays 0. The fix must order the two events before the drop.
 
-Add one helper to `tests/common/mod.rs`:
+In `tests/common/mod.rs`, `Endpoint` exposes `arrivals()`, a clone of the `Arc<AtomicUsize>` that
+its `Scripted` responder bumps for every request it answers.
 
-```rust
-impl Endpoint {
-    /// Waits until at least `n` requests have arrived, for the cases where the request is sent
-    /// by a future that raced something else; returns the count seen when it stops waiting.
-    pub async fn wait_for_calls(&self, n: usize, within: Duration) -> usize
-}
-```
+In `tests/cascade.rs`, `screen_server` and the new `screen_server_after_guardian` share
+`screen_server_with`, which mounts the three screen reads (stop, steering, allow) and takes a
+closure building the responder for each read's score. `screen_server_after_guardian` takes the
+guardian endpoint's `arrivals()`; each screen responder waits (bounded at 1 s, so a guardian that is
+never asked cannot hang the test) until it is non-zero, then answers with no delay. Blocking the
+responder is fine: the mock server runs on its own thread.
 
-It polls `calls()` every few milliseconds until the count reaches `n` or `within` elapses, and
-returns the last count so the caller's `assert_eq!` still prints a useful `left`/`right` on a
-real failure. It does not sleep a fixed time first, so the common case stays instant.
-
-Both tests replace `assert_eq!(endpoint.calls().await, 1)` with
-`assert_eq!(endpoint.wait_for_calls(1, Duration::from_secs(1)).await, 1)`.
-
-The deadline sits well under the 3 s guardian delay, and the request is recorded on arrival, not on
-response, so a mock that is still sleeping does not delay the count. The wait runs after the
-`started.elapsed() < 2s` check, so it cannot mask a regression where the guardian is awaited.
-
-`assert_eq!(.., 1)` stays an equality, not `>= 1`: a retry or a second request would be a real
-behavior change the test should keep catching (the guardian's retries only follow a failed
-response, and this reply is a slow success).
+The two tests use it, so the enforced decision always finds the guardian request already sent
+and drops a request in flight, which is the case the test means to pin. The count assertion goes
+back to `assert_eq!(endpoint.calls().await, 1)`, with a comment saying why it is exact: wiremock
+records a request before running its responder, so once the screen gate opens the request is
+already counted. It stays an equality, not `>= 1`: a retry or a second request would be a real
+behavior change the test should keep catching.
 
 ## Implementation Steps
 
-1. `fontaine-guardian/tests/common/mod.rs`: add `Endpoint::wait_for_calls`.
-2. `fontaine-guardian/tests/cascade.rs`: use it at lines 134 and 158; update the comment at 133 to
-   say the request is awaited because it races the screen.
+1. `tests/common/mod.rs`: add `Endpoint::arrivals`.
+2. `tests/cascade.rs`: factor `screen_server_with` out of `screen_server`; add
+   `screen_server_after_guardian`; use it in both tests and restore the plain `calls()` assertion
+   with the why-comment.
 3. Run `cargo test -p fontaine-guardian --test cascade` repeatedly, and under CPU load (see
    Testing Strategy), to confirm.
 
@@ -76,9 +69,11 @@ response, and this reply is a slow success).
 
 ## Trade-offs
 
-- **Nonzero screen delay (e.g. 50 ms)** instead of polling: smaller diff, but it only shifts the
-  race; a loaded runner can still stall the guardian task past any fixed delay, and it slows the
-  tests.
+- **Poll for the count after `adjudicate` returns** (a `wait_for_calls` helper): the first design,
+  rejected. When the enforced arm drops the guardian future before it sends, the request never
+  arrives, so the count stays 0 however long the test waits. Stress runs still failed with it.
+- **Nonzero screen delay (e.g. 50 ms)**: smaller diff, but it only shifts the race; a loaded
+  runner can still stall the guardian task past any fixed delay, and it slows the tests.
 - **Drop the call-count assertion**: removes the check that the guardian was in fact asked in
   parallel with the screen (the point of the cascade's overlap), so the cascade's "billed but
   dropped" behavior would go unpinned.
@@ -89,6 +84,9 @@ response, and this reply is a slow success).
 
 - 2026-10-26: `dropped_input_tokens` and its doc ("usually been sent") stay unchanged; only the
   tests' stronger assumption is corrected.
+- 2026-10-26: the polling-only design was replaced by gating the screen on the guardian's arrival
+  because stress runs showed polling still failed (polling-only: 1 failure in 150 runs, twice;
+  before any change: 2 in 150; gated: 0 in 400).
 
 ## Testing Strategy
 
@@ -98,9 +96,8 @@ The change is to test code, so verification is running it:
 - Stress for the race: run the two tests many times with the CPU saturated, e.g.
   `cargo nextest run -p fontaine-guardian --test cascade -E 'test(/drops_the_guardian/)' --stress-count 200`
   (or a shell loop of `cargo test` if nextest's stress mode is unavailable) while a parallel
-  `yes > /dev/null` per core runs. Before the change this should reproduce the `0 != 1` failure at
-  some rate; after it, none. If the failure does not reproduce before the change, say so in the PR
-  rather than claim a verified fix.
+  `yes > /dev/null` per core runs. Before the change this reproduced the `0 != 1` failure at
+  some rate; with the gate, none.
 - `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`.
 
 ## Documentation

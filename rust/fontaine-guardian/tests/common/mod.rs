@@ -140,19 +140,6 @@ impl Endpoint {
         self.requests().await.len()
     }
 
-    /// Waits until at least `n` requests have arrived, for the cases where the request is sent
-    /// by a future that raced something else; returns the count seen when it stops waiting.
-    pub async fn wait_for_calls(&self, n: usize, within: Duration) -> usize {
-        let deadline = tokio::time::Instant::now() + within;
-        loop {
-            let seen = self.calls().await;
-            if seen >= n || tokio::time::Instant::now() >= deadline {
-                return seen;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    }
-
     pub fn guardian(&self, settings: Settings) -> Guardian {
         guardian_at(&self.url(), "mock/scripted", settings)
     }

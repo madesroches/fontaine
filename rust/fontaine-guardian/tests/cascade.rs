@@ -166,8 +166,9 @@ async fn an_enforced_stop_drops_the_guardian() {
         Some(guardian.dropped_estimate(&request("ls", false)))
     );
     assert!(composed.dropped_input_tokens.is_some_and(|n| n > 0));
-    // The screen waited for the request, but the count is read from the recorded requests.
-    assert_eq!(endpoint.wait_for_calls(1, Duration::from_secs(1)).await, 1);
+    // The screen answered only after the guardian's responder ran, and the server records a request
+    // before running its responder, so the request is already counted.
+    assert_eq!(endpoint.calls().await, 1);
 }
 
 #[tokio::test]
@@ -191,7 +192,7 @@ async fn an_enforced_allow_drops_the_guardian() {
     );
     assert!(matches!(composed.decided, Decided::ScreenAllow(_)));
     assert!(composed.dropped_input_tokens.is_some_and(|n| n > 0));
-    assert_eq!(endpoint.wait_for_calls(1, Duration::from_secs(1)).await, 1);
+    assert_eq!(endpoint.calls().await, 1);
 }
 
 #[tokio::test]
