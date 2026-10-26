@@ -1,4 +1,4 @@
-//! The system prompt, assembled in layers: the base, `FONTAINE.md` instructions, the skill
+//! The system prompt, assembled in layers: the base, the instruction files, the skill
 //! index, the scheduling note, the output style, then `--append-system-prompt`. `--system-prompt` replaces the base
 //! layer only.
 
@@ -14,26 +14,26 @@ user asked for. When a harness note says an iteration of a self-paced `/loop` is
 by calling `schedule_wakeup` with the delay you want before the next one (or `stop: true` when the \
 work is done); without a call the loop retries once after 20 minutes and then ends.";
 
-pub const INSTRUCTIONS_FILE: &str = "FONTAINE.md";
+pub use crate::instructions::InstructionFile;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InstructionFile {
-    pub path: PathBuf,
-    pub text: String,
+/// The hidden prompt `/init` sends. `existing` says whether `target` is already there, in which
+/// case the agent improves it instead of replacing it.
+pub fn init_prompt(target: &Path, existing: bool) -> String {
+    let task = if existing {
+        format!(
+            "Improve the project instruction file at {}. It already exists: keep what is accurate and useful, fix what is wrong or out of date, and add what is missing. Never overwrite it wholesale.",
+            target.display()
+        )
+    } else {
+        format!(
+            "Create the project instruction file at {}. It does not exist yet.",
+            target.display()
+        )
+    };
+    INIT_PROMPT.replace("{{task}}", &task)
 }
 
-/// The instruction files that apply: the user-level one, then the primary root's. Absent and
-/// unreadable files are skipped; there is no parent-directory walk and no imports.
-pub fn load_instructions(config_dir: &Path, primary_root: &Path) -> Vec<InstructionFile> {
-    [config_dir, primary_root]
-        .iter()
-        .filter_map(|dir| {
-            let path = dir.join(INSTRUCTIONS_FILE);
-            let text = std::fs::read_to_string(&path).ok()?;
-            (!text.trim().is_empty()).then_some(InstructionFile { path, text })
-        })
-        .collect()
-}
+const INIT_PROMPT: &str = include_str!("../prompts/init.md");
 
 pub struct PromptParts<'a> {
     pub roots: &'a [PathBuf],

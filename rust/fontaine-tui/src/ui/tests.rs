@@ -44,6 +44,8 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         env: Arc::new(|_| None),
         mcp_status: Vec::new(),
         clipboard: Box::new(|_| Ok(())),
+        suspend: crate::no_suspend(),
+        launcher: crate::ui::Launcher::Sh,
     }
 }
 

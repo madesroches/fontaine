@@ -52,7 +52,7 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
      A target that cannot be resolved (a variable, a glob, a tilde, a brace pattern), a command that does not parse, and an `rm` inside a command that is
      not one simple command all count as critical.
    - **protected path**: `write` and `edit` on a path with a component named `.git`, `.vscode`,
-     `.idea`, `.husky` or `.fontaine`, or whose file name is `.gitconfig`, `.gitmodules`,
+     `.idea`, `.husky`, `.fontaine` or `.claude`, or whose file name is `.gitconfig`, `.gitmodules`,
      `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc` or `.mcp.json`,
      in any workspace root or the home directory, asks; so does any path under Fontaine's own
      config or data directory. Matching is on resolved path components, so separators and, on
@@ -152,6 +152,9 @@ Deny and ask rules fail toward matching; allow rules fail toward not matching:
 - Path deny and ask rules match the path as written and the resolved path, so a symlink into a
   denied path is denied. Path allow rules match only the resolved path, so an allow on a symlinked
   alias does not apply.
+- A `read` deny rule also keeps a file out of the [instruction files](instructions.md#what-is-refused)
+  the system prompt is built from, so a rule that stops the agent reading `secrets/**` stops
+  `CLAUDE.md` from importing it too.
 - A `webfetch` never follows a redirect to another host: the redirect is returned to the model and
   a follow-up fetch is judged on its own host.
 

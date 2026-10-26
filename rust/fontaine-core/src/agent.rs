@@ -32,6 +32,7 @@ use crate::config::{Config, PermissionMode};
 use crate::context::{self, ContextError, ContextUsage};
 use crate::extensions::Extensions;
 use crate::gate::SessionState;
+use crate::instructions::{self, InstructionStage, Loaded, MemoryEntry};
 use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
 use crate::models::{AccountListing, Models, SharedSwitcher, Switcher};
 use crate::notice::Notice;
@@ -125,6 +126,8 @@ pub struct AgentSetup {
 pub struct AgentRuntime {
     pub agent: Agent,
     prompt_pieces: prompt::PromptPieces,
+    launch_instructions: Loaded,
+    instruction_stage: Arc<InstructionStage>,
     pub state: Arc<SessionState>,
     pub session: Session,
     pub models: Models,
@@ -167,6 +170,7 @@ pub(crate) struct Setup {
     /// The global `[network]` settings, loaded once; accounts resolve theirs on demand.
     network: Arc<fontaine_tools::tls::LoadedNetwork>,
     config_dir: PathBuf,
+    home: Option<PathBuf>,
     data_dir: PathBuf,
     pub(crate) scrub_env: Vec<OsString>,
     pub(crate) git_bash: Option<GitBash>,
@@ -187,16 +191,13 @@ impl AgentRuntime {
         let tree = Arc::new(AgentTree::new(setup::agent_limits(&setup.config)));
         let state = setup::session_state(&setup, &tree);
         setup::attach_screen(&state, &setup);
-        let (pipeline, post_hooks) = setup::permission_pipeline(&setup, &state);
-        let retained = setup::retained(&setup)?;
-        let (results, llm_scanner) = setup::result_pipeline(
-            setup.scanner.backend,
-            &setup.config,
-            &tree,
-            &state,
-            post_hooks,
-        );
-
+        let setup::Gates {
+            pipeline,
+            retained,
+            instruction_stage,
+            results,
+            llm_scanner,
+        } = setup::gates(&mut setup, &tree, &state)?;
         let (extensions, agent_types, skills) = setup::extension_runtimes(
             setup.extensions,
             &setup.config,
@@ -214,7 +215,7 @@ impl AgentRuntime {
         let seen = Seen::default();
         let steering = Steering::default();
         let scope = state.scope();
-        let (agent, prompt_pieces) = build_agent(&Parts {
+        let (agent, prompt_pieces, launch_instructions) = build_agent(&Parts {
             setup: &retained,
             roots: scope.roots(),
             pipeline: &pipeline,
@@ -231,10 +232,13 @@ impl AgentRuntime {
             runner: &runner,
             output_style: None,
             steering: &steering,
+            instructions: &instruction_stage,
         })?;
         Ok(AgentRuntime {
             agent,
             prompt_pieces,
+            launch_instructions,
+            instruction_stage,
             state,
             session: setup.session,
             models: setup.models,
@@ -269,7 +273,7 @@ impl AgentRuntime {
     /// session store, so a new agent continues it.
     fn rebuild(&mut self) -> Result<(), RuntimeError> {
         let scope = self.state.scope();
-        let (agent, prompt_pieces) = build_agent(&Parts {
+        let (agent, prompt_pieces, launch_instructions) = build_agent(&Parts {
             setup: &self.setup,
             roots: scope.roots(),
             pipeline: &self.pipeline,
@@ -286,9 +290,11 @@ impl AgentRuntime {
             runner: &self.runner,
             output_style: self.output_style_text(),
             steering: &self.steering,
+            instructions: &self.instruction_stage,
         })?;
         self.agent = agent;
         self.prompt_pieces = prompt_pieces;
+        self.launch_instructions = launch_instructions;
         Ok(())
     }
 
@@ -296,6 +302,17 @@ impl AgentRuntime {
         let name = self.output_style.as_deref()?;
         let style = self.extensions.output_style(name)?;
         Some((style.name.clone(), style.body.clone()))
+    }
+
+    /// What `/memory` lists: the instruction files in the prompt, the ones read on demand, and
+    /// the `FONTAINE.md` files that can be created.
+    pub fn memory_entries(&self) -> Vec<MemoryEntry> {
+        instructions::memory_entries(
+            &self.launch_instructions,
+            &self.instruction_stage.loaded_on_demand(),
+            &self.setup.config_dir,
+            &self.primary_root(),
+        )
     }
 
     /// The names of the tools the agent has now, MCP tools included.

@@ -1700,3 +1700,77 @@ async fn config_reads_one_plain_line_per_key_in_screen_reader_mode() {
         "box drawing in {out:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn memory_lists_the_instruction_files_and_opens_one_after_creating_it() {
+    let mut w = World::new(vec![]);
+    w.env.push(("EDITOR".to_string(), "true".to_string()));
+    std::fs::write(w.work.join("CLAUDE.md"), "project rules\n").unwrap();
+    let project = w.work.join("FONTAINE.md");
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/memory");
+        ui.wait_for("instruction files").await;
+        let screen = ui.screen();
+        assert!(screen.contains("CLAUDE.md — project"), "{screen}");
+        assert!(screen.contains("FONTAINE.md — not created"), "{screen}");
+        ui.send("/memory 9");
+        ui.wait_for("there is no instruction file number 9").await;
+        ui.send("/memory x");
+        ui.wait_for("/memory takes a number").await;
+        ui.send("/memory 3");
+        ui.wait_for("edits apply at the next").await;
+    })
+    .await;
+    assert!(project.is_file());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn init_sends_a_hidden_prompt_naming_the_target_and_records_the_intent() {
+    let w = World::new(vec![text_turn("written")]);
+    let target = w.work.join("FONTAINE.md");
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/init");
+        ui.wait_for("written").await;
+        idle(&ui).await;
+    })
+    .await;
+    let requests = w.requests().join("\n");
+    assert!(
+        requests.contains(&format!(
+            "Create the project instruction file at {}",
+            target.display()
+        )),
+        "{requests}"
+    );
+    assert!(
+        w.ledger_text()
+            .contains(&format!("/init: create or improve {}", target.display())),
+        "{}",
+        w.ledger_text()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn init_improves_an_existing_instruction_file_instead_of_creating_one() {
+    let w = World::new(vec![text_turn("improved")]);
+    std::fs::write(w.work.join("AGENTS.md"), "existing\n").unwrap();
+    let target = w.work.join("AGENTS.md");
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/init");
+        ui.wait_for("improved").await;
+        idle(&ui).await;
+    })
+    .await;
+    let requests = w.requests().join("\n");
+    assert!(
+        requests.contains(&format!(
+            "Improve the project instruction file at {}",
+            target.display()
+        )),
+        "{requests}"
+    );
+    assert!(!w.work.join("FONTAINE.md").exists());
+}

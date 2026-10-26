@@ -11,7 +11,8 @@ use fontaine_tools::scope::{Scope, fold, translate};
 use serde_json::Value;
 
 /// Directories whose contents `edit` and `write` never touch without a prompt.
-pub const PROTECTED_DIRS: [&str; 5] = [".git", ".vscode", ".idea", ".husky", ".fontaine"];
+pub const PROTECTED_DIRS: [&str; 6] =
+    [".git", ".vscode", ".idea", ".husky", ".fontaine", ".claude"];
 
 /// Files `edit` and `write` never touch without a prompt, wherever they sit.
 pub const PROTECTED_FILES: [&str; 9] = [
@@ -395,6 +396,9 @@ mod tests {
             ".git/config",
             "sub/.git/hooks/pre-commit",
             ".fontaine/settings.toml",
+            ".claude/settings.json",
+            ".claude/rules/x.md",
+            ".claude/CLAUDE.md",
             ".vscode/x.json",
             ".bashrc",
             "a/b/.zshrc",
@@ -403,7 +407,15 @@ mod tests {
         ] {
             assert!(hit(path), "{path}");
         }
-        for path in ["src/main.rs", "gitconfig", ".github/ci.yml", "x/.gitignore"] {
+        for path in [
+            "src/main.rs",
+            "gitconfig",
+            ".github/ci.yml",
+            "x/.gitignore",
+            "CLAUDE.md",
+            "AGENTS.md",
+            "FONTAINE.md",
+        ] {
             assert!(!hit(path), "{path}");
         }
     }

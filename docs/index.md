@@ -22,11 +22,15 @@ describe what the current build does; each page covers one topic.
   JSON input and output, and what a hook can and cannot decide.
 - [MCP servers](mcp.md): declaring stdio and streamable-HTTP servers, workspace trust and
   per-server approval, and how MCP tools are gated.
+- [Instruction files](instructions.md): `FONTAINE.md`, `CLAUDE.md` and `AGENTS.md` from your
+  config, every parent directory and nested directories, `@path` imports, rules scoped by path,
+  what the guardian reads, `/memory` and `/init`.
 - [Skills, agent files and output styles](extensions.md): the extension files, their
   frontmatter, slash commands and porting from `.claude/`.
 - [The terminal UI](tui.md): keys, the status bar, approval prompts, the guardian's denials,
   `/denied`, `/login`, `/model`, `/guardian-model`, `/add-dir`, `/output-style`, `/help`,
-  `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plan`, `/copy`, `/clear`, `/compact`,
+  `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plan`, `/copy`, `/memory`, `/init`,
+  `/clear`, `/compact`,
   `/context`, `/config`, `/theme`, `/loop` and scheduled prompts, the agents panel and the workspace trust
   prompt.
 - [Terminal setup](terminal.md): newline keys for each terminal, tmux, Option as Meta on macOS,

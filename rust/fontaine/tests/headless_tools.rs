@@ -255,6 +255,74 @@ async fn the_system_prompt_names_the_roots_and_carries_the_instruction_files() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_hierarchy_files_an_import_and_a_rule_reach_the_system_prompt() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("ok")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let above = s.work.parent().unwrap();
+    common::write(&above.join("CLAUDE.md"), "ANCESTOR-MARKER\n");
+    s.add_file("CLAUDE.md", "ROOT-MARKER\n@docs/imported.md\n");
+    s.add_file("docs/imported.md", "IMPORTED-MARKER\n");
+    s.add_file(
+        ".claude/rules/always.md",
+        "---\ndescription: x\n---\nRULE-MARKER\n",
+    );
+    s.add_file(
+        ".claude/rules/scoped.md",
+        "---\npaths: [\"never/**\"]\n---\nSCOPED-MARKER\n",
+    );
+    let out = s.headless(&["hi"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let request = endpoint.requests().await[0].to_string();
+    for needle in [
+        "ANCESTOR-MARKER",
+        "ROOT-MARKER",
+        "IMPORTED-MARKER",
+        "RULE-MARKER",
+    ] {
+        assert!(request.contains(needle), "the request lacks `{needle}`");
+    }
+    assert!(
+        !request.contains("SCOPED-MARKER"),
+        "a path-scoped rule is not in the launch prompt"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agents_md_is_read_when_the_repository_has_no_claude_or_fontaine_file() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("ok")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    s.add_file("AGENTS.md", "AGENTS-MARKER\n");
+    let out = s.headless(&["hi"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let request = endpoint.requests().await[0].to_string();
+    assert!(request.contains("AGENTS-MARKER"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_brings_the_nested_instruction_file_into_the_tool_result() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool("c1", "read", json!({"path": "sub/f.txt"})),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    s.add_file("CLAUDE.md", "ROOT-MARKER\n");
+    s.add_file("sub/CLAUDE.md", "NESTED-MARKER\n");
+    s.add_file("sub/f.txt", "file body\n");
+    let out = s.headless(&["read it"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let requests = endpoint.requests().await;
+    assert_eq!(requests.len(), 2);
+    assert!(!requests[0].to_string().contains("NESTED-MARKER"));
+    let second = requests[1].to_string();
+    assert!(second.contains("file body"), "{second}");
+    assert!(second.contains("NESTED-MARKER"), "{second}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_conversation_continues_across_turns_through_the_session_store() {
     let endpoint = Endpoint::start(
         Wire::Chat,

@@ -145,6 +145,40 @@ impl Approver for ChannelApprover {
 
 type ClipboardSink = Box<dyn FnMut(&str) -> std::io::Result<()>>;
 
+/// Hands the terminal to a child process for the duration of the closure: the interface steps
+/// aside, the child owns the terminal, and the interface is redrawn afterwards.
+pub type Suspend = Box<dyn FnMut(&mut dyn FnMut())>;
+
+/// A [`Suspend`] for a surface with no terminal to hand over: it just runs the closure.
+pub fn no_suspend() -> Suspend {
+    Box::new(|work| work())
+}
+
+/// Lets the terminal reader step aside, so a child process that owns the terminal gets every
+/// key.
+#[derive(Default)]
+pub(crate) struct ReaderPause {
+    requested: AtomicBool,
+    parked: AtomicBool,
+}
+
+impl ReaderPause {
+    /// Asks the reader to stop reading and waits until it has.
+    fn pause(&self) {
+        self.requested.store(true, Ordering::SeqCst);
+        for _ in 0..100 {
+            if self.parked.load(Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn resume(&self) {
+        self.requested.store(false, Ordering::SeqCst);
+    }
+}
+
 struct Ui<R> {
     app: App,
     input: UnboundedReceiver<Input>,
@@ -168,6 +202,9 @@ struct Ui<R> {
     mcp_status: Vec<(String, McpState)>,
     /// Where `/copy` sends text; the write's result comes back to the command.
     clipboard: ClipboardSink,
+    /// Runs the editor `/memory` opens with the terminal handed over.
+    suspend: Suspend,
+    launcher: ui::Launcher,
 }
 
 /// Runs the interface until the user quits or `input` closes. `render` is called with the
@@ -181,6 +218,7 @@ pub async fn drive(
     input: UnboundedReceiver<Input>,
     render: impl FnMut(&mut App),
     clipboard: impl FnMut(&str) -> std::io::Result<()> + 'static,
+    suspend: Suspend,
 ) -> Result<(), String> {
     let (tx, prompts) = unbounded_channel();
     setup.approver = Arc::new(ChannelApprover { tx });
@@ -196,6 +234,7 @@ pub async fn drive(
     let user_config = setup.user_config.clone();
     let env = setup.env.clone();
     let env_lookup = env.clone();
+    let launcher = ui::Launcher::for_platform(setup.git_bash.clone());
     let mut runtime =
         AgentRuntime::new(setup).map_err(|e| fontaine_tools::error_chain::chain(&e))?;
     runtime.record_session_start().await;
@@ -215,6 +254,8 @@ pub async fn drive(
         env,
         mcp_status: Vec::new(),
         clipboard: Box::new(clipboard),
+        suspend,
+        launcher,
     };
     ui.app.theme = theme;
     ui.app.transcript.glyphs = theme::Glyphs::from_env(
@@ -311,8 +352,14 @@ impl Drop for TerminalGuard {
     }
 }
 
-pub(crate) fn read_terminal(tx: &UnboundedSender<Input>, stop: &AtomicBool) {
+pub(crate) fn read_terminal(tx: &UnboundedSender<Input>, stop: &AtomicBool, pause: &ReaderPause) {
     while !stop.load(Ordering::Relaxed) && !tx.is_closed() {
+        if pause.requested.load(Ordering::SeqCst) {
+            pause.parked.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(20));
+            continue;
+        }
+        pause.parked.store(false, Ordering::SeqCst);
         match event::poll(Duration::from_millis(100)) {
             Ok(true) => {}
             Ok(false) => continue,
@@ -374,9 +421,42 @@ pub async fn run(
 
     let (tx, rx) = unbounded_channel();
     let stop = Arc::new(AtomicBool::new(false));
+    let pause = Arc::new(ReaderPause::default());
     let reader = {
-        let stop = stop.clone();
-        tokio::task::spawn_blocking(move || read_terminal(&tx, &stop))
+        let (stop, pause) = (stop.clone(), pause.clone());
+        tokio::task::spawn_blocking(move || read_terminal(&tx, &stop, &pause))
+    };
+    let suspend: Suspend = {
+        let screen = screen.clone();
+        let pause = pause.clone();
+        Box::new(move |work| {
+            pause.pause();
+            match &screen {
+                Some(screen) => {
+                    if let Ok(mut screen) = screen.lock() {
+                        let _ = screen.clear_live();
+                    }
+                }
+                None => {
+                    use std::io::Write;
+                    let mut out = std::io::stdout();
+                    let _ = out.write_all(b"\r\n");
+                    let _ = out.flush();
+                }
+            }
+            restore_terminal();
+            work();
+            // The editor may have left the terminal anywhere; a failure here shows as the next
+            // frame failing, which ends the session like any lost terminal.
+            let _ = enable_raw_mode();
+            let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
+            if let Some(screen) = &screen
+                && let Ok(mut screen) = screen.lock()
+            {
+                let _ = screen.resume();
+            }
+            pause.resume();
+        })
     };
     // A failed write means stdout is gone: ending the reader closes the input and the session
     // ends the way it does when the terminal closes.
@@ -412,6 +492,7 @@ pub async fn run(
             }
         },
         clipboard::copy,
+        suspend,
     )
     .await;
     stop.store(true, Ordering::Relaxed);

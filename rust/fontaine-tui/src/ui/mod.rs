@@ -1,4 +1,5 @@
 mod commands;
+pub(crate) use commands::Launcher;
 mod mcp;
 mod providers;
 mod schedule;
@@ -314,6 +315,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
             }
             Some(Command::Copy(argument)) => self.copy(&argument),
+            Some(Command::Memory(argument)) => self.memory(runtime, &argument),
+            Some(Command::Init(argument)) => return self.init(runtime, &argument).await,
             Some(Command::Clear(name)) => self.clear(runtime, &name).await,
             Some(Command::Compact(focus)) => return self.compact(runtime, focus).await,
             Some(Command::Context(argument)) => self.context(runtime, &argument).await,

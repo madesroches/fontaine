@@ -8,6 +8,7 @@ use fontaine_core::config::{Hook, PermissionMode};
 use fontaine_core::context::ContextUsage;
 use fontaine_core::extensions::{Scope, Skill};
 use fontaine_core::gate::Rules;
+use fontaine_core::instructions::{MemoryEntry, MemoryKind};
 use fontaine_core::permission_rules::SourcedRule;
 
 use crate::commands::{BUILTINS, MenuEntry, is_builtin};
@@ -240,6 +241,21 @@ pub fn skills(skills: &[Skill]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// `/memory`: the instruction files, numbered for `/memory <n>`.
+pub fn memory(entries: &[MemoryEntry]) -> String {
+    let mut out = String::from("instruction files (`/memory <n>` opens one in your editor):");
+    for (at, entry) in entries.iter().enumerate() {
+        let what = match &entry.kind {
+            MemoryKind::Launch(origin) => origin.label(),
+            MemoryKind::OnDemand => "loaded on demand".to_string(),
+            MemoryKind::NotCreated => "not created".to_string(),
+            MemoryKind::Present => "empty or a repeat".to_string(),
+        };
+        let _ = write!(out, "\n  {}. {} — {what}", at + 1, entry.path.display());
+    }
+    out
 }
 
 /// A token count as the reports show it: `842`, `35.7k`.
@@ -569,6 +585,45 @@ mod tests {
         assert!(
             !untrusted.contains("check.sh [user] timeout 5s not loaded"),
             "{untrusted}"
+        );
+    }
+
+    #[test]
+    fn memory_lists_numbered_entries_with_their_origin_and_what_is_not_created() {
+        use fontaine_core::instructions::Origin;
+        let entries = vec![
+            MemoryEntry {
+                path: "/repo/CLAUDE.md".into(),
+                kind: MemoryKind::Launch(Origin::Walk),
+            },
+            MemoryEntry {
+                path: "/repo/docs/a.md".into(),
+                kind: MemoryKind::Launch(Origin::Import {
+                    from: "/repo/CLAUDE.md".into(),
+                }),
+            },
+            MemoryEntry {
+                path: "/repo/sub/CLAUDE.md".into(),
+                kind: MemoryKind::OnDemand,
+            },
+            MemoryEntry {
+                path: "/repo/FONTAINE.md".into(),
+                kind: MemoryKind::NotCreated,
+            },
+        ];
+        let text = memory(&entries);
+        assert!(text.contains("\n  1. /repo/CLAUDE.md — project"), "{text}");
+        assert!(
+            text.contains("\n  2. /repo/docs/a.md — imported by /repo/CLAUDE.md"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n  3. /repo/sub/CLAUDE.md — loaded on demand"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n  4. /repo/FONTAINE.md — not created"),
+            "{text}"
         );
     }
 
