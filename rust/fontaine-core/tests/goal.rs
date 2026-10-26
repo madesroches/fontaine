@@ -419,6 +419,29 @@ fn eight_idle_verdicts_in_a_row_pause_and_a_tool_call_resets_the_count() {
 }
 
 #[test]
+fn a_tool_call_in_an_earlier_turn_of_the_stretch_still_counts_as_progress() {
+    let f = Fixture::new();
+    let goal = f.goal();
+    goal.set("done", Spend::default()).unwrap();
+    for _ in 0..7 {
+        goal.after_turn(Some(&answer()));
+        assert!(goal.next_step(false).is_some());
+        not_met(&goal, &CAPS, Spend::default(), true);
+    }
+    for _ in 0..3 {
+        f.root_call();
+        goal.after_turn(Some(&answer()));
+        // A news turn with no call of its own runs before the evaluation.
+        goal.after_turn(Some(&answer()));
+        assert!(goal.next_step(false).is_some());
+        assert!(matches!(
+            not_met(&goal, &CAPS, Spend::default(), true).step,
+            Step::Continue(_)
+        ));
+    }
+}
+
+#[test]
 fn only_the_root_agents_calls_count_as_progress() {
     let f = Fixture::new();
     let goal = f.goal();

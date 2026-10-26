@@ -541,7 +541,7 @@ impl SessionGoal {
         let calls = self.root_actions();
         let mut state = lock(&self.state, "goal");
         let goal = state.active.as_mut()?;
-        goal.made_call = calls > goal.calls_seen;
+        goal.made_call |= calls > goal.calls_seen;
         goal.calls_seen = calls;
         if goal.paused.is_some() {
             return None;
@@ -568,6 +568,7 @@ impl SessionGoal {
         if let Some(goal) = lock(&self.state, "goal").active.as_mut() {
             goal.paused = None;
             goal.pending = false;
+            goal.made_call = false;
             goal.stretch = Stretch {
                 turns: 0,
                 idle_verdicts: 0,
@@ -659,6 +660,7 @@ fn not_met(
     } else {
         stretch.idle_verdicts + 1
     };
+    goal.made_call = false;
     let spent = spend_since(&spend_now, &stretch.spend_base);
     let over_cost = priced
         && caps.max_cost_usd.is_some_and(|cap| {

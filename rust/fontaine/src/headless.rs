@@ -664,6 +664,7 @@ async fn guarded_turn(
     prompt: String,
 ) -> Outcome {
     if let Some(stop) = stop_before_call(runtime, options, totals).await {
+        runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
         return stop;
     }
     let outcome = run_one(runtime, options, prompt, totals, stream_events).await;
@@ -688,7 +689,11 @@ async fn settle(
                 runtime.goal_turn_ended(Some(&goal::turn_end(&next)));
                 outcome = merge(outcome, next);
             }
-            News::OverBudget => outcome = budget_stop(),
+            News::OverBudget => {
+                let stop = budget_stop();
+                runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
+                outcome = merge(outcome, stop);
+            }
             News::Done => break,
         }
     }
@@ -737,9 +742,14 @@ async fn handle_message(
         }
         Some(GoalArg::Set(condition)) => {
             if let Err(e) = runtime.set_goal(&condition) {
-                let mut outcome = budget_stop();
-                outcome.subtype = Subtype::Execution;
-                outcome.error = Some(fontaine_tools::error_chain::chain(&e));
+                let outcome = Outcome {
+                    subtype: Subtype::Execution,
+                    text: String::new(),
+                    structured: None,
+                    error: Some(fontaine_tools::error_chain::chain(&e)),
+                    started: std::time::Instant::now(),
+                    denials: Vec::new(),
+                };
                 return Handled {
                     outcome,
                     goal: None,
@@ -760,7 +770,8 @@ async fn handle_message(
             break;
         };
         if let Some(stop) = stop_before_call(runtime, options, totals).await {
-            outcome = stop;
+            runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
+            outcome = merge(outcome, stop);
             break;
         }
         let Some(applied) = runtime.evaluate_goal(&pending).await else {
