@@ -401,7 +401,8 @@ where
             return;
         };
         // A model call made while a guardian adjudication is open is the guardian's own, one
-        // under a scan is the scanner's, one under a goal evaluation is the goal's, and one under a subagent's span is that subagent's.
+        // under a scan is the scanner's, one under a goal evaluation is the goal's, and one
+        // under a subagent's span is that subagent's.
         let query_source = if span
             .scope()
             .skip(1)

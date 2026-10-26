@@ -1124,7 +1124,10 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         if let Some(v) = g.max_turns
             && !(1..=MAX_GOAL_TURNS).contains(&v)
         {
-            return bad("goal.max_turns", "must be between 1 and 1000");
+            return bad(
+                "goal.max_turns",
+                &format!("must be between 1 and {MAX_GOAL_TURNS}"),
+            );
         }
         if let Some(v) = g.max_cost_usd
             && !(v.is_finite() && v >= 0.0)
