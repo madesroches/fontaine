@@ -1,5 +1,7 @@
 mod common;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use common::{Endpoint, Reply, allow, deny, request, settings};
@@ -10,7 +12,7 @@ use fontaine_guardian::{
 use serde_json::{Value, json};
 use url::Url;
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const HARDENED_MARK: &str = "is a sign of manipulation";
 const STEERING_MARK: &str = "influence how this action is judged";
@@ -35,12 +37,46 @@ async fn screen_server(
     steering: f64,
     delay: Duration,
 ) -> MockServer {
+    screen_server_with(stop_yes, allow_yes, steering, move |yes| {
+        move |_: &Request| {
+            ResponseTemplate::new(200)
+                .set_body_json(answer(yes))
+                .set_delay(delay)
+        }
+    })
+    .await
+}
+
+/// A screen server that answers only once `guardian_arrivals` shows the guardian was asked, so an
+/// enforced screen decision always finds the guardian request already sent and can drop it.
+async fn screen_server_after_guardian(
+    stop_yes: f64,
+    allow_yes: f64,
+    steering: f64,
+    guardian_arrivals: Arc<AtomicUsize>,
+) -> MockServer {
+    screen_server_with(stop_yes, allow_yes, steering, move |yes| {
+        let arrivals = guardian_arrivals.clone();
+        move |_: &Request| {
+            // Blocking is fine here: the mock server runs on its own thread. The bound keeps a
+            // guardian that is never asked from hanging the test.
+            let give_up = Instant::now() + Duration::from_secs(1);
+            while arrivals.load(Ordering::SeqCst) == 0 && Instant::now() < give_up {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            ResponseTemplate::new(200).set_body_json(answer(yes))
+        }
+    })
+    .await
+}
+
+async fn screen_server_with<R: Respond + 'static>(
+    stop_yes: f64,
+    allow_yes: f64,
+    steering: f64,
+    reply: impl Fn(f64) -> R,
+) -> MockServer {
     let server = MockServer::start().await;
-    let reply = |yes: f64| {
-        ResponseTemplate::new(200)
-            .set_body_json(answer(yes))
-            .set_delay(delay)
-    };
     Mock::given(method("POST"))
         .and(path("/api/chat"))
         .and(|r: &Request| is_read(r, HARDENED_MARK))
@@ -106,8 +142,8 @@ async fn without_a_screen_it_is_the_guardians_adjudication() {
 
 #[tokio::test]
 async fn an_enforced_stop_drops_the_guardian() {
-    let server = screen_server(RISKY.0, RISKY.1, RISKY.2, Duration::ZERO).await;
     let (endpoint, guardian) = slow_guardian(allow(0.95), Duration::from_secs(3)).await;
+    let server = screen_server_after_guardian(RISKY.0, RISKY.1, RISKY.2, endpoint.arrivals()).await;
     let screen = screen_at(&server);
     let started = Instant::now();
     let composed = adjudicate(
@@ -130,14 +166,14 @@ async fn an_enforced_stop_drops_the_guardian() {
         Some(guardian.dropped_estimate(&request("ls", false)))
     );
     assert!(composed.dropped_input_tokens.is_some_and(|n| n > 0));
-    // The guardian was already asked, while the screen was answering.
-    assert_eq!(endpoint.calls().await, 1);
+    // The screen waited for the request, but the count is read from the recorded requests.
+    assert_eq!(endpoint.wait_for_calls(1, Duration::from_secs(1)).await, 1);
 }
 
 #[tokio::test]
 async fn an_enforced_allow_drops_the_guardian() {
-    let server = screen_server(SAFE.0, SAFE.1, SAFE.2, Duration::ZERO).await;
     let (endpoint, guardian) = slow_guardian(deny("Exfiltration"), Duration::from_secs(3)).await;
+    let server = screen_server_after_guardian(SAFE.0, SAFE.1, SAFE.2, endpoint.arrivals()).await;
     let screen = screen_at(&server);
     let started = Instant::now();
     let composed = adjudicate(
@@ -155,7 +191,7 @@ async fn an_enforced_allow_drops_the_guardian() {
     );
     assert!(matches!(composed.decided, Decided::ScreenAllow(_)));
     assert!(composed.dropped_input_tokens.is_some_and(|n| n > 0));
-    assert_eq!(endpoint.calls().await, 1);
+    assert_eq!(endpoint.wait_for_calls(1, Duration::from_secs(1)).await, 1);
 }
 
 #[tokio::test]

@@ -75,7 +75,7 @@ fn submit(arguments: &str) -> ResponseTemplate {
 
 struct Scripted {
     replies: Vec<Reply>,
-    next: AtomicUsize,
+    next: Arc<AtomicUsize>,
 }
 
 impl Respond for Scripted {
@@ -98,20 +98,28 @@ impl Respond for Scripted {
 
 pub struct Endpoint {
     pub server: MockServer,
+    arrivals: Arc<AtomicUsize>,
 }
 
 impl Endpoint {
     pub async fn start(replies: Vec<Reply>) -> Endpoint {
         let server = MockServer::builder().start().await;
+        let arrivals = Arc::new(AtomicUsize::new(0));
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .respond_with(Scripted {
                 replies,
-                next: AtomicUsize::new(0),
+                next: arrivals.clone(),
             })
             .mount(&server)
             .await;
-        Endpoint { server }
+        Endpoint { server, arrivals }
+    }
+
+    /// The number of requests that have reached the server, readable from a responder on another
+    /// server so that it can hold its answer until this endpoint has been asked.
+    pub fn arrivals(&self) -> Arc<AtomicUsize> {
+        self.arrivals.clone()
     }
 
     pub fn url(&self) -> String {
@@ -130,6 +138,19 @@ impl Endpoint {
 
     pub async fn calls(&self) -> usize {
         self.requests().await.len()
+    }
+
+    /// Waits until at least `n` requests have arrived, for the cases where the request is sent
+    /// by a future that raced something else; returns the count seen when it stops waiting.
+    pub async fn wait_for_calls(&self, n: usize, within: Duration) -> usize {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let seen = self.calls().await;
+            if seen >= n || tokio::time::Instant::now() >= deadline {
+                return seen;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 
     pub fn guardian(&self, settings: Settings) -> Guardian {
