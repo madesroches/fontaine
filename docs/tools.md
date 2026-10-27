@@ -56,8 +56,8 @@ inside a workspace root after symlinks are resolved. The label alone earns nothi
 `~/.ssh/id_rsa`, a cloud credential file or a browser cookie store is a classic reconnaissance
 step, and it is read-only too. A call whose path arguments cannot be read, or that names a path
 outside every root, is outside the fast path.
-File-tool calls on such a path are denied with a hint to add the directory with `/add-dir` or
-`--add-dir`; they are never offered for approval.
+File-tool calls on such a path are denied with a hint to use the session's scratch directory or to
+add the directory with `/add-dir` or `--add-dir`; they are never offered for approval.
 
 The `skill`, `ask_user_question`, `todo_write`, `cron_jobs`, `cron_delete` and `schedule_wakeup` tools are the read-only tools that name no path. `skill` takes
 only a skill name, resolved against the skills loaded at startup, so all it can do is put that
@@ -90,7 +90,37 @@ More roots come from the repeatable `--add-dir <path>` flag and from
   A bad entry never widens the workspace.
 - Roots grant file access, not configuration. Settings, hooks, MCP servers and extension files are
   read from the primary root only; a `.fontaine/settings.toml` in an added root is ignored.
-- Only the user adds roots. No tool can.
+- Only the user adds roots. No tool can. The one root Fontaine adds itself is the session's
+  scratch directory, below.
+
+### The scratch directory
+
+Each session gets a private scratch directory, appended to the workspace roots after the session's startup
+roots as a non-primary root (`/add-dir` roots come after it), so `write` and `edit` can stage a helper script or a temporary file without a prompt in
+`acceptEdits` and without a detour through `shell`. The system prompt names it, and the denial for
+a path outside every root points at it.
+
+| Platform | Location |
+|---|---|
+| Linux and other Unix with `$XDG_RUNTIME_DIR` | `$XDG_RUNTIME_DIR/fontaine/<session id>/` |
+| macOS, or Unix without a runtime directory | `<temp dir>/fontaine-<uid>/<session id>/` (`$TMPDIR`, else `/tmp`) |
+| Windows | `%TEMP%\fontaine-<sid>\<session id>\` |
+
+- It is readable by the current user only (mode 0700; a current-user-only ACL on Windows), and
+  the directory above it is checked before use: on Unix, a name someone else created, a symlink or
+  a directory open to other users is refused (on Windows the per-user `%TEMP%` and the SID in the
+  directory name stand in for that). The path is canonical, and it is never inside
+  Fontaine's config or data directory, so those stay protected.
+- It is an ordinary root. The deterministic floor still applies (a protected file name such as
+  `.bashrc` still asks), `shell` treats it like any root (read-only commands whose operands are inside it take the
+  pre-classifier fast path, other commands go through the guardian as usual), and it appears
+  in the guardian's workspace roots, in hook payloads and in the headless `init` event. Subagents
+  share their parent's scratch directory.
+- It is removed when the session ends, including before a `/resume` or `/branch` starts the next
+  one. A session that dies without cleaning up (a crash, `kill -9`) is swept by the next Fontaine
+  start: each session holds a lock beside its directory, and a directory whose lock is free is
+  removed. A resumed session reuses its path.
+- If it cannot be created, a warning says why and the session runs with the roots it had before.
 
 On Windows the path forms Fontaine accepts include drive letters, UNC paths and MSYS-style
 `/c/...` paths, which are translated to drive paths first; a path rooted at `/` that is not a

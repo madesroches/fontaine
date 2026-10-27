@@ -17,6 +17,7 @@ use fontaine_core::models::{self, Models, ResolveParams, Switcher};
 use fontaine_core::notice::Notice;
 use fontaine_core::permissions::DenyAll;
 use fontaine_core::scanner_stage::{self, ScannerStart};
+use fontaine_core::scratch::{self, Scratch};
 use fontaine_core::session::{self, Session, SessionError};
 use fontaine_core::tools;
 use fontaine_core::trust;
@@ -277,9 +278,9 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     } else {
         None
     };
-    let mut prep =
+    let (mut prep, mut scratch) =
         match prepare_session(&cli, &config, &host, &dirs, mode, project_executables, true) {
-            Ok(prep) => prep,
+            Ok(prepared) => prepared,
             Err(code) => {
                 print_warnings(&ax_warnings);
                 return ExitCode::from(code);
@@ -334,6 +335,8 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
             });
             drop(entered);
             drop(session);
+            // Removed before the next session prepares, which may be a resume of this one.
+            drop(scratch.take());
             let target = match outcome {
                 Outcome::Done(code) => break code,
                 Outcome::Switch(target, added) => {
@@ -357,7 +360,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
                 name: None,
                 ..cli
             };
-            prep = match prepare_session(
+            (prep, scratch) = match prepare_session(
                 &cli,
                 &config,
                 &host,
@@ -366,7 +369,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
                 project_executables,
                 target.record_resume,
             ) {
-                Ok(prep) => prep,
+                Ok(prepared) => prepared,
                 Err(code) => {
                     export.finish(code);
                     return ExitCode::from(code);
@@ -458,6 +461,8 @@ pub struct SessionPrep {
     pub session: Session,
     /// The workspace roots, primary first, canonical.
     pub roots: Vec<PathBuf>,
+    /// The session's scratch root, which is also the last of `roots`.
+    pub scratch: Option<PathBuf>,
     pub mode: PermissionMode,
     pub scrub_env: Vec<OsString>,
     pub git_bash: Option<GitBash>,
@@ -563,7 +568,7 @@ fn prepare_session(
     mode: PermissionMode,
     project_executables: bool,
     record_resume: bool,
-) -> Result<SessionPrep, u8> {
+) -> Result<(SessionPrep, Option<Scratch>), u8> {
     let git_bash = git_bash(host)?;
 
     let added = cli
@@ -577,7 +582,7 @@ fn prepare_session(
                 .iter()
                 .map(|dir| (RootSource::Settings, PathBuf::from(dir))),
         );
-    let roots = workspace::resolve(&config.workspace, &host.cwd, added);
+    let mut roots = workspace::resolve(&config.workspace, &host.cwd, added);
     let mut warnings: Vec<Notice> = roots
         .warnings
         .iter()
@@ -589,6 +594,29 @@ fn prepare_session(
         open_session(cli, config, dirs, record_resume, &mut warnings).inspect_err(|_| {
             print_warnings(&warnings);
         })?;
+    // The guard goes back to the caller, which drops it when the run ends; the root list only
+    // carries the path. Failing to make one leaves the confinement as it was.
+    warnings.extend(
+        scratch::sweep_stale(&*host.env)
+            .into_iter()
+            .map(|warning| Notice::warning(warning, None)),
+    );
+    let protected = [dirs.config.clone(), dirs.data.clone()];
+    let scratch = match Scratch::create(&*host.env, &protected, &session.id) {
+        Ok(scratch) => Some(scratch),
+        Err(e) => {
+            warnings.push(Notice::warning(
+                format!(
+                    "no scratch directory for this session: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                ),
+                None,
+            ));
+            None
+        }
+    };
+    let scratch_path = scratch.as_ref().map(|s| s.path().to_path_buf());
+    roots.roots.extend(scratch_path.clone());
     // Declined trust keeps a repository's servers from starting, but its agent files may still
     // name their tools: toolset cutting drops them.
     let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
@@ -607,9 +635,10 @@ fn prepare_session(
         .map(PathBuf::from)
         .or_else(::dirs::home_dir)
         .map(|path| std::fs::canonicalize(&path).unwrap_or(path));
-    Ok(SessionPrep {
+    let prep = SessionPrep {
         session,
         roots: roots.roots,
+        scratch: scratch_path,
         mode,
         scrub_env: tools::scrubbed_env(config, (host.env_names)()),
         git_bash,
@@ -619,7 +648,8 @@ fn prepare_session(
         project_executables,
         start_type,
         warnings,
-    })
+    };
+    Ok((prep, scratch))
 }
 
 /// The shell tool runs through Git Bash on Windows; elsewhere it needs none.
@@ -737,6 +767,7 @@ fn agent_setup(
         models,
         session: prep.session,
         roots: prep.roots,
+        scratch: prep.scratch,
         mode: prep.mode,
         scrub_env: prep.scrub_env,
         git_bash: prep.git_bash,

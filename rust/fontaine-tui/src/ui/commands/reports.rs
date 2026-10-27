@@ -16,6 +16,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             version: env!("CARGO_PKG_VERSION"),
             session_id: &runtime.session.id,
             roots: &runtime.roots(),
+            scratch: runtime.state.scratch.as_deref(),
             mode: runtime.state.mode(),
             model: &runtime.models.main.reference.to_string(),
             guardian_label: guardian.label(),

@@ -125,6 +125,7 @@ fn prompt_layers(p: &Parts<'_>) -> (prompt::PromptPieces, Sources, Loaded) {
     let skill_index = skills::index(p.skills.extensions());
     let pieces = prompt::layers(&PromptParts {
         roots: p.roots,
+        scratch: p.state.scratch.as_deref(),
         system_prompt: p.setup.system_prompt.as_deref(),
         instructions: &loaded.files,
         skill_index: skill_index.as_deref(),

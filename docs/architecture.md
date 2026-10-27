@@ -110,7 +110,9 @@ pipeline before the model sees it:
 
 A deny goes back to the model as the tool result and the run goes on. The registry is built at
 session start (and rebuilt between turns by `/add-dir`); each file tool and `shell` has one confined
-instance per workspace root, and `webfetch` has one. MCP tools join the registry as their servers
+instance per workspace root, and `webfetch` has one. The session's scratch directory
+(`scratch`) is created beside the session and appended to the roots, so it needs no special case
+here; it is removed when the session ends. MCP tools join the registry as their servers
 connect, wrapped by the same gate. A subagent gets a copy of the registry cut down to its type's
 tools, so its calls reach the same gate. See [Tools](tools.md).
 

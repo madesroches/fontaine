@@ -72,6 +72,8 @@ pub struct StatusInfo<'a> {
     pub version: &'a str,
     pub session_id: &'a str,
     pub roots: &'a [PathBuf],
+    /// The session's scratch root, one of `roots`.
+    pub scratch: Option<&'a Path>,
     pub mode: PermissionMode,
     pub model: &'a str,
     pub guardian_label: &'a str,
@@ -86,9 +88,16 @@ pub fn status(info: &StatusInfo) -> String {
     let mut out = format!("Fontaine {} · session {}", info.version, info.session_id);
     if let Some((primary, added)) = info.roots.split_first() {
         let _ = write!(out, "\nworkspace: {}", primary.display());
+        let added: Vec<_> = added
+            .iter()
+            .filter(|p| info.scratch != Some(p.as_path()))
+            .map(|p| p.display().to_string())
+            .collect();
         if !added.is_empty() {
-            let added: Vec<_> = added.iter().map(|p| p.display().to_string()).collect();
             let _ = write!(out, "\nadded roots: {}", added.join(", "));
+        }
+        if let Some(scratch) = info.scratch {
+            let _ = write!(out, "\nscratch: {}", scratch.display());
         }
     }
     let _ = write!(out, "\nmode: {}", mode_label(info.mode));
@@ -428,6 +437,7 @@ mod tests {
             version: "1.2.3",
             session_id: "s1",
             roots,
+            scratch: None,
             mode: PermissionMode::Plan,
             model: "work/claude",
             guardian_label: "work/haiku",
@@ -463,6 +473,21 @@ mod tests {
         assert!(skills.contains("/review [pr] — Review a pull request"));
         assert!(keys.contains("esc interrupt"));
         assert!(!help(&[]).contains("skills:"));
+    }
+
+    #[test]
+    fn status_labels_the_scratch_root_instead_of_listing_it_as_added() {
+        let roots = [
+            PathBuf::from("/work"),
+            PathBuf::from("/extra"),
+            PathBuf::from("/run/scratch"),
+        ];
+        let mut i = info(&roots);
+        i.scratch = Some(Path::new("/run/scratch"));
+        let text = status(&i);
+        assert!(text.contains("added roots: /extra\n"), "{text}");
+        assert!(text.contains("scratch: /run/scratch"), "{text}");
+        assert!(!text.contains("extra, /run/scratch"), "{text}");
     }
 
     #[test]

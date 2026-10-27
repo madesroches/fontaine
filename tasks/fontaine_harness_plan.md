@@ -569,6 +569,10 @@ scorecard run (see `## Remaining work`).
 - 2026-10-26: No key is rebound for tool cards; Ctrl-O stays the task list, because a transcript view needs a key and an alternate screen. `/expand [n]` re-prints a call instead (#222).
 - 2026-10-26: `/expand n` takes the last entry with ordinal `n`, and an unknown call after `/clear` is an error, because no store survives `/clear` and that is the least new state (#222).
 
+- 2026-10-26: Each session gets a private scratch directory, `$XDG_RUNTIME_DIR/fontaine/<session-id>/` (else `<temp>/fontaine-<uid>/<session-id>/`; on Windows `<temp>\fontaine-<sid>\<session-id>\`), added to the workspace roots automatically and removed on exit, so file-tool writes of helper files work without a prompt (Claude Code prompts for out-of-root writes and Fontaine denies them, 2026-10-22; this is a further deviation); reason: the denial protected nothing once the model wrote the file through `shell`, and a private owner-only root keeps the floor intact (#238).
+- 2026-10-26: AFK: The scratch directory lives outside the config and data dirs (`XDG_RUNTIME_DIR`, else an owner-only per-user dir under the OS temp dir, verified against squatting, canonicalized, and refused if under a protected dir) rather than under `<data>`, and the protected-path floor gets no exception; reason: `protected_dirs` covers the data dir, so `<data>/scratch` would defeat the feature or require a floor exception (#238).
+- 2026-10-26: Subagents share the parent's scratch directory; reason: one shared `Scope`, and a child's mode is already capped by its parent's (#238).
+
 ## Open Questions
 
 None.

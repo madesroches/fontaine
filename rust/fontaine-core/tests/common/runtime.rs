@@ -149,6 +149,7 @@ pub fn build_scheduling(
         models,
         session: Session::create(&world.data, &session_id()).unwrap(),
         roots: vec![world.work.clone()],
+        scratch: None,
         mode,
         scrub_env: Vec::new(),
         git_bash: None,

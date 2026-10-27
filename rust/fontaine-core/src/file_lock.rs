@@ -32,6 +32,18 @@ pub fn lock(target: &Path) -> io::Result<FileLock> {
     Ok(FileLock(file))
 }
 
+/// Takes the exclusive lock on the lock file at `path` without waiting, creating the file but
+/// not its parent. `None` means another holder has it; the lock lasts as long as the returned
+/// handle stays open.
+pub fn try_lock(path: &Path) -> io::Result<Option<File>> {
+    let file = crate::owner_only::open_lock(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
 /// Reads `target` while holding the shared lock beside it, so a session replacing the file under
 /// the exclusive lock is waited for instead of observed mid-rename. Must not be called by a
 /// holder of [`lock`] for the same target: the shared lock would wait on its own process.
@@ -86,6 +98,16 @@ mod tests {
             drop(guard);
             assert_eq!(reader.join().unwrap(), "new");
         });
+    }
+
+    #[test]
+    fn try_lock_reports_a_held_lock_instead_of_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.lock");
+        let held = try_lock(&path).unwrap().expect("free lock is taken");
+        assert!(try_lock(&path).unwrap().is_none());
+        drop(held);
+        assert!(try_lock(&path).unwrap().is_some());
     }
 
     #[test]

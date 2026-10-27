@@ -135,6 +135,8 @@ pub struct Options {
     pub denied_hooks: Vec<Arc<dyn PermissionDeniedHook>>,
     pub always_allow_file: bool,
     pub guardian: Option<Arc<Guardian>>,
+    /// Gives the rig a session scratch root beside the launch directory.
+    pub scratch: bool,
 }
 
 impl Options {
@@ -149,7 +151,13 @@ impl Options {
             denied_hooks: Vec::new(),
             always_allow_file: true,
             guardian: None,
+            scratch: false,
         }
+    }
+
+    pub fn scratch(mut self) -> Options {
+        self.scratch = true;
+        self
     }
 
     pub fn settings(mut self, text: &str) -> Options {
@@ -176,6 +184,7 @@ pub struct Rig {
     pub approver: Arc<Scripted>,
     pub session: Session,
     pub user_config: PathBuf,
+    pub scratch: Option<PathBuf>,
     next: AtomicUsize,
 }
 
@@ -189,7 +198,12 @@ impl Rig {
         world.user_file(&options.settings);
         let config = world.load().unwrap();
         let session = Session::create(&world.data, "00000000-0000-4000-8000-000000000001").unwrap();
-        let scope = Arc::new(Scope::new(config.workspace.clone(), []));
+        let scratch = options.scratch.then(|| {
+            let dir = world.root.join("scratch");
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        });
+        let scope = Arc::new(Scope::new(config.workspace.clone(), scratch.clone()));
         let agents = Arc::new(AgentTree::new(Limits::default()));
         let approver = Arc::new(Scripted::default());
         let state = Arc::new(SessionState::new(StateParams {
@@ -204,6 +218,7 @@ impl Rig {
             approver: approver.clone(),
             home: options.home.clone(),
             protected_dirs: vec![world.config.clone(), world.data.clone()],
+            scratch: scratch.clone(),
             guardian: options
                 .guardian
                 .clone()
@@ -230,6 +245,7 @@ impl Rig {
             approver,
             session,
             user_config,
+            scratch,
             next: AtomicUsize::new(1),
         }
     }
