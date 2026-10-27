@@ -82,9 +82,11 @@ notebook is refused as "not read", and emits the same `FilesRead` result as rig'
   `Edit(...)` rule.
 - Add one `"notebook_edit"` arm next to `"edit"` at each site: `scope.rs` `fields_of`,
   `permission_rules.rs` `path_args`, `destructive.rs` `touched_paths`, and in `permissions.rs` the
-  protected-path check (`matches!(tool, "edit" | "write")` before `floor::protected_path`), the
-  prompted-preview record (same `matches!`), and `summarize` (so the approval card shows the path),
-  plus the `preview.rs` arm.
+  protected-path check (`matches!(tool, "edit" | "write")` before `floor::protected_path`),
+  `publish_preview` (`permissions.rs:1682`, `matches!(tool, "edit" | "write")`), and `summarize` (so
+  the approval card shows the path); plus the `preview.rs:53` gate with its `notebook_edit` arm, and
+  `instructions/on_demand.rs:203` (`matches!(call.tool, "read" | "write" | "edit")`, which appends
+  instruction notes after file tools).
 - One test iterates the `TOOLS` rows that are `WorkspaceWrite` and not `path_free` and asserts each is
   handled by `fields_of`, `path_args`, `touched_paths` and `protected_path`.
 - Register in `builtins::build` via `GuardedTool::per_root`.
@@ -99,9 +101,10 @@ notebook is refused as "not read", and emits the same `FilesRead` result as rig'
 1. `notebook.rs`: pure notebook model functions (parse, render, apply edit, serialize with indent
    preservation) with no I/O; then the `NotebookEdit` and `NotebookRead` tools over them.
 2. Descriptor row; add the `notebook_edit` arm at each site (three matches plus the `permissions.rs`
-   sites); the `TOOLS`-row coverage test; update `rows_are_pinned` and the `choke_point.rs` tables (including the `built_ins` list in
-   `fontaine-core/tests/choke_point.rs`).
-3. Register in `builtins::build`; add to `worker` toolset; fix `extensions.rs` mapping and test.
+   sites and `on_demand.rs`); the `TOOLS`-row coverage test; register in `builtins::build`; update
+   `rows_are_pinned` and the `choke_point.rs` tables (including `EXPECTED` and the `built_ins` list in
+   `fontaine-core/tests/choke_point.rs`) in the same step.
+3. Add to `worker` toolset; fix `extensions.rs` mapping and test.
 4. Preview arm in `preview.rs`.
 5. Docs and changelog.
 6. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
@@ -112,6 +115,7 @@ notebook is refused as "not read", and emits the same `FilesRead` result as rig'
 - `rust/fontaine-tools/tests/choke_point.rs`, `rust/fontaine-core/tests/choke_point.rs` (add
   `notebook_edit` to `built_ins`, ~line 195)
 - `rust/fontaine-core/src/{permissions,permission_rules,destructive,preview,extensions}.rs`,
+  `rust/fontaine-core/src/instructions/on_demand.rs`,
   `rust/fontaine-core/tests/extensions.rs` (lines 117-119 expect `tools: Read, NotebookEdit` to be an
   error; change the example)
 - `rust/fontaine-evals/src/baseline.rs` (map `path` to `notebook_path` for `notebook_edit`, near the
@@ -139,6 +143,11 @@ notebook is refused as "not read", and emits the same `FilesRead` result as rig'
 - 2026-10-27: Risk class is `WorkspaceWrite`, per the issue; only the protected-path
   floor applies (the critical-path check is shell-only) because `notebook_edit` is added to the path matches and to the hardcoded
   `edit`/`write` sites in `permissions.rs`.
+- 2026-10-27: `edit`/`write` stay allowed on `.ipynb` (as in Claude Code) and are steered to
+  `notebook_edit` via tool descriptions.
+- 2026-10-27: Image outputs render as an omitted-image placeholder.
+- 2026-10-27: `notebook_edit` is included in the `on_demand.rs` file-tool match; a notebook edit is a
+  file edit under the primary root, so instruction notes apply.
 
 ## Documentation
 
@@ -160,9 +169,3 @@ A new registry test that `worker` includes it (`registry.rs:268` is only a gener
 The workspace `serde_json` dependency gets `preserve_order` enabled explicitly (it is active today
 only through feature unification); `uuid` (a workspace dependency) is added to `fontaine-tools` if
 used for cell ids.
-
-## Open Questions
-
-- Should `edit`/`write` be refused on `.ipynb` outright (Claude Code allows them)? Default: allow,
-  steer via descriptions.
-- Image outputs: omit with a placeholder (planned) vs. pass to vision-capable models later.
