@@ -129,6 +129,7 @@ mod tests {
             approver: Arc::new(DenyAll),
             home: None,
             protected_dirs: Vec::new(),
+            scratch: None,
             guardian: no_guardian(),
             auto: AutoContext::default(),
             agents: Arc::new(AgentTree::new(Limits::default())),

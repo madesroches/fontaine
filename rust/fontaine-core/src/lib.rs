@@ -37,6 +37,7 @@ pub mod runtime_error;
 pub mod scanner_model;
 pub mod scanner_stage;
 pub mod schedule;
+pub mod scratch;
 pub mod session;
 pub mod skills;
 pub mod steering;

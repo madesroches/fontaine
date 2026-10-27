@@ -69,8 +69,13 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    from nobody (the model is told to use its best judgment). Your typed "Other" answers count as
    intent for the guardian; the options you pick do not.
    A file-tool call (`read`, `ls`, `glob`, `grep`, `write`, `edit`) that names a path outside
-   every root is denied, with a hint to add the directory with `/add-dir`: the file tools are
-   confined to the roots, so an approval could never make the call run.
+   every root is denied, with a hint naming the session's scratch directory and `/add-dir`: the
+   file tools are confined to the roots, so an approval could never make the call run. The scratch
+   directory is an ordinary root (see [Tools](tools.md#the-scratch-directory)): this step, the floor
+   and the guardian treat a path in it like one in the workspace, and `shell` treats it like any root:
+   read-only commands whose operands are inside it take the pre-classifier fast path, and other
+   commands go through the guardian as usual. Claude Code prompts for a write outside the workspace; Fontaine denies
+   it and offers the scratch directory instead.
 4. **Shell pre-classifier**, below.
 5. **Allow rules**, below.
 6. **The mode**, as in the table above. In `auto`, and for the consequential calls of `plan`,

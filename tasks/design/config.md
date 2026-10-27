@@ -9,7 +9,7 @@ The **workspace** is an ordered set of roots. The primary root is the canonicali
 roots come from `--add-dir`, the `/add-dir` command, and `[permissions] additional_directories`
 (Claude Code parity). Containment means "inside any root after symlink resolution" — for the fast
 path, Tier 0.5, rule path patterns, protected paths and the critical-path list (each root and its
-parents). Only the user adds roots at runtime (`/add-dir` is a user command; no tool can add one).
+parents). Only the user adds roots at runtime (`/add-dir` is a user command; no tool can add one). The one automatic root is the per-session scratch directory (outside the config and data directories, owner-only, removed on exit, swept after a crash), appended last.
 Extra roots grant file access, not configuration: settings, hooks, MCP servers and extension files
 load from the primary root only. The guardian's `session_facts` and trust boundary list every root.
 

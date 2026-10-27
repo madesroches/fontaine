@@ -303,7 +303,7 @@ since a transcript can hold secrets, and an existing file is an error: an export
 
 | Command | Action |
 |---|---|
-| `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Until then a file-tool call outside the roots is denied with a hint naming this command. Only between turns. |
+| `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Until then a file-tool call outside the roots is denied with a hint naming this command and the session's scratch directory, which is always a root. Only between turns. |
 | `/agents`, `/tasks` | Opens the [agents panel](#the-agents-panel). |
 | `/branch [<name>]`, `/fork` | Copies the session under a new id and carries on in the copy; the original is left as it was. Only between turns, and refused while a subagent runs. See [Sessions](#sessions). |
 | `/clear`, `/reset`, `/new` | Starts over with an empty context. See [Context](#context). It takes no name for the old conversation; `/rename` names a session, and `/resume` returns to one later. |
@@ -331,7 +331,7 @@ since a transcript can hold secrets, and an existing file is an error: an export
 | `/rename [<name>]` | Names the session. Without a name, draws one from the first line of your first message. See [Sessions](#sessions). |
 | `/resume [<name-or-id>]` | Switches to another session started in this folder: the picker without an argument, that session with one. Sessions where nothing was said and that have no name are not listed. Only between turns. See [Sessions](#sessions). |
 | `/skills` | Lists every loaded [skill](extensions.md#skills) with its scope, marking those only the model can use, those only you can run, and those a built-in command hides. |
-| `/status` | Shows the version, the session id, the workspace roots, the permission mode, the main model, the guardian (or why it is unavailable) with its profile, the output style, and how many MCP servers are connected. |
+| `/status` | Shows the version, the session id, the workspace roots (the scratch directory labelled separately), the permission mode, the main model, the guardian (or why it is unavailable) with its profile, the output style, and how many MCP servers are connected. |
 | `/theme [<name>]` | Without an argument, lists the colour themes, marks the current one and names the file the choice is saved to. With a name, switches to that theme at once and saves it as `[tui] theme` in your user settings file. An unknown name is an error that lists the themes. See [Terminal setup](terminal.md#colours). |
 | `/todos` | Expands or collapses the [task list](#the-task-panel), as Ctrl-O does. |
 | `/<skill> [arguments]` | Runs a [skill](extensions.md#slash-commands-and-arguments). |

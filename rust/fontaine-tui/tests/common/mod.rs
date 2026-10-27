@@ -360,6 +360,7 @@ impl World {
                 .unwrap()
                 .with_clock(self.clock.clone()),
             roots: vec![self.work.clone()],
+            scratch: None,
             mode: self.mode,
             scrub_env: vec![],
             git_bash: git_bash(),

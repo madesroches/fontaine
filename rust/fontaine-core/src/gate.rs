@@ -96,6 +96,8 @@ pub struct StateParams {
     pub home: Option<PathBuf>,
     /// Fontaine's own config and data directories, which file writes never reach unprompted.
     pub protected_dirs: Vec<PathBuf>,
+    /// The session's scratch root, one of the scope's roots, when it could be created.
+    pub scratch: Option<PathBuf>,
     pub guardian: Arc<Guardian>,
     pub auto: AutoContext,
     /// The session's agents, root included.
@@ -262,6 +264,7 @@ pub struct SessionState {
     sink_warned: [AtomicBool; 2],
     pub home: Option<PathBuf>,
     pub protected_dirs: Vec<PathBuf>,
+    pub scratch: Option<PathBuf>,
     inner: RwLock<Inner>,
     mode: Arc<RwLock<PermissionMode>>,
     agents: Arc<AgentTree>,
@@ -307,6 +310,7 @@ impl SessionState {
             sink_warned: Default::default(),
             home: params.home,
             protected_dirs: params.protected_dirs,
+            scratch: params.scratch,
             mode,
             agents: params.agents,
             reveal_mcp_names: params.reveal_mcp_names,
@@ -815,6 +819,7 @@ mod tests {
             approver: Arc::new(DenyAll),
             home: None,
             protected_dirs: Vec::new(),
+            scratch: None,
             guardian: no_guardian(),
             auto: AutoContext::default(),
             agents: Arc::new(AgentTree::new(Limits::default())),

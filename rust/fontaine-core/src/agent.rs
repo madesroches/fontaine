@@ -87,6 +87,8 @@ pub struct AgentSetup {
     pub session: Session,
     /// The workspace roots, primary first, canonical.
     pub roots: Vec<PathBuf>,
+    /// The session's scratch root, which is also the last of `roots`.
+    pub scratch: Option<PathBuf>,
     pub mode: PermissionMode,
     /// Variables the shell tool's child processes do not inherit.
     pub scrub_env: Vec<OsString>,

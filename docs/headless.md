@@ -159,7 +159,7 @@ these is one line, in this order:
 
 | `type` | When | Main fields |
 |---|---|---|
-| `init` | Once, first | `model`, `guardian_model` and `guardian_profile` (the guardian and profile in force, which may differ from the configured ones: a default pick, the main model, or `full` after a failed containment check), `guardian_available`, `permission_mode`, `workspace_roots`, `config_sources` (scope, path, whether loaded), `workspace_trust`, `suspended_allow_rules` (the broad allow rules `auto` sets aside; empty outside `auto`), `tools` |
+| `init` | Once, first | `model`, `guardian_model` and `guardian_profile` (the guardian and profile in force, which may differ from the configured ones: a default pick, the main model, or `full` after a failed containment check), `guardian_available`, `permission_mode`, `workspace_roots` (the session's [scratch directory](tools.md#the-scratch-directory) is the last entry when it could be created), `config_sources` (scope, path, whether loaded), `workspace_trust`, `suspended_allow_rules` (the broad allow rules `auto` sets aside; empty outside `auto`), `tools` |
 | `assistant` | A complete assistant message | `text` |
 | `assistant_delta` | With `--include-partial-messages`, for each text fragment | `text` |
 | `tool_call` | The model called a tool | `tool_use_id`, `tool`, `args` |

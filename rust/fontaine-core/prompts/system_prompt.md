@@ -6,7 +6,7 @@ You work inside these workspace roots. The first is the primary root: relative p
 
 {{workspace_roots}}
 
-Tools that read or write files are confined to these roots. Do not try to reach files outside them, and do not widen your own access: only the user can add a root.
+Tools that read or write files are confined to these roots. Do not try to reach files outside them, and do not widen your own access: only the user can add a root.{{scratch_note}}
 
 # Tools
 

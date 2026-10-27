@@ -567,6 +567,58 @@ async fn an_out_of_scope_file_call_says_why_and_how_to_fix_it() {
 }
 
 #[tokio::test]
+async fn the_scratch_root_takes_file_writes_without_a_prompt() {
+    let rig = Rig::with(Options::new(AcceptEdits).scratch());
+    let scratch = rig.scratch.clone().unwrap();
+    for (tool, args) in [
+        (
+            "write",
+            write_args(&scratch.join("helper.sh").display().to_string()),
+        ),
+        (
+            "edit",
+            edit_args(&scratch.join("helper.sh").display().to_string()),
+        ),
+    ] {
+        assert_eq!(
+            first(&rig, tool, args).await,
+            (Decision::Allow, Tier::Mode),
+            "{tool}"
+        );
+    }
+    let manual = Rig::with(Options::new(Manual).scratch());
+    let path = manual.scratch.clone().unwrap().join("helper.sh");
+    let (decision, tier) = first(&manual, "write", write_args(&path.display().to_string())).await;
+    assert_eq!((decision, tier), (Decision::Prompt, Tier::Mode));
+}
+
+#[tokio::test]
+async fn a_protected_file_name_in_the_scratch_root_still_hits_the_floor() {
+    let rig = Rig::with(Options::new(AcceptEdits).scratch());
+    let path = rig.scratch.clone().unwrap().join(".bashrc");
+    assert_eq!(
+        first(&rig, "write", write_args(&path.display().to_string())).await,
+        (Decision::Prompt, Tier::ProtectedPath)
+    );
+}
+
+#[tokio::test]
+async fn an_out_of_roots_denial_names_the_scratch_directory() {
+    let rig = Rig::with(Options::new(Manual).headless().scratch());
+    let outside = rig.world.root.join("outside.txt");
+    let d = rig
+        .check("write", write_args(&outside.display().to_string()))
+        .await;
+    let message = denied_message(&d);
+    let scratch = rig.scratch.clone().unwrap();
+    assert!(
+        message.contains(&scratch.display().to_string()),
+        "{message}"
+    );
+    assert!(message.contains("/add-dir"), "{message}");
+}
+
+#[tokio::test]
 async fn a_mode_change_takes_effect_on_the_next_call() {
     let rig = Rig::new(Manual);
     assert_eq!(

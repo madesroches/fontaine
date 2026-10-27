@@ -36,6 +36,7 @@ fn the_assembled_prompt_is_stable() {
     let instructions = instructions();
     let assembled = prompt::assemble(&PromptParts {
         roots: &roots,
+        scratch: None,
         system_prompt: None,
         instructions: &instructions,
         skill_index: Some(
@@ -71,6 +72,7 @@ fn the_roots_section_lists_every_root_with_the_primary_first() {
     let roots = roots();
     let assembled = prompt::assemble(&PromptParts {
         roots: &roots,
+        scratch: None,
         system_prompt: None,
         instructions: &[],
         skill_index: None,
@@ -85,11 +87,33 @@ fn the_roots_section_lists_every_root_with_the_primary_first() {
 }
 
 #[test]
+fn the_prompt_names_the_scratch_root_and_keeps_the_user_only_rule() {
+    let mut roots = roots();
+    let scratch = std::path::PathBuf::from("/run/user/1000/fontaine/abc");
+    roots.push(scratch.clone());
+    let assembled = prompt::assemble(&PromptParts {
+        roots: &roots,
+        scratch: Some(&scratch),
+        system_prompt: None,
+        instructions: &[],
+        skill_index: None,
+        scheduling: None,
+        output_style: None,
+        append: None,
+    });
+    assert!(!assembled.contains("{{"));
+    assert!(assembled.contains("- /run/user/1000/fontaine/abc (scratch)"));
+    assert!(assembled.contains("The exception is the scratch root /run/user/1000/fontaine/abc"));
+    assert!(assembled.contains("only the user can add a root"));
+}
+
+#[test]
 fn layers_come_in_order_base_then_instructions_then_append() {
     let roots = roots();
     let instructions = instructions();
     let assembled = prompt::assemble(&PromptParts {
         roots: &roots,
+        scratch: None,
         system_prompt: None,
         instructions: &instructions,
         skill_index: None,
@@ -106,6 +130,7 @@ fn layers_come_in_order_base_then_instructions_then_append() {
     // The skill list, the scheduling note and the output style sit between the instructions and the appended text.
     let layered = prompt::assemble(&PromptParts {
         roots: &roots,
+        scratch: None,
         system_prompt: None,
         instructions: &instructions,
         skill_index: Some("SKILL INDEX"),
@@ -129,6 +154,7 @@ fn a_replacement_system_prompt_replaces_only_the_base() {
     let instructions = instructions();
     let assembled = prompt::assemble(&PromptParts {
         roots: &roots,
+        scratch: None,
         system_prompt: Some("You are a pirate."),
         instructions: &instructions,
         skill_index: None,
@@ -178,6 +204,7 @@ fn the_scheduling_note_is_a_layer_that_is_present_only_when_given() {
     let roots = roots();
     let without = prompt::assemble(&PromptParts {
         roots: &roots,
+        scratch: None,
         system_prompt: None,
         instructions: &[],
         skill_index: None,
@@ -188,6 +215,7 @@ fn the_scheduling_note_is_a_layer_that_is_present_only_when_given() {
     assert!(!without.contains("cron_create") && !without.contains("schedule_wakeup"));
     let with = prompt::assemble(&PromptParts {
         roots: &roots,
+        scratch: None,
         system_prompt: None,
         instructions: &[],
         skill_index: None,

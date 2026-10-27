@@ -823,9 +823,15 @@ impl PermissionPipeline {
 
         let outside = match &located {
             // Model-facing text; the scope error has no source.
-            Err(e) if call.risk != RiskClass::Arbitrary => Some(format!(
-                "{e}; file tools work inside the workspace roots only (add one with /add-dir)"
-            )),
+            Err(e) if call.risk != RiskClass::Arbitrary => Some(match &self.state.scratch {
+                Some(scratch) => format!(
+                    "{e}; file tools work inside the workspace roots only. Put temporary files in the session scratch directory {} (or add a root with /add-dir)",
+                    scratch.display()
+                ),
+                None => format!(
+                    "{e}; file tools work inside the workspace roots only (add one with /add-dir)"
+                ),
+            }),
             _ => None,
         };
         // The tool refuses an out-of-scope path whatever the answer, so asking would only offer

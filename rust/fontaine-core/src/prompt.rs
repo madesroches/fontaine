@@ -33,10 +33,14 @@ pub fn init_prompt(target: &Path, existing: bool) -> String {
     INIT_PROMPT.replace("{{task}}", &task)
 }
 
+const SCRATCH_NOTE: &str = " The exception is the scratch root {{scratch}}, which Fontaine added for this session. It is private and deleted when the session ends: put temporary and helper files there, not in /tmp or the workspace.";
+
 const INIT_PROMPT: &str = include_str!("../prompts/init.md");
 
 pub struct PromptParts<'a> {
     pub roots: &'a [PathBuf],
+    /// The session's scratch root, one of `roots`, when it could be created.
+    pub scratch: Option<&'a Path>,
     /// Replaces the base layer when set.
     pub system_prompt: Option<&'a str>,
     pub instructions: &'a [InstructionFile],
@@ -49,14 +53,25 @@ pub struct PromptParts<'a> {
     pub append: Option<&'a str>,
 }
 
-fn base(roots: &[PathBuf]) -> String {
+fn base(roots: &[PathBuf], scratch: Option<&Path>) -> String {
     let list = roots
         .iter()
-        .map(|root| format!("- {}", root.display()))
+        .map(|root| {
+            if scratch == Some(root.as_path()) {
+                format!("- {} (scratch)", root.display())
+            } else {
+                format!("- {}", root.display())
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
+    let scratch_note = match scratch {
+        Some(dir) => SCRATCH_NOTE.replace("{{scratch}}", &dir.display().to_string()),
+        None => String::new(),
+    };
     BASE_PROMPT
         .replace("{{workspace_roots}}", &list)
+        .replace("{{scratch_note}}", &scratch_note)
         .trim_end()
         .to_string()
 }
@@ -93,7 +108,7 @@ pub fn layers(parts: &PromptParts<'_>) -> PromptPieces {
     PromptPieces {
         base: match parts.system_prompt {
             Some(replacement) => replacement.to_string(),
-            None => base(parts.roots),
+            None => base(parts.roots, parts.scratch),
         },
         instructions: parts
             .instructions

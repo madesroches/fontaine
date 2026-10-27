@@ -8,6 +8,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Each session has a private scratch directory, added to the workspace roots automatically
+  (`$XDG_RUNTIME_DIR/fontaine/<session id>/`, else an owner-only per-user directory under the temp
+  dir). `write` and `edit` work there without a prompt in `acceptEdits`, the system prompt names it,
+  and the out-of-roots denial points at it. It is removed on exit and swept after a crash; the
+  floor, the guardian and `shell` handling are unchanged (#238).
 - Tool calls in the transcript are cards: a long or multi-line command folded to three rows, the
   last ten rows of the output behind a gutter, and for `edit` and `write` the diff of the change,
   also when no prompt asked about it. `/expand [n]` prints a call in full as new lines. Output is
