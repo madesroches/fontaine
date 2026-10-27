@@ -15,7 +15,7 @@ run (`fontaine -p`) starts in `manual`, as Claude Code's `-p` starts in `default
 |---|---|
 | `manual` | The human is asked. |
 | `acceptEdits` | `write` and `edit` inside the workspace roots run; everything else asks. |
-| `plan` | No edit ever runs: `write` and `edit` are blocked outright. Other consequential calls (write-capable or unparsed `shell`, `webfetch`, every MCP call, shell reads outside the roots) go to the guardian, as in `auto`. |
+| `plan` | No edit ever runs: `write` and `edit` are blocked outright. Other consequential calls (write-capable or unparsed `shell`, `webfetch`, `websearch`, every MCP call, shell reads outside the roots) go to the guardian, as in `auto`. |
 | `dontAsk` | Denied. Only calls that are pre-approved run. |
 | `auto` | The [guardian](guardian.md) decides: allow, deny with a reason, or ask you. |
 
@@ -146,6 +146,7 @@ grammar: `Tool` or `Tool(specifier)`. A bare tool name matches every call of the
 | `shell` | words, optionally ending in ` *`: `shell(git push)`, `shell(npm run test *)` | the parsed command line; quoting keeps a word whole; no wildcard inside a word |
 | `read`, `edit`, `write`, `ls`, `glob`, `grep` | a gitignore-style path pattern: `src/**`, `~/.aws/**`, `//etc/hosts` | the resolved path; relative patterns anchor at each workspace root, `~/` at your home (a deny or ask rule with `~/` matches everything when no home directory can be found; an allow rule matches nothing), `//` at the file system root |
 | `webfetch` | `domain:example.com` or `domain:*.example.com` | the URL's host; `*.` matches subdomains only |
+| `websearch` | none | the tool name; the destination is the configured backend, not a host the model picks, so `domain:` does not apply |
 | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | none | the registered tool name |
 | `agent`, `skill` | the agent type or skill name | exact name |
 | `send_message`, `ask_user_question`, `todo_write`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup` | none | the tool name |
@@ -166,6 +167,14 @@ Deny and ask rules fail toward matching; allow rules fail toward not matching:
 - A `read` deny rule also keeps a file out of the [instruction files](instructions.md#what-is-refused)
   the system prompt is built from, so a rule that stops the agent reading `secrets/**` stops
   `CLAUDE.md` from importing it too.
+- A bare `websearch` rule also governs the provider's own search: while a `deny` or `ask` rule
+  covers `websearch`, or a `pre_tool_use` hook could (it has no `matcher`, its `matcher` names
+  `websearch`, or its matcher cannot be read), it is not offered to the model, and in `manual`, `acceptEdits` and `dontAsk`
+  it is offered only when an `allow` rule exists. In `auto` and `plan` it is offered otherwise.
+  Because it runs inside the model's response, an offered provider search is checked once, when the
+  request is built, not per query. A mode switch or a new rule takes effect on the next turn, so
+  tightening the mode mid-turn (Shift+Tab, or the fallback when the guardian is unavailable) leaves
+  the provider's search attached until that turn ends; see [Web search](tools.md#web-search).
 - A `webfetch` never follows a redirect to another host: the redirect is returned to the model and
   a follow-up fetch is judged on its own host.
 

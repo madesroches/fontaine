@@ -504,6 +504,7 @@ async fn run_one(
             priced: runtime.models.main.catalog_billed(),
             model,
             provider,
+            native_search: runtime.native_search_active(),
         },
         &mut on_event,
     )
@@ -817,7 +818,7 @@ async fn handle_message(
 
 /// Runs the headless session and returns the process exit code: 0 completed, 1 run error or a
 /// `/goal` that did not end met, 2 usage error.
-pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -> u8 {
+pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Path) -> u8 {
     let mut input = match open_input(&mut options).await {
         Ok(input) => input,
         Err(message) => {
@@ -847,7 +848,24 @@ pub async fn run(mut options: Options, runtime: AgentRuntime, data_dir: &Path) -
                 return 2;
             }
         };
-        let handled = handle_message(&runtime, &options, &mut totals, stream_events, text).await;
+        let handled = match runtime.refresh_native_search() {
+            Ok(()) => handle_message(&runtime, &options, &mut totals, stream_events, text).await,
+            Err(e) => Handled {
+                outcome: Outcome {
+                    subtype: Subtype::Execution,
+                    text: String::new(),
+                    structured: None,
+                    error: Some(format!(
+                        "the provider's web search could not be turned off, so the message was not run: {}",
+                        fontaine_tools::error_chain::chain(&e)
+                    )),
+                    started: std::time::Instant::now(),
+                    denials: Vec::new(),
+                },
+                goal: None,
+                goal_ran: false,
+            },
+        };
         let outcome = &handled.outcome;
         let failed = outcome.subtype != Subtype::Success;
         // A goal that ended impossible or paused did not finish the task, even when the turn

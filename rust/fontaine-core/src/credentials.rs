@@ -19,6 +19,8 @@ struct File {
     accounts: BTreeMap<String, Entry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     telemetry: Option<Entry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    websearch: Option<Entry>,
 }
 
 /// Exactly one of the two is set; [`check`] enforces it after parsing.
@@ -129,16 +131,25 @@ impl Credentials {
             .and_then(|e| e.api_key.as_deref())
             .filter(|k| !k.is_empty())
     }
+
+    /// Kept apart from accounts, like the telemetry key.
+    pub fn websearch(&self) -> Option<&str> {
+        self.0
+            .websearch
+            .as_ref()
+            .and_then(|e| e.api_key.as_deref())
+            .filter(|k| !k.is_empty())
+    }
 }
 
-/// An entry holds exactly one of `api_key` and `oauth`, and `[telemetry]` only an `api_key`.
+/// An entry holds exactly one of `api_key` and `oauth`, and `[telemetry]` and `[websearch]` only
+/// an `api_key`.
 fn check(file: &File) -> bool {
     let one = |e: &Entry| e.api_key.is_some() != e.oauth.is_some();
     file.accounts.values().all(one)
-        && file
-            .telemetry
-            .as_ref()
-            .is_none_or(|e| one(e) && e.oauth.is_none())
+        && [&file.telemetry, &file.websearch]
+            .into_iter()
+            .all(|entry| entry.as_ref().is_none_or(|e| one(e) && e.oauth.is_none()))
 }
 
 fn parse_toml(text: &str) -> Result<File, Option<(usize, usize)>> {

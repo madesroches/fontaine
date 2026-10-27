@@ -12,6 +12,7 @@ use fontaine_tools::risk::{RiskClass, ToolSource, registered_risk};
 use fontaine_tools::scope::Scope;
 use fontaine_tools::tls::LoadedNetwork;
 use fontaine_tools::webfetch::WebfetchConfig;
+use fontaine_tools::websearch::{SearxngChild, WebsearchConfig};
 use rig_core::tool::Tool;
 
 use crate::config::Config;
@@ -87,6 +88,10 @@ pub struct RegistryParams {
     pub hide_mcp_names: bool,
     /// The `[network]` settings webfetch is built with.
     pub network: Arc<LoadedNetwork>,
+    /// The search backend, when one is configured; without it there is no `websearch` tool.
+    pub websearch: Option<WebsearchConfig>,
+    /// The SearXNG process, owned by the runtime so a rebuild does not restart it.
+    pub searxng: Arc<SearxngChild>,
     pub extension: Option<ExtensionTools>,
 }
 
@@ -122,14 +127,11 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
             ..ShellSettings::default()
         },
         webfetch: WebfetchConfig::default(),
+        websearch: params.websearch,
+        searxng: params.searxng,
         network: params.network,
     })
-    .map_err(|e| {
-        format!(
-            "cannot set up the webfetch tool: {}",
-            fontaine_tools::error_chain::chain(&e.without_url())
-        )
-    })?;
+    .map_err(|e| fontaine_tools::error_chain::chain(&e))?;
     if let Some(extension) = params.extension {
         tools.extend(extension.0.into_iter().map(|register| (register.0)(&guard)));
     }

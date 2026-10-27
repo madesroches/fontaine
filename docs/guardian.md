@@ -108,7 +108,7 @@ failure names the denial. A deny verdict is never softened. The destructive clas
 the call by Fontaine, structurally, never from the label the guardian chose: a call is destructive
 when it removes or overwrites (`rm`, `mv`, `cp`, `dd`, `sed -i`, `find -delete`, `git reset
 --hard`, a redirect to a file, a write over a path that existed), writes outside every workspace
-root, reaches the network (`curl`, `git push`, a package install, `webfetch`), schedules a prompt to run later (`cron_create`), starts a code runner
+root, reaches the network (`curl`, `git push`, a package install, `webfetch`, `websearch`), schedules a prompt to run later (`cron_create`), starts a code runner
 (`sh`, `python` in any version, `pwsh`, `cmd`, `awk`, `make`, `cargo run`, `sudo`, ...; a launcher such as `timeout` is judged by the program it wraps), is an MCP call, or uses any construct the shell
 parser cannot classify. A plain `cargo test 2>&1 | tail` is not destructive.
 
@@ -363,6 +363,12 @@ valid for the dataset it was scored on.
   dataset never saw, will be misjudged at some rate. A guardian allow is a decision to run the
   command with your permissions, not a proof that it is safe.
 - **Tool results are scanned only if you turn it on.** The guardian judges calls, not what comes back from them. The [scanner](#scanning-tool-results) annotates suspect results; it cannot prove one safe, and a flag is a warning to the agent, not a block.
+- **Provider-native search is outside the guardian and the scanner.** When the provider's own web
+  search is offered (see [Web search](tools.md#web-search)), it runs inside the model's response:
+  the guardian never sees a query and the scanner never sees a result. Fontaine withholds it while
+  a `deny` or `ask` rule or a `pre_tool_use` hook could cover `websearch`, and in `manual`,
+  `acceptEdits` and `dontAsk` unless an `allow` rule exists; `[websearch] native = "off"` turns it
+  off. The client-side `websearch` tool is judged and scanned like any other call.
 
 The [scorecard](evals.md) reports the measured catch and false-deny rates per model.
 

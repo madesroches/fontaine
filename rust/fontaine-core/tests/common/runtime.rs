@@ -133,6 +133,34 @@ pub fn build_scheduling(
     approver: Arc<dyn fontaine_core::permissions::Approver>,
     scheduling: bool,
 ) -> AgentRuntime {
+    build_with_env(
+        world,
+        mode,
+        models,
+        switcher,
+        project_executables,
+        scanner,
+        user_config,
+        approver,
+        scheduling,
+        Arc::new(|_| None),
+    )
+}
+
+/// Like [`build_scheduling`], with the process environment the runtime looks variables up in.
+#[allow(clippy::too_many_arguments)]
+pub fn build_with_env(
+    world: &World,
+    mode: PermissionMode,
+    models: Models,
+    switcher: Option<Switcher>,
+    project_executables: bool,
+    scanner: fontaine_core::scanner_stage::ScannerStart,
+    user_config: Option<std::path::PathBuf>,
+    approver: Arc<dyn fontaine_core::permissions::Approver>,
+    scheduling: bool,
+    env: fontaine_core::agent::EnvLookup,
+) -> AgentRuntime {
     let config = world.load().unwrap();
     let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
     let loaded = extensions::load(&LoadParams {
@@ -141,7 +169,6 @@ pub fn build_scheduling(
         servers: &servers,
     })
     .unwrap();
-    let env: fontaine_core::agent::EnvLookup = Arc::new(|_| None);
     let setup = AgentSetup {
         config,
         config_dir: world.config.clone(),
@@ -171,6 +198,7 @@ pub fn build_scheduling(
         confirm_project_servers: false,
         origin: SessionOrigin::Fresh,
         env,
+        warn_no_search: true,
     };
     AgentRuntime::new(setup).unwrap()
 }

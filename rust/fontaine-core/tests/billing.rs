@@ -39,6 +39,7 @@ async fn root_turn(priced: bool) -> (Option<f64>, Option<f64>) {
             priced,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
+            native_search: false,
         },
         &mut on_event,
     )
@@ -78,6 +79,7 @@ async fn an_unpriced_subagent_adds_tokens_but_no_cost_to_the_subagent_total() {
             priced: false,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
+            native_search: false,
             span: tracing::Span::none(),
         },
         None,

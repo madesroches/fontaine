@@ -25,6 +25,7 @@ use crate::config::Config;
 use crate::gate::SessionState;
 use crate::instructions::{self, InstructionStage, Loaded, Sources};
 use crate::models::Models;
+use crate::native_search;
 use crate::permissions::{Approver, PermissionPipeline};
 use crate::prompt::{self, PromptParts};
 use crate::questions::HumanQuestions;
@@ -94,7 +95,7 @@ pub(super) struct Parts<'a> {
 /// The agent, with its wrapped tools registered in the session's tool server.
 pub(super) fn build_agent(
     p: &Parts<'_>,
-) -> Result<(Agent, prompt::PromptPieces, Loaded), RuntimeError> {
+) -> Result<(Agent, prompt::PromptPieces, Loaded, bool), RuntimeError> {
     let (pieces, sources, loaded) = prompt_layers(p);
     p.instructions.warn_once(&loaded.warnings);
     if let Some(warning) = p.session.todos().take_warning() {
@@ -111,7 +112,8 @@ pub(super) fn build_agent(
     }
     register_tools(p)?;
     p.instructions.reseed(sources, &loaded);
-    Ok((finish_builder(p, pieces.join()), pieces, loaded))
+    let (agent, native_search) = finish_builder(p, pieces.join());
+    Ok((agent, pieces, loaded, native_search))
 }
 
 /// Whether the scheduling tools exist in this session.
@@ -142,6 +144,13 @@ fn prompt_layers(p: &Parts<'_>) -> (prompt::PromptPieces, Sources, Loaded) {
 fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
     let ledger_window: Arc<dyn fontaine_agents::root_ledger::RootLedger> =
         Arc::new(LedgerWindow(p.state.clone()));
+    let websearch = p
+        .config
+        .websearch_config_with_notice(&*p.setup.env, &p.setup.data_dir, {
+            let approver = p.approver.clone();
+            Arc::new(move |message: &str| approver.warn(message))
+        })
+        .map_err(|e| RuntimeError::caused("cannot set up the websearch tool", e))?;
     let registered = tools::registry(RegistryParams {
         gate: p.pipeline.clone(),
         scope: p.state.scope(),
@@ -152,6 +161,8 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
         results: p.results.clone(),
         hide_mcp_names: !(p.config.telemetry.enabled && p.config.telemetry.log_tool_details),
         network: p.setup.network.clone(),
+        websearch,
+        searxng: p.setup.searxng.clone(),
         extension: Some(ExtensionTools(extension_tools(p, ledger_window))),
     })
     .map_err(RuntimeError::new)?;
@@ -213,7 +224,8 @@ fn extension_tools(
     tools
 }
 
-fn finish_builder(p: &Parts<'_>, preamble: String) -> Agent {
+/// The agent, and whether it carries the provider's search tool.
+fn finish_builder(p: &Parts<'_>, preamble: String) -> (Agent, bool) {
     let builder = AgentBuilder::new(p.models.main.completion.clone())
         .preamble(preamble)
         .memory(p.session.store())
@@ -224,5 +236,9 @@ fn finish_builder(p: &Parts<'_>, preamble: String) -> Agent {
     if let Some(schema) = &p.setup.json_schema {
         builder = builder.output_schema_raw(schema.clone());
     }
-    builder.build()
+    let native = native_search::offered(p.config, p.models, p.state);
+    if let Some(entry) = &native {
+        builder = builder.additional_params(serde_json::json!({ "tools": [entry] }));
+    }
+    (builder.build(), native.is_some())
 }

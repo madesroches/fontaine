@@ -22,6 +22,7 @@ use crate::risk::{RiskClass, ToolSource, registered_risk};
 use crate::scope::{Scope, glob_target};
 use crate::tls::LoadedNetwork;
 use crate::webfetch::{Webfetch, WebfetchConfig};
+use crate::websearch::{SearxngChild, Websearch, WebsearchConfig};
 
 /// The directory listing tool; the model sees it as `ls`.
 #[derive(Clone, Debug)]
@@ -318,6 +319,11 @@ pub struct BuiltinEnv {
     pub guard: Guard,
     pub shell: ShellSettings,
     pub webfetch: WebfetchConfig,
+    /// Present only when a search backend is configured; with none, the tool does not exist.
+    pub websearch: Option<WebsearchConfig>,
+    /// The SearXNG process a session launches. Passing the same one again when the registry is
+    /// rebuilt keeps the instance running.
+    pub searxng: Arc<SearxngChild>,
     pub network: Arc<LoadedNetwork>,
 }
 
@@ -345,11 +351,11 @@ fn register<T: Tool + 'static>(guarded: GuardedTool<T>) -> Registered {
 
 /// Every built-in tool, wrapped. One `Seen` is shared by all `read` and `edit` instances so
 /// read-before-edit tracking holds whichever root serves a call.
-pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, reqwest::Error> {
+pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
     let scope = &env.scope;
     let guard = &env.guard;
     let seen = env.seen.clone();
-    Ok(vec![
+    let mut tools = vec![
         register(GuardedTool::per_root(
             scope.clone(),
             risk_of(Read::NAME),
@@ -399,9 +405,45 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, reqwest::Error> {
             |root| shell_for(root, &env.shell),
         )),
         register(GuardedTool::single(
-            Webfetch::new(env.webfetch.clone(), &env.network)?,
+            Webfetch::new(env.webfetch.clone(), &env.network).map_err(|source| BuildError {
+                tool: Webfetch::NAME,
+                source,
+            })?,
             risk_of(Webfetch::NAME),
             guard.clone(),
         )),
-    ])
+    ];
+    if let Some(config) = &env.websearch {
+        let tool = Websearch::new(config.clone(), &env.network, env.searxng.clone()).map_err(
+            |source| BuildError {
+                tool: Websearch::NAME,
+                source,
+            },
+        )?;
+        tools.push(register(GuardedTool::single(
+            tool,
+            risk_of(Websearch::NAME),
+            guard.clone(),
+        )));
+    }
+    Ok(tools)
+}
+
+/// A built-in whose HTTP client could not be built.
+#[derive(Debug)]
+pub struct BuildError {
+    pub tool: &'static str,
+    pub source: reqwest::Error,
+}
+
+impl std::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cannot set up the {} tool", self.tool)
+    }
+}
+
+impl std::error::Error for BuildError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
 }

@@ -81,6 +81,7 @@ fn unreadable_arguments_are_out_of_scope() {
         ("glob", json!({"path": "."})),
         ("mystery", json!({"path": "a"})),
         ("webfetch", json!({"url": "https://example.com"})),
+        ("websearch", json!({"query": "rust 2024 edition"})),
     ] {
         assert!(
             matches!(s.locate(tool, &args), Err(ScopeError::Unreadable(_))),

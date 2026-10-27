@@ -398,6 +398,7 @@ async fn run_child(
             priced: model.priced,
             model: model.model,
             provider: model.provider,
+            native_search: false,
             span: tracing::Span::current(),
         },
         None,

@@ -153,6 +153,8 @@ fn params(rig: &Rig) -> RegistryParams {
         git_bash: None,
         results: Arc::new(ResultPipeline::new()),
         hide_mcp_names: false,
+        websearch: None,
+        searxng: Default::default(),
         network: Default::default(),
         extension: Some(extension()),
     }
@@ -170,7 +172,12 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         "duplicate registrations: {names:?}"
     );
 
-    let expected: BTreeSet<&str> = TOOLS.iter().map(|d| d.name).collect();
+    // `websearch` exists only when a backend is configured.
+    let expected: BTreeSet<&str> = TOOLS
+        .iter()
+        .map(|d| d.name)
+        .filter(|name| *name != "websearch")
+        .collect();
     assert_eq!(unique, expected);
     // The nine beyond the built-ins are exactly these.
     let extras: BTreeSet<&str> = [
@@ -203,10 +210,39 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
     }
 }
 
+fn searxng() -> fontaine_tools::websearch::WebsearchConfig {
+    use fontaine_tools::websearch::{BackendConfig, WebsearchConfig};
+    WebsearchConfig::new(BackendConfig::Searxng {
+        base_url: "http://127.0.0.1:1".parse().unwrap(),
+        launch: None,
+    })
+}
+
+#[test]
+fn a_configured_backend_adds_exactly_websearch_with_its_descriptor_class() {
+    let rig = Rig::new(Manual);
+    let plain: BTreeSet<&str> = registry(params(&rig))
+        .unwrap()
+        .iter()
+        .map(|t| t.name)
+        .collect();
+    let mut p = params(&rig);
+    p.websearch = Some(searxng());
+    let tools = registry(p).unwrap();
+    let configured: BTreeSet<&str> = tools.iter().map(|t| t.name).collect();
+    assert_eq!(&configured - &plain, BTreeSet::from(["websearch"]));
+    assert!(plain.is_subset(&configured));
+    let tool = tools.iter().find(|t| t.name == "websearch").unwrap();
+    assert_eq!(Some(tool.risk), registered_risk("websearch"));
+    assert_eq!(tool.risk, fontaine_tools::risk::RiskClass::Arbitrary);
+}
+
 #[test]
 fn every_registered_tool_has_a_descriptor_row_and_its_class() {
     let rig = Rig::new(Manual);
-    for tool in registry(params(&rig)).unwrap() {
+    let mut p = params(&rig);
+    p.websearch = Some(searxng());
+    for tool in registry(p).unwrap() {
         let row = find(tool.name);
         assert!(row.is_some(), "{} has no descriptor row", tool.name);
         assert_eq!(Some(tool.risk), row.map(|d| d.risk), "{}", tool.name);

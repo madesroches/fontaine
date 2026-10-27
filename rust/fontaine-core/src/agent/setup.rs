@@ -270,6 +270,7 @@ pub(super) fn gates(
     tree: &Arc<AgentTree>,
     state: &Arc<SessionState>,
 ) -> Result<Gates, RuntimeError> {
+    super::warn_if_no_search(setup);
     let (pipeline, post_hooks) = permission_pipeline(setup, state);
     let retained = retained(setup)?;
     let instruction_stage = instruction_stage(setup, state);
@@ -390,6 +391,7 @@ pub(super) fn retained(setup: &AgentSetup) -> Result<Setup, RuntimeError> {
         confirm_project_servers: setup.confirm_project_servers,
         scheduling: setup.scheduling,
         env: setup.env.clone(),
+        searxng: Arc::default(),
     })
 }
 

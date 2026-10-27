@@ -292,6 +292,7 @@ async fn a_failed_main_model_call_emits_an_api_error_without_the_message() {
             priced: true,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
+            native_search: false,
         },
         &mut |_| Flow::Continue,
     )
@@ -329,6 +330,7 @@ async fn a_failed_subagent_call_reports_the_subagent_as_its_source() {
             priced: true,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
+            native_search: false,
             span: tracing::Span::none(),
         },
         None,
@@ -368,6 +370,7 @@ async fn reaching_the_turn_limit_is_not_an_api_error() {
             priced: true,
             model: "scripted".to_string(),
             provider: "mock".to_string(),
+            native_search: false,
         },
         &mut |_| Flow::Continue,
     )

@@ -1540,3 +1540,231 @@ fn the_goal_limits_are_validated() {
         .is_err()
     );
 }
+
+mod websearch {
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    use fontaine_core::config::{
+        Column, ConfigError, NativeSearch, WebsearchBackend, parse_settings,
+    };
+    use fontaine_core::credentials::{self, Credentials};
+    use fontaine_tools::websearch::{BackendConfig, DEFAULT_STARTUP_TIMEOUT};
+
+    use super::{World, env_with, write};
+
+    const SEARXNG: &str =
+        "[websearch]\nbackend = \"searxng\"\nbase_url = \"http://localhost:8080\"\n";
+
+    #[test]
+    fn nothing_is_configured_by_default() {
+        let w = World::new();
+        let c = w.load().unwrap();
+        assert_eq!(c.websearch.backend, None);
+        assert_eq!(c.websearch.native, NativeSearch::Auto);
+        assert_eq!(c.websearch.max_results, 10);
+        assert_eq!(c.websearch.timeout_secs, 30);
+        assert!(
+            c.websearch_config(&super::common::no_env, &w.data)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn off_parses_and_builds_no_tool_even_with_a_runtime_installed() {
+        let w = World::new();
+        w.user_file("[websearch]\nbackend = \"off\"\n");
+        let c = w.load().unwrap();
+        assert_eq!(c.websearch.backend, Some(WebsearchBackend::Off));
+        let env = |name: &str| (name == "PATH").then(|| std::ffi::OsString::from("/usr/bin"));
+        assert!(c.websearch_config(&env, &w.data).unwrap().is_none());
+        assert!(c.default_search_runtime(&env).is_none());
+    }
+
+    #[test]
+    fn off_refuses_the_keys_of_a_real_backend() {
+        let w = World::new();
+        w.user_file("[websearch]\nbackend = \"off\"\nbase_url = \"http://localhost:8080\"\n");
+        assert!(w.load().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_default_is_a_managed_backend_only_when_a_runtime_is_found() {
+        use std::os::unix::fs::PermissionsExt;
+        let w = World::new();
+        let c = w.load().unwrap();
+        let bin = w.root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let path = std::ffi::OsString::from(bin.as_os_str());
+        let env = move |name: &str| (name == "PATH").then(|| path.clone());
+        assert!(c.websearch_config(&env, &w.data).unwrap().is_none());
+        std::fs::write(bin.join("podman"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join("podman"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let built = c.websearch_config(&env, &w.data).unwrap().unwrap();
+        assert!(matches!(built.backend, BackendConfig::Managed(_)));
+        // Building the config starts nothing and writes nothing.
+        assert!(!w.data.join("searxng").exists());
+    }
+
+    #[test]
+    fn a_searxng_section_parses_and_builds_a_launching_backend() {
+        let w = World::new();
+        w.user_file(
+            "[websearch]\nbackend = \"searxng\"\nbase_url = \"http://localhost:8080\"\n\
+             command = [\"docker\", \"run\", \"--rm\", \"searxng/searxng\"]\n\
+             native = \"off\"\nmax_results = 5\ntimeout_secs = 12\n",
+        );
+        let c = w.load().unwrap();
+        assert_eq!(c.websearch.backend, Some(WebsearchBackend::Searxng));
+        assert_eq!(c.websearch.native, NativeSearch::Off);
+        let built = c
+            .websearch_config(&super::common::no_env, &w.data)
+            .unwrap()
+            .unwrap();
+        assert_eq!(built.max_results, 5);
+        assert_eq!(built.timeout.as_secs(), 12);
+        let BackendConfig::Searxng { base_url, launch } = built.backend else {
+            panic!("expected a searxng backend");
+        };
+        assert_eq!(base_url.as_str(), "http://localhost:8080/");
+        let launch = launch.unwrap();
+        assert_eq!(launch.argv[0], "docker");
+        assert_eq!(launch.startup_timeout, DEFAULT_STARTUP_TIMEOUT);
+    }
+
+    #[test]
+    fn unknown_keys_are_rejected() {
+        let err = parse_settings(
+            "[websearch]\nbackend = \"tavily\"\napi_key = \"k\"\n",
+            Path::new("user.toml"),
+            Column::User,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Parse { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn project_and_project_local_scopes_cannot_set_it_but_the_cli_can() {
+        let w = World::new();
+        w.trusted_repo();
+        w.project_file(SEARXNG);
+        assert!(matches!(w.load(), Err(ConfigError::Scope { .. })));
+        std::fs::remove_file(w.work.join(".fontaine/settings.toml")).unwrap();
+        w.local_file(SEARXNG);
+        assert!(matches!(w.load(), Err(ConfigError::Scope { .. })));
+        std::fs::remove_file(w.work.join(".fontaine/settings.local.toml")).unwrap();
+        let cli = w.cli_file(SEARXNG);
+        let c = w.load_with_settings(&cli).unwrap();
+        assert_eq!(c.websearch.backend, Some(WebsearchBackend::Searxng));
+    }
+
+    fn invalid(text: &str, mention: &str) {
+        let w = World::new();
+        w.user_file(text);
+        let err = w.load().unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.to_string().contains(mention), "{err}");
+    }
+
+    #[test]
+    fn inconsistent_sections_are_config_errors() {
+        invalid("[websearch]\nbackend = \"searxng\"\n", "base_url");
+        invalid(
+            "[websearch]\nbackend = \"tavily\"\nbase_url = \"http://x.test\"\napi_key_env = \"K\"\n",
+            "base_url",
+        );
+        invalid(
+            "[websearch]\nbackend = \"tavily\"\ncommand = [\"x\"]\napi_key_env = \"K\"\n",
+            "command",
+        );
+        invalid(&format!("{SEARXNG}startup_timeout_secs = 5\n"), "command");
+        invalid(&format!("{SEARXNG}command = []\n"), "command");
+        invalid(&format!("{SEARXNG}max_results = 21\n"), "max_results");
+        invalid(&format!("{SEARXNG}max_results = 0\n"), "max_results");
+        invalid("[websearch]\nbase_url = \"http://x.test\"\n", "backend");
+        invalid(
+            "[websearch]\nbackend = \"searxng\"\nbase_url = \"ftp://x.test\"\n",
+            "base_url",
+        );
+    }
+
+    #[test]
+    fn tavily_without_a_key_is_a_websearch_error_with_exit_code_two() {
+        let w = World::new();
+        w.user_file("[websearch]\nbackend = \"tavily\"\n");
+        let err = w.load().unwrap_err();
+        assert!(matches!(err, ConfigError::Websearch { .. }), "{err:?}");
+        assert_eq!(err.exit_code(), 2);
+
+        w.user_file("[websearch]\nbackend = \"tavily\"\napi_key_env = \"TAVILY\"\n");
+        let err = w.load().unwrap_err();
+        assert!(err.to_string().contains("TAVILY"), "{err}");
+        // A stored key does not stand in for a named-but-missing variable.
+        write(
+            &w.data.join("credentials.toml"),
+            "[websearch]\napi_key = \"stored\"\n",
+        );
+        assert!(matches!(
+            w.load().unwrap_err(),
+            ConfigError::Websearch { .. }
+        ));
+    }
+
+    #[test]
+    fn the_key_comes_from_the_named_variable_or_the_stored_credential() {
+        let w = World::new();
+        w.user_file("[websearch]\nbackend = \"tavily\"\napi_key_env = \"TAVILY\"\n");
+        let env = env_with("TAVILY", "tvly-from-env");
+        let c = w.load_from(&w.work, None, &env).unwrap();
+        let built = c.websearch_config(&env, &w.data).unwrap().unwrap();
+        let BackendConfig::Tavily { api_key, .. } = &built.backend else {
+            panic!("expected a tavily backend");
+        };
+        assert_eq!(
+            api_key,
+            &fontaine_tools::websearch::ApiKey::new("tvly-from-env")
+        );
+        assert!(!format!("{built:?}").contains("tvly-from-env"));
+
+        w.user_file("[websearch]\nbackend = \"tavily\"\n");
+        write(
+            &w.data.join("credentials.toml"),
+            "[websearch]\napi_key = \"tvly-stored\"\n",
+        );
+        let c = w.load().unwrap();
+        let no_env = |_: &str| -> Option<OsString> { None };
+        let built = c.websearch_config(&no_env, &w.data).unwrap().unwrap();
+        let BackendConfig::Tavily { api_key, .. } = built.backend else {
+            panic!("expected a tavily backend");
+        };
+        assert_eq!(
+            api_key,
+            fontaine_tools::websearch::ApiKey::new("tvly-stored")
+        );
+    }
+
+    #[test]
+    fn the_credentials_entry_round_trips_beside_accounts_and_takes_no_oauth() {
+        let w = World::new();
+        write(
+            &w.data.join("credentials.toml"),
+            "[websearch]\napi_key = \"tvly-stored\"\n",
+        );
+        credentials::store(&w.data, "work", "sk-account").unwrap();
+        let stored = Credentials::load(&w.data).unwrap();
+        assert_eq!(stored.websearch(), Some("tvly-stored"));
+        assert!(stored.account("work").is_some());
+
+        write(
+            &w.data.join("credentials.toml"),
+            "[websearch.oauth]\naccess = \"a\"\nrefresh = \"r\"\nexpires_at = 1\n",
+        );
+        assert!(matches!(
+            Credentials::load(&w.data),
+            Err(ConfigError::Credentials { .. })
+        ));
+    }
+}

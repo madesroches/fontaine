@@ -706,7 +706,8 @@ async fn clear_writes_the_held_conversation_to_scrollback_before_the_notice() {
 #[tokio::test(flavor = "multi_thread")]
 async fn startup_warnings_open_the_conversation_as_warning_entries() {
     use fontaine_core::Notice;
-    let mut w = World::new(vec![]);
+    // Off, so the web-search-unavailable warning is not among those the test orders.
+    let mut w = World::new(vec![]).with_cli_settings("[websearch]\nbackend = \"off\"\n");
     w.startup = vec![Notice::warning(
         "FONTAINE_AX_SCREEN_READER=x is ignored",
         None,

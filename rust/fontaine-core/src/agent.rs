@@ -19,6 +19,7 @@ use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::lock::write_recovering;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::RiskClass;
+use fontaine_tools::websearch::SearxngChild;
 use rig_agent::prelude::*;
 use rig_agent::tool::server::ToolServerHandle;
 use rig_core::completion::ToolDefinition;
@@ -35,6 +36,7 @@ use crate::gate::SessionState;
 use crate::instructions::{self, InstructionStage, Loaded, MemoryEntry};
 use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
 use crate::models::{AccountListing, Models, SharedSwitcher, Switcher};
+use crate::native_search;
 use crate::notice::Notice;
 use crate::permissions::{Approver, PermissionPipeline};
 use crate::prompt;
@@ -127,6 +129,9 @@ pub struct AgentSetup {
     pub origin: SessionOrigin,
     /// The process environment, for the variables MCP servers are given by name.
     pub env: EnvLookup,
+    /// Whether to say that web search is unavailable. A `/resume` or `/branch` builds another
+    /// runtime in the same process, so the launcher turns this off after the first.
+    pub warn_no_search: bool,
 }
 
 pub struct AgentRuntime {
@@ -169,6 +174,8 @@ pub struct AgentRuntime {
     mcp: Vec<Connected>,
     /// What `model_listings` has fetched this session.
     listings: Vec<AccountListing>,
+    /// Whether the agent was built with the provider's search tool.
+    native_search: bool,
 }
 
 /// The parts of the setup a rebuild needs again.
@@ -189,6 +196,23 @@ pub(crate) struct Setup {
     confirm_project_servers: bool,
     scheduling: bool,
     env: EnvLookup,
+    /// The SearXNG process `[websearch] command` starts, created once so a registry rebuild
+    /// reuses it. Dropping the runtime stops it.
+    searxng: Arc<SearxngChild>,
+}
+
+/// One line when the main model has no way to search: no provider search for its account, no
+/// configured backend and no container runtime for the default one.
+fn warn_if_no_search(setup: &AgentSetup) {
+    if setup.warn_no_search
+        && !native_search::provider_available(&setup.config, &setup.models)
+        && setup.config.websearch.backend.is_none()
+        && setup.config.default_search_runtime(&*setup.env).is_none()
+    {
+        setup.approver.warn(
+            "web search is unavailable: install docker or podman, or set `[websearch] backend`",
+        );
+    }
 }
 
 impl AgentRuntime {
@@ -220,10 +244,9 @@ impl AgentRuntime {
         );
         let seen = Seen::default();
         let steering = Steering::default();
-        let scope = state.scope();
-        let (agent, prompt_pieces, launch_instructions) = build_agent(&Parts {
+        let (agent, pieces, loaded, native) = build_agent(&Parts {
             setup: &retained,
-            roots: scope.roots(),
+            roots: state.scope().roots(),
             pipeline: &pipeline,
             state: &state,
             seen: &seen,
@@ -242,8 +265,8 @@ impl AgentRuntime {
         })?;
         Ok(AgentRuntime {
             agent,
-            prompt_pieces,
-            launch_instructions,
+            prompt_pieces: pieces,
+            launch_instructions: loaded,
             instruction_stage,
             state,
             session: setup.session,
@@ -272,6 +295,7 @@ impl AgentRuntime {
             output_style: None,
             mcp: Vec::new(),
             listings: Vec::new(),
+            native_search: native,
         })
     }
 
@@ -279,7 +303,7 @@ impl AgentRuntime {
     /// session store, so a new agent continues it.
     fn rebuild(&mut self) -> Result<(), RuntimeError> {
         let scope = self.state.scope();
-        let (agent, prompt_pieces, launch_instructions) = build_agent(&Parts {
+        let (agent, prompt_pieces, launch_instructions, native_search) = build_agent(&Parts {
             setup: &self.setup,
             roots: scope.roots(),
             pipeline: &self.pipeline,
@@ -298,10 +322,45 @@ impl AgentRuntime {
             steering: &self.steering,
             instructions: &self.instruction_stage,
         })?;
+        self.native_search = native_search;
         self.agent = agent;
         self.prompt_pieces = prompt_pieces;
         self.launch_instructions = launch_instructions;
         Ok(())
+    }
+
+    fn native_search_entry(&self) -> Option<serde_json::Value> {
+        native_search::offered(&self.config, &self.models, &self.state)
+    }
+
+    /// Rebuilds the agent when the live mode and rules change whether the provider's search
+    /// tool is offered. The tool is part of the built agent, which a mode switch or a session
+    /// rule does not rebuild, so the turn drivers call this before each turn.
+    ///
+    /// A failed rebuild is an error only when the old agent would keep a search tool the gate now
+    /// withholds, so the caller must not run the turn; failing to newly offer it is warned about
+    /// and the turn runs without it.
+    pub fn refresh_native_search(&mut self) -> Result<(), RuntimeError> {
+        let offered = self.native_search_entry().is_some();
+        if offered == self.native_search {
+            return Ok(());
+        }
+        match self.rebuild() {
+            Err(e) if !offered => Err(e),
+            Err(e) => {
+                self.approver.warn(&format!(
+                    "the provider's web search could not be updated: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                ));
+                Ok(())
+            }
+            Ok(()) => Ok(()),
+        }
+    }
+
+    /// Whether the agent carries the provider's search tool now.
+    pub fn native_search_active(&self) -> bool {
+        self.native_search
     }
 
     fn output_style_text(&self) -> Option<(String, String)> {

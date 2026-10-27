@@ -77,6 +77,8 @@ pub struct TurnParams<'a> {
     /// The model's id and provider, for the `api_error` event.
     pub model: String,
     pub provider: String,
+    /// Whether the request carries the provider's built-in search tool.
+    pub native_search: bool,
 }
 
 fn tool_text(content: &[ToolResultContent]) -> String {
@@ -117,6 +119,7 @@ pub async fn run_turn(
             priced: params.priced,
             model: params.model,
             provider: params.provider,
+            native_search: params.native_search,
             span: interaction,
         },
         Some(&mut feed),
@@ -147,6 +150,8 @@ pub struct Drive<'a> {
     /// The model's id and provider, for the `api_error` event.
     pub model: String,
     pub provider: String,
+    /// Whether the request carries the provider's built-in search tool.
+    pub native_search: bool,
     /// The run adopts this span as its own agent span.
     pub span: tracing::Span,
 }
@@ -160,6 +165,28 @@ fn error_class(error: &PromptError) -> Option<&'static str> {
         PromptError::Report(report) => Some(report.kind.code()),
         _ => None,
     }
+}
+
+/// The failure as shown to the user. A 400 whose body names `web_search` means the endpoint
+/// rejected the provider's built-in search tool; nothing retries without it, so the text says
+/// how to turn it off.
+fn failure_text(error: &PromptError, offered_search: bool) -> String {
+    let mut text = error.to_string();
+    let rejected_search = offered_search
+        && error
+            .provider_response_status()
+            .is_some_and(|status| status.as_u16() == 400)
+        && error
+            .provider_response_body()
+            .is_some_and(|body| body.contains("web_search"));
+    if rejected_search {
+        text.push_str(
+            "\nThe request carried the provider's built-in web search, which this endpoint \
+             rejected. Set `native = \"off\"` under `[websearch]` to use the configured search \
+             backend instead.",
+        );
+    }
+    text
 }
 
 async fn next_fed(feed: &mut Option<&mut DecisionFeed>) -> Option<Published> {
@@ -328,7 +355,7 @@ pub async fn drive(
         }
         match e {
             e @ PromptError::MaxTurns { .. } => TurnOutcome::MaxTurns(e.to_string()),
-            other => TurnOutcome::Failed(other.to_string()),
+            other => TurnOutcome::Failed(failure_text(&other, params.native_search)),
         }
     } else if let Some(response) = final_response {
         TurnOutcome::Answer(response.output())

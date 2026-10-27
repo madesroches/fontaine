@@ -94,6 +94,7 @@ without one is refused from project and project-local files. For those scopes:
 |---|---|---|---|
 | `[accounts.*]`, including their network keys | no | no | yes |
 | `[network]` | no | no | yes |
+| `[websearch]` | no | no | yes |
 | `[model] model` | no | yes | yes |
 | `[guardian] model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache` | no | yes | yes |
 | `[guardian] scanner`, `scanner_command`, `scanner_model_path`, `scanner_hf_token_env` | no | no | no |
@@ -373,7 +374,7 @@ model is a usage error (exit code 2).
 
 Proxy, extra CA roots and a client certificate for the HTTP clients Fontaine builds: model
 accounts, the guardian and its screen, `webfetch`, the scanner-model download, the `opencode-go`
-sign-in and HTTP MCP servers. User file and `--settings` only. Stdio MCP servers, shell commands
+sign-in, `websearch` and HTTP MCP servers. User file and `--settings` only. Stdio MCP servers, shell commands
 and [telemetry](#telemetry) exporters are not covered.
 
 | Key | Meaning | Default |
@@ -417,6 +418,39 @@ kind        = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 client_cert = "/etc/corp/client.pem"
 client_key  = "/etc/corp/client.key"
+```
+
+### `[websearch]`
+
+Where the `websearch` tool sends its queries, and whether the provider's own search is used. User
+file and `--settings` only, since it decides where queries go, which key is used and which command
+runs. See [Web search](tools.md#web-search) for how the two ways of searching are chosen.
+
+| Key | Meaning | Default |
+|---|---|---|
+| `backend` | `tavily`, `searxng` or `off`. Unset: a SearXNG container Fontaine starts itself when `docker` or `podman` is installed (see [Default search](tools.md#default-search)). `off` disables the client-side `websearch` tool. | unset |
+| `base_url` | The SearXNG instance, an `http` or `https` URL. Required for `searxng`; refused for `tavily`. | unset |
+| `command` | `searxng` only: the argv (no shell) that starts the instance serving `base_url`, such as `["docker", "run", "--rm", "-p", "127.0.0.1:8080:8080", "searxng/searxng"]`. Started by the first search with a minimal environment and stopped with the session (SIGTERM to its process group, then SIGKILL after 10 seconds from a background task, so a session that ends sooner can leave a process that ignores SIGTERM running). | unset: Fontaine does not start it |
+| `startup_timeout_secs` | How long to wait for `base_url` to answer after starting `command`. Needs `command`. | `60` |
+| `native` | `auto` uses the provider's own search where supported (`anthropic` accounts on the Anthropic API); `on` also uses it for other hosts of a supported kind; `off` never does. | `auto` |
+| `api_key_env` | `tavily` only: the environment variable holding the key. Omit it to use the stored credential. | unset |
+| `max_results` | Results returned, 1 to 20. | `10` |
+| `timeout_secs` | Request timeout. | `30` |
+
+Queries are sent to the provider, or to the configured backend, in the clear. A `tavily` backend
+needs a key, and a missing key is a configuration error (exit code 2) at startup, not at the first
+search. The key is `api_key_env` when that is set; if the named variable is unset or empty the key
+counts as missing. When it is omitted, the key is the `[websearch]` entry in `credentials.toml`.
+Keys are never written inline in settings. With `backend` unset, the managed container gets the minimal child environment plus
+`DOCKER_HOST`, `DOCKER_CONFIG`, `XDG_RUNTIME_DIR` and `CONTAINER_HOST` when they are set (the runtime needs them to
+reach its daemon), a 300 second start timeout for the first image pull, and a command that is fixed by Fontaine and a generated container name (`fontaine-searxng-<random>`) removed by a detached `rm -f` when the session ends. `command` is an executable like an MCP server or a hook
+command, but it can only start the instance; it never loosens a permission decision.
+
+```toml
+[websearch]
+backend = "tavily"
+api_key_env = "TAVILY_API_KEY"
+max_results = 8
 ```
 
 ### `[model]`
@@ -524,7 +558,7 @@ file, and the notice names the scope that wins from the next launch.
 
 Rule strings use the `Tool` or `Tool(specifier)` form described in
 [Permissions](permissions.md#rules). At load, Fontaine checks the outer shape, that the tool is one
-of `shell`, `read`, `edit`, `write`, `ls`, `glob`, `grep`, `webfetch`, `agent`, `skill`,
+of `shell`, `read`, `edit`, `write`, `ls`, `glob`, `grep`, `webfetch`, `websearch`, `agent`, `skill`,
 `send_message`, `ask_user_question`, `todo_write`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup` or an `mcp__<server>[__<tool>|__*]` name, and that the specifier is valid for the
 tool (a `shell` specifier is literal command words, a path specifier a gitignore-style pattern, a
 `webfetch` specifier `domain:<host>` or `domain:*.<host>`). A bad rule is a configuration error.
@@ -775,7 +809,9 @@ RUST_LOG = "warn"
 - Values are never logged and never appear in a configuration error, and the settings debug output
   hides them. The [guardian](guardian.md) is told the names that are set, never the values.
 - Fontaine's own process is not affected: provider, telemetry and scanner-command lookups keep
-  using the variables they name, and the `scanner = "command"` program does not get `[env]`.
+  using the variables they name, and neither the `scanner = "command"` program nor the `[websearch] command` SearXNG launch gets `[env]`. The
+  SearXNG child's environment is deliberately the minimal one; pass it variables inline in the
+  argv (for `docker run`, `-e NAME=value`).
 - User-trust scopes only (see [Trust asymmetry](#trust-asymmetry)).
 
 ### `[tui]`
@@ -846,8 +882,8 @@ may set, Fontaine exits with code 2, names the root, and prints the `trust.toml`
 ## Credentials
 
 `<data dir>/credentials.toml` holds stored credentials. Each account has either an `api_key` or,
-after a sign-in, an `oauth` entry, and the telemetry key is kept separately, so an account named
-`telemetry` cannot shadow it:
+after a sign-in, an `oauth` entry, and the telemetry and web search keys are kept separately, so an
+account named `telemetry` or `websearch` cannot shadow them:
 
 ```toml credentials.toml
 [accounts.work]
@@ -863,6 +899,9 @@ email = "me@example.com"
 
 [telemetry]
 api_key = "ingestion-key"
+
+[websearch]
+api_key = "tavily-key"
 ```
 
 `/login` in the terminal UI is the way to store a credential interactively; see
@@ -883,7 +922,8 @@ again.
 There is no command-line way to store a credential. Automation sets `api_key_env` on the account
 and exports the variable, or ships a `credentials.toml` in the data directory (the schema above,
 owner-only). The telemetry ingestion key is the `[telemetry]` entry of that file, or the variable
-`[telemetry] api_key_env` names. An `opencode-go` sign-in is a poor fit for CI: refresh tokens
+`[telemetry] api_key_env` names; the Tavily key is the `[websearch]` entry, or the variable
+`[websearch] api_key_env` names. An `opencode-go` sign-in is a poor fit for CI: refresh tokens
 rotate, so a copied `credentials.toml` works on one machine at a time and the copy left behind
 stops working after the first refresh. Use a key-based account there.
 

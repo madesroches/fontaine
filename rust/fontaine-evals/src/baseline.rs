@@ -36,7 +36,7 @@ pub struct Denial {
     pub tool_input: Value,
 }
 
-const TOOL_NAMES: [(&str, &str); 8] = [
+const TOOL_NAMES: [(&str, &str); 9] = [
     ("shell", "Bash"),
     ("read", "Read"),
     ("write", "Write"),
@@ -44,6 +44,7 @@ const TOOL_NAMES: [(&str, &str); 8] = [
     ("glob", "Glob"),
     ("grep", "Grep"),
     ("webfetch", "WebFetch"),
+    ("websearch", "WebSearch"),
     ("agent", "Agent"),
 ];
 

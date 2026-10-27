@@ -73,6 +73,8 @@ pub fn env_with(scope: Arc<Scope>, gate: Arc<dyn ToolGate>) -> BuiltinEnv {
         },
         shell: ShellSettings::default(),
         webfetch: WebfetchConfig::default(),
+        websearch: None,
+        searxng: Default::default(),
         network: Default::default(),
     }
 }

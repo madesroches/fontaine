@@ -454,6 +454,11 @@ mod tests {
     }
 
     #[test]
+    fn web_search_maps_to_websearch() {
+        assert_eq!(map_tool_entry("WebSearch").unwrap(), "websearch");
+    }
+
+    #[test]
     fn todo_write_maps_to_todo_write() {
         assert_eq!(map_tool_entry("TodoWrite").unwrap(), "todo_write");
     }
@@ -465,7 +470,7 @@ mod tests {
                 .unwrap_err()
                 .contains("NotebookEdit")
         );
-        assert!(map_tool_entry("WebSearch").is_err());
+        assert!(map_tool_entry("WebSearch(domain:example.com)").is_err());
         assert!(map_tool_entry("Bash(git add:*)").is_err());
         assert!(map_tool_entry("Bash(").is_err());
     }

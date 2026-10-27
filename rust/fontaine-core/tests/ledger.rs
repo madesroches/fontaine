@@ -739,6 +739,8 @@ async fn a_corrupt_trust_store_is_reported_once_at_session_start() {
     use fontaine_core::config::PermissionMode::Manual;
 
     let w = World::new();
+    // Off, so the web-search-unavailable warning does not join the one under test.
+    w.user_file("[websearch]\nbackend = \"off\"\n");
     std::fs::write(w.data.join("trust.toml"), "trusted = [[[").unwrap();
     let approver = std::sync::Arc::new(Collect(Default::default()));
     let handle = fontaine_core::models::ModelHandle::new(

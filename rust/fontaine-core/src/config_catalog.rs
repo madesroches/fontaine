@@ -453,6 +453,45 @@ pub const KEYS: &[KeyRow] = &[
     row!("telemetry.resource_attributes", Map, |c, _| names(
         c.telemetry.resource_attributes.keys()
     )),
+    row!("websearch.backend", Scalar, |c, _| {
+        c.websearch
+            .backend
+            .map_or_else(|| "unset".to_string(), lowercase_debug)
+    }),
+    row!("websearch.base_url", Scalar, |c, _| {
+        c.websearch
+            .base_url
+            .as_deref()
+            .map_or_else(|| "unset".to_string(), redacted_url)
+    }),
+    row!("websearch.command", Scalar, |c, _| {
+        c.websearch.command.as_ref().map_or_else(
+            || "unset".to_string(),
+            |argv| {
+                // Arguments can carry inline secrets (docker `-e NAME=value`).
+                let program = argv.first().map_or("", String::as_str);
+                format!("{program} (+{} args)", argv.len().saturating_sub(1))
+            },
+        )
+    }),
+    row!("websearch.startup_timeout_secs", Scalar, |c, _| opt(c
+        .websearch
+        .startup_timeout_secs)),
+    row!("websearch.native", Scalar, |c, _| lowercase_debug(
+        c.websearch.native
+    )),
+    row!("websearch.api_key_env", Scalar, |c, _| opt(c
+        .websearch
+        .api_key_env
+        .as_deref())),
+    row!("websearch.max_results", Scalar, |c, _| c
+        .websearch
+        .max_results
+        .to_string()),
+    row!("websearch.timeout_secs", Scalar, |c, _| c
+        .websearch
+        .timeout_secs
+        .to_string()),
     row!("env", Map, |c, _| names(c.env.keys())),
 ];
 
@@ -547,6 +586,20 @@ mod tests {
             effective("guardian.model", &c),
             "unset (best validated, else main model)"
         );
+    }
+
+    #[test]
+    fn the_searxng_command_shows_the_program_but_not_its_arguments() {
+        let mut c = defaults();
+        assert_eq!(effective("websearch.command", &c), "unset");
+        c.websearch.command = Some(
+            ["docker", "run", "-e", "SEARXNG_SECRET=hunter2"]
+                .map(String::from)
+                .to_vec(),
+        );
+        let shown = effective("websearch.command", &c);
+        assert_eq!(shown, "docker (+3 args)");
+        assert!(!shown.contains("hunter2"));
     }
 
     #[test]

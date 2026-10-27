@@ -371,3 +371,34 @@ fn a_matching_pair_loads() {
     };
     settings.load().unwrap();
 }
+
+#[tokio::test]
+async fn websearch_goes_through_the_configured_proxy() {
+    use fontaine_tools::websearch::{
+        ApiKey, BackendConfig, Websearch, WebsearchArgs, WebsearchConfig,
+    };
+
+    let proxy = proxy_mock(
+        r#"{"results": [{"title": "Via proxy", "url": "https://a.example/", "content": "s"}]}"#,
+    )
+    .await;
+    let network = proxied("http", &proxy, None).load().unwrap();
+    let config = WebsearchConfig::new(BackendConfig::Tavily {
+        api_key: ApiKey::new("k"),
+        endpoint: "http://search.test/search".parse().unwrap(),
+    });
+    let tool = Websearch::new(config, &network, Default::default()).unwrap();
+    let out = tool
+        .call(
+            &mut ToolContext::new(),
+            WebsearchArgs {
+                query: "x".to_string(),
+                allowed_domains: None,
+                blocked_domains: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(out.contains("Via proxy"), "{out}");
+    assert_eq!(proxy.received_requests().await.unwrap().len(), 1);
+}
