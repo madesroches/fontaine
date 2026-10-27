@@ -266,7 +266,7 @@ impl Approval {
                 Choice::Session => "allow session grants this rule until you exit",
                 _ => "rule the lasting answers would add",
             };
-            for piece in wrap(&format!("{what}: {rule}"), width) {
+            for piece in wrap(&format!("{what}: {}", display_rule(rule)), width) {
                 out.push(Line::styled(piece, dim));
             }
         }
@@ -282,6 +282,12 @@ impl Approval {
         }
         out
     }
+}
+
+/// `wrap` chunks by width and ratatui drops control characters, so a rule's newlines would run
+/// its lines together; the saved rule keeps them.
+fn display_rule(rule: &str) -> String {
+    rule.replace("\r\n", "\\n").replace(['\n', '\r'], "\\n")
 }
 
 #[cfg(test)]
@@ -405,5 +411,24 @@ mod tests {
             plain(&approval.body(40, &Theme::default())),
             ["Allow shell?", "ls", "r"]
         );
+    }
+
+    #[test]
+    fn display_rule_shows_newlines_as_markers() {
+        assert_eq!(display_rule("a\nb"), "a\\nb");
+        assert_eq!(display_rule("a\r\nb"), "a\\nb");
+        assert_eq!(display_rule("a\rb"), "a\\nb");
+        assert_eq!(display_rule("shell(ls -la)"), "shell(ls -la)");
+    }
+
+    #[test]
+    fn the_footer_rule_keeps_both_lines_of_a_multiline_command() {
+        let mut req = request();
+        req.proposed_rule = Some("shell(import median\nprint(median([1]))".into());
+        let approval = Approval::new(req, oneshot::channel().0);
+        let rows = plain(&approval.footer(200)).join("\n");
+        let at = |needle: &str| rows.find(needle).expect(needle);
+        assert!(at("import median") < at("\\n"));
+        assert!(at("\\n") < at("print(median"));
     }
 }
