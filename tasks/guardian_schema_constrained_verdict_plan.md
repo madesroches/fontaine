@@ -113,11 +113,14 @@ The mode is a property of the (account, model), not a user setting:
   eval scorecards say which path judged. A `completion`-less model is a
   `GuardianModel::Unavailable`-style reason shown at startup and in `/guardian-model`:
   "ollama/<model> cannot generate text (capabilities: embedding)".
-- Startup and `/guardian-model` run the probe eagerly in the same place the session already warms
-  the screen (`agent/setup.rs:244` spawns `screen.warm_up()`; add the guardian probe beside it, as
-  a fire-and-forget task whose `Tool`/`Schema` result lands in the `OnceCell` and, when it is the
-  capability error above or a `Schema` selection, in a one-time notice). The sync `set_guardian_model` keeps its
-  signature; the notice is delivered through the runtime's existing notice channel. Per-call
+- Startup runs the probe eagerly, in guardian setup rather than `attach_screen` (which runs only when
+  a screen exists, so is not a general guardian hook): a fire-and-forget task, holding an
+  `Arc<dyn Approver>` (`setup.approver`), whose `Tool`/`Schema` result lands in the `OnceCell` and, when
+  it is the capability error above or a `Schema` selection, is reported once through `Approver::notice`
+  (`Approver::warn` for the capability error). There is no runtime notice channel: `AgentRuntime`'s
+  `Vec<Notice>` fields are static and filled at setup. `/guardian-model` prints synchronously from
+  `unavailable_reason()`, so the Schema/capability message reaches it through `Switched` gaining an
+  optional `notice: Option<String>` field. The sync `set_guardian_model` keeps its signature. Per-call
   behavior never depends on the eager probe finishing: the lazy resolution in `run()` is the source
   of truth.
 - The `400 ... does not support tools` response is also recognized in the `Tool` path's
@@ -142,7 +145,10 @@ The issue's open questions are answered by measurement, not by this plan:
 
 1. Add `--verdict-transport tool|schema|auto` to `fontaine-evals` (default `auto` = what a session
    would pick) and record the transport in each scorecard row and in `guardian_models.toml`
-   entries' provenance (`transport = "tool"` default, so existing entries are unchanged).
+   entries (a flat `#[serde(default)]` `transport` field, default `"tool"`, so existing entries are
+   unchanged; transport is not part of the lookup/ranking key, so an entry is added only for the
+   transport that cleared the bar, one entry per model, and a model clearing it on both keeps the
+   `Tool` entry).
 2. Run `evals/` against live models: `ollama/gemma3:4b` on `schema`; one tool-capable Ollama model
    (e.g. `qwen3:8b` with thinking off, or whichever the maintainer has pulled) on both `tool` and
    `schema`; at least one non-Ollama validated model on `tool` as the control. Same dataset
@@ -180,9 +186,9 @@ and recorded in the master plan's `## Decisions`; the code, tests, and docs do n
    `ModelHandle` carries the probe; pass it at the construction sites (`agent/setup.rs`,
    `scanner_stage.rs`, `evals/live.rs` guardian and scanner paths) and the tests that build them
    (`fontaine-guardian/tests/guardian.rs:585`, `tests/scanner.rs:244`).
-4. **Notices**: eager probe beside the screen warm-up; one-time notice on `Schema` selection and on
+4. **Notices**: eager probe in guardian setup (spawned task holding the `Approver`); one-time notice on `Schema` selection and on
    the capability error; clearer `400 does not support tools` text on the `Tool` path.
-5. **Evals**: `--verdict-transport` flag, scorecard/`guardian_models.toml` provenance field
+5. **Evals**: `--verdict-transport` flag, scorecard/`guardian_models.toml` flat `transport` field
    (serde default keeps existing files valid); the flag is rejected for `fixture`, `none` and
    `screen`.
 6. **Spike runs and write-up** (see above); write the measured comparison in `docs/evals.md` when
@@ -213,6 +219,8 @@ and recorded in the master plan's `## Decisions`; the code, tests, and docs do n
   `prompt_typed`, not a custom Ollama client (#250).
 - 2026-10-27: No model is listed in `guardian_models.toml` for the schema path without its own
   scorecard run clearing the inclusion bar (#250, per the issue's constraint).
+- AFK: 2026-10-27: Notices are delivered by the spawned probe task calling `Approver::notice`/`warn` (probe placed in guardian setup, not `attach_screen`), and `/guardian-model` via an optional `notice` field on `Switched`; no new notice channel (#250).
+- AFK: 2026-10-27: `guardian_models.toml` gets a flat `#[serde(default)]` `transport` field (default `tool`) that is not part of the lookup key: one entry per model, added only for the transport that cleared the bar, `Tool` wins if both do (#250).
 
 ## Documentation
 
