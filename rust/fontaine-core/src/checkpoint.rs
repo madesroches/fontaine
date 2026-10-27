@@ -357,7 +357,9 @@ impl CheckpointStore {
                 "{skipped} unreadable line(s) in the checkpoint manifest were skipped, so /rewind may not restore some edits"
             ));
         }
-        let mut manifest = owner_only::open(&path, true)?;
+        // Shared for writing so a second open of the session (a test, or a store not yet dropped)
+        // is not refused by Windows.
+        let mut manifest = owner_only::open_lock(&path)?;
         // A complete last record can still lack its newline; the next append would join it.
         if std::fs::read(&path).is_ok_and(|b| !b.is_empty() && !b.ends_with(b"\n")) {
             manifest.write_all(b"\n")?;
