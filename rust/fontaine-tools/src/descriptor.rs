@@ -90,6 +90,14 @@ pub static TOOLS: &[ToolDescriptor] = &[
         &["Write"],
     ),
     row(
+        "notebook_edit",
+        RiskClass::WorkspaceWrite,
+        false,
+        Destructive::FileWrite,
+        Specifier::Path,
+        &["NotebookEdit"],
+    ),
+    row(
         "ls",
         RiskClass::ReadOnly,
         false,
@@ -262,7 +270,7 @@ mod tests {
         use RiskClass as R;
         use Specifier as S;
         type Pinned = (&'static str, R, bool, D, S, &'static [&'static str]);
-        let expected: [Pinned; 18] = [
+        let expected: [Pinned; 19] = [
             ("shell", R::Arbitrary, false, D::Shell, S::Shell, &["Bash"]),
             ("read", R::ReadOnly, false, D::Never, S::Path, &["Read"]),
             (
@@ -280,6 +288,14 @@ mod tests {
                 D::FileWrite,
                 S::Path,
                 &["Write"],
+            ),
+            (
+                "notebook_edit",
+                R::WorkspaceWrite,
+                false,
+                D::FileWrite,
+                S::Path,
+                &["NotebookEdit"],
             ),
             ("ls", R::ReadOnly, false, D::Never, S::Path, &["LS"]),
             ("glob", R::ReadOnly, false, D::Never, S::Path, &["Glob"]),

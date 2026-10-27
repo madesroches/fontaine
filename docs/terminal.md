@@ -158,11 +158,11 @@ What is printed:
 |---|---|
 | `you: ...` | A message you sent. |
 | `assistant: ...` | The model's reply, printed a line at a time as it streams. The label appears once. |
-| `tool: <tool> <summary> — done` | A tool call that finished; `— interrupted` for one that did not. Its last ten output lines follow as plain lines, after `… N earlier lines`. `expand: /expand N` ends the card when the output was cut, the call spans several lines, or an `edit` or `write` has a diff on a call that did not fail; a `… clipped: only the start and end of the output are kept` line marks output too large to keep whole. `/expand N` prints the card whole: a `tool: <tool> — done` line, the call's lines, a diff header (path, added and removed counts) with `+` and `-` lines and no line numbers, then all the kept output. |
+| `tool: <tool> <summary> — done` | A tool call that finished; `— interrupted` for one that did not. Its last ten output lines follow as plain lines, after `… N earlier lines`. `expand: /expand N` ends the card when the output was cut, the call spans several lines, or an `edit`, `write` or `notebook_edit` has a diff on a call that did not fail; a `… clipped: only the start and end of the output are kept` line marks output too large to keep whole. `/expand N` prints the card whole: a `tool: <tool> — done` line, the call's lines, a diff header (path, added and removed counts) with `+` and `-` lines and no line numbers, then all the kept output. |
 | `tool error: <tool> <summary> — failed: ...` | A tool call that failed, or `— denied: ...` for one that was refused. A failed call's output follows like a finished one's. |
 | `error: ...`, `notice: ...` and `warning: ...` | Errors, notices and warnings. A warning's advice follows on its own `hint: ...` line. |
 | `shell: <command>` | A `!` command you ran, followed by its output. |
-| `Permission Required:` | An approval prompt opened. Its question, the call (for an `edit` or `write`, its diff as plain text: line numbers, then `+` or `-` and the line), the choices and the rule the lasting answers would add follow. |
+| `Permission Required:` | An approval prompt opened. Its question, the call (for an `edit`, `write` or `notebook_edit`, its diff as plain text: line numbers, then `+` or `-` and the line), the choices and the rule the lasting answers would add follow. |
 | `<name>:` | Another dialog opened, for example `model:`, `providers:`, `denied:` or `MCP server:`. |
 | `selected: ...` | The highlighted row of the open dialog. |
 | `[plan mode on]` | The mode changed: `[manual mode on]`, `[accept edits on]`, `[plan mode on]`, `[auto mode on]` or `[dontAsk mode on]`, however it changed. |

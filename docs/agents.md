@@ -36,7 +36,7 @@ Two types are built in:
 | Type | Model | Tools |
 |---|---|---|
 | `explore` | `$guardian_default` | `ls`, `read`, `glob`, `grep`, `send_message` |
-| `worker` | `$main` | `ls`, `read`, `glob`, `grep`, `edit`, `write`, `shell`, `send_message` |
+| `worker` | `$main` | `ls`, `read`, `glob`, `grep`, `edit`, `write`, `notebook_edit`, `shell`, `send_message` |
 
 `$main` is the session model. `$guardian_default` is the top-ranked validated guardian model your
 accounts offer, or the session model when there is none.

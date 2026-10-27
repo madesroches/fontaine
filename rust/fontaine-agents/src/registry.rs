@@ -171,6 +171,7 @@ impl AgentTypes {
                     "grep",
                     "edit",
                     "write",
+                    "notebook_edit",
                     "shell",
                     "send_message",
                 ]
@@ -259,6 +260,13 @@ mod tests {
             ty.toolset(&names(&["read", "todo_write"])),
             names(&["read", "todo_write"])
         );
+    }
+
+    #[test]
+    fn the_worker_type_can_edit_notebooks() {
+        let worker = AgentTypes::builtin().get("worker").unwrap().clone();
+        let set = worker.toolset(&names(&["read", "notebook_edit"]));
+        assert_eq!(set, names(&["read", "notebook_edit"]));
     }
 
     #[test]

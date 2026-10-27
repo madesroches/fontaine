@@ -36,6 +36,7 @@ async fn the_registered_tools_are_advertised_to_the_model() {
         "grep",
         "write",
         "edit",
+        "notebook_edit",
         "shell",
         "webfetch",
         "agent",

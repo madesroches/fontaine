@@ -284,7 +284,7 @@ pub fn touched_paths(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
     };
     let mut out: Vec<String> = Vec::new();
     match tool {
-        "read" | "write" | "edit" => out.extend(text("path").map(resolve)),
+        "read" | "write" | "edit" | "notebook_edit" => out.extend(text("path").map(resolve)),
         "ls" | "grep" => out.push(
             text("path").map_or_else(|| scope.primary().to_string_lossy().into_owned(), resolve),
         ),

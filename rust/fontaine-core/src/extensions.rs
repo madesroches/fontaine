@@ -466,9 +466,9 @@ mod tests {
     #[test]
     fn unmapped_names_and_bad_specifiers_are_errors() {
         assert!(
-            map_tool_entry("NotebookEdit")
+            map_tool_entry("MadeUpTool")
                 .unwrap_err()
-                .contains("NotebookEdit")
+                .contains("MadeUpTool")
         );
         assert!(map_tool_entry("WebSearch(domain:example.com)").is_err());
         assert!(map_tool_entry("Bash(git add:*)").is_err());

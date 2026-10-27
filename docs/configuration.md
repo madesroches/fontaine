@@ -559,7 +559,7 @@ file, and the notice names the scope that wins from the next launch.
 
 Rule strings use the `Tool` or `Tool(specifier)` form described in
 [Permissions](permissions.md#rules). At load, Fontaine checks the outer shape, that the tool is one
-of `shell`, `read`, `edit`, `write`, `ls`, `glob`, `grep`, `webfetch`, `websearch`, `agent`, `skill`,
+of `shell`, `read`, `edit`, `write`, `notebook_edit`, `ls`, `glob`, `grep`, `webfetch`, `websearch`, `agent`, `skill`,
 `send_message`, `ask_user_question`, `todo_write`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup` or an `mcp__<server>[__<tool>|__*]` name, and that the specifier is valid for the
 tool (a `shell` specifier is literal command words, a path specifier a gitignore-style pattern, a
 `webfetch` specifier `domain:<host>` or `domain:*.<host>`). A bad rule is a configuration error.

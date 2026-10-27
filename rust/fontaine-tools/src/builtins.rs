@@ -18,6 +18,7 @@ use serde_json::json;
 
 use crate::git_bash::{GitBash, sh_command};
 use crate::guarded::{Guard, GuardedTool};
+use crate::notebook::{NOTEBOOK_STEER, NotebookEdit, NotebookRead};
 use crate::risk::{RiskClass, ToolSource, registered_risk};
 use crate::scope::{Scope, glob_target};
 use crate::tls::LoadedNetwork;
@@ -58,6 +59,80 @@ impl Tool for Ls {
         args: ListArgs,
     ) -> Result<String, ToolExecutionError> {
         self.list.call(context, args).await
+    }
+}
+
+/// rig's `write`, pointed away from notebooks in its description.
+#[derive(Clone, Debug)]
+pub struct WriteTool {
+    pub write: Write,
+}
+
+impl Tool for WriteTool {
+    const NAME: &'static str = Write::NAME;
+    type Args = <Write as Tool>::Args;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        self.write.description() + NOTEBOOK_STEER
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        self.write.parameters()
+    }
+
+    fn annotations(&self) -> ToolAnnotations {
+        self.write.annotations()
+    }
+
+    fn footprint(&self, args: &Self::Args) -> rig_core::tool::Touches {
+        self.write.footprint(args)
+    }
+
+    async fn call(
+        &self,
+        context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<String, ToolExecutionError> {
+        self.write.call(context, args).await
+    }
+}
+
+/// rig's `edit`, pointed away from notebooks in its description.
+#[derive(Clone, Debug)]
+pub struct EditTool {
+    pub edit: Edit,
+}
+
+impl Tool for EditTool {
+    const NAME: &'static str = Edit::NAME;
+    type Args = <Edit as Tool>::Args;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        self.edit.description() + NOTEBOOK_STEER
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        self.edit.parameters()
+    }
+
+    fn annotations(&self) -> ToolAnnotations {
+        self.edit.annotations()
+    }
+
+    fn footprint(&self, args: &Self::Args) -> rig_core::tool::Touches {
+        self.edit.footprint(args)
+    }
+
+    async fn call(
+        &self,
+        context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<String, ToolExecutionError> {
+        self.edit.call(context, args).await
     }
 }
 
@@ -270,6 +345,15 @@ pub fn edit_for(root: &Path, seen: &Seen) -> Edit {
     }
 }
 
+pub fn notebook_edit_for(root: &Path, seen: &Seen) -> NotebookEdit {
+    NotebookEdit {
+        base: Some(root.to_path_buf()),
+        confine: true,
+        seen: seen.clone(),
+        ..NotebookEdit::default()
+    }
+}
+
 pub fn list_for(root: &Path) -> List {
     List {
         base: Some(root.to_path_buf()),
@@ -360,7 +444,9 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             scope.clone(),
             risk_of(Read::NAME),
             guard.clone(),
-            |root| read_for(root, &seen),
+            |root| NotebookRead {
+                read: read_for(root, &seen),
+            },
         )),
         register(GuardedTool::per_root(
             scope.clone(),
@@ -390,13 +476,23 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             scope.clone(),
             risk_of(Write::NAME),
             guard.clone(),
-            |root| write_for(root, &seen),
+            |root| WriteTool {
+                write: write_for(root, &seen),
+            },
         )),
         register(GuardedTool::per_root(
             scope.clone(),
             risk_of(Edit::NAME),
             guard.clone(),
-            |root| edit_for(root, &seen),
+            |root| EditTool {
+                edit: edit_for(root, &seen),
+            },
+        )),
+        register(GuardedTool::per_root(
+            scope.clone(),
+            risk_of(NotebookEdit::NAME),
+            guard.clone(),
+            |root| notebook_edit_for(root, &seen),
         )),
         register(GuardedTool::per_root(
             scope.clone(),

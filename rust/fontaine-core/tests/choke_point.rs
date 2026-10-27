@@ -194,7 +194,15 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
     .into_iter()
     .collect();
     let built_ins: BTreeSet<&str> = [
-        "read", "ls", "glob", "grep", "write", "edit", "shell", "webfetch",
+        "read",
+        "ls",
+        "glob",
+        "grep",
+        "write",
+        "edit",
+        "notebook_edit",
+        "shell",
+        "webfetch",
     ]
     .into_iter()
     .collect();
@@ -251,11 +259,11 @@ fn every_registered_tool_has_a_descriptor_row_and_its_class() {
 }
 
 #[test]
-fn without_the_extension_the_registry_is_the_eight_built_ins() {
+fn without_the_extension_the_registry_is_the_nine_built_ins() {
     let rig = Rig::new(Manual);
     let mut p = params(&rig);
     p.extension = None;
-    assert_eq!(registry(p).unwrap().len(), 8);
+    assert_eq!(registry(p).unwrap().len(), 9);
 }
 
 async fn serve(

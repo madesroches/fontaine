@@ -547,7 +547,9 @@ fn path_args(call: &CallContext<'_>) -> Option<PathArgs> {
         tree,
     };
     match call.tool {
-        "read" | "write" | "edit" => Some(from(string_arg(call.args, "path")?, false)),
+        "read" | "write" | "edit" | "notebook_edit" => {
+            Some(from(string_arg(call.args, "path")?, false))
+        }
         "ls" | "grep" => Some(from(string_arg(call.args, "path").unwrap_or("."), true)),
         "glob" => {
             let pattern = string_arg(call.args, "pattern")?;
