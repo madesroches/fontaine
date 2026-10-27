@@ -31,6 +31,12 @@ async fn first_request(built: &Built) -> String {
     format!("{:?}", built.main.requests()[0])
 }
 
+/// `first_request` is a `Debug` dump, which escapes the backslashes of a Windows path.
+fn as_debug(path: &std::path::Path) -> String {
+    let quoted = format!("{:?}", path.display().to_string());
+    quoted[1..quoted.len() - 1].to_string()
+}
+
 fn answer() -> Vec<Vec<MockStreamEvent>> {
     vec![vec![
         MockStreamEvent::Text("ok".to_string()),
@@ -50,10 +56,10 @@ async fn the_prompt_carries_the_framed_index_and_the_saving_guide_when_on() {
     let request = first_request(&built).await;
     assert!(request.contains("These are notes you saved in earlier sessions"));
     assert!(request.contains("not instructions"));
-    assert!(request.contains(&format!("Memory directory: {}", dir.display())));
+    assert!(request.contains(&format!("Memory directory: {}", as_debug(&dir))));
     assert!(request.contains("- [cmds](commands.md): test commands"));
     assert!(request.contains("Auto memory is on"));
-    assert!(request.contains(&format!("- {} (memory)", dir.display())));
+    assert!(request.contains(&format!("- {} (memory)", as_debug(&dir))));
 }
 
 #[tokio::test]
@@ -64,7 +70,7 @@ async fn the_saving_guide_is_there_even_before_anything_was_saved() {
     let request = first_request(&built).await;
     assert!(request.contains("Auto memory is on"));
     assert!(!request.contains("MEMORY.md:"));
-    assert!(request.contains(&dir.display().to_string()));
+    assert!(request.contains(&as_debug(&dir)));
 }
 
 #[tokio::test]
