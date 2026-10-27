@@ -434,6 +434,10 @@ mod tests {
     fn a_scratch_path_under_a_protected_dir_is_refused() {
         let runtime = tempfile::tempdir().unwrap();
         let env = env_for(runtime.path());
+        // Windows ignores XDG_RUNTIME_DIR, so the real ancestor of the scratch parent is the temp dir.
+        #[cfg(windows)]
+        let protected = [std::env::temp_dir()];
+        #[cfg(not(windows))]
         let protected = [runtime.path().to_path_buf()];
         let err = Scratch::create(&env, &protected, "abc").err().unwrap();
         assert!(err.to_string().contains("Fontaine's own directory"));
