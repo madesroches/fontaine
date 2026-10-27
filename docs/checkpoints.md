@@ -7,7 +7,8 @@ conversation, or both back to the start of any earlier prompt of this conversati
 ## What is tracked
 
 - **Tracked:** every file `write` and `edit` change, in any workspace root, including a file they
-  create. A subagent's edits belong to the prompt that started it.
+  create. A foreground subagent's edits belong to the prompt that started it; a background
+  subagent's late edits belong to whatever prompt is current when they land.
 - **Not tracked:** changes made through the `shell` tool, your own `!` commands, MCP tools, and any
   other process. A rewind leaves them as they are, and says so before it restores anything.
 - **Not tracked, by design:** the [auto memory](memory.md) directory. It holds notes that outlive
@@ -48,7 +49,7 @@ Those last were edited by you or another program after the agent's last change; 
 discards that work, so you choose between overwriting them and keeping them. Esc steps back.
 
 Restoring the conversation puts the rewound prompt back in the input box to edit and send again,
-clears an active [goal](tui.md#goals) (it described the conversation that is gone), and keeps the
+clears an active [goal](tui.md#goals) (as `/clear` does, whichever prompt you go back to), and keeps the
 task list, scheduled prompts, permission grants and mode. The transcript on screen is emptied the
 way `/clear` empties it. Summarizing from a chosen point is not offered.
 

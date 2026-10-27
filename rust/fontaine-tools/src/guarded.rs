@@ -127,12 +127,16 @@ impl<T: Tool> GuardedTool<T> {
             )
         };
         if let Some(capture) = capture {
-            // Hashing the file must not block the executor; a lost record only costs the warning.
-            let _ = rig_tools::blocking(move || {
+            // Hashing the file must not block the executor. A lost record leaves the file
+            // looking unchanged to a later rewind, so it is logged.
+            if let Err(e) = rig_tools::blocking(move || {
                 capture.finish(succeeded);
                 Ok(())
             })
-            .await;
+            .await
+            {
+                tracing::warn!(error = %e, "the checkpoint record of an edit was lost");
+            }
         }
         let output = output?;
         Ok(output)
@@ -151,10 +155,13 @@ impl<T: Tool> GuardedTool<T> {
         let agent = agent_of(context).ok()?;
         let path = located.get("path")?.as_str()?;
         let (_, resolved) = scope.find(path).ok()?;
-        rig_tools::blocking(move || Ok(pre_images.before(&agent, T::NAME, &resolved)))
-            .await
-            .ok()
-            .flatten()
+        match rig_tools::blocking(move || Ok(pre_images.before(&agent, T::NAME, &resolved))).await {
+            Ok(capture) => capture,
+            Err(e) => {
+                tracing::warn!(error = %e, "the pre-image of an edit could not be taken");
+                None
+            }
+        }
     }
 }
 

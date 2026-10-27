@@ -106,8 +106,13 @@ impl AgentRuntime {
             dropped_user_messages,
         });
         if what.includes_conversation() {
-            checkpoints.mark_rewound(plan.turn, what.includes_code());
-            // The goal was set under the conversation this rewind drops.
+            let restored = code.as_ref().map(|report| {
+                (report.restored.iter().chain(&report.deleted))
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect()
+            });
+            checkpoints.mark_rewound(plan.turn, what.includes_code(), restored);
+            // The goal records no turn, so any conversation rewind clears it, as /clear does.
             self.clear_goal();
         }
         if let Some(report) = &code

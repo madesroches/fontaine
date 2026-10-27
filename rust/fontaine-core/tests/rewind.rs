@@ -409,6 +409,56 @@ async fn rewinding_across_a_compaction_restores_the_original_messages() {
 }
 
 #[tokio::test]
+async fn rewinding_to_a_turn_after_a_compaction_keeps_its_summary_state() {
+    use rig_core::DynModel;
+    use rig_core::operation::Completion;
+    use rig_core::test_utils::{MockCompletionModel, MockTurn};
+    use rig_memory::{CompactReason, summary_state, undo_summary};
+
+    let w = World::new();
+    let session = Session::create(&w.data, SESSION).unwrap();
+    configured(&session);
+    saved_pairs(&session, 0, 8);
+    let resolved = rig_core::catalog::Catalog::builtin()
+        .resolve("openai/gpt-4o-mini")
+        .unwrap();
+    let mut spec: rig_core::catalog::ModelSpec = (*resolved.spec).clone();
+    spec.context_window = Some(100_000);
+    let mock = MockCompletionModel::from_turns(vec![MockTurn::text("SUMMARY-OF-THE-OLD-PART")])
+        .priced_as(spec);
+    let model: DynModel<Completion> = mock.into();
+    let asked = || CompactReason::Asked {
+        focus: String::new(),
+    };
+    let result = session.compact(&model, asked(), &DenyAll).await;
+    assert!(matches!(
+        result,
+        fontaine_core::session::CompactResult::Compacted { .. }
+    ));
+    let state = summary_state(&load(&session.store(), CONVERSATION_LOG).unwrap());
+    assert_ne!(state, rig_memory::SummaryState::default());
+
+    session.begin_turn("question after", false).unwrap();
+    saved_pairs(&session, 8, 10);
+    let plan = session
+        .checkpoints()
+        .plan(1, &Scope::new(w.work.clone(), []))
+        .unwrap();
+    session.rewind_conversation(plan.conv_n).await.unwrap();
+
+    let mut restored = load(&session.store(), CONVERSATION_LOG).unwrap();
+    assert_eq!(summary_state(&restored), state);
+    undo_summary(
+        &mut restored,
+        &session.store(),
+        CONVERSATION_LOG,
+        rig_core::conversation::Author::plugin("test"),
+    )
+    .expect("the compaction before the rewind point can be undone");
+    assert!(!format!("{:?}", restored.messages()).contains("SUMMARY-OF-THE-OLD-PART"));
+}
+
+#[tokio::test]
 async fn a_fork_carries_the_checkpoints_and_a_code_restore_works_in_the_copy() {
     let w = World::new();
     let session = Session::create(&w.data, SESSION).unwrap();

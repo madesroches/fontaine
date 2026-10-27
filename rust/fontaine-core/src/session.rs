@@ -639,14 +639,25 @@ impl Session {
         let mut conversation = load_async(&self.store, CONVERSATION_LOG)
             .await
             .map_err(fail("read"))?;
-        let entries = match until {
-            None => Vec::new(),
+        // The compaction records of the restored past stay with its summary entry, or the next
+        // compaction would build on an empty state and replace the summary.
+        let (entries, compactions) = match until {
+            None => (Vec::new(), Vec::new()),
             Some(n) => {
                 let past = rig_memory::as_of(&self.store, CONVERSATION_LOG, n)
                     .map_err(fail("read as it was"))?;
-                (0..past.messages().len())
+                let entries = (0..past.messages().len())
                     .filter_map(|at| past.entry(at))
-                    .collect()
+                    .collect();
+                let compactions = past
+                    .asides()
+                    .filter(|(_, aside)| {
+                        aside.kind == rig_memory::COMPACTED
+                            && aside.author == rig_memory::summary_author()
+                    })
+                    .map(|(_, aside)| aside.clone())
+                    .collect();
+                (entries, compactions)
             }
         };
         let asides: Vec<_> = conversation.asides().map(|(id, _)| id).collect();
@@ -654,6 +665,9 @@ impl Session {
             conversation.remove_aside(id);
         }
         conversation.set_entries(entries, Author::plugin(by));
+        for aside in compactions {
+            conversation.add_aside(aside);
+        }
         save_async(&self.store, CONVERSATION_LOG, &mut conversation)
             .await
             .map_err(fail("saved"))?;

@@ -101,8 +101,15 @@ pub enum Entry {
         user_messages_before: usize,
     },
     /// The conversation (and, with `code`, the files) went back to the start of `to_turn`: the
-    /// turns from there on, and with `code` their pre-images, are no longer offered.
-    Rewind { to_turn: u64, code: bool },
+    /// turns from there on, and with `code` their pre-images, are no longer offered. With
+    /// `restored`, only the pre-images of those paths go: a file the restore kept or could not
+    /// put back stays plannable. Without it (older manifests) every pre-image goes.
+    Rewind {
+        to_turn: u64,
+        code: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        restored: Option<Vec<String>>,
+    },
     PreImage {
         turn: u64,
         agent: String,
@@ -251,6 +258,8 @@ struct State {
     /// `(turn, path)` pairs already holding a pre-image, in every epoch turn ever written.
     captured: HashSet<(u64, String)>,
     next_turn: u64,
+    /// Found while opening, before an approver existed; `configure` delivers them.
+    open_warnings: Vec<String>,
 }
 
 pub struct CheckpointStore {
@@ -273,11 +282,21 @@ fn fold(entries: &[Entry]) -> Folded {
         match entry {
             Entry::Epoch {} => out = Folded::default(),
             Entry::Turn { turn, prompt, .. } => out.turns.push((*turn, prompt.clone())),
-            Entry::Rewind { to_turn, code } => {
+            Entry::Rewind {
+                to_turn,
+                code,
+                restored,
+            } => {
                 out.turns.retain(|(turn, _)| turn < to_turn);
                 if *code {
-                    out.pre.retain(|(turn, ..)| turn < to_turn);
-                    out.after.retain(|(turn, ..)| turn < to_turn);
+                    let gone = |turn: &u64, path: &str| {
+                        *turn >= *to_turn
+                            && restored.as_ref().is_none_or(|paths| {
+                                paths.iter().any(|p| path_key(p) == path_key(path))
+                            })
+                    };
+                    out.pre.retain(|(turn, path, _)| !gone(turn, path));
+                    out.after.retain(|(turn, path, _)| !gone(turn, path));
                 }
             }
             Entry::PreImage {
@@ -309,22 +328,34 @@ impl CheckpointStore {
         }
         let path = dir.join(MANIFEST);
         let mut entries = Vec::new();
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            let mut lines = text.split_inclusive('\n').peekable();
-            while let Some(raw) = lines.next() {
-                if raw.trim().is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<Entry>(raw) {
-                    Ok(entry) => entries.push(entry),
-                    Err(e) if lines.peek().is_none() && !raw.ends_with('\n') => {
-                        tracing::warn!(error = %e, "skipping the torn last line of the checkpoint manifest");
+        let mut open_warnings = Vec::new();
+        let mut skipped = 0usize;
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                let mut lines = text.split_inclusive('\n').peekable();
+                while let Some(raw) = lines.next() {
+                    if raw.trim().is_empty() {
+                        continue;
                     }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "skipping an unreadable checkpoint manifest line");
+                    match serde_json::from_str::<Entry>(raw) {
+                        Ok(entry) => entries.push(entry),
+                        Err(e) if lines.peek().is_none() && !raw.ends_with('\n') => {
+                            tracing::warn!(error = %e, "skipping the torn last line of the checkpoint manifest");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "skipping an unreadable checkpoint manifest line");
+                            skipped += 1;
+                        }
                     }
                 }
             }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        if skipped > 0 {
+            open_warnings.push(format!(
+                "{skipped} unreadable line(s) in the checkpoint manifest were skipped, so /rewind may not restore some edits"
+            ));
         }
         let mut manifest = owner_only::open(&path, true)?;
         // A complete last record can still lack its newline; the next append would join it.
@@ -362,6 +393,7 @@ impl CheckpointStore {
                 io_warned: false,
                 captured,
                 next_turn,
+                open_warnings,
             }),
         })
     }
@@ -374,11 +406,16 @@ impl CheckpointStore {
         memory_root: Option<PathBuf>,
         approver: Arc<dyn Approver>,
     ) {
-        lock(&self.state, "checkpoint store").settings = Settings {
-            limits: Some(limits),
-            memory_root,
-            approver: Some(approver),
+        let pending = {
+            let mut state = lock(&self.state, "checkpoint store");
+            state.settings = Settings {
+                limits: Some(limits),
+                memory_root,
+                approver: Some(approver),
+            };
+            std::mem::take(&mut state.open_warnings)
         };
+        self.warn(pending);
     }
 
     fn warn(&self, messages: Vec<String>) {
@@ -448,11 +485,21 @@ impl CheckpointStore {
     }
 
     /// Records that the conversation (and with `code` the files) went back to `to_turn`.
-    pub fn mark_rewound(&self, to_turn: u64, code: bool) {
+    /// `restored` lists the paths the code restore put back or deleted; `None` hides every
+    /// pre-image of the turns dropped.
+    pub fn mark_rewound(&self, to_turn: u64, code: bool, restored: Option<Vec<String>>) {
         let mut warnings = Vec::new();
         {
             let mut state = lock(&self.state, "checkpoint store");
-            Self::append(&mut state, Entry::Rewind { to_turn, code }, &mut warnings);
+            Self::append(
+                &mut state,
+                Entry::Rewind {
+                    to_turn,
+                    code,
+                    restored,
+                },
+                &mut warnings,
+            );
         }
         self.warn(warnings);
     }

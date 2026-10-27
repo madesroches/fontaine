@@ -323,7 +323,7 @@ fn a_rewind_marker_hides_the_superseded_turns_and_a_new_turn_gets_a_fresh_ordina
         r.store.begin_turn(0, prompt, 0);
     }
     r.edit("a.txt", "v1");
-    r.store.mark_rewound(2, true);
+    r.store.mark_rewound(2, true, None);
     let shown: Vec<_> = r.store.turns().iter().map(|t| t.turn).collect();
     assert_eq!(shown, [1]);
     // The code was put back, so the superseded pre-image is gone from the counts too.
@@ -347,7 +347,7 @@ fn a_conversation_only_rewind_leaves_the_pre_images_restorable() {
     r.store.begin_turn(0, "one", 0);
     r.store.begin_turn(0, "two", 0);
     r.edit("a.txt", "v1");
-    r.store.mark_rewound(2, false);
+    r.store.mark_rewound(2, false, None);
     assert_eq!(r.store.turns().len(), 1);
     assert_eq!(r.store.turns()[0].files, 1);
     let plan = r.store.plan(1, &r.scope()).unwrap();
@@ -480,4 +480,31 @@ fn a_manifest_path_in_the_memory_directory_is_not_restored() {
     assert_eq!(r.store.turns()[0].files, 0);
     r.store.restore_code(&plan, &r.scope(), true);
     assert_eq!(read(&note), "v1");
+}
+
+#[test]
+fn a_rewind_hides_only_the_pre_images_of_the_paths_it_restored() {
+    let r = rig();
+    std::fs::write(r.work.join("kept.txt"), "k0").unwrap();
+    std::fs::write(r.work.join("done.txt"), "d0").unwrap();
+    r.store.begin_turn(0, "one", 0);
+    r.store.begin_turn(0, "two", 0);
+    let kept = r.edit("kept.txt", "k1");
+    let done = r.edit("done.txt", "d1");
+    std::fs::write(&kept, "the user got there").unwrap();
+    let plan = r.store.plan(2, &r.scope()).unwrap();
+    let report = r.store.restore_code(&plan, &r.scope(), false);
+    assert_eq!(report.kept_changed, std::slice::from_ref(&kept));
+    let restored = report
+        .restored
+        .iter()
+        .chain(&report.deleted)
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    r.store.mark_rewound(2, true, Some(restored));
+    assert_eq!(read(&done), "d0");
+    let plan = r.store.plan(1, &r.scope()).unwrap();
+    let paths: Vec<_> = plan.files.iter().map(|f| f.path.clone()).collect();
+    assert_eq!(paths, [kept]);
+    assert_eq!(r.reopened().plan(1, &r.scope()).unwrap().files.len(), 1);
 }
