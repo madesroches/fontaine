@@ -1,12 +1,12 @@
 # Checkpoints and /rewind
 
-Fontaine saves a file's contents before the `write` and `edit` tools change it, filed under the
+Fontaine saves a file's contents before the `write`, `edit` and `notebook_edit` tools change it, filed under the
 prompt you were answering. `/rewind` (or Esc Esc at an idle, empty prompt) takes the code, the
 conversation, or both back to the start of any earlier prompt of this conversation.
 
 ## What is tracked
 
-- **Tracked:** every file `write` and `edit` change, in any workspace root, including a file they
+- **Tracked:** every file `write`, `edit` and `notebook_edit` change, in any workspace root, including a file they
   create. A foreground subagent's edits belong to the prompt that started it; a background
   subagent's late edits belong to whatever prompt is current when they land.
 - **Not tracked:** changes made through the `shell` tool, your own `!` commands, MCP tools, and any

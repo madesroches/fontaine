@@ -283,7 +283,7 @@ mod tests {
             .filter(|d| d.checkpointed)
             .map(|d| d.name)
             .collect();
-        assert_eq!(saved, ["edit", "write"]);
+        assert_eq!(saved, ["edit", "write", "notebook_edit"]);
     }
 
     #[test]
