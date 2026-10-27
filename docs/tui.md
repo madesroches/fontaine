@@ -293,7 +293,7 @@ leaving the original as it was. The copy is named `<name>`, or the original's na
 running or has a report to deliver, since the copy would not carry the subagent's state.
 
 `/export [<path>]` writes the conversation as Markdown. The default is `fontaine-<first 8 characters
-of the session id>.md` in the folder you launched from; a relative path is relative to that folder.
+of the session id>.md` in the project directory (the launch directory, or `--cd`); a relative path is relative to it.
 The text is the model's conversation, so after a compaction the summary stands where the older
 messages were (labelled as one), and after `/clear` only the conversation since is in it. A tool
 call is one line, and a tool result appears only as its length. The file is readable by you alone,

@@ -8,6 +8,9 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `--cd <DIR>` (`-C`) starts Fontaine in another directory: it becomes the project root for
+  settings, trust, workspace and session identity, and relative `--settings`, `--add-dir` and
+  `--debug-file` values resolve against it (#145).
 - Each session has a private scratch directory, added to the workspace roots automatically
   (`$XDG_RUNTIME_DIR/fontaine/<session id>/`, else an owner-only per-user directory under the temp
   dir). `write` and `edit` work there without a prompt in `acceptEdits`, the system prompt names it,

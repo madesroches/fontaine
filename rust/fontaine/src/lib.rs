@@ -124,6 +124,36 @@ fn check_session_flags(cli: &Cli) -> Result<(), ExitCode> {
     Ok(())
 }
 
+/// Makes `--cd`'s directory the project directory, for `Host.cwd` and the process alike so that
+/// children and relative flag values agree with it.
+fn apply_cd(cli: &Cli, host: &mut Host) -> Result<(), u8> {
+    let Some(dir) = &cli.cd else {
+        return Ok(());
+    };
+    let change = || -> std::io::Result<PathBuf> {
+        let target = host.cwd.join(dir).canonicalize()?;
+        if !target.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                "not a directory",
+            ));
+        }
+        std::env::set_current_dir(&target)?;
+        Ok(target)
+    };
+    match change() {
+        Ok(target) => {
+            host.cwd = target;
+            Ok(())
+        }
+        Err(e) => Err(usage_code(format!(
+            "--cd {}: {}",
+            dir.display(),
+            fontaine_tools::error_chain::chain(&e)
+        ))),
+    }
+}
+
 /// What the workspace holds that the trust prompt is about.
 fn trust_summary(config: &Config) -> fontaine_tui::trust_prompt::Summary {
     let hooks = config
@@ -198,7 +228,7 @@ fn screen_reader_mode(
     (source, warnings)
 }
 
-pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
+pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode {
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(e) => {
@@ -210,6 +240,9 @@ pub fn run(args: impl IntoIterator<Item = OsString>, host: Host) -> ExitCode {
     };
     if let Err(code) = check_session_flags(&cli) {
         return code;
+    }
+    if let Err(code) = apply_cd(&cli, &mut host) {
+        return ExitCode::from(code);
     }
 
     let sink = match DebugSink::open(cli.debug_file.as_deref(), (host.env)(telemetry::LOG_VAR)) {
