@@ -44,12 +44,16 @@ survive a rewind. Parity target is the documented behavior; deviations are liste
 
 ### What is a checkpoint
 
-A **turn checkpoint** is created when the human submits a prompt (the same point that appends
-`Record::UserMessage` for a typed prompt; harness-started turns — scheduled prompts, goal
-continuations — and mid-turn steering messages do not make one). It holds:
+A **turn checkpoint** is created when the human submits a turn: a typed prompt
+(`fontaine-tui/src/ui/turn.rs:257`), an expanded skill command (`ui/mod.rs:364`), `/init`
+(`ui/commands/memory.rs:183`) or a goal-set turn (`ui/goal.rs:44`). Mid-turn steering
+(`steering.rs:80`), scheduled prompts (`ui/schedule.rs:178`) and subagent questions
+(`questions.rs:36`) do not make one. It holds:
 
 - `turn`: a 1-based ordinal within the current clear epoch
-- `conv_n`: the `Stamp.n` the next conversation record will get, so `as_of(conv_n)` is the
+- `conv_n`: one past the last stamp in `history(store, CONVERSATION_LOG)` (0 if empty), read at
+  submit time after the previous turn's save. The typed prompt reaches the ledger first and the
+  conversation log only inside `run_turn` (`agent/build.rs:239`), so `as_of(conv_n)` is the
   conversation before this prompt
 - `prompt`: the text, for the picker (the ledger already holds it verbatim; this copy is for display)
 - `user_messages_before`: how many `UserMessage` records the ledger view held, to size the
@@ -85,7 +89,7 @@ enum SkipReason { TooLarge, NotRegular, Unreadable, Budget }
 - The first `PreImage` for a `(turn, path)` is the one that counts; later edits in the same turn add
   nothing but their `after` hash. `after` (hash of what the tool left) is appended when the call
   finishes, so a restore can tell whether the file changed since Fontaine last wrote it.
-- Caps under `[checkpoints]` (user scope only, like `[memory]`): `enabled` (default `true`),
+- Caps under `[checkpoints]` (user scope only, `Rule::user_only`): `enabled` (default `true`),
   `max_file_bytes` (default 10 MiB), `max_session_bytes` (default 256 MiB). A file over a cap is
   recorded `Skipped`, the edit still proceeds, and the user gets one `Approver::warn` per session per
   reason. Capture never blocks or denies an edit: it is a convenience, and failing closed would let a
@@ -111,14 +115,19 @@ pub trait Capture: Send { fn finish(self: Box<Self>, succeeded: bool); }  // rec
 - `Guard` gains `pre_images: Option<Arc<dyn PreImages>>`.
 - `ToolDescriptor` gains `checkpointed: bool`, true for `write` and `edit` only. A tool absent from
   the table is not checkpointed (unlike risk, where absence is strictest) — the choke-point test
-  gets an assertion that every `WorkspaceWrite` file tool row sets it, so a new editing tool cannot
-  be forgotten silently.
+  gets an assertion that `destructive == FileWrite` implies `checkpointed`, so a new editing tool
+  cannot be forgotten silently.
 - In `GuardedTool::run`, after `Scope::locate` and before `tool.call`, a checkpointed tool resolves
-  its `path` argument with the scope (the same resolution `touched_paths` uses) and calls
-  `before`. It runs only on the `Allow` path, so a denied call captures nothing. MCP tools and the
-  shell are not checkpointed.
-- `fontaine-core` implements `PreImages` over the checkpoint store and injects it where the `Guard`
-  is built (`agent/setup.rs`), with the current turn read from the store.
+  its `path` argument with `Scope::find` (`scope.rs:109`; not core's `touched_paths`, and not the
+  located args, since `locate` rewrites `path` only for non-primary roots) and calls `before`.
+  `run` receives only `(context, args)`, so the agent name is derived (`agent_of`) or passed in.
+  `run` is restructured so `finish(ok)` is called with the tool's raw success or failure before
+  the `?` propagates, not the result pipeline's outcome. It runs only on the `Allow` path, so a
+  denied call captures nothing. MCP tools and the shell are not checkpointed.
+- `fontaine-core` implements `PreImages` over the checkpoint store. The guard is built in
+  `tools.rs:114` (registry via `RegistryParams`, called from `agent/build.rs:162`) and
+  `agent/mcp.rs:112` (`pre_images: None`); `fontaine/src/lib.rs` assembles the session and store.
+  The current turn is read from the store.
 
 ### Rewind
 
@@ -129,8 +138,9 @@ pub trait Capture: Send { fn finish(self: Box<Self>, succeeded: bool); }  // rec
 state at the start of `turn`:
 
 - `Absent`: delete the file if it is a regular file now.
-- `Blob`: write the bytes back (restoring the unix mode), atomically, via the same replace helper the
-  `write` tool uses.
+- `Blob`: write the bytes back atomically with `rig_tools::fs::write_atomic` (it follows symlinks
+  and preserves an existing file's mode), so the symlink refusal below is a separate pre-check and
+  `unix_mode` is applied explicitly. (`owner_only::write_atomic_keeping_mode` also exists.)
 - `Skipped`: reported as not restorable.
 
 Safety on restore, because the manifest is trusted data from disk: each path is re-checked to be
@@ -163,7 +173,9 @@ a retracted prompt must not keep authorizing actions in the guardian's request, 
 grants and denials stay untouched, so `/denied` and the guardian's history are complete. For
 `what = Code` the count is zero. `session::list` ignores it.
 
-Conversation rewinds and `/rewind` are refused while a turn or a subagent runs, as `/clear` is.
+Conversation rewinds and `/rewind` are refused with the same runtime guard as `clear_conversation`
+(`agent.rs:750-760`: `any_running() || has_notifications(ROOT_AGENT)`) plus the TUI's running-turn
+check (`ui/commands/context.rs`).
 
 ### UI
 
@@ -190,16 +202,19 @@ Conversation rewinds and `/rewind` are refused while a turn or a subagent runs, 
 ## Implementation Steps
 
 1. **Store.** `fontaine-core/src/checkpoint.rs`: entry types, manifest + blob IO, caps, skip
-   reasons, first-wins resolution, torn-line tolerance. Spike first: confirm what `Stamp.n` the next
-   record gets at turn start and that `as_of(n)` yields exactly the pre-prompt conversation (the
-   prompt is not yet logged); fix the way `conv_n` is read if not.
+   reasons, first-wins resolution, torn-line tolerance. `conv_n` is read from `history`, which is
+   O(log); prefer a cheaper last-stamp read if one exists, else accept it.
 2. **Capture seam.** `fontaine-tools/src/checkpoint.rs` trait; `Guard.pre_images`;
-   `ToolDescriptor.checkpointed`; call in `GuardedTool::run`; core implementation and wiring in
-   `agent/setup.rs`. Turn begin hooked where the typed prompt's `UserMessage` is appended
-   (`steering.rs`, `turn.rs`).
+   `ToolDescriptor.checkpointed` (the `row()` const fn and the `rows_are_pinned` `[Pinned; 18]`
+   table); call in `GuardedTool::run`; core implementation and wiring in `tools.rs`,
+   `agent/build.rs`, `agent/mcp.rs`, `fontaine/src/lib.rs`; the new `Guard` field in the literals
+   in `fontaine-tools/tests/guarded.rs`, `telemetry.rs`, `result_pipeline.rs`. Turn begin hooked at
+   the submit sites listed under "What is a checkpoint" (`ui/turn.rs`, `ui/mod.rs`,
+   `ui/commands/memory.rs`, `ui/goal.rs`).
 3. **Config.** `[checkpoints]` keys in `config.rs`, `config_catalog.rs`, and rows in
-   `config_scope.rs` (user scope only).
-4. **Ledger.** `Record::Rewound`, `LedgerView` trim, `Session::rewind_conversation` beside `clear`
+   `config_scope.rs` (`Rule::user_only`), plus `fontaine-core/tests/config.rs` and the per-section
+   row in the `config_scope.rs` test.
+4. **Ledger.** `Record::Rewound`, `LedgerView::apply` arm (it matches `Record` exhaustively) and trim, `Session::rewind_conversation` beside `clear`
    (shared helper for the asides/`set_entries`/save/reset sequence), `/clear` writes the epoch entry.
 5. **Rewinder.** Plan and apply for code with the scope, symlink and divergence checks; runtime
    methods on `AgentRuntime` mirroring `clear_conversation`.
@@ -211,11 +226,15 @@ Conversation rewinds and `/rewind` are refused while a turn or a subagent runs, 
 
 - New: `fontaine-core/src/checkpoint.rs`, `fontaine-tools/src/checkpoint.rs`,
   `fontaine-tui/src/rewind.rs`, `fontaine-tui/src/ui/commands/rewind.rs`, `docs/checkpoints.md`
-- `fontaine-tools/src/guarded.rs`, `descriptor.rs`, `lib.rs`
-- `fontaine-core/src/ledger.rs`, `session.rs`, `agent.rs` / `agent/setup.rs`, `steering.rs`,
-  `turn.rs`, `config.rs`, `config_catalog.rs`, `config_scope.rs`, `lib.rs`
-- `fontaine-tui/src/app.rs`, `commands.rs`, `ui/commands/mod.rs`, `lib.rs`
-- `docs/index.md`, `docs/tui.md`, `docs/configuration.md`, `docs/tools.md`, `docs/permissions.md`
+- `fontaine-tools/src/guarded.rs`, `descriptor.rs`, `lib.rs`; Guard literals in
+  `fontaine-tools/tests/guarded.rs`, `telemetry.rs`, `result_pipeline.rs`
+- `fontaine-core/src/ledger.rs`, `session.rs`, `agent.rs`, `tools.rs`, `agent/build.rs`,
+  `agent/mcp.rs`, `config.rs`, `config_catalog.rs`, `config_scope.rs`, `lib.rs`,
+  `fontaine-core/tests/config.rs`; `fontaine/src/lib.rs`
+- `fontaine-tui/src/app.rs`, `commands.rs`, `ui/turn.rs`, `ui/mod.rs`, `ui/goal.rs`,
+  `ui/commands/mod.rs`, `ui/commands/memory.rs`, `ui/commands/context.rs`, `lib.rs`
+- `docs/index.md`, `docs/tui.md`, `docs/configuration.md` (including the scope-table row),
+  `docs/tools.md`, `docs/permissions.md`, `docs/guardian.md`
 - `tasks/design/sessions.md`, `research/research-claude-code-parity.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -255,7 +274,10 @@ Conversation rewinds and `/rewind` are refused while a turn or a subagent runs, 
 - `docs/tools.md`: `write` and `edit` save pre-images. `docs/permissions.md`: a rewind is a user
   action outside the pipeline and cannot be requested by the model.
 - `tasks/design/sessions.md`: replace the one-line rewind mention with the `Rewound` record and the
-  intent trim. Parity row to `done` in `research/research-claude-code-parity.md`.
+  intent trim. `docs/guardian.md:53` and `docs/tui.md:287/298` (the `/clear` intent reset) mention
+  the trim; `docs/tui.md` Esc table (98-99) and command table (~306-316) get the new rows.
+  `research/research-claude-code-parity.md`: both rewind mentions (lines 200 and 300) updated, the
+  parity row to `done`.
 
 ## Testing Strategy
 
@@ -280,8 +302,9 @@ Unit (no live APIs; `rig_core::test_utils` models, tempdirs):
 Integration (core tests through the headless surface, deterministic model): edit a file over two
 turns, rewind to turn 1 with Both, assert file bytes, conversation, input text and ledger contents;
 rewind across a compaction restores the original messages (`as_of` replay catches what a fake store
-could not); `/clear` then `/rewind` lists only post-clear turns; fork then rewind in the copy;
-resume then rewind; the guardian request built after a conversation rewind omits the retracted
+could not); `/clear` then `/rewind` lists only post-clear turns; one combined fork test (fork a session with a
+checkpoint, assert `checkpoints/` is present and a code restore works in the copy); resume is
+covered by a store unit test (reopen reads manifest and blobs); the guardian request built after a conversation rewind omits the retracted
 prompt but still shows prior denials.
 
 ## Manual Verification
@@ -293,8 +316,3 @@ Terminal layout of the picker is a tmux concern (`tasks/design/testing.md`), not
    Expect the picker above the prompt without corrupting scrollback.
 2. Pick the first prompt, *Restore code*; expect the file back to its original content and the
    confirmation listing it, and `git status` showing the working tree as it was before the session.
-
-## Open Questions
-
-- Does the prompt text reach the conversation log before `run_turn` begins (which `Stamp.n` marks the
-  pre-prompt boundary)? Step 1 resolves this with the spike; the design holds either way.
