@@ -147,7 +147,9 @@ deterministic test model.
 1. `fontaine-core`: add the shared effective-lists helper on `Config`; switch `session_state`
    (`agent/setup.rs`) to it. Unit test that it equals the previous `expand` composition.
 2. `fontaine-guardian`: add `critique.rs` and `prompts/critique.md`; export from `lib.rs`.
-3. `fontaine/src/cli.rs`: add `Command::AutoMode(AutoModeArgs)` with the three subcommands and
+3. `fontaine/Cargo.toml`: add `fontaine-guardian.workspace = true` (the bin crate depends only on core,
+   tools, tui; core does not re-export guardian types).
+   `fontaine/src/cli.rs`: add `Command::AutoMode(AutoModeArgs)` with the three subcommands and
    `--format`. Test: parse `fontaine --cd X auto-mode config` (cd_flag.rs style).
 4. `fontaine/src/auto_mode.rs`: implement the three handlers (text and JSON renderers); wire the
    dispatch into `run` in `lib.rs`. Tests: renderer goldens; integration tests in
@@ -158,6 +160,7 @@ deterministic test model.
 
 - `rust/fontaine-core/src/config.rs` (helper), `rust/fontaine-core/src/agent/setup.rs`
 - `rust/fontaine-guardian/src/lib.rs`, new `src/critique.rs`, new `prompts/critique.md`
+- `rust/fontaine/Cargo.toml` (add `fontaine-guardian.workspace = true`)
 - `rust/fontaine/src/cli.rs`, `rust/fontaine/src/lib.rs`, new `rust/fontaine/src/auto_mode.rs`
 - `docs/guardian.md`, `docs/configuration.md`, `docs/headless.md`, `CHANGELOG.md`
 - `research/research-claude-code-parity.md` (flip the row from `missing` to shipped)
@@ -179,6 +182,8 @@ deterministic test model.
 - 2026-10-27: `critique` output is free-text advisory; no structured verdict.
 - 2026-10-27: `--format text|json` is offered on all three subcommands; not verified against
   `claude auto-mode`.
+
+- 2026-10-27: AFK: `fontaine` takes a direct `fontaine-guardian.workspace = true` dependency for the guardian types `auto_mode.rs` needs, rather than re-exporting them through `fontaine-core` (no new public API surface; the workspace dependency already exists).
 
 ## Documentation
 
