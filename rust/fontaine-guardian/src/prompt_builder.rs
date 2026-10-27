@@ -22,7 +22,7 @@ pub fn render(profile: Profile, request: &AdjudicationRequest) -> Rendered {
     }
 }
 
-fn bullets(items: &[String]) -> String {
+pub(crate) fn bullets(items: &[String]) -> String {
     if items.is_empty() {
         return "- (none)".to_string();
     }
@@ -100,7 +100,7 @@ fn block(kind: &str, body: &str) -> String {
     )
 }
 
-fn list_block(kind: &str, items: &[String]) -> String {
+pub(crate) fn list_block(kind: &str, items: &[String]) -> String {
     let body = if items.is_empty() {
         "(none)".to_string()
     } else {

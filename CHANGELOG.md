@@ -14,6 +14,11 @@ All notable changes are recorded here. The format follows
   Every write is gated by the protected-path floor and, in `auto`, the guardian, with a
   memory-write rule in both guardian prompts; there is no fast path. `/memory` lists the saved files,
   `/context` counts the layer, and `evals/dataset/memory.jsonl` adds the memory-poisoning cases (#8).
+- `fontaine auto-mode defaults|config|critique` inspects the rules the guardian judges against.
+  `defaults` prints the shipped lists as a TOML fragment, `config` prints the effective lists with
+  the scopes that set each and whether each entry is shipped or custom, and `critique` asks the
+  guardian's model to review your custom entries (advisory text; it is the only one that calls a
+  model). Each takes `--format text|json` (#1).
 - `--cd <DIR>` (`-C`) starts Fontaine in another directory: it becomes the project root for
   settings, trust, workspace and session identity, and relative `--settings`, `--add-dir` and
   `--debug-file` values resolve against it (#145).

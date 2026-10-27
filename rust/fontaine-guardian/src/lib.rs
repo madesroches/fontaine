@@ -5,6 +5,7 @@
 mod breaker;
 mod cache;
 pub mod cascade;
+pub mod critique;
 mod guardian;
 pub mod models;
 mod profile;
@@ -27,7 +28,7 @@ pub use request::{
     task_intent, trailing_chars,
 };
 pub use rule_label::RuleLabel;
-pub use rules::{EnvironmentConfig, RuleConfig};
+pub use rules::{EnvironmentConfig, List, RuleConfig};
 pub use scanner::{CommandScanner, LlmScanner, Scan, Scanner};
 pub use screen::{
     AllowSettings, DEFAULT_STEERING_VETO, Question, Screen, ScreenOutcome, ScreenScores,

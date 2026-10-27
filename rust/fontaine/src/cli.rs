@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use fontaine_core::config::PermissionMode;
 
 #[derive(Parser, Debug, Clone)]
@@ -120,6 +120,44 @@ pub struct Cli {
     /// The task for a headless run
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum Command {
+    /// Inspect the rules the guardian judges against
+    #[command(name = "auto-mode")]
+    AutoMode(AutoModeArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct AutoModeArgs {
+    #[command(subcommand)]
+    pub action: AutoModeAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum AutoModeAction {
+    /// Print the shipped environment and rule lists
+    Defaults(FormatArgs),
+    /// Print the lists a session would hand the guardian, and where each came from
+    Config(FormatArgs),
+    /// Ask the guardian's model to review your custom entries
+    Critique(FormatArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct FormatArgs {
+    #[arg(long, value_enum, default_value_t = ReportFormat::Text, value_name = "FORMAT")]
+    pub format: ReportFormat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ReportFormat {
+    Text,
+    Json,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

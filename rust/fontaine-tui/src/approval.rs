@@ -266,7 +266,10 @@ impl Approval {
                 Choice::Session => "allow session grants this rule until you exit",
                 _ => "rule the lasting answers would add",
             };
-            for piece in wrap(&format!("{what}: {}", display_rule(rule)), width) {
+            for piece in wrap(
+                &format!("{what}: {}", fontaine_tools::display::escape_controls(rule)),
+                width,
+            ) {
                 out.push(Line::styled(piece, dim));
             }
         }
@@ -282,24 +285,6 @@ impl Approval {
         }
         out
     }
-}
-
-/// `wrap` chunks by width and ratatui drops control characters, so a rule's newlines and tabs
-/// would run its text together; the saved rule keeps them, so they are shown escaped instead.
-fn display_rule(rule: &str) -> String {
-    let mut out = String::with_capacity(rule.len());
-    let mut chars = rule.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\r' if chars.peek() == Some(&'\n') => {}
-            '\r' => out.push_str("\\r"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", u32::from(c))),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -423,20 +408,6 @@ mod tests {
             plain(&approval.body(40, &Theme::default())),
             ["Allow shell?", "ls", "r"]
         );
-    }
-
-    #[test]
-    fn display_rule_shows_newlines_as_markers() {
-        assert_eq!(display_rule("a\nb"), "a\\nb");
-        assert_eq!(display_rule("a\r\nb"), "a\\nb");
-        assert_eq!(display_rule("a\rb"), "a\\rb");
-        assert_eq!(display_rule("shell(ls -la)"), "shell(ls -la)");
-    }
-
-    #[test]
-    fn display_rule_escapes_tabs_and_other_control_characters() {
-        assert_eq!(display_rule("cut -d'\t' -f2"), "cut -d'\\t' -f2");
-        assert_eq!(display_rule("a\x1bb\x7f"), "a\\u{1b}b\\u{7f}");
     }
 
     #[test]

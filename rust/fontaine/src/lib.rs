@@ -1,3 +1,4 @@
+mod auto_mode;
 pub mod cli;
 pub mod headless;
 pub mod telemetry;
@@ -261,6 +262,10 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             return ExitCode::from(e.exit_code());
         }
     };
+
+    if let Some(cli::Command::AutoMode(args)) = &cli.command {
+        return auto_mode::run(&cli, args, &config, &dirs, &host);
+    }
 
     let mode = session_mode(&cli, &config);
     if !cli.print && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
