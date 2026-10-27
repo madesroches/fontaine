@@ -95,8 +95,7 @@ pub fn connect(
         Arc::new(move |name: &str| held.get(name).cloned()),
         Some(uuid::Uuid::new_v4().to_string()),
     );
-    let guardian_model = switcher.guardian(spec, None).map_err(|e| e.to_string())?;
-    let mut guardian_model = guardian_model;
+    let mut guardian_model = switcher.guardian(spec, None).map_err(|e| e.to_string())?;
     if let (Some(mode), GuardianModel::Ready(handle)) = (transport, &mut guardian_model) {
         handle.output_probe = Some(Arc::new(FixedProbe(mode)));
     }

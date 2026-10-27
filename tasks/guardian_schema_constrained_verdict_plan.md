@@ -117,10 +117,10 @@ The mode is a property of the (account, model), not a user setting:
   a screen exists, so is not a general guardian hook): a fire-and-forget task, holding an
   `Arc<dyn Approver>` (`setup.approver`), whose `Tool`/`Schema` result lands in the `OnceCell` and, when
   it is the capability error above or a `Schema` selection, is reported once through `Approver::notice`
-  (`Approver::warn` for the capability error). There is no runtime notice channel: `AgentRuntime`'s
-  `Vec<Notice>` fields are static and filled at setup. `/guardian-model` prints synchronously from
-  `unavailable_reason()`, so the Schema/capability message reaches it through `Switched` gaining an
-  optional `notice: Option<String>` field. The sync `set_guardian_model` keeps its signature. Per-call
+  (`Approver::warn` for the capability error). `/guardian-model` takes the same path: it builds the
+  guardian with `build_guardian_telling` and warms the transport with `warm_output_mode`, so the
+  notice goes through the `Approver` (`ChannelApprover::notice`, drained by the TUI). The sync
+  `set_guardian_model` keeps its signature. Per-call
   behavior never depends on the eager probe finishing: the lazy resolution in `run()` is the source
   of truth.
 - The `400 ... does not support tools` response is also recognized in the `Tool` path's
@@ -219,7 +219,7 @@ and recorded in the master plan's `## Decisions`; the code, tests, and docs do n
   `prompt_typed`, not a custom Ollama client (#250).
 - 2026-10-27: No model is listed in `guardian_models.toml` for the schema path without its own
   scorecard run clearing the inclusion bar (#250, per the issue's constraint).
-- AFK: 2026-10-27: Notices are delivered by the spawned probe task calling `Approver::notice`/`warn` (probe placed in guardian setup, not `attach_screen`), and `/guardian-model` via an optional `notice` field on `Switched`; no new notice channel (#250).
+- AFK: 2026-10-27: Notices are delivered by the spawned probe task calling `Approver::notice`/`warn` (probe placed in guardian setup, not `attach_screen`); `/guardian-model` uses `build_guardian_telling` and `warm_output_mode` through the same `Approver` (`ChannelApprover::notice`, drained by the TUI); no new notice channel (#250).
 - AFK: 2026-10-27: `guardian_models.toml` gets a flat `#[serde(default)]` `transport` field (default `tool`) that is not part of the lookup key: one entry per model, added only for the transport that cleared the bar, `Tool` wins if both do (#250).
 
 ## Documentation

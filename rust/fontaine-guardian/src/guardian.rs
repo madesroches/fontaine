@@ -81,7 +81,7 @@ pub struct Adjudication {
     pub profile: Profile,
     /// Tokens this adjudication spent; empty on a cache hit.
     pub usage: Usage,
-    /// The transport the verdict was asked for on; absent when no model was asked.
+    /// The transport the verdict was obtained on; absent when the model could not be asked.
     pub transport: Option<OutputMode>,
 }
 

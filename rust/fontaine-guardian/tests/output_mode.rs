@@ -115,21 +115,6 @@ async fn a_low_confidence_destructive_allow_is_still_denied_on_the_schema_path()
     assert_eq!(result.decision, Decision::Deny);
 }
 
-#[tokio::test]
-async fn schema_and_tool_verdicts_do_not_share_cache_entries() {
-    let tool = Endpoint::start(vec![Reply::Verdict(allow(0.95))]).await;
-    let first = tool
-        .guardian(settings())
-        .with_output_probe(Arc::new(FixedProbe(OutputMode::Tool)));
-    first.adjudicate(&request("ls", false)).await;
-    let schema = Endpoint::start(vec![text(allow(0.95))]).await;
-    let second = schema_guardian(&schema);
-    let result = second.adjudicate(&request("ls", false)).await;
-    assert!(!result.cache_hit);
-    // Same guardian, same mode: the second call is served from the cache.
-    assert!(second.adjudicate(&request("ls", false)).await.cache_hit);
-}
-
 #[derive(Debug)]
 struct Scripted {
     answers: std::sync::Mutex<Vec<ProbeOutcome>>,
@@ -223,4 +208,21 @@ async fn the_schema_notice_is_sent_once() {
     guardian.adjudicate(&request("ls", false)).await;
     guardian.adjudicate(&request("pwd", false)).await;
     assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn schema_and_tool_verdicts_do_not_share_cache_entries() {
+    let endpoint = Endpoint::start(vec![Reply::Verdict(allow(0.95)), text(allow(0.95))]).await;
+    let probe = scripted(vec![
+        ProbeOutcome::Unreachable,
+        ProbeOutcome::Mode(OutputMode::Schema),
+    ]);
+    let guardian = endpoint.guardian(settings()).with_output_probe(probe);
+    let first = guardian.adjudicate(&request("ls", false)).await;
+    assert_eq!(first.transport, Some(OutputMode::Tool));
+    let second = guardian.adjudicate(&request("ls", false)).await;
+    assert_eq!(second.transport, Some(OutputMode::Schema));
+    assert!(!second.cache_hit);
+    // Same mode now: the repeat is served from the cache.
+    assert!(guardian.adjudicate(&request("ls", false)).await.cache_hit);
 }

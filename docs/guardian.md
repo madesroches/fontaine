@@ -298,9 +298,10 @@ answer:
 - a model that cannot generate text at all (an embedding model) makes the guardian unavailable
   with `ollama/<model> cannot generate text (capabilities: embedding)`, and every gated call is
   denied until you pick another guardian;
-- a daemon too old to report capabilities, or one that does not answer the question in time, is
-  treated as a `submit` model for that call, so a failure stays as loud as it is today. The
-  question is asked again on the next call until it is answered.
+- a daemon too old to report capabilities (no `capabilities` list) is treated as a `submit` model
+  for the guardian's life. A question that goes unanswered (unreachable daemon, HTTP error or
+  timeout) is treated as a `submit` model for that call only, so a failure stays as loud as it is
+  today, and is asked again on the next call.
 
 There is no setting for this: the path follows what the model reports. If a daemon claims tool
 support the model lacks, the call is denied and the explanation says that the model does not

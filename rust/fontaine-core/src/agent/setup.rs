@@ -91,13 +91,13 @@ pub fn build_guardian_telling(
 fn mode_notifier(approver: Arc<dyn Approver>, label: String) -> fontaine_guardian::Notifier {
     Arc::new(move |notice| {
         match notice {
-        ModeNotice::Schema => approver.notice(&format!(
-            "guardian model {label} has no tool support, so its verdicts use the schema-constrained output path"
-        )),
-        ModeNotice::Incapable(reason) => approver.warn(&format!(
-            "guardian model {label} {reason}: every guardian-gated call is denied until the guardian model is changed"
-        )),
-    }
+            ModeNotice::Schema => approver.notice(&format!(
+                "guardian model {label} has no tool support, so its verdicts use the schema-constrained output path"
+            )),
+            ModeNotice::Incapable(reason) => approver.warn(&format!(
+                "guardian model {label} {reason}: every guardian-gated call is denied until the guardian model is changed"
+            )),
+        }
     })
 }
 
