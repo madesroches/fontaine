@@ -37,7 +37,7 @@ survive a rewind. Parity target is the documented behavior; deviations are liste
 - `rig-tools` ships a `checkpoint` module (git-tree or scan snapshots, tracks shell changes too).
   It spawns `git` and snapshots whole trees; Fontaine never spawns `git` and Claude Code does not
   track shell changes, so it is not used (Trade-offs).
-- `core_slash_commands_plan.md` reserved `/rewind` for this issue; `research-claude-code-parity.md:300`
+- `tasks/completed/core_slash_commands_plan.md` (line 64) reserved `/rewind` for this issue; `research-claude-code-parity.md:300`
   lists checkpointing as `missing`.
 
 ## Design
@@ -53,11 +53,13 @@ A **turn checkpoint** is created when the human submits a turn: a typed prompt
 - `turn`: a 1-based ordinal within the current clear epoch
 - `conv_n`: one past the last stamp in `history(store, CONVERSATION_LOG)` (0 if empty), read at
   submit time after the previous turn's save. The typed prompt reaches the ledger first and the
-  conversation log only inside `run_turn` (`agent/build.rs:239`), so `as_of(conv_n)` is the
-  conversation before this prompt
+  conversation log only when the agent run itself saves it during the turn (finish_builder's
+  `.memory(..).conversation(CONVERSATION_LOG)`, `agent/build.rs:239`), so `as_of(conv_n)` is the
+  conversation before this prompt; a stored stamp stays exact across compaction, which a search of
+  the log for the k-th user message would not
 - `prompt`: the text, for the picker (the ledger already holds it verbatim; this copy is for display)
-- `user_messages_before`: how many `UserMessage` records the ledger view held, to size the
-  intent trim (below)
+- `user_messages_before`: the raw length of the `LedgerView` `user_messages`, read before this
+  prompt's `UserMessage` is appended, to size the intent trim (below)
 
 `/clear` starts a new epoch; the picker lists only the current epoch's turns, so a rewind never
 resurrects context the ledger's intent view has already dropped.
@@ -86,14 +88,17 @@ enum Before { Absent, Blob { hash, unix_mode: Option<u32> }, Skipped { why: Skip
 enum SkipReason { TooLarge, NotRegular, Unreadable, Budget }
 ```
 
+- `ContentHash` is SHA-256 via the existing `sha2` dependency of `fontaine-core` (no new dependency).
+- Every read of the manifest (`plan`, `apply`, the picker's per-turn file counts) considers only
+  entries after the last `Epoch` entry, since turn ordinals restart at 1 there.
 - The first `PreImage` for a `(turn, path)` is the one that counts; later edits in the same turn add
   nothing but their `after` hash. `after` (hash of what the tool left) is appended when the call
   finishes, so a restore can tell whether the file changed since Fontaine last wrote it.
 - Caps under `[checkpoints]` (user scope only, `Rule::user_only`): `enabled` (default `true`),
   `max_file_bytes` (default 10 MiB), `max_session_bytes` (default 256 MiB). A file over a cap is
   recorded `Skipped`, the edit still proceeds, and the user gets one `Approver::warn` per session per
-  reason. Capture never blocks or denies an edit: it is a convenience, and failing closed would let a
-  full disk stop all editing.
+  reason. Capture never blocks or denies an edit: it is a recovery aid, not a permission decision, and
+  failing closed would let a full disk or an oversize file stop all editing.
 - The store is `Mutex`-guarded; a poisoned lock panics (`fontaine_tools::lock::lock`) because its
   contents feed a restore.
 - Manifest and blob writes use `owner_only`. A torn last manifest line is skipped on read, as
@@ -117,6 +122,9 @@ pub trait Capture: Send { fn finish(self: Box<Self>, succeeded: bool); }  // rec
   the table is not checkpointed (unlike risk, where absence is strictest) — the choke-point test
   gets an assertion that `destructive == FileWrite` implies `checkpointed`, so a new editing tool
   cannot be forgotten silently.
+- `write` and `edit` are registered with `GuardedTool::per_root(scope, ..)` (`builtins.rs`), so
+  `Routing::PerRoot(scope)` supplies the scope for the capture call; `Routing::One` tools have no
+  scope and are not checkpointed.
 - In `GuardedTool::run`, after `Scope::locate` and before `tool.call`, a checkpointed tool resolves
   its `path` argument with `Scope::find` (`scope.rs:109`; not core's `touched_paths`, and not the
   located args, since `locate` rewrites `path` only for non-primary roots) and calls `before`.
@@ -134,7 +142,7 @@ pub trait Capture: Send { fn finish(self: Box<Self>, succeeded: bool); }  // rec
 `fontaine-core::checkpoint::plan(turn) -> RewindPlan` and `Rewinder::apply(plan, what)`, where
 `what` is `Both | Conversation | Code`.
 
-**Code.** For every path with a `PreImage` in turns `>= turn`, the earliest one wins and gives the
+**Code.** For every path with a `PreImage` in the current epoch's turns `>= turn`, the earliest one wins and gives the
 state at the start of `turn`:
 
 - `Absent`: delete the file if it is a regular file now.
@@ -153,8 +161,7 @@ so shell-made changes, user `!` commands and Skipped files stay as they are (sta
 Restoring is a harness action at the user's request, like a `!` command: it does not pass through
 the permission pipeline, and it is not a model-callable tool, so no risk class is involved.
 
-The rig-tools `Seen` set is left alone: a restored file's content no longer matches what was read,
-so the next `edit` or `write` of it already demands a fresh `read`, which is the right behavior.
+The rig-tools `Seen` set is left alone: the next `edit` or `write` of a restored file already demands a fresh `read`.
 
 **Conversation.**
 1. `as_of(store, CONVERSATION_LOG, turn.conv_n)` gives the conversation before the prompt.
@@ -164,13 +171,19 @@ so the next `edit` or `write` of it already demands a fresh `read`, which is the
    compaction restores the pre-compaction messages.
 3. An active goal is cleared (it described the conversation that is gone), as `/clear` does; the
    task list, schedule and permissions carry on.
-4. The prompt text goes back into the input box for editing, as Claude Code does.
+4. The prompt text goes back into the input box for editing, as Claude Code does. The runtime
+   method returns it in an outcome struct; the TUI passes it to `restore_to_input`.
 
-**Ledger.** One new record, `Rewound { turn, what, dropped_user_messages }`, appended after the
+**Ledger.** One new record, `Rewound { turn, what, dropped_user_messages }`, with
+`dropped_user_messages = view.len().saturating_sub(user_messages_before)` computed at rewind time
+and appended after the
 operation (even when some files failed, with the counts in the TUI message). Nothing is removed or
-edited. `LedgerView` handles it by trimming its `user_messages` by `dropped_user_messages`:
+edited. `LedgerView` handles it by trimming `user_messages` from the tail by `dropped_user_messages`
+(steering, subagent questions and schedules also append `UserMessage`, so the raw length is what
+matters):
 a retracted prompt must not keep authorizing actions in the guardian's request, while approvals,
-grants and denials stay untouched, so `/denied` and the guardian's history are complete. For
+grants and denials stay untouched, so `/denied` and the guardian's history are complete (trimming
+only the derived view keeps the ledger append-only). For
 `what = Code` the count is zero. `session::list` ignores it.
 
 Conversation rewinds and `/rewind` are refused with the same runtime guard as `clear_conversation`
@@ -244,15 +257,6 @@ check (`ui/commands/context.rs`).
   Claude Code deliberately does not, costs a tree walk per turn, and breaks the rule that Fontaine
   never spawns `git`. Per-file pre-images are cheap, exactly scoped to the two editing tools and
   gated by the same Allow.
-- **Fail-open capture vs. fail-closed.** The guardian invariants are about permission decisions;
-  a checkpoint is a recovery aid. Refusing an allowed edit because a snapshot failed would turn a
-  disk-full or oversize file into a denial of service for the user's task. The skip is recorded and
-  surfaced instead.
-- **Stored `conv_n` vs. locating the prompt in the log at rewind time.** Searching `history` for the
-  k-th user message breaks once compaction rewrites entries; a stamp taken at turn start is exact.
-- **Trimming the intent view vs. leaving it.** Keeping a retracted prompt in `task_intent` would let
-  words the user took back keep authorizing actions. Trimming only the derived view keeps the ledger
-  append-only.
 
 ## Decisions
 
@@ -274,8 +278,8 @@ check (`ui/commands/context.rs`).
 - `docs/tools.md`: `write` and `edit` save pre-images. `docs/permissions.md`: a rewind is a user
   action outside the pipeline and cannot be requested by the model.
 - `tasks/design/sessions.md`: replace the one-line rewind mention with the `Rewound` record and the
-  intent trim. `docs/guardian.md:53` and `docs/tui.md:287/298` (the `/clear` intent reset) mention
-  the trim; `docs/tui.md` Esc table (98-99) and command table (~306-316) get the new rows.
+  intent trim. `docs/guardian.md:53` and `docs/tui.md:287/298` (the `/rename` and `/export` "since last
+  `/clear`" text; a rewind changes what they describe, so they may need an edit) mention the trim; `docs/tui.md` Esc table (98-99) and command table (starts ~302) get the new rows.
   `research/research-claude-code-parity.md`: both rewind mentions (lines 200 and 300) updated, the
   parity row to `done`.
 
@@ -296,11 +300,13 @@ Unit (no live APIs; `rig_core::test_utils` models, tempdirs):
   per-root routing captures the right root's path. The descriptor test asserts the `checkpointed`
   rows. These pin the silent-failure cases: a denied edit leaving a stale snapshot, and an edit
   tool added without capture.
-- TUI: picker selection, action menu, epoch filtering, Esc Esc timing against the other Esc
+- TUI: the rewound prompt lands in the input box (`restore_to_input`), picker selection, action menu, epoch filtering, Esc Esc timing against the other Esc
   meanings, command registration and alias.
 
-Integration (core tests through the headless surface, deterministic model): edit a file over two
-turns, rewind to turn 1 with Both, assert file bytes, conversation, input text and ledger contents;
+Integration (runtime-level core tests calling `AgentRuntime::rewind_*`, as `goal.rs`/`schedule.rs`
+tests call `clear_conversation`; deterministic model; headless has no rewind): edit a file over two
+turns, rewind to turn 1 with Both, assert file bytes, conversation, the returned prompt text and
+ledger contents (the input-box assertion belongs in the TUI tests);
 rewind across a compaction restores the original messages (`as_of` replay catches what a fake store
 could not); `/clear` then `/rewind` lists only post-clear turns; one combined fork test (fork a session with a
 checkpoint, assert `checkpoints/` is present and a code restore works in the copy); resume is
