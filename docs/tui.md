@@ -316,7 +316,7 @@ since a transcript can hold secrets, and an existing file is an error: an export
 | `/expand [<n>]` | Prints tool call `n` in full (command, retained output, diff) as new transcript lines; the latest call without a number. `n` is the number in the card's `expand:` hint, counted from the start of the session. It is an error for a call that does not exist or that `/clear` removed. |
 | `/export [<path>]` | Writes the conversation to a Markdown file, owner-only, never over an existing file. See [Sessions](#sessions). |
 | `/goal [<condition> \| clear]` | Keeps working until the condition is met; see [Goals](#goals). Bare `/goal` shows the goal's status. |
-| `/guardian-model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model) limited to the models the guardian could be. With one, pins the guardian to that model for the live session and saves it as `[guardian] model`. A model whose account has no credential becomes an unavailable guardian, which the next adjudication reports. When a higher scope (`--settings` or a project-local file) sets `[guardian] model`, the notice adds that the scope wins from the next launch. |
+| `/guardian-model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model) over a live listing. With one, pins the guardian to that model for the live session and saves it as `[guardian] model`. A model whose account has no credential becomes an unavailable guardian, which the next adjudication reports. When a higher scope (`--settings` or a project-local file) sets `[guardian] model`, the notice adds that the scope wins from the next launch. |
 | `/help` | Lists the built-in commands, your user-invocable skills and the main keys. |
 | `/hooks` | Lists the [hooks](hooks.md) by event with their matcher, command and scope, and marks a repository's hooks that did not load because the workspace is not trusted. |
 | `/init` | Has the agent write the project instruction file, or improve the one that exists. See [Instruction files](instructions.md#init). Takes no argument. |
@@ -400,9 +400,9 @@ so a credential added in the meantime shows up. An account that cannot be listed
 keeps its heading and shows why (`could not list: ...`), for example a missing credential, a
 provider error or the timeout.
 
-`/guardian-model` with no argument opens the same overlay with only the models the guardian could
-use: the benchmark-validated models your accounts offer and every model an account lists in its
-`models` setting. A pick pins the guardian and saves it as `[guardian] model`.
+`/guardian-model` with no argument opens the same overlay over a live listing of every account, as
+`/model` does, failures included. A pick pins the guardian and saves it as `[guardian] model`; a pick
+the account cannot serve as a guardian is rejected with the reason.
 
 ## Settings panel
 

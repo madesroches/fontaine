@@ -66,11 +66,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
         ));
     }
 
-    /// `/guardian-model`: opens the picker on the models the guardian could be, or pins the
+    /// `/guardian-model`: opens the picker over a live listing, or pins the
     /// guardian to the one named.
-    pub(crate) fn guardian_model(&mut self, runtime: &mut AgentRuntime, reference: &str) {
+    pub(crate) async fn guardian_model(&mut self, runtime: &mut AgentRuntime, reference: &str) {
         if reference.is_empty() {
-            self.open_guardian_picker(runtime);
+            self.open_guardian_picker(runtime).await;
             return;
         }
         match runtime.set_guardian_model(reference) {
@@ -98,29 +98,25 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
-    pub(crate) fn open_guardian_picker(&mut self, runtime: &AgentRuntime) {
+    /// Lists every account's models live, like `/model`: `set_guardian_model` rejects a pick
+    /// that cannot host a guardian, so filtering here would only hide accounts silently.
+    pub(crate) async fn open_guardian_picker(&mut self, runtime: &mut AgentRuntime) {
+        self.app.transcript.notice("listing models…");
+        self.draw(runtime);
+        let groups: Vec<Group> = match runtime.model_listings(None).await {
+            Ok(listings) => listings.iter().map(Group::from).collect(),
+            Err(e) => {
+                self.app.transcript.error(format!(
+                    "/guardian-model: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                ));
+                return;
+            }
+        };
         let guardian = runtime.state.guardian();
         let mut header = format!("guardian {}", guardian.label());
         if let Some(reason) = guardian.unavailable_reason() {
             header.push_str(&format!(" (unavailable: {reason})"));
-        }
-        let mut by_account: std::collections::BTreeMap<String, Vec<String>> = Default::default();
-        for candidate in runtime.guardian_candidates() {
-            by_account
-                .entry(candidate.account)
-                .or_default()
-                .push(candidate.model);
-        }
-        let groups: Vec<Group> = by_account
-            .into_iter()
-            .filter_map(|(account, models)| {
-                let kind = runtime.config.accounts.get(&account)?.kind;
-                Some(Group::new(account, kind, Ok(models)))
-            })
-            .collect();
-        if groups.is_empty() {
-            self.app.transcript.notice(header);
-            return;
         }
         // The runtime's own record of the guardian goes stale after a session-only change.
         let current = fontaine_core::models::ModelRef::parse(guardian.label());
@@ -142,7 +138,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) {
         match purpose {
             PickerPurpose::Main => self.model(runtime, reference).await,
-            PickerPurpose::Guardian => self.guardian_model(runtime, reference),
+            PickerPurpose::Guardian => self.guardian_model(runtime, reference).await,
         }
     }
 

@@ -298,7 +298,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(Command::Todos) => self.app.todos.toggle(),
             Some(Command::OutputStyle(name)) => self.output_style(runtime, &name),
             Some(Command::Model(reference)) => self.model(runtime, &reference).await,
-            Some(Command::GuardianModel(reference)) => self.guardian_model(runtime, &reference),
+            Some(Command::GuardianModel(reference)) => {
+                self.guardian_model(runtime, &reference).await
+            }
             Some(Command::Login(account)) => self.login(runtime, &account).await,
             Some(Command::Help) => {
                 let (skills, _) = crate::commands::skill_menu(runtime.slash_skills());

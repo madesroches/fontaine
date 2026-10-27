@@ -1096,6 +1096,45 @@ async fn a_failed_account_keeps_its_heading_and_only_failures_are_listed_again()
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn guardian_model_lists_accounts_without_a_models_setting() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let live = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(openai_models(&["fresh"]))
+        .mount(&live)
+        .await;
+    let broken = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+        .mount(&broken)
+        .await;
+    let extra = format!(
+        "\n[accounts.live]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\n\n[accounts.broken]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\n",
+        live.uri(),
+        broken.uri()
+    );
+    let w = World::routed("http://127.0.0.1:9", &extra);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/guardian-model");
+        picker_open(&ui).await;
+        let shown = ui.live();
+        assert!(shown.contains("guardian mock/scripted"), "{shown}");
+        assert!(shown.contains("  fresh"), "{shown}");
+        ui.type_text("fresh");
+        ui.press(KeyCode::Enter);
+        ui.wait_for("guardian is now live/fresh").await;
+    })
+    .await;
+    let saved = std::fs::read_to_string(&w.user_config).unwrap();
+    assert!(saved.contains("[guardian]"), "{saved}");
+    assert!(saved.contains("model = \"live/fresh\""), "{saved}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_main_account_is_listed_afresh_after_a_switch_to_it() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer};
