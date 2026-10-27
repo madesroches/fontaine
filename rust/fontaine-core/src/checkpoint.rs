@@ -651,11 +651,14 @@ impl CheckpointStore {
             }
             match &file.step {
                 Step::Delete => match delete_regular(path) {
-                    Ok(true) => {
+                    Ok(Deletion::Deleted) => {
                         report.deleted.push(path.clone());
                         self.note_restored(path);
                     }
-                    Ok(false) => {}
+                    Ok(Deletion::Absent) => {}
+                    Ok(Deletion::NotRegular) => report
+                        .not_restorable
+                        .push((path.clone(), Refusal::Skipped(SkipReason::NotRegular))),
                     Err(e) => report.failed.push((path.clone(), e)),
                 },
                 Step::Restore { hash, unix_mode } => {
@@ -885,11 +888,17 @@ fn refusal_for(path: &Path, scope: &Scope, memory_root: Option<&Path>) -> Option
     linked.then_some(Refusal::Symlink)
 }
 
-fn delete_regular(path: &Path) -> io::Result<bool> {
+enum Deletion {
+    Deleted,
+    Absent,
+    NotRegular,
+}
+
+fn delete_regular(path: &Path) -> io::Result<Deletion> {
     match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_file() => std::fs::remove_file(path).map(|()| true),
-        Ok(_) => Ok(false),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Ok(meta) if meta.is_file() => std::fs::remove_file(path).map(|()| Deletion::Deleted),
+        Ok(_) => Ok(Deletion::NotRegular),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Deletion::Absent),
         Err(e) => Err(e),
     }
 }

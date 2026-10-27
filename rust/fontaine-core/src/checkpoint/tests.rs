@@ -126,6 +126,23 @@ fn a_file_that_did_not_exist_is_recorded_absent_and_deleted_by_a_restore() {
 }
 
 #[test]
+fn a_created_path_that_became_a_directory_is_reported_not_restorable() {
+    let r = rig();
+    r.store.begin_turn(0, "make it", 0);
+    let path = r.edit("new.txt", "x");
+    let plan = r.store.plan(1, &r.scope()).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let report = r.store.restore_code(&plan, &r.scope(), true);
+    assert!(report.deleted.is_empty());
+    assert_eq!(
+        report.not_restorable,
+        vec![(path.clone(), Refusal::Skipped(SkipReason::NotRegular))]
+    );
+    assert!(path.is_dir());
+}
+
+#[test]
 fn identical_pre_images_share_one_blob() {
     let r = rig();
     for name in ["a.txt", "b.txt"] {

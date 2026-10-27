@@ -224,17 +224,19 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
         loop {
-            // A prompt with an expansion was recorded as the human's message before this point.
-            runtime.begin_turn(&text, expanded.is_some());
             self.app.transcript.user(text.clone());
             // A prompt from the user resumes a paused goal.
             runtime.goal_user_prompt();
             let end = match self.refresh_native_search(runtime) {
                 Some(end) => end,
-                None => match expanded.take() {
-                    Some(prompt) => self.turn(runtime, prompt, None).await,
-                    None => self.turn(runtime, text.clone(), Some(&text)).await,
-                },
+                None => {
+                    // A prompt with an expansion was recorded as the human's message before this point.
+                    runtime.begin_turn(&text, expanded.is_some());
+                    match expanded.take() {
+                        Some(prompt) => self.turn(runtime, prompt, None).await,
+                        None => self.turn(runtime, text.clone(), Some(&text)).await,
+                    }
+                }
             };
             if matches!(end, TurnEnd::InputClosed) {
                 return Break(());

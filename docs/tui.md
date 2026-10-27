@@ -285,7 +285,7 @@ among this folder's sessions, and two sessions with one name are an error that l
 
 A name is 1 to 80 characters with no control characters. `/rename <name>` records it in the
 session's ledger; the latest name wins. `/rename` alone draws a name from the first line of your
-first message since the last `/clear`, cut to 60 characters (a `/rewind` does not change this); it makes no model call, and is an error
+first message since the last `/clear`, cut to 60 characters (a conversation `/rewind` to that first message also takes it away, so the name is drawn from the next one you send); it makes no model call, and is an error
 when there is no message yet.
 
 `/branch [<name>]` (also `/fork`) copies the session under a new id and carries on in the copy,
