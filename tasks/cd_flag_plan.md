@@ -62,10 +62,12 @@ Applies to the interactive and `-p` surfaces alike (`run` is shared).
 2. `fontaine/src/lib.rs`: make `host` mutable in `run`; add `apply_cd`; call it before
    `DebugSink::open`. Map failure to `usage_code`-style stderr output and `EXIT_CONFIG`.
 3. Tests (below).
-4. Docs: `docs/headless.md` flag table, `docs/configuration.md` workspace-roots paragraph (relative
-   entries resolve against the project directory, which `--cd` sets), and the CLI flag list in
-   `docs/index.md`/`README.md` if flags are enumerated there.
-5. `tasks/fontaine_harness_plan.md` `## Decisions`: dated line recording the deviation.
+4. Docs: `docs/headless.md` flag table; reword passages that call the launch directory the project
+   directory to "project directory (the launch directory, or `--cd`)": `docs/configuration.md`
+   (:52, :398, :942, and the workspace-roots paragraph), `docs/tools.md` (:77, :87),
+   `docs/headless.md` (:37, :38, :102, where `--continue`/`--resume` match sessions by launch
+   directory), `docs/tui.md` (:296).
+5. `tasks/fontaine_harness_plan.md` `## Decisions`: add the same dated line as this plan's.
 6. `CHANGELOG.md` `Added` entry.
 
 ## Files to Modify
@@ -73,7 +75,7 @@ Applies to the interactive and `-p` surfaces alike (`run` is shared).
 - `rust/fontaine/src/cli.rs`
 - `rust/fontaine/src/lib.rs`
 - `rust/fontaine/tests/` (new `cd_flag.rs`)
-- `docs/headless.md`, `docs/configuration.md`
+- `docs/headless.md`, `docs/configuration.md`, `docs/tools.md`, `docs/tui.md`
 - `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -90,12 +92,13 @@ Applies to the interactive and `-p` surfaces alike (`run` is shared).
 
 ## Decisions
 
-- AFK: Name is `--cd` with short `-C` (issue's open question): matches the issue's proposal and the two precedents it cites.
+- 2026-10-27: `--cd <DIR>` (short `-C`) is a Fontaine addition with no Claude Code equivalent; it changes the process working directory as well as `Host.cwd`, because relative `--settings`/`--add-dir`/`--debug-file` values and spawned children must agree with the project directory (#145).
 
 ## Documentation
 
-`docs/headless.md` (flag table), `docs/configuration.md` (workspace roots: relative entries and
-`--add-dir` resolve against the project directory). Fontaine's own `AGENTS.md` mentions
+`docs/headless.md` (flag table; :37, :38, :102), `docs/configuration.md` (:52, :398, :942; workspace
+roots: relative entries and `--add-dir` resolve against the project directory), `docs/tools.md`
+(:77, :87), `docs/tui.md` (:296). Fontaine's own `AGENTS.md` mentions
 `cargo run -p fontaine`; leave unchanged.
 
 ## Testing Strategy
@@ -104,14 +107,16 @@ Integration tests in `rust/fontaine/tests/cd_flag.rs` drive the binary (as `debu
 with `FONTAINE_CONFIG_DIR`/`FONTAINE_DATA_DIR` sandboxed, launched from a different directory than
 `<DIR>`:
 
-- `-p` with `--cd <abs>`: the stream-json init event / workspace roots report `<DIR>` (canonical),
-  not the launch directory.
+- `-p` with `--cd <abs>`: `workspace_roots[0]` in the stream-json init event equals the canonical
+  `<DIR>`, not the launch directory.
 - Relative `--cd sub` resolves against the launch directory.
 - Project-scope settings in `<DIR>/.fontaine/` take effect, and ones in the launch directory do not
   (pins that config derives from `<DIR>`).
 - Nonexistent path and a path to a regular file each exit with `EXIT_CONFIG` and a message naming
   `--cd`.
 - A relative `--debug-file` lands inside `<DIR>`.
+- A relative `--settings` file located in `<DIR>` is loaded.
+- A relative `--add-dir` appears in `workspace_roots`.
 - `-C` short form works.
 
 The trust-prompt-names-`<DIR>` behaviour is covered structurally (config load receives the changed
