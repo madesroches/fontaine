@@ -610,18 +610,25 @@ impl Tool for NotebookRead {
                 .place(self.read.base.as_deref(), self.read.confine, &args.path)?;
         let workspace = self.read.workspace.clone();
         let seen = self.read.seen.clone();
-        let (output, read) = blocking(move || {
+        let parsed = blocking(move || {
             let raw = workspace.read_text(&path)?;
-            let notebook =
-                Notebook::parse(&raw).map_err(|e| invalid(format!("{}: {e}", args.path)))?;
+            let Ok(notebook) = Notebook::parse(&raw) else {
+                return Ok::<_, ToolExecutionError>(Err(args));
+            };
             // The raw text is what an edit starts from, not the rendering.
             seen.saw_whole(&path, &raw);
             let (output, lines) = args.shown(&notebook.render());
             let read = FileRead::new(path.to_string_lossy(), content_hash(raw.as_bytes()))
                 .with_lines(lines);
-            Ok::<_, ToolExecutionError>((output, read))
+            Ok(Ok((output, read)))
         })
         .await?;
+        // Not an editable notebook (invalid JSON, conflict markers, nbformat 3): the raw text
+        // is still worth reading.
+        let (output, read) = match parsed {
+            Ok(parsed) => parsed,
+            Err(args) => return self.read.call(context, args).await,
+        };
         context.insert_result(FilesRead(vec![read]))?;
         Ok(output)
     }
@@ -1056,7 +1063,10 @@ mod tests {
             rig.write("a.txt", "one\ntwo\n");
             assert!(rig.read("a.txt").await.unwrap().contains("one"));
             rig.write("bad.ipynb", "not json");
-            assert!(rig.read("bad.ipynb").await.is_err());
+            // Not an editable notebook: read as plain text rather than refused.
+            assert!(rig.read("bad.ipynb").await.unwrap().contains("not json"));
+            rig.write("v3.ipynb", r#"{"nbformat": 3, "worksheets": []}"#);
+            assert!(rig.read("v3.ipynb").await.unwrap().contains("worksheets"));
         }
 
         #[tokio::test]
