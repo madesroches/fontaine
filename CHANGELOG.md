@@ -380,8 +380,8 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
-- The approval prompt's rule line shows each newline of a multi-line command as `\n` instead of
-  running the lines together; the saved rule is unchanged (#229).
+- The approval prompt's rule line shows newlines, tabs and other control characters of a command as escapes
+  (`\n`, `\t`, `\u{..}`) instead of dropping them; the saved rule is unchanged (#229).
 - The guardian's touched paths for a shell command now list its redirect targets (`>`, `>>`, `>|`,
   `&>`, `<>`, `>&file`), including those on compound commands and in nested command lines, ahead
   of its arguments; before, a target such as `cfg.py` was missing while a non-path argument

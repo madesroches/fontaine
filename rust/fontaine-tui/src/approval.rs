@@ -284,10 +284,26 @@ impl Approval {
     }
 }
 
-/// `wrap` chunks by width and ratatui drops control characters, so a rule's newlines would run
-/// its lines together; the saved rule keeps them.
+/// `wrap` chunks by width and ratatui drops control characters, so a rule's newlines and tabs
+/// would run its text together; the saved rule keeps them, so they are shown escaped instead.
 fn display_rule(rule: &str) -> String {
-    rule.replace("\r\n", "\\n").replace(['\n', '\r'], "\\n")
+    let mut out = String::with_capacity(rule.len());
+    let mut chars = rule.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push_str("\\n");
+            }
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -419,6 +435,12 @@ mod tests {
         assert_eq!(display_rule("a\r\nb"), "a\\nb");
         assert_eq!(display_rule("a\rb"), "a\\nb");
         assert_eq!(display_rule("shell(ls -la)"), "shell(ls -la)");
+    }
+
+    #[test]
+    fn display_rule_escapes_tabs_and_other_control_characters() {
+        assert_eq!(display_rule("cut -d'\t' -f2"), "cut -d'\\t' -f2");
+        assert_eq!(display_rule("a\x1bb\x7f"), "a\\u{1b}b\\u{7f}");
     }
 
     #[test]

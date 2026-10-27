@@ -190,7 +190,7 @@ When a call needs approval, a prompt lists the call and why it asked:
 - `y` allow once.
 - `s` allow session, when the prompt offers it.
 - `a` always allow, when the prompt offers it. The prompt shows the exact rule that will be added
-  to `[permissions] allow` in your user settings file, with newlines in the rule shown as `\n`.
+  to `[permissions] allow` in your user settings file, with newlines and tabs in the rule shown as `\n` and `\t`, and other control characters as `\u{..}`.
 - `n` deny. Enter on the deny row opens an optional reason, which is sent to the model with the
   denial.
 
