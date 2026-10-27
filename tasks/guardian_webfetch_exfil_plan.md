@@ -87,6 +87,7 @@ sensitive data in the request still hits the hard deny.
 
 - Extend `Read-only operations` rather than add a new allow entry: avoids two overlapping exceptions.
 - No deterministic (code-level) allow for bare URLs: forbidden by the no-argument-regex rule and the "fast path earned by containment" invariant.
+- AFK: The `minimal` profile prompt (`guardian_minimal.md`) is out of scope and not edited: its Exfiltration paragraph already keys on sending sensitive data, so a plain public-URL webfetch is not denied by it, and loosening a container profile is the wrong direction; the new `profile: full` rows are scored by the `minimal` fixture column only through their `fixture_verdict`.
 
 ## Documentation
 
