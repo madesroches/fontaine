@@ -95,7 +95,7 @@ answer to a prompt adds a second record with `tier = human`. The same record is 
 The `tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
 `read_only_fast_path`, `tier05`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`, `plan_block` and
 `human`. A guardian decision also records the guardian model and profile, its verdict, confidence,
-whether the verdict came from the cache, how long the guardian took, and, when it failed closed,
+whether the verdict came from the cache, how long the guardian took, the `verdict_transport` it was asked on (`tool`, a forced `submit` call, or `schema`, for an Ollama model with no tool support; see [Models with no tool support](guardian.md#models-with-no-tool-support)) and, when it failed closed,
 the reason (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`). With a
 [screen stage](guardian.md#the-screen-stage) configured, the record also carries `screen_risk`,
 `screen_allow_risk`, `screen_steering`, `screen_model`, `screen_latency_ms` and `screen_outcome`,

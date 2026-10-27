@@ -13,8 +13,8 @@ use rig_core::operation::Completion;
 use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup};
 use crate::credentials::{Credentials, StoredCredential};
 use crate::providers::{AccountClient, Billing, ConnectContext, CredentialPolicy};
-use fontaine_guardian::WireIds;
 use fontaine_guardian::models::{ModelEntry, ModelsFile};
+use fontaine_guardian::{OutputProbe, WireIds};
 use fontaine_tools::tls::LoadedNetwork;
 
 type Client = Arc<dyn AccountClient>;
@@ -112,6 +112,9 @@ pub struct ModelHandle {
     /// Request parameters that turn the model's thinking off, for the calls that force a tool
     /// call (the guardian and the scanner).
     pub thinking_off: Option<serde_json::Value>,
+    /// How to learn whether the model takes a forced tool call for the guardian's typed answer;
+    /// `None` when it always does.
+    pub output_probe: Option<Arc<dyn OutputProbe>>,
     /// The same model's completions with conversation-wide and static-prefix-only caching, when
     /// it was built from a client.
     scopes: Option<Scopes>,
@@ -130,6 +133,7 @@ impl ModelHandle {
             kind,
             completion,
             thinking_off: None,
+            output_probe: None,
             scopes: None,
         }
     }
@@ -172,12 +176,14 @@ impl ModelHandle {
     ) -> Self {
         let guardian = client.guardian_completion(&reference.model);
         let thinking_off = client.thinking_off(&reference.model);
+        let output_probe = client.output_probe(&reference.model);
         let conversation = client.completion(&reference.model);
         ModelHandle {
             reference,
             kind,
             completion: guardian.clone(),
             thinking_off,
+            output_probe,
             scopes: Some(Scopes {
                 conversation,
                 guardian,

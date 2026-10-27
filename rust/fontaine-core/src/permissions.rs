@@ -930,6 +930,7 @@ impl PermissionPipeline {
             guardian_profile: None,
             guardian_verdict: None,
             guardian_cache_hit: None,
+            verdict_transport: None,
             guardian_latency_ms: None,
             fail_closed_reason: None,
             screen_risk: None,
@@ -962,6 +963,7 @@ impl PermissionPipeline {
         record.guardian_profile = Some(adjudication.profile.as_str().to_string());
         record.guardian_verdict = Some(adjudication.decision.as_str().to_string());
         record.guardian_cache_hit = Some(adjudication.cache_hit);
+        record.verdict_transport = adjudication.transport.map(|t| t.as_str().to_string());
         record.guardian_latency_ms = Some(adjudication.latency_ms);
         record.fail_closed_reason = adjudication.fail_closed.map(|r| r.as_str().to_string());
         record

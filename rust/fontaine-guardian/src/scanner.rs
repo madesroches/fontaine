@@ -5,12 +5,11 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use rig_agent::extractor::ExtractorBuilder;
 use rig_core::DynModel;
-use rig_core::message::Message;
 use rig_core::operation::Completion;
 use rig_core::redact;
 use schemars::JsonSchema;
@@ -20,6 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::Instrument;
 
 use crate::prompt_builder::neutralize;
+use crate::structured::{self, ModeResolver, Notifier, Options, OutputMode, OutputProbe, Tally};
 
 #[cfg(feature = "pg2")]
 mod pg2;
@@ -106,7 +106,15 @@ pub struct LlmScanner {
     priced: bool,
     /// Extra request parameters; see `Guardian::with_additional_params`.
     additional_params: Option<serde_json::Value>,
+    mode: ModeResolver,
 }
+
+/// What a schema-constrained scan adds to the prompt: the prompt's `submit` function is not in
+/// that request.
+const SCHEMA_ANSWER: &str = "## Answer format in this conversation
+
+There is no `submit` function in this conversation. Ignore the instruction above to call it. Instead reply with exactly one JSON object and nothing else, with the fields `verdict` (`clean` or `flagged`) and `reason` (one sentence).
+";
 
 impl LlmScanner {
     pub fn new(model: DynModel<Completion>, timeout: Duration, priced: bool) -> LlmScanner {
@@ -115,6 +123,7 @@ impl LlmScanner {
             timeout,
             priced,
             additional_params: None,
+            mode: ModeResolver::default(),
         }
     }
 
@@ -123,17 +132,46 @@ impl LlmScanner {
         self
     }
 
+    /// Asks `probe` which transport the model can use, once; see `Guardian::with_output_probe`.
+    pub fn with_output_probe(mut self, probe: Arc<dyn OutputProbe>) -> Self {
+        self.mode.set_probe(probe);
+        self
+    }
+
+    pub fn with_notifier(mut self, notifier: Notifier) -> Self {
+        self.mode.set_notifier(notifier);
+        self
+    }
+
+    /// See `Guardian::resolve_mode`.
+    pub async fn resolve_mode(&self) -> Result<OutputMode, String> {
+        self.mode.resolve().await
+    }
+
     async fn run(&self, tool: &str, content: &str) -> Scan {
-        let mut builder = ExtractorBuilder::<Reported>::new(self.model.clone())
-            .append_preamble(LLM_PROMPT)
-            .max_tokens(MAX_TOKENS)
-            .retries(1);
-        if let Some(params) = &self.additional_params {
-            builder = builder.additional_params(params.clone());
-        }
-        let extractor = builder.build();
-        let message = Message::user(user_message(tool, content));
-        match tokio::time::timeout(self.timeout, extractor.extract(message)).await {
+        let mode = match self.mode.resolve().await {
+            Ok(mode) => mode,
+            Err(reason) => return failed(format!("the scanner model is unavailable: {reason}")),
+        };
+        let preamble = match mode {
+            OutputMode::Tool => LLM_PROMPT.to_string(),
+            OutputMode::Schema => format!("{LLM_PROMPT}\n\n{SCHEMA_ANSWER}"),
+        };
+        let options = Options {
+            retries: 1,
+            max_tokens: MAX_TOKENS,
+            additional_params: self.additional_params.as_ref(),
+        };
+        let spent = Tally::default();
+        let extraction = structured::run::<Reported>(
+            &self.model,
+            mode,
+            &preamble,
+            user_message(tool, content),
+            options,
+            &spent,
+        );
+        match tokio::time::timeout(self.timeout, extraction).await {
             Err(_) => failed(format!(
                 "the scanner did not answer within {} seconds",
                 self.timeout.as_secs()
@@ -142,7 +180,7 @@ impl LlmScanner {
                 tracing::warn!(error = %error, "the scanner model gave no usable verdict");
                 failed(format!("the scanner model gave no usable verdict: {error}"))
             }
-            Ok(Ok(response)) => response.output.into_scan(),
+            Ok(Ok(reported)) => reported.into_scan(),
         }
     }
 }

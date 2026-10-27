@@ -17,8 +17,8 @@ use fontaine_core::models::{GuardianModel, Switcher};
 use fontaine_core::scanner_stage::{self, Backend};
 use fontaine_guardian::cascade::{Decided, ScreenInput};
 use fontaine_guardian::{
-    ActionTaken, AdjudicationRequest, Guardian, PreExistence, Profile, Screen, ScreenOutcome,
-    SessionFacts, Settings, ToolCallSummary, TouchedPath, task_intent,
+    ActionTaken, AdjudicationRequest, FixedProbe, Guardian, OutputMode, PreExistence, Profile,
+    Screen, ScreenOutcome, SessionFacts, Settings, ToolCallSummary, TouchedPath, task_intent,
 };
 use fontaine_tools::scope::Scope;
 use serde_json::Value;
@@ -49,9 +49,13 @@ pub struct Live {
 /// Resolves `<account>/<model>` against the user's configuration. The profile is built
 /// directly: eval cases never execute tools, so no containment is resolved, and a `minimal`
 /// column can never silently score `full`.
+///
+/// `transport` forces how the guardian and the scanner are asked for a typed answer; `None`
+/// leaves it to the model's reported capabilities, as in a session.
 pub fn connect(
     spec: &str,
     profile: Profile,
+    transport: Option<OutputMode>,
     env: &dyn Fn(&str) -> Option<OsString>,
 ) -> Result<Live, String> {
     let (account, model) = spec
@@ -92,6 +96,10 @@ pub fn connect(
         Some(uuid::Uuid::new_v4().to_string()),
     );
     let guardian_model = switcher.guardian(spec, None).map_err(|e| e.to_string())?;
+    let mut guardian_model = guardian_model;
+    if let (Some(mode), GuardianModel::Ready(handle)) = (transport, &mut guardian_model) {
+        handle.output_probe = Some(Arc::new(FixedProbe(mode)));
+    }
     let handle = match &guardian_model {
         GuardianModel::Ready(handle) => handle.clone(),
         GuardianModel::Unavailable { reason, .. } => {
@@ -114,10 +122,14 @@ pub fn connect(
         snapshot.insert(config.guardian.scanner_hf_token_env.clone(), value);
     }
     Ok(Live {
-        guardian: Arc::new(
-            Guardian::new(handle.completion, spec, settings)
-                .with_additional_params(handle.thinking_off),
-        ),
+        guardian: Arc::new({
+            let guardian = Guardian::new(handle.completion, spec, settings)
+                .with_additional_params(handle.thinking_off);
+            match handle.output_probe {
+                Some(probe) => guardian.with_output_probe(probe),
+                None => guardian,
+            }
+        }),
         screen: None,
         data_dir: dirs.data.clone(),
         scanner_model: guardian_model,
@@ -379,6 +391,7 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
             explanation: Some(explanation),
             escape_class: None,
             fail_closed: None,
+            transport: None,
             cascade: Some(step(outcome, false)),
             screen: None,
         }))
@@ -436,6 +449,7 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
             .then(|| escape_class(&adjudication.explanation))
             .flatten(),
         fail_closed,
+        transport: adjudication.transport.map(|t| t.as_str().to_string()),
         cascade: composed.screen.as_ref().map(|outcome| step(outcome, true)),
         screen: None,
     })))
@@ -481,6 +495,7 @@ pub async fn scan(case: &Case, backend: &Backend) -> CaseResult {
         category: case.category.to_string(),
         expected: case.expected.clone(),
         pass: fail_closed.is_none() && actual == case.expected,
+        transport: None,
         actual: actual.to_string(),
         expected_tier: None,
         actual_tier: None,

@@ -15,6 +15,7 @@ mod rule_label;
 pub mod rules;
 pub mod scanner;
 mod screen;
+pub mod structured;
 mod verdict;
 
 pub use breaker::{CONSECUTIVE_LIMIT, LoopBreaker, TOTAL_LIMIT};
@@ -33,5 +34,8 @@ pub use scanner::{CommandScanner, LlmScanner, Scan, Scanner};
 pub use screen::{
     AllowSettings, DEFAULT_STEERING_VETO, Question, Screen, ScreenOutcome, ScreenScores,
     ScreenSettings,
+};
+pub use structured::{
+    FixedProbe, ModeNotice, Notifier, OutputMode, OutputProbe, PROBE_TIMEOUT, ProbeOutcome,
 };
 pub use verdict::{AuditLabel, Decision, FailClosed, Verdict};

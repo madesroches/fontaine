@@ -42,6 +42,7 @@ fn result(id: &str, actual: &str) -> CaseResult {
         explanation: None,
         escape_class: None,
         fail_closed: None,
+        transport: None,
         cascade: None,
         screen: None,
     }
@@ -75,6 +76,7 @@ fn entry(model: &str, catch: f64, false_deny: f64, p95: u64, version: &str) -> M
         p95_ms: p95,
         scored_on: "2026-01-01".into(),
         dataset_version: version.into(),
+        transport: "tool".into(),
     }
 }
 
@@ -86,6 +88,7 @@ fn card<'a>(model: &'a str, rates: &'a Rates, p95: u64, version: &'a str) -> Sco
         p95_ms: p95,
         scored_on: "2026-02-02",
         dataset_version: version,
+        transport: "tool",
     }
 }
 
@@ -347,4 +350,70 @@ fn escape_catch_rates_are_per_the_class_tag_in_the_explanation() {
     assert_eq!(classes["mount"], Some(0.5));
     assert_eq!(classes["docker-socket"], Some(1.0));
     assert_eq!(classes["untagged"], Some(1.0));
+}
+
+fn schema_card<'a>(model: &'a str, rates: &'a Rates, version: &'a str) -> Scorecard<'a> {
+    Scorecard {
+        transport: "schema",
+        ..card(model, rates, 800, version)
+    }
+}
+
+fn transport_of(file: &ModelsFile, model: &str) -> Option<String> {
+    file.models
+        .iter()
+        .find(|e| e.model == model)
+        .map(|e| e.transport.clone())
+}
+
+#[test]
+fn a_schema_pass_adds_a_schema_entry_and_a_tool_entry_is_never_replaced_by_it() {
+    let strong = scorecard(10, 0);
+    let merged = merge(ModelsFile::default(), &schema_card("m", &strong, "v1"));
+    assert_eq!(transport_of(&merged.file, "m").as_deref(), Some("schema"));
+
+    let existing = ModelsFile {
+        models: vec![entry("m", 0.92, 0.04, 2500, "v1")],
+    };
+    let merged = merge(existing.clone(), &schema_card("m", &strong, "v1"));
+    assert_eq!(merged.file.models.len(), 1);
+    assert_eq!(merged.file.models[0], existing.models[0], "tool wins");
+    // A failing schema run says nothing about the tool entry either.
+    let merged = merge(existing, &schema_card("m", &scorecard(2, 0), "v1"));
+    assert_eq!(transport_of(&merged.file, "m").as_deref(), Some("tool"));
+}
+
+#[test]
+fn a_tool_run_supersedes_a_schema_entry_and_its_failure_leaves_it() {
+    let mut schema_entry = entry("m", 0.92, 0.04, 2500, "v1");
+    schema_entry.transport = "schema".into();
+    let existing = ModelsFile {
+        models: vec![schema_entry],
+    };
+    let strong = scorecard(10, 0);
+    let merged = merge(existing.clone(), &card("m", &strong, 800, "v1"));
+    assert_eq!(transport_of(&merged.file, "m").as_deref(), Some("tool"));
+    let merged = merge(existing, &card("m", &scorecard(2, 0), 800, "v1"));
+    assert_eq!(transport_of(&merged.file, "m").as_deref(), Some("schema"));
+}
+
+#[test]
+fn an_entry_without_a_transport_is_a_tool_entry_and_a_tool_entry_is_written_without_one() {
+    let file: ModelsFile = toml::from_str(
+        "[[models]]\nkind = \"anthropic\"\nmodel = \"m\"\ncatch_rate = 0.95\nfalse_deny_rate = 0.01\np95_ms = 900\nscored_on = \"2026-01-01\"\ndataset_version = \"abc\"\n",
+    )
+    .unwrap();
+    assert_eq!(file.models[0].transport, "tool");
+    assert!(!render(&file).unwrap().contains("transport"));
+    let mut schema = file.models[0].clone();
+    schema.transport = "schema".into();
+    let text = render(&ModelsFile {
+        models: vec![schema.clone()],
+    })
+    .unwrap();
+    assert!(text.contains("transport = \"schema\""));
+    assert_eq!(
+        toml::from_str::<ModelsFile>(&text).unwrap().models[0],
+        schema
+    );
 }

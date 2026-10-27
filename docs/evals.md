@@ -71,6 +71,22 @@ A local model is scored on the window its Ollama account requests (`context_toke
 default; see [configuration](configuration.md#accountsname)). A prompt that does not fit is refused
 by the daemon and counts as a fail-closed infrastructure failure, not as a truncated read.
 
+### Verdict transport
+
+`--verdict-transport tool|schema|auto` chooses how a `live:` guardian, and the `llm` scanner on the
+same model, is asked for its typed answer: `tool` is a forced `submit` function call, `schema` is
+the provider's schema-constrained output with no tools in the request, and `auto` (the default) is
+what a session would pick for the model from its reported capabilities (see
+[Models with no tool support](guardian.md#models-with-no-tool-support)). The flag is rejected for
+`fixture`, `none` and `screen:` runs. Each case in the report records the `transport` that judged
+it and the summary records the one transport of the run (`mixed` if a probe changed its answer
+mid-run).
+
+A model has one entry in the ranked list, and it is added only for a transport whose own run
+cleared the inclusion bar. An entry records its `transport` when that is `schema`; a model that
+clears the bar on both keeps its `tool` entry, and a failing run on one transport never removes an
+entry earned on the other.
+
 ### Cascade scorecards
 
 With a screen stage beside the guardian, `--screen live:<account>/<model>` (an Ollama account)
@@ -187,6 +203,41 @@ overall.
 | `kimi/kimi-for-coding` | 100.0% | 100.0% | 77.8% | 44.4% | 100.0% | 90.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 70.0% |
 | `local/qwen3:4b` | 100.0% | 100.0% | 100.0% | 0.0% | — | — | 100.0% | 100.0% | 100.0% | 50.0% | 100.0% | 100.0% |
 | `local/qwen3:4b`, `think = false` | 100.0% | 100.0% | 100.0% | 100.0% | — | 100.0% | 100.0% | 100.0% | 100.0% | 0.0% | 100.0% | — |
+
+### Schema-constrained verdicts on local models
+
+Three Ollama runs on 2026-10-27 against dataset `d1740a7c65ae` (a different dataset version from
+the table above, so the rows are not comparable with it), on a GTX 1060 (6 GB) at the account's
+default 16384-token window, with the default `[guardian]` settings. They compare the two verdict
+transports from [Verdict transport](#verdict-transport):
+`local/gemma3:4b` reports no `tools` capability, so it can only take `schema`;
+`local/qwen3:4b-instruct-2507-q4_K_M` takes both, so it shows what `schema` costs on one model.
+
+| Model and transport | Catch rate | False-deny rate | p50 | p95 | Unparseable |
+|---|---|---|---|---|---|
+| `gemma3:4b`, `schema` | 98.9% (86 of 87 answered) | 31.7% (13 of 41 answered) | 3.0 s | 3.7 s | 48 of 209 |
+| `qwen3:4b-instruct-2507`, `tool` | 93.4% (114 of 122) | 3.9% (2 of 51) | 3.4 s | 4.1 s | 0 |
+| `qwen3:4b-instruct-2507`, `schema` | 93.4% (114 of 122) | 5.9% (3 of 51) | 3.8 s | 4.4 s | 0 |
+
+The reports are
+[`gemma3-4b-schema.json`](../evals/scorecards/gemma3-4b-schema.json),
+[`qwen3-4b-instruct-tool.json`](../evals/scorecards/qwen3-4b-instruct-tool.json) and
+[`qwen3-4b-instruct-schema.json`](../evals/scorecards/qwen3-4b-instruct-schema.json).
+
+- Neither model clears the inclusion bar on either transport, so nothing was added to the ranked
+  list. `gemma3:4b` has a 31.7% false-deny rate and 48 answers that were not valid verdicts: the
+  decision and the rule label disagreed after the schema fill, so they were denied as
+  `unparseable` and are left out of its rates. The other two miss on latency (p95 over 3 s) and
+  the `schema` run also on false-deny (over 5%).
+- On the one model that takes both transports, `schema` gave the same catch rate and one more
+  false deny out of 51 benign cases, and was about 0.4 s slower at p50. A difference of one case in
+  51 is inside the noise of a single run, so this does not show that `schema` loses accuracy; it
+  does show that it did not recover any.
+- `gemma3:4b` therefore works as an explicitly pinned guardian on the schema path, with a false-deny
+  rate that makes it a poor one. It is not a candidate for the ranked list.
+- No hosted model was scored on the `tool` path in this round, so there is no control from a
+  non-Ollama provider on this dataset version. The `minimal` profile was not scored, because no
+  model was viable on the full profile.
 
 ### Minimal profile
 

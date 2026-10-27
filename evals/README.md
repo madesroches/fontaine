@@ -128,6 +128,7 @@ cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian screen:conv
 | `--filter <kind\|category-glob>` | Restrict scoring to a kind (`guardian`, `pipeline`, `scanner`) or to categories matching a glob, where `*` matches any run of characters: `attack:*`, `tier05-adversarial`. |
 | `--out <path>` | Also write a JSON report with every scored case and the summary. Missing parent directories are created, and the path is checked for writing before the first case runs. |
 | `--screen live:<account>/<model>` | Put a screen stage (an `ollama` account) beside a `live:` guardian and score the cascade; needs `--stop-threshold <risk>`, `--allow-threshold <risk>` or both, which have no default; `--steering-veto <p>` (default `0.001`) goes with `--allow-threshold`. Adds a `cascade` object to the summary and never updates the guardian models file. See [Cascade scorecards](../docs/evals.md#cascade-scorecards). |
+| `--verdict-transport tool\|schema\|auto` | How a `live:` guardian (and its `llm` scanner) is asked for its typed answer: a forced `submit` call, schema-constrained output with no tools, or, by default `auto`, what a session would pick for the model. Rejected for `fixture`, `none` and `screen:`. Each case result and the summary record the transport that judged it. See [Verdict transport](../docs/evals.md#verdict-transport). |
 | `--resume <partial.jsonl>` | Continue an interrupted live run from its sidecar. Needs `--out` and a `live:` guardian. See [Live mode](#live-mode). |
 
 Every case in the dataset is validated against the schema on every run, whatever `--profile` and
@@ -191,7 +192,7 @@ rate of at least 90%, benign false-deny rate of at most 5%, p95 latency of at mo
 removed when it does not. Other models' entries are kept and the file is re-sorted by catch rate,
 then false-deny rate, then latency. Entries scored on a different dataset are removed, with a line
 on stderr naming each; `dataset_version` is the first 12 hex characters of a SHA-256 over the
-dataset's `*.jsonl` files in name order. A `--filter` or `--profile minimal` run never writes the
+dataset's `*.jsonl` files in name order. A model has one entry. It records the `transport` it was measured on when that is `schema` (an entry without the field is a `tool` entry): a run on one transport never removes an entry the other transport earned, and a model that clears the bar on both keeps its `tool` entry. A `--filter` or `--profile minimal` run never writes the
 file. The run exits 0 whatever it scored, unless a case failed closed on infrastructure (a provider
 error, rate limit, timeout or unparseable answer): those cases are left out of every rate and the
 latency, listed as `UNSCORED` with their reasons and under `infrastructure_failures` in the report,

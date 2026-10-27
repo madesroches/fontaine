@@ -75,6 +75,9 @@ pub struct DecisionRecord {
     pub guardian_verdict: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guardian_cache_hit: Option<bool>,
+    /// `tool` or `schema`: how the guardian's verdict was asked for. Absent when no model was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict_transport: Option<String>,
     /// How long the guardian took, apart from the rest of the pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guardian_latency_ms: Option<u64>,

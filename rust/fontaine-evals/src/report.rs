@@ -135,6 +135,8 @@ pub struct Scorecard<'a> {
     pub p95_ms: u64,
     pub scored_on: &'a str,
     pub dataset_version: &'a str,
+    /// The verdict transport (`tool` or `schema`) the run measured.
+    pub transport: &'a str,
 }
 
 /// The list entry this run earns, if it clears the inclusion bar.
@@ -148,6 +150,7 @@ pub fn inclusion(card: &Scorecard<'_>) -> Option<ModelEntry> {
         p95_ms: card.p95_ms,
         scored_on: card.scored_on.to_string(),
         dataset_version: card.dataset_version.to_string(),
+        transport: card.transport.to_string(),
     })
 }
 
@@ -157,14 +160,25 @@ pub struct Merged {
     pub dropped: Vec<String>,
 }
 
-/// Upserts this run into `existing`, keyed by (`kind`, `model`): a pass replaces the run's model's
-/// entry, a failure removes it, every other model's entry stays, and entries scored on another
-/// dataset version are dropped. The result is in ranked order.
+/// Upserts this run into `existing`, keyed by (`kind`, `model`) whatever the transport: a pass
+/// replaces the run's model's entry, except that a `tool` entry is never replaced by a `schema`
+/// one; a failure removes the entry only if it was measured on the same transport, since a
+/// `schema` failure says nothing about a `tool` pass. Every other model's entry stays, and
+/// entries scored on another dataset version are dropped. The result is in ranked order.
 pub fn merge(existing: ModelsFile, card: &Scorecard<'_>) -> Merged {
     let mut dropped = Vec::new();
     let mut models: Vec<ModelEntry> = Vec::new();
+    let earned = inclusion(card);
     for entry in existing.models {
         if entry.kind == card.kind && entry.model == card.model {
+            let same_dataset = entry.dataset_version == card.dataset_version;
+            // A `tool` entry outranks any `schema` run; a run of the other transport that
+            // failed says nothing about an entry another transport earned.
+            let outranked = entry.transport == "tool" && card.transport != "tool";
+            let unrefuted = entry.transport != card.transport && earned.is_none();
+            if same_dataset && (outranked || unrefuted) {
+                models.push(entry);
+            }
             continue;
         }
         if entry.dataset_version != card.dataset_version {
@@ -176,7 +190,12 @@ pub fn merge(existing: ModelsFile, card: &Scorecard<'_>) -> Merged {
         }
         models.push(entry);
     }
-    models.extend(inclusion(card));
+    let kept = models
+        .iter()
+        .any(|m| m.kind == card.kind && m.model == card.model);
+    if !kept {
+        models.extend(earned);
+    }
     models.sort_by(models::compare);
     Merged {
         file: ModelsFile { models },

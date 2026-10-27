@@ -63,7 +63,7 @@ use build::{Parts, build_agent};
 pub use mcp::{McpOutcome, McpServerPlan};
 pub use models::{CredentialEffect, Switched};
 pub use rewind::{RewindError, RewindOutcome};
-pub use setup::{build_agent_types, build_guardian, build_screen};
+pub use setup::{build_agent_types, build_guardian, build_guardian_telling, build_screen};
 
 pub type EnvLookup = Arc<dyn Fn(&str) -> Option<OsString> + Send + Sync>;
 

@@ -8,7 +8,7 @@ use fontaine_tools::error_chain::chain;
 use fontaine_tools::lock::{read, write};
 
 use super::AgentRuntime;
-use super::setup::build_guardian;
+use super::setup::{build_guardian_telling, warm_output_mode};
 use crate::accounts::AccountsError;
 use crate::child_runner::MainModel;
 use crate::config::Account;
@@ -42,11 +42,14 @@ pub struct CredentialEffect {
 impl AgentRuntime {
     /// Makes `model` the guardian from the next adjudication on. Its verdict cache starts empty.
     pub fn install_guardian(&self, model: &GuardianModel) {
-        self.state.set_guardian(Arc::new(build_guardian(
+        let guardian = Arc::new(build_guardian_telling(
             Some(model),
             &self.config,
             self.guardian_profile,
-        )));
+            Some(&self.approver),
+        ));
+        warm_output_mode(&guardian);
+        self.state.set_guardian(guardian);
         if let Some(slot) = &self.llm_scanner {
             let timeout = std::time::Duration::from_secs(self.config.guardian.timeout_secs);
             *write(slot, "scanner model") = llm_backend(Some(model), timeout);

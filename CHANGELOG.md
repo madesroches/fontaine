@@ -8,6 +8,16 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- A schema-constrained verdict path makes an Ollama model with no tool support usable as the
+  guardian and as the `llm` scanner model (#250). Fontaine asks the daemon for the model's
+  capabilities and, for a model that can generate text but reports no `tools`, sends the verdict's
+  JSON schema as the daemon's `format` instead of a forced `submit` call; a model that reports
+  `tools`, a daemon too old to report capabilities and every other provider are unchanged. The
+  schema path is announced once, an embedding-only model is reported as an unavailable guardian
+  with its capabilities, a `400 ... does not support tools` denial now says what is missing, and the
+  audit log gains `verdict_transport`. `fontaine-evals --verdict-transport tool|schema|auto` scores
+  either path, and `guardian_models.toml` entries may record the `transport` they were measured
+  on.
 - `notebook_edit` edits one cell of a Jupyter notebook (`replace`, `insert` or `delete`, by cell id
   or `cell-N`); a code cell's outputs are cleared when its source is replaced. `read` shows a
   `.ipynb` as its cells, ids and text outputs, `NotebookEdit` rules and `allowed-tools` entries now

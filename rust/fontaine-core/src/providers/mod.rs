@@ -4,6 +4,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use fontaine_guardian::OutputProbe;
 use futures::future::BoxFuture;
 use rig_core::DynModel;
 use rig_core::driver::Model;
@@ -185,6 +186,11 @@ pub trait AccountClient: Send + Sync {
     /// the static prefix may carry a cache breakpoint.
     fn guardian_completion(&self, model: &str) -> DynModel<Completion> {
         self.completion(model)
+    }
+    /// How to learn which transport the guardian and scanner can use to get a typed answer
+    /// from `model`. `None` when the kind's models all take a forced tool call.
+    fn output_probe(&self, _model: &str) -> Option<Arc<dyn OutputProbe>> {
+        None
     }
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>>;
 }
