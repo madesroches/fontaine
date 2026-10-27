@@ -48,16 +48,20 @@ fields survive):
 - `insert`: new cell with a fresh id (nbformat >= 4.5 only; older notebooks get no `id`), empty
   `metadata`, and `outputs: []`/`execution_count: null` for code.
 - `delete`: remove the cell.
-- Cell lookup by `id`; also accept `cell-N` (0-based index) as Claude Code does.
+- Cell lookup tries `id` first and `cell-N` (0-based index, as Claude Code does) only if no id
+  matches. Cells without an `id` in a 4.5+ notebook are addressable only by `cell-N`.
+- `source` form: `replace` preserves the cell's existing form (string or line array); new cells and
+  `cell_type` changes write a line array (each line keeping its `\n`, the last without). `replace`
+  keeps the cell `id`. New cells use sorted key order (`cell_type`, `execution_count`, `id`,
+  `metadata`, `outputs`, `source`). Render joins array sources.
 - Write back with the notebook's original indent (detect 1 vs 2 vs 4 spaces; default 1, nbformat's
   own) and trailing newline, via `Workspace::write_if(path, bytes, seen_hash)` as rig's `Edit` does:
   it writes only while the file still holds the seen text; on a hash mismatch nothing is written and
   the call is refused as stale. `Local` writes with `write_atomic` (temp file and rename) but takes
   no lock, and `write_if` reads then writes, so a concurrent writer between the two is not excluded.
   On success `seen.saw_whole`; on an I/O error `seen.forget`.
-- Publish `FilesChanged` itself (no fontaine crate does today): build a `FileChange` with its
-  `ChangeKind` from the before/after bytes as rig's `Write` does, and implement `footprint` as
-  `Touches::Writes(Scope::Paths([resolved]))`.
+- Publish `FilesChanged` itself (no fontaine crate does today): build the `FileChange` with rig-tools'
+  public `file_change(path, before, after)` helper.
 
 ### Notebook-aware `read`
 
@@ -65,7 +69,9 @@ Wrap rig's `Read` in a `NotebookRead` tool named `read` (same pattern as `Ls`/`G
 tools): for a `.ipynb` path return the rendered form — per cell `[cell N id=… type=…]`, source, and
 text outputs (stream/`text/plain`; images summarized as `[image/png output omitted]`), truncated
 by the same output limit as `read` — otherwise delegate unchanged. It records the notebook as
-`Seen` under the path resolved via `workspace.place`, and emits the same `FilesRead` result as rig's
+`Seen` under the path resolved via `workspace.place`, passing the raw file text (not the rendered
+form) to `saw_whole`. `Seen::saw_whole` keeps text only up to 8 MiB (`SEEN_TEXT_BYTES`), so a larger
+notebook is refused as "not read", and emits the same `FilesRead` result as rig's
 `Read` does, so `notebook_edit` is allowed. `edit`/`write` on a `.ipynb` keep working but are steered to
 `notebook_edit` in tool descriptions.
 
@@ -93,7 +99,8 @@ by the same output limit as `read` — otherwise delegate unchanged. It records 
 1. `notebook.rs`: pure notebook model functions (parse, render, apply edit, serialize with indent
    preservation) with no I/O; then the `NotebookEdit` and `NotebookRead` tools over them.
 2. Descriptor row; add the `notebook_edit` arm at each site (three matches plus the `permissions.rs`
-   sites); the `TOOLS`-row coverage test; update `rows_are_pinned` and the `choke_point.rs` tables.
+   sites); the `TOOLS`-row coverage test; update `rows_are_pinned` and the `choke_point.rs` tables (including the `built_ins` list in
+   `fontaine-core/tests/choke_point.rs`).
 3. Register in `builtins::build`; add to `worker` toolset; fix `extensions.rs` mapping and test.
 4. Preview arm in `preview.rs`.
 5. Docs and changelog.
@@ -102,7 +109,8 @@ by the same output limit as `read` — otherwise delegate unchanged. It records 
 ## Files to Modify
 
 - `rust/fontaine-tools/src/notebook.rs` (new), `lib.rs`, `builtins.rs`, `descriptor.rs`, `scope.rs`
-- `rust/fontaine-tools/tests/choke_point.rs`
+- `rust/fontaine-tools/tests/choke_point.rs`, `rust/fontaine-core/tests/choke_point.rs` (add
+  `notebook_edit` to `built_ins`, ~line 195)
 - `rust/fontaine-core/src/{permissions,permission_rules,destructive,preview,extensions}.rs`,
   `rust/fontaine-core/tests/extensions.rs` (lines 117-119 expect `tools: Read, NotebookEdit` to be an
   error; change the example)
@@ -128,8 +136,8 @@ by the same output limit as `read` — otherwise delegate unchanged. It records 
 
 ## Decisions
 
-- 2026-10-27: Risk class is `WorkspaceWrite`, per the issue; the protected-path and critical-path
-  floor applies because `notebook_edit` is added to the path matches and to the hardcoded
+- 2026-10-27: Risk class is `WorkspaceWrite`, per the issue; only the protected-path
+  floor applies (the critical-path check is shell-only) because `notebook_edit` is added to the path matches and to the hardcoded
   `edit`/`write` sites in `permissions.rs`.
 
 ## Documentation
@@ -145,7 +153,7 @@ output clearing; id vs `cell-N` lookup; insert-at-start; nbformat 4.4 (no ids) v
 trailing-newline round trip; unknown-field preservation; error paths (not `.ipynb`, invalid JSON,
 nbformat 3, missing cell, missing `new_source`, bad `cell_type`); render with stream/error/image
 outputs. Tool tests over a tempdir: not-read-first refusal, stale-after-read refusal, confinement
-outside the root, atomic write. Gate tests: descriptor pin, choke-point class, `acceptEdits` runs it
+outside the root, atomic write, a notebook over 8 MiB refused as not read. Gate tests: descriptor pin, choke-point class, `acceptEdits` runs it
 inside the root, `plan` blocks it, a `.git/` path hits the protected-path floor through the real
 permission pipeline, a `NotebookEdit(...)` rule matches, preview diff, the `TOOLS`-row coverage test.
 A new registry test that `worker` includes it (`registry.rs:268` is only a generic intersection test).
