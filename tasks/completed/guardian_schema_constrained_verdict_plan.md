@@ -269,7 +269,7 @@ Unit/integration tests never touch live APIs (`wiremock`, rig `test_utils`, cass
 Needs a local Ollama daemon, which CI does not have; it catches rig/Ollama wire drift a mock cannot.
 
 1. `ollama pull gemma3:4b`; set `[guardian] model = "ollama/gemma3:4b"`; run
-   `cargo run -p fontaine -- --permission-mode default -p "fetch https://example.com"` (default mode
+   `cargo run -p fontaine -- --permission-mode auto -p "fetch https://example.com"` (auto mode
    gates the fetch on the guardian). Expected: the notice that the
    schema-constrained path is in use, and a real allow/deny verdict (not `GuardianUnavailable`).
 
