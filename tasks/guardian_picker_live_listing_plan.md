@@ -93,11 +93,14 @@ picker as limited to guardian-eligible models; say instead that it opens the sam
 Automated, in `fontaine-tui/tests/tui.rs` (the bug that happened in the wild, so a regression
 test through the real TUI driver):
 
-- Add `guardian_model_lists_accounts_without_a_models_setting`: a world whose account has no
-  `models = [...]` and whose listing comes from a `wiremock` models endpoint; `/guardian-model`
-  must show `type to filter` and the listed model, and Enter must save `[guardian] model` to the
-  user config. Pins the issue's bug. Include a second, broken account in the world; the `could not
-  list` row itself is already covered for `/model` by
+- Add `guardian_model_lists_accounts_without_a_models_setting`: a `World::routed` world (whose
+  `mock` account does have `models = ["scripted"]`) plus a `wiremock`-backed `live` account with no
+  `models` setting, set up like `a_failed_account_keeps_its_heading_and_only_failures_are_listed_again`;
+  `/guardian-model` must show `type to filter` and the listed model. The test types the listed model
+  name into the filter before Enter (groups sort alphabetically, so the first row is not it), and
+  Enter must save `[guardian] model` to the user config and the header must read `guardian
+  mock/scripted` (no guardian set, so it falls back to main). Pins the issue's bug. Include a second,
+  broken account in the world; the `could not list` row itself is already covered for `/model` by
   `a_failed_account_keeps_its_heading_and_only_failures_are_listed_again` via the shared
   `Group::from`.
 - Existing `guardian_model_pins_the_guardian_and_saves_the_choice` and
