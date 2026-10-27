@@ -8,7 +8,7 @@
 gets its verdict through a forced `submit` tool call, so each request carries `tools`, and Ollama
 answers `400 ... does not support tools` for a model with no tool template. The tool is only an
 output format. This plan makes a model without tool support usable as a guardian (and as the
-scanner and critique model) by adding a second verdict transport: Ollama's `/api/chat` `format`
+scanner model) by adding a second verdict transport: Ollama's `/api/chat` `format`
 field set to the verdict JSON schema, which constrains decoding and needs no tool template. It
 also makes the failure legible (capability probe, startup/`/guardian-model` messages, docs), and
 runs the benchmark the issue asks for so the shipped claims are measurements.
@@ -19,20 +19,22 @@ every non-verdict outcome is still a Deny.
 
 ## Current State
 
-- `fontaine-guardian/src/guardian.rs:253-268` builds `ExtractorBuilder::<Verdict>`; rig's
+- `fontaine-guardian/src/guardian.rs:250-268` builds `ExtractorBuilder::<Verdict>`; rig's
   `Extractor::extract` (`rig-agent-0.45.0/src/extractor.rs:78`) is a one-turn run in output-tool
   mode, so the request carries a required `submit` tool. The same pattern is used by
-  `scanner.rs:127` (`LlmScanner::run`), `critique.rs:~115` and `fontaine-core/src/goal.rs:880`.
+  `scanner.rs:127` (`LlmScanner::run`) and `fontaine-core/src/goal.rs:880`. Critique
+  (`critique.rs:117-125`) is a plain-text `AgentBuilder` + `agent.prompt()` with no tools, so it
+  never hits "does not support tools" and is out of scope.
 - rig already supports the constrained form natively: `CompletionRequest::output_schema` is encoded
   as Ollama's `format` when the request has no tools (`rig-core-0.45.0/src/providers/ollama/chat.rs:150-165`),
   and `Agent::prompt_typed::<T>` (`rig-agent .../agent/completion.rs:689`, `TypedRun::native`) is the
   typed run that sets it. No wire code is needed in Fontaine.
 - `fontaine-core/src/providers/ollama.rs` wraps rig's native `Chat` wire in `Tuned` (pins `num_ctx`,
-  `truncate:false`); `Connected` implements `AccountClient` (`providers/mod.rs:~170-190`:
+  `truncate:false`); `Connected` (today only the rig `Client`, `context_tokens`, `think`) implements `AccountClient` (`providers/mod.rs:~170-190`:
   `completion`, `thinking_off`, `guardian_completion`, `list`). `ModelHandle`
   (`fontaine-core/src/models.rs:~106`) carries `completion` and `thinking_off` into
-  `Guardian::with_additional_params` (`agent/setup.rs:55`, `fontaine/src/auto_mode.rs:274`,
-  `scanner_stage.rs:60`, `fontaine-evals/src/live.rs:119`).
+  `Guardian::with_additional_params` (`Guardian` at `agent/setup.rs:50-55` and `fontaine-evals/src/live.rs:118-119`; `LlmScanner` at
+  `scanner_stage.rs:59-60` and the evals scanner path, ~`live.rs:453`).
 - `GuardianModel::{Ready, Unavailable}` is built synchronously by `Switcher::guardian`
   (`models.rs:721`); `/guardian-model` calls the sync `AgentRuntime::set_guardian_model`
   (`agent/models.rs:270`, `fontaine-tui/src/ui/commands/model.rs:67`). A failure after build only
@@ -57,7 +59,7 @@ pub enum OutputMode { Tool, Schema }
 (rig's native structured output: `output_schema`, no tools) with the same retries, `max_tokens`,
 `additional_params`, and `UsageTally` hook. One internal helper in the guardian crate,
 `structured::run<T>(model, mode, preamble, user_message, opts) -> Result<(T, Usage), StructuredOutputError>`,
-replaces the three copies of the `ExtractorBuilder` setup (guardian, scanner, critique); each
+replaces the two copies of the `ExtractorBuilder` setup (guardian, scanner); each
 caller keeps its own timeout wrapper and error→`FailClosed` mapping. This is the DRY seam: a third
 transport later is one more arm, not three edits. The goal evaluator in core stays on `Tool`: it
 judges with the main model, which must support tools to be the agent at all.
@@ -81,10 +83,16 @@ The mode is a property of the (account, model), not a user setting:
   with a clear reason. A daemon too old to report `capabilities`, or a probe error/timeout, resolves
   to `Tool` (today's behavior): the failure stays loud and the benchmarked path is never swapped
   silently on missing evidence. The probe is bounded by a short timeout and does not load the model.
-- `ModelHandle` carries a `OutputProbe` (an `Arc<dyn ...>` over the client and model id, or a fixed
-  mode for tests and non-Ollama accounts). `Guardian`, `LlmScanner` and the critique settings hold
-  it and resolve it once per instance into a `tokio::sync::OnceCell<OutputMode>` inside the
-  first call's timeout budget; a resolved `Unavailable` is not cached so a daemon started later
+- `ModelHandle` carries an `OutputProbe` (an `Arc<dyn ...>` over the client and model id, or a fixed
+  mode for tests and non-Ollama accounts). The trait is defined in `fontaine-guardian` and
+  implemented in `fontaine-core` (core depends on guardian, not the reverse). Ollama's
+  `Connected` gains the base URL, key and HTTP transport that `/api/show` needs, since it keeps
+  only the rig `Client` today. `Guardian` and `LlmScanner` hold the probe and resolve it once per
+  instance into a `tokio::sync::OnceCell<OutputMode>` inside the first call's timeout budget. For
+  the guardian this happens at the top of `run()`, before the system prompt is built (the build at
+  `guardian.rs:226` is synchronous and `rules_version` is the digest of `rendered.system` at
+  `:230`); the `Schema` suffix goes into `rendered.system`, so `Schema` cache keys differ from
+  `Tool` keys. A resolved `Unavailable` is not cached so a daemon started later
   works without a restart (`/guardian-model` rebuilds the guardian anyway, which resets the cell).
 - No `[guardian]` config key. The mode follows the model's reported capability; adding a knob for a
   daemon that misreports is deferred until someone hits it (the pinned-model "never substituted"
@@ -105,7 +113,8 @@ The mode is a property of the (account, model), not a user setting:
   behavior never depends on the eager probe finishing: the lazy resolution in `run()` is the source
   of truth.
 - The `400 ... does not support tools` response is also recognized in the `Tool` path's
-  `StructuredOutputError::Prompt` mapping and its explanation says "this model does not support tool
+  `StructuredOutputError::Prompt` mapping, matched on the typed rig
+  `ProviderError::ProviderResponse` (HTTP status + body), not the rendered string, and its explanation says "this model does not support tool
   calls; the guardian could not use the `submit` output tool" so a daemon that reported `tools`
   wrongly is still diagnosable. It remains a Deny (`FailClosed::Error`); the text does not alter the
   decision.
@@ -148,29 +157,36 @@ and recorded here under `## Decisions`; the code, tests, and docs do not depend 
 
 1. **Guardian crate: `structured` helper** (`fontaine-guardian/src/structured.rs`, `lib.rs`):
    `OutputMode`, the `Schema`-mode preamble suffix, `run<T>` over `ExtractorBuilder` (`Tool`) and
-   `prompt_typed` (`Schema`), shared usage tally (move `UsageTally` here). Convert
-   `guardian.rs`, `scanner.rs`, `critique.rs` to call it. No behavior change for `Tool`.
-2. **Mode plumbing**: `OutputProbe` type; `Guardian::with_output_probe`, `LlmScanner::with_output_probe`,
-   critique settings field; `OnceCell` resolution inside the timeout; `Unavailable` mapping for
-   the `completion`-less error; audit/telemetry field `verdict_transport`.
+   `prompt_typed` (`Schema`), shared usage tally (move `UsageTally` here). The `Schema` path builds
+   an `AgentBuilder` and must not set a tool choice; unlike `ExtractorBuilder` it does not inherit
+   the default extractor preamble. Convert `guardian.rs` and `scanner.rs` to call it. No behavior
+   change for `Tool`.
+2. **Mode plumbing**: `OutputProbe` trait (guardian crate); `Guardian::with_output_probe`,
+   `LlmScanner::with_output_probe`; `OnceCell` resolution at the top of `run()` inside the timeout,
+   before the prompt is built; `Unavailable` mapping for the `completion`-less error; a
+   `verdict_transport` field on `Adjudication` carrying the transport out of the guardian crate to
+   `DecisionRecord` in `fontaine-core/src/audit.rs`.
 3. **Core/provider side**: `AccountClient::output_mode` (default `Tool`); Ollama impl calling
    `/api/show` through the account's `caused_client` transport with the account's base URL and key;
-   a pure `capabilities → OutputMode` function. `ModelHandle` carries the probe; pass it at the
-   four construction sites (`agent/setup.rs`, `auto_mode.rs`, `scanner_stage.rs`, `evals/live.rs`).
+   a pure `capabilities → OutputMode` function; `Connected` gains base URL, key and transport.
+   `ModelHandle` carries the probe; pass it at the construction sites (`agent/setup.rs`,
+   `scanner_stage.rs`, `evals/live.rs` guardian and scanner paths) and the tests that build them
+   (`fontaine-guardian/tests/guardian.rs:585`, `tests/scanner.rs:244`).
 4. **Notices**: eager probe beside the screen warm-up; one-time notice on `Schema` selection and on
    the capability error; clearer `400 does not support tools` text on the `Tool` path.
 5. **Evals**: `--verdict-transport` flag, scorecard/`guardian_models.toml` provenance field
-   (serde default keeps existing files valid), fixture-mode coverage.
+   (serde default keeps existing files valid); the flag is rejected for `fixture`, `none` and
+   `screen`.
 6. **Spike runs and write-up** (see above); record numbers in `docs/evals.md` and this plan's
    `## Decisions`; open follow-up issues.
 7. **Docs and changelog** (below).
 
 ## Files to Modify
 
-- `rust/fontaine-guardian/src/{structured.rs (new),lib.rs,guardian.rs,scanner.rs,critique.rs,prompt_builder.rs,models.rs}`
+- `rust/fontaine-guardian/src/{structured.rs (new),lib.rs,guardian.rs,scanner.rs,prompt_builder.rs,models.rs}`
   and the prompt snapshot.
 - `rust/fontaine-core/src/{providers/mod.rs,providers/ollama.rs,models.rs,agent/setup.rs,scanner_stage.rs,audit.rs}`,
-  `rust/fontaine/src/auto_mode.rs`, `rust/fontaine-evals/src/{live.rs,runner.rs,report.rs}`.
+  `rust/fontaine-evals/src/{live.rs,runner.rs,report.rs}`.
 - `rust/fontaine-guardian/data/guardian_models.toml` (only if a `schema` run clears the bar).
 - `docs/guardian.md`, `docs/evals.md`, `docs/configuration.md` (audit field), `CHANGELOG.md`,
   `tasks/fontaine_harness_plan.md` (`## Decisions` line).
@@ -218,19 +234,22 @@ Unit/integration tests never touch live APIs (`wiremock`, rig `test_utils`, cass
   via wiremock: `format` is the `Verdict` schema, `tools` absent); both return the same `Verdict`;
   malformed JSON retries then `Unparseable`; a verdict with `rule`/`decision` disagreement is
   rejected in `Schema` mode too.
-- **Regression for the reported bug (#250):** a wiremock Ollama that answers `400 "<model> does not
+- **Regression for the reported bug (#250)**, in `fontaine-core` tests (wiremock is a
+  dev-dependency there): a wiremock Ollama that answers `400 "<model> does not
   support tools"` to any request with `tools`, and `/api/show` reporting `["completion"]`: the
   guardian resolves `Schema` and returns a real verdict (not `GuardianUnavailable`); with
   `/api/show` reporting tools support wrongly, the call is a Deny whose explanation names the
-  missing tool support. The same pair for `LlmScanner` and critique. Pinned at the integration tier
+  missing tool support. The same pair for `LlmScanner`. Pinned at the integration tier
   because the bug lived in the wire contract, not in a function.
 - Probe failure/timeout/old daemon → `Tool`; embedding-only → unavailable with the capability
   reason; the `OnceCell` does not cache an unavailable result.
-- Soundness unchanged: existing guardian fail-closed tests run against both modes (parameterize the
-  suite in `fontaine-guardian/tests/guardian.rs`).
+- Soundness unchanged: existing guardian fail-closed tests run against both modes. The
+  `fontaine-guardian/tests` suite uses a hand-rolled TCP `Endpoint` helper in `tests/common`, so
+  parameterizing by mode goes through a scripted model or an extended helper.
 - Prompt snapshot: `Tool`-mode prompt byte-identical to today; `Schema`-mode suffix snapshotted.
 - Audit record and `init`/notice output carry `verdict_transport` and the one-time notice.
-- Evals: fixture-mode run with `--verdict-transport schema` and `tool`; `cargo run -p fontaine-evals
+- Evals: a flag-parsing test that rejects `--verdict-transport` for `fixture`, `none` and `screen`
+  (it only matters for live runs); `cargo run -p fontaine-evals
   -- --dataset ../evals/dataset --guardian fixture` stays green with and without `--profile minimal`.
 
 ## Manual Verification
