@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::sync::Arc;
 
 use fontaine_tools::builtins::{self, BuiltinEnv, Registered, Seen, ShellSettings};
+use fontaine_tools::checkpoint::PreImages;
 use fontaine_tools::gate::ToolGate;
 use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::guarded::{Guard, GuardedTool};
@@ -93,6 +94,8 @@ pub struct RegistryParams {
     /// The SearXNG process, owned by the runtime so a rebuild does not restart it.
     pub searxng: Arc<SearxngChild>,
     pub extension: Option<ExtensionTools>,
+    /// Saves a file before `write` or `edit` changes it; `None` saves nothing.
+    pub pre_images: Option<Arc<dyn PreImages>>,
 }
 
 fn register_extension<T: Tool + 'static>(tool: T, guard: &Guard) -> Registered {
@@ -115,6 +118,7 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
         gate: params.gate,
         results: params.results,
         hide_mcp_names: params.hide_mcp_names,
+        pre_images: params.pre_images,
     };
     let mut tools = builtins::build(&BuiltinEnv {
         scope: params.scope,

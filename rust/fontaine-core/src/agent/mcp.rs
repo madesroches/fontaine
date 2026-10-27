@@ -113,6 +113,7 @@ impl AgentRuntime {
             gate: self.pipeline.clone(),
             results: self.results.clone(),
             hide_mcp_names: !reveal,
+            pre_images: None,
         };
         let mut outcomes = Vec::new();
         for plan in self.mcp_plan() {

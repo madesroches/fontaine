@@ -19,6 +19,7 @@ use rig_memory::{
 };
 
 use crate::audit::AuditLog;
+use crate::checkpoint::CheckpointStore;
 use crate::goal::SessionGoal;
 use crate::ledger::Ledger;
 use crate::owner_only;
@@ -175,6 +176,7 @@ pub struct Session {
     scheduler: Arc<Scheduler>,
     goal: Arc<SessionGoal>,
     store: DirStore,
+    checkpoints: Arc<CheckpointStore>,
     policy: CompactionPolicy,
     autocompact_window: Option<u64>,
     context_reset: Arc<OnceLock<ContextReset>>,
@@ -209,6 +211,7 @@ impl Session {
         let audit = AuditLog::create(data_dir, id)
             .map_err(io_error(&data_dir.join(crate::audit::AUDIT_DIR)))?;
         let store = DirStore::open(&dir).map_err(|e| SessionError::Store(e.to_string()))?;
+        let checkpoints = CheckpointStore::open(&dir).map_err(io_error(&dir))?;
         let ledger = Arc::new(ledger);
         Ok(Session {
             id: id.to_string(),
@@ -219,6 +222,7 @@ impl Session {
             todos: Arc::new(SessionTodos::new(&dir)),
             dir,
             store,
+            checkpoints: Arc::new(checkpoints),
             policy: CompactionPolicy::default(),
             autocompact_window: None,
             context_reset: Arc::default(),
@@ -247,6 +251,7 @@ impl Session {
         let audit = AuditLog::create(data_dir, id)
             .map_err(io_error(&data_dir.join(crate::audit::AUDIT_DIR)))?;
         let store = DirStore::open(&dir).map_err(|e| SessionError::Store(e.to_string()))?;
+        let checkpoints = CheckpointStore::open(&dir).map_err(io_error(&dir))?;
         let ledger = Arc::new(ledger);
         Ok(Session {
             id: id.to_string(),
@@ -257,6 +262,7 @@ impl Session {
             todos: Arc::new(SessionTodos::load(&dir)),
             dir,
             store,
+            checkpoints: Arc::new(checkpoints),
             policy: CompactionPolicy::default(),
             autocompact_window: None,
             context_reset: Arc::default(),
@@ -616,20 +622,78 @@ impl Session {
     /// live conversation is empty. The compaction asides go too, or the next summary would be
     /// built on the cleared conversation's.
     pub async fn clear(&self) -> Result<(), ClearError> {
+        self.replace_conversation("clear", None).await?;
+        self.checkpoints.begin_epoch();
+        Ok(())
+    }
+
+    /// Makes the live conversation what it was before the log record `conv_n`, which a turn
+    /// checkpoint noted. The log keeps the rewound states as logged changes, so a later rewind
+    /// to an earlier turn still folds correctly, also across a compaction.
+    pub async fn rewind_conversation(&self, conv_n: u64) -> Result<(), ClearError> {
+        self.replace_conversation("rewind", Some(conv_n)).await
+    }
+
+    async fn replace_conversation(&self, by: &str, until: Option<u64>) -> Result<(), ClearError> {
         let fail = |action| move |source| ClearError::Store { action, source };
         let mut conversation = load_async(&self.store, CONVERSATION_LOG)
             .await
             .map_err(fail("read"))?;
+        // The compaction records of the restored past stay with its summary entry, or the next
+        // compaction would build on an empty state and replace the summary.
+        let (entries, compactions) = match until {
+            None => (Vec::new(), Vec::new()),
+            Some(n) => {
+                let past = rig_memory::as_of(&self.store, CONVERSATION_LOG, n)
+                    .map_err(fail("read as it was"))?;
+                let entries = (0..past.messages().len())
+                    .filter_map(|at| past.entry(at))
+                    .collect();
+                let compactions = past
+                    .asides()
+                    .filter(|(_, aside)| {
+                        aside.kind == rig_memory::COMPACTED
+                            && aside.author == rig_memory::summary_author()
+                    })
+                    .map(|(_, aside)| aside.clone())
+                    .collect();
+                (entries, compactions)
+            }
+        };
         let asides: Vec<_> = conversation.asides().map(|(id, _)| id).collect();
         for id in asides {
             conversation.remove_aside(id);
         }
-        conversation.set_entries(Vec::new(), Author::plugin("clear"));
+        conversation.set_entries(entries, Author::plugin(by));
+        for aside in compactions {
+            conversation.add_aside(aside);
+        }
         save_async(&self.store, CONVERSATION_LOG, &mut conversation)
             .await
             .map_err(fail("saved"))?;
         self.context_was_reset();
         Ok(())
+    }
+
+    pub fn checkpoints(&self) -> &Arc<CheckpointStore> {
+        &self.checkpoints
+    }
+
+    /// The human submitted a prompt: notes where the conversation and the intent view stand so
+    /// a rewind can come back to this point. `recorded` says the prompt is already in the ledger
+    /// as the human's message. Returns the turn's ordinal.
+    pub fn begin_turn(
+        &self,
+        prompt: &str,
+        recorded: bool,
+    ) -> Result<u64, rig_memory::SessionError> {
+        let history = rig_memory::history(&self.store, CONVERSATION_LOG)?;
+        let conv_n = history.last().map_or(0, |(stamp, _)| stamp.n + 1);
+        let held = self.ledger.view().user_messages.len();
+        let user_messages_before = held.saturating_sub(usize::from(recorded));
+        Ok(self
+            .checkpoints
+            .begin_turn(conv_n, prompt, user_messages_before))
     }
 }
 

@@ -70,6 +70,7 @@ pub fn env_with(scope: Arc<Scope>, gate: Arc<dyn ToolGate>) -> BuiltinEnv {
             gate,
             results: Arc::new(ResultPipeline::new()),
             hide_mcp_names: false,
+            pre_images: None,
         },
         shell: ShellSettings::default(),
         webfetch: WebfetchConfig::default(),

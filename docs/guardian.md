@@ -51,7 +51,9 @@ The request is built from the ledger and the call itself:
 | `prior_denials` | Reason-coded denials earlier in the session, for loop detection. |
 
 The `task_intent` and `recent_user_messages` messages start after your last `/clear`: what you
-asked before it is not shown to the guardian, while the session facts are kept.
+asked before it is not shown to the guardian, while the session facts are kept. A
+[`/rewind`](checkpoints.md) of the conversation takes the prompts it retracts out of them the same
+way, so a message you took back no longer counts as intent; the denials and approvals stay.
 
 Only messages you typed count as user intent. The text you type under "Other" when the model asks
 you a question with `ask_user_question` counts, recorded as `Other: "<text>"`; the options you pick

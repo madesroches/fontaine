@@ -262,6 +262,16 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         return;
                     }
                 }
+                Action::OpenRewind => self.open_rewind(runtime),
+                Action::SelectRewind(turn) => self.offer_rewind(runtime, turn),
+                Action::Rewind {
+                    plan,
+                    what,
+                    overwrite_changed,
+                } => {
+                    self.run_rewind(runtime, plan, what, overwrite_changed)
+                        .await
+                }
                 Action::KillAgent(id) => self.kill_agent(runtime, &id),
                 Action::PickModel(purpose, reference) => {
                     self.apply_pick(runtime, purpose, &reference).await;
@@ -342,6 +352,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(Command::Memory(argument)) => self.memory(runtime, &argument),
             Some(Command::Init(argument)) => return self.init(runtime, &argument).await,
             Some(Command::Resume(argument)) => return self.resume(runtime, &argument),
+            Some(Command::Rewind(argument)) => return self.rewind(runtime, &argument),
             Some(Command::Branch(name)) => return self.branch(runtime, &name),
             Some(Command::Rename(name)) => self.rename(runtime, &name),
             Some(Command::Export(path)) => self.export(runtime, launch_dir, &path).await,

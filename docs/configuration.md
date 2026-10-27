@@ -110,6 +110,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[schedule] enabled` | no | no | yes |
 | `[memory] auto` | no | no | yes |
 | `[goal]` keys | no | no | yes |
+| `[checkpoints]` keys | no | no | no |
 | `[shell_preclassifier] allow_extra` | no | yes | yes |
 | Agent files `agents/*.md` | narrowing only | n/a | n/a |
 | `[[hooks.*]]` | yes, after workspace trust; `allow` ignored | yes, after workspace trust | yes |
@@ -756,6 +757,21 @@ no-progress cap (8 verdicts in a row after turns that called no tool) is fixed.
 [goal]
 max_turns = 50
 max_cost_usd = 5.0
+```
+
+### `[checkpoints]`
+
+| Key | Meaning | Default |
+|---|---|---|
+| `enabled` | Whether `write` and `edit` save a file's contents before changing it, for [`/rewind`](checkpoints.md). When `false` a rewind can restore the conversation but not the code. | `true` |
+| `max_file_bytes` | A file larger than this is not saved; the edit goes ahead and the rewind lists the file as not restorable. At least 1. | `10485760` (10 MiB) |
+| `max_session_bytes` | Once the saved copies of a session reach this size, later files are not saved. At least 1. | `268435456` (256 MiB) |
+
+Only the user file can set these; neither a repository nor `--settings` can.
+
+```toml
+[checkpoints]
+max_file_bytes = 5242880
 ```
 
 ### `[shell_preclassifier]`

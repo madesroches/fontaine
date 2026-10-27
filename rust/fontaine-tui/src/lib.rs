@@ -21,6 +21,7 @@ pub mod question;
 pub mod recent;
 pub mod reports;
 pub mod resume_picker;
+pub mod rewind;
 pub mod screen;
 pub mod server_prompt;
 pub mod setup;

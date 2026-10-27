@@ -34,6 +34,9 @@ pub struct ToolDescriptor {
     pub specifier: Specifier,
     /// Claude Code names for this tool; the first is canonical.
     pub claude: &'static [&'static str],
+    /// Whether the file the call names is saved before the tool changes it. A tool absent from
+    /// the table is not saved; the table test requires it of every `FileWrite` row.
+    pub checkpointed: bool,
 }
 
 const fn row(
@@ -51,6 +54,7 @@ const fn row(
         destructive,
         specifier,
         claude,
+        checkpointed: matches!(destructive, Destructive::FileWrite),
     }
 }
 
@@ -262,6 +266,24 @@ mod tests {
                 assert_eq!(d.risk, RiskClass::ReadOnly, "{}", d.name);
             }
         }
+    }
+
+    #[test]
+    fn every_file_writing_tool_is_checkpointed() {
+        for d in TOOLS {
+            assert_eq!(
+                d.checkpointed,
+                d.destructive == Destructive::FileWrite,
+                "{}",
+                d.name
+            );
+        }
+        let saved: Vec<_> = TOOLS
+            .iter()
+            .filter(|d| d.checkpointed)
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(saved, ["edit", "write", "notebook_edit"]);
     }
 
     #[test]

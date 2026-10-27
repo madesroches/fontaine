@@ -197,7 +197,7 @@ from the ledger, never from a compaction summary. Specify what resume and fork r
 - **Resume** restores the context and the ledger. Mode comes back as the user's default mode,
   not the saved one. Session-scope grants are dropped.
 - **Fork** (`--fork-session` / `/branch`) copies both stores.
-- **Rewind** truncates the context but keeps the ledger's denial and approval history.
+- **Rewind** puts the context back to an earlier prompt (`/rewind`) but keeps the ledger's denial and approval history; the guardian's view of intent drops only the retracted prompts.
 
 Persist both stores as JSONL under the user data dir, keyed by session id.
 
@@ -297,7 +297,7 @@ only, the file format becomes a second, competing definition path.
 | Session picker, naming, export UX | [sessions#use-the-session-picker](https://code.claude.com/docs/en/sessions#use-the-session-picker) | missing | backlog | UX on top of P6's model. Issue: "Session UX: resume picker, naming, /rename, /branch, /export". |
 | Auto-compaction + `/compact [focus]`, what survives compaction, `/context` breakdown, autocompact window config | [context-window](https://code.claude.com/docs/en/context-window) | partial | **plan-now** (P6) | rig-memory compaction is planned (Phase 2 step 2) but its interaction with the guardian's intent inputs is unspecified - core of P6. |
 | `/compact`, `/context`, `/clear` commands and compaction thresholds | [commands](https://code.claude.com/docs/en/commands) | missing | backlog | Issue: "Context commands: /compact [focus], /context, /clear, auto-compact threshold". |
-| Checkpointing: automatic per-prompt file snapshots, `/rewind` / Esc-Esc (code, conversation, or both), summarize-from-here | [checkpointing](https://code.claude.com/docs/en/checkpointing) | missing | backlog | GuardedTool already sees every edit-class call - the natural pre-image capture seam; rig-memory has `as_of`/restore for conversation. Issue: "Checkpoints and /rewind (code + conversation)". |
+| Checkpointing: automatic per-prompt file snapshots, `/rewind` / Esc-Esc (code, conversation, or both), summarize-from-here | [checkpointing](https://code.claude.com/docs/en/checkpointing) | done | shipped (#12) | `write`/`edit` save pre-images through the `GuardedTool` seam; `/rewind` and Esc Esc restore code, conversation or both; summarize-from-here is not offered. See docs/checkpoints.md. |
 | Prompt caching managed automatically (cache breakpoints, cache hit visibility) | [prompt-caching](https://code.claude.com/docs/en/prompt-caching) | missing | backlog | Model-agnostic: Anthropic explicit breakpoints, OpenAI automatic prefix caching. Issue: "Prompt-caching strategy for the main agent and guardian". |
 
 ### Headless & automation

@@ -1,5 +1,6 @@
 pub mod ask_user;
 pub mod builtins;
+pub mod checkpoint;
 pub mod child_env;
 pub mod descriptor;
 pub mod display;

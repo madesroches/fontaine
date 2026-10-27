@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod adjudication;
 pub mod agent;
 pub mod audit;
+pub mod checkpoint;
 pub mod child_runner;
 pub mod code_execution;
 pub mod config;

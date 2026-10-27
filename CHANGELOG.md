@@ -13,6 +13,14 @@ All notable changes are recorded here. The format follows
   `.ipynb` as its cells, ids and text outputs, `NotebookEdit` rules and `allowed-tools` entries now
   map to it, and it joins the `worker` subagent type. It is a workspace write: `acceptEdits` runs
   it, `plan` blocks it, and the protected-path floor applies (#20).
+- Checkpoints and `/rewind` (alias `/checkpoint`, or Esc Esc at an idle empty prompt). `write` and
+  `edit` save a file's contents before changing it, filed under the prompt being answered, and
+  `/rewind` restores the code, the conversation or both to the start of an earlier prompt of the
+  conversation. Shell, `!` and MCP changes are not tracked; files over `[checkpoints]`
+  `max_file_bytes` or past `max_session_bytes` are skipped with a warning; files edited since
+  Fontaine's last change ask before being overwritten; the memory directory is never touched. The
+  ledger is never truncated: a `rewound` record trims only the guardian's view of what you asked.
+  Summarize-from-here is not offered (#12).
 - Auto memory (`[memory] auto`, user scope only, on by default while it is tested). The agent saves
   notes about the project with `write` and `edit` to `<data dir>/memory/<project key>/`, outside the
   repository, and the capped `MEMORY.md` index loads into later sessions framed as unverified notes.

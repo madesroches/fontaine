@@ -12,6 +12,7 @@ use rig_core::tool::{
 use serde_json::Value;
 use tracing::Instrument;
 
+use crate::checkpoint::{Capture, PreImages};
 use crate::gate::{AgentId, CallView, GateDecision, ToolGate};
 use crate::result_pipeline::{ResultPipeline, ToolOutcome};
 use crate::risk::{RiskClass, ToolSource};
@@ -37,6 +38,8 @@ pub struct Guard {
     pub results: Arc<ResultPipeline>,
     /// Telemetry names an MCP tool `third-party` instead of by its server and tool.
     pub hide_mcp_names: bool,
+    /// Saves the file a `write` or `edit` is about to change.
+    pub pre_images: Option<Arc<dyn PreImages>>,
 }
 
 pub struct GuardedTool<T: Tool> {
@@ -112,13 +115,53 @@ impl<T: Tool> GuardedTool<T> {
         let typed: T::Args = serde_json::from_value(located.args.clone()).map_err(|e| {
             ToolExecutionError::invalid_args(format!("failed to parse tool arguments: {e}"))
         })?;
+        let capture = self.capture(context, &located.args).await;
         let tool = &self.instances[located.root];
-        let output = tool
-            .call(context, typed)
+        let (succeeded, output) = {
+            let result = tool.call(context, typed).await;
+            (
+                result.is_ok(),
+                result
+                    .map_err(|e| tool.map_error(e))
+                    .and_then(|o| o.into_tool_output()),
+            )
+        };
+        if let Some(capture) = capture {
+            // Hashing the file must not block the executor. A lost record leaves the file
+            // looking unchanged to a later rewind, so it is logged.
+            if let Err(e) = rig_tools::blocking(move || {
+                capture.finish(succeeded);
+                Ok(())
+            })
             .await
-            .map_err(|e| tool.map_error(e))?
-            .into_tool_output()?;
+            {
+                tracing::warn!(error = %e, "the checkpoint record of an edit was lost");
+            }
+        }
+        let output = output?;
         Ok(output)
+    }
+
+    /// Saves the file the call names, when this tool is one whose edits are kept. `located`
+    /// already holds the path the tool will open; capture failures never stop the call.
+    async fn capture(&self, context: &ToolContext, located: &Value) -> Option<Box<dyn Capture>> {
+        let Routing::PerRoot(scope) = &self.routing else {
+            return None;
+        };
+        let pre_images = self.guard.pre_images.clone()?;
+        if !crate::descriptor::find(T::NAME).is_some_and(|d| d.checkpointed) {
+            return None;
+        }
+        let agent = agent_of(context).ok()?;
+        let path = located.get("path")?.as_str()?;
+        let (_, resolved) = scope.find(path).ok()?;
+        match rig_tools::blocking(move || Ok(pre_images.before(&agent, T::NAME, &resolved))).await {
+            Ok(capture) => capture,
+            Err(e) => {
+                tracing::warn!(error = %e, "the pre-image of an edit could not be taken");
+                None
+            }
+        }
     }
 }
 

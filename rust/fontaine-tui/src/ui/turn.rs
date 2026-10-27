@@ -229,10 +229,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
             runtime.goal_user_prompt();
             let end = match self.refresh_native_search(runtime) {
                 Some(end) => end,
-                None => match expanded.take() {
-                    Some(prompt) => self.turn(runtime, prompt, None).await,
-                    None => self.turn(runtime, text.clone(), Some(&text)).await,
-                },
+                None => {
+                    // A prompt with an expansion was recorded as the human's message before this point.
+                    runtime.begin_turn(&text, expanded.is_some());
+                    match expanded.take() {
+                        Some(prompt) => self.turn(runtime, prompt, None).await,
+                        None => self.turn(runtime, text.clone(), Some(&text)).await,
+                    }
+                }
             };
             if matches!(end, TurnEnd::InputClosed) {
                 return Break(());
@@ -330,6 +334,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             runtime.steering.queue(text);
                         }
                         Action::EditQueued => self.edit_queued(runtime),
+                        // A turn or a sign-in is under way, so a rewind cannot start: the picker closes.
+                        Action::SelectRewind(_) => self.app.rewind = None,
+                        Action::OpenRewind | Action::Rewind { .. } => {}
                         Action::Server(_)
                         | Action::None
                         | Action::Submit(_)

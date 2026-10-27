@@ -716,6 +716,7 @@ async fn handle_message(
     let mut involved = runtime.session.goal().is_active();
     let prompt = match goal::command(&text) {
         None => {
+            runtime.begin_turn(&text, false);
             runtime.append(Record::UserMessage { text: text.clone() });
             text
         }
@@ -752,6 +753,7 @@ async fn handle_message(
                 };
             }
             involved = true;
+            runtime.begin_turn(&text, false);
             runtime.append(Record::UserMessage { text });
             first_turn_prompt(&condition)
         }
