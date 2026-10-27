@@ -117,7 +117,8 @@ const SCREEN: &str = "the screen stage is configured only in the user file; othe
 const DEFAULT_MODE: &str = "only `manual` and `dontAsk` are accepted here";
 const SCHEDULE: &str = "scheduled prompts run without the user typing them, so only the user file or --settings turns them on or off";
 const MEMORY: &str = "auto memory persists text into later sessions, so only the user file or --settings turns it on";
-const CHECKPOINTS: &str = "checkpoint storage is a recovery aid the user sizes, so only the user file or --settings sets it";
+const CHECKPOINTS: &str =
+    "checkpoint storage is a recovery aid the user sizes, so only the user file sets it";
 const GOAL: &str =
     "goal turns run unattended, so only the user file or --settings sets how long they may run";
 const TELEMETRY: &str = "only `enabled = false` may be set here";

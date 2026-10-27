@@ -245,9 +245,26 @@ fn the_earliest_pre_image_across_turns_gives_the_state_at_the_start() {
     assert_eq!(read(&path), "v1");
     let plan = r.store.plan(1, &r.scope()).unwrap();
     assert_eq!(plan.files.len(), 1);
-    // The first restore already moved the file, so this one overwrites a "later" state.
-    r.store.restore_code(&plan, &r.scope(), true);
+    // The first restore left "v1" on record, so this one is not a change the user made.
+    assert!(!plan.files[0].changed_since);
+    r.store.restore_code(&plan, &r.scope(), false);
     assert_eq!(read(&path), "v0");
+}
+
+#[test]
+fn a_second_code_rewind_of_a_deleted_file_does_not_flag_the_first_ones_result() {
+    let r = rig();
+    r.store.begin_turn(0, "one", 0);
+    let path = r.edit("new.txt", "x");
+    r.store.begin_turn(0, "two", 1);
+    r.edit("new.txt", "y");
+    let plan = r.store.plan(2, &r.scope()).unwrap();
+    r.store.restore_code(&plan, &r.scope(), false);
+    assert_eq!(read(&path), "x");
+    let plan = r.store.plan(1, &r.scope()).unwrap();
+    assert!(!plan.files[0].changed_since);
+    let report = r.store.restore_code(&plan, &r.scope(), false);
+    assert_eq!(report.deleted, std::slice::from_ref(&path));
 }
 
 #[test]

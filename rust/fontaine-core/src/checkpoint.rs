@@ -56,6 +56,8 @@ pub enum SkipReason {
     TooLarge,
     NotRegular,
     Unreadable,
+    /// The blob could not be written to the session's store.
+    StoreWrite,
     Budget,
 }
 
@@ -65,6 +67,7 @@ impl fmt::Display for SkipReason {
             SkipReason::TooLarge => "larger than [checkpoints] max_file_bytes",
             SkipReason::NotRegular => "not a regular file",
             SkipReason::Unreadable => "could not be read",
+            SkipReason::StoreWrite => "could not be copied into the checkpoint store",
             SkipReason::Budget => "the session's [checkpoints] max_session_bytes is used up",
         })
     }
@@ -593,13 +596,19 @@ impl CheckpointStore {
             }
             match &file.step {
                 Step::Delete => match delete_regular(path) {
-                    Ok(true) => report.deleted.push(path.clone()),
+                    Ok(true) => {
+                        report.deleted.push(path.clone());
+                        self.note_restored(path);
+                    }
                     Ok(false) => {}
                     Err(e) => report.failed.push((path.clone(), e)),
                 },
                 Step::Restore { hash, unix_mode } => {
                     match self.restore_blob(path, hash, *unix_mode) {
-                        Ok(()) => report.restored.push(path.clone()),
+                        Ok(()) => {
+                            report.restored.push(path.clone());
+                            self.note_restored(path);
+                        }
                         Err(RestoreError::Lost) => report
                             .not_restorable
                             .push((path.clone(), Refusal::BlobLost)),
@@ -610,6 +619,15 @@ impl CheckpointStore {
             }
         }
         report
+    }
+
+    /// Records what the rewind left at `path`, so a later plan compares against it and not
+    /// against the edit the rewind undid.
+    fn note_restored(&self, path: &Path) {
+        let turn = Self::current_turn(&lock(&self.state, "checkpoint store"));
+        if let Some(turn) = turn {
+            self.record_after(turn, path);
+        }
     }
 
     fn restore_blob(
@@ -653,12 +671,14 @@ impl CheckpointStore {
             if state.captured.contains(&(turn, key.clone())) {
                 Some(turn)
             } else {
-                let before = self.read_before(&mut state, &limits, path);
+                let mut cause = None;
+                let before = self.read_before(&mut state, &limits, path, &mut cause);
                 if let Before::Skipped { why } = &before
                     && state.warned.insert(*why)
                 {
+                    let detail = cause.map(|c| format!(" ({c})")).unwrap_or_default();
                     warnings.push(format!(
-                        "{} is not saved for /rewind: it is {why}; the edit goes ahead",
+                        "{} is not saved for /rewind: it is {why}{detail}; the edit goes ahead",
                         path.display()
                     ));
                 }
@@ -677,7 +697,13 @@ impl CheckpointStore {
         result
     }
 
-    fn read_before(&self, state: &mut State, limits: &Checkpoints, path: &Path) -> Before {
+    fn read_before(
+        &self,
+        state: &mut State,
+        limits: &Checkpoints,
+        path: &Path,
+        cause: &mut Option<String>,
+    ) -> Before {
         let skipped = |why| Before::Skipped { why };
         let meta = match std::fs::metadata(path) {
             Ok(meta) => meta,
@@ -699,8 +725,9 @@ impl CheckpointStore {
             if state.blob_bytes.saturating_add(bytes.len() as u64) > limits.max_session_bytes {
                 return skipped(SkipReason::Budget);
             }
-            if owner_only::write_atomic(&blob, &bytes).is_err() {
-                return skipped(SkipReason::Unreadable);
+            if let Err(e) = owner_only::write_atomic(&blob, &bytes) {
+                *cause = Some(fontaine_tools::error_chain::chain(&e));
+                return skipped(SkipReason::StoreWrite);
             }
             state.blob_bytes += bytes.len() as u64;
         }
