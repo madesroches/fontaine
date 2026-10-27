@@ -50,7 +50,7 @@ bar, so `guardian_models.toml` still ships empty and the guardian falls back to 
 The remaining live-key, live-model and maintainer steps are GitHub issues labelled
 `release-blocker`; see `## Remaining work`.
 
-`research/` holds eleven companion docs that are this plan's precedent and inputs:
+`research/` holds twelve companion docs that are this plan's precedent and inputs:
 `analysis-competitive-landscape.md` (market/permission-story survey),
 `analysis-guardian-market.md`, `analysis-differentiation.md`,
 `analysis-devils-advocate.md` (kill criteria), `analysis-strategic-verdict.md` (verdict and
@@ -61,9 +61,9 @@ The remaining live-key, live-model and maintainer steps are GitHub issues labell
 and backlog triage), `research-deepseek-harness.md` (study of DeepSeek's own agent harness:
 desirable features led by iteration, DeepSeek model support, experiments under
 `research/deepseek-harness/`), `research-anthropic-models.md` (Claude on Microsoft Foundry and
-Databricks, a docs-based study), and `research-oh-my-pi-harness.md` (study of the oh-my-pi
+Databricks, a docs-based study), `research-oh-my-pi-harness.md` (study of the oh-my-pi
 harness: what lets the model iterate, edit formats, safety posture, terminal UI, experiments
-under `research/oh-my-pi-harness/`).
+under `research/oh-my-pi-harness/`), and `research-claude-code-auto-mode-prompt.md` (verbatim capture of Claude Code's auto-mode classifier prompt).
 
 ## Phase Tracker
 
@@ -229,7 +229,7 @@ fontaine/
 ├── docs/                       # all product docs — one topic per page, website-ready (see `design/documentation.md` §Documentation);
 │                               #   `schemas/headless-v1.schema.json`
 ├── tasks/                      # this master plan + design/ (topic design docs) + completed/ (shipped plans, incl. phases/)
-└── research/                   # eleven analysis/research companion docs
+└── research/                   # twelve analysis/research companion docs
 ```
 
 Crate dependency graph (arrows point at dependencies; no cycles):
