@@ -356,10 +356,40 @@ is not accepted), the network fails, or the files are missing or corrupt, the se
 The scanner is then unavailable: a notice names the cause, the license and the token variable, and
 every result carries the unscanned note until you fix it and restart.
 
+## Inspecting the rules
+
+`fontaine auto-mode` shows what the guardian judges against. It starts no session, runs nothing
+the repository defines and changes no setting. `--cd` and `--settings` apply. Each subcommand takes
+`--format text|json`.
+
+- `fontaine auto-mode defaults` prints the shipped `environment`, `allow`, `soft_deny` and
+  `hard_deny` lists. The text form is a `[auto_mode]` TOML fragment you can paste into a settings
+  file and edit. It needs no configuration and makes no request.
+- `fontaine auto-mode config` prints the effective lists a session would hand the guardian, after
+  `$defaults` splicing and the add-only rules for `soft_deny` and `hard_deny`. Each list is headed
+  by the scopes that set it (`user`, `project-local`, and so on) or `shipped defaults`, and each
+  entry is tagged `default` or `custom`. Scopes are recorded per list, not per entry. The output
+  shows what a non-interactive load yields: project settings that need workspace trust are not
+  given it here, so an interactive session you trusted can differ. Control characters in entries
+  are shown as escapes. Under `[guardian] profile = "minimal"` (when the container check holds) a
+  note says that only `environment` reaches the guardian. It makes no request.
+- `fontaine auto-mode critique` sends your custom entries, the entries not equal to a shipped one,
+  to the guardian's model and prints its review for ambiguity, overbreadth, redundancy and
+  contradiction with the hard-deny classes, followed by the model and its token count (and cost,
+  for a priced model). With no custom entries it prints `nothing to critique` and exits 0 without
+  resolving a model or making a request. The model is chosen as a session chooses it, so it needs
+  the same main model and account; an unavailable guardian model is a configuration error (exit
+  2), and a timeout (`[guardian] timeout_secs`) or provider error exits 1. Your entries go to that
+  account's provider, as they do in a session; the command says so on stderr before sending. The
+  review is advice: it changes no setting and has no effect on any permission decision.
+
+A prompt that is exactly `auto-mode` runs the subcommand, with or without `-p`; write
+`fontaine -p -- auto-mode` to give the agent that word as a task.
+
 ## Prompt versioning
 
 The prompts are versioned assets in `rust/fontaine-guardian/prompts/` (`guardian_prompt.md`,
-`guardian_minimal.md`, `scanner_llm.md`) compiled into the binary, so a prompt change ships with a release and is
+`guardian_minimal.md`, `scanner_llm.md`, `critique.md`) compiled into the binary, so a prompt change ships with a release and is
 re-scored on the golden dataset before the list of validated models is regenerated. A change to a
 prompt or to the shipped rule lists changes the cache key, and an entry in the model list is only
 valid for the dataset it was scored on.

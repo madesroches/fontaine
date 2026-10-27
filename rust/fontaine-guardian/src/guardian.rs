@@ -23,7 +23,8 @@ const TARGET: &str = "fontaine::telemetry";
 
 /// Retries after a malformed answer or a provider error, per adjudication.
 pub const EXTRACTOR_RETRIES: usize = 2;
-const MAX_TOKENS: u64 = 1_024;
+/// Also the cap of the critique reply.
+pub(crate) const MAX_TOKENS: u64 = 1_024;
 
 /// The provider name and model id a model's requests carry on the wire.
 #[derive(Clone, Debug, PartialEq, Eq)]

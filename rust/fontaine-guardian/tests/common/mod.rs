@@ -28,6 +28,8 @@ pub enum Reply {
     Malformed,
     /// The model answers in prose and never calls `submit`.
     Prose,
+    /// The model answers in this prose.
+    Text(String),
     Fail(u16),
     /// Answers after this long.
     Slow(Duration, Value),
@@ -90,6 +92,7 @@ impl Respond for Scripted {
             Reply::Prose => {
                 completion(json!({"role": "assistant", "content": "Looks fine to me."}))
             }
+            Reply::Text(text) => completion(json!({"role": "assistant", "content": text})),
             Reply::Fail(status) => ResponseTemplate::new(*status).set_body_string("scripted"),
             Reply::Slow(delay, value) => submit(&value.to_string()).set_delay(*delay),
         }

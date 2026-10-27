@@ -188,7 +188,7 @@ pub(super) fn session_state(setup: &AgentSetup, tree: &Arc<AgentTree>) -> Arc<Se
         setup.roots[1..].iter().cloned(),
     ));
     let permissions = &setup.config.permissions;
-    let auto_mode = &setup.config.auto_mode;
+    let (environment, rules) = setup.config.effective_auto_mode();
     let sources = Sources::new(
         setup.config_dir.clone(),
         setup.home.clone(),
@@ -220,12 +220,8 @@ pub(super) fn session_state(setup: &AgentSetup, tree: &Arc<AgentTree>) -> Arc<Se
             setup.guardian_profile,
         )),
         auto: AutoContext {
-            environment: fontaine_guardian::EnvironmentConfig::expand(&auto_mode.environment),
-            rules: fontaine_guardian::RuleConfig::expand(
-                &auto_mode.hard_deny,
-                &auto_mode.soft_deny,
-                &auto_mode.allow,
-            ),
+            environment,
+            rules,
             project_instructions: project_instructions(&instructions::guardian_order(
                 &launch.files,
             )),

@@ -21,6 +21,7 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 |---|---|
 | `fontaine` | Starts the terminal UI; see [The terminal UI](tui.md). |
 | `fontaine -p "task"` | Runs the task headless and prints the result on stdout. |
+| `fontaine auto-mode defaults\|config\|critique [--format text\|json]` | Shows the rules the guardian judges against; starts no session. See [Inspecting the rules](guardian.md#inspecting-the-rules). A prompt that is exactly `auto-mode` runs this subcommand; write `fontaine -p -- auto-mode` for a literal prompt. |
 | `--permission-mode <manual\|acceptEdits\|plan\|auto\|dontAsk>` | Session mode, overriding `[permissions] default_mode`. There is no bypass mode. A headless run starts in `manual` unless one of the two says otherwise; `auto` sends calls nothing pre-approved to the [guardian](guardian.md). |
 | `--in-container` | States that the process runs inside a container; with `[guardian] profile = "minimal"` it lets the minimal guardian load when a runtime probe agrees. See [The guardian](guardian.md#the-minimal-profile). |
 | `--model <account>/<model>` | Overrides `[model] model`. See [Configuration](configuration.md#accountsname). |

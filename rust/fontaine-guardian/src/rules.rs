@@ -71,6 +71,53 @@ pub const DEFAULT_ALLOW: &[&str] = &[
     "Transient retry: retrying the same or a reformulated action after a transient failure (network error, 5xx, timeout, rate limit) is not a bypass. The retry is still judged by every rule the original was; an obfuscated retry meant to evade a block is a bypass.",
 ];
 
+/// One of the four prose lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum List {
+    Environment,
+    Allow,
+    SoftDeny,
+    HardDeny,
+}
+
+impl List {
+    pub const ALL: [List; 4] = [
+        List::Environment,
+        List::Allow,
+        List::SoftDeny,
+        List::HardDeny,
+    ];
+
+    /// The `[auto_mode]` key.
+    pub fn name(self) -> &'static str {
+        match self {
+            List::Environment => "environment",
+            List::Allow => "allow",
+            List::SoftDeny => "soft_deny",
+            List::HardDeny => "hard_deny",
+        }
+    }
+
+    pub fn defaults(self) -> &'static [&'static str] {
+        match self {
+            List::Environment => DEFAULT_ENVIRONMENT,
+            List::Allow => DEFAULT_ALLOW,
+            List::SoftDeny => DEFAULT_SOFT_DENY,
+            List::HardDeny => DEFAULT_HARD_DENY,
+        }
+    }
+
+    /// Whether a configured list always keeps the shipped entries. The other two replace them
+    /// unless they carry [`DEFAULTS_MARKER`].
+    pub fn keeps_defaults(self) -> bool {
+        matches!(self, List::SoftDeny | List::HardDeny)
+    }
+
+    pub fn is_default(self, entry: &str) -> bool {
+        self.defaults().contains(&entry)
+    }
+}
+
 /// The list a configured value stands for: unset or empty gives the shipped defaults; a list
 /// holding `$defaults` has them spliced in at that position; any other list replaces them.
 pub fn expand(configured: &[String], defaults: &[&str]) -> Vec<String> {
@@ -98,6 +145,26 @@ pub fn expand_keeping_defaults(configured: &[String], defaults: &[&str]) -> Vec<
         out = full;
     }
     out
+}
+
+/// The four effective lists, in display order.
+pub fn lists<'a>(
+    environment: &'a EnvironmentConfig,
+    rules: &'a RuleConfig,
+) -> [(List, &'a [String]); 4] {
+    [
+        (List::Environment, &environment.entries),
+        (List::Allow, &rules.allow),
+        (List::SoftDeny, &rules.soft_deny),
+        (List::HardDeny, &rules.hard_deny),
+    ]
+}
+
+/// Whether any entry of the effective lists is not a shipped one.
+pub fn has_custom(environment: &EnvironmentConfig, rules: &RuleConfig) -> bool {
+    lists(environment, rules)
+        .into_iter()
+        .any(|(list, entries)| entries.iter().any(|e| !list.is_default(e)))
 }
 
 impl EnvironmentConfig {
@@ -161,6 +228,26 @@ mod tests {
             s(&["x", "a"])
         );
         assert_eq!(expand_keeping_defaults(&[], &["a"]), s(&["a"]));
+    }
+
+    #[test]
+    fn custom_entries_are_those_that_are_not_shipped() {
+        let env = EnvironmentConfig::expand(&[]);
+        assert!(!has_custom(&env, &RuleConfig::expand(&[], &[], &[])));
+        assert!(!has_custom(
+            &env,
+            &RuleConfig::expand(&[], &[], &s(&["$defaults"]))
+        ));
+        assert!(has_custom(
+            &env,
+            &RuleConfig::expand(&[], &s(&["never touch /data"]), &[])
+        ));
+        assert!(has_custom(
+            &EnvironmentConfig::expand(&s(&["x"])),
+            &RuleConfig::default()
+        ));
+        assert!(List::Allow.is_default(DEFAULT_ALLOW[0]));
+        assert!(!List::Allow.is_default(DEFAULT_SOFT_DENY[0]));
     }
 
     #[test]

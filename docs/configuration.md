@@ -662,6 +662,9 @@ defaults in where it stands.
 `environment` and `allow` loosen, so they come from user-trust scopes only; `soft_deny` and
 `hard_deny` can be added to from any scope. Under the `minimal` profile only `environment` is used.
 
+`fontaine auto-mode config` prints the lists a session would use and which scopes set them; see
+[Inspecting the rules](guardian.md#inspecting-the-rules).
+
 ```toml
 [auto_mode]
 environment = ["$defaults", "Source control: github.com/myorg"]

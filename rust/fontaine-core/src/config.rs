@@ -1490,6 +1490,25 @@ pub struct Config {
 }
 
 impl Config {
+    /// The environment and rule lists a session hands the guardian: the configured `[auto_mode]`
+    /// entries after `$defaults` splicing and the tighten-only rules.
+    pub fn effective_auto_mode(
+        &self,
+    ) -> (
+        fontaine_guardian::EnvironmentConfig,
+        fontaine_guardian::RuleConfig,
+    ) {
+        let auto_mode = &self.auto_mode;
+        (
+            fontaine_guardian::EnvironmentConfig::expand(&auto_mode.environment),
+            fontaine_guardian::RuleConfig::expand(
+                &auto_mode.hard_deny,
+                &auto_mode.soft_deny,
+                &auto_mode.allow,
+            ),
+        )
+    }
+
     pub(crate) fn defaults(workspace: PathBuf) -> Self {
         Config {
             workspace,
@@ -2411,7 +2430,59 @@ fn read_optional(
 
 #[cfg(test)]
 mod tests {
-    use super::case_colliding_env_name;
+    use super::{AutoMode, case_colliding_env_name};
+    use fontaine_guardian::rules::{DEFAULT_ALLOW, DEFAULT_ENVIRONMENT, DEFAULT_HARD_DENY};
+    use fontaine_guardian::{EnvironmentConfig, RuleConfig};
+
+    fn config_with(auto_mode: AutoMode) -> super::Config {
+        let mut config = super::Config::defaults(std::path::PathBuf::from("."));
+        config.auto_mode = auto_mode;
+        config
+    }
+
+    fn s(items: &[&str]) -> Vec<String> {
+        items.iter().map(|i| (*i).to_string()).collect()
+    }
+
+    #[test]
+    fn effective_auto_mode_is_the_expansion_a_session_used_to_compose() {
+        let cases = [
+            AutoMode::default(),
+            AutoMode {
+                environment: s(&["$defaults", "mine"]),
+                allow: s(&["only mine"]),
+                soft_deny: s(&["deny this"]),
+                hard_deny: s(&["$defaults", "and this"]),
+            },
+        ];
+        for auto_mode in cases {
+            let (environment, rules) = config_with(auto_mode.clone()).effective_auto_mode();
+            assert_eq!(
+                environment,
+                EnvironmentConfig::expand(&auto_mode.environment)
+            );
+            assert_eq!(
+                rules,
+                RuleConfig::expand(&auto_mode.hard_deny, &auto_mode.soft_deny, &auto_mode.allow)
+            );
+        }
+    }
+
+    #[test]
+    fn effective_auto_mode_splices_replaces_and_only_tightens() {
+        let (environment, rules) = config_with(AutoMode {
+            environment: s(&["$defaults", "mine"]),
+            allow: s(&["only mine"]),
+            soft_deny: Vec::new(),
+            hard_deny: s(&["extra"]),
+        })
+        .effective_auto_mode();
+        assert_eq!(environment.entries.len(), DEFAULT_ENVIRONMENT.len() + 1);
+        assert_eq!(rules.allow, s(&["only mine"]));
+        assert!(DEFAULT_ALLOW.len() > 1);
+        assert_eq!(rules.hard_deny.len(), DEFAULT_HARD_DENY.len() + 1);
+        assert_eq!(rules.hard_deny[0], DEFAULT_HARD_DENY[0]);
+    }
 
     #[test]
     fn case_collisions_are_found_only_when_folding() {
