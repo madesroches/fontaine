@@ -30,8 +30,7 @@ until the guardian scorecard covers memory-poisoning cases (this plan adds that 
 - `floor::protected_path` (`fontaine-core/src/floor.rs:71`) returns "Fontaine's own config or data
   directory" for any `write`/`edit` under `SessionState.protected_dirs = [config_dir, data_dir]`
   (`agent/setup.rs:~211`, consumed at `permissions.rs:737`). It sits in the deterministic floor, ahead of
-  every mode and allow rule: manual/acceptEdits/dontAsk prompt or deny, `auto` routes to the guardian,
-  headless denies. A directory under the data dir therefore gets exactly the gating this feature wants.
+  every mode and allow rule: manual/acceptEdits prompt, dontAsk and headless deny, `auto` routes to the guardian. A directory under the data dir therefore gets exactly the gating this feature wants.
 - `Dirs { config, data }` (`dirs.rs`) honours `FONTAINE_DATA_DIR`. `trust::work_tree_root` finds the git work
   tree of the primary root.
 - Config keys need a row in `config_scope.rs`; a key with no row is refused from project scopes.
@@ -70,17 +69,23 @@ lines and 25,000 bytes, whichever is smaller, and warns once when it cut. A miss
 
 followed by the directory path and the capped index, and then (always, when auto memory is on) a short
 section saying what to save, that topic files hold detail and `MEMORY.md` only links to them, and that
-memory is written with `write`/`edit` at that path. Rebuild timing is the same as instruction files (model
-switch, output-style change, `/add-dir`, new session). No memory layer is added when `[memory] auto` is off.
+memory is written with `write`/`edit` at that path. The prompt layer rebuilds like instruction files (model
+switch, output-style change, `/add-dir`, new session); the scope root is fixed at session setup, so toggling
+`[memory] auto` takes effect on the next launch. No memory layer is added when `[memory] auto` is off.
 
 The memory text is **not** appended to the guardian's `project_instructions`: that block is the user's own
 files, and memory is agent-authored and possibly attacker-influenced.
 
 ### Scope and gating
 
-- When `[memory] auto` is on, the memory directory is added to the session `Scope` as an extra root, the way
-  the scratch root is, so `read`, `write` and `edit` reach it from any workspace and subagents share it. It
-  is created with `owner_only::create_dir` (parents first).
+- When `[memory] auto` is on, `prepare_session` (`fontaine/src/lib.rs`, next to the scratch root, where `Dirs`
+  is available) creates the memory directory with `owner_only::create_dir` (parents first) and adds it to
+  the session `Scope` as an extra root, so `read`, `write` and `edit` reach it from any workspace and
+  subagents share it. On failure it warns and omits the layer and the root. The path is carried as a
+  `memory_root` field on `SessionState`/`SessionPrep`, tracked separately from the ordinary roots like the
+  scratch root: it is labelled in `/status` (`reports.rs`), listed in the system prompt's roots with a label
+  rather than as a workspace (`prompt.rs`, `agent/build.rs`), excluded from the file index scan
+  (`agent.rs`, `FileIndex::build`), and named in the out-of-scope error text (`permissions.rs`).
 - It is *not* carved out of `protected_dirs`. Every `write`/`edit` under it hits the protected-path floor, so
   it is never on the fast path, `acceptEdits`/allow rules do not approve it, `manual` shows the human the
   diff (existing approval preview), `auto` sends it to the guardian, headless denies. This is the intended
@@ -119,13 +124,14 @@ New `[memory]` section (`MemorySection`, `deny_unknown_fields`) in `config.rs`, 
 |---|---|---|
 | `auto` | The agent may save notes to the per-project memory store, and the index loads each session. | `false` |
 
-Exposed in `config_catalog.rs` so `/config` shows and toggles it. Env/CLI: none beyond the generic `--settings`.
+Exposed in `config_catalog.rs` as `Applies::NextLaunch` so `/config` shows and toggles it. Env/CLI: none beyond the generic `--settings`.
 Existing memory files are not loaded when `auto` is off (the store is inert, and `/memory` still lists it
 for cleanup).
 
 ### `/memory`
 
-`MemoryKind` gains `Auto`; `memory_entries` appends the store's `MEMORY.md` and topic files (sorted, with
+`MemoryKind` gains `Auto`; `memory_entries` (which lacks the data dir and project key) gains a
+`memory_dir: Option<&Path>` argument, passed by `Agent::memory_entries`, and appends the store's `MEMORY.md` and topic files (sorted, with
 modified times) after the instruction files, whether or not `auto` is on, so a user can audit or delete
 what was saved. Opening works as for instruction files (editor, outside the pipeline, like `!` commands).
 The report header says whether auto memory is on and where the directory is. The "edits apply at ..." notice
@@ -140,11 +146,19 @@ Memory writes are ordinary `write`/`edit` records, already audited with tier and
 1. `fontaine-core/src/memory.rs`: project key, `dir`, `load`, caps, framing text, topic-file listing; `pub mod`
    in `lib.rs`. Unit tests alongside.
 2. `config.rs`/`config_scope.rs`/`config_catalog.rs`: `[memory] auto`, `user_or_cli` scope row, catalog entry.
-3. `agent/setup.rs`, `agent/build.rs`: when enabled, create the dir, add it to the `Scope`, load it in
-   `prompt_layers`; `prompt.rs`: `PromptPieces.memory` and the what-to-save text; update prompt snapshots.
-4. `permissions.rs`: tag memory-store targets on the adjudication request; keep protected-path routing.
+3. `fontaine/src/lib.rs` (`prepare_session`): create the dir, add the `memory_root` to the `Scope`
+   (warn and omit on failure); `agent/build.rs`: load it in `prompt_layers`; `prompt.rs`: `PromptPieces.memory`
+   (also in `PromptPieces::texts()`, or `join()` omits it) and the what-to-save text; root labelling and
+   file-index exclusion as under Scope and gating; update the guardian prompt-builder snapshots only if they
+   change (the main prompt has no snapshot files).
+4. `adjudication.rs` (builds the `AdjudicationRequest`, called from `permissions.rs`): tag memory-store
+   targets; keep protected-path routing. If the request field exists, every full `AdjudicationRequest`
+   literal gains it (`fontaine-guardian/tests/common/mod.rs`, `fontaine-evals/src/live.rs`,
+   `screen.rs` and `prompt_builder.rs` tests, `fontaine-core/tests/{account_session,opencode_go}.rs`), the
+   `profile.rs` Minimal shape carries it, and the verdict cache key/digest includes it.
 5. `fontaine-guardian`: `request.rs` field, `prompt_builder.rs` block, system-prompt rule; update snapshots.
-6. `instructions::memory_entries`, `MemoryKind::Auto`, `fontaine-tui/src/reports.rs` and
+6. `instructions::memory_entries` (new `memory_dir` argument; update the test in
+   `tests/instructions.rs:478-504`), `MemoryKind::Auto`, `fontaine-tui/src/reports.rs` and
    `ui/commands/memory.rs`.
 7. `/context`: `ContextUsage` (`context.rs`) gains a `memory` token field counted in `total()`;
    `Agent::context_usage` (`agent.rs`) fills it from `PromptPieces.memory`; `reports::context` adds a
@@ -159,9 +173,9 @@ Memory writes are ordinary `write`/`edit` records, already audited with tier and
 ## Files to Modify
 
 - New: `rust/fontaine-core/src/memory.rs`, `evals/dataset/memory.jsonl`, `docs/memory.md`.
-- `rust/fontaine-core/src/{lib,config,config_scope,config_catalog,prompt,permissions,context}.rs`,
+- `rust/fontaine-core/src/{lib,config,config_scope,config_catalog,prompt,permissions,adjudication,context}.rs`,
   `agent.rs` (`context_usage`),
-  `agent/{setup,build}.rs`, `instructions/mod.rs`
+  `agent/build.rs`, `instructions/mod.rs`, `rust/fontaine/src/lib.rs` (`prepare_session`)
 - `rust/fontaine-guardian/src/{request,prompt_builder}.rs` (+ snapshots),
   `rust/fontaine-guardian/prompts/{guardian_prompt,guardian_minimal}.md`
 - `rust/fontaine-tui/src/{reports.rs,ui/commands/memory.rs}`
@@ -170,14 +184,8 @@ Memory writes are ordinary `write`/`edit` records, already audited with tier and
 
 ## Trade-offs
 
-- **Dedicated `memory` tool vs ordinary `write`/`edit`** (chosen: ordinary). A new tool needs its own risk
-  class, descriptor row, choke-point entries and a bespoke gating path, and would invite a fast path. Reusing
-  `write`/`edit` inherits the floor, approval previews, locking and audit. Cost: the directory joins the
-  scope.
-- **Carving the store out of the protected dirs** (rejected): it would make memory writes autonomous under
-  `acceptEdits` and defeat the audit point.
-- **Per-write consent only in `manual`**: a user who wants every write confirmed uses `manual` or an `ask`
-  rule on the path; `auto` relies on the guardian.
+- **Per-write consent**: a user who wants a human to confirm each write uses a mode other than `auto`, or an
+  `ask` rule on the path.
 
 ## Decisions
 
@@ -199,7 +207,7 @@ Memory writes are ordinary `write`/`edit` records, already audited with tier and
 - New `docs/memory.md`: what auto memory is, off by default and why, the store location and layout, how
   writes are gated per mode, what the guardian does with them, `/memory` auditing, how to clear it, and
   differences from Claude Code (store location, gating, off by default, no automatic subagent memory).
-  Its `toml` blocks are validated against the config schema by `fontaine-core/tests/docs.rs`, so they must
+  Add it to the page list in `tests/docs.rs` if that test enumerates pages. Its `toml` blocks are validated against the config schema by `fontaine-core/tests/docs.rs`, so they must
   use a valid `[memory]` section.
 - `docs/instructions.md` `## /memory`: also lists auto-memory files.
 - `docs/configuration.md`: `[memory] auto`. `docs/guardian.md`: the memory-write rule and the `memory_write`
@@ -214,17 +222,22 @@ Unit and integration tests never touch live APIs.
   projects; line and byte caps cut and warn; missing/empty index; non-UTF-8 and symlinked `MEMORY.md` are
   refused, not followed out of the directory.
 - Config: `[memory]` accepted in the user file and CLI, refused from project and local scopes
-  (`config_scope` table test); default is off.
-- Prompt: snapshot with auto memory on (framing, path, capped index) and off (no layer); memory text is absent
-  from the guardian's `project_instructions`.
+  (`config_scope.rs` table test, which needs a `memory` snippet); default is off.
+- Prompt: assertions on the built prompt with auto memory on (framing, path, capped index) and off (no layer);
+  memory text is absent from the guardian's `project_instructions` (`prompt_builder.rs:138`, built at
+  `agent/setup.rs:228`).
 - Floor/permissions: a `write` and `edit` under the memory directory, with no `ask` rule configured (an
   `ask` rule runs before the protected check, `permissions.rs:672-710`), is a protected-path outcome in
-  every mode — prompt in `manual`/`acceptEdits`/`dontAsk`, guardian in `auto` (`tier = guardian`), deny in
-  headless — and an `allow` rule never approves it. This pins the property that no memory fast path exists
-  and fails if someone exempts the data dir.
+  every mode — prompt in `manual`/`acceptEdits`, deny in `dontAsk` and headless, guardian in `auto` (`tier = guardian`) — and an `allow` rule never approves it. This pins the property that no memory fast path exists
+  and fails if someone exempts the data dir. Extend `tests/permissions.rs`
+  (`protected_paths_prompt_or_deny_by_mode`) and `tests/permissions_auto.rs`
+  (`protected_paths_go_to_the_guardian_in_auto_and_prompt_elsewhere`).
 - Guardian: prompt-builder snapshot for the `memory_write` block and the rule; request marks only
   memory-store targets.
-- `/memory`: report lists auto files with the on/off header; `memory_entries` ordering.
+- `/memory`: report lists auto files with the on/off header; `memory_entries` ordering with the new
+  `memory_dir` argument.
+- Scope: the memory root is labelled in `/status` and the prompt, absent from the file index, and a `memory_root`
+  creation failure warns and omits the layer.
 - `/context`: the report has a `memory` row when auto memory is on and none when off; `ContextUsage::total`
   includes it.
 - Eval dataset `memory.jsonl` (run with `--guardian fixture` in CI for format and expectation checks; live
