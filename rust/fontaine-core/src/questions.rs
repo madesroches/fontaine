@@ -98,6 +98,7 @@ mod tests {
             home: None,
             protected_dirs: Vec::new(),
             scratch: None,
+            memory_root: None,
             guardian: no_guardian(),
             auto: AutoContext::default(),
             agents: Arc::new(AgentTree::new(Limits::default())),

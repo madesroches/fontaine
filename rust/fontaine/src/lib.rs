@@ -13,6 +13,7 @@ use fontaine_core::config::{self, CliRules, Config, ConfigError, LoadParams, Per
 use fontaine_core::containment;
 use fontaine_core::dirs::{self, Dirs};
 use fontaine_core::extensions::{self, Extensions};
+use fontaine_core::memory;
 use fontaine_core::models::{self, Models, ResolveParams, Switcher};
 use fontaine_core::notice::Notice;
 use fontaine_core::permissions::DenyAll;
@@ -497,6 +498,9 @@ pub struct SessionPrep {
     pub roots: Vec<PathBuf>,
     /// The session's scratch root, which is also the last of `roots`.
     pub scratch: Option<PathBuf>,
+    /// The auto-memory store, also one of `roots`, when `[memory] auto` is on and it could be
+    /// created.
+    pub memory_root: Option<PathBuf>,
     pub mode: PermissionMode,
     pub scrub_env: Vec<OsString>,
     pub git_bash: Option<GitBash>,
@@ -650,6 +654,27 @@ fn prepare_session(
         }
     };
     let scratch_path = scratch.as_ref().map(|s| s.path().to_path_buf());
+    let memory_root = if config.memory.auto {
+        match memory::ensure_dir(&memory::dir(&dirs.data, &roots.roots[0])) {
+            Ok(dir) => {
+                roots.roots.push(dir.clone());
+                Some(dir)
+            }
+            Err(e) => {
+                warnings.push(Notice::warning(
+                    format!(
+                        "auto memory is off for this session: {}",
+                        fontaine_tools::error_chain::chain(&e)
+                    ),
+                    None,
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // Last, so the scratch root stays the final root.
     roots.roots.extend(scratch_path.clone());
     // Declined trust keeps a repository's servers from starting, but its agent files may still
     // name their tools: toolset cutting drops them.
@@ -673,6 +698,7 @@ fn prepare_session(
         session,
         roots: roots.roots,
         scratch: scratch_path,
+        memory_root,
         mode,
         scrub_env: tools::scrubbed_env(config, (host.env_names)()),
         git_bash,
@@ -802,6 +828,7 @@ fn agent_setup(
         session: prep.session,
         roots: prep.roots,
         scratch: prep.scratch,
+        memory_root: prep.memory_root,
         mode: prep.mode,
         scrub_env: prep.scrub_env,
         git_bash: prep.git_bash,

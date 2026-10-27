@@ -38,6 +38,19 @@ impl World {
         }
     }
 
+    /// Where a runtime built in this world keeps auto memory, once `enable_memory` made it.
+    pub fn memory_dir(&self) -> PathBuf {
+        self.data.join("memory").join("test-project")
+    }
+
+    /// Makes runtimes built in this world run with auto memory on, as a session whose
+    /// `[memory] auto` is on and whose store could be created.
+    pub fn enable_memory(&self) -> PathBuf {
+        let dir = self.memory_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::canonicalize(dir).unwrap()
+    }
+
     pub fn load(&self) -> Result<Config, ConfigError> {
         self.load_from(&self.work, None, &no_env)
     }

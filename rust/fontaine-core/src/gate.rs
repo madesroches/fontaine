@@ -98,6 +98,9 @@ pub struct StateParams {
     pub protected_dirs: Vec<PathBuf>,
     /// The session's scratch root, one of the scope's roots, when it could be created.
     pub scratch: Option<PathBuf>,
+    /// The auto-memory store, one of the scope's roots, when auto memory is on and the directory
+    /// could be created.
+    pub memory_root: Option<PathBuf>,
     pub guardian: Arc<Guardian>,
     pub auto: AutoContext,
     /// The session's agents, root included.
@@ -265,6 +268,7 @@ pub struct SessionState {
     pub home: Option<PathBuf>,
     pub protected_dirs: Vec<PathBuf>,
     pub scratch: Option<PathBuf>,
+    pub memory_root: Option<PathBuf>,
     inner: RwLock<Inner>,
     mode: Arc<RwLock<PermissionMode>>,
     agents: Arc<AgentTree>,
@@ -311,6 +315,7 @@ impl SessionState {
             home: params.home,
             protected_dirs: params.protected_dirs,
             scratch: params.scratch,
+            memory_root: params.memory_root,
             mode,
             agents: params.agents,
             reveal_mcp_names: params.reveal_mcp_names,
@@ -820,6 +825,7 @@ mod tests {
             home: None,
             protected_dirs: Vec::new(),
             scratch: None,
+            memory_root: None,
             guardian: no_guardian(),
             auto: AutoContext::default(),
             agents: Arc::new(AgentTree::new(Limits::default())),

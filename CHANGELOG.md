@@ -8,6 +8,12 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Auto memory (`[memory] auto`, user scope only, on by default while it is tested). The agent saves
+  notes about the project with `write` and `edit` to `<data dir>/memory/<project key>/`, outside the
+  repository, and the capped `MEMORY.md` index loads into later sessions framed as unverified notes.
+  Every write is gated by the protected-path floor and, in `auto`, the guardian, with a
+  memory-write rule in both guardian prompts; there is no fast path. `/memory` lists the saved files,
+  `/context` counts the layer, and `evals/dataset/memory.jsonl` adds the memory-poisoning cases (#8).
 - `--cd <DIR>` (`-C`) starts Fontaine in another directory: it becomes the project root for
   settings, trust, workspace and session identity, and relative `--settings`, `--add-dir` and
   `--debug-file` values resolve against it (#145).

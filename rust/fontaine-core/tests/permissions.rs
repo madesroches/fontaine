@@ -829,3 +829,67 @@ async fn a_denied_edit_and_other_tools_publish_no_diff() {
         assert!(r.state.feed().await.try_next_preview().is_none());
     }
 }
+
+fn memory_file(rig: &Rig) -> String {
+    rig.memory
+        .as_ref()
+        .expect("a rig with memory")
+        .join("MEMORY.md")
+        .display()
+        .to_string()
+}
+
+#[tokio::test]
+async fn memory_writes_are_a_protected_path_outcome_in_every_mode() {
+    for (tool, make) in [
+        ("write", write_args as fn(&str) -> Value),
+        ("edit", edit_args),
+    ] {
+        for mode in [Manual, AcceptEdits] {
+            // Allow rules for the tools do not approve the store.
+            let rig = Rig::with(
+                Options::new(mode)
+                    .memory()
+                    .settings("[permissions]\nallow = [\"write\", \"edit\"]\n"),
+            );
+            let path = memory_file(&rig);
+            assert_eq!(
+                first(&rig, tool, make(&path)).await,
+                (Decision::Prompt, Tier::ProtectedPath),
+                "{tool} {mode:?}"
+            );
+        }
+        let rig = Rig::with(Options::new(DontAsk).memory());
+        let path = memory_file(&rig);
+        assert_eq!(
+            first(&rig, tool, make(&path)).await,
+            (Decision::Deny, Tier::ProtectedPath),
+            "{tool} dontAsk"
+        );
+        let rig = Rig::with(Options::new(Manual).memory().headless());
+        let path = memory_file(&rig);
+        assert_eq!(
+            first(&rig, tool, make(&path)).await,
+            (Decision::Deny, Tier::ProtectedPath),
+            "{tool} headless"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_shell_write_to_the_memory_store_takes_the_ordinary_shell_path() {
+    let rig = Rig::with(Options::new(Manual).memory());
+    let path = memory_file(&rig);
+    let (decision, tier) = first(&rig, "shell", shell(&format!("echo x >> {path}"))).await;
+    assert_ne!(tier, Tier::ProtectedPath);
+    assert_eq!(decision, Decision::Prompt);
+}
+
+#[tokio::test]
+async fn the_out_of_scope_error_points_at_the_memory_directory() {
+    let rig = Rig::with(Options::new(Manual).memory());
+    let d = rig.check("read", json!({"path": "/etc/hostname"})).await;
+    let message = denied_message(&d);
+    let memory = rig.memory.as_ref().unwrap().display().to_string();
+    assert!(message.contains(&memory), "{message}");
+}

@@ -481,7 +481,7 @@ async fn a_nonexistent_add_dir_and_a_nonexistent_config_entry_are_skipped_with_a
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let init = &out.lines()[0];
     let roots = init["workspace_roots"].as_array().unwrap();
-    assert_eq!(roots.len(), 2, "{roots:?}");
+    assert_eq!(roots.len(), 3, "{roots:?}");
     assert_eq!(roots[0], s.work.display().to_string());
     let flag_warning = out
         .stderr
@@ -701,8 +701,8 @@ async fn the_scratch_root_is_the_last_root_and_is_gone_after_the_run() {
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let init = &out.lines()[0];
     let roots = init["workspace_roots"].as_array().unwrap();
-    assert_eq!(roots.len(), 2);
-    let scratch = Path::new(roots[1].as_str().unwrap());
+    assert_eq!(roots.len(), 3);
+    let scratch = Path::new(roots[2].as_str().unwrap());
     assert!(scratch.starts_with(s.scratch_parent()), "{scratch:?}");
     assert!(!scratch.exists());
     let left: Vec<_> = std::fs::read_dir(s.scratch_parent())
@@ -710,6 +710,60 @@ async fn the_scratch_root_is_the_last_root_and_is_gone_after_the_run() {
         .map(|e| e.unwrap().file_name())
         .collect();
     assert!(left.is_empty(), "{left:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_memory_store_is_a_root_before_the_scratch_root_and_is_owner_only() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let out = s.headless(&["--output-format", "stream-json", "hi"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let init = &out.lines()[0];
+    let roots = init["workspace_roots"].as_array().unwrap();
+    let memory = Path::new(roots[1].as_str().unwrap());
+    assert!(memory.starts_with(s.data.join("memory")), "{memory:?}");
+    assert!(memory.is_dir());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            memory.metadata().unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_memory_off_in_the_user_file_adds_no_root_and_no_store() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let user_file = s.config.join("config.toml");
+    let mut text = std::fs::read_to_string(&user_file).unwrap();
+    text.push_str("\n[memory]\nauto = false\n");
+    std::fs::write(&user_file, text).unwrap();
+    let out = s.headless(&["--output-format", "stream-json", "hi"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let roots = out.lines()[0]["workspace_roots"].as_array().unwrap().len();
+    assert_eq!(roots, 2);
+    assert!(!s.data.join("memory").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_store_that_cannot_be_created_warns_and_leaves_the_roots_alone() {
+    let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let s = Sandbox::compatible(&endpoint.url());
+    std::fs::write(s.data.join("memory"), "in the way").unwrap();
+    let out = s.headless(&["--output-format", "stream-json", "hi"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("auto memory is off for this session"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(
+        out.lines()[0]["workspace_roots"].as_array().unwrap().len(),
+        2
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

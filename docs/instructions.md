@@ -144,7 +144,9 @@ session warns once and names the largest files. `/context all` shows what each f
 
 `/memory` lists the instruction files: every launch file with where it came from (and the file that
 imported it), the files loaded on demand so far, and your `FONTAINE.md` and the primary root's, marked
-`not created` when they do not exist. `/memory <n>` opens entry `n` in your editor, creating the file
+`not created` when they do not exist. After them come the [auto-memory](memory.md) files for the
+project, `MEMORY.md` first, each marked `saved note` with when it was modified, and the first line
+says whether auto memory is on and where its directory is. `/memory <n>` opens entry `n` in your editor, creating the file
 (and its directory) first when it does not exist.
 
 The editor is `$VISUAL`, then `$EDITOR`, else `vi` (`notepad` on Windows). It runs as

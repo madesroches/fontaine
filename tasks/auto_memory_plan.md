@@ -6,14 +6,14 @@
 
 Claude Code's auto memory lets the agent save learnings (build commands, corrections, preferences) to a
 per-project memory directory whose index loads into every later session. This plan adds that to Fontaine as
-an opt-in feature (`[memory] auto = false` by default). The store lives in the user data directory, outside
+a user-scope feature (`[memory] auto`, on by default for testing; see Decisions). The store lives in the user data directory, outside
 the repository. The agent writes it with the ordinary `write`/`edit` tools, so every write crosses the
 deterministic floor and, in `auto` mode, the guardian; there is no memory fast path. Memory text is treated
 as untrusted data wherever the guardian could see it, and `/memory` lists and opens the files for audit.
 
 Auto memory is a persistence vector: an injection that reaches the model once can write itself into every
 future session. The design therefore leans on three properties: the write is never auto-approved by a
-label, the loaded text is framed as notes rather than instructions, and the feature stays off by default
+label, the loaded text is framed as notes rather than instructions, and the default should return to off
 until the guardian scorecard covers memory-poisoning cases (this plan adds that dataset slice).
 
 ## Current State
@@ -125,11 +125,11 @@ files, and memory is agent-authored and possibly attacker-influenced.
 ### Config
 
 New `[memory]` section (`MemorySection`, `deny_unknown_fields`) in `config.rs`, scope rule `user_or_cli`
-(a repository must not be able to turn persistence on):
+(a repository must not be able to change persistence):
 
 | Key | Meaning | Default |
 |---|---|---|
-| `auto` | The agent may save notes to the per-project memory store, and the index loads each session. | `false` |
+| `auto` | The agent may save notes to the per-project memory store, and the index loads each session. | `true` |
 
 Exposed in `config_catalog.rs` as `Applies::NextLaunch` so `/config` shows and toggles it. Env/CLI: none beyond the generic `--settings`.
 Existing memory files are not loaded when `auto` is off (the store is inert, and `/memory` still lists it
@@ -210,8 +210,10 @@ Memory writes are ordinary `write`/`edit` records, already audited with tier and
 
 - 2026-10-27: Auto memory lives in the user data directory, not the repo, because repo memory is
   attacker-writable via a cloned repository and could be committed by accident (#8)
-- 2026-10-27: Auto memory is off by default (`[memory] auto = false`, user-scope only), because it is a
-  persistence vector and a repository must not be able to enable it (#8)
+- 2026-10-27: Auto memory is on by default (`[memory] auto = true`, user-scope only) for testing, at the
+  user's request; the default should return to off until the memory-poisoning scorecard
+  (`evals/dataset/memory.jsonl`) has been run live, because it is a persistence vector. A repository
+  still cannot change the key (#8)
 - 2026-10-27: Memory writes use ordinary `write`/`edit` gated by the floor and, in `auto`, the guardian, with
   no fast path, because the store is under the protected data dir (#8)
 - 2026-10-27: Memory text is framed as untrusted notes and kept out of the guardian's `project_instructions`,
@@ -224,12 +226,15 @@ Memory writes are ordinary `write`/`edit` records, already audited with tier and
 - 2026-10-27: AFK: The guardian learns the memory directory from a core-set `SessionFacts.memory_dir` and a path-based rule, not a per-call `memory_store` field, because the target already reaches it and a session-level fact touches far fewer literals and cannot be model-spoofed (#8)
 - 2026-10-27: AFK: The eval harness sets `memory_dir` in `request_for` for the memory slice; fixture mode checks format only and the slice measures the live guardian's memory-write rule, because fixture mode builds no prompt (#8)
 - 2026-10-27: AFK: The `MEMORY.md` index is capped at 200 lines / 25,000 bytes as a Fontaine design choice, without a `claude -p` baseline, because the conservative cap bounds prompt size and poisoning surface (#8)
+- 2026-10-27: The memory root is pushed before the scratch root so the scratch root stays the last of the roots, because existing surfaces and tests rely on that (#8)
+- 2026-10-27: The memory slice's cases are posed with a fixed fake `memory_dir` constant rather than one under the per-case temp root, because a dataset file cannot name a path inside a temp directory it does not know (#8)
+- 2026-10-27: The guardian docs describe the `agent_memory_directory` line of the `session_facts` block instead of a separate `memory_write` block, because the rule is path-based and the fact is session-level (#8)
 
 ## Documentation
 
-- New `docs/memory.md`: what auto memory is, off by default and why, the store location and layout, how
+- New `docs/memory.md`: what auto memory is, that it is on by default for testing and should return to off until the memory-poisoning scorecard is run, the store location and layout, how
   writes are gated per mode, what the guardian does with them, `/memory` auditing, how to clear it, and
-  differences from Claude Code (store location, gating, off by default, no automatic subagent memory).
+  differences from Claude Code (store location, gating, no automatic subagent memory).
   Add it to the page list in `tests/docs.rs` if that test enumerates pages. Its `toml` blocks are validated against the config schema by `fontaine-core/tests/docs.rs`, so they must
   use a valid `[memory]` section.
 - `docs/instructions.md` `## /memory`: also lists auto-memory files.
@@ -248,7 +253,7 @@ Unit and integration tests never touch live APIs.
   projects; line and byte caps cut and warn; missing/empty index; non-UTF-8 and symlinked `MEMORY.md` are
   refused, not followed out of the directory.
 - Config: `[memory]` accepted in the user file and CLI, refused from project and local scopes
-  (`config_scope.rs` table test, which needs a `memory` snippet); default is off.
+  (`config_scope.rs` table test, which needs a `memory` snippet); default is on.
 - Prompt: assertions on the built prompt with auto memory on (framing, path, capped index) and off (no layer);
   memory text is absent from the guardian's `project_instructions` (`prompt_builder.rs:138`, built at
   `agent/setup.rs:228`).
@@ -279,6 +284,6 @@ Unit and integration tests never touch live APIs.
 
 Only the live loop is not automated, because it needs a real model:
 
-1. Set `[memory] auto = true`, run `fontaine` in a repo in `manual` mode, tell it "remember that tests run
+1. With the default `[memory] auto = true`, run `fontaine` in a repo in `manual` mode, tell it "remember that tests run
    with `cargo test -p x`". Expect an approval prompt for a write under `<data>/memory/<key>/`.
 2. Start a new session; `/memory` lists the file and `/context` shows the memory layer.

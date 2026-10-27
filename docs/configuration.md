@@ -108,6 +108,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[agents]` keys and `[agents.types]` | no | yes | yes |
 | `[context] autocompact_window` | no | yes | yes |
 | `[schedule] enabled` | no | no | yes |
+| `[memory] auto` | no | no | yes |
 | `[goal]` keys | no | no | yes |
 | `[shell_preclassifier] allow_extra` | no | yes | yes |
 | Agent files `agents/*.md` | narrowing only | n/a | n/a |
@@ -725,6 +726,17 @@ autocompact_window = 150000
 ```toml
 [schedule]
 enabled = false
+```
+
+### `[memory]`
+
+| Key | Meaning | Default |
+|---|---|---|
+| `auto` | Whether the agent may save notes to the [per-project memory store](memory.md) and the store's index loads into each session. A change applies at the next launch. Only the user file and `--settings` can set it. | `true` |
+
+```toml
+[memory]
+auto = false
 ```
 
 ### `[goal]`

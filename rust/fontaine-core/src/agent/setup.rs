@@ -213,6 +213,7 @@ pub(super) fn session_state(setup: &AgentSetup, tree: &Arc<AgentTree>) -> Arc<Se
             .map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.clone()))
             .collect(),
         scratch: setup.scratch.clone(),
+        memory_root: setup.memory_root.clone(),
         guardian: Arc::new(build_guardian(
             setup.models.guardian.as_ref(),
             &setup.config,
@@ -457,8 +458,10 @@ fn child_runner(
                 prompt::assemble(&PromptParts {
                     roots: &roots,
                     scratch: preamble_state.scratch.as_deref(),
+                    memory_root: preamble_state.memory_root.as_deref(),
                     system_prompt: preamble_system.as_deref(),
                     instructions: &instructions,
+                    memory: None,
                     skill_index: None,
                     scheduling: None,
                     output_style: None,

@@ -55,7 +55,9 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
      `.idea`, `.husky`, `.fontaine` or `.claude`, or whose file name is `.gitconfig`, `.gitmodules`,
      `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc` or `.mcp.json`,
      in any workspace root or the home directory, asks; so does any path under Fontaine's own
-     config or data directory. Matching is on resolved path components, so separators and, on
+     config or data directory (the [auto-memory store](memory.md) is the one gated location under the
+     data directory that is also reachable as a workspace root, and it takes this check like any other).
+     Matching is on resolved path components, so separators and, on
      Windows and macOS, case do not matter. In `auto` the guardian takes the place of the
      prompt, for a path the file tools can reach.
 

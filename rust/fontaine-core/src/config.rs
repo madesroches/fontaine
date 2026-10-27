@@ -588,6 +588,12 @@ pub struct ScheduleSection {
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct MemorySection {
+    pub auto: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GoalSection {
     pub max_turns: Option<u32>,
     pub max_cost_usd: Option<f64>,
@@ -781,6 +787,7 @@ pub struct Settings {
     pub agents: Option<AgentsSection>,
     pub context: Option<ContextSection>,
     pub schedule: Option<ScheduleSection>,
+    pub memory: Option<MemorySection>,
     pub goal: Option<GoalSection>,
     pub shell_preclassifier: Option<ShellPreclassifierSection>,
     pub telemetry: Option<TelemetrySection>,
@@ -1422,6 +1429,14 @@ pub struct Schedule {
     pub enabled: bool,
 }
 
+/// The merged `[memory]` section.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Memory {
+    /// Whether the agent may save notes to the per-project memory store and the store's index
+    /// loads into each session.
+    pub auto: bool,
+}
+
 /// The merged `[goal]` section: what bounds an unattended stretch of goal turns.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Goal {
@@ -1464,6 +1479,7 @@ pub struct Config {
     pub agents: Agents,
     pub context: Context,
     pub schedule: Schedule,
+    pub memory: Memory,
     pub goal: Goal,
     pub shell_preclassifier_allow_extra: Vec<String>,
     pub telemetry: Telemetry,
@@ -1517,6 +1533,7 @@ impl Config {
             },
             context: Context::default(),
             schedule: Schedule { enabled: true },
+            memory: Memory { auto: true },
             goal: Goal {
                 max_turns: DEFAULT_GOAL_MAX_TURNS,
                 max_cost_usd: None,
@@ -1718,6 +1735,9 @@ impl Config {
         }
         if let Some(v) = s.schedule.as_ref().and_then(|c| c.enabled) {
             self.schedule.enabled = v;
+        }
+        if let Some(v) = s.memory.as_ref().and_then(|c| c.auto) {
+            self.memory.auto = v;
         }
         if let Some(g) = &s.goal {
             if let Some(v) = g.max_turns {

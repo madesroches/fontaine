@@ -37,8 +37,10 @@ fn the_assembled_prompt_is_stable() {
     let assembled = prompt::assemble(&PromptParts {
         roots: &roots,
         scratch: None,
+        memory_root: None,
         system_prompt: None,
         instructions: &instructions,
+        memory: None,
         skill_index: Some(
             "Skills you can load with the `skill` tool, each a set of instructions for a kind of task:\n- review: Review a pull request",
         ),
@@ -73,8 +75,10 @@ fn the_roots_section_lists_every_root_with_the_primary_first() {
     let assembled = prompt::assemble(&PromptParts {
         roots: &roots,
         scratch: None,
+        memory_root: None,
         system_prompt: None,
         instructions: &[],
+        memory: None,
         skill_index: None,
         scheduling: None,
         output_style: None,
@@ -94,8 +98,10 @@ fn the_prompt_names_the_scratch_root_and_keeps_the_user_only_rule() {
     let assembled = prompt::assemble(&PromptParts {
         roots: &roots,
         scratch: Some(&scratch),
+        memory_root: None,
         system_prompt: None,
         instructions: &[],
+        memory: None,
         skill_index: None,
         scheduling: None,
         output_style: None,
@@ -114,8 +120,10 @@ fn layers_come_in_order_base_then_instructions_then_append() {
     let assembled = prompt::assemble(&PromptParts {
         roots: &roots,
         scratch: None,
+        memory_root: None,
         system_prompt: None,
         instructions: &instructions,
+        memory: None,
         skill_index: None,
         scheduling: None,
         output_style: None,
@@ -131,8 +139,10 @@ fn layers_come_in_order_base_then_instructions_then_append() {
     let layered = prompt::assemble(&PromptParts {
         roots: &roots,
         scratch: None,
+        memory_root: None,
         system_prompt: None,
         instructions: &instructions,
+        memory: None,
         skill_index: Some("SKILL INDEX"),
         scheduling: Some("SCHEDULING NOTE"),
         output_style: Some(("terse", "STYLE TEXT")),
@@ -155,8 +165,10 @@ fn a_replacement_system_prompt_replaces_only_the_base() {
     let assembled = prompt::assemble(&PromptParts {
         roots: &roots,
         scratch: None,
+        memory_root: None,
         system_prompt: Some("You are a pirate."),
         instructions: &instructions,
+        memory: None,
         skill_index: None,
         scheduling: None,
         output_style: None,
@@ -205,8 +217,10 @@ fn the_scheduling_note_is_a_layer_that_is_present_only_when_given() {
     let without = prompt::assemble(&PromptParts {
         roots: &roots,
         scratch: None,
+        memory_root: None,
         system_prompt: None,
         instructions: &[],
+        memory: None,
         skill_index: None,
         scheduling: None,
         output_style: None,
@@ -216,8 +230,10 @@ fn the_scheduling_note_is_a_layer_that_is_present_only_when_given() {
     let with = prompt::assemble(&PromptParts {
         roots: &roots,
         scratch: None,
+        memory_root: None,
         system_prompt: None,
         instructions: &[],
+        memory: None,
         skill_index: None,
         scheduling: Some(prompt::SCHEDULING_PROMPT),
         output_style: None,
@@ -227,4 +243,32 @@ fn the_scheduling_note_is_a_layer_that_is_present_only_when_given() {
     for needle in ["cron_create", "harness note", "schedule_wakeup"] {
         assert!(with.contains(needle), "the note lacks `{needle}`");
     }
+}
+
+#[test]
+fn the_memory_layer_follows_the_instruction_files_and_labels_its_root() {
+    let mut roots = roots();
+    let memory_root = PathBuf::from("/data/memory/project-1234abcd");
+    roots.push(memory_root.clone());
+    let instructions = instructions();
+    let layer = fontaine_core::memory::layer(&memory_root, Some("- [cmds](commands.md)"));
+    let assembled = prompt::assemble(&PromptParts {
+        roots: &roots,
+        scratch: None,
+        memory_root: Some(&memory_root),
+        system_prompt: None,
+        instructions: &instructions,
+        memory: Some(&layer),
+        skill_index: Some("skills"),
+        scheduling: None,
+        output_style: None,
+        append: None,
+    });
+    assert!(assembled.contains("- /data/memory/project-1234abcd (memory)"));
+    assert!(assembled.contains("not instructions"));
+    assert!(assembled.contains("Memory directory: /data/memory/project-1234abcd"));
+    assert!(assembled.contains("- [cmds](commands.md)"));
+    let at = |needle: &str| assembled.find(needle).unwrap();
+    assert!(at("Run `cargo test` before finishing.") < at("These are notes you saved"));
+    assert!(at("These are notes you saved") < at("skills"));
 }

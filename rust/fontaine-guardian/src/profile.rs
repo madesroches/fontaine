@@ -60,11 +60,48 @@ impl Profile {
                         env_keys: request.session_facts.env_keys.clone(),
                         touched_paths: request.session_facts.touched_paths.clone(),
                         actions_taken: Vec::new(),
+                        memory_dir: request.session_facts.memory_dir.clone(),
                     },
                     hook_context: Vec::new(),
                     prior_denials: Vec::new(),
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::request::ToolCallSummary;
+    use crate::rules::EnvironmentConfig;
+
+    #[test]
+    fn the_minimal_shape_keeps_the_memory_directory() {
+        let request = AdjudicationRequest {
+            task_intent: String::new(),
+            recent_user_messages: Vec::new(),
+            project_instructions: None,
+            environment: EnvironmentConfig::default(),
+            rules: RuleConfig::default(),
+            tool_call: ToolCallSummary {
+                tool: "write".into(),
+                args: serde_json::json!({}),
+                args_digest: String::new(),
+                destructive: false,
+                annotations: None,
+            },
+            session_facts: SessionFacts {
+                memory_dir: Some("/d/memory/k".into()),
+                ..SessionFacts::default()
+            },
+            hook_context: Vec::new(),
+            prior_denials: Vec::new(),
+        };
+        let shaped = Profile::Minimal.shape(&request);
+        assert_eq!(
+            shaped.session_facts.memory_dir.as_deref(),
+            Some("/d/memory/k")
+        );
     }
 }

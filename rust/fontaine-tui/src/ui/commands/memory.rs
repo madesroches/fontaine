@@ -111,7 +111,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
         };
         let entries = runtime.memory_entries();
         let Some(number) = number else {
-            self.app.transcript.notice(reports::memory(&entries));
+            let dir = runtime.memory_dir();
+            self.app.transcript.notice(reports::memory(
+                &entries,
+                &reports::AutoMemory {
+                    on: runtime.auto_memory_active(),
+                    dir: &dir,
+                },
+            ));
             return;
         };
         let Some(entry) = number.checked_sub(1).and_then(|at| entries.get(at)) else {

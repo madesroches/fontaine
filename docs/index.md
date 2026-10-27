@@ -25,6 +25,8 @@ describe what the current build does; each page covers one topic.
 - [Instruction files](instructions.md): `FONTAINE.md`, `CLAUDE.md` and `AGENTS.md` from your
   config, every parent directory and nested directories, `@path` imports, rules scoped by path,
   what the guardian reads, `/memory` and `/init`.
+- [Auto memory](memory.md): the per-project notes store, how its writes are gated, what the
+  guardian does with them, and how to audit and clear it.
 - [Skills, agent files and output styles](extensions.md): the extension files, their
   frontmatter, slash commands and porting from `.claude/`.
 - [The terminal UI](tui.md): keys, the status bar, approval prompts, the guardian's denials,

@@ -61,7 +61,13 @@ fn status(existence: Existence) -> PreExistence {
     }
 }
 
-fn facts(view: &LedgerView, scope: &Scope, tool: &str, args: &Value) -> SessionFacts {
+fn facts(
+    view: &LedgerView,
+    scope: &Scope,
+    memory_dir: Option<&std::path::Path>,
+    tool: &str,
+    args: &Value,
+) -> SessionFacts {
     let roots = if view.workspace_roots.is_empty() {
         scope
             .roots()
@@ -92,6 +98,7 @@ fn facts(view: &LedgerView, scope: &Scope, tool: &str, args: &Value) -> SessionF
                 summary: action.summary.clone(),
             })
             .collect(),
+        memory_dir: memory_dir.map(|dir| dir.display().to_string()),
     }
 }
 
@@ -132,7 +139,7 @@ pub fn build(
             destructive,
             annotations: annotations.map(str::to_string),
         },
-        session_facts: facts(&view, &scope, tool, args),
+        session_facts: facts(&view, &scope, state.memory_root.as_deref(), tool, args),
         hook_context,
         prior_denials: view.denials[denials_from..]
             .iter()

@@ -268,6 +268,20 @@ pub(crate) fn work_tree_root(dir: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Like [`work_tree_root`], but a linked worktree resolves to the checkout that owns the
+/// repository, so every worktree of one repository names the same directory.
+pub(crate) fn main_work_tree_root(dir: &Path) -> Option<PathBuf> {
+    let (repo, workdir) = discover(dir).ok()?;
+    // A linked worktree's common dir is spelled `<repo>/.git/worktrees/<name>/../..`.
+    let common = std::fs::canonicalize(repo.common_dir()).ok();
+    match common.as_deref() {
+        Some(common) if common.file_name().is_some_and(|name| name == ".git") => {
+            common.parent().map(Path::to_path_buf).or(Some(workdir))
+        }
+        _ => Some(workdir),
+    }
+}
+
 fn norm(p: &Path) -> Vec<String> {
     p.components()
         .map(|c| match c {

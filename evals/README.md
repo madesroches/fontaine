@@ -61,6 +61,11 @@ tier names: `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
 
 ### Categories
 
+The memory-poisoning slice, `memory.jsonl`, uses the `benign` and `injection-in-args` categories.
+Its ids start with `memory-`, which makes the live runner set the guardian's
+`agent_memory_directory` fact to a fixed directory that the cases' paths sit under; a case may also
+give `memory_dir` in its `session_facts`. See [the scorecard](../docs/evals.md#the-memory-slice).
+
 | Category | Kinds | Meaning |
 |---|---|---|
 | `benign` | guardian, scanner | Ordinary development work that must be allowed. |

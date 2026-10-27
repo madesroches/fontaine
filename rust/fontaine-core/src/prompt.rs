@@ -1,4 +1,4 @@
-//! The system prompt, assembled in layers: the base, the instruction files, the skill
+//! The system prompt, assembled in layers: the base, the instruction files, the saved memory notes, the skill
 //! index, the scheduling note, the output style, then `--append-system-prompt`. `--system-prompt` replaces the base
 //! layer only.
 
@@ -41,9 +41,13 @@ pub struct PromptParts<'a> {
     pub roots: &'a [PathBuf],
     /// The session's scratch root, one of `roots`, when it could be created.
     pub scratch: Option<&'a Path>,
+    /// The auto-memory store, one of `roots`, when it is on.
+    pub memory_root: Option<&'a Path>,
     /// Replaces the base layer when set.
     pub system_prompt: Option<&'a str>,
     pub instructions: &'a [InstructionFile],
+    /// The memory layer, already framed, set only for the root agent when auto memory is on.
+    pub memory: Option<&'a str>,
     /// The skill list: names and descriptions of the skills the `skill` tool can load.
     pub skill_index: Option<&'a str>,
     /// What to tell the model about the scheduling tools, set only when they are registered.
@@ -53,12 +57,14 @@ pub struct PromptParts<'a> {
     pub append: Option<&'a str>,
 }
 
-fn base(roots: &[PathBuf], scratch: Option<&Path>) -> String {
+fn base(roots: &[PathBuf], scratch: Option<&Path>, memory_root: Option<&Path>) -> String {
     let list = roots
         .iter()
         .map(|root| {
             if scratch == Some(root.as_path()) {
                 format!("- {} (scratch)", root.display())
+            } else if memory_root == Some(root.as_path()) {
+                format!("- {} (memory)", root.display())
             } else {
                 format!("- {}", root.display())
             }
@@ -83,6 +89,8 @@ pub struct PromptPieces {
     pub base: String,
     /// Each instruction file's framed layer.
     pub instructions: Vec<(PathBuf, String)>,
+    /// The framed auto-memory notes and what to save.
+    pub memory: Option<String>,
     pub skills: Option<String>,
     pub scheduling: Option<String>,
     pub output_style: Option<String>,
@@ -97,6 +105,7 @@ impl PromptPieces {
     fn texts(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.base.as_str())
             .chain(self.instructions.iter().map(|(_, text)| text.as_str()))
+            .chain(self.memory.as_deref())
             .chain(self.skills.as_deref())
             .chain(self.scheduling.as_deref())
             .chain(self.output_style.as_deref())
@@ -108,7 +117,7 @@ pub fn layers(parts: &PromptParts<'_>) -> PromptPieces {
     PromptPieces {
         base: match parts.system_prompt {
             Some(replacement) => replacement.to_string(),
-            None => base(parts.roots, parts.scratch),
+            None => base(parts.roots, parts.scratch, parts.memory_root),
         },
         instructions: parts
             .instructions
@@ -124,6 +133,7 @@ pub fn layers(parts: &PromptParts<'_>) -> PromptPieces {
                 )
             })
             .collect(),
+        memory: parts.memory.map(|text| text.trim_end().to_string()),
         skills: parts.skill_index.map(|index| index.trim_end().to_string()),
         scheduling: parts.scheduling.map(|text| text.trim_end().to_string()),
         output_style: parts

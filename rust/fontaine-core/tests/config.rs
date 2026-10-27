@@ -1768,3 +1768,22 @@ mod websearch {
         ));
     }
 }
+
+#[test]
+fn auto_memory_defaults_on_and_only_the_user_file_and_cli_can_set_it() {
+    let w = World::new();
+    assert!(w.load().unwrap().memory.auto);
+
+    w.user_file("[memory]\nauto = false\n");
+    assert!(!w.load().unwrap().memory.auto);
+
+    w.user_file("");
+    let cli = w.cli_file("[memory]\nauto = false\n");
+    assert!(!w.load_with_settings(&cli).unwrap().memory.auto);
+
+    for column in [Column::Project, Column::ProjectLocal] {
+        let err = parse_settings("[memory]\nauto = true\n", Path::new("p.toml"), column)
+            .expect_err("a repository cannot set memory");
+        assert!(err.to_string().contains("memory"), "{err}");
+    }
+}
