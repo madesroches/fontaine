@@ -157,7 +157,7 @@ async fn a_read_in_an_add_dir_root_is_allowed() {
     }
     assert_eq!(tool_results(&lines).len(), 2);
     let roots = lines[0]["workspace_roots"].as_array().unwrap();
-    assert_eq!(roots.len(), 3);
+    assert_eq!(roots.len(), 4);
     assert_eq!(
         roots[1],
         extra.canonicalize().unwrap().display().to_string()

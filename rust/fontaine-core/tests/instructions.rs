@@ -479,8 +479,16 @@ fn memory_entries_mark_the_default_files_that_do_not_exist() {
     let w = World::new();
     write(&w.work.join("CLAUDE.md"), "c");
     let loaded = instructions::load(&sources(&w));
-    let entries =
-        instructions::memory_entries(&loaded, &[w.work.join("sub/CLAUDE.md")], &w.config, &w.work);
+    let store = w.work.join("store");
+    write(&store.join("topic.md"), "t");
+    write(&store.join("MEMORY.md"), "- [topic](topic.md)");
+    let entries = instructions::memory_entries(
+        &loaded,
+        &[w.work.join("sub/CLAUDE.md")],
+        &w.config,
+        &w.work,
+        Some(&store),
+    );
     let kind = |path: PathBuf| {
         entries
             .iter()
@@ -502,6 +510,20 @@ fn memory_entries_mark_the_default_files_that_do_not_exist() {
     assert_eq!(
         kind(w.work.join("FONTAINE.md")),
         Some(MemoryKind::NotCreated)
+    );
+    let auto: Vec<PathBuf> = entries
+        .iter()
+        .filter(|e| matches!(e.kind, MemoryKind::Auto { .. }))
+        .map(|e| e.path.clone())
+        .collect();
+    assert_eq!(auto, [store.join("MEMORY.md"), store.join("topic.md")]);
+    assert!(
+        entries.iter().position(|e| e.path == auto[0]).unwrap()
+            > entries
+                .iter()
+                .position(|e| e.path == w.work.join("FONTAINE.md"))
+                .unwrap(),
+        "auto-memory files follow the instruction files"
     );
 }
 

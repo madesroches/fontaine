@@ -17,6 +17,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             session_id: &runtime.session.id,
             roots: &runtime.roots(),
             scratch: runtime.state.scratch.as_deref(),
+            memory: runtime.state.memory_root.as_deref(),
             mode: runtime.state.mode(),
             model: &runtime.models.main.reference.to_string(),
             guardian_label: guardian.label(),

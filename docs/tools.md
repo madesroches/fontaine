@@ -91,8 +91,10 @@ directories refer to it. More roots come from the repeatable `--add-dir <path>` 
   A bad entry never widens the workspace.
 - Roots grant file access, not configuration. Settings, hooks, MCP servers and extension files are
   read from the primary root only; a `.fontaine/settings.toml` in an added root is ignored.
-- Only the user adds roots. No tool can. The one root Fontaine adds itself is the session's
-  scratch directory, below.
+- Only the user adds roots. No tool can. The roots Fontaine adds itself are the session's
+  scratch directory, below, and, while [auto memory](memory.md) is on, the project's memory store.
+  The store is labelled in `/status` and the system prompt, stays out of the file index, and keeps
+  the protected-path check on every `write` and `edit`.
 
 ### The scratch directory
 

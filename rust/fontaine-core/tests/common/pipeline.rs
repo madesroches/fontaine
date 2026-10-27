@@ -137,6 +137,9 @@ pub struct Options {
     pub guardian: Option<Arc<Guardian>>,
     /// Gives the rig a session scratch root beside the launch directory.
     pub scratch: bool,
+    /// Gives the rig an auto-memory root under the data directory, as a session with
+    /// `[memory] auto` on has.
+    pub memory: bool,
 }
 
 impl Options {
@@ -152,11 +155,17 @@ impl Options {
             always_allow_file: true,
             guardian: None,
             scratch: false,
+            memory: false,
         }
     }
 
     pub fn scratch(mut self) -> Options {
         self.scratch = true;
+        self
+    }
+
+    pub fn memory(mut self) -> Options {
+        self.memory = true;
         self
     }
 
@@ -185,6 +194,7 @@ pub struct Rig {
     pub session: Session,
     pub user_config: PathBuf,
     pub scratch: Option<PathBuf>,
+    pub memory: Option<PathBuf>,
     next: AtomicUsize,
 }
 
@@ -203,7 +213,15 @@ impl Rig {
             std::fs::create_dir_all(&dir).unwrap();
             dir
         });
-        let scope = Arc::new(Scope::new(config.workspace.clone(), scratch.clone()));
+        let memory = options.memory.then(|| {
+            let dir = world.data.join("memory").join("project-1");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::canonicalize(dir).unwrap()
+        });
+        let scope = Arc::new(Scope::new(
+            config.workspace.clone(),
+            scratch.iter().chain(&memory).cloned(),
+        ));
         let agents = Arc::new(AgentTree::new(Limits::default()));
         let approver = Arc::new(Scripted::default());
         let state = Arc::new(SessionState::new(StateParams {
@@ -219,6 +237,7 @@ impl Rig {
             home: options.home.clone(),
             protected_dirs: vec![world.config.clone(), world.data.clone()],
             scratch: scratch.clone(),
+            memory_root: memory.clone(),
             guardian: options
                 .guardian
                 .clone()
@@ -246,6 +265,7 @@ impl Rig {
             session,
             user_config,
             scratch,
+            memory,
             next: AtomicUsize::new(1),
         }
     }

@@ -7,6 +7,7 @@ use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use fontaine_tools::scope::Scope;
 
@@ -301,15 +302,18 @@ pub enum MemoryKind {
     NotCreated,
     /// A default file that exists but contributes nothing now (blank, or a repeat).
     Present,
+    /// A file in the auto-memory store.
+    Auto { modified: Option<SystemTime> },
 }
 
 /// What `/memory` lists: the launch files, the files loaded on demand, and the user and project
-/// `FONTAINE.md`, which can be created from there.
+/// `FONTAINE.md`, which can be created from there, then the auto-memory store's files.
 pub fn memory_entries(
     loaded: &Loaded,
     on_demand: &[PathBuf],
     config_dir: &Path,
     primary_root: &Path,
+    memory_dir: Option<&Path>,
 ) -> Vec<MemoryEntry> {
     let mut entries: Vec<MemoryEntry> = loaded
         .files
@@ -336,6 +340,18 @@ pub fn memory_entries(
             MemoryKind::NotCreated
         };
         entries.push(MemoryEntry { path, kind });
+    }
+    if let Some(dir) = memory_dir {
+        entries.extend(
+            crate::memory::files(dir)
+                .into_iter()
+                .map(|file| MemoryEntry {
+                    path: file.path,
+                    kind: MemoryKind::Auto {
+                        modified: file.modified,
+                    },
+                }),
+        );
     }
     entries
 }

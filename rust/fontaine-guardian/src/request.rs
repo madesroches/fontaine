@@ -75,6 +75,9 @@ pub struct SessionFacts {
     pub touched_paths: Vec<TouchedPath>,
     /// The last [`ACTIONS_TAKEN`] actions, oldest first.
     pub actions_taken: Vec<ActionTaken>,
+    /// The agent's persistent memory directory, set by the harness from the session and never
+    /// from a tool argument. Future sessions load what is written there as notes.
+    pub memory_dir: Option<String>,
 }
 
 /// A denial earlier in the session, reason-coded, for loop detection.

@@ -3,6 +3,7 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use fontaine_core::config::{Hook, PermissionMode};
 use fontaine_core::context::ContextUsage;
@@ -74,6 +75,8 @@ pub struct StatusInfo<'a> {
     pub roots: &'a [PathBuf],
     /// The session's scratch root, one of `roots`.
     pub scratch: Option<&'a Path>,
+    /// The auto-memory store, one of `roots`.
+    pub memory: Option<&'a Path>,
     pub mode: PermissionMode,
     pub model: &'a str,
     pub guardian_label: &'a str,
@@ -90,11 +93,14 @@ pub fn status(info: &StatusInfo) -> String {
         let _ = write!(out, "\nworkspace: {}", primary.display());
         let added: Vec<_> = added
             .iter()
-            .filter(|p| info.scratch != Some(p.as_path()))
+            .filter(|p| info.scratch != Some(p.as_path()) && info.memory != Some(p.as_path()))
             .map(|p| p.display().to_string())
             .collect();
         if !added.is_empty() {
             let _ = write!(out, "\nadded roots: {}", added.join(", "));
+        }
+        if let Some(memory) = info.memory {
+            let _ = write!(out, "\nauto memory: {}", memory.display());
         }
         if let Some(scratch) = info.scratch {
             let _ = write!(out, "\nscratch: {}", scratch.display());
@@ -252,15 +258,42 @@ pub fn skills(skills: &[Skill]) -> String {
         .join("\n")
 }
 
-/// `/memory`: the instruction files, numbered for `/memory <n>`.
-pub fn memory(entries: &[MemoryEntry]) -> String {
-    let mut out = String::from("instruction files (`/memory <n>` opens one in your editor):");
+/// Where the auto-memory store is and whether this session uses it.
+pub struct AutoMemory<'a> {
+    pub on: bool,
+    pub dir: &'a Path,
+}
+
+fn age(modified: SystemTime) -> String {
+    let secs = SystemTime::now()
+        .duration_since(modified)
+        .map_or(0, |d| d.as_secs());
+    match secs {
+        0..60 => "just now".to_string(),
+        60..3600 => format!("{}m ago", secs / 60),
+        3600..86_400 => format!("{}h ago", secs / 3600),
+        _ => format!("{}d ago", secs / 86_400),
+    }
+}
+
+/// `/memory`: the auto-memory header, then the instruction files and the saved notes,
+/// numbered for `/memory <n>`.
+pub fn memory(entries: &[MemoryEntry], auto: &AutoMemory<'_>) -> String {
+    let mut out = format!(
+        "auto memory: {} ({})\ninstruction files and saved notes (`/memory <n>` opens one in your editor):",
+        if auto.on { "on" } else { "off" },
+        auto.dir.display()
+    );
     for (at, entry) in entries.iter().enumerate() {
         let what = match &entry.kind {
             MemoryKind::Launch(origin) => origin.label(),
             MemoryKind::OnDemand => "loaded on demand".to_string(),
             MemoryKind::NotCreated => "not created".to_string(),
             MemoryKind::Present => "empty or a repeat".to_string(),
+            MemoryKind::Auto { modified } => match modified {
+                Some(at) => format!("saved note, modified {}", age(*at)),
+                None => "saved note".to_string(),
+            },
         };
         let _ = write!(out, "\n  {}. {} — {what}", at + 1, entry.path.display());
     }
@@ -327,6 +360,9 @@ pub fn context(usage: &ContextUsage, all: bool) -> String {
         rows.push(row("output style", usage.output_style, None, &[]));
     }
     rows.push(row("instructions", sum(&instructions), None, &instructions));
+    if usage.memory > 0 {
+        rows.push(row("memory", usage.memory, None, &[]));
+    }
     rows.push(row("skills", usage.skills, None, &[]));
     rows.push(row(
         "tools",
@@ -438,6 +474,7 @@ mod tests {
             session_id: "s1",
             roots,
             scratch: None,
+            memory: None,
             mode: PermissionMode::Plan,
             model: "work/claude",
             guardian_label: "work/haiku",
@@ -473,6 +510,16 @@ mod tests {
         assert!(skills.contains("/review [pr] — Review a pull request"));
         assert!(keys.contains("esc interrupt"));
         assert!(!help(&[]).contains("skills:"));
+    }
+
+    #[test]
+    fn status_labels_the_memory_root_instead_of_listing_it_as_added() {
+        let roots = [PathBuf::from("/w"), PathBuf::from("/data/memory/k")];
+        let mut i = info(&roots);
+        i.memory = Some(Path::new("/data/memory/k"));
+        let text = status(&i);
+        assert!(text.contains("auto memory: /data/memory/k"), "{text}");
+        assert!(!text.contains("added roots"), "{text}");
     }
 
     #[test]
@@ -635,8 +682,39 @@ mod tests {
                 path: "/repo/FONTAINE.md".into(),
                 kind: MemoryKind::NotCreated,
             },
+            MemoryEntry {
+                path: "/data/memory/k/MEMORY.md".into(),
+                kind: MemoryKind::Auto {
+                    modified: Some(SystemTime::now() - std::time::Duration::from_secs(7_300)),
+                },
+            },
         ];
-        let text = memory(&entries);
+        let text = memory(
+            &entries,
+            &AutoMemory {
+                on: true,
+                dir: Path::new("/data/memory/k"),
+            },
+        );
+        assert!(
+            text.starts_with("auto memory: on (/data/memory/k)\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n  5. /data/memory/k/MEMORY.md — saved note, modified 2h ago"),
+            "{text}"
+        );
+        let off = memory(
+            &entries[..1],
+            &AutoMemory {
+                on: false,
+                dir: Path::new("/data/memory/k"),
+            },
+        );
+        assert!(
+            off.starts_with("auto memory: off (/data/memory/k)"),
+            "{off}"
+        );
         assert!(text.contains("\n  1. /repo/CLAUDE.md — project"), "{text}");
         assert!(
             text.contains("\n  2. /repo/docs/a.md — imported by /repo/CLAUDE.md"),
@@ -677,6 +755,7 @@ mod tests {
             system_prompt: 2_100,
             output_style: 0,
             instructions: vec![("/w/FONTAINE.md".into(), 1_300)],
+            memory: 0,
             skills: 400,
             tools: vec![("read".into(), 300), ("shell".into(), 900)],
             mcp_tools: vec![("mcp__gh__issue".into(), 2_900)],
@@ -691,6 +770,17 @@ mod tests {
             text,
             "context ~43.6k of 200k tokens (21%), estimated · anthropic/claude-sonnet-5-5\n  system prompt   2.1k\n  instructions    1.3k\n  skills           400\n  tools           1.2k  (2)\n  MCP tools       2.9k  (1)\n  messages       35.7k\n  free          156.4k\nauto-compacts when messages pass ~183.6k (window minus a 16.4k reserve)"
         );
+    }
+
+    #[test]
+    fn context_has_a_memory_row_only_when_auto_memory_loaded_something() {
+        assert!(!context(&usage(), false).contains("memory"));
+        let mut u = usage();
+        u.memory = 600;
+        let text = context(&u, false);
+        assert!(text.contains("\n  memory           600"), "{text}");
+        assert_eq!(u.total(), usage().total() + 600);
+        assert!(text.starts_with("context ~44.2k of 200k"), "{text}");
     }
 
     #[test]

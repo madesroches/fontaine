@@ -31,6 +31,8 @@ pub struct ContextUsage {
     pub system_prompt: u64,
     pub output_style: u64,
     pub instructions: Vec<(PathBuf, u64)>,
+    /// The auto-memory notes layer; zero when auto memory is off.
+    pub memory: u64,
     /// The skill index in the prompt.
     pub skills: u64,
     /// Built-in and extension tools.
@@ -48,6 +50,7 @@ impl ContextUsage {
         self.system_prompt
             + self.output_style
             + self.instructions.iter().map(|(_, n)| n).sum::<u64>()
+            + self.memory
             + self.skills
             + sum(&self.tools)
             + sum(&self.mcp_tools)

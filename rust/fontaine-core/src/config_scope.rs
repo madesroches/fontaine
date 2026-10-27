@@ -116,6 +116,7 @@ const SCANNER: &str = "scanner settings come only from the user file";
 const SCREEN: &str = "the screen stage is configured only in the user file; other scopes may only set `shadow = true`";
 const DEFAULT_MODE: &str = "only `manual` and `dontAsk` are accepted here";
 const SCHEDULE: &str = "scheduled prompts run without the user typing them, so only the user file or --settings turns them on or off";
+const MEMORY: &str = "auto memory persists text into later sessions, so only the user file or --settings turns it on";
 const GOAL: &str =
     "goal turns run unattended, so only the user file or --settings sets how long they may run";
 const TELEMETRY: &str = "only `enabled = false` may be set here";
@@ -135,6 +136,7 @@ fn is_shadow_true(v: &toml::Value) -> bool {
 pub(crate) const RULES: &[Rule] = &[
     Rule::user_or_cli("tui", TUI),
     Rule::user_or_cli("schedule.enabled", SCHEDULE),
+    Rule::user_or_cli("memory", MEMORY),
     Rule::user_or_cli("goal", GOAL),
     Rule::user_or_cli("accounts", USER_FILE),
     Rule::user_or_cli("network", NETWORK),
@@ -500,6 +502,7 @@ mod tests {
         ),
         ("agents", "[agents]\nmax_parallel = 2\n", None),
         ("schedule.enabled", "[schedule]\nenabled = false\n", None),
+        ("memory", "[memory]\nauto = true\n", None),
         ("goal", "[goal]\nmax_turns = 10\n", None),
         ("context", "[context]\nautocompact_window = 150000\n", None),
         (

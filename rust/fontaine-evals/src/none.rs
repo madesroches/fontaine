@@ -116,6 +116,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
         home: Some(home),
         protected_dirs: Vec::new(),
         scratch: None,
+        memory_root: None,
         guardian: guardian.unwrap_or_else(no_guardian),
         auto: auto_context(case),
         agents: Arc::new(fontaine_agents::tree::AgentTree::new(

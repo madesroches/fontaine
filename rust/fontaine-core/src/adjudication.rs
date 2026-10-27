@@ -61,8 +61,17 @@ fn status(existence: Existence) -> PreExistence {
     }
 }
 
-fn facts(view: &LedgerView, scope: &Scope, tool: &str, args: &Value) -> SessionFacts {
-    let roots = if view.workspace_roots.is_empty() {
+fn facts(
+    view: &LedgerView,
+    scope: &Scope,
+    memory_dir: Option<&std::path::Path>,
+    tool: &str,
+    args: &Value,
+) -> SessionFacts {
+    let memory = memory_dir.map(|dir| dir.display().to_string());
+    // The store is told to the guardian as its own fact; listing it as a workspace root would
+    // read as a trusted location.
+    let roots: Vec<String> = if view.workspace_roots.is_empty() {
         scope
             .roots()
             .iter()
@@ -70,7 +79,10 @@ fn facts(view: &LedgerView, scope: &Scope, tool: &str, args: &Value) -> SessionF
             .collect()
     } else {
         view.workspace_roots.clone()
-    };
+    }
+    .into_iter()
+    .filter(|root| Some(root) != memory.as_ref())
+    .collect();
     let touched_paths = touched_paths(tool, args, scope)
         .into_iter()
         .map(|path| TouchedPath {
@@ -92,6 +104,7 @@ fn facts(view: &LedgerView, scope: &Scope, tool: &str, args: &Value) -> SessionF
                 summary: action.summary.clone(),
             })
             .collect(),
+        memory_dir: memory_dir.map(|dir| dir.display().to_string()),
     }
 }
 
@@ -132,7 +145,7 @@ pub fn build(
             destructive,
             annotations: annotations.map(str::to_string),
         },
-        session_facts: facts(&view, &scope, tool, args),
+        session_facts: facts(&view, &scope, state.memory_root.as_deref(), tool, args),
         hook_context,
         prior_denials: view.denials[denials_from..]
             .iter()
@@ -142,5 +155,22 @@ pub fn build(
                 summary: denial.summary.clone(),
             })
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn the_memory_store_is_not_a_workspace_root_for_the_guardian() {
+        let work = PathBuf::from("/work/proj");
+        let memory = PathBuf::from("/data/memory/proj-1");
+        let scope = Scope::new(work.clone(), [memory.clone()]);
+        let view = LedgerView::default();
+        let got = facts(&view, &scope, Some(&memory), "Read", &Value::Null);
+        assert_eq!(got.workspace_roots, vec![work.display().to_string()]);
+        assert_eq!(got.memory_dir, Some(memory.display().to_string()));
     }
 }

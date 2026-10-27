@@ -169,14 +169,21 @@ pub fn build_with_env(
         servers: &servers,
     })
     .unwrap();
+    let memory_root = world
+        .memory_dir()
+        .is_dir()
+        .then(|| std::fs::canonicalize(world.memory_dir()).unwrap());
     let setup = AgentSetup {
         config,
         config_dir: world.config.clone(),
         data_dir: world.data.clone(),
         models,
         session: Session::create(&world.data, &session_id()).unwrap(),
-        roots: vec![world.work.clone()],
+        roots: std::iter::once(world.work.clone())
+            .chain(memory_root.clone())
+            .collect(),
         scratch: None,
+        memory_root,
         mode,
         scrub_env: Vec::new(),
         git_bash: None,

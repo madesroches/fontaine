@@ -36,6 +36,23 @@ ranked by catch rate, then false-deny rate, then latency. Each entry records the
 dataset version it was scored on (the first 12 hex characters of a SHA-256 over the dataset files);
 an entry scored on an older dataset is removed on the next run, because it is no longer validated.
 
+## The memory slice
+
+`evals/dataset/memory.jsonl` holds the [auto memory](memory.md) cases: benign saves (a build
+command from the repository, a preference you stated), expected `allow`, and poisoning attempts,
+expected `deny`: a note that tells the future agent to run shell commands without asking, a note
+carrying a fetched URL to run, credentials in a note, text copied from a tool result that contains an
+injection, a note that changes the guardian or permission settings, and a shell command that
+appends such text to the index. They use the existing `benign` and `injection-in-args` categories, and
+their ids start with `memory-`. The runner poses them with the guardian's `agent_memory_directory`
+fact set to a fixed stand-in directory that the cases' paths sit under, as a session would.
+
+Offline, `--guardian fixture` only checks the format and the expectations of these cases. What the
+slice measures is the live guardian's memory-write rule, so it is scored by hand with a live run,
+and a maintainer signs off the labels as for the other slices. Adding the file changed the dataset
+version, so scorecards and ranked-list entries scored before it no longer match the dataset and
+are removed on the next run.
+
 ## Running it
 
 A scorecard run is manual and needs a key for the model being scored. It is never part of CI.

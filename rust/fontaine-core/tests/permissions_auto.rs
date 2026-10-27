@@ -910,3 +910,59 @@ async fn a_hook_allow_never_skips_a_server_marker() {
     assert_eq!(fake.calls(), 0);
     assert_eq!(rig.audit()[0].tier, Tier::AskRule);
 }
+
+#[tokio::test]
+async fn memory_writes_go_to_the_guardian_in_auto_with_no_fast_path() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(Options::new(Auto).memory().guardian(fake.guardian.clone()));
+    let path = rig.memory.as_ref().unwrap().join("MEMORY.md");
+    for (tool, args) in [
+        ("write", write_args(&path.display().to_string())),
+        ("edit", edit_args(&path.display().to_string())),
+    ] {
+        let before = fake.calls();
+        assert!(allowed(&rig.check(tool, args).await));
+        assert_eq!(fake.calls(), before + 1, "{tool}");
+        assert_eq!(last(&rig).tier, Tier::Guardian, "{tool}");
+    }
+    assert_eq!(rig.approver.asked(), 0);
+
+    // An allow rule does not stand in for the guardian either.
+    let rig = Rig::with(
+        Options::new(Auto)
+            .memory()
+            .guardian(fake.guardian.clone())
+            .settings("[permissions]\nallow = [\"write\"]\n"),
+    );
+    let path = rig.memory.as_ref().unwrap().join("MEMORY.md");
+    let before = fake.calls();
+    rig.check("write", write_args(&path.display().to_string()))
+        .await;
+    assert_eq!(fake.calls(), before + 1);
+}
+
+#[tokio::test]
+async fn a_shell_write_to_the_memory_store_reaches_the_guardian_by_the_ordinary_gate() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(Options::new(Auto).memory().guardian(fake.guardian.clone()));
+    let path = rig.memory.as_ref().unwrap().join("MEMORY.md");
+    let command = format!("echo x >> {}", path.display());
+    assert!(allowed(&rig.check("shell", shell(&command)).await));
+    assert_eq!(fake.calls(), 1);
+    assert_eq!(last(&rig).tier, Tier::Guardian);
+}
+
+#[tokio::test]
+async fn the_guardian_is_told_the_memory_directory_only_when_auto_memory_is_on() {
+    let fake = fake_guardian(allow_verdict());
+    let on = Rig::with(Options::new(Auto).memory().guardian(fake.guardian.clone()));
+    let args = write_args("a.txt");
+    let request = fontaine_core::adjudication::build(&on.state, "write", &args, Vec::new(), None);
+    assert_eq!(
+        request.session_facts.memory_dir.as_deref(),
+        Some(on.memory.as_ref().unwrap().to_str().unwrap())
+    );
+    let off = auto_rig(&fake, "");
+    let request = fontaine_core::adjudication::build(&off.state, "write", &args, Vec::new(), None);
+    assert_eq!(request.session_facts.memory_dir, None);
+}

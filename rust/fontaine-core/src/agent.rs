@@ -35,6 +35,7 @@ use crate::extensions::Extensions;
 use crate::gate::SessionState;
 use crate::instructions::{self, InstructionStage, Loaded, MemoryEntry};
 use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
+use crate::memory;
 use crate::models::{AccountListing, Models, SharedSwitcher, Switcher};
 use crate::native_search;
 use crate::notice::Notice;
@@ -89,6 +90,9 @@ pub struct AgentSetup {
     pub roots: Vec<PathBuf>,
     /// The session's scratch root, which is also the last of `roots`.
     pub scratch: Option<PathBuf>,
+    /// The auto-memory store, also one of `roots`, when `[memory] auto` is on and it could be
+    /// created.
+    pub memory_root: Option<PathBuf>,
     pub mode: PermissionMode,
     /// Variables the shell tool's child processes do not inherit.
     pub scrub_env: Vec<OsString>,
@@ -377,7 +381,18 @@ impl AgentRuntime {
             &self.instruction_stage.loaded_on_demand(),
             &self.setup.config_dir,
             &self.primary_root(),
+            Some(&self.memory_dir()),
         )
+    }
+
+    /// Where this project's auto-memory notes live, whether or not auto memory is on.
+    pub fn memory_dir(&self) -> PathBuf {
+        memory::dir(&self.setup.data_dir, &self.primary_root())
+    }
+
+    /// Whether this session saves and loads auto-memory notes.
+    pub fn auto_memory_active(&self) -> bool {
+        self.state.memory_root.is_some()
     }
 
     /// The names of the tools the agent has now, MCP tools included.
@@ -583,6 +598,16 @@ impl AgentRuntime {
         self.state.scope().roots().to_vec()
     }
 
+    /// The roots the completion and ledger file indexes scan: the workspace, not the memory
+    /// store, whose files are notes rather than project files.
+    fn indexed_roots(&self) -> Vec<PathBuf> {
+        let memory = self.state.memory_root.as_deref();
+        self.roots()
+            .into_iter()
+            .filter(|root| Some(root.as_path()) != memory)
+            .collect()
+    }
+
     pub fn primary_root(&self) -> PathBuf {
         self.state.scope().roots()[0].clone()
     }
@@ -650,7 +675,7 @@ impl AgentRuntime {
         // known to the ledger, and a fresh index would call those files pre-existing.
         let continued = matches!(self.origin, SessionOrigin::Continued { .. });
         let roots = self.roots();
-        let scanned = roots.clone();
+        let scanned = self.indexed_roots();
         let (index, git_remotes) = tokio::task::spawn_blocking(move || {
             let index = FileIndex::build(&scanned, FILE_INDEX_CAP);
             let mut remotes: Vec<String> =
@@ -707,7 +732,7 @@ impl AgentRuntime {
     /// Rebuilds the completion file list in the background, so files the agent created and
     /// directories added since start become completable. Never blocks the caller.
     pub fn refresh_files(&self) {
-        let roots = self.roots();
+        let roots = self.indexed_roots();
         let slot = self.files.clone();
         tokio::task::spawn_blocking(move || {
             let index = FileIndex::build(&roots, FILE_INDEX_CAP);
@@ -784,6 +809,7 @@ impl AgentRuntime {
                 .iter()
                 .map(|(path, text)| (path.clone(), context::text_tokens(text)))
                 .collect(),
+            memory: count(&pieces.memory),
             skills: count(&pieces.skills),
             tools,
             mcp_tools,

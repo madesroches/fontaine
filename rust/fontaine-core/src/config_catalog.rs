@@ -246,6 +246,12 @@ pub const KEYS: &[KeyRow] = &[
         NextLaunch
     ),
     row!(
+        "memory.auto",
+        |c, _| c.memory.auto.to_string(),
+        Edit::Choice(bool_choices),
+        NextLaunch
+    ),
+    row!(
         "model.model",
         |_, r| r.main_model.to_string(),
         Edit::Picker(ModelSlot::Main),
@@ -664,6 +670,7 @@ mod tests {
                 "tui.screen_reader",
                 "context.autocompact_window",
                 "schedule.enabled",
+                "memory.auto",
                 "model.model",
                 "guardian.model",
             ]

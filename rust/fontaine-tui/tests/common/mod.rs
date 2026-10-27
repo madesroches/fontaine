@@ -361,6 +361,7 @@ impl World {
                 .with_clock(self.clock.clone()),
             roots: vec![self.work.clone()],
             scratch: None,
+            memory_root: None,
             mode: self.mode,
             scrub_env: vec![],
             git_bash: git_bash(),

@@ -24,6 +24,7 @@ use crate::child_runner::{CoreChildRunner, LedgerWindow};
 use crate::config::Config;
 use crate::gate::SessionState;
 use crate::instructions::{self, InstructionStage, Loaded, Sources};
+use crate::memory;
 use crate::models::Models;
 use crate::native_search;
 use crate::permissions::{Approver, PermissionPipeline};
@@ -125,11 +126,18 @@ fn prompt_layers(p: &Parts<'_>) -> (prompt::PromptPieces, Sources, Loaded) {
     let sources = Sources::for_state(p.state, &p.setup.config_dir, p.setup.home.as_deref());
     let loaded = instructions::load(&sources);
     let skill_index = skills::index(p.skills.extensions());
+    let memory = p.state.memory_root.as_deref().map(|dir| {
+        let notes = memory::load(dir);
+        p.instructions.warn_once(&notes.warnings);
+        memory::layer(dir, notes.index.as_deref())
+    });
     let pieces = prompt::layers(&PromptParts {
         roots: p.roots,
         scratch: p.state.scratch.as_deref(),
+        memory_root: p.state.memory_root.as_deref(),
         system_prompt: p.setup.system_prompt.as_deref(),
         instructions: &loaded.files,
+        memory: memory.as_deref(),
         skill_index: skill_index.as_deref(),
         scheduling: scheduling(p).then_some(prompt::SCHEDULING_PROMPT),
         output_style: p
