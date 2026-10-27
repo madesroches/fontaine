@@ -31,7 +31,9 @@ its provider's models, and an account that cannot be listed shows why.
 
 Make the guardian picker async and list live, reusing the `/model` listing path:
 
-- `open_guardian_picker(&mut self, runtime: &mut AgentRuntime)` becomes `async`. It shows
+- `open_guardian_picker(&mut self, runtime: &mut AgentRuntime)` becomes `async` (its parameter
+  changes from `&AgentRuntime` to `&mut AgentRuntime`, since `model_listings` takes `&mut self`;
+  `open_config_picker` already holds `&mut`). It shows
   `listing models…`, calls `runtime.model_listings(None)`, and maps each `AccountListing` to a
   `Group` with `Group::from`. An error from `model_listings` is reported as `/guardian-model: …`
   with `error_chain::chain`, as `/model` does.
@@ -41,7 +43,8 @@ Make the guardian picker async and list live, reusing the `/model` listing path:
 - The header keeps the current text (`guardian <label>` plus `(unavailable: …)`), and `current`
   stays parsed from `guardian.label()`.
 - `guardian_model` and its caller in `ui/mod.rs:301` become async/awaited; `open_config_picker`
-  awaits the new function.
+  awaits the new function. `apply_pick` (`model.rs:145`) also calls `guardian_model` for
+  `PickerPurpose::Guardian`; it is already async and awaits it.
 - Shared body: factor the picker-opening tail common to both pickers only if it is a clean
   extraction; otherwise leave the two functions separate (they differ in purpose, header, current).
 - `guardian_candidates()` is unchanged and stays for the unavailable-guardian prompt.
@@ -50,11 +53,12 @@ Make the guardian picker async and list live, reusing the `/model` listing path:
 
 1. `fontaine-tui/src/ui/commands/model.rs`: make `guardian_model` and `open_guardian_picker`
    async, rewrite the latter over `model_listings(None)` as above; drop the now-unused
-   `BTreeMap` grouping.
+   `BTreeMap` grouping. Await `guardian_model` in `apply_pick` (`model.rs:145`).
 2. `fontaine-tui/src/ui/mod.rs`: await `self.guardian_model(...)`.
 3. `fontaine-tui/src/ui/commands/config.rs`: await `open_guardian_picker`.
 4. Tests (below).
-5. Docs and changelog.
+5. Docs and changelog: the `CHANGELOG.md` entry goes under `## [Unreleased]` → `### Fixed`,
+   suffixed `(#151)`.
 
 ## Files to Modify
 
@@ -91,10 +95,11 @@ test through the real TUI driver):
 
 - Add `guardian_model_lists_accounts_without_a_models_setting`: a world whose account has no
   `models = [...]` and whose listing comes from a `wiremock` models endpoint; `/guardian-model`
-  must show `type to filter` and the listed model, and Enter must save `[guardian] model`.
-  Pins the issue's bug.
-- Same world with an unreachable account: the overlay opens with a `could not list` row rather than
-  only a notice.
+  must show `type to filter` and the listed model, and Enter must save `[guardian] model` to the
+  user config. Pins the issue's bug. Include a second, broken account in the world; the `could not
+  list` row itself is already covered for `/model` by
+  `a_failed_account_keeps_its_heading_and_only_failures_are_listed_again` via the shared
+  `Group::from`.
 - Existing `guardian_model_pins_the_guardian_and_saves_the_choice` and
   `picking_the_current_guardian_saves_it` keep passing (explicit `models` still listed, `(current)`
   marker preserved).
