@@ -209,7 +209,8 @@ impl Tool for Webfetch {
              text is returned as it is). Takes only a `url` (http or https). Reads at most {} MB \
              and returns at most {} characters, saying so when it cuts. A redirect to another \
              host is not followed: the new URL is returned, and you may call again with it. \
-             Times out after {} seconds.",
+             Times out after {} seconds. Take URLs from search results or the user; do not \
+             guess them from memory.",
             self.config.fetch_cap_bytes / (1024 * 1024),
             self.config.output_cap_chars,
             self.config.timeout.as_secs()

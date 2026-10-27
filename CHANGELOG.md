@@ -382,6 +382,11 @@ All notable changes are recorded here. The format follows
 
 - The approval prompt's rule line shows newlines, tabs and other control characters of a command as escapes
   (`\n`, `\t`, `\u{..}`) instead of dropping them; the saved rule is unchanged (#229).
+- The guardian no longer denies a plain `webfetch` or `websearch` of a public page as Data
+  Exfiltration: the rule now needs sensitive data in the outbound request, and the read-only
+  exception names both tools. A request with an encoded payload or a secret in the URL or query is
+  still denied. The `webfetch` description tells the model to take URLs from search results or the
+  user rather than guess them (#239).
 - The guardian's touched paths for a shell command now list its redirect targets (`>`, `>>`, `>|`,
   `&>`, `<>`, `>&file`), including those on compound commands and in nested command lines, ahead
   of its arguments; before, a target such as `cfg.py` was missing while a non-path argument
