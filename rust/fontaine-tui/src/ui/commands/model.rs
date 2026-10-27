@@ -40,17 +40,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         runtime: &mut AgentRuntime,
         account: Option<&str>,
     ) {
-        self.app.transcript.notice("listing models…");
-        self.draw(runtime);
-        let groups: Vec<Group> = match runtime.model_listings(account).await {
-            Ok(listings) => listings.iter().map(Group::from).collect(),
-            Err(e) => {
-                self.app.transcript.error(format!(
-                    "/model: {}",
-                    fontaine_tools::error_chain::chain(&e)
-                ));
-                return;
-            }
+        let Some(groups) = self.list_groups(runtime, account, "/model").await else {
+            return;
         };
         let current = runtime.models.main.reference.clone();
         let scope = account.map_or(String::new(), |name| format!("models of {name} · "));
@@ -66,11 +57,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
         ));
     }
 
-    /// `/guardian-model`: opens the picker on the models the guardian could be, or pins the
+    /// `/guardian-model`: opens the picker over a live listing, or pins the
     /// guardian to the one named.
-    pub(crate) fn guardian_model(&mut self, runtime: &mut AgentRuntime, reference: &str) {
+    pub(crate) async fn guardian_model(&mut self, runtime: &mut AgentRuntime, reference: &str) {
         if reference.is_empty() {
-            self.open_guardian_picker(runtime);
+            self.open_guardian_picker(runtime).await;
             return;
         }
         match runtime.set_guardian_model(reference) {
@@ -98,29 +89,37 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
-    pub(crate) fn open_guardian_picker(&mut self, runtime: &AgentRuntime) {
+    async fn list_groups(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        account: Option<&str>,
+        command: &str,
+    ) -> Option<Vec<Group>> {
+        self.app.transcript.notice("listing models…");
+        self.draw(runtime);
+        match runtime.model_listings(account).await {
+            Ok(listings) => Some(listings.iter().map(Group::from).collect()),
+            Err(e) => {
+                self.app.transcript.error(format!(
+                    "{command}: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                ));
+                None
+            }
+        }
+    }
+
+    /// Lists every account's models live, like `/model`: a pick the account cannot serve is
+    /// still installed and reported as an unavailable guardian, so filtering here would only
+    /// hide accounts silently.
+    pub(crate) async fn open_guardian_picker(&mut self, runtime: &mut AgentRuntime) {
+        let Some(groups) = self.list_groups(runtime, None, "/guardian-model").await else {
+            return;
+        };
         let guardian = runtime.state.guardian();
         let mut header = format!("guardian {}", guardian.label());
         if let Some(reason) = guardian.unavailable_reason() {
             header.push_str(&format!(" (unavailable: {reason})"));
-        }
-        let mut by_account: std::collections::BTreeMap<String, Vec<String>> = Default::default();
-        for candidate in runtime.guardian_candidates() {
-            by_account
-                .entry(candidate.account)
-                .or_default()
-                .push(candidate.model);
-        }
-        let groups: Vec<Group> = by_account
-            .into_iter()
-            .filter_map(|(account, models)| {
-                let kind = runtime.config.accounts.get(&account)?.kind;
-                Some(Group::new(account, kind, Ok(models)))
-            })
-            .collect();
-        if groups.is_empty() {
-            self.app.transcript.notice(header);
-            return;
         }
         // The runtime's own record of the guardian goes stale after a session-only change.
         let current = fontaine_core::models::ModelRef::parse(guardian.label());
@@ -142,7 +141,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) {
         match purpose {
             PickerPurpose::Main => self.model(runtime, reference).await,
-            PickerPurpose::Guardian => self.guardian_model(runtime, reference),
+            PickerPurpose::Guardian => self.guardian_model(runtime, reference).await,
         }
     }
 

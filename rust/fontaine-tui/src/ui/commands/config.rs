@@ -36,7 +36,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     pub(crate) async fn open_config_picker(&mut self, runtime: &mut AgentRuntime, slot: ModelSlot) {
         match slot {
             ModelSlot::Main => self.open_model_picker(runtime, None).await,
-            ModelSlot::Guardian => self.open_guardian_picker(runtime),
+            ModelSlot::Guardian => self.open_guardian_picker(runtime).await,
         }
     }
 

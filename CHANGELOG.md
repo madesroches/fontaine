@@ -380,6 +380,8 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- `/guardian-model` with no argument opens the model picker over a live listing of every account,
+  as `/model` does, instead of showing nothing when no account lists `models` (#151).
 - The approval prompt's rule line shows newlines, tabs and other control characters of a command as escapes
   (`\n`, `\t`, `\u{..}`) instead of dropping them; the saved rule is unchanged (#229).
 - The guardian no longer denies a plain `webfetch` or `websearch` of a public page as Data

@@ -129,7 +129,7 @@ impl AgentRuntime {
         Ok(guardian_followed)
     }
 
-    /// The models of every configured account, for the `/model` picker. The first call fetches
+    /// The models of every configured account, for the `/model` and `/guardian-model` pickers. The first call fetches
     /// them; later calls fetch only the accounts that failed before or were not listed yet, so
     /// a credential or account added mid-session shows up while cached successes make no
     /// request. The main account's entry always follows the current listing. With `account`,

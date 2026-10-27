@@ -626,8 +626,8 @@ mod tests {
     }
 
     #[test]
-    fn guardian_recent_keeps_only_candidates() {
-        let candidates = vec![Group::new(
+    fn guardian_recent_drops_models_the_listing_no_longer_offers() {
+        let listing = vec![Group::new(
             "cloud".into(),
             kind("openai-compatible"),
             ok(&["judge-b"]),
@@ -637,7 +637,7 @@ mod tests {
             "h".into(),
             None,
             vec![model("cloud/judge-a"), model("cloud/judge-b")],
-            candidates,
+            listing,
         );
         let rows = text(&p);
         assert!(rows.contains(&"  cloud/judge-b".to_string()), "{rows:?}");
