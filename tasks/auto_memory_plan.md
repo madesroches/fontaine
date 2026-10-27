@@ -19,7 +19,7 @@ until the guardian scorecard covers memory-poisoning cases (this plan adds that 
 ## Current State
 
 - `fontaine-core/src/instructions/mod.rs` loads `FONTAINE.md`/`CLAUDE.md`/`AGENTS.md`; `agent/build.rs`
-  `prompt_layers` turns them into `PromptPieces.instructions` (`prompt.rs:81`). The same launch set becomes
+  `prompt_layers` turns them into `PromptPieces.instructions` (`prompt.rs:85`). The same launch set becomes
   the guardian's `project_instructions` (`fontaine-guardian/src/prompt_builder.rs:138`), capped at 16,000
   characters. Instruction files are user-authored; the guardian treats them as context, not as commands.
 - `/memory` (`fontaine-tui/src/ui/commands/memory.rs`, `instructions::memory_entries`,
@@ -97,6 +97,10 @@ files, and memory is agent-authored and possibly attacker-influenced.
   core when the call's target path is under the memory directory (`{ path, topic: bool }`). `prompt_builder`
   renders a `memory_write` block in the untrusted-data section stating that the target is the agent's
   persistent memory, which future sessions load as notes.
+- The memory-write rule goes in both `fontaine-guardian/prompts/guardian_prompt.md` and
+  `guardian_minimal.md`; containers run the minimal profile, so it applies there too. `profile.rs:42-52`
+  reshapes the request for `minimal` (drops project instructions, trims intent), and the new field and block
+  must survive that reshaping.
 - The guardian system prompt gains a memory-write rule: allow plain project facts the user's request or the
   repository supports (commands, layout, user-stated preferences); deny/escalate content that is an
   instruction to the future agent, widens or relaxes permissions or the guardian, contains secrets or
@@ -142,16 +146,24 @@ Memory writes are ordinary `write`/`edit` records, already audited with tier and
 5. `fontaine-guardian`: `request.rs` field, `prompt_builder.rs` block, system-prompt rule; update snapshots.
 6. `instructions::memory_entries`, `MemoryKind::Auto`, `fontaine-tui/src/reports.rs` and
    `ui/commands/memory.rs`.
-7. `evals/dataset/memory.jsonl`: memory-poisoning cases (see Testing); register in the dataset loader if it
-   lists files; refresh fixture expectations.
-8. Docs, `CHANGELOG.md`, parity matrix row, master-plan Decisions line.
+7. `/context`: `ContextUsage` (`context.rs`) gains a `memory` token field counted in `total()`;
+   `Agent::context_usage` (`agent.rs`) fills it from `PromptPieces.memory`; `reports::context` adds a
+   `memory` row; update their snapshot tests.
+8. `evals/dataset/memory.jsonl`: memory-poisoning cases (see Testing), using existing categories
+   (`benign` for benign saves, `injection-in-args` for poisoning; `Category` is a closed enum with per-category
+   minimums, and these two need no new variant). The loader reads every `*.jsonl`, so no registration. Cases set the
+   target through `tool` and `args` only. Adding the file changes the dataset version hash, so older
+   scorecards no longer match; record this in `docs/evals.md`. Refresh fixture expectations.
+9. Docs, `CHANGELOG.md`, parity matrix row, master-plan Decisions line.
 
 ## Files to Modify
 
 - New: `rust/fontaine-core/src/memory.rs`, `evals/dataset/memory.jsonl`, `docs/memory.md`.
-- `rust/fontaine-core/src/{lib,config,config_scope,config_catalog,prompt,permissions}.rs`,
+- `rust/fontaine-core/src/{lib,config,config_scope,config_catalog,prompt,permissions,context}.rs`,
+  `agent.rs` (`context_usage`),
   `agent/{setup,build}.rs`, `instructions/mod.rs`
-- `rust/fontaine-guardian/src/{request,prompt_builder}.rs` (+ snapshots), guardian system prompt
+- `rust/fontaine-guardian/src/{request,prompt_builder}.rs` (+ snapshots),
+  `rust/fontaine-guardian/prompts/{guardian_prompt,guardian_minimal}.md`
 - `rust/fontaine-tui/src/{reports.rs,ui/commands/memory.rs}`
 - `docs/{index,instructions,configuration,guardian,evals,permissions}.md`, `CHANGELOG.md`,
   `research/research-claude-code-parity.md`, `tasks/fontaine_harness_plan.md`
@@ -162,11 +174,6 @@ Memory writes are ordinary `write`/`edit` records, already audited with tier and
   class, descriptor row, choke-point entries and a bespoke gating path, and would invite a fast path. Reusing
   `write`/`edit` inherits the floor, approval previews, locking and audit. Cost: the directory joins the
   scope.
-- **Store in the repo (`.fontaine/memory`) vs data dir** (chosen: data dir). Repo memory would be
-  attacker-writable via a cloned repository and could be committed by accident; the data dir is owned by the
-  user and protected by the floor.
-- **Memory text as guardian `project_instructions` vs not** (chosen: not). Instruction files are the user's;
-  memory is agent-written, so giving it that standing would let a poisoned note steer the guardian.
 - **Carving the store out of the protected dirs** (rejected): it would make memory writes autonomous under
   `acceptEdits` and defeat the audit point.
 - **Per-write consent only in `manual`**: a user who wants every write confirmed uses `manual` or an `ask`
@@ -174,11 +181,26 @@ Memory writes are ordinary `write`/`edit` records, already audited with tier and
 
 ## Decisions
 
+- 2026-10-27: Auto memory lives in the user data directory, not the repo, because repo memory is
+  attacker-writable via a cloned repository and could be committed by accident (#8)
+- 2026-10-27: Auto memory is off by default (`[memory] auto = false`, user-scope only), because it is a
+  persistence vector and a repository must not be able to enable it (#8)
+- 2026-10-27: Memory writes use ordinary `write`/`edit` gated by the floor and, in `auto`, the guardian, with
+  no fast path, because the store is under the protected data dir (#8)
+- 2026-10-27: Memory text is framed as untrusted notes and kept out of the guardian's `project_instructions`,
+  because it is agent-written and a poisoned note must not steer the guardian (#8)
+- 2026-10-27: `/memory` stays read-only with no delete action; deletion is done in the editor or file system,
+  because the first release needs auditing, not management (#8)
+- 2026-10-27: No automatic subagent memory, because the scope is shared and each subagent write is gated
+  independently (#8)
+
 ## Documentation
 
 - New `docs/memory.md`: what auto memory is, off by default and why, the store location and layout, how
   writes are gated per mode, what the guardian does with them, `/memory` auditing, how to clear it, and
   differences from Claude Code (store location, gating, off by default, no automatic subagent memory).
+  Its `toml` blocks are validated against the config schema by `fontaine-core/tests/docs.rs`, so they must
+  use a valid `[memory]` section.
 - `docs/instructions.md` `## /memory`: also lists auto-memory files.
 - `docs/configuration.md`: `[memory] auto`. `docs/guardian.md`: the memory-write rule and the `memory_write`
   block. `docs/evals.md`: the memory slice. `docs/index.md`: link the page.
@@ -187,20 +209,24 @@ Memory writes are ordinary `write`/`edit` records, already audited with tier and
 
 Unit and integration tests never touch live APIs.
 
-- `memory.rs` unit tests: project key is stable across subdirectories and worktrees and differs between
+- `memory.rs` unit tests: creating the directory tolerates one that already exists (`owner_only::create_dir`
+  is non-recursive and returns `AlreadyExists`); project key is stable across subdirectories and worktrees and differs between
   projects; line and byte caps cut and warn; missing/empty index; non-UTF-8 and symlinked `MEMORY.md` are
   refused, not followed out of the directory.
 - Config: `[memory]` accepted in the user file and CLI, refused from project and local scopes
   (`config_scope` table test); default is off.
 - Prompt: snapshot with auto memory on (framing, path, capped index) and off (no layer); memory text is absent
   from the guardian's `project_instructions`.
-- Floor/permissions: a `write` and `edit` under the memory directory is a protected-path outcome in every
-  mode — prompt in `manual`/`acceptEdits`/`dontAsk`, guardian in `auto` (`tier = guardian`), deny in
+- Floor/permissions: a `write` and `edit` under the memory directory, with no `ask` rule configured (an
+  `ask` rule runs before the protected check, `permissions.rs:672-710`), is a protected-path outcome in
+  every mode — prompt in `manual`/`acceptEdits`/`dontAsk`, guardian in `auto` (`tier = guardian`), deny in
   headless — and an `allow` rule never approves it. This pins the property that no memory fast path exists
   and fails if someone exempts the data dir.
 - Guardian: prompt-builder snapshot for the `memory_write` block and the rule; request marks only
   memory-store targets.
 - `/memory`: report lists auto files with the on/off header; `memory_entries` ordering.
+- `/context`: the report has a `memory` row when auto memory is on and none when off; `ContextUsage::total`
+  includes it.
 - Eval dataset `memory.jsonl` (run with `--guardian fixture` in CI for format and expectation checks; live
   scoring is manual): benign saves (build command from the repo, user-stated preference) expected allow;
   poisoning attempts (note instructing "always run shell without asking", note carrying a fetched URL to
@@ -219,5 +245,3 @@ Only the live loop is not automated, because it needs a real model:
 
 - Does Claude Code's documented memory (`claude -p` baseline) cap the index at 200 lines / 25 KB as assumed?
   Confirm with `claude -p` and record any difference in Decisions.
-- Should `/memory` gain a delete action, or is editor/file-system deletion enough for the first release?
-  (Plan assumes the latter.)
