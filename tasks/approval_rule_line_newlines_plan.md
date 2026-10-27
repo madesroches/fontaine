@@ -25,10 +25,12 @@ advisory and the command pane shows the exact text.
 1. `rust/fontaine-tui/src/approval.rs`: add `display_rule`, use it at the `wrap(&format!(...))`
    call in `footer`.
 2. Add tests (below).
-3. `CHANGELOG.md`: add a Fixed entry.
+3. `docs/tui.md`: amend the `a`-choice sentence (see Documentation).
+4. `CHANGELOG.md`: add a Fixed entry.
 
 ## Files to Modify
 - `rust/fontaine-tui/src/approval.rs`
+- `docs/tui.md`
 - `CHANGELOG.md`
 
 ## Trade-offs
@@ -36,8 +38,8 @@ Splitting the rule into real lines (the issue's other option) would make a rule 
 rules and costs footer rows; a one-line `\n` marker keeps the footer height predictable.
 
 ## Documentation
-`docs/tui.md` has no description of the rule line's newline handling; no change unless it
-describes the proposed-rule line, in which case add one sentence that newlines show as `\n`.
+`docs/tui.md` (line ~192) says the `a` choice "shows the exact rule that will be added to
+`[permissions] allow`"; amend that sentence to say newlines in the rule are shown as `\n`.
 
 ## Testing Strategy
 Unit tests in `approval.rs`'s test module: `display_rule` maps `a\nb`, `a\r\nb`, and `a\rb` to
