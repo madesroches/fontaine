@@ -157,6 +157,7 @@ fn params(rig: &Rig) -> RegistryParams {
         searxng: Default::default(),
         network: Default::default(),
         extension: Some(extension()),
+        pre_images: None,
     }
 }
 
@@ -281,6 +282,7 @@ async fn serve(
         gate: rig.pipeline.clone(),
         results: Arc::new(ResultPipeline::new()),
         hide_mcp_names: true,
+        pre_images: None,
     };
     connect_transport("double", (cfs, c2s), handle.clone(), guard, false)
         .await

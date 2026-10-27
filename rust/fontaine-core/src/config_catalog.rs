@@ -412,6 +412,18 @@ pub const KEYS: &[KeyRow] = &[
         .max_turns
         .to_string()),
     row!("goal.max_cost_usd", Scalar, |c, _| opt(c.goal.max_cost_usd)),
+    row!("checkpoints.enabled", Scalar, |c, _| c
+        .checkpoints
+        .enabled
+        .to_string()),
+    row!("checkpoints.max_file_bytes", Scalar, |c, _| c
+        .checkpoints
+        .max_file_bytes
+        .to_string()),
+    row!("checkpoints.max_session_bytes", Scalar, |c, _| c
+        .checkpoints
+        .max_session_bytes
+        .to_string()),
     row!("shell_preclassifier.allow_extra", List, |c, _| entries(
         c.shell_preclassifier_allow_extra.len()
     )),

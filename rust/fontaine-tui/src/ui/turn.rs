@@ -224,6 +224,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
         loop {
+            // A prompt with an expansion was recorded as the human's message before this point.
+            runtime.begin_turn(&text, expanded.is_some());
             self.app.transcript.user(text.clone());
             // A prompt from the user resumes a paused goal.
             runtime.goal_user_prompt();
@@ -330,6 +332,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             runtime.steering.queue(text);
                         }
                         Action::EditQueued => self.edit_queued(runtime),
+                        // A turn or a sign-in is under way, so a rewind cannot start: the picker closes.
+                        Action::SelectRewind(_) => self.app.rewind = None,
+                        Action::OpenRewind | Action::Rewind { .. } => {}
                         Action::Server(_)
                         | Action::None
                         | Action::Submit(_)

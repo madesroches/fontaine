@@ -69,6 +69,7 @@ pub fn guard(gate: Arc<Gate>) -> Guard {
         gate,
         results: Arc::new(ResultPipeline::new()),
         hide_mcp_names: false,
+        pre_images: None,
     }
 }
 

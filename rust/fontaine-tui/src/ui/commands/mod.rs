@@ -4,6 +4,7 @@ mod context;
 mod memory;
 mod model;
 mod reports;
+mod rewind;
 mod session;
 mod workspace;
 

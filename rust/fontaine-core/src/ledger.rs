@@ -13,6 +13,7 @@ use gix::bstr::ByteSlice;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 
+use crate::checkpoint::RewindWhat;
 use crate::owner_only;
 use fontaine_tools::lock::lock;
 
@@ -124,6 +125,14 @@ pub enum Record {
         origin: String,
         cron: String,
         recurring: bool,
+    },
+    /// The human rewound to the start of an earlier prompt with `/rewind`. Nothing before it is
+    /// removed: approvals, grants and denials stay. The guardian's view of what the human asked
+    /// drops the `dropped_user_messages` most recent messages, which the rewind retracted.
+    Rewound {
+        turn: u64,
+        what: RewindWhat,
+        dropped_user_messages: usize,
     },
     /// A `/goal` was set, ended or paused. The condition is not recorded: it is in the
     /// `UserMessage` of the line that set it, and a goal turn is a harness note, never something
@@ -281,6 +290,16 @@ impl LedgerView {
                 summary: summary.clone(),
             }),
             Record::AddDir { root } => self.workspace_roots.push(root.clone()),
+            Record::Rewound {
+                dropped_user_messages,
+                ..
+            } => {
+                let keep = self
+                    .user_messages
+                    .len()
+                    .saturating_sub(*dropped_user_messages);
+                self.user_messages.truncate(keep);
+            }
             Record::ModeChange { .. }
             | Record::Approval { .. }
             | Record::Grant { .. }
@@ -637,5 +656,81 @@ mod tests {
         check(&ledger);
         drop(ledger);
         check(&Ledger::open(dir.path()).unwrap());
+    }
+
+    fn say(ledger: &Ledger, text: &str) {
+        ledger
+            .append(Record::UserMessage { text: text.into() })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_rewind_trims_the_human_messages_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        say(&ledger, "one");
+        say(&ledger, "two");
+        ledger
+            .append(Record::Approval {
+                tool: "shell".into(),
+                agent: "main".into(),
+                scope: "once".into(),
+            })
+            .unwrap();
+        ledger
+            .append(Record::Grant {
+                rule: "shell(ls)".into(),
+            })
+            .unwrap();
+        ledger
+            .append(Record::Denial {
+                tool: "shell".into(),
+                agent: "main".into(),
+                reason: "r".into(),
+                rule: None,
+                summary: "rm".into(),
+            })
+            .unwrap();
+        say(&ledger, "three");
+        ledger
+            .append(Record::Rewound {
+                turn: 2,
+                what: RewindWhat::Both,
+                dropped_user_messages: 2,
+            })
+            .unwrap();
+        let check = |ledger: &Ledger| {
+            let view = ledger.view();
+            assert_eq!(view.user_messages, ["one"]);
+            assert_eq!(view.denials.len(), 1);
+            // Nothing was removed from the file itself.
+            assert_eq!(ledger.read().unwrap().len(), 7);
+        };
+        check(&ledger);
+        drop(ledger);
+        check(&Ledger::open(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn a_code_only_rewind_trims_nothing_and_more_than_held_does_not_underflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        say(&ledger, "one");
+        ledger
+            .append(Record::Rewound {
+                turn: 1,
+                what: RewindWhat::Code,
+                dropped_user_messages: 0,
+            })
+            .unwrap();
+        assert_eq!(ledger.view().user_messages, ["one"]);
+        ledger
+            .append(Record::Rewound {
+                turn: 1,
+                what: RewindWhat::Both,
+                dropped_user_messages: 9,
+            })
+            .unwrap();
+        assert!(ledger.view().user_messages.is_empty());
     }
 }

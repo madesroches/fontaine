@@ -232,6 +232,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             Action::OpenPicker(slot) => {
                                 self.pending_config.push_back(ConfigKey::OpenPicker(slot));
                             }
+                            // A turn or a sign-in is under way, so a rewind cannot start: the picker closes.
+                            Action::SelectRewind(_) => self.app.rewind = None,
+                            Action::OpenRewind | Action::Rewind { .. } => {}
                             Action::Server(_)
                             | Action::None
                             | Action::Submit(_)

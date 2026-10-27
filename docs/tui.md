@@ -97,6 +97,7 @@ The bar shows the permission mode, the model, how many subagents are running, `â
 | Shift+Tab | Cycle the mode: manual, accept edits, plan, auto, and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` lists the broad allow rules it sets aside and says so when the guardian cannot be asked. |
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
+| Esc twice in quick succession when idle with an empty input | Opens the `/rewind` picker; see [Checkpoints and /rewind](checkpoints.md). Any other meaning of Esc above wins first. |
 | Ctrl-C, or Ctrl-D on an empty input, when idle | Quit. |
 | PageUp, PageDown | Scroll the command or diff in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/U/K/W/B/F | Edit the input. |
@@ -284,7 +285,7 @@ among this folder's sessions, and two sessions with one name are an error that l
 
 A name is 1 to 80 characters with no control characters. `/rename <name>` records it in the
 session's ledger; the latest name wins. `/rename` alone draws a name from the first line of your
-first message since the last `/clear`, cut to 60 characters; it makes no model call, and is an error
+first message since the last `/clear`, cut to 60 characters (a `/rewind` does not change this); it makes no model call, and is an error
 when there is no message yet.
 
 `/branch [<name>]` (also `/fork`) copies the session under a new id and carries on in the copy,
@@ -295,7 +296,7 @@ running or has a report to deliver, since the copy would not carry the subagent'
 `/export [<path>]` writes the conversation as Markdown. The default is `fontaine-<first 8 characters
 of the session id>.md` in the project directory (the launch directory, or `--cd`); a relative path is relative to it.
 The text is the model's conversation, so after a compaction the summary stands where the older
-messages were (labelled as one), and after `/clear` only the conversation since is in it. A tool
+messages were (labelled as one), and after `/clear` or a `/rewind` only the conversation that remains is in it. A tool
 call is one line, and a tool result appears only as its length. The file is readable by you alone,
 since a transcript can hold secrets, and an existing file is an error: an export never overwrites.
 
@@ -330,6 +331,7 @@ since a transcript can hold secrets, and an existing file is an error: an export
 | `/plan [<description>]` | Switches to plan mode, as Shift+Tab does. With a description it also sends it as your next message, so `/plan fix the auth bug` plans the fix. |
 | `/rename [<name>]` | Names the session. Without a name, draws one from the first line of your first message. See [Sessions](#sessions). |
 | `/resume [<name-or-id>]` | Switches to another session started in this folder: the picker without an argument, that session with one. Sessions where nothing was said and that have no name are not listed. Only between turns. See [Sessions](#sessions). |
+| `/rewind`, `/checkpoint` | Opens a list of this conversation's prompts to restore the code, the conversation or both to the start of one. Esc twice does the same. See [Checkpoints and /rewind](checkpoints.md). Refused while a subagent runs. |
 | `/skills` | Lists every loaded [skill](extensions.md#skills) with its scope, marking those only the model can use, those only you can run, and those a built-in command hides. |
 | `/status` | Shows the version, the session id, the workspace roots (the scratch directory labelled separately), the permission mode, the main model, the guardian (or why it is unavailable) with its profile, the output style, and how many MCP servers are connected. |
 | `/theme [<name>]` | Without an argument, lists the colour themes, marks the current one and names the file the choice is saved to. With a name, switches to that theme at once and saves it as `[tui] theme` in your user settings file. An unknown name is an error that lists the themes. See [Terminal setup](terminal.md#colours). |
@@ -350,7 +352,8 @@ ignores the escape leaves the clipboard unchanged without reporting an error.
 `/clear` empties the model's context. The session carries on: the same id, ledger, audit log,
 grants and permission mode. The transcript is emptied (what was already written stays in your
 terminal's scrollback), and so is the guardian's view of what you have asked, which starts again
-from the next message you send; the files, actions and denials it knows about are kept. The old
+from the next message you send; the files, actions and denials it knows about are kept.
+[`/rewind`](checkpoints.md) trims the guardian's view the same way for the prompts it takes back. The old
 conversation cannot be resumed: `--resume` reopens the empty one. `/clear` is refused while a
 subagent is running or its report is waiting to be delivered, since the subagent's calls are judged against what you asked; wait for it
 or kill it from the [agents panel](#the-agents-panel).

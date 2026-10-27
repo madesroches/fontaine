@@ -138,6 +138,13 @@ audit log gets one record with `tier = human`, `decision = allow`, `rule = user_
 shell` and `agent_id = user`, and the session ledger gets a `user_shell` record. See
 [Shell commands](tui.md#shell-commands).
 
+## Rewinding
+
+[`/rewind`](checkpoints.md) restores files from the copies `write` and `edit` saved. Like a `!`
+command it is your own action, taken in the terminal: it does not pass through the pipeline above,
+and the model has no tool that can request it. Because it writes on your behalf it checks each path
+against the workspace roots and refuses symbolic links, and it never touches the memory directory.
+
 ## Rules
 
 `[permissions] deny`, `ask` and `allow` (and `--disallowed-tools` / `--allowed-tools`) share one

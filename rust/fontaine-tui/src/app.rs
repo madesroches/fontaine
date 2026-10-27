@@ -25,10 +25,12 @@ use crate::model_picker::{ModelPicker, PickerKey, PickerPurpose};
 use crate::provider_dialog::{DialogKey, ProviderDialog};
 use crate::question::QuestionPanel;
 use crate::resume_picker::{ResumeKey, ResumePicker};
+use crate::rewind::{RewindKey, RewindPicker};
 use crate::server_prompt::ServerPrompt;
 use crate::theme::Theme;
 use crate::todo_panel::TodoPanel;
 use crate::transcript::Transcript;
+use fontaine_core::checkpoint::{RewindPlan, RewindWhat};
 use fontaine_core::config_catalog::ModelSlot;
 
 pub use crate::commands::Command;
@@ -62,6 +64,17 @@ pub enum Action {
     PickModel(PickerPurpose, String),
     /// The human chose a session in the `/resume` picker.
     ResumeSession(String),
+    /// The human chose a prompt in the `/rewind` picker, which waits for what a rewind to it
+    /// would do.
+    SelectRewind(u64),
+    /// The human confirmed a rewind.
+    Rewind {
+        plan: RewindPlan,
+        what: RewindWhat,
+        overwrite_changed: bool,
+    },
+    /// Esc twice at an idle, empty prompt.
+    OpenRewind,
     /// The human asked to stop a subagent.
     KillAgent(String),
     /// The provider dialog asks for something done.
@@ -114,6 +127,10 @@ pub struct App {
     pub models: Option<ModelPicker>,
     /// The `/resume` picker while it is open.
     pub resume: Option<ResumePicker>,
+    /// The `/rewind` picker while it is open.
+    pub rewind: Option<RewindPicker>,
+    /// When an Esc nothing else claimed was pressed, for the second of a double press.
+    pub(crate) last_esc: Option<std::time::Instant>,
     /// The `/config` panel while it is open.
     pub config: Option<ConfigPanel>,
     /// The `/login` dialog while it is open.
@@ -167,6 +184,9 @@ pub struct SlashMenu<'a> {
     pub selected: usize,
 }
 
+/// How soon the second Esc must follow the first to open `/rewind`.
+const ESC_DOUBLE_PRESS: std::time::Duration = std::time::Duration::from_millis(600);
+
 fn is_cycle_key(key: &KeyEvent) -> bool {
     key.code == KeyCode::BackTab
         || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
@@ -188,6 +208,8 @@ impl App {
             server: None,
             models: None,
             resume: None,
+            rewind: None,
+            last_esc: None,
             config: None,
             providers: None,
             menu: builtin_menu(),
@@ -466,6 +488,7 @@ impl App {
                     || self.server.is_some()
                     || self.models.is_some()
                     || self.resume.is_some()
+                    || self.rewind.is_some()
                     || self.config.is_some();
                 if above_dialog {
                 } else if let Some(dialog) = &mut self.providers {
@@ -495,6 +518,7 @@ impl App {
             || self.server.is_some()
             || self.models.is_some()
             || self.resume.is_some()
+            || self.rewind.is_some()
             || self.config.is_some()
             || self.providers.is_some()
             || self.agents.is_some()
@@ -502,6 +526,9 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent) -> Action {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        if key.code != KeyCode::Esc {
+            self.last_esc = None;
+        }
         if is_cycle_key(&key) {
             return Action::CycleMode;
         }
@@ -568,6 +595,28 @@ impl App {
                 ResumeKey::Pick(id) => {
                     self.resume = None;
                     Action::ResumeSession(id)
+                }
+            };
+        }
+        if let Some(picker) = &mut self.rewind {
+            return match picker.handle_key(key) {
+                RewindKey::None => Action::None,
+                RewindKey::Close => {
+                    self.rewind = None;
+                    Action::None
+                }
+                RewindKey::Select(turn) => Action::SelectRewind(turn),
+                RewindKey::Run {
+                    plan,
+                    what,
+                    overwrite_changed,
+                } => {
+                    self.rewind = None;
+                    Action::Rewind {
+                        plan,
+                        what,
+                        overwrite_changed,
+                    }
                 }
             };
         }
@@ -646,6 +695,25 @@ impl App {
         }
         if key.code == KeyCode::Esc && self.wakeup_pending && !self.running {
             return Action::CancelWakeup;
+        }
+        if key.code == KeyCode::Esc
+            && !self.running
+            && !self.shell_running
+            && self.input.is_empty()
+            && !self.history.navigating()
+        {
+            // Only an Esc nothing above claimed counts, so closing a menu or cancelling a
+            // wakeup never starts the double press.
+            let now = std::time::Instant::now();
+            let double = self
+                .last_esc
+                .take()
+                .is_some_and(|before| now.duration_since(before) <= ESC_DOUBLE_PRESS);
+            if double {
+                return Action::OpenRewind;
+            }
+            self.last_esc = Some(now);
+            return Action::None;
         }
         if control && key.code == KeyCode::Char('d') {
             return if !self.running && self.input.is_empty() {
@@ -1663,5 +1731,91 @@ mod tests {
         assert!(app.slash_menu().is_none());
         press(&mut app, KeyCode::Up);
         assert_eq!(app.input.text(), "older");
+    }
+
+    #[test]
+    fn two_escapes_at_an_idle_empty_prompt_open_the_rewind_picker() {
+        let mut app = app();
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::OpenRewind);
+        // The press is spent: a third starts over.
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+    }
+
+    #[test]
+    fn a_slow_second_escape_or_a_key_between_does_not_open_it() {
+        let mut app = app();
+        press(&mut app, KeyCode::Esc);
+        app.last_esc = Some(std::time::Instant::now() - ESC_DOUBLE_PRESS * 2);
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+    }
+
+    #[test]
+    fn escapes_other_meanings_win_and_do_not_start_the_double_press() {
+        // Typed text: Esc has nothing to cancel, but the prompt is not empty.
+        let mut app = app();
+        type_text(&mut app, "draft");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+
+        // A running turn: Esc interrupts, twice.
+        let mut app = self::app();
+        app.running = true;
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::Interrupt);
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::Interrupt);
+
+        // A pending loop wakeup: Esc cancels it, and the second Esc is a first press.
+        let mut app = self::app();
+        app.wakeup_pending = true;
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::CancelWakeup);
+        app.wakeup_pending = false;
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::OpenRewind);
+
+        // The slash menu closes on Esc without arming.
+        let mut app = self::app();
+        type_text(&mut app, "/");
+        assert!(app.slash_menu().is_some());
+        press(&mut app, KeyCode::Esc);
+        assert!(app.slash_menu().is_none());
+        app.input.set_text("");
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+    }
+
+    #[test]
+    fn the_rewind_picker_takes_the_keyboard_and_a_confirmed_rewind_closes_it() {
+        use fontaine_core::checkpoint::{RewindPlan, TurnSummary};
+        let mut app = app();
+        app.rewind = Some(RewindPicker::new(vec![TurnSummary {
+            turn: 1,
+            prompt: "first".into(),
+            files: 0,
+        }]));
+        assert!(app.covered());
+        type_text(&mut app, "ignored");
+        assert!(app.input.is_empty());
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::SelectRewind(1));
+        app.rewind.as_mut().unwrap().offer(RewindPlan {
+            turn: 1,
+            prompt: "first".into(),
+            conv_n: 0,
+            user_messages_before: 0,
+            files: Vec::new(),
+        });
+        press(&mut app, KeyCode::Down);
+        let action = press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            action,
+            Action::Rewind {
+                what: RewindWhat::Conversation,
+                ..
+            }
+        ));
+        assert!(app.rewind.is_none());
+        app.restore_to_input("first");
+        assert_eq!(app.input.text(), "first");
     }
 }

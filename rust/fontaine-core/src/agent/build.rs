@@ -20,6 +20,7 @@ use rig_agent::prelude::*;
 use rig_agent::tool::server::ToolServerHandle;
 
 use super::Setup;
+use crate::checkpoint::StoreCapture;
 use crate::child_runner::{CoreChildRunner, LedgerWindow};
 use crate::config::Config;
 use crate::gate::SessionState;
@@ -159,6 +160,11 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
             Arc::new(move |message: &str| approver.warn(message))
         })
         .map_err(|e| RuntimeError::caused("cannot set up the websearch tool", e))?;
+    p.session.checkpoints().configure(
+        p.config.checkpoints.clone(),
+        p.state.memory_root.clone(),
+        p.approver.clone(),
+    );
     let registered = tools::registry(RegistryParams {
         gate: p.pipeline.clone(),
         scope: p.state.scope(),
@@ -172,6 +178,7 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
         websearch,
         searxng: p.setup.searxng.clone(),
         extension: Some(ExtensionTools(extension_tools(p, ledger_window))),
+        pre_images: Some(Arc::new(StoreCapture(p.session.checkpoints().clone()))),
     })
     .map_err(RuntimeError::new)?;
     for tool in registered {

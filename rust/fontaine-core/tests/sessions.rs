@@ -418,6 +418,27 @@ async fn a_clear_resets_the_first_prompt_a_listing_shows() {
     );
 }
 
+#[tokio::test]
+async fn a_rewind_record_changes_nothing_a_listing_shows() {
+    let w = World::new();
+    let session = Session::create(&w.data, A).unwrap();
+    start(&session, &w.work);
+    say_to_ledger(&session, "first");
+    let before = list(&w.data, Some(&w.work));
+    session
+        .ledger
+        .append(Record::Rewound {
+            turn: 1,
+            what: fontaine_core::checkpoint::RewindWhat::Both,
+            dropped_user_messages: 1,
+        })
+        .unwrap();
+    let after = list(&w.data, Some(&w.work));
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].first_prompt, before[0].first_prompt);
+    assert_eq!(after[0].first_prompt.as_deref(), Some("first"));
+}
+
 #[test]
 fn a_fork_is_named_for_the_copy_alone() {
     let w = World::new();

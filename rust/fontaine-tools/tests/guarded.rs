@@ -89,6 +89,7 @@ fn guard(gate: Arc<dyn ToolGate>) -> Guard {
         gate,
         results: Arc::new(ResultPipeline::new()),
         hide_mcp_names: false,
+        pre_images: None,
     }
 }
 
@@ -240,6 +241,7 @@ fn mcp_tool(
             gate,
             results: Arc::new(results),
             hide_mcp_names: false,
+            pre_images: None,
         },
         false,
     );
@@ -401,4 +403,202 @@ mod shell_env {
         assert!(printed.contains("UNRELATED_VARIABLE=kept"), "{printed}");
         assert!(!printed.contains("leaked-value"), "{printed}");
     }
+}
+
+/// Remembers each capture request and the order of captures and finishes.
+#[derive(Default)]
+struct Recorder {
+    events: Mutex<Vec<String>>,
+}
+
+struct Finisher {
+    recorder: Arc<Recorder>,
+}
+
+impl fontaine_tools::checkpoint::Capture for Finisher {
+    fn finish(self: Box<Self>, succeeded: bool) {
+        self.recorder
+            .events
+            .lock()
+            .unwrap()
+            .push(format!("finish {succeeded}"));
+    }
+}
+
+struct Saver {
+    recorder: Arc<Recorder>,
+    /// The file's content when `before` ran, which is what a pre-image would hold.
+    content: Mutex<Vec<Option<String>>>,
+}
+
+impl fontaine_tools::checkpoint::PreImages for Saver {
+    fn before(
+        &self,
+        agent: &str,
+        tool: &str,
+        path: &std::path::Path,
+    ) -> Option<Box<dyn fontaine_tools::checkpoint::Capture>> {
+        self.recorder
+            .events
+            .lock()
+            .unwrap()
+            .push(format!("before {agent} {tool} {}", path.display()));
+        self.content
+            .lock()
+            .unwrap()
+            .push(std::fs::read_to_string(path).ok());
+        Some(Box::new(Finisher {
+            recorder: self.recorder.clone(),
+        }))
+    }
+}
+
+fn saving_registry(
+    gate: Arc<dyn ToolGate>,
+    scope: Arc<fontaine_tools::scope::Scope>,
+) -> (Arc<Saver>, Vec<fontaine_tools::builtins::Registered>) {
+    let saver = Arc::new(Saver {
+        recorder: Arc::new(Recorder::default()),
+        content: Mutex::new(Vec::new()),
+    });
+    let mut env = env_with(scope, gate);
+    env.guard.pre_images = Some(saver.clone());
+    (saver, registry(&env))
+}
+
+#[tokio::test]
+async fn an_allowed_write_and_edit_are_saved_before_the_tool_runs() {
+    let d = Dirs::new();
+    let root = d.dir("work");
+    std::fs::write(root.join("a.txt"), "old").unwrap();
+    let (saver, tools) = saving_registry(Scripted::new(allow), scope(&root, &[]));
+    call(&tools, "read", json!({"path": "a.txt"}))
+        .await
+        .unwrap();
+    call(&tools, "write", json!({"path": "a.txt", "content": "new"}))
+        .await
+        .unwrap();
+    call(
+        &tools,
+        "edit",
+        json!({"path": "a.txt", "edits": [{"old_text": "new", "new_text": "newer"}]}),
+    )
+    .await
+    .unwrap();
+    let events = saver.recorder.events.lock().unwrap().clone();
+    let path = root.join("a.txt").display().to_string();
+    assert_eq!(
+        events,
+        [
+            format!("before root write {path}"),
+            "finish true".to_string(),
+            format!("before root edit {path}"),
+            "finish true".to_string(),
+        ]
+    );
+    assert_eq!(
+        *saver.content.lock().unwrap(),
+        [Some("old".to_string()), Some("new".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn a_denied_edit_saves_nothing() {
+    let d = Dirs::new();
+    let root = d.dir("work");
+    let gate = Scripted::new(|_| GateDecision::Deny {
+        message: "no".to_string(),
+    });
+    let (saver, tools) = saving_registry(gate, scope(&root, &[]));
+    let denied = call(&tools, "write", json!({"path": "n.txt", "content": "x"})).await;
+    assert!(denied.is_err());
+    assert!(saver.recorder.events.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_tool_call_still_finishes_the_capture() {
+    let d = Dirs::new();
+    let root = d.dir("work");
+    std::fs::write(root.join("a.txt"), "old").unwrap();
+    let (saver, tools) = saving_registry(Scripted::new(allow), scope(&root, &[]));
+    let failed = call(
+        &tools,
+        "edit",
+        json!({"path": "a.txt", "edits": [{"old_text": "missing", "new_text": "x"}]}),
+    )
+    .await;
+    assert!(failed.is_err());
+    let events = saver.recorder.events.lock().unwrap().clone();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1], "finish false");
+}
+
+#[tokio::test]
+async fn read_only_tools_and_the_shell_are_never_saved() {
+    let d = Dirs::new();
+    let root = d.dir("work");
+    std::fs::write(root.join("a.txt"), "old").unwrap();
+    let (saver, tools) = saving_registry(Scripted::new(allow), scope(&root, &[]));
+    call(&tools, "read", json!({"path": "a.txt"}))
+        .await
+        .unwrap();
+    call(&tools, "ls", json!({"path": "."})).await.unwrap();
+    call(&tools, "grep", json!({"pattern": "old"}))
+        .await
+        .unwrap();
+    let _ = call(&tools, "shell", json!({"command": "true"})).await;
+    assert!(saver.recorder.events.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_mcp_callback_is_never_saved() {
+    let saver = Arc::new(Saver {
+        recorder: Arc::new(Recorder::default()),
+        content: Mutex::new(Vec::new()),
+    });
+    let callback: Arc<dyn ToolCallback> = Arc::new(|_: &mut ToolContext, _: Value| {
+        Box::pin(async { Ok(ToolOutput::text("done")) })
+            as rig_core::wasm_compat::WasmBoxedFuture<'_, _>
+    });
+    let tool = guard_callback(
+        ToolDefinition::new(
+            ToolName::new("write").unwrap(),
+            "pretends to write",
+            json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+        ),
+        callback,
+        RiskClass::Arbitrary,
+        Guard {
+            gate: Scripted::new(allow),
+            results: Arc::new(ResultPipeline::new()),
+            hide_mcp_names: false,
+            pre_images: Some(saver.clone()),
+        },
+        false,
+    );
+    tool.run_with(&mut as_root(), json!({"path": "/tmp/x"}))
+        .await
+        .unwrap();
+    assert!(saver.recorder.events.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn each_root_captures_its_own_path() {
+    let d = Dirs::new();
+    let (first, second) = (d.dir("one"), d.dir("two"));
+    std::fs::write(second.join("b.txt"), "old").unwrap();
+    let (saver, tools) = saving_registry(Scripted::new(allow), scope(&first, &[&second]));
+    let path = second.join("b.txt");
+    call(&tools, "read", json!({"path": path.to_str().unwrap()}))
+        .await
+        .unwrap();
+    call(
+        &tools,
+        "write",
+        json!({"path": path.to_str().unwrap(), "content": "new"}),
+    )
+    .await
+    .unwrap();
+    let events = saver.recorder.events.lock().unwrap().clone();
+    assert_eq!(events[0], format!("before root write {}", path.display()));
 }

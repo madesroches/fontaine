@@ -1787,3 +1787,39 @@ fn auto_memory_defaults_on_and_only_the_user_file_and_cli_can_set_it() {
         assert!(err.to_string().contains("memory"), "{err}");
     }
 }
+
+#[test]
+fn the_checkpoint_caps_default_and_only_the_user_file_sets_them() {
+    let w = World::new();
+    let defaults = w.load().unwrap().checkpoints;
+    assert!(defaults.enabled);
+    assert_eq!(defaults.max_file_bytes, 10 * 1024 * 1024);
+    assert_eq!(defaults.max_session_bytes, 256 * 1024 * 1024);
+
+    w.user_file("[checkpoints]\nenabled = false\nmax_file_bytes = 100\nmax_session_bytes = 1000\n");
+    let set = w.load().unwrap().checkpoints;
+    assert_eq!(
+        (set.enabled, set.max_file_bytes, set.max_session_bytes),
+        (false, 100, 1000)
+    );
+
+    for column in [Column::Project, Column::ProjectLocal, Column::Cli] {
+        let err = parse_settings(
+            "[checkpoints]\nenabled = true\n",
+            Path::new("p.toml"),
+            column,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
+    }
+    let err = parse_settings(
+        "[checkpoints]\nmax_file_bytes = 0\n",
+        Path::new("u.toml"),
+        Column::User,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("checkpoints.max_file_bytes"),
+        "{err}"
+    );
+}

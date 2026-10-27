@@ -12,6 +12,7 @@ use rig_core::tool::{
 use serde_json::Value;
 use tracing::Instrument;
 
+use crate::checkpoint::{Capture, PreImages};
 use crate::gate::{AgentId, CallView, GateDecision, ToolGate};
 use crate::result_pipeline::{ResultPipeline, ToolOutcome};
 use crate::risk::{RiskClass, ToolSource};
@@ -37,6 +38,8 @@ pub struct Guard {
     pub results: Arc<ResultPipeline>,
     /// Telemetry names an MCP tool `third-party` instead of by its server and tool.
     pub hide_mcp_names: bool,
+    /// Saves the file a `write` or `edit` is about to change.
+    pub pre_images: Option<Arc<dyn PreImages>>,
 }
 
 pub struct GuardedTool<T: Tool> {
@@ -112,13 +115,30 @@ impl<T: Tool> GuardedTool<T> {
         let typed: T::Args = serde_json::from_value(located.args.clone()).map_err(|e| {
             ToolExecutionError::invalid_args(format!("failed to parse tool arguments: {e}"))
         })?;
+        let capture = self.capture(context, &located.args);
         let tool = &self.instances[located.root];
-        let output = tool
-            .call(context, typed)
-            .await
-            .map_err(|e| tool.map_error(e))?
-            .into_tool_output()?;
+        let result = tool.call(context, typed).await;
+        if let Some(capture) = capture {
+            capture.finish(result.is_ok());
+        }
+        let output = result.map_err(|e| tool.map_error(e))?.into_tool_output()?;
         Ok(output)
+    }
+
+    /// Saves the file the call names, when this tool is one whose edits are kept. `located`
+    /// already holds the path the tool will open; capture failures never stop the call.
+    fn capture(&self, context: &ToolContext, located: &Value) -> Option<Box<dyn Capture>> {
+        let Routing::PerRoot(scope) = &self.routing else {
+            return None;
+        };
+        let pre_images = self.guard.pre_images.as_ref()?;
+        if !crate::descriptor::find(T::NAME).is_some_and(|d| d.checkpointed) {
+            return None;
+        }
+        let agent = agent_of(context).ok()?;
+        let path = located.get("path")?.as_str()?;
+        let (_, resolved) = scope.find(path).ok()?;
+        pre_images.before(&agent, T::NAME, &resolved)
     }
 }
 

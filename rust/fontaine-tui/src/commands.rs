@@ -47,6 +47,8 @@ pub enum Command {
     Resume(String),
     /// `/branch [name]` (`/fork`): carries on in a copy of this session.
     Branch(String),
+    /// `/rewind` (`/checkpoint`): the checkpoint picker; takes no argument.
+    Rewind(String),
     /// `/rename [name]`.
     Rename(String),
     /// `/expand [n]`.
@@ -265,6 +267,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: Some("[name-or-id]"),
         description: "switch to another session of this directory",
         command: Command::Resume,
+    },
+    Builtin {
+        name: "rewind",
+        aliases: &["checkpoint"],
+        hint: None,
+        description: "restore the code, the conversation or both to an earlier prompt",
+        command: Command::Rewind,
     },
     Builtin {
         name: "skills",
@@ -826,6 +835,13 @@ mod tests {
             parse_command("/export notes.md"),
             Some(Command::Export("notes.md".into()))
         );
+        for name in ["rewind", "checkpoint"] {
+            assert_eq!(
+                parse_command(&format!("/{name}")),
+                Some(Command::Rewind(String::new()))
+            );
+        }
+        assert!(builtin_menu().iter().any(|e| e.name == "rewind"));
         let menu = builtin_menu();
         for name in ["resume", "branch", "rename", "export"] {
             let row = menu.iter().find(|m| m.name == name).expect(name);

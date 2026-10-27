@@ -325,6 +325,7 @@ fn skills(w_setup: impl FnOnce(&World)) -> Skills {
         searxng: Default::default(),
         network: Default::default(),
         extension: None,
+        pre_images: None,
     })
     .unwrap();
     let shell = tools.into_iter().find(|t| t.name == "shell").unwrap();

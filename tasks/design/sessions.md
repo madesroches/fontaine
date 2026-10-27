@@ -13,8 +13,15 @@ the index does not hold are reported to the guardian as `unindexed`). The guardi
 `AdjudicationRequest` is built only from the ledger — never from a compaction summary or other
 model-written text. In a subagent tree there is one intent source, the root session's ledger: every agent's request takes `task_intent` and `recent_user_messages` from the root's human messages since the last `ContextCleared` record (written by `/clear`, which empties the model context in the same session and refuses to run while a subagent does; the ledger keeps every other fact); spawn prompts and `send_message` bodies are untrusted-delimited context only. Resume restores both stores but starts in the user's resolved default mode and
 drops session-scope grants; fork (`--fork-session`) copies both stores under a new session id, also
-without session grants; a rewind of the conversation (rig-memory `as_of`) truncates the context and
-appends to the ledger — denial and approval history is never removed. Both stores persist as JSONL
+without session grants; a rewind of the conversation (rig-memory `as_of`, run by `/rewind`) puts the context back and
+appends a `Rewound { turn, what, dropped_user_messages }` record to the ledger — denial and approval
+history is never removed. `LedgerView` trims `user_messages` from the tail by `dropped_user_messages`
+(the raw count, since steering, subagent questions and schedules also append `UserMessage`), so a
+retracted prompt stops authorizing actions while the file stays append-only; a code-only rewind
+trims nothing and `session::list` ignores the record. File pre-images for `/rewind` live beside
+the stores in `checkpoints/` (`manifest.jsonl` and content-addressed `blobs/`), written by the
+`write` and `edit` wrapper after the gate allows the call; a `/clear` writes an epoch entry there
+and the picker lists only the current epoch's prompts. Both stores persist as JSONL
 under `<data dir>/sessions/<session-id>/` (owner-only); the ledger is `ledger/ledger.jsonl` there,
 outside the `logs/` and `files/` folders rig-memory's store reads (a top-level `*.jsonl` would make
 it refuse the dir). Beside them sit the root agent's task list (`todos.json`) and the session's

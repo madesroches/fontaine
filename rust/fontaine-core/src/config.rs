@@ -588,6 +588,14 @@ pub struct ScheduleSection {
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct CheckpointsSection {
+    pub enabled: Option<bool>,
+    pub max_file_bytes: Option<u64>,
+    pub max_session_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MemorySection {
     pub auto: Option<bool>,
 }
@@ -788,6 +796,7 @@ pub struct Settings {
     pub context: Option<ContextSection>,
     pub schedule: Option<ScheduleSection>,
     pub memory: Option<MemorySection>,
+    pub checkpoints: Option<CheckpointsSection>,
     pub goal: Option<GoalSection>,
     pub shell_preclassifier: Option<ShellPreclassifierSection>,
     pub telemetry: Option<TelemetrySection>,
@@ -1182,6 +1191,16 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
             return bad("goal.max_cost_usd", "must be a finite number, zero or more");
         }
     }
+    if let Some(c) = &s.checkpoints {
+        for (key, v) in [
+            ("checkpoints.max_file_bytes", c.max_file_bytes),
+            ("checkpoints.max_session_bytes", c.max_session_bytes),
+        ] {
+            if v == Some(0) {
+                return bad(key, "must be at least 1");
+            }
+        }
+    }
     if let Some(sp) = &s.shell_preclassifier {
         for entry in sp.allow_extra.iter().flatten() {
             let words: Vec<_> = entry.split_whitespace().collect();
@@ -1429,6 +1448,30 @@ pub struct Schedule {
     pub enabled: bool,
 }
 
+/// The merged `[checkpoints]` section.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Checkpoints {
+    /// Whether `write` and `edit` save the file's pre-image for `/rewind`.
+    pub enabled: bool,
+    /// A file larger than this is not saved.
+    pub max_file_bytes: u64,
+    /// Once the session's saved pre-images reach this many bytes, later files are not saved.
+    pub max_session_bytes: u64,
+}
+
+impl Default for Checkpoints {
+    fn default() -> Self {
+        Checkpoints {
+            enabled: true,
+            max_file_bytes: DEFAULT_CHECKPOINT_FILE_BYTES,
+            max_session_bytes: DEFAULT_CHECKPOINT_SESSION_BYTES,
+        }
+    }
+}
+
+pub const DEFAULT_CHECKPOINT_FILE_BYTES: u64 = 10 * 1024 * 1024;
+pub const DEFAULT_CHECKPOINT_SESSION_BYTES: u64 = 256 * 1024 * 1024;
+
 /// The merged `[memory]` section.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Memory {
@@ -1480,6 +1523,7 @@ pub struct Config {
     pub context: Context,
     pub schedule: Schedule,
     pub memory: Memory,
+    pub checkpoints: Checkpoints,
     pub goal: Goal,
     pub shell_preclassifier_allow_extra: Vec<String>,
     pub telemetry: Telemetry,
@@ -1553,6 +1597,7 @@ impl Config {
             context: Context::default(),
             schedule: Schedule { enabled: true },
             memory: Memory { auto: true },
+            checkpoints: Checkpoints::default(),
             goal: Goal {
                 max_turns: DEFAULT_GOAL_MAX_TURNS,
                 max_cost_usd: None,
@@ -1757,6 +1802,17 @@ impl Config {
         }
         if let Some(v) = s.memory.as_ref().and_then(|c| c.auto) {
             self.memory.auto = v;
+        }
+        if let Some(c) = &s.checkpoints {
+            if let Some(v) = c.enabled {
+                self.checkpoints.enabled = v;
+            }
+            if let Some(v) = c.max_file_bytes {
+                self.checkpoints.max_file_bytes = v;
+            }
+            if let Some(v) = c.max_session_bytes {
+                self.checkpoints.max_session_bytes = v;
+            }
         }
         if let Some(g) = &s.goal {
             if let Some(v) = g.max_turns {

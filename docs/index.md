@@ -34,7 +34,9 @@ describe what the current build does; each page covers one topic.
   `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plan`, `/copy`, `/expand`, `/memory`, `/init`,
   `/clear`, `/compact`,
   `/context`, `/config`, `/theme`, `/loop` and scheduled prompts, `/goal`, `/resume`, `/branch`,
-  `/rename` and `/export`, the agents panel and the workspace trust prompt.
+  `/rename`, `/export` and `/rewind`, the agents panel and the workspace trust prompt.
+- [Checkpoints and /rewind](checkpoints.md): what `write` and `edit` save before they change a
+  file, `/rewind` and Esc Esc, restoring code, the conversation or both, and what is not tracked.
 - [Terminal setup](terminal.md): newline keys for each terminal, tmux, Option as Meta on macOS,
   colour themes and `NO_COLOR`, and screen-reader mode.
 - [Headless runs](headless.md): `fontaine -p`, its flags, exit codes, and the versioned JSON output
