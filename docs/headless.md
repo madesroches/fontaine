@@ -32,10 +32,11 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `--json-schema <schema>` | An inline JSON Schema the final answer must follow. The parsed answer is returned in `result.structured_output`. A schema that is not a JSON object is a usage error. |
 | `--allowed-tools <rule>` | Adds an allow rule in `Tool(specifier)` syntax for this session, such as `shell(npm test)`. Repeatable. Loaded as the CLI scope's `[permissions] allow`; an invalid rule is a usage error. |
 | `--disallowed-tools <rule>` | Adds a deny rule for this session, such as `read(.env)`. Repeatable. See [Permissions](permissions.md#rules). |
+| `--cd <dir>`, `-C <dir>` | Starts in this directory instead of the launch directory. It becomes the project directory: project settings, trust, workspace root and session identity come from it. Fontaine changes its own working directory to it, so relative `--settings`, `--add-dir` and `--debug-file` values and spawned processes resolve against it as if launched there. A directory that does not exist is a usage error (exit code 2). |
 | `--add-dir <path>` | Adds a directory to the workspace roots. Repeatable. See [Tools](tools.md#workspace-roots). |
 | `--session-id <uuid>` | Uses this UUID as the session id. A value that is not a UUID is a usage error (exit code 2), and so is an id whose session directory already exists. With `--continue` or `--resume` it is accepted only together with `--fork-session`, where it names the copy; otherwise it is a usage error. |
-| `--continue`, `-c` | Reopens the most recently updated session that was started in the launch directory; starts a fresh session when there is none. |
-| `--resume <id-or-name>`, `-r <id-or-name>` | Reopens the session with this id, or else the session started in the launch directory that has this name (compared without regard to case). A value that matches no session is a usage error (exit code 2), and so is a name carried by several sessions: the error lists their ids. The value is required, so `fontaine -p --resume <id> "task"` reads `task` as the prompt. |
+| `--continue`, `-c` | Reopens the most recently updated session that was started in the project directory (the launch directory, or `--cd`); starts a fresh session when there is none. |
+| `--resume <id-or-name>`, `-r <id-or-name>` | Reopens the session with this id, or else the session started in the project directory (the launch directory, or `--cd`) that has this name (compared without regard to case). A value that matches no session is a usage error (exit code 2), and so is a name carried by several sessions: the error lists their ids. The value is required, so `fontaine -p --resume <id> "task"` reads `task` as the prompt. |
 | `--name <name>`, `-n <name>` | Names the session being started, so `--resume` can find it by name. With `--fork-session` it names the copy; with `--continue` or `--resume` alone it renames the session reopened. A name is 1 to 80 characters with no control characters; anything else is a usage error. A fork the flag does not name is called the source's name followed by ` (branch)` when the source has one, so a name finds one session. |
 | `--fork-session` | With `--continue` or `--resume`, starts a new session that is a copy of the one that would have been reopened. Alone it is a usage error. |
 | `--system-prompt <text>` | Replaces the base system prompt. |
@@ -99,7 +100,7 @@ resolve to, as a new session does, not in the mode the session ended in, and non
 session's "allow session" grants carry over. `--fork-session` copies both stores under a new id
 (`--session-id` chooses it) and leaves the original untouched; the audit log of the copy starts
 empty. `--continue` and a `--resume` by name look only at sessions whose primary workspace root is
-the launch directory; `--resume` by id takes a session of any directory.
+the project directory; `--resume` by id takes a session of any directory.
 
 ## Subagents
 

@@ -575,6 +575,7 @@ scorecard run (see `## Remaining work`).
 - 2026-10-26: Each session gets a private scratch directory, `$XDG_RUNTIME_DIR/fontaine/<session-id>/` (else `<temp>/fontaine-<uid>/<session-id>/`; on Windows `<temp>\fontaine-<sid>\<session-id>\`), added to the workspace roots automatically and removed on exit, so file-tool writes of helper files work without a prompt (Claude Code prompts for out-of-root writes and Fontaine denies them, 2026-10-22; this is a further deviation); reason: the denial protected nothing once the model wrote the file through `shell`, and a private owner-only root keeps the floor intact (#238).
 - 2026-10-26: AFK: The scratch directory lives outside the config and data dirs (`XDG_RUNTIME_DIR`, else an owner-only per-user dir under the OS temp dir, verified against squatting, canonicalized, and refused if under a protected dir) rather than under `<data>`, and the protected-path floor gets no exception; reason: `protected_dirs` covers the data dir, so `<data>/scratch` would defeat the feature or require a floor exception (#238).
 - 2026-10-26: Subagents share the parent's scratch directory; reason: one shared `Scope`, and a child's mode is already capped by its parent's (#238).
+- 2026-10-27: `--cd <DIR>` (short `-C`) is a Fontaine addition with no Claude Code equivalent; it changes the process working directory as well as `Host.cwd`, because relative `--settings`/`--add-dir`/`--debug-file` values and spawned children must agree with the project directory (#145).
 
 ## Open Questions
 

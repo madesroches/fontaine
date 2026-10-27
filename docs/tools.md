@@ -73,9 +73,9 @@ same treatment: such tools are registered as arbitrary whatever the server says.
 
 ## Workspace roots
 
-The workspace is an ordered set of roots. The first is the primary root, the directory Fontaine
-was launched from after symlinks are resolved; relative paths and default directories refer to it.
-More roots come from the repeatable `--add-dir <path>` flag and from
+The workspace is an ordered set of roots. The first is the primary root: the project directory
+(the launch directory, or `--cd`) after symlinks are resolved; relative paths and default
+directories refer to it. More roots come from the repeatable `--add-dir <path>` flag and from
 `[permissions] additional_directories` (see [Configuration](configuration.md#permissions)).
 
 - A path is inside the workspace when it lies inside any root. A symlink from one root into
@@ -84,7 +84,7 @@ More roots come from the repeatable `--add-dir <path>` flag and from
   by the instance of the root that holds its path. For `shell` that is the root that holds its
   `cwd`. The tool's own confinement and Fontaine's check use the same rule, so they cannot
   disagree.
-- A relative `--add-dir` or configuration entry is resolved against the launch directory. An entry
+- A relative `--add-dir` or configuration entry is resolved against the project directory (the launch directory, or `--cd`). An entry
   that does not exist, is not a directory or cannot be resolved is left out, with a warning that
   names the path and where it came from (in the conversation in the terminal UI, on stderr in a
   headless run), and the run continues with the other roots.

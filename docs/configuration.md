@@ -49,7 +49,7 @@ Settings come from up to five scopes. Higher scopes win, listed here highest fir
    tighten.
 5. **user**: `<config dir>/config.toml`. It may set every key.
 
-The workspace is the directory Fontaine was launched from, after symlinks are resolved. Project
+The workspace is the project directory (the launch directory, or `--cd`), after symlinks are resolved. Project
 files are read only from it: there is no search through parent directories and no nested settings
 files. A missing project, project-local or user file is treated as empty. A file that exists but
 cannot be read, such as a directory in its place, is a configuration error that names the path. A
@@ -394,8 +394,8 @@ An `ollama` account on `localhost` therefore goes direct under `https_proxy` alo
 proxy under `http_proxy` unless `no_proxy` lists it. `SSL_CERT_FILE` and `SSL_CERT_DIR` replace the
 system roots; `ca_bundle` adds to them.
 
-Relative `ca_bundle`, `client_cert` and `client_key` paths resolve against the directory Fontaine
-was launched from, and `~` is not expanded.
+Relative `ca_bundle`, `client_cert` and `client_key` paths resolve against the project directory
+(the launch directory, or `--cd`), and `~` is not expanded.
 
 Configuration checking is in two tiers. Reading a settings file checks only that the keys are known,
 allowed in that scope and not empty, and never opens the files, so the example paths below pass
@@ -589,7 +589,7 @@ additional_directories = ["/home/me/shared-libs"]
 
 The workspace is an ordered set of roots: the primary root, then every `--add-dir <path>` and every
 `additional_directories` entry. File tools reach a path that lies inside any root. A relative entry
-is resolved against the launch directory. An entry that does not exist, is not a directory or
+is resolved against the project directory (the launch directory, or `--cd`). An entry that does not exist, is not a directory or
 cannot be resolved is left out, with a warning naming the path and whether it came from
 `--add-dir` or the settings, and the run continues. The terminal UI shows the warning in the
 conversation; a headless run prints it on stderr.
@@ -935,11 +935,12 @@ for any reason other than not existing, is a configuration error naming the path
 | Flag or variable | Effect |
 |---|---|
 | `--settings <file>` | Layers a TOML file over the project and user settings for this session (CLI scope). |
+| `--cd <dir>`, `-C <dir>` | Starts in this directory instead of the launch directory; see [Headless runs](headless.md). A relative `--debug-file` resolves against it. |
 | `--debug-file <path>` | Writes debug-level diagnostics to the file, which is created readable by the current user only. The `config loaded` event, which carries the resolved scope stack, is written here. |
 | `--model <account>/<model>` | Overrides `[model] model`. |
 | `--permission-mode <mode>` | Overrides `[permissions] default_mode`. `auto` is accepted. |
 | `--in-container` | States that the process runs inside a container. With `[guardian] profile = "minimal"` it lets the minimal guardian load, after a runtime probe also finds a container; the flag alone is never enough. |
-| `--continue`, `--resume <id-or-name>`, `--fork-session`, `--name <name>` | Reopen the latest session of the launch directory, reopen one by id or by name, copy the one that would have been reopened under a new id, or name the session started (or, without `--fork-session`, the one reopened). See [Headless runs](headless.md#continuing-a-session). |
+| `--continue`, `--resume <id-or-name>`, `--fork-session`, `--name <name>` | Reopen the latest session of the project directory (the launch directory, or `--cd`), reopen one by id or by name, copy the one that would have been reopened under a new id, or name the session started (or, without `--fork-session`, the one reopened). See [Headless runs](headless.md#continuing-a-session). |
 | `--allowed-tools <rule>`, `--disallowed-tools <rule>` | Adds an allow or deny rule for the session (CLI scope). Repeatable. |
 | `--ax-screen-reader` | Prints the interface as plain labelled lines for a screen reader instead of drawing it, and prints `[Screen Reader Mode: on via flag]` first. A headless run ignores it. |
 | `FONTAINE_AX_SCREEN_READER` | `1` turns screen-reader mode on and `0` keeps it off even when `[tui] screen_reader` is `true`; the flag still turns it on. Any other value is ignored, with a warning in the conversation (or on stderr when the UI cannot start). |

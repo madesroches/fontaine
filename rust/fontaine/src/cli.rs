@@ -6,6 +6,11 @@ use fontaine_core::config::PermissionMode;
 #[derive(Parser, Debug, Clone)]
 #[command(name = "fontaine", version, about = "A terminal AI coding agent")]
 pub struct Cli {
+    /// Start in this directory instead of the launch directory: it becomes the project root, and
+    /// relative `--settings`, `--add-dir` and `--debug-file` paths resolve against it
+    #[arg(short = 'C', long = "cd", value_name = "DIR", global = true)]
+    pub cd: Option<PathBuf>,
+
     /// TOML settings file layered over the project and user settings for this session
     #[arg(long, value_name = "FILE", global = true)]
     pub settings: Option<PathBuf>,
