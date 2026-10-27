@@ -40,17 +40,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         runtime: &mut AgentRuntime,
         account: Option<&str>,
     ) {
-        self.app.transcript.notice("listing models…");
-        self.draw(runtime);
-        let groups: Vec<Group> = match runtime.model_listings(account).await {
-            Ok(listings) => listings.iter().map(Group::from).collect(),
-            Err(e) => {
-                self.app.transcript.error(format!(
-                    "/model: {}",
-                    fontaine_tools::error_chain::chain(&e)
-                ));
-                return;
-            }
+        let Some(groups) = self.list_groups(runtime, account, "/model").await else {
+            return;
         };
         let current = runtime.models.main.reference.clone();
         let scope = account.map_or(String::new(), |name| format!("models of {name} · "));
@@ -98,20 +89,32 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
-    /// Lists every account's models live, like `/model`: `set_guardian_model` rejects a pick
-    /// that cannot host a guardian, so filtering here would only hide accounts silently.
-    pub(crate) async fn open_guardian_picker(&mut self, runtime: &mut AgentRuntime) {
+    async fn list_groups(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        account: Option<&str>,
+        command: &str,
+    ) -> Option<Vec<Group>> {
         self.app.transcript.notice("listing models…");
         self.draw(runtime);
-        let groups: Vec<Group> = match runtime.model_listings(None).await {
-            Ok(listings) => listings.iter().map(Group::from).collect(),
+        match runtime.model_listings(account).await {
+            Ok(listings) => Some(listings.iter().map(Group::from).collect()),
             Err(e) => {
                 self.app.transcript.error(format!(
-                    "/guardian-model: {}",
+                    "{command}: {}",
                     fontaine_tools::error_chain::chain(&e)
                 ));
-                return;
+                None
             }
+        }
+    }
+
+    /// Lists every account's models live, like `/model`: a pick the account cannot serve is
+    /// still installed and reported as an unavailable guardian, so filtering here would only
+    /// hide accounts silently.
+    pub(crate) async fn open_guardian_picker(&mut self, runtime: &mut AgentRuntime) {
+        let Some(groups) = self.list_groups(runtime, None, "/guardian-model").await else {
+            return;
         };
         let guardian = runtime.state.guardian();
         let mut header = format!("guardian {}", guardian.label());

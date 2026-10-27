@@ -402,7 +402,8 @@ provider error or the timeout.
 
 `/guardian-model` with no argument opens the same overlay over a live listing of every account, as
 `/model` does, failures included. A pick pins the guardian and saves it as `[guardian] model`; a pick
-the account cannot serve as a guardian is rejected with the reason.
+the account cannot serve (no credential, say) is still installed and saved, and reported as an
+unavailable guardian.
 
 ## Settings panel
 
