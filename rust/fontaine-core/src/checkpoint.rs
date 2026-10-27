@@ -575,10 +575,11 @@ impl CheckpointStore {
         scope: &Scope,
         overwrite_changed: bool,
     ) -> CodeReport {
-        let memory = lock(&self.state, "checkpoint store")
-            .settings
-            .memory_root
-            .clone();
+        // The plan may be older than the user's last edit, so the files are compared again here.
+        let (memory, folded) = {
+            let state = lock(&self.state, "checkpoint store");
+            (state.settings.memory_root.clone(), fold(&state.entries))
+        };
         let mut report = CodeReport::default();
         for file in &plan.files {
             let path = &file.path;
@@ -590,7 +591,14 @@ impl CheckpointStore {
                 report.not_restorable.push((path.clone(), why));
                 continue;
             }
-            if file.changed_since && !overwrite_changed {
+            let changed_now = folded
+                .after
+                .iter()
+                .rfind(|(t, p, _)| {
+                    *t >= plan.turn && path_key(p) == path_key(&path.to_string_lossy())
+                })
+                .is_some_and(|(_, _, expected)| hash_file(path) != *expected);
+            if (file.changed_since || changed_now) && !overwrite_changed {
                 report.kept_changed.push(path.clone());
                 continue;
             }
@@ -660,19 +668,29 @@ impl CheckpointStore {
 
     fn capture_before(&self, agent: &str, path: &Path) -> Option<u64> {
         let mut warnings = Vec::new();
-        let result = {
-            let mut state = lock(&self.state, "checkpoint store");
+        let (turn, limits, blob_bytes) = {
+            let state = lock(&self.state, "checkpoint store");
             let limits = state.settings.limits.clone()?;
             if !limits.enabled || in_memory(state.settings.memory_root.as_deref(), path) {
                 return None;
             }
             let turn = Self::current_turn(&state)?;
+            if state
+                .captured
+                .contains(&(turn, path.to_string_lossy().into_owned()))
+            {
+                return Some(turn);
+            }
+            (turn, limits, state.blob_bytes)
+        };
+        // Read and hashed without the lock: the file can be large.
+        let mut cause = None;
+        let (before, written) = self.read_before(&limits, blob_bytes, path, &mut cause);
+        {
+            let mut state = lock(&self.state, "checkpoint store");
             let key = path.to_string_lossy().into_owned();
-            if state.captured.contains(&(turn, key.clone())) {
-                Some(turn)
-            } else {
-                let mut cause = None;
-                let before = self.read_before(&mut state, &limits, path, &mut cause);
+            if state.captured.insert((turn, key.clone())) {
+                state.blob_bytes += written;
                 if let Before::Skipped { why } = &before
                     && state.warned.insert(*why)
                 {
@@ -682,7 +700,6 @@ impl CheckpointStore {
                         path.display()
                     ));
                 }
-                state.captured.insert((turn, key.clone()));
                 let entry = Entry::PreImage {
                     turn,
                     agent: agent.to_string(),
@@ -690,24 +707,24 @@ impl CheckpointStore {
                     before,
                 };
                 Self::append(&mut state, entry, &mut warnings);
-                Some(turn)
             }
-        };
+        }
         self.warn(warnings);
-        result
+        Some(turn)
     }
 
+    /// The state of `path` for the manifest, and how many new blob bytes were stored for it.
     fn read_before(
         &self,
-        state: &mut State,
         limits: &Checkpoints,
+        blob_bytes: u64,
         path: &Path,
         cause: &mut Option<String>,
-    ) -> Before {
-        let skipped = |why| Before::Skipped { why };
+    ) -> (Before, u64) {
+        let skipped = |why| (Before::Skipped { why }, 0);
         let meta = match std::fs::metadata(path) {
             Ok(meta) => meta,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Before::Absent,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return (Before::Absent, 0),
             Err(_) => return skipped(SkipReason::Unreadable),
         };
         if !meta.is_file() {
@@ -721,15 +738,16 @@ impl CheckpointStore {
         };
         let hash = ContentHash::of(&bytes);
         let blob = self.dir.join(BLOBS).join(&hash.0);
+        let mut written = 0;
         if !blob.exists() {
-            if state.blob_bytes.saturating_add(bytes.len() as u64) > limits.max_session_bytes {
+            if blob_bytes.saturating_add(bytes.len() as u64) > limits.max_session_bytes {
                 return skipped(SkipReason::Budget);
             }
             if let Err(e) = owner_only::write_atomic(&blob, &bytes) {
                 *cause = Some(fontaine_tools::error_chain::chain(&e));
                 return skipped(SkipReason::StoreWrite);
             }
-            state.blob_bytes += bytes.len() as u64;
+            written = bytes.len() as u64;
         }
         #[cfg(unix)]
         let unix_mode = {
@@ -738,17 +756,18 @@ impl CheckpointStore {
         };
         #[cfg(not(unix))]
         let unix_mode = None;
-        Before::Blob { hash, unix_mode }
+        (Before::Blob { hash, unix_mode }, written)
     }
 
     fn record_after(&self, turn: u64, path: &Path) {
         let mut warnings = Vec::new();
+        let hash = hash_file(path);
         {
             let mut state = lock(&self.state, "checkpoint store");
             let entry = Entry::After {
                 turn,
                 path: path.to_string_lossy().into_owned(),
-                hash: hash_file(path),
+                hash,
             };
             Self::append(&mut state, entry, &mut warnings);
         }

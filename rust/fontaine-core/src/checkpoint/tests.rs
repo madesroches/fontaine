@@ -301,6 +301,21 @@ fn a_file_changed_since_the_last_tool_call_is_flagged() {
 }
 
 #[test]
+fn an_edit_made_after_the_plan_is_kept_by_the_restore() {
+    let r = rig();
+    let path = r.work.join("a.txt");
+    std::fs::write(&path, "v0").unwrap();
+    r.store.begin_turn(0, "one", 0);
+    r.edit("a.txt", "v1");
+    let plan = r.store.plan(1, &r.scope()).unwrap();
+    assert!(!plan.files[0].changed_since);
+    std::fs::write(&path, "the user got there").unwrap();
+    let report = r.store.restore_code(&plan, &r.scope(), false);
+    assert_eq!(report.kept_changed, std::slice::from_ref(&path));
+    assert_eq!(read(&path), "the user got there");
+}
+
+#[test]
 fn a_rewind_marker_hides_the_superseded_turns_and_a_new_turn_gets_a_fresh_ordinal() {
     let r = rig();
     std::fs::write(r.work.join("a.txt"), "v0").unwrap();
