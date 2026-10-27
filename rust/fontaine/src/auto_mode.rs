@@ -254,6 +254,7 @@ async fn critique_models(
         Ok(models) => models,
         Err(e) => return fail(chain(&e), e.exit_code()),
     };
+    print_warnings(&models.notices);
     let handle = match models.guardian {
         Some(GuardianModel::Ready(handle)) => handle,
         Some(GuardianModel::Unavailable { reference, reason }) => {

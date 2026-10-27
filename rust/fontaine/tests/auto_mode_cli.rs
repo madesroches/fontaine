@@ -62,12 +62,8 @@ async fn defaults_prints_the_shipped_lists_and_needs_no_config() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn config_shows_the_merged_entries_and_the_scopes_that_set_them() {
-    let (s, _endpoint) = setup().await;
-    let url = s.config.join("config.toml");
-    let base = std::fs::read_to_string(&url).unwrap();
-    s.user_config(&format!(
-        "{base}\n[auto_mode]\nallow = [\"$defaults\", \"deploys to staging are fine\"]\n"
-    ));
+    let s = Sandbox::new();
+    s.user_config("[auto_mode]\nallow = [\"$defaults\", \"deploys to staging are fine\"]\n");
     write(
         &s.work.join(".fontaine/settings.toml"),
         "[auto_mode]\nhard_deny = [\"never print the staging token\"]\n",

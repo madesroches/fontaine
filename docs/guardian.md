@@ -381,7 +381,9 @@ the repository defines and changes no setting. `--cd` and `--settings` apply. Ea
   the same main model and account; an unavailable guardian model is a configuration error (exit
   2), and a timeout (`[guardian] timeout_secs`) or provider error exits 1. Your entries go to that
   account's provider, as they do in a session; the command says so on stderr before sending. The
-  review is advice: it changes no setting and has no effect on any permission decision.
+  review is advice: it changes no setting and has no effect on any permission decision. Under
+  `[guardian] profile = "minimal"` it prints a note and makes no request, because the rule lists
+  are not sent.
 
 A prompt that is exactly `auto-mode` runs the subcommand, with or without `-p`; write
 `fontaine -p -- auto-mode` to give the agent that word as a task.
