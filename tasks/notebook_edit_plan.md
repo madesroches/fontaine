@@ -40,8 +40,9 @@ insert after, none = at the start), `cell_type` (`code`|`markdown`, required for
 Behavior, all on the parsed JSON (`serde_json::Value`, `preserve_order` so key order and unrelated
 fields survive):
 - Refuse a path not ending in `.ipynb`, a non-notebook JSON, or an unsupported `nbformat` (< 4).
-- Require the notebook to have been read first via the shared `Seen` (same rule as `edit`), and
-  refuse if it changed since the read.
+- Require the notebook to have been read first via the shared `Seen` (same rule as `edit`): resolve
+  with `workspace.place`, take `Seen::hash`/`text` (none = refuse), and apply the edit to that seen
+  text so the write-time check is the hash precondition below.
 - `replace`: set `source` of the cell; for a code cell clear `outputs` and `execution_count`;
   `cell_type` change allowed (adds/removes `outputs`/`execution_count`).
 - `insert`: new cell with a fresh id (nbformat >= 4.5 only; older notebooks get no `id`), empty
@@ -49,8 +50,14 @@ fields survive):
 - `delete`: remove the cell.
 - Cell lookup by `id`; also accept `cell-N` (0-based index) as Claude Code does.
 - Write back with the notebook's original indent (detect 1 vs 2 vs 4 spaces; default 1, nbformat's
-  own) and trailing newline, via the same atomic, locked replace `Write` uses (`Workspace::replace`),
-  then mark the file `Seen` whole and publish `FilesChanged` like `Write`.
+  own) and trailing newline, via `Workspace::write_if(path, bytes, seen_hash)` as rig's `Edit` does:
+  it writes only while the file still holds the seen text; on a hash mismatch nothing is written and
+  the call is refused as stale. `Local` writes with `write_atomic` (temp file and rename) but takes
+  no lock, and `write_if` reads then writes, so a concurrent writer between the two is not excluded.
+  On success `seen.saw_whole`; on an I/O error `seen.forget`.
+- Publish `FilesChanged` itself (no fontaine crate does today): build a `FileChange` with its
+  `ChangeKind` from the before/after bytes as rig's `Write` does, and implement `footprint` as
+  `Touches::Writes(Scope::Paths([resolved]))`.
 
 ### Notebook-aware `read`
 
@@ -58,7 +65,8 @@ Wrap rig's `Read` in a `NotebookRead` tool named `read` (same pattern as `Ls`/`G
 tools): for a `.ipynb` path return the rendered form — per cell `[cell N id=… type=…]`, source, and
 text outputs (stream/`text/plain`; images summarized as `[image/png output omitted]`), truncated
 by the same output limit as `read` — otherwise delegate unchanged. It records the notebook as
-`Seen` so `notebook_edit` is allowed. `edit`/`write` on a `.ipynb` keep working but are steered to
+`Seen` under the path resolved via `workspace.place`, and emits the same `FilesRead` result as rig's
+`Read` does, so `notebook_edit` is allowed. `edit`/`write` on a `.ipynb` keep working but are steered to
 `notebook_edit` in tool descriptions.
 
 ### Gate wiring
@@ -66,11 +74,13 @@ by the same output limit as `read` — otherwise delegate unchanged. It records 
 - `TOOLS` row: `("notebook_edit", WorkspaceWrite, path_free: false, Destructive::FileWrite,
   Specifier::Path, &["NotebookEdit"])`. A `NotebookEdit(path-pattern)` rule therefore works like an
   `Edit(...)` rule.
-- Add `"notebook_edit"` to the three path matches (`scope.rs` `fields_of`, `permission_rules.rs`
-  `path_args`, `destructive.rs` `touched_paths`) next to `"edit"`; protected-path and workspace
-  containment then apply with no further code. To keep that from being forgotten next time, factor
-  the shared "file tools with a required `path`" set into one `descriptor`-level predicate used by
-  all three (DRY, open/closed).
+- Add one `"notebook_edit"` arm next to `"edit"` at each site: `scope.rs` `fields_of`,
+  `permission_rules.rs` `path_args`, `destructive.rs` `touched_paths`, and in `permissions.rs` the
+  protected-path check (`matches!(tool, "edit" | "write")` before `floor::protected_path`), the
+  prompted-preview record (same `matches!`), and `summarize` (so the approval card shows the path),
+  plus the `preview.rs` arm.
+- One test iterates the `TOOLS` rows that are `WorkspaceWrite` and not `path_free` and asserts each is
+  handled by `fields_of`, `path_args`, `touched_paths` and `protected_path`.
 - Register in `builtins::build` via `GuardedTool::per_root`.
 - `extensions.rs`: `NotebookEdit` now maps (via `find_claude`); update the test that used it as the
   unmapped example to another name.
@@ -82,8 +92,8 @@ by the same output limit as `read` — otherwise delegate unchanged. It records 
 
 1. `notebook.rs`: pure notebook model functions (parse, render, apply edit, serialize with indent
    preservation) with no I/O; then the `NotebookEdit` and `NotebookRead` tools over them.
-2. Descriptor row + shared path-tool predicate; update the three matches; update `rows_are_pinned`
-   and the `choke_point.rs` tables.
+2. Descriptor row; add the `notebook_edit` arm at each site (three matches plus the `permissions.rs`
+   sites); the `TOOLS`-row coverage test; update `rows_are_pinned` and the `choke_point.rs` tables.
 3. Register in `builtins::build`; add to `worker` toolset; fix `extensions.rs` mapping and test.
 4. Preview arm in `preview.rs`.
 5. Docs and changelog.
@@ -93,10 +103,18 @@ by the same output limit as `read` — otherwise delegate unchanged. It records 
 
 - `rust/fontaine-tools/src/notebook.rs` (new), `lib.rs`, `builtins.rs`, `descriptor.rs`, `scope.rs`
 - `rust/fontaine-tools/tests/choke_point.rs`
-- `rust/fontaine-core/src/{permission_rules,destructive,preview,extensions}.rs`
+- `rust/fontaine-core/src/{permissions,permission_rules,destructive,preview,extensions}.rs`,
+  `rust/fontaine-core/tests/extensions.rs` (lines 117-119 expect `tools: Read, NotebookEdit` to be an
+  error; change the example)
+- `rust/fontaine-evals/src/baseline.rs` (map `path` to `notebook_path` for `notebook_edit`, near the
+  `TOOL_NAMES` table and the `file_path` mapping)
 - `rust/fontaine-agents/src/registry.rs`
-- `docs/tools.md`, `docs/permissions.md`, `CHANGELOG.md`, `research/research-claude-code-parity.md`
-  (mark NotebookEdit done)
+- `rust/Cargo.toml` (`serde_json` with `preserve_order`), `rust/fontaine-tools/Cargo.toml` (`uuid`
+  if used for cell ids)
+- `docs/tools.md`, `docs/permissions.md`, `docs/extensions.md` (line 82 names `NotebookEdit` as
+  unmapped), `docs/agents.md` (line 39 `worker` toolset), `docs/tui.md` and `docs/terminal.md`
+  (lines 161, 165: `edit`/`write` diff cards), `docs/configuration.md` (line 562 tool list),
+  `CHANGELOG.md`, `research/research-claude-code-parity.md` (mark NotebookEdit done)
 
 ## Trade-offs
 
@@ -111,12 +129,14 @@ by the same output limit as `read` — otherwise delegate unchanged. It records 
 ## Decisions
 
 - 2026-10-27: Risk class is `WorkspaceWrite`, per the issue; the protected-path and critical-path
-  floor applies unchanged because the path is wired into the shared path matches.
+  floor applies because `notebook_edit` is added to the path matches and to the hardcoded
+  `edit`/`write` sites in `permissions.rs`.
 
 ## Documentation
 
 `docs/tools.md` (new row, notebook-aware `read`), `docs/permissions.md` (acceptEdits/plan lists and
-rule specifier table name `notebook_edit`), `CHANGELOG.md`, parity matrix.
+rule specifier table name `notebook_edit`), `docs/extensions.md`, `docs/agents.md`, `docs/tui.md`,
+`docs/terminal.md`, `docs/configuration.md`, `CHANGELOG.md`, parity matrix.
 
 ## Testing Strategy
 
@@ -126,8 +146,12 @@ trailing-newline round trip; unknown-field preservation; error paths (not `.ipyn
 nbformat 3, missing cell, missing `new_source`, bad `cell_type`); render with stream/error/image
 outputs. Tool tests over a tempdir: not-read-first refusal, stale-after-read refusal, confinement
 outside the root, atomic write. Gate tests: descriptor pin, choke-point class, `acceptEdits` runs it
-inside the root, `plan` blocks it, a `.git/` path hits the protected-path floor, a `NotebookEdit(...)`
-rule matches, preview diff. Registry test that `worker` includes it.
+inside the root, `plan` blocks it, a `.git/` path hits the protected-path floor through the real
+permission pipeline, a `NotebookEdit(...)` rule matches, preview diff, the `TOOLS`-row coverage test.
+A new registry test that `worker` includes it (`registry.rs:268` is only a generic intersection test).
+The workspace `serde_json` dependency gets `preserve_order` enabled explicitly (it is active today
+only through feature unification); `uuid` (a workspace dependency) is added to `fontaine-tools` if
+used for cell ids.
 
 ## Open Questions
 
