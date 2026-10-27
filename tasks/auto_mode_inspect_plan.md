@@ -29,7 +29,9 @@ open, so this is cheap, and it lets users see exactly what the guardian judges a
 - `rust/fontaine/src/cli.rs` has no subcommands; `run` (`rust/fontaine/src/lib.rs:231`) parses
   flags, loads config via `load_config`, then starts a headless or interactive session.
 - Guardian model resolution: `fontaine_core::models::resolve` yields `Models.guardian`
-  (an `Option<ModelHandle>`, with `DynModel<Completion>`); `build_guardian` wraps it for structured verdicts.
+  (an `Option<GuardianModel>`: `Ready(ModelHandle)` or `Unavailable { reference, reason }`;
+  the handle carries the `DynModel<Completion>`, the thinking-off `additional_params` and
+  `catalog_billed()`); `build_guardian` wraps it for structured verdicts.
 
 ## Design
 
@@ -46,11 +48,16 @@ fontaine auto-mode critique   [--format text|json]
 `#[command(subcommand)] command: Option<Command>` with the existing `global = true` flags
 (`--cd`, `--settings`, `--debug-file`) applying to the subcommand. `args_conflicts_with_subcommands`
 is not set: it makes any matched arg, including a global one, stop clap recognising the subcommand.
-A subcommand wins over the positional prompt, and session-only flags (`--model`, `-p`, …) are
-ignored with a subcommand. `run` dispatches to a new module
-`rust/fontaine/src/auto_mode.rs` right after `apply_cd` and `load_config` (so `--cd` and
+The prompt is a plain optional positional and `-p` a bool flag, so clap matches a positional
+against the subcommand names first: both `fontaine auto-mode` and `fontaine -p "auto-mode"`
+parse as the subcommand. A literal prompt "auto-mode" is written `fontaine -p -- auto-mode`.
+Session-only flags (`--model`, `-p`, …) are ignored with a subcommand. `run` dispatches to a new
+module `rust/fontaine/src/auto_mode.rs` right after `apply_cd` and `load_config` (so `--cd` and
 `--settings` apply), before the TTY check, trust prompt and session preparation — none of the
-subcommands start a session or run project executables.
+subcommands start a session or run project executables. `check_session_flags` runs earlier, so
+it still rejects its own misuse (an invalid `--name`, `--fork-session` without `--continue` or
+`--resume`, `--session-id` with `--continue`/`--resume`) alongside a subcommand; every other
+session flag is ignored.
 
 ### `defaults`
 
@@ -87,22 +94,31 @@ hard-deny classes. Behavior:
   with "nothing to critique", needing no model.
 - Resolves the guardian model through the same path a session uses (`models::resolve`, with the
   guardian default selection), so the account, credentials and the "unavailable" cases behave
-  identically; an absent `Models.guardian` or an unavailable guardian (missing credential) is
-  `EXIT_CONFIG`, never a silent skip.
+  identically. That path also requires a main model (`no main model` otherwise) and may make
+  its account-listing call; this is accepted, and only the no-custom-entries path is guaranteed
+  to make zero requests. `critique` matches on `GuardianModel`: `Unavailable` and an absent
+  `Models.guardian` are `EXIT_CONFIG`, never a silent skip.
 - Sends one plain-text completion (no tools, no structured verdict) through a plain rig
   completion/agent prompt on the guardian's `DynModel`: guardian.rs and scanner.rs use
   `ExtractorBuilder`, so no plain-text path exists yet. The token cap reuses the private
   `MAX_TOKENS` (1_024) in `fontaine-guardian/src/guardian.rs`, exposed for this call; no new
-  config key. It uses a new prompt asset `fontaine-guardian/prompts/critique.md`, with the effective
-  lists rendered through the existing `bullets` redaction path so credential-shaped text never
+  config key. The call takes the whole `ModelHandle`'s model and `thinking_off` params, as the
+  guardian does. It uses a new prompt asset `fontaine-guardian/prompts/critique.md`, with the effective
+  lists rendered through the existing `bullets` redaction path (private in
+  `prompt_builder.rs`; made `pub(crate)` for `critique.rs`) so credential-shaped text never
   leaves the machine. The custom entries are placed in the user message and treated as untrusted
-  text (`neutralize`).
-- Prints the model's reply and the cost line (text mode), or both in the JSON object; never changes any config. The critique is advisory
+  text (`neutralize`). The prompt names which shipped `environment`/`allow` entries a custom list
+  replaced (no `$defaults`) and states that `hard_deny`/`soft_deny` always keep theirs.
+- With `[guardian] profile = "minimal"` the rule lists are not sent to the guardian, so it prints
+  a note saying so and exits 0 without a call.
+- Prints the model's reply and the cost line (text mode), or both in the JSON object; the cost is
+  the returned `Usage.cost` when the handle is `catalog_billed()` (the session's own rule for
+  dropping an unpriced model's cost), otherwise token counts only. Never changes any config. The critique is advisory
   and has no effect on any permission decision (error text may explain, never change, a Deny).
 - A timeout (`[guardian] timeout_secs`) or provider error is reported with the error chain
   (`fontaine_tools::error_chain::chain`) and a non-zero exit.
 
-The critique call lives in `fontaine-guardian` as `critique::review(model, config) -> Result<String,
+The critique call lives in `fontaine-guardian` as `critique::review(handle, config) -> Result<(String, Usage),
 _>` (a chain-preserving error, not a typed enum: no caller dispatches on its kind) so it is embeddable by other harnesses and unit-testable with rig's
 deterministic test model.
 
@@ -113,14 +129,17 @@ deterministic test model.
 - At load, project scope may not set `auto_mode.environment`/`allow` without user trust, while
   `soft_deny`/`hard_deny` are accepted from project scope (add only, `config_scope.rs:168-171`);
   `config` shows the post-merge result, so
-  it cannot disagree with what a session enforces (the shared helper above guarantees that).
+  it uses the same merge and helper a session does. Dispatch runs before the trust prompt, so
+  `config` shows what an untrusted or non-interactive load yields, which can differ from a trusted
+  interactive session; `Config.sources` is built from raw layer tables, so it may list a project
+  scope whose `environment`/`allow` the scope rule dropped.
 - Output of `config` includes project-scope text; it is printed to the terminal as data only.
   In text mode terminal control characters in entries are shown as escapes: the private
   `display_rule` (`rust/fontaine-tui/src/approval.rs:289`) moves to a shared crate
   (`fontaine-tools` or `fontaine-core`). JSON output needs none, since serde_json escapes them.
 - The critique prompt includes user-authored rule text sent to the guardian account's provider;
   `critique` states which model/account it is about to call on stderr before sending, and carries
-  the cost in the JSON object. Project-scope `soft_deny`/`hard_deny` text goes to the guardian
+  the cost or token counts in the JSON object. Project-scope `soft_deny`/`hard_deny` text goes to the guardian
   provider with no extra prompt, the same exposure a session's guardian prompt already has.
 
 ## Implementation Steps
@@ -154,6 +173,8 @@ deterministic test model.
 
 ## Decisions
 
+- 2026-10-27: a prompt that is exactly a subcommand name (`auto-mode`) runs the subcommand, with
+  or without `-p`; `--` is the escape for a literal prompt.
 - 2026-10-27: `config` records scopes per list, not per entry; no merge change.
 - 2026-10-27: `critique` output is free-text advisory; no structured verdict.
 - 2026-10-27: `--format text|json` is offered on all three subcommands; not verified against
@@ -179,7 +200,7 @@ deterministic test model.
   settings shows the right scopes and merged entries; `critique` with no custom entries exits 0
   and zero requests reached the wiremock endpoint (`Endpoint::requests()` in
   `rust/fontaine/tests/common/mod.rs`); `fontaine --cd X auto-mode config` parses; `fontaine -p
-  "auto-mode"` stays a prompt (`-p` is matched). `Sandbox::headless` adds `-p`, so subcommand
+  -- auto-mode` stays a prompt while `fontaine -p "auto-mode"` runs the subcommand. `Sandbox::headless` adds `-p`, so subcommand
   tests invoke `run` directly.
 - Tiers: rig's deterministic test model covers the library (`critique::review`); the wiremock
   `Endpoint` covers the binary's request/response plumbing. No live APIs in tests.
