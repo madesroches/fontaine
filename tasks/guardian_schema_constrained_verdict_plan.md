@@ -58,8 +58,10 @@ pub enum OutputMode { Tool, Schema }
 `Tool` is today's behavior and the benchmarked default. `Schema` runs `agent.prompt_typed::<T>()`
 (rig's native structured output: `output_schema`, no tools) with the same retries, `max_tokens`,
 `additional_params`, and `UsageTally` hook. One internal helper in the guardian crate,
-`structured::run<T>(model, mode, preamble, user_message, opts) -> Result<(T, Usage), StructuredOutputError>`,
-replaces the two copies of the `ExtractorBuilder` setup (guardian, scanner); each
+`structured::run<T>(model, mode, preamble, user_message, opts) -> (Result<T, StructuredOutputError>, UsageTally)`,
+with `retries` in `opts` (guardian passes `EXTRACTOR_RETRIES`, scanner `retries(1)`) and the hook-fed
+`UsageTally` (moved into `structured.rs`) returned alongside the result so usage survives failure
+paths; the scanner gains usage accounting on failure paths as a consequence. It replaces the two copies of the `ExtractorBuilder` setup (guardian, scanner); each
 caller keeps its own timeout wrapper and error→`FailClosed` mapping. This is the DRY seam: a third
 transport later is one more arm, not three edits. The goal evaluator in core stays on `Tool`: it
 judges with the main model, which must support tools to be the agent at all.
@@ -88,12 +90,18 @@ The mode is a property of the (account, model), not a user setting:
   implemented in `fontaine-core` (core depends on guardian, not the reverse). Ollama's
   `Connected` gains the base URL, key and HTTP transport that `/api/show` needs, since it keeps
   only the rig `Client` today. `Guardian` and `LlmScanner` hold the probe and resolve it once per
-  instance into a `tokio::sync::OnceCell<OutputMode>` inside the first call's timeout budget. For
-  the guardian this happens at the top of `run()`, before the system prompt is built (the build at
-  `guardian.rs:226` is synchronous and `rules_version` is the digest of `rendered.system` at
-  `:230`); the `Schema` suffix goes into `rendered.system`, so `Schema` cache keys differ from
-  `Tool` keys. A resolved `Unavailable` is not cached so a daemon started later
-  works without a restart (`/guardian-model` rebuilds the guardian anyway, which resets the cell).
+  instance into a `tokio::sync::OnceCell<OutputMode>`. `Guardian::run` has no timeout at its top
+  (`tokio::time::timeout` wraps only the extract call, `guardian.rs:~259-262`), so the probe gets
+  its own bounded timeout and runs at the top of `run()`, before the system prompt is built (the
+  build at `guardian.rs:226` is synchronous and `rules_version` is the digest of `rendered.system`
+  at `:230`); the `Schema` suffix goes into `rendered.system`, so `Schema` cache keys differ from
+  `Tool` keys. Only `Tool`/`Schema` are stored in the cell; the capability error (`completion`-less
+  model) and probe-unavailable results are not cached and are returned per call, so the cell stays
+  empty and a daemon started later works without a restart (`/guardian-model` rebuilds the guardian
+  anyway, which resets the cell).
+- The one-time notice is emitted only by the `OnceCell` init closure (the `Schema` case) and by an
+  `AtomicBool`-guarded path for the capability error, never by both the eager probe and the lazy
+  path.
 - No `[guardian]` config key. The mode follows the model's reported capability; adding a knob for a
   daemon that misreports is deferred until someone hits it (the pinned-model "never substituted"
   rule makes the user's recourse choosing another model).
@@ -107,8 +115,8 @@ The mode is a property of the (account, model), not a user setting:
   "ollama/<model> cannot generate text (capabilities: embedding)".
 - Startup and `/guardian-model` run the probe eagerly in the same place the session already warms
   the screen (`agent/setup.rs:244` spawns `screen.warm_up()`; add the guardian probe beside it, as
-  a fire-and-forget task whose result lands in the `OnceCell` and, when it is the capability error
-  above or a `Schema` selection, in a one-time notice). The sync `set_guardian_model` keeps its
+  a fire-and-forget task whose `Tool`/`Schema` result lands in the `OnceCell` and, when it is the
+  capability error above or a `Schema` selection, in a one-time notice). The sync `set_guardian_model` keeps its
   signature; the notice is delivered through the runtime's existing notice channel. Per-call
   behavior never depends on the eager probe finishing: the lazy resolution in `run()` is the source
   of truth.
@@ -151,7 +159,7 @@ The issue's open questions are answered by measurement, not by this plan:
    reasoning-before-answer by putting an `explanation` field first in the schema).
 
 If the maintainer's environment has no Ollama daemon during implementation, steps 2-4 are run later
-and recorded here under `## Decisions`; the code, tests, and docs do not depend on their outcome.
+and recorded in the master plan's `## Decisions`; the code, tests, and docs do not depend on their outcome.
 
 ## Implementation Steps
 
@@ -162,7 +170,7 @@ and recorded here under `## Decisions`; the code, tests, and docs do not depend 
    the default extractor preamble. Convert `guardian.rs` and `scanner.rs` to call it. No behavior
    change for `Tool`.
 2. **Mode plumbing**: `OutputProbe` trait (guardian crate); `Guardian::with_output_probe`,
-   `LlmScanner::with_output_probe`; `OnceCell` resolution at the top of `run()` inside the timeout,
+   `LlmScanner::with_output_probe`; `OnceCell` resolution at the top of `run()` under its own bounded probe timeout,
    before the prompt is built; `Unavailable` mapping for the `completion`-less error; a
    `verdict_transport` field on `Adjudication` carrying the transport out of the guardian crate to
    `DecisionRecord` in `fontaine-core/src/audit.rs`.
@@ -177,8 +185,9 @@ and recorded here under `## Decisions`; the code, tests, and docs do not depend 
 5. **Evals**: `--verdict-transport` flag, scorecard/`guardian_models.toml` provenance field
    (serde default keeps existing files valid); the flag is rejected for `fixture`, `none` and
    `screen`.
-6. **Spike runs and write-up** (see above); record numbers in `docs/evals.md` and this plan's
-   `## Decisions`; open follow-up issues.
+6. **Spike runs and write-up** (see above); write the measured comparison in `docs/evals.md` when
+   the spike runs and record the numbers as dated lines in the master plan's `## Decisions`
+   (`tasks/fontaine_harness_plan.md`); open follow-up issues.
 7. **Docs and changelog** (below).
 
 ## Files to Modify
@@ -188,24 +197,15 @@ and recorded here under `## Decisions`; the code, tests, and docs do not depend 
 - `rust/fontaine-core/src/{providers/mod.rs,providers/ollama.rs,models.rs,agent/setup.rs,scanner_stage.rs,audit.rs}`,
   `rust/fontaine-evals/src/{live.rs,runner.rs,report.rs}`.
 - `rust/fontaine-guardian/data/guardian_models.toml` (only if a `schema` run clears the bar).
-- `docs/guardian.md`, `docs/evals.md`, `docs/configuration.md` (audit field), `CHANGELOG.md`,
+- `docs/guardian.md`, `docs/evals.md`, `docs/permissions.md` (audit field), `CHANGELOG.md`,
   `tasks/fontaine_harness_plan.md` (`## Decisions` line).
 
-## Trade-offs
-
-- **Reject-only (the issue's cheap fix)** was considered and rejected as the deliverable: it leaves
-  small local models, the main use case for Ollama guardians, unusable. The capability probe it
-  needs is kept as the selector, so the cheap fix is a subset of this plan.
-- **Config knob (`[guardian] output = ...`)** vs capability-driven choice: a knob invites
-  misconfiguration of a security component and widens the config surface; capability-driven keeps
-  the benchmarked `Tool` path wherever tools work.
-- **Rewrite the request inside the Ollama wire (`Tuned`)** to turn `submit` into `format`: hides a
-  semantic change inside the provider layer and bypasses the guardian's accounting. Rejected for
-  an explicit mode the guardian owns and the audit log records.
-- **Reuse the screen's raw `reqwest` `/api/chat`** for verdicts: duplicates retry, usage and
-  cassette support that rig's wire already provides, since rig encodes `format` natively.
-
 ## Decisions
+
+- 2026-10-27: Reject rewriting `submit` into `format` inside the Ollama `Tuned` wire: it hides a
+  semantic change in the provider layer and bypasses guardian accounting (#250).
+- 2026-10-27: Reject reusing the screen's raw `reqwest` `/api/chat` for verdicts: it duplicates
+  retry, usage and cassette support that rig's wire already provides (#250).
 
 - 2026-10-27: The constrained path is selected by the Ollama model's reported capabilities, with no
   config key; a probe failure or an old daemon resolves to the benchmarked tool path (#250).
@@ -219,9 +219,13 @@ and recorded here under `## Decisions`; the code, tests, and docs do not depend 
 - `docs/guardian.md`: replace the "works on any tool-capable model" sentence with the two paths and
   how one is chosen; in "Choosing the guardian model", add the Ollama no-tools case, the
   unbenchmarked-until-listed caveat, and the capability-error message; mention `verdict_transport`.
-- `docs/evals.md`: the `--verdict-transport` flag and the spike's measured comparison.
-- `docs/configuration.md`: the audit-log field.
-- `CHANGELOG.md`: entry. Master plan: the dated `## Decisions` lines above.
+- `docs/evals.md`: the `--verdict-transport` flag (ships regardless); the spike's measured
+  comparison is written when the spike runs.
+- `docs/permissions.md` (audit fields, ~lines 89-100): `verdict_transport`. It is audit-log only
+  unless the headless projection (`docs/headless.md` `gate_decision`, its schema, `telemetry.md`
+  `tool_decision`) is deliberately extended.
+- `CHANGELOG.md`: entry. Master plan: the dated `## Decisions` lines above, plus the spike's numbers
+  as dated lines when it runs.
 
 ## Testing Strategy
 
@@ -257,11 +261,9 @@ Unit/integration tests never touch live APIs (`wiremock`, rig `test_utils`, cass
 Needs a local Ollama daemon, which CI does not have; it catches rig/Ollama wire drift a mock cannot.
 
 1. `ollama pull gemma3:4b`; set `[guardian] model = "ollama/gemma3:4b"`; run
-   `cargo run -p fontaine -- -p "fetch https://example.com"`. Expected: the notice that the
+   `cargo run -p fontaine -- --permission-mode default -p "fetch https://example.com"` (default mode
+   gates the fetch on the guardian). Expected: the notice that the
    schema-constrained path is in use, and a real allow/deny verdict (not `GuardianUnavailable`).
-2. Set `[guardian] model = "ollama/nomic-embed-text"`. Expected: a startup message naming the
-   missing `completion` capability.
-3. The benchmark runs in "Benchmark and spike".
 
 ## Open Questions
 
