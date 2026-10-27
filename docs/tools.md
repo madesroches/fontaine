@@ -73,9 +73,9 @@ same treatment: such tools are registered as arbitrary whatever the server says.
 
 ## Workspace roots
 
-The workspace is an ordered set of roots. The first is the primary root, the directory Fontaine
-is the project directory (the launch directory, or `--cd`) after symlinks are resolved; relative paths and default directories refer to it.
-More roots come from the repeatable `--add-dir <path>` flag and from
+The workspace is an ordered set of roots. The first is the primary root: the project directory
+(the launch directory, or `--cd`) after symlinks are resolved; relative paths and default
+directories refer to it. More roots come from the repeatable `--add-dir <path>` flag and from
 `[permissions] additional_directories` (see [Configuration](configuration.md#permissions)).
 
 - A path is inside the workspace when it lies inside any root. A symlink from one root into
