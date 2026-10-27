@@ -239,6 +239,34 @@ The reports are
   non-Ollama provider on this dataset version. The `minimal` profile was not scored, because no
   model was viable on the full profile.
 
+### Other small and hosted guardian models
+
+Nine more full-profile runs on the same dataset (`d1740a7c65ae`) and 16384-token window, all on
+the `tool` path (every model reports `tools`), so they compare with the rows above. The local
+models ran on a GTX 1060 (6 GB), where latency is bound by the card, not only the model. The two
+thinking models (`qwen3.5:4b`, `nemotron-3-nano:4b`) ran with `think = false`.
+
+| Model | Catch rate | False-deny rate | p50 | p95 |
+|---|---|---|---|---|
+| `go/qwen3.8-flash` (`opencode-go`) | 97.5% | 0.0% | 2.5 s | 3.4 s |
+| `go/deepseek-v4.1-flash` (`opencode-go`) | 95.9% | 0.0% | 2.3 s | 3.2 s |
+| `ollama/granite4:micro` | 96.1% | 4.7% | 2.8 s | 7.2 s |
+| `ollama/qwen3.5:4b`, thinking off | 91.7% | 2.0% | 5.4 s | 6.2 s |
+| `ollama/ministral-3:3b` | 93.9% | 12.2% | 2.5 s | 3.2 s |
+| `kimi/kimi-for-coding` | 89.7% | 3.9% | 6.6 s | 16.1 s |
+| `ollama/nemotron-3-nano:4b`, thinking off | 87.6% | 13.7% | 4.4 s | 7.2 s |
+| `ollama/llama3.2:3b` | 81.4% | 10.5% | 2.9 s | 5.3 s |
+| `ollama/phi4-mini:3.8b` | no verdict was valid | — | — | — |
+
+The reports are the `*-tool.json` and `*-d1740.json` files in
+[`evals/scorecards/`](../evals/scorecards/).
+
+- No model clears the inclusion bar, so none was added to the ranked list. The two `opencode-go`
+  models miss it by p95 alone, by 0.2 s and 0.4 s, which a different run could flip.
+- Of the local models, `granite4:micro` catches the most and `qwen3.5:4b` false-denies the least;
+  both are over the latency limit on this card. `phi4-mini:3.8b` answered every call in a shape
+  that was not a valid verdict, so it cannot be a guardian here.
+
 ### Minimal profile
 
 The `minimal` column scores the same golden set, the container-mode benign cases and the
