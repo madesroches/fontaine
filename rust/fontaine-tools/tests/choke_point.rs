@@ -13,13 +13,14 @@ use fontaine_tools::risk::RiskClass;
 use rig_core::tool::{Tool, ToolContext};
 use rig_tools::{OutputLimit, Seen, WriteArgs};
 
-const EXPECTED: [(&str, RiskClass); 8] = [
+const EXPECTED: [(&str, RiskClass); 9] = [
     ("read", RiskClass::ReadOnly),
     ("ls", RiskClass::ReadOnly),
     ("glob", RiskClass::ReadOnly),
     ("grep", RiskClass::ReadOnly),
     ("write", RiskClass::WorkspaceWrite),
     ("edit", RiskClass::WorkspaceWrite),
+    ("notebook_edit", RiskClass::WorkspaceWrite),
     ("shell", RiskClass::Arbitrary),
     ("webfetch", RiskClass::Arbitrary),
 ];
@@ -98,6 +99,7 @@ fn file_tools_are_confined_to_their_root() {
     assert!(builtins::read_for(&root, &seen).confine);
     assert!(builtins::edit_for(&root, &seen).confine);
     assert!(builtins::write_for(&root, &seen).confine);
+    assert!(builtins::notebook_edit_for(&root, &seen).confine);
     assert!(builtins::list_for(&root).confine);
     assert!(builtins::search_for(&root).confine);
     assert_eq!(

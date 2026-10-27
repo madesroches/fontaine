@@ -732,7 +732,7 @@ impl PermissionPipeline {
                 );
             }
         }
-        if matches!(tool, "edit" | "write")
+        if matches!(tool, "edit" | "write" | "notebook_edit")
             && let Some(found) =
                 floor::protected_path(&scope, home, &self.state.protected_dirs, args)
         {
@@ -1679,7 +1679,7 @@ impl PermissionPipeline {
         let GateDecision::Allow { args } = decision else {
             return;
         };
-        if !matches!(tool, "edit" | "write") {
+        if !matches!(tool, "edit" | "write" | "notebook_edit") {
             return;
         }
         let Some(id) = self.state.current_call(agent) else {
@@ -1755,7 +1755,7 @@ pub fn summarize(tool: &str, args: &Value) -> String {
     let text = |key: &str| args.get(key).and_then(Value::as_str);
     let line = match tool {
         "shell" => text("command").map(str::to_string),
-        "read" | "write" | "edit" => text("path").map(str::to_string),
+        "read" | "write" | "edit" | "notebook_edit" => text("path").map(str::to_string),
         "webfetch" => text("url").map(str::to_string),
         "websearch" => text("query").map(str::to_string),
         "glob" => text("pattern").map(str::to_string),

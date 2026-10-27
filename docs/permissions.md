@@ -14,8 +14,8 @@ run (`fontaine -p`) starts in `manual`, as Claude Code's `-p` starts in `default
 | Mode | What happens to a call nothing pre-approved |
 |---|---|
 | `manual` | The human is asked. |
-| `acceptEdits` | `write` and `edit` inside the workspace roots run; everything else asks. |
-| `plan` | No edit ever runs: `write` and `edit` are blocked outright. Other consequential calls (write-capable or unparsed `shell`, `webfetch`, `websearch`, every MCP call, shell reads outside the roots) go to the guardian, as in `auto`. |
+| `acceptEdits` | `write`, `edit` and `notebook_edit` inside the workspace roots run; everything else asks. |
+| `plan` | No edit ever runs: `write`, `edit` and `notebook_edit` are blocked outright. Other consequential calls (write-capable or unparsed `shell`, `webfetch`, `websearch`, every MCP call, shell reads outside the roots) go to the guardian, as in `auto`. |
 | `dontAsk` | Denied. Only calls that are pre-approved run. |
 | `auto` | The [guardian](guardian.md) decides: allow, deny with a reason, or ask you. |
 
@@ -51,7 +51,7 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
      text is data. A command name built from an expansion counts as critical.
      A target that cannot be resolved (a variable, a glob, a tilde, a brace pattern), a command that does not parse, and an `rm` inside a command that is
      not one simple command all count as critical.
-   - **protected path**: `write` and `edit` on a path with a component named `.git`, `.vscode`,
+   - **protected path**: `write`, `edit` and `notebook_edit` on a path with a component named `.git`, `.vscode`,
      `.idea`, `.husky`, `.fontaine` or `.claude`, or whose file name is `.gitconfig`, `.gitmodules`,
      `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc` or `.mcp.json`,
      in any workspace root or the home directory, asks; so does any path under Fontaine's own
@@ -70,7 +70,7 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    and no mode, `auto` included, ever answers it: the answer comes from you or, in a headless run,
    from nobody (the model is told to use its best judgment). Your typed "Other" answers count as
    intent for the guardian; the options you pick do not.
-   A file-tool call (`read`, `ls`, `glob`, `grep`, `write`, `edit`) that names a path outside
+   A file-tool call (`read`, `ls`, `glob`, `grep`, `write`, `edit`, `notebook_edit`) that names a path outside
    every root is denied, with a hint naming the session's scratch directory and `/add-dir`: the
    file tools are confined to the roots, so an approval could never make the call run. The scratch
    directory is an ordinary root (see [Tools](tools.md#the-scratch-directory)): this step, the floor
@@ -146,7 +146,7 @@ grammar: `Tool` or `Tool(specifier)`. A bare tool name matches every call of the
 | Tool | Specifier | Matches |
 |---|---|---|
 | `shell` | words, optionally ending in ` *`: `shell(git push)`, `shell(npm run test *)` | the parsed command line; quoting keeps a word whole; no wildcard inside a word |
-| `read`, `edit`, `write`, `ls`, `glob`, `grep` | a gitignore-style path pattern: `src/**`, `~/.aws/**`, `//etc/hosts` | the resolved path; relative patterns anchor at each workspace root, `~/` at your home (a deny or ask rule with `~/` matches everything when no home directory can be found; an allow rule matches nothing), `//` at the file system root |
+| `read`, `edit`, `write`, `notebook_edit`, `ls`, `glob`, `grep` | a gitignore-style path pattern: `src/**`, `~/.aws/**`, `//etc/hosts` | the resolved path; relative patterns anchor at each workspace root, `~/` at your home (a deny or ask rule with `~/` matches everything when no home directory can be found; an allow rule matches nothing), `//` at the file system root |
 | `webfetch` | `domain:example.com` or `domain:*.example.com` | the URL's host; `*.` matches subdomains only |
 | `websearch` | none | the tool name; the destination is the configured backend, not a host the model picks, so `domain:` does not apply |
 | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | none | the registered tool name |
@@ -208,7 +208,7 @@ The approval prompt can create allow rules:
 - **Always allow** appends the same rule to `[permissions] allow` in your user settings file,
   keeping the file's comments and layout, and applies it at once.
 
-The diff an `edit` or `write` prompt shows is display-only: it is not sent to the guardian, hooks,
+The diff an `edit`, `write` or `notebook_edit` prompt shows is display-only: it is not sent to the guardian, hooks,
 telemetry or the ledger, and it changes no decision.
 
 The proposed rule is the narrowest that covers the call: the exact command words for `shell`, the

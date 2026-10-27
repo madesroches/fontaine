@@ -8,6 +8,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `notebook_edit` edits one cell of a Jupyter notebook (`replace`, `insert` or `delete`, by cell id
+  or `cell-N`); a code cell's outputs are cleared when its source is replaced. `read` shows a
+  `.ipynb` as its cells, ids and text outputs, `NotebookEdit` rules and `allowed-tools` entries now
+  map to it, and it joins the `worker` subagent type. It is a workspace write: `acceptEdits` runs
+  it, `plan` blocks it, and the protected-path floor applies (#20).
 - Auto memory (`[memory] auto`, user scope only, on by default while it is tested). The agent saves
   notes about the project with `write` and `edit` to `<data dir>/memory/<project key>/`, outside the
   repository, and the capped `MEMORY.md` index loads into later sessions framed as unverified notes.

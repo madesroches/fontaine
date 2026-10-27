@@ -29,7 +29,7 @@ as pending, and its card (outcome, output, diff) follows after it once it settle
 A call that has finished shows more than its one line. A command that is multi-line or wider than
 the screen is shown under the `•` row, folded to three rows with `… (+N rows)` for the rest. The
 tool's output follows, dim behind a `│` gutter: the last ten rows, with `… N earlier rows` when
-more were cut. An `edit` or `write` call shows its diff instead (a `path  +added -removed` header,
+more were cut. An `edit`, `write` or `notebook_edit` call shows its diff instead (a `path  +added -removed` header,
 then up to 20 lines in the same form as the approval prompt, with `… N more changed lines`), for
 every allowed call, not only the ones you were asked about. A failed call keeps its `✗ failed:`
 reason on the first row and shows its output. `read` and `todo_write` calls and calls with empty
@@ -194,15 +194,15 @@ When a call needs approval, a prompt lists the call and why it asked:
 - `n` deny. Enter on the deny row opens an optional reason, which is sent to the model with the
   denial.
 
-For an `edit` or `write` call the prompt also shows the change as a diff, above the reason: a
+For an `edit`, `write` or `notebook_edit` call the prompt also shows the change as a diff, above the reason: a
 `path  +added -removed` header, then the changed lines with three lines of context, each behind
 its line number, added lines marked `+` and removed lines `-` (in green and red). Long lines wrap
 under a blank gutter, and PageUp and PageDown scroll the diff like any long call. At most 200 rows
 are shown; the rest is summarized as `… N more changed lines (not shown)`. The diff is computed
 from the file as it is when the prompt opens, so it is advisory: the tool applies the edit to the
 file as it is when it runs. The transcript card of an allowed call shows the same diff. No diff appears, and the prompt shows only the path, for other tools,
-for a path outside the workspace roots, for a file that is missing (`edit`), not UTF-8 or larger
-than 1 MiB, and for an edit that matches nowhere or more than once. Control characters in file
+for a path outside the workspace roots, for a file that is missing (`edit`, `notebook_edit`), not UTF-8 or larger
+than 1 MiB, and for an edit that matches nowhere or more than once. A `notebook_edit` diff is the cell's source before and after, not the notebook's JSON. Control characters in file
 content are blanked and credential-shaped text is redacted before it is shown.
 
 When several agents ask at once their prompts queue and are shown one at a time, and a prompt that

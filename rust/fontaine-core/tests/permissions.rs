@@ -17,6 +17,10 @@ fn edit_args(path: &str) -> Value {
     json!({"path": path, "edits": [{"old_text": "a", "new_text": "b", "replace_all": false}]})
 }
 
+fn notebook_args(path: &str) -> Value {
+    json!({"path": path, "cell_id": "cell-0", "new_source": "x"})
+}
+
 fn shell(command: &str) -> Value {
     json!({"command": command})
 }
@@ -63,6 +67,16 @@ async fn the_mode_and_risk_class_matrix() {
         (
             "edit",
             edit_args("a.txt"),
+            [
+                (Prompt, Mode),
+                (Allow, Mode),
+                (Deny, PlanBlock),
+                (Deny, Dont),
+            ],
+        ),
+        (
+            "notebook_edit",
+            notebook_args("a.ipynb"),
             [
                 (Prompt, Mode),
                 (Allow, Mode),
@@ -145,7 +159,11 @@ async fn plan_mode_blocks_edits_outright_and_sends_the_rest_to_the_guardian() {
             .guardian(fake.guardian.clone())
             .settings("[permissions]\nallow = [\"write\", \"edit\"]\n"),
     );
-    for (tool, args) in [("write", write_args("n.txt")), ("edit", edit_args("n.txt"))] {
+    for (tool, args) in [
+        ("write", write_args("n.txt")),
+        ("edit", edit_args("n.txt")),
+        ("notebook_edit", notebook_args("n.ipynb")),
+    ] {
         let d = headless.check(tool, args).await;
         assert!(!allowed(&d));
     }
@@ -434,7 +452,11 @@ async fn protected_paths_prompt_or_deny_by_mode() {
         ".mcp.json",
     ];
     for path in paths {
-        for (tool, args) in [("write", write_args(path)), ("edit", edit_args(path))] {
+        for (tool, args) in [
+            ("write", write_args(path)),
+            ("edit", edit_args(path)),
+            ("notebook_edit", notebook_args(path)),
+        ] {
             for mode in [Manual, AcceptEdits] {
                 let rig = Rig::with(
                     Options::new(mode).settings("[permissions]\nallow = [\"write\", \"edit\"]\n"),
@@ -892,4 +914,41 @@ async fn the_out_of_scope_error_points_at_the_memory_directory() {
     let message = denied_message(&d);
     let memory = rig.memory.as_ref().unwrap().display().to_string();
     assert!(message.contains(&memory), "{message}");
+}
+
+/// Every path-naming write tool must be known to each hand-maintained path site, or a new tool
+/// would slip past containment, rules or the protected-path floor.
+#[tokio::test]
+async fn every_path_naming_write_tool_is_handled_by_each_path_site() {
+    use fontaine_core::destructive::touched_paths;
+    use fontaine_core::permission_rules::{CallContext, Posture, matches, parse_rule};
+    use fontaine_tools::descriptor::TOOLS;
+    use fontaine_tools::risk::RiskClass;
+    use fontaine_tools::scope::Scope;
+
+    let rows = TOOLS
+        .iter()
+        .filter(|d| d.risk == RiskClass::WorkspaceWrite && !d.path_free);
+    for d in rows {
+        let rig = Rig::new(Manual);
+        let scope = Scope::new(rig.work().to_path_buf(), []);
+        let args = json!({"path": "target.txt"});
+        assert!(scope.locate(d.name, &args).is_ok(), "{}: scope", d.name);
+        let rule = parse_rule(&format!("{}(target.txt)", d.name)).unwrap();
+        let call = CallContext {
+            tool: d.name,
+            args: &args,
+            scope: &scope,
+            home: None,
+        };
+        assert!(matches(&rule, &call, Posture::Deny), "{}: rules", d.name);
+        assert!(
+            !touched_paths(d.name, &args, &scope).is_empty(),
+            "{}: touched paths",
+            d.name
+        );
+        let protected = rig.check(d.name, json!({"path": ".git/config"})).await;
+        assert!(!allowed(&protected), "{}: protected path", d.name);
+        assert_eq!(rig.audit()[0].tier, Tier::ProtectedPath, "{}", d.name);
+    }
 }

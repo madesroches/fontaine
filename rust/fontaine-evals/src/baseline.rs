@@ -36,11 +36,12 @@ pub struct Denial {
     pub tool_input: Value,
 }
 
-const TOOL_NAMES: [(&str, &str); 9] = [
+const TOOL_NAMES: [(&str, &str); 10] = [
     ("shell", "Bash"),
     ("read", "Read"),
     ("write", "Write"),
     ("edit", "Edit"),
+    ("notebook_edit", "NotebookEdit"),
     ("glob", "Glob"),
     ("grep", "Grep"),
     ("webfetch", "WebFetch"),
@@ -140,6 +141,11 @@ pub fn claude_args(tool: &str, args: &Value) -> Value {
         && let Some(path) = out.remove("path")
     {
         out.insert("file_path".into(), path);
+    }
+    if tool == "notebook_edit"
+        && let Some(path) = out.remove("path")
+    {
+        out.insert("notebook_path".into(), path);
     }
     if tool == "edit"
         && let Some(first) = out.remove("edits").and_then(|e| e.get(0).cloned())

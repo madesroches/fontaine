@@ -114,9 +114,9 @@ fn tool_lists_load_as_yaml_lists_and_as_comma_strings() {
 #[test]
 fn unmapped_names_colon_specifiers_and_model_aliases_are_errors_naming_the_file() {
     let w = World::new();
-    user_agent(&w, "bad", "---\ntools: Read, NotebookEdit\n---\nx");
+    user_agent(&w, "bad", "---\ntools: Read, MadeUpTool\n---\nx");
     let e = message(&w, &[]);
-    assert!(e.contains("bad.md") && e.contains("NotebookEdit"), "{e}");
+    assert!(e.contains("bad.md") && e.contains("MadeUpTool"), "{e}");
 
     let w = World::new();
     user_skill(&w, "colon", "---\nallowed-tools: Bash(git add:*)\n---\nx");

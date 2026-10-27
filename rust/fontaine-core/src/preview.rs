@@ -1,4 +1,4 @@
-//! The change an `edit` or `write` call would make, as the approval prompt shows it. Display
+//! The change an `edit`, `write` or `notebook_edit` call would make, as the approval prompt shows it. Display
 //! only: nothing here reaches a decision, the guardian, a hook or the ledger.
 
 use fontaine_tools::scope::Scope;
@@ -50,7 +50,7 @@ pub struct DiffPreview {
 /// edits the tool itself would refuse.
 pub fn preview(tool: &str, args: &Value, scope: &Scope) -> Option<DiffPreview> {
     let path = args.get("path")?.as_str()?;
-    if !matches!(tool, "edit" | "write") {
+    if !matches!(tool, "edit" | "write" | "notebook_edit") {
         return None;
     }
     let (_, resolved) = scope.find(path).ok()?;
@@ -61,6 +61,14 @@ pub fn preview(tool: &str, args: &Value, scope: &Scope) -> Option<DiffPreview> {
                 serde_json::from_value(args.get("edits")?.clone()).ok()?;
             let applied = apply(path, &before.ok()??, &edits).ok()?;
             applied.change
+        }
+        "notebook_edit" => {
+            let cell = fontaine_tools::notebook::cell_change(&before.ok()??, args)?;
+            file_change(
+                path,
+                Some(cell.before.as_deref().unwrap_or("")),
+                Some(cell.after.as_deref().unwrap_or("")),
+            )
         }
         _ => {
             let content = args.get("content")?.as_str()?;
@@ -357,5 +365,19 @@ mod tests {
         assert_eq!(p.lines.len(), PREVIEW_MAX_LINES);
         assert_eq!(p.added, 300);
         assert_eq!(p.hidden, 100);
+    }
+
+    #[test]
+    fn notebook_edit_previews_the_cell_source_change() {
+        let (dir, scope) = setup();
+        let nb = r#"{"cells":[{"cell_type":"code","id":"a","metadata":{},"outputs":[],"execution_count":null,"source":["x = 1\n","y = 2"]}],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
+        put(&dir, "n.ipynb", nb.as_bytes());
+        let args = json!({"path": "n.ipynb", "cell_id": "a", "new_source": "x = 1\ny = 3"});
+        let p = preview("notebook_edit", &args, &scope).unwrap();
+        assert_eq!(kinds(&p, DiffKind::Removed), [(Some(2), None, "y = 2")]);
+        assert_eq!(kinds(&p, DiffKind::Added), [(None, Some(2), "y = 3")]);
+        let missing = json!({"path": "n.ipynb", "cell_id": "ghost", "new_source": "x"});
+        assert!(preview("notebook_edit", &missing, &scope).is_none());
+        assert!(preview("notebook_edit", &json!({"path": "a.txt"}), &scope).is_none());
     }
 }

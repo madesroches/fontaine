@@ -200,7 +200,8 @@ impl ResultStage for InstructionStage {
         outcome: ToolOutcome,
     ) -> BoxFuture<'a, ToolOutcome> {
         Box::pin(async move {
-            if outcome.is_err() || !matches!(call.tool, "read" | "write" | "edit") {
+            if outcome.is_err() || !matches!(call.tool, "read" | "write" | "edit" | "notebook_edit")
+            {
                 return outcome;
             }
             match self.note_for(call.agent, call.tool, call.args) {

@@ -46,7 +46,7 @@ enum PathFields {
 
 fn fields_of(tool: &str) -> Option<PathFields> {
     match tool {
-        "read" | "write" | "edit" => Some(PathFields::Required("path")),
+        "read" | "write" | "edit" | "notebook_edit" => Some(PathFields::Required("path")),
         "ls" | "grep" => Some(PathFields::Optional("path")),
         "glob" => Some(PathFields::Glob),
         "shell" => Some(PathFields::Optional("cwd")),

@@ -8,12 +8,13 @@ result passes one post-call step before the model sees it.
 
 | Tool | Risk class | What it does |
 |---|---|---|
-| `read` | read-only | Reads a text file (at most 16 MB), by line range. |
+| `read` | read-only | Reads a text file (at most 16 MB), by line range. A Jupyter notebook (`.ipynb`) is shown as its cells: index, id and type, source, and text outputs (images are noted, not shown). |
 | `ls` | read-only | Lists the files under a directory, honouring `.gitignore`. Arguments: `path`, `depth`, `glob`, `hidden`. |
 | `glob` | read-only | Finds files whose path matches a glob pattern such as `src/**/*.rs`. Arguments: `pattern`, `path`. Returns at most 1,000 files. |
 | `grep` | read-only | Searches file contents with a Rust regular expression, honouring `.gitignore`. Arguments: `pattern`, `path`, `glob`, `hidden`, `files`. Returns at most 200 matches; prefix the pattern with `(?i)` to ignore case. |
 | `write` | workspace write | Replaces a whole file. |
 | `edit` | workspace write | Replaces text in a file. The file must have been read first. |
+| `notebook_edit` | workspace write | Edits one cell of a Jupyter notebook (`.ipynb`): `replace` a cell's source (default), `insert` a new cell after `cell_id` (at the start when none) or `delete` a cell. Arguments: `path`, `cell_id`, `cell_type` (`code` or `markdown`; required to insert), `edit_mode`, `new_source`. Name a cell by its id, or `cell-N` (0-based) when it has none. Replacing a code cell clears its outputs. The notebook must have been read first, and is refused if it changed since. The rest of the notebook, its key order and its indentation are kept. `edit` and `write` still work on a notebook but their descriptions point the model here. |
 | `shell` | arbitrary | Runs a shell command. |
 | `webfetch` | arbitrary | Fetches one web page. |
 | `websearch` | arbitrary | Searches the web through the backend set in [`[websearch]`](configuration.md#websearch); registered when one is configured, or by default when `docker` or `podman` is installed. Arguments: `query`, `allowed_domains`, `blocked_domains`. |
@@ -94,7 +95,7 @@ directories refer to it. More roots come from the repeatable `--add-dir <path>` 
 - Only the user adds roots. No tool can. The roots Fontaine adds itself are the session's
   scratch directory, below, and, while [auto memory](memory.md) is on, the project's memory store.
   The store is labelled in `/status` and the system prompt, stays out of the file index, and keeps
-  the protected-path check on every `write` and `edit`.
+  the protected-path check on every `write`, `edit` and `notebook_edit`.
 
 ### The scratch directory
 
