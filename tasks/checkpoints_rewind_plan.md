@@ -44,13 +44,21 @@ survive a rewind. Parity target is the documented behavior; deviations are liste
 
 ### What is a checkpoint
 
-A **turn checkpoint** is created when the human submits a turn: a typed prompt
-(`fontaine-tui/src/ui/turn.rs:257`), an expanded skill command (`ui/mod.rs:364`), `/init`
-(`ui/commands/memory.rs:183`) or a goal-set turn (`ui/goal.rs:44`). Mid-turn steering
-(`steering.rs:80`), scheduled prompts (`ui/schedule.rs:178`) and subagent questions
-(`questions.rs:36`) do not make one. It holds:
+A **turn checkpoint** is created when the human submits a turn. There are exactly two hook sites.
+In the TUI it is `converse` (`fontaine-tui/src/ui/turn.rs:219`), the one path every human prompt
+takes: a typed prompt, an expanded skill command (`ui/mod.rs:380`), `/init`
+(`ui/commands/memory.rs:187`), `/plan`, a goal-set turn (`ui/goal.rs:48`), the first iteration of a
+typed `/loop` line (`ui/schedule.rs:181`) and a queued next prompt (`turn.rs:111/137`, `goal.rs:105`).
+The hook runs at the top of each `converse` loop iteration, before `turn()` (whose `human` is `None`
+for some of these, so it cannot be the hook). In headless `-p` it is `handle_message`
+(`fontaine/src/headless.rs`, beside the two `Record::UserMessage` appends at 719/755), so a `-p`
+session's edits have a Turn and a later `--resume` can rewind them. Turns the harness starts do not
+make one: later `/loop` and scheduled iterations (`scheduled_turn`), goal continuation turns,
+mid-turn steering and subagent questions (`fontaine-core/src/steering.rs`, `questions.rs`); their
+edits attach to the current turn. It holds:
 
-- `turn`: a 1-based ordinal within the current clear epoch
+- `turn`: a monotonic ordinal, 1-based within the current clear epoch and never reused within it,
+  including after a conversation rewind (see Rewind markers)
 - `conv_n`: one past the last stamp in `history(store, CONVERSATION_LOG)` (0 if empty), read at
   submit time after the previous turn's save. The typed prompt reaches the ledger first and the
   conversation log only when the agent run itself saves it during the turn (finish_builder's
@@ -82,6 +90,7 @@ checkpoints/blobs/<hash>     pre-image bytes, content-addressed (deduplicated)
 enum Entry {
     Epoch {},                                   // written by /clear
     Turn { turn, conv_n, prompt, user_messages_before },
+    Rewind { to_turn },                         // written after a Both/Conversation rewind
     PreImage { turn, agent, path, before: Before, after: Option<ContentHash> },
 }
 enum Before { Absent, Blob { hash, unix_mode: Option<u32> }, Skipped { why: SkipReason } }
@@ -91,6 +100,14 @@ enum SkipReason { TooLarge, NotRegular, Unreadable, Budget }
 - `ContentHash` is SHA-256 via the existing `sha2` dependency of `fontaine-core` (no new dependency).
 - Every read of the manifest (`plan`, `apply`, the picker's per-turn file counts) considers only
   entries after the last `Epoch` entry, since turn ordinals restart at 1 there.
+- Rewind markers: a `Rewind { to_turn }` hides every earlier `Turn` entry with `turn >= to_turn`
+  (their `conv_n` points into the abandoned branch) and, when the rewind included code, every earlier
+  `PreImage` with `turn >= to_turn` (those files are back at the state at the start of `to_turn`).
+  After a conversation rewind the next ordinal is still one past the highest `turn` ever written in
+  the epoch, so a new turn's `(turn, path)` never collides with a hidden entry. The picker, its file
+  counts, `plan` and `apply` read only visible entries, within the last `Epoch` as above. A
+  `Conversation`-only rewind leaves the pre-images visible, so the files stay restorable from an
+  earlier turn; a `Code`-only rewind writes no marker.
 - The first `PreImage` for a `(turn, path)` is the one that counts; later edits in the same turn add
   nothing but their `after` hash. `after` (hash of what the tool left) is appended when the call
   finishes, so a restore can tell whether the file changed since Fontaine last wrote it.
@@ -134,15 +151,20 @@ pub trait Capture: Send { fn finish(self: Box<Self>, succeeded: bool); }  // rec
   denied call captures nothing. MCP tools and the shell are not checkpointed.
 - `fontaine-core` implements `PreImages` over the checkpoint store. The guard is built in
   `tools.rs:114` (registry via `RegistryParams`, called from `agent/build.rs:162`) and
-  `agent/mcp.rs:112` (`pre_images: None`); `fontaine/src/lib.rs` assembles the session and store.
-  The current turn is read from the store.
+  `agent/mcp.rs:112` (`pre_images: None`); `fontaine/src/lib.rs` assembles the session and passes the
+  store in. The current turn is read from the store.
+- Auto memory has no dedicated tool: it writes with `write`/`edit` into the memory directory, which
+  is on the scope roots. That directory is persistent cross-session state, not project code, so the
+  core `PreImages` implementation returns `None` for any path under it (compared after the same
+  resolution `Scope::find` gives), and `plan`/`apply` skip any such path found in a manifest and
+  report it as not restorable. A Code rewind never reverts or deletes memory notes.
 
 ### Rewind
 
 `fontaine-core::checkpoint::plan(turn) -> RewindPlan` and `Rewinder::apply(plan, what)`, where
 `what` is `Both | Conversation | Code`.
 
-**Code.** For every path with a `PreImage` in the current epoch's turns `>= turn`, the earliest one wins and gives the
+**Code.** For every path with a visible `PreImage` in the current epoch's turns `>= turn` (memory-directory paths excluded), the earliest one wins and gives the
 state at the start of `turn`:
 
 - `Absent`: delete the file if it is a regular file now.
@@ -220,10 +242,13 @@ check (`ui/commands/context.rs`).
 2. **Capture seam.** `fontaine-tools/src/checkpoint.rs` trait; `Guard.pre_images`;
    `ToolDescriptor.checkpointed` (the `row()` const fn and the `rows_are_pinned` `[Pinned; 18]`
    table); call in `GuardedTool::run`; core implementation and wiring in `tools.rs`,
-   `agent/build.rs`, `agent/mcp.rs`, `fontaine/src/lib.rs`; the new `Guard` field in the literals
-   in `fontaine-tools/tests/guarded.rs`, `telemetry.rs`, `result_pipeline.rs`. Turn begin hooked at
-   the submit sites listed under "What is a checkpoint" (`ui/turn.rs`, `ui/mod.rs`,
-   `ui/commands/memory.rs`, `ui/goal.rs`).
+   `agent/build.rs` (builds `RegistryParams`, not `Guard`), `agent/mcp.rs`, `fontaine/src/lib.rs`
+   (passes the store in); the new `Guard` field in the literals at `fontaine-tools/tests/common/mod.rs:69`,
+   `fontaine-mcp/tests/common/mod.rs:68`, `fontaine-core/tests/choke_point.rs:272`,
+   `fontaine-tools/tests/guarded.rs` (:88, :239), `result_pipeline.rs` (:42, :123), `telemetry.rs:121`;
+   the new `RegistryParams` field in `choke_point.rs:147` and `fontaine-core/tests/extensions.rs:315`.
+   Turn begin hooked at the two sites under "What is a checkpoint" (`converse` in `ui/turn.rs`,
+   `handle_message` in `fontaine/src/headless.rs`).
 3. **Config.** `[checkpoints]` keys in `config.rs`, `config_catalog.rs`, and rows in
    `config_scope.rs` (`Rule::user_only`), plus `fontaine-core/tests/config.rs` and the per-section
    row in the `config_scope.rs` test.
@@ -240,12 +265,14 @@ check (`ui/commands/context.rs`).
 - New: `fontaine-core/src/checkpoint.rs`, `fontaine-tools/src/checkpoint.rs`,
   `fontaine-tui/src/rewind.rs`, `fontaine-tui/src/ui/commands/rewind.rs`, `docs/checkpoints.md`
 - `fontaine-tools/src/guarded.rs`, `descriptor.rs`, `lib.rs`; Guard literals in
-  `fontaine-tools/tests/guarded.rs`, `telemetry.rs`, `result_pipeline.rs`
+  `fontaine-tools/tests/common/mod.rs`, `guarded.rs`, `telemetry.rs`, `result_pipeline.rs`,
+  `fontaine-mcp/tests/common/mod.rs`, `fontaine-core/tests/choke_point.rs`; RegistryParams literals in
+  `choke_point.rs`, `fontaine-core/tests/extensions.rs`
 - `fontaine-core/src/ledger.rs`, `session.rs`, `agent.rs`, `tools.rs`, `agent/build.rs`,
   `agent/mcp.rs`, `config.rs`, `config_catalog.rs`, `config_scope.rs`, `lib.rs`,
-  `fontaine-core/tests/config.rs`; `fontaine/src/lib.rs`
-- `fontaine-tui/src/app.rs`, `commands.rs`, `ui/turn.rs`, `ui/mod.rs`, `ui/goal.rs`,
-  `ui/commands/mod.rs`, `ui/commands/memory.rs`, `ui/commands/context.rs`, `lib.rs`
+  `fontaine-core/tests/config.rs`; `fontaine/src/lib.rs`, `fontaine/src/headless.rs`
+- `fontaine-tui/src/app.rs`, `commands.rs`, `ui/turn.rs`,
+  `ui/commands/mod.rs`, `ui/commands/context.rs`, `lib.rs`
 - `docs/index.md`, `docs/tui.md`, `docs/configuration.md` (including the scope-table row),
   `docs/tools.md`, `docs/permissions.md`, `docs/guardian.md`
 - `tasks/design/sessions.md`, `research/research-claude-code-parity.md`, `CHANGELOG.md`
@@ -266,6 +293,9 @@ check (`ui/commands/context.rs`).
 - A conversation rewind clears an active goal, as `/clear` does; todos, the schedule, grants and
   mode carry on.
 - Rewind points are limited to the current `/clear` epoch.
+- AFK: Turn ordinals are monotonic and never reused within an epoch; a `Rewind { to_turn }` manifest marker hides superseded Turn entries (and, when code was restored, their pre-images) from the picker, counts and restore scan.
+- AFK: Auto-memory directory paths are excluded from pre-image capture and from restore, so a Code rewind never touches persistent memory notes.
+- AFK: Turn checkpoints are hooked in exactly two places, `converse` (TUI) and `handle_message` (headless `-p`); harness-started turns, steering and questions make none.
 - The hash of what a tool left is stored so the restore can warn about the user's own later edits;
   Claude Code does not warn, Fontaine does because a restore overwrites without a backup.
 
@@ -289,7 +319,9 @@ Unit (no live APIs; `rig_core::test_utils` models, tempdirs):
 
 - Store: first pre-image per `(turn, path)` wins, later edits only add `after`; absent file →
   `Absent`; blob dedup; per-file and per-session caps produce `Skipped` and still let the call run;
-  torn manifest tail is skipped.
+  torn manifest tail is skipped; after a `Rewind` marker a new prompt gets a fresh ordinal and the
+  superseded turns (and, when code was restored, their pre-images) leave the picker, counts and
+  restore scan; paths under the memory dir are never captured nor restored.
 - Restore planning: earliest pre-image across several turns; created files are deleted; a path
   outside the roots, a symlinked target and a symlinked parent are refused; files edited since
   (`after` mismatch) are flagged; `Skipped` files are reported, not touched; unix mode restored.
