@@ -176,11 +176,18 @@ fn sweep_one(parent: &Path, id: &str) -> io::Result<()> {
         // The directory is already gone; another instance opening the lock in the gap
         // makes the unlink fail, and its own sweep or exit removes the file.
         return match std::fs::remove_file(&lock_path) {
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied || is_sharing_violation(&e) => {
+                Ok(())
+            }
             other => other,
         };
     }
     std::fs::remove_file(&lock_path)
+}
+
+/// std leaves ERROR_SHARING_VIOLATION uncategorized.
+fn is_sharing_violation(e: &io::Error) -> bool {
+    cfg!(windows) && e.raw_os_error() == Some(32)
 }
 
 fn lock_with_retry(path: &Path) -> io::Result<Option<File>> {
@@ -231,7 +238,7 @@ fn refuse_protected(dir: &Path, protected: &[PathBuf]) -> io::Result<()> {
 }
 
 /// Where scratch directories go: `$XDG_RUNTIME_DIR/fontaine` when the runtime directory is
-/// usable, else a per-user directory under the temp dir.
+/// usable, else a per-user directory under the temp dir (`%TMP%`, `%TEMP%` on Windows).
 fn parent_path(env: Env<'_>) -> io::Result<PathBuf> {
     #[cfg(unix)]
     {
@@ -249,8 +256,14 @@ fn parent_path(env: Env<'_>) -> io::Result<PathBuf> {
     }
     #[cfg(windows)]
     {
-        let _ = env;
-        Ok(std::env::temp_dir().join(format!("fontaine-{}", owner_only::current_user_sid()?)))
+        // The order GetTempPath uses, read through `env` so tests and sandboxes can redirect it.
+        let temp = ["TMP", "TEMP"]
+            .into_iter()
+            .filter_map(env)
+            .map(PathBuf::from)
+            .find(|p| p.is_absolute())
+            .unwrap_or_else(std::env::temp_dir);
+        Ok(temp.join(format!("fontaine-{}", owner_only::current_user_sid()?)))
     }
 }
 
@@ -309,7 +322,11 @@ mod tests {
     use super::*;
 
     fn env_for(runtime: &Path) -> impl Fn(&str) -> Option<OsString> + '_ {
-        move |name| (name == "XDG_RUNTIME_DIR").then(|| runtime.as_os_str().to_owned())
+        // Windows has no runtime dir and takes its parent from the temp variables.
+        move |name| {
+            matches!(name, "XDG_RUNTIME_DIR" | "TMP" | "TEMP")
+                .then(|| runtime.as_os_str().to_owned())
+        }
     }
 
     #[test]
@@ -434,10 +451,6 @@ mod tests {
     fn a_scratch_path_under_a_protected_dir_is_refused() {
         let runtime = tempfile::tempdir().unwrap();
         let env = env_for(runtime.path());
-        // Windows ignores XDG_RUNTIME_DIR, so the real ancestor of the scratch parent is the temp dir.
-        #[cfg(windows)]
-        let protected = [std::env::temp_dir()];
-        #[cfg(not(windows))]
         let protected = [runtime.path().to_path_buf()];
         let err = Scratch::create(&env, &protected, "abc").err().unwrap();
         assert!(err.to_string().contains("Fontaine's own directory"));

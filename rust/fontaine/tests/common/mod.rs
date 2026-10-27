@@ -471,7 +471,7 @@ pub struct Sandbox {
     pub work: PathBuf,
     pub config: PathBuf,
     pub data: PathBuf,
-    /// Stands in for `$XDG_RUNTIME_DIR`, where the session scratch directories go.
+    /// Stands in for `$XDG_RUNTIME_DIR` (`%TEMP%` on Windows), where the session scratch directories go.
     pub runtime: PathBuf,
     env: Vec<(String, String)>,
 }
@@ -540,6 +540,18 @@ impl Sandbox {
         sandbox
     }
 
+    /// The directory holding the session scratch directories under `runtime`.
+    pub fn scratch_parent(&self) -> PathBuf {
+        #[cfg(windows)]
+        let name = format!(
+            "fontaine-{}",
+            fontaine_core::owner_only::current_user_sid().unwrap()
+        );
+        #[cfg(not(windows))]
+        let name = "fontaine".to_string();
+        self.runtime.join(name)
+    }
+
     pub fn user_config(&self, text: &str) {
         write(&self.config.join("config.toml"), text);
     }
@@ -555,6 +567,8 @@ impl Sandbox {
             .env("FONTAINE_CONFIG_DIR", &self.config)
             .env("FONTAINE_DATA_DIR", &self.data)
             .env("XDG_RUNTIME_DIR", &self.runtime)
+            .env("TMP", &self.runtime)
+            .env("TEMP", &self.runtime)
             .env_remove("FONTAINE_LOG")
             .env_remove("MICROMEGAS_TELEMETRY_URL")
             .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
