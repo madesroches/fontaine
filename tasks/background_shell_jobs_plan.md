@@ -127,15 +127,20 @@ pub trait JobSink: Send + Sync {
   `Kept` policy and status-line texts (a quarter first lines, a quarter error and failure lines from between, the rest
   last lines, over `OutputLimit`), because rig's cutter is private. Spilling whole output to the
   session scratch directory is out of scope.
-- **Limits (harness constants, not tool arguments).** At most 8 jobs running per session (a
-  ninth `shell` with `run_in_background`, or a promotion past the cap, is refused / killed with a
-  message saying to `job_kill` one); a finished job's record and buffer are kept until the model has
-  read it or 50 newer jobs exist. No per-job deadline for a background job, since a dev server is a
+- **Limits (harness constants, not tool arguments).** At most 8 background and monitor jobs running
+  per session (a foreground call is not counted until promoted). A ninth `run_in_background`
+  `shell` or `monitor` is refused with a message naming `job_kill`; a promotion past the cap stops
+  the command and the result says it was stopped because 8 jobs are already running, naming
+  `job_kill`. A finished job's record and buffer are kept until the model has
+  read it or 50 newer jobs exist (a foreground call that ended in time is removed at once; this
+  applies to promoted and flagged jobs). No per-job deadline for a background job, since a dev server is a
   legitimate use; every job is terminated when the runtime that owns the registry
   is dropped (`/resume`, `/branch`, process exit) and explicitly at the end of a headless run and on
   TUI exit. `/clear` clears the conversation within the same session and leaves running jobs
   alone. The model cannot raise or disable any
   of these, and `timeout_secs` stays capped at 600 (S3 in the oh-my-pi study).
+- The job thread holds an `Arc<Shared>` (the buffer, state and sink), never an `Arc<Jobs>`; `Jobs`
+  owns the join and kill handles, so `Drop` on `Jobs` can run.
 - Lock policy: the registry mutex feeds what runs, so it uses `fontaine_tools::lock::lock`; no lock
   is held across an await or while spawning.
 - `JobError` is a typed enum where a caller dispatches (`UnknownJob`, `TooMany`, `NotRoot`,
@@ -156,9 +161,11 @@ widen nothing: the command that made the job was judged by the gate when it was 
 `ReadOnly` class follows `cron_delete`, which likewise changes only session-owned state. `monitor`
 runs an arbitrary command, so it gets `shell`'s row, but much handling is keyed on `tool ==
 "shell"` rather than the row: `floor::critical_shell` (`permissions.rs:715`, the critical-path
-floor), path resolution in `destructive.rs:296`, `is_broad_code_execution`
-(`permission_rules.rs:662`), `summarize()` (`permissions.rs:1759`) and `fields_of` in
-`scope.rs:52`. Each moves to a descriptor predicate (`Specifier::Shell`) instead of a name check,
+floor), the pre-classifier `read_paths` call (`permissions.rs:762`), `scope.locate("shell", ...)`
+(`destructive.rs:89`) and path resolution (`destructive.rs:296`), `is_broad_code_execution`
+(`permission_rules.rs:662-663`), `summarize()` (`permissions.rs:1759`) and `fields_of` in
+`scope.rs:52`. `skills.rs:182` and `agent/build.rs:186` name the one real `shell` tool and stay as
+they are. Each of the others moves to a descriptor predicate (`Specifier::Shell`) instead of a name check,
 so `monitor` is covered by all of them. Rule matching is by tool name (`permission_rules.rs:400-402`),
 so `Bash(...)` / `shell(...)` rules are decided to cover `monitor` too: the Claude name list for
 the `Bash` specifier includes `monitor`, so a `Bash(...)` deny or ask also applies to it.
@@ -169,7 +176,8 @@ the `Bash` specifier includes `monitor`, so a `Bash(...)` deny or ask also appli
 ### Notifications
 
 `NotificationKind` gains `Job` (`fontaine-agents/src/tree.rs`), and `AgentTree` a
-`post_to_root(from, kind, text)` that queues it in the root inbox and fires `changed()`.
+`post_to_root(from, kind, text)` that queues it in the root inbox and fires `changed()`; it is a
+thin wrapper over a private push helper shared with `notify_report` (~line 616), not a copy of it.
 Core implements `JobSink` by calling it; `Jobs` stays free of the agent crate.
 
 - **Completion.** When a background (promoted or flagged) job ends, the job thread posts
@@ -226,9 +234,10 @@ or long build you do not need to wait for. Do not poll with `sleep`: use `job_ou
    `sh -c` children (guarded with `cfg(unix)`).
 2. `builtins.rs`: replace `ShellTool::call` with the job-backed call (foreground wait, promotion,
    `run_in_background`, unchanged result text for commands that finish in time). Keep
-   `ShellTool::run` (used by `!` shell mode) on the old direct path: a user-typed `!cmd` is not a
+   `ShellTool::run` (used by `!` shell mode, `rust/fontaine-core/src/user_shell.rs`) on the old direct path: a user-typed `!cmd` is not a
    model job. Skill shell injection (`skills.rs` `run_command`) goes through the registered tool,
-   so the call gets a no-promote flag on the job-backed path: it kills at the timeout as today, so
+   so `run_command` (`rust/fontaine-core/src/skills.rs`) inserts a `NoPromote` value into the
+   `ToolContext` that `ShellTool::call` reads, never a model-visible argument; the job-backed path kills at the timeout as today, so
    no promotion message can land in skill text and the trailing `[exit code 0]` `strip_suffix`
    handling is unchanged. Thread `Arc<Jobs>` through `BuiltinEnv` and
    `RegistryParams` (like `searxng`, built in `Setup` so `AgentRuntime::rebuild()` keeps running jobs).
@@ -241,11 +250,13 @@ or long build you do not need to wait for. Do not poll with `sleep`: use `job_ou
    `run_in_background` from them is refused with a message.
 5. `fontaine-tools/src/jobs.rs` tools `JobOutputTool`, `JobKillTool` and their rows in
    `descriptor.rs`; register in `agent/build.rs:extension_tools` beside the todo tool.
-6. `fontaine-agents/src/tree.rs`: `NotificationKind::Job`, `post_to_root`; `fontaine-core`
+6. `fontaine-agents/src/tree.rs`: `NotificationKind::Job`, `post_to_root` (wrapper over the push
+   helper shared with `notify_report`); `fontaine-core`
    implements `JobSink` and holds the `Arc<Jobs>` in `Setup` (`agent/setup.rs`) beside `searxng`,
    reaching `AgentRuntime` as a field (`agent.rs`).
 7. `notification_prompt` header wording; TUI notice by kind; headless `wait_for_news`.
-8. Session-end cleanup: `Drop` on `Jobs` terminates every job (the primary mechanism, as for
+8. Session-end cleanup: `Drop` on `Jobs` (which owns the join and kill handles; job threads hold
+   only `Arc<Shared>`) terminates every job (the primary mechanism, as for
    `searxng`, which has only a `Drop` teardown); add an explicit async `terminate_all` call in the
    headless end-of-run path and the TUI exit path.
 
@@ -255,18 +266,22 @@ or long build you do not need to wait for. Do not poll with `sleep`: use `job_ou
 
 ### Phase 3: monitor
 
-10. `Monitor` job mode (line batching, rate and total caps, timeout) and `MonitorTool` with its
+10. Replace the `tool == "shell"` name checks at `permissions.rs:715`, `:762`, `:1759`,
+    `destructive.rs:89`, `:296`, `permission_rules.rs:662-663` and `scope.rs:52` with a descriptor
+    predicate (`Specifier::Shell`); `skills.rs:182` and `agent/build.rs:186` stay by name.
+11. `Monitor` job mode (line batching, rate and total caps, timeout) and `MonitorTool` with its
     descriptor row; root-only.
 
 ### Phase 4: docs
 
-11. Documentation (see below).
+12. Documentation (see below).
 
 ## Files to Modify
 
 - `rust/fontaine-tools/src/jobs.rs`, `jobs/cut.rs` (new); `lib.rs` (export)
-- `rust/fontaine-tools/src/builtins.rs`, `descriptor.rs`, `destructive.rs`, `permission_rules.rs`,
-  `scope.rs`; `rust/fontaine-core/src/permissions.rs` (`critical_shell`, `summarize`)
+- `rust/fontaine-tools/src/builtins.rs`, `descriptor.rs`, `scope.rs`;
+  `rust/fontaine-core/src/permissions.rs` (`critical_shell`, `read_paths` call, `summarize`),
+  `destructive.rs`, `permission_rules.rs`, `skills.rs` (`NoPromote`), `user_shell.rs`
 - `rust/fontaine-agents/src/tree.rs`
 - `rust/fontaine-core/src/agent.rs` (`AgentRuntime` field, `notification_prompt`, `/clear` refusal text), `agent/build.rs`,
   `agent/setup.rs` (own `Jobs`), `tools.rs` (`RegistryParams`)
@@ -275,7 +290,7 @@ or long build you do not need to wait for. Do not poll with `sleep`: use `job_ou
 - `rust/fontaine/src/headless.rs`
 - `rust/fontaine-tools/tests/choke_point.rs` (new rows are covered by the existing table test)
 - `CHANGELOG.md`, `docs/tools.md`, `docs/tui.md`, `docs/headless.md`, `docs/permissions.md`,
-  `research/research-claude-code-parity.md`
+  `docs/extensions.md`, `docs/configuration.md`, `docs/guardian.md`, `research/research-claude-code-parity.md`
 
 ## Trade-offs
 
@@ -299,6 +314,8 @@ or long build you do not need to wait for. Do not poll with `sleep`: use `job_ou
 - Jobs are root-only: a subagent's `shell` call never creates a job (the job-backed path is used
   only when the agent is `ROOT_AGENT`, others use the existing `Shell::call` unchanged) and
   `run_in_background` from a subagent is refused.
+- 8 running jobs and 1 MiB per job are harness constants in `jobs.rs`; a `[shell]` key, if ever
+  added, is a loosening key and therefore user-scope only.
 
 ## Documentation
 
@@ -309,6 +326,10 @@ or long build you do not need to wait for. Do not poll with `sleep`: use `job_ou
 - `docs/headless.md`: jobs are not waited for and are terminated at the end of the run.
 - `docs/permissions.md`: `job_output` / `job_kill` / `monitor` rows and the statement that
   promotion does not re-approve a command already approved.
+- `docs/extensions.md` (Claude-to-Fontaine tool-name table, ~58-75: BashOutput, TaskOutput,
+  KillShell, KillBash, TaskStop, Monitor), `docs/configuration.md` (valid rule tool names,
+  ~563-564), `docs/permissions.md` (tool lists ~118 and ~164), `docs/tools.md` (path-free read-only
+  list, ~64), `docs/guardian.md` (consequential-call list ~129; `monitor` is a shell-class runner).
 - `research/research-claude-code-parity.md`: mark the row done; `CHANGELOG.md` entry.
 
 ## Testing Strategy
@@ -347,10 +368,3 @@ Unit tests (no live API):
    (see `tasks/design/testing.md`, terminal layout bugs).
 2. Open `/agents` while a job runs and kill it from the panel; confirm no process is left
    (`pgrep sleep`). Not automated: it needs a real terminal and real processes.
-
-## Open Questions
-
-- Should a subagent also be allowed jobs of its own (Claude Code may allow it)? Per-agent inboxes
-  already exist, so the open part is cleanup at the child's end and the panel's ownership display.
-- Is 8 concurrent jobs / 1 MiB of buffer per job the right default? Both are constants here; a
-  `[shell]` config key would be a loosening key and therefore user-scope only.
