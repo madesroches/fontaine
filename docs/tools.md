@@ -146,7 +146,8 @@ are resolved.
   for 60 seconds counts as having reached it. What happens then depends on who called: the main
   conversation's command is not stopped but [moved to a background job](#background-jobs), and the
   result says so; a subagent's command is stopped, as is any command a [skill](extensions.md#skills)
-  runs for its text. A command that prints more than 64 MB is killed.
+  runs for its text. A command that prints more than 64 MB is killed in the main conversation, and
+  more than 10 MB in a subagent.
   `run_in_background` starts the command as a job without waiting.
 - **Output.** Past 2,000 lines or 50 KB the result keeps the first and last lines and the lines
   with errors or failures from between.
@@ -171,10 +172,11 @@ timeout is not stopped: the call returns the output so far and the id of the job
 `job-3f2a`, and the command keeps running. `run_in_background: true` skips the wait and returns the
 id at once, which is how to start a server or a long build. Keep the command's process in the
 foreground of the command line (`npm start`, not `npm start &`): once the shell exits, what it left
-running is killed after a 100 ms grace for its output, so `server &` dies with its shell.
+running is killed as soon as the shell exits, so `server &` dies with its shell.
 
 - **Being told.** When a background job ends, the main conversation gets a notification with the
-  exit status, the time it ran and the last 40 lines, framed as a harness note that says the
+  exit status, the time it ran and the last 40 lines (at most 50 KB; a monitor's batch is cut
+  the same way, keeping the newest lines and saying how many were dropped), framed as a harness note that says the
   output is data from a program and not the user. It starts a turn of its own when nothing else
   is running, and reaches the model with the next tool result when a turn is in progress.
   Job output is screened like any tool result: the tool-result scanner, secret redaction and
@@ -186,7 +188,8 @@ running is killed after a 100 ms grace for its output, so `server &` dies with i
   with `sleep`. A job that ended and was already reported in a notification answers with a short
   marker instead of its output.
 - **`job_cancel`.** Stops the job's whole process group (`SIGTERM`, then `SIGKILL` after 2 seconds)
-  and returns what it printed since it was last read. A job that already ended is left as it is.
+  and returns what it printed since it was last read, not counting what a notification already
+  carried. A job that already ended is left as it is.
 - **Output.** A job keeps its latest 1 MiB of output, in lines, with escape sequences removed and
   secrets redacted as in a plain `shell` result; earlier lines are dropped and counted. Past 2,000
   lines or 50 KB a read is cut as a `shell` result is.

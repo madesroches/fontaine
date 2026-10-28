@@ -83,15 +83,13 @@ impl AgentRuntime {
         if agents.any_running() || agents.has_agent_notifications() {
             return Err(RewindError::SubagentsRunning);
         }
-        if what.includes_conversation() {
-            self.end_jobs().await;
-        }
         let checkpoints = self.session.checkpoints();
         if what.includes_conversation() {
             self.session
                 .rewind_conversation(plan.conv_n)
                 .await
                 .map_err(RewindError::Conversation)?;
+            self.end_jobs().await;
         }
         let code = what
             .includes_code()

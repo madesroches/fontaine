@@ -563,3 +563,66 @@ fn ages_read_as_short_durations() {
     assert_eq!(format_age(Duration::from_secs(252)), "4m12s");
     assert_eq!(format_age(Duration::from_secs(3720)), "1h02m");
 }
+
+#[test]
+fn a_notice_is_cut_to_its_byte_budget_keeping_the_newest_lines() {
+    let (shared, sink) = bare_monitor(0, 0, None);
+    {
+        let mut inner = shared.inner.lock().unwrap();
+        let monitor = inner.jobs[0].monitor.as_mut().unwrap();
+        monitor.pending = (0..MONITOR_LINES)
+            .map(|n| format!("{n:03} {}\n", "x".repeat(NOTICE_LINE)))
+            .collect();
+    }
+    shared.monitor_tick("job-test");
+    let text = sink.notes()[0].text.clone();
+    assert!(text.len() <= NOTE_BYTES + 512, "{}", text.len());
+    assert!(text.contains("earlier lines dropped]"), "{}", &text[..300]);
+    assert!(text.contains("199 x") && !text.contains("000 x"));
+    let inner = shared.inner.lock().unwrap();
+    assert!(end_note(&inner.jobs[0]).text.len() < 512);
+}
+
+#[test]
+fn a_monitors_batch_moves_the_read_cursor_past_what_it_sent() {
+    let (shared, _) = bare_monitor(0, 0, None);
+    for n in 0..3 {
+        shared.append("job-test", &OutputLine::Out(format!("line {n}\n")));
+    }
+    shared.monitor_tick("job-test");
+    let inner = shared.inner.lock().unwrap();
+    assert_eq!(inner.jobs[0].cursor, 3);
+}
+
+#[tokio::test]
+async fn cancelling_after_the_end_note_returns_the_marker_not_the_output_again() {
+    let (jobs, sink) = jobs();
+    let id = start(&jobs, "echo quick", true);
+    until("the note", || !sink.notes().is_empty()).await;
+    let read = jobs.cancel(&id).await.unwrap();
+    assert!(read.already_reported);
+    assert!(read.chunk.is_empty());
+}
+
+#[tokio::test]
+async fn cancelling_a_monitor_does_not_return_lines_it_already_sent() {
+    let (jobs, sink) = jobs();
+    let id = monitor(&jobs, "echo l1; sleep 30", Duration::from_secs(20));
+    until("the batch", || !sink.notes().is_empty()).await;
+    let read = jobs.cancel(&id).await.unwrap();
+    assert!(read.chunk.is_empty(), "{}", lines(&read.chunk));
+    assert!(read.end.is_some() && !read.already_reported);
+}
+
+#[tokio::test]
+async fn a_dropped_call_leaves_no_record_whichever_stop_came_first() {
+    let (jobs, _) = jobs();
+    let id = start(&jobs, "sleep 30", false);
+    let call = tokio::time::timeout(
+        Duration::from_millis(300),
+        jobs.foreground(&id, Duration::from_millis(100), None, false),
+    )
+    .await;
+    assert!(call.is_err() || call.is_ok());
+    until("the record to go", || jobs.snapshot().is_empty()).await;
+}

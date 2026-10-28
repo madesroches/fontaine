@@ -639,6 +639,33 @@ impl AgentTree {
             .get_mut(parent)
             .filter(|n| parent == ROOT_AGENT || n.status.is_running())
         {
+            let mut text = text;
+            if kind == NotificationKind::Job {
+                // A job that outpaces the model's turns must not grow the inbox without bound.
+                let mut queued: usize = node
+                    .inbox
+                    .iter()
+                    .filter(|n| n.kind == kind && n.from == from)
+                    .map(|n| n.text.len())
+                    .sum();
+                let mut dropped = 0;
+                while queued + text.len() > fontaine_tools::jobs::NOTE_BYTES {
+                    let Some(at) = node
+                        .inbox
+                        .iter()
+                        .position(|n| n.kind == kind && n.from == from)
+                    else {
+                        break;
+                    };
+                    if let Some(old) = node.inbox.remove(at) {
+                        queued -= old.text.len();
+                        dropped += 1;
+                    }
+                }
+                if dropped > 0 {
+                    text = format!("[{dropped} earlier notices from {from} dropped]\n{text}");
+                }
+            }
             node.inbox.push_back(Notification {
                 from: from.to_string(),
                 kind,
@@ -793,6 +820,25 @@ mod tests {
         assert!(!tree.has_notifications(&a));
         tree.notify_report(ROOT_AGENT, &c, "ok".into());
         assert!(tree.has_notifications(ROOT_AGENT));
+    }
+
+    #[test]
+    fn queued_notes_of_one_job_are_capped_and_the_loss_is_reported() {
+        let tree = tree(2);
+        let chunk = "x".repeat(fontaine_tools::jobs::NOTE_BYTES / 3);
+        for _ in 0..5 {
+            tree.post_to_root("job-1", NotificationKind::Job, chunk.clone());
+        }
+        tree.post_to_root("job-2", NotificationKind::Job, "other".into());
+        let notes = tree.take_notifications(ROOT_AGENT);
+        let of_one: Vec<_> = notes.iter().filter(|n| n.from == "job-1").collect();
+        assert!(of_one.len() < 5);
+        assert!(
+            of_one
+                .iter()
+                .any(|n| n.text.contains("earlier notices from job-1 dropped]"))
+        );
+        assert!(notes.iter().any(|n| n.from == "job-2"));
     }
 
     #[tokio::test]

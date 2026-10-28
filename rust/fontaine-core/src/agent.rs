@@ -795,8 +795,8 @@ impl AgentRuntime {
         if agents.any_running() || agents.has_agent_notifications() {
             return Err(ClearError::SubagentsRunning);
         }
-        self.end_jobs().await;
         self.session.clear().await?;
+        self.end_jobs().await;
         self.state.append(Record::ContextCleared {});
         if let Err(e) = self.session.todos().clear() {
             self.approver

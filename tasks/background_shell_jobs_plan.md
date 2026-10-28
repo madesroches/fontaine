@@ -82,8 +82,8 @@ pub trait JobSink: Send + Sync {
   thread: `try_wait`, then `lines().recv_timeout`, then the kill-request check, then
   `Process::stop` / `kill`. Each `OutputLine` is appended to the job's buffer (the buffer, not the
   child, is bounded) and stamps `last_output` (the 60 s quiet limit). The loop reimplements what
-  `Process::run` does privately: the post-exit pipe grace (a local constant, not rig's private
-  `PIPE_GRACE`), the group kill after it, the quiet limit and the total-output cap. Rig's 10 MB
+  `Process::run` does privately: the group kill as soon as the shell exits (the queued output is
+  drained, not waited for), the quiet limit and the total-output cap. Rig's 10 MB
   runaway-output kill does not apply; the 1 MiB buffer below is the cap, and the job thread
   kills a job that has produced more than 64 MiB in total. The spawn replicates rig's
   `Shell::start` cwd confinement (`workspace.place`) and goes through `workspace.spawn` with
@@ -109,9 +109,9 @@ pub trait JobSink: Send + Sync {
   `job_cancel` has a `killed_by_us` flag set before it is terminated, so its result does not read
   "killed by signal ... which this tool did not send". Dropping the future (turn cancelled) while the job is still foreground sends a kill request to
   the job thread, which stops the group; a promoted job is not affected by a drop.
-- **Daemonizing commands.** After the shell exits, the job thread waits its post-exit pipe grace
-  (100 ms) and then kills the whole group, so `server &` under `run_in_background` dies 100 ms
-  after the shell exits. The `shell` description and `docs/tools.md` say a background job must
+- **Daemonizing commands.** When the shell exits, the job thread kills the whole group at once and
+  drains only the output already queued, so `server &` under `run_in_background` dies with its
+  shell. The `shell` description and `docs/tools.md` say a background job must
   keep its process in the foreground of the command (`run_in_background` with `npm start`, not
   `npm start &`).
 - **`job_cancel` on an ended job.** `job_cancel` checks the job's state under the registry lock first
@@ -330,7 +330,7 @@ or long build you do not need to wait for. Do not poll with `sleep`: use `job_ou
 - Jobs are root-only: a subagent's `shell` call never creates a job (the job-backed path is used
   only when the agent is `ROOT_AGENT`, others use the existing `Shell::call` unchanged) and
   `run_in_background` from a subagent is refused.
-- A daemonizing command (`server &`) under `run_in_background` dies after the post-exit pipe grace;
+- A daemonizing command (`server &`) under `run_in_background` dies as soon as the shell exits;
   accepted and documented rather than worked around.
 - `job_output` is `ReadOnly`; `job_cancel` is `Arbitrary` (path-free), since a path-free `WorkspaceWrite` row does not exist.
 - AFK: `job_output` stays `ReadOnly`; the kill tool `job_cancel` is `Arbitrary`, path-free (no path-free `WorkspaceWrite` row exists in the descriptor table).
@@ -350,7 +350,7 @@ or long build you do not need to wait for. Do not poll with `sleep`: use `job_ou
   `Bash` deny and ask rules and hook matchers; an allow rule for them does not apply to `monitor`,
   which needs its own `Monitor(...)` allow.
 - The job limits (8 running jobs, 1 MiB buffer and 64 MiB output cap per job, 60 s quiet limit,
-  100 ms pipe grace, 50 retained jobs, 1,000 monitor notifications, 200 lines and 1 notification per
+  50 retained jobs, 1,000 monitor notifications, 200 lines and 1 notification per
   second per monitor, 40 tail lines) are harness constants, defined only in `jobs.rs`; a `[shell]` key, if ever
   added, is a loosening key and therefore user-scope only.
 
@@ -404,6 +404,6 @@ Unit tests (no live API):
 - Notifications: a job ending while `job_output(wait)` returns its end state delivers the news
   exactly once (no note, no wake-up turn); a note posted mid-turn is not appended to that
   `job_output` result.
-- Job loop: a silent job is killed by `job_cancel`; the post-exit grace kills a daemonized child.
+- Job loop: a silent job is killed by `job_cancel`; the group kill at the shell's exit kills a daemonized child.
 - Windows: `cargo clippy --target x86_64-pc-windows-gnu` compile check only; it does not verify
   kill behavior, which on non-unix rests on `Process::kill` in the job thread.

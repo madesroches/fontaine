@@ -291,7 +291,8 @@ when there is no message yet.
 `/branch [<name>]` (also `/fork`) copies the session under a new id and carries on in the copy,
 leaving the original as it was. The copy is named `<name>`, or the original's name followed by
 ` (branch)`, or nothing when the original has none. `/branch` is refused while a subagent is
-running or has a report to deliver, since the copy would not carry the subagent's state.
+running, or a report or background-job notice is waiting to be delivered, since the copy would
+not carry that state.
 
 `/export [<path>]` writes the conversation as Markdown. The default is `fontaine-<first 8 characters
 of the session id>.md` in the project directory (the launch directory, or `--cd`); a relative path is relative to it.

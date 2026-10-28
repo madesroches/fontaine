@@ -388,11 +388,14 @@ impl ShellTool {
         let silent = ran.chunk.lines.is_empty();
         let status = match &ran.end {
             None => {
+                let why = match (ran.quiet, quiet) {
+                    (true, Some(quiet)) => format!("printed nothing for {}s", quiet.as_secs()),
+                    _ => format!("still running after {}s", timeout.as_secs()),
+                };
                 text.push_str(&format!(
-                    "[still running after {}s; moved to background job {id}. Its output so far \
-                     is above. Use job_output to read more or wait for it, job_cancel to stop \
-                     it. You are told when it ends.]",
-                    timeout.as_secs()
+                    "[{why}; moved to background job {id}. Its output so far is above. Use \
+                     job_output to read more or wait for it, job_cancel to stop it. You are \
+                     told when it ends.]"
                 ));
                 None
             }
@@ -437,6 +440,9 @@ impl ShellTool {
     }
 }
 
+/// The output a subagent's shell call may print before rig kills it.
+const SUBAGENT_OUTPUT_MB: u64 = 10;
+
 impl Tool for ShellTool {
     const NAME: &'static str = Shell::NAME;
     type Args = ShellCall;
@@ -462,7 +468,9 @@ impl Tool for ShellTool {
              you are told when it ends; pass run_in_background for a server or a long build you \
              do not need to wait for, and keep its process in the foreground of the command \
              (`npm start`, not `npm start &`). Do not poll with `sleep`: use job_output with \
-             wait_secs. A command that prints more than {} MB is killed. Use it to build, test, \
+             wait_secs. Background jobs are for the main agent only: a subagent's command is \
+             stopped at its timeout and run_in_background is refused. A command that prints \
+             more than {} MB is killed ({} MB in a subagent). Use it to build, test, \
              run programs and use git. Each call starts a fresh `sh`: a `cd` or a variable does \
              not carry over to the next call. Do not start programs that wait for input, such \
              as editors or pagers. Do not assume a git repository: a failed `git` command ends \
@@ -470,6 +478,7 @@ impl Tool for ShellTool {
             DEFAULT_TIMEOUT.min(self.shell.max_timeout).max(1),
             QUIET_LIMIT.as_secs(),
             OUTPUT_CAP / 1024 / 1024,
+            SUBAGENT_OUTPUT_MB,
         )
     }
 
@@ -483,8 +492,8 @@ impl Tool for ShellTool {
                 "run_in_background".to_owned(),
                 json!({
                     "type": ["boolean", "null"],
-                    "description": "Start the command as a background job and return at once; \
-                                    you are told when it ends.",
+                    "description": "Main agent only. Start the command as a background job and \
+                                    return at once; you are told when it ends.",
                 }),
             );
         }

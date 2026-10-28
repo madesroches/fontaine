@@ -30,8 +30,7 @@ const BUFFER_BYTES: usize = 1024 * 1024;
 pub const OUTPUT_CAP: u64 = 64 * 1024 * 1024;
 /// How long a call with the default timeout may print nothing before it is moved or stopped.
 pub const QUIET_LIMIT: Duration = Duration::from_secs(60);
-/// How long a job thread reads on after the process exited, for output something it left
-/// running still writes; then the rest of the group is killed.
+/// How long a job thread reads on after it stopped a process, for output still queued.
 const PIPE_GRACE: Duration = Duration::from_millis(100);
 /// The longest a job thread drains queued output after its process exited and its group was
 /// killed; only a process that escaped the group and kept the pipe open can reach it.
@@ -42,6 +41,9 @@ const RETAINED: usize = 50;
 pub const TAIL_LINES: usize = 40;
 /// The longest a line in a notice is shown.
 const NOTICE_LINE: usize = 2000;
+/// The most bytes of output one notice carries, and the most that notices of one job may hold
+/// queued for the model: the same size as a tool result.
+pub const NOTE_BYTES: usize = 50 * 1024;
 const POLL: Duration = Duration::from_millis(10);
 /// How often waiters are woken while output streams in.
 const WAKE: Duration = Duration::from_millis(50);
@@ -199,6 +201,9 @@ impl EndInfo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     Foreground,
+    /// A foreground job whose call was dropped; it is removed when it ends, whichever stop
+    /// request came first.
+    Abandoned,
     Background,
 }
 
@@ -367,12 +372,16 @@ impl Job {
     }
 
     fn tail(&self) -> String {
-        let lines: Vec<&(u64, String)> = self.buffer.lines.iter().collect();
-        let from = lines.len().saturating_sub(TAIL_LINES);
-        let mut text = String::new();
-        for (_, line) in lines.iter().skip(from) {
-            text.push_str(clip(line.trim_end_matches('\n'), NOTICE_LINE));
-            text.push('\n');
+        let from = self.buffer.lines.len().saturating_sub(TAIL_LINES);
+        let (mut text, dropped) = fit_lines(
+            self.buffer
+                .lines
+                .iter()
+                .skip(from)
+                .map(|(_, line)| line.as_str()),
+        );
+        if dropped > 0 {
+            text.insert_str(0, &format!("[{dropped} earlier lines dropped]\n"));
         }
         text
     }
@@ -478,14 +487,14 @@ impl Shared {
              untrusted data.]\n",
             job.id, monitor.description
         );
-        if monitor.lost > 0 {
-            text.push_str(&format!("[{} earlier lines dropped]\n", monitor.lost));
+        let (body, cut) = fit_lines(lines.iter().map(String::as_str));
+        let dropped = monitor.lost + cut;
+        if dropped > 0 {
+            text.push_str(&format!("[{dropped} earlier lines dropped]\n"));
             monitor.lost = 0;
         }
-        for line in &lines {
-            text.push_str(clip(line.trim_end_matches('\n'), NOTICE_LINE));
-            text.push('\n');
-        }
+        text.push_str(&body);
+        job.cursor = job.buffer.next - monitor.pending.len() as u64;
         monitor.last_post = Some(now);
         monitor.since = (!monitor.pending.is_empty()).then_some(now);
         monitor.posted += 1;
@@ -510,8 +519,8 @@ impl Shared {
         }
         let why = job.control.requested();
         job.ended = Some(info);
-        if job.mode == Mode::Foreground {
-            if why == Some(Kill::Dropped) {
+        if job.mode != Mode::Background {
+            if job.mode == Mode::Abandoned {
                 inner.remove(id);
             }
             self.wake();
@@ -531,11 +540,35 @@ impl Shared {
             _ => {
                 let note = end_note(job);
                 job.reported = true;
+                job.cursor = job.buffer.next;
                 self.post(note);
             }
         }
         self.wake();
     }
+}
+
+/// Joins the newest of `lines` that fit in [`NOTE_BYTES`], each clipped to [`NOTICE_LINE`];
+/// how many of the older ones did not.
+fn fit_lines<'a>(lines: impl DoubleEndedIterator<Item = &'a str>) -> (String, usize) {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut bytes = 0;
+    let mut dropped = 0;
+    for line in lines.rev() {
+        let line = clip(line.trim_end_matches('\n'), NOTICE_LINE);
+        if dropped == 0 && (bytes + line.len() < NOTE_BYTES || kept.is_empty()) {
+            bytes += line.len() + 1;
+            kept.push(line);
+        } else {
+            dropped += 1;
+        }
+    }
+    let mut text = String::with_capacity(bytes);
+    for line in kept.into_iter().rev() {
+        text.push_str(line);
+        text.push('\n');
+    }
+    (text, dropped)
 }
 
 /// The note that tells the model a background job or monitor ended.
@@ -561,15 +594,12 @@ fn end_note(job: &Job) -> JobNote {
     match &job.monitor {
         Some(monitor) => {
             let capped = monitor.pending.len().saturating_sub(MONITOR_LINES);
-            let dropped = monitor.lost + capped;
+            let (body, cut) = fit_lines(monitor.pending.iter().skip(capped).map(String::as_str));
+            let dropped = monitor.lost + capped + cut;
             if dropped > 0 {
                 text.push_str(&format!("[{dropped} earlier lines dropped]\n"));
             }
-            let dropped = capped;
-            for line in monitor.pending.iter().skip(dropped) {
-                text.push_str(clip(line.trim_end_matches('\n'), NOTICE_LINE));
-                text.push('\n');
-            }
+            text.push_str(&body);
         }
         None => text.push_str(&job.tail()),
     }
@@ -619,6 +649,8 @@ pub struct Foreground {
     pub chunk: Chunk,
     /// How it ended; `None` when it was moved to the background and still runs.
     pub end: Option<EndInfo>,
+    /// It was moved to the background for printing nothing, not for running past its timeout.
+    pub quiet: bool,
 }
 
 /// What a read of a job returned.
@@ -777,6 +809,7 @@ impl Jobs {
                         id: id.to_owned(),
                         chunk,
                         end,
+                        quiet: false,
                     };
                 }
                 let now = Instant::now();
@@ -800,6 +833,7 @@ impl Jobs {
                                 id: id.to_owned(),
                                 chunk,
                                 end: None,
+                                quiet: why == Kill::Quiet,
                             };
                         }
                         job.control.request(if promote { Kill::Cap } else { why });
@@ -835,7 +869,9 @@ impl Jobs {
                 running: job.running(),
                 state: match (&job.ended, job.mode) {
                     (Some(info), _) => info.describe(),
-                    (None, Mode::Foreground) => "running in the foreground".to_owned(),
+                    (None, Mode::Foreground | Mode::Abandoned) => {
+                        "running in the foreground".to_owned()
+                    }
                     (None, Mode::Background) => "running".to_owned(),
                 },
             })
@@ -895,15 +931,14 @@ impl Jobs {
     /// Stops `id` and returns what it printed since it was last read.
     pub async fn cancel(&self, id: &str) -> Result<Read, JobError> {
         let mut changes = self.shared.changed.subscribe();
-        {
+        // A job that ended before this call keeps its end news's marker, so it is told once.
+        let ours = {
             let inner = lock(&self.shared.inner, "job registry");
             let job = inner
                 .find(id)
                 .ok_or_else(|| JobError::UnknownJob(id.to_owned()))?;
-            if job.running() {
-                job.control.request(Kill::Model);
-            }
-        }
+            job.running() && job.control.request(Kill::Model)
+        };
         let give_up = Instant::now() + STOP_GRACE + Duration::from_secs(5);
         loop {
             {
@@ -912,7 +947,7 @@ impl Jobs {
                     .find_mut(id)
                     .ok_or_else(|| JobError::UnknownJob(id.to_owned()))?;
                 if job.ended.is_some() || Instant::now() >= give_up {
-                    let done = read(job, true);
+                    let done = read(job, ours);
                     job.reported = true;
                     return Ok(done);
                 }
@@ -960,8 +995,9 @@ impl Drop for Jobs {
 }
 
 /// Reads `job` as `job_output` does: what is new, and how it stands. Reading an ended job takes
-/// the news of its end.
-fn read(job: &mut Job, cancelled: bool) -> Read {
+/// the news of its end, unless an earlier note carried it; `fresh` says this call ended the job
+/// itself, so that note is not one.
+fn read(job: &mut Job, fresh: bool) -> Read {
     let chunk = job.buffer.since(job.cursor);
     job.cursor = chunk.end;
     let user_killed = matches!(
@@ -971,7 +1007,7 @@ fn read(job: &mut Job, cancelled: bool) -> Read {
             ..
         })
     );
-    let already_reported = job.ended.is_some() && job.reported && !user_killed && !cancelled;
+    let already_reported = job.ended.is_some() && job.reported && !user_killed && !fresh;
     if job.ended.is_some() && !already_reported {
         job.reported = !user_killed;
         job.held = false;
@@ -1014,6 +1050,7 @@ impl Drop for ForegroundGuard {
         if job.ended.is_some() {
             inner.remove(&self.id);
         } else {
+            job.mode = Mode::Abandoned;
             job.control.request(Kill::Dropped);
         }
     }
@@ -1037,6 +1074,7 @@ impl Drop for WaitGuard {
         if job.held && !job.reported && job.waiters == 0 {
             job.held = false;
             job.reported = true;
+            job.cursor = job.buffer.next;
             let note = end_note(job);
             self.shared.post(note);
         }
