@@ -482,7 +482,7 @@ async fn a_minimal_run_sends_the_trimmed_request_rendered_from_the_minimal_promp
         .to_string();
     let user = user.replace("\\n", "\n");
     let block = |kind: &str| -> String {
-        let open = format!("<untrusted kind=\\\"{kind}\\\">\n");
+        let open = format!("kind=\\\"{kind}\\\">\n");
         let start = user
             .find(&open)
             .unwrap_or_else(|| panic!("no {kind} block in {user}"))

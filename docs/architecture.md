@@ -134,7 +134,9 @@ decision before anything else sees it:
  3. read-only fast path: read-only tool, every path inside a workspace root -> allow
  4. shell pre-classifier: one literal simple command of the curated set -> allow
  5. allow rules (user trust scopes, session grants, always-allow rules) -> allow
- 6. the mode: manual / acceptEdits / plan ask, dontAsk denies
+ 6. `auto` only: scratch write (file tool inside the session scratch directory) -> allow, then
+    tracked edit (file tool on a tracked, new or session-created file in the primary root) -> allow
+ 7. the mode: manual / acceptEdits / plan ask, dontAsk denies, auto asks the guardian
     |
     v
  audit log -> tool_decision event -> gate_decision event / transcript

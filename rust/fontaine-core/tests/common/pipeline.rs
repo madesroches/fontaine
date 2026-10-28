@@ -245,6 +245,10 @@ impl Rig {
             auto: AutoContext::default(),
             agents: agents.clone(),
             reveal_mcp_names: false,
+            auto_edits: fontaine_core::gate::AutoEdits {
+                tracked: config.permissions.auto_tracked_edits,
+                scratch: config.permissions.auto_scratch_writes,
+            },
         }));
         let user_config = world.config.join("config.toml");
         let pipeline = Arc::new(PermissionPipeline::new(PipelineParams {

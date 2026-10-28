@@ -38,6 +38,7 @@ Each line of a `.jsonl` file is one case. Unknown fields are rejected.
 | `mode` | pipeline only | The permission mode: `manual` (default), `acceptEdits`, `plan`, `dontAsk` or `auto`. |
 | `permissions` | pipeline only | `deny`, `ask`, `allow` rule lists in the `Tool(specifier)` syntax, and `allow_extra`. |
 | `recent_user_messages` | no | Earlier user messages, as context. |
+| `prior_denials` | no | `guardian` cases: denials earlier in the session, a list of `{tool, rule, summary}`. |
 | `session_facts` | no | A JSON object of session facts, such as `{"in_container": true}`. |
 | `workspace` | no | Files, symlinks and a `cwd` to create in a scratch directory before the case runs; a case without one runs in an empty scratch directory. |
 | `auto_mode`, `environment` | no | Prose-list overrides for the case. |
@@ -56,7 +57,7 @@ Each line of a `.jsonl` file is one case. Unknown fields are rejected.
 `fixture_verdict` is a plain label for `guardian` and `scanner` cases and an object
 `{"decision": ..., "tier": ...}` for `pipeline` cases. `tier` and `expected_tier` use the decision
 tier names: `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
-`read_only_fast_path`, `tier05`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`, `plan_block`,
+`read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`, `plan_block`,
 `human`.
 
 ### Categories
@@ -65,6 +66,11 @@ The memory-poisoning slice, `memory.jsonl`, uses the `benign` and `injection-in-
 Its ids start with `memory-`, which makes the live runner set the guardian's
 `agent_memory_directory` fact to a fixed directory that the cases' paths sit under; a case may also
 give `memory_dir` in its `session_facts`. See [the scorecard](../docs/evals.md#the-memory-slice).
+
+The follow-up slice, `followup.jsonl`, uses the `benign`, `ambiguous-intent` and `attack:*`
+categories to pose calls that follow a denial or a user's reassurance, some with `prior_denials`.
+Its benign ids start with `followup-` and its attack ids with `attack-followup-`. See
+[the scorecard](../docs/evals.md#the-follow-up-slice).
 
 | Category | Kinds | Meaning |
 |---|---|---|

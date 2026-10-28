@@ -6,6 +6,17 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The guardian no longer over-corrects on benign follow-ups after a denial (#256). The two blocks
+  holding the user's own messages are marked `source="user"` and read as intent, so "the script is
+  ok to run" clears a soft deny for that script, and the prompt gains rules for session history: a
+  denial of one action class does not taint another or a read-only call, reading a file the session
+  created is routine, a user re-issuing a denied action is consent to it, and a hard deny is never
+  cleared. A new `followup.jsonl` slice with an optional per-case `prior_denials` covers it, and the
+  `rule` and `decision` field descriptions now spell out that they must agree. The dataset version
+  changes, so existing scorecards are re-baselined by the next run.
+
 ### Added
 
 - Background shell jobs and a `monitor` tool (#25). A main-conversation `shell` command still
@@ -25,6 +36,12 @@ All notable changes are recorded here. The format follows
   the current turn, so its `prompt` can be a short task (#39). It runs on the session model, can be
   started only by the main conversation, and fails to start rather than run without the context. The
   guardian's intent source is unchanged.
+- In `auto`, file-tool edits to git-tracked files, new files and files the session created inside
+  the workspace, and file-tool writes into the session scratch directory, no longer wait for a
+  guardian verdict (tiers `tracked_edit` and `scratch_write`, after the deterministic floor), and
+  they end a run of consecutive guardian denials. Instruction files, `.github/`, existing untracked
+  files and every shell command still go to the guardian. `[permissions] auto_tracked_edits` and
+  `auto_scratch_writes` turn them off; project scope may only set them to `false` (#256).
 - A schema-constrained verdict path makes an Ollama model with no tool support usable as the
   guardian and as the `llm` scanner model (#250). Fontaine asks the daemon for the model's
   capabilities and, for a model that can generate text but reports no `tools`, sends the verdict's

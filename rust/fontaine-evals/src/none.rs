@@ -123,6 +123,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
             fontaine_agents::tree::Limits::default(),
         )),
         reveal_mcp_names: false,
+        auto_edits: fontaine_core::gate::AutoEdits::default(),
     }));
     let pipeline = PermissionPipeline::new(PipelineParams {
         state: state.clone(),

@@ -80,6 +80,8 @@ scanner = "off"                   # tool-result scanner: "off" | "pg2" | "llm" |
 default_mode = "auto"             # shipped default; config error before Phase 4 (default `manual`)
 deny = []                         # floor rules, every mode
 ask = []                          # always prompt, even in `auto`
+auto_tracked_edits = true         # `auto`: tracked/new/session-created file edits skip the guardian; project scope: false only
+auto_scratch_writes = true        # `auto`: file-tool writes into scratch skip the guardian; project scope: false only
 allow = []                        # pre-approval rules, same grammar; user trust scopes only
                                   #   (user, untracked project-local, CLI); step 5a, after the
                                   #   floor; broad code-exec rules suspended in `auto`
@@ -180,6 +182,7 @@ Per-key scope (the user file may set every key; a key a scope may not set is rej
 | `[permissions]` `deny`, `ask` | add only | add only | add only (`--disallowed-tools` → deny) |
 | `[permissions]` `allow` | no | yes | yes (`--allowed-tools`) |
 | `[permissions]` `additional_directories` | no | yes | yes (`--add-dir`) |
+| `[permissions]` `auto_tracked_edits`, `auto_scratch_writes` | `false` only | `false` only | yes |
 | `[auto_mode]` `environment`, `allow` | no | yes | `--settings` |
 | `[auto_mode]` `soft_deny`, `hard_deny` | add only | add only | add only |
 | `[agents]` `max_parallel`, budgets; `[agents.types]` | no | yes | `--settings` |

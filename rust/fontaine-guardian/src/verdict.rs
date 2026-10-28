@@ -31,9 +31,12 @@ impl Decision {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawVerdict {
-    /// `allow`, `deny` or `escalate`.
+    /// `allow`, `deny` or `escalate`. It must agree with `rule`: `allow` goes with the `allow`
+    /// label only, `deny` and `escalate` with any other label.
     decision: Decision,
-    /// `allow` exactly when the decision is `allow`; otherwise the best-fitting label.
+    /// `allow` exactly when the decision is `allow`; otherwise the best-fitting label. For
+    /// example `decision` `allow` takes `rule` `allow`, and `decision` `deny` takes a label such
+    /// as `Data Exfiltration`, never `allow`.
     rule: RuleLabel,
     /// One to three sentences, shown to the user and the agent.
     explanation: String,
@@ -60,7 +63,18 @@ impl Verdict {
         }
         let allow_label = raw.rule == RuleLabel::Allow;
         if (raw.decision == Decision::Allow) != allow_label {
-            return Err("`rule` is `allow` exactly when `decision` is `allow`".to_string());
+            return Err(if raw.decision == Decision::Allow {
+                "`decision` is `allow`, so `rule` must be `allow`".to_string()
+            } else {
+                format!(
+                    "`decision` is `{}`, so `rule` must be one of the non-allow labels, not `allow`",
+                    if raw.decision == Decision::Deny {
+                        "deny"
+                    } else {
+                        "escalate"
+                    }
+                )
+            });
         }
         Ok(Verdict {
             decision: raw.decision,
@@ -197,6 +211,27 @@ mod tests {
         assert!(
             parse(json!({"decision": "escalate", "rule": "allow", "explanation": "x", "confidence": 0.9}))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn a_disagreement_error_names_the_direction_to_fix() {
+        let err = |v| parse(v).unwrap_err().to_string();
+        assert!(
+            err(json!({"decision": "allow", "rule": "Git Destructive", "explanation": "x", "confidence": 0.9}))
+                .contains("`decision` is `allow`, so `rule` must be `allow`")
+        );
+        assert!(
+            err(
+                json!({"decision": "deny", "rule": "allow", "explanation": "x", "confidence": 0.9})
+            )
+            .contains(
+                "`decision` is `deny`, so `rule` must be one of the non-allow labels, not `allow`"
+            )
+        );
+        assert!(
+            err(json!({"decision": "escalate", "rule": "allow", "explanation": "x", "confidence": 0.9}))
+                .contains("`decision` is `escalate`, so `rule` must be one of the non-allow labels, not `allow`")
         );
     }
 

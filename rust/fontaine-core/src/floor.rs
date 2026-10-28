@@ -27,6 +27,36 @@ pub const PROTECTED_FILES: [&str; 9] = [
     ".mcp.json",
 ];
 
+/// Instruction files at any depth: an edit to one changes what later sessions are told to do.
+const INSTRUCTION_FILES: [&str; 5] = [
+    "FONTAINE.md",
+    "FONTAINE.local.md",
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    "AGENTS.md",
+];
+
+/// Whether `path` (resolved) is an instruction file, a file under a `rules` directory or inside
+/// `.github`: places where an edit changes later security decisions or what CI runs, so the
+/// guardian keeps judging them.
+pub fn is_instruction_or_ci_path(path: &Path, fold: bool) -> bool {
+    let names: Vec<&std::ffi::OsStr> = path
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+    let Some((last, parents)) = names.split_last() else {
+        return false;
+    };
+    INSTRUCTION_FILES.iter().any(|f| same(last, f, fold))
+        || parents
+            .iter()
+            .any(|n| same(n, "rules", fold) || same(n, ".github", fold))
+        || same(last, ".github", fold)
+}
+
 const DELETERS: [&str; 2] = ["rm", "rmdir"];
 
 /// Windows and macOS file systems are case-insensitive by default, so `.MCP.json` names the
@@ -452,5 +482,35 @@ mod tests {
         assert!(hit("data/fontaine/audit/x.jsonl"));
         assert!(hit(root.join("cfg/fontaine/trust.toml").to_str().unwrap()));
         assert!(!hit("cfg/other/settings.toml"));
+    }
+
+    #[test]
+    fn instruction_and_ci_paths_are_named_exactly() {
+        let hit = |path: &str, fold: bool| is_instruction_or_ci_path(Path::new(path), fold);
+        for path in [
+            "FONTAINE.md",
+            "FONTAINE.local.md",
+            "CLAUDE.md",
+            "CLAUDE.local.md",
+            "AGENTS.md",
+            "sub/dir/AGENTS.md",
+            "docs/rules/style.md",
+            ".github/workflows/ci.yml",
+            "a/.github/CODEOWNERS",
+        ] {
+            assert!(hit(path, false), "{path}");
+        }
+        for path in [
+            "AGENTS.md.bak",
+            "notes/CLAUDE.md.txt",
+            "src/main.rs",
+            "rules.md",
+            "github/ci.yml",
+        ] {
+            assert!(!hit(path, false), "{path}");
+        }
+        assert!(!hit("agents.md", false));
+        assert!(hit("agents.md", true));
+        assert!(hit("Docs/RULES/x.md", true));
     }
 }

@@ -366,6 +366,14 @@ pub const KEYS: &[KeyRow] = &[
     row!("permissions.additional_directories", List, |c, _| entries(
         c.permissions.additional_directories.len()
     )),
+    row!("permissions.auto_tracked_edits", Scalar, |c, _| c
+        .permissions
+        .auto_tracked_edits
+        .to_string()),
+    row!("permissions.auto_scratch_writes", Scalar, |c, _| c
+        .permissions
+        .auto_scratch_writes
+        .to_string()),
     row!("hooks.pre_tool_use", List, |c, _| entries(
         c.hooks.pre_tool_use.len()
     )),

@@ -89,7 +89,8 @@ Run `fontaine` for the terminal UI (Shift+Tab cycles the mode) or `fontaine -p` 
 
 In `auto` a call is judged by the guardian only after everything that can be decided without a
 model has been: your deny and ask rules, the critical and protected paths, the read-only fast path
-inside your workspace, and a small set of read-only shell commands never reach it. For the rest,
+inside your workspace, a small set of read-only shell commands, and file-tool edits to tracked,
+new or session-created files and to the scratch directory never reach it. For the rest,
 the guardian is a separate model with no tools. It reads what you asked for (your own messages,
 taken from a record the agent cannot edit), the call and a short written policy, and answers
 **allow**, **deny** with a reason the agent sees, or **escalate** to ask you.

@@ -2,7 +2,9 @@ mod common;
 
 use common::{World, git_init, write};
 use fontaine_core::config::ConfigError;
-use fontaine_core::trust::{self, LocalClassification, ProjectDemotion, classify_project_local};
+use fontaine_core::trust::{
+    self, LocalClassification, ProjectDemotion, Tracking, classify_project_local, tracking,
+};
 
 #[test]
 fn a_trusted_repo_root_trusts_its_subdirectories() {
@@ -234,4 +236,39 @@ fn unreadable_reports_only_a_corrupt_store() {
     let message = trust::unreadable(&w.data).unwrap();
     assert!(message.contains("trust.toml"), "{message}");
     assert!(!message.contains('\n'), "{message}");
+}
+
+#[test]
+fn tracking_wants_an_exact_index_entry_inside_the_work_tree() {
+    let w = World::new();
+    git_init(&w.work);
+    write(&w.work.join("kept.txt"), "a");
+    write(&w.work.join("loose.txt"), "a");
+    common::git(&w.work, &["add", "kept.txt"]);
+    let work = std::fs::canonicalize(&w.work).unwrap();
+    assert_eq!(tracking(&work, &work.join("kept.txt")), Tracking::Tracked);
+    assert_eq!(
+        tracking(&work, &work.join("loose.txt")),
+        Tracking::Untracked
+    );
+    assert_eq!(tracking(&work, &work.join("new.txt")), Tracking::Untracked);
+    assert_eq!(
+        tracking(&work, &work.join("no/dir/new.txt")),
+        Tracking::Unknown
+    );
+    // macOS volumes are case-insensitive by default: KEPT.txt resolves to kept.txt.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    assert_eq!(tracking(&work, &work.join("KEPT.txt")), Tracking::Untracked);
+    let outside = std::fs::canonicalize(&w.root).unwrap().join("x.txt");
+    assert_eq!(tracking(&work, &outside), Tracking::Unknown);
+}
+
+#[test]
+fn tracking_outside_any_repo_is_unknown() {
+    let w = World::new();
+    let plain = std::fs::canonicalize(w.root.join("plain")).unwrap_or_else(|_| {
+        std::fs::create_dir_all(w.root.join("plain")).unwrap();
+        std::fs::canonicalize(w.root.join("plain")).unwrap()
+    });
+    assert_eq!(tracking(&plain, &plain.join("a.txt")), Tracking::Unknown);
 }

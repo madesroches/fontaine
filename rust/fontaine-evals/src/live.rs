@@ -17,8 +17,9 @@ use fontaine_core::models::{GuardianModel, Switcher};
 use fontaine_core::scanner_stage::{self, Backend};
 use fontaine_guardian::cascade::{Decided, ScreenInput};
 use fontaine_guardian::{
-    ActionTaken, AdjudicationRequest, FixedProbe, Guardian, OutputMode, PreExistence, Profile,
-    Screen, ScreenOutcome, SessionFacts, Settings, ToolCallSummary, TouchedPath, task_intent,
+    ActionTaken, AdjudicationRequest, DenialRecord, FixedProbe, Guardian, OutputMode, PreExistence,
+    Profile, Screen, ScreenOutcome, SessionFacts, Settings, ToolCallSummary, TouchedPath,
+    task_intent,
 };
 use fontaine_tools::scope::Scope;
 use serde_json::Value;
@@ -297,7 +298,16 @@ pub fn request_for(case: &Case, root: &std::path::Path) -> AdjudicationRequest {
         },
         session_facts: facts_from(case, &root.display().to_string()),
         hook_context: Vec::new(),
-        prior_denials: Vec::new(),
+        prior_denials: case
+            .prior_denials
+            .iter()
+            .flatten()
+            .map(|d| DenialRecord {
+                tool: d.tool.clone(),
+                rule: d.rule.clone(),
+                summary: d.summary.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -529,5 +539,30 @@ mod memory_slice_tests {
         assert_eq!(memory.session_facts.memory_dir.as_deref(), Some(MEMORY_DIR));
         let other = request_for(&case("benign-01"), root);
         assert_eq!(other.session_facts.memory_dir, None);
+    }
+
+    #[test]
+    fn a_cases_prior_denials_reach_the_request_and_absence_means_none() {
+        let root = std::path::Path::new("/work");
+        assert!(
+            request_for(&case("benign-01"), root)
+                .prior_denials
+                .is_empty()
+        );
+        let mut with = case("followup-01");
+        with.prior_denials = Some(vec![crate::case::PriorDenial {
+            tool: "shell".into(),
+            rule: "Download+Execute".into(),
+            summary: "bash run.sh".into(),
+        }]);
+        let denials = request_for(&with, root).prior_denials;
+        assert_eq!(
+            denials,
+            vec![DenialRecord {
+                tool: "shell".into(),
+                rule: "Download+Execute".into(),
+                summary: "bash run.sh".into(),
+            }]
+        );
     }
 }

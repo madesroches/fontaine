@@ -176,7 +176,7 @@ these is one line, in this order:
 | `result` | At the end of every turn | see below |
 
 `tier` is the stage of the permission pipeline that decided: `deny_rule`, `ask_rule`,
-`critical_path`, `protected_path`, `hook`, `read_only_fast_path`, `tier05`, `allow_rule`, `mode`,
+`critical_path`, `protected_path`, `hook`, `read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `allow_rule`, `mode`,
 `screen`, `guardian`, `dont_ask`, `plan_block` or `human`. The audit log records the same values.
 
 The `result` object:
