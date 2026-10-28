@@ -12,8 +12,10 @@ untrusted data", which contradicts the system prompt's "user intent comes from t
 `task_intent` and `recent_user_messages` blocks". This plan fixes the framing, adds the missing
 history rules (modelled on Claude Code's auto-mode classifier), and adds a regression slice to
 the golden dataset. It also covers the `benign-34` decision/rule mismatch from the issue comment,
-and takes routine edits to version-controlled project files out of the guardian's hands, so the
-guardian can no longer deny them.
+and takes routine edits out of the guardian's hands (edits to tracked files, new files, files
+created this session, and scratch writes), so the guardian can no longer deny them. The guardian
+still sees edits to existing untracked files that predate the session, instruction files and
+`.github/`.
 
 ## Current State
 
@@ -43,6 +45,9 @@ guardian can no longer deny them.
 
 Five small changes. Changes 1-4 touch neither the deterministic floor, the fail-closed handling,
 nor any confidence threshold. Change 5 adds a pipeline stage strictly after the floor.
+
+Success criterion: `auto` works with the user absent. Benign continuation after a denial,
+project-scope edits, scratch writes and status checks complete with nobody present.
 
 ### 1. Name the user's words as the user's words
 
@@ -135,33 +140,53 @@ it needs no guardian verdict.
 - New decision tier `tracked_edit` (beside `read_only_fast_path`), reached only after the whole
   floor (`deny → ask → critical-path → protected-path`) and user hooks have passed. A call gets it
   when all of these hold: the tool is edit-class (the same `edit_class` test `acceptEdits` uses);
-  `scope.locate` places the target inside a workspace root; and the target, canonicalized, is
-  something the call cannot destroy: an entry in the git index, a path that does not exist yet
-  (creating a file destroys nothing), or a path the ledger shows this session created
-  (`created_this_session`). The index lookup reuses the tracked test in `trust.rs`
-  `classify_project_local` (extracted into a shared helper), including its handling of submodule
-  and sparse-directory entries and of symlinks, which are judged by the path git sees.
-- This follows Claude Code's "local operations within project scope" allowance, which does not
-  cover Write/Edit "onto an existing untracked or out-of-repo path": an existing untracked or
-  ignored file that predates the session (`pre_existing` or `unindexed`), such as `.env` or
-  uncommitted work, and any shell command go to the guardian as before.
+  `scope.locate` places the target inside the primary workspace root (the memory root and
+  `/add-dir` roots are excluded, so memory-write rules still reach the guardian, and scratch has
+  its own stage); the target lies inside that root's git work tree; and the target is something
+  the call cannot destroy: in the git index, a path that does not exist yet (creating a file
+  destroys nothing), or a path the ledger shows this session created (`created_this_session`).
+  A new file in a root that is not in a git work tree is not covered. Everything else, including a
+  ledger `PreExisting` or `Unindexed` path that is not in the index, goes to the guardian.
+- The index lookup is a helper extracted from the index-lookup part of `trust.rs`
+  `classify_project_local` (the rest of that function is trust-store logic and stays), including
+  its handling of submodule and sparse-directory entries. It takes the canonical path from
+  `Scope::find`/`locate`; only the resolved path counts, never the literal one, so a tracked
+  symlink to an untracked in-repo file does not qualify, and a symlink whose target is outside the
+  work tree or that fails to canonicalize does not qualify. For a path that does not exist yet the
+  helper canonicalizes the parent. The helper reports "not in a work tree" separately from "not
+  tracked", so a new file outside git is still "new" where the stage allows it.
+- The permissions evaluator does not read the ledger today; the stage takes `state.ledger.view()`
+  and asks `existence` for the `created_this_session` case. That value comes from the
+  session-start file walk, not from git's index, so "pre-existing or unindexed" is not the
+  complement of "tracked"; the stage tests the index itself.
+- An existing untracked or ignored file that predates the session, such as `.env` or uncommitted
+  work, and any shell command go to the guardian as before.
 - Scratch writes get the same treatment under their own tier, `scratch_write`: an edit-class file
-  tool whose canonicalized target lies inside the session scratch directory (`state.scratch`, a
-  private per-session root that is deleted when the session ends) is allowed after the floor.
-  Reads there already take the read-only fast path. A shell command that touches scratch is not a
-  file-tool call and goes to the guardian. Symlinks are resolved first, so a link from scratch to
-  a path outside it is judged by its target.
+  tool whose canonicalized target lies inside the session scratch directory (`state.scratch`,
+  shared with the session's subagents; files written by shell are not ledger-tracked) is allowed
+  after the floor. The scratch stage is evaluated first, so a scratch path always records
+  `scratch_write`; a setting that is off falls through to the next stage. Reads there already take
+  the read-only fast path. A shell command that touches scratch is not a file-tool call and goes
+  to the guardian. Symlinks are resolved first, so a link from scratch to a path outside it is
+  judged by its target.
+- Both stages apply only when the effective `mode == Auto` (Plan blocks edit-class calls earlier,
+  and a child's mode is the lesser of its own and its parent's).
 - Agent configuration is excluded. The floor's protected paths already cover it; in `auto` the
   floor hands a protected path to the guardian instead of prompting (`docs/permissions.md`), so
-  this stage must not allow it. Beyond those, the exclusion also names the instruction files
-  the guardian reads as `project_instructions` (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and
-  their imports) and `.github/`, because an edit there changes later security decisions or what CI
+  this stage must not allow it. Beyond those, the exclusion names the instruction files
+  the guardian reads as `project_instructions` and `.github/`, because an edit there changes later security decisions or what CI
   runs. Those paths fall through to the guardian rather than being allowed or denied here, where
   an explicit request in the user's own message that names the file clears them.
-- Both stages are on by default, switchable only from user scope (`[permissions]` keys, named in
-  the config doc); project scope may switch them off but never on, as for every loosening key.
+- Two settings, `[permissions] auto_tracked_edits` and `auto_scratch_writes` (`Option<bool>` on
+  `PermissionsSection`, `bool` on `Permissions`, default true). Project scope may switch them off
+  but never on: two `Rule::if_project_local(key, is_false, reason)` rows in `RULES` in
+  `config_scope.rs`, as for `telemetry.enabled`.
 - Auditing is unchanged: the call is recorded with tier `tracked_edit` or `scratch_write`, and the
   edit still lands in the ledger as an action.
+- The fast-path allows (`tracked_edit`, `scratch_write`) reset the run of consecutive denials in
+  the loop breaker, as a guardian allow does (`guardian_allowed`), so benign work between denials
+  keeps `auto` from pausing and handing the session to an absent user. The read-only fast path
+  and the pre-classifier do not reset it today and are unchanged.
 
 ## Implementation Steps
 
@@ -196,14 +221,24 @@ it needs no guardian verdict.
    `prior_denials` row of the "What the guardian sees" table; add a short "How history and your
    words are weighed" subsection. `docs/evals.md`: add a "The follow-up slice" section modelled
    on "The memory slice", plus the dataset-version note.
-8. Tracked-file edits and scratch writes: extract the tracked-in-index test from `trust.rs`
-   `classify_project_local` into a shared helper; add `Tier::TrackedEdit` and `Tier::ScratchWrite`
-   (`tier.rs`, names `tracked_edit` and `scratch_write`); add both stages in `permissions.rs` in
-   the `Auto`/`Plan` arm before `Verdict::Guardian`, with the exclusions above; add the user-scope
-   settings in `config.rs` (default on; project scope can only turn them off). Every place that
-   lists tier names (audit and telemetry docs, the eval runner's `expected_tier` values) gains the
-   two names.
-9. Master plan `## Decisions` lines (below) and the `CHANGELOG.md` entry at PR time.
+8. Tracked-file edits and scratch writes: extract the index-lookup part of `trust.rs`
+   `classify_project_local` into a shared helper (resolved path only; reports not-in-work-tree);
+   add `Tier::TrackedEdit` and `Tier::ScratchWrite` (`tier.rs`, names `tracked_edit` and
+   `scratch_write`; `Tier::ALL` grows from 14 to 16); add both stages in `permissions.rs` before
+   `Verdict::Guardian` at the `Plan | Auto` arm, gated on the effective `mode == Auto`, with the
+   exclusions above, plumbing `state.ledger.view()` into the evaluator and resetting the breaker on
+   either allow; add `auto_tracked_edits` and `auto_scratch_writes` in `config.rs` and their two
+   `RULES` rows in `config_scope.rs`. Update tests that edit new or tracked files in `auto` and
+   expect the guardian (`tests/permissions_auto.rs` ~663-700, `tests/choke_point.rs`, others found
+   by running the suite). Every place that lists tier names gains the two names:
+   `docs/schemas/headless-v1.schema.json` (closed `tier` enum), `docs/headless.md` (~174),
+   `docs/architecture.md` (pipeline diagram), `evals/README.md` (`expected_tier` values),
+   `tasks/design/permissions.md` (tier enum).
+9. Docs and amendments: `docs/tools.md` scratch section (~100-122); fix the stale statements in
+   `docs/permissions.md` (~20, 83-84, 269-271: "the only guardian skips earned without a grant of
+   yours") and `docs/guardian.md` (~3-12); amend the AGENTS.md security-invariant text on the fast
+   path (~lines 45-48) to name this second exception; master plan `## Decisions` lines (below) and
+   the `CHANGELOG.md` entry at PR time.
 
 ## Files to Modify
 
@@ -213,16 +248,16 @@ it needs no guardian verdict.
 - `rust/fontaine-guardian/src/verdict.rs` (descriptions only)
 - `rust/fontaine-evals/src/case.rs`, `live.rs`, `tests/live.rs`
 - `evals/dataset/followup.jsonl` (new), `evals/README.md`
-- `rust/fontaine-core/src/permissions.rs`, `tier.rs`, `trust.rs`, `config.rs` (tracked-file edits)
+- `rust/fontaine-core/src/permissions.rs`, `tier.rs`, `trust.rs`, `config.rs`, `config_scope.rs`
+  (tracked-file edits)
+- `rust/fontaine-core/tests/permissions_auto.rs`, `choke_point.rs` (tests that expect the guardian
+  for such edits)
+- `docs/schemas/headless-v1.schema.json`, `docs/headless.md`, `docs/architecture.md`,
+  `docs/tools.md`, `tasks/design/permissions.md`, `AGENTS.md` (fast-path invariant)
 - `docs/guardian.md`, `docs/evals.md`, `docs/permissions.md`, `docs/configuration.md`,
   `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
 
 ## Trade-offs
-
-- **A fast path vs. a prompt rule for edits.** Telling the guardian that tracked-file edits are
-  routine would still leave the verdict to a model that has already misjudged such calls; a stage
-  after the floor makes the outcome deterministic. The cost is a deviation from "the fast path is
-  earned by containment", recorded below.
 
 - **Prompt rules vs. a structured "user vouched" field.** The request already carries the user's
   messages as harness-recorded data; the failure was how they are framed, not a missing channel.
@@ -243,12 +278,17 @@ it needs no guardian verdict.
   files and files created this session without a guardian verdict (tier `tracked_edit`), after the
   floor; Claude Code gives the same scope to its classifier but still asks it. Existing untracked
   files that predate the session, agent configuration, instruction files and `.github/` still go
-  to the guardian, where an explicit request from the user clears them. Requested by the maintainer after
+  to the guardian, where an explicit request from the user that names the file clears them. Requested by the maintainer after
   guardian denials of ordinary repository edits. (#256)
 - 2026-10-27: Deviation — `auto` mode allows file-tool writes inside the session scratch directory
   without a guardian verdict (tier `scratch_write`), after the floor; shell commands there still go
   to the guardian, because the directory is private to the session and removed when it ends.
   Requested by the maintainer. (#256)
+- 2026-10-27: Deviation — a `tracked_edit` or `scratch_write` allow resets the loop breaker's
+  consecutive-denial run like a guardian allow; the read-only fast path and the pre-classifier do
+  not. The maintainer requires `auto` to work with the user absent. (#256)
+- 2026-10-27: The fast-path exception in the AGENTS.md security invariants gains a second
+  exception naming these tiers (after the floor, scoped as above). (#256)
 - 2026-10-27: Same as Claude Code — a hard deny is never cleared by user intent, repeated or not. (#256)
 
 ## Documentation
@@ -256,7 +296,10 @@ it needs no guardian verdict.
 `docs/guardian.md` (data bullet, request table, new history subsection), `evals/README.md`
 (`prior_denials` row, `followup.jsonl` paragraph), `docs/evals.md` (follow-up slice section and
 the dataset-version note, as for `memory.jsonl`), `docs/permissions.md` (the `tracked_edit` and
-`scratch_write` tiers and their exclusions), `docs/configuration.md` (the setting), `CHANGELOG.md`.
+`scratch_write` tiers and their exclusions), `docs/configuration.md` (the two settings), `docs/tools.md` (scratch section),
+`docs/headless.md`, `docs/architecture.md` and `docs/schemas/headless-v1.schema.json` (tier names),
+`docs/guardian.md` and `docs/permissions.md` (stale "only guardian skips" statements),
+`tasks/design/permissions.md`, `AGENTS.md`, `CHANGELOG.md`.
 
 ## Testing Strategy
 
@@ -266,16 +309,20 @@ the dataset-version note, as for `memory.jsonl`), `docs/permissions.md` (the `tr
 - Unit (`verdict.rs`): both mismatch directions stay malformed (existing combined test kept).
 - Unit (`live.rs`): `request_for` carries a case's `prior_denials`; a case without the field
   yields none.
-- Unit (`permissions.rs`, temp git repo): in `auto`, editing a tracked file, creating a new file
+- Unit (`permissions.rs`, temp git repo, `auto` only): editing a tracked file, creating a new file
   and editing a file created this session give `tracked_edit`; an existing untracked or ignored
   file that predates the session, a shell command, a symlink to such a target and
-  a path outside the workspace go to the guardian; a tracked file under a protected path or a deny
-  or ask rule is decided by the floor; a tracked instruction file and a tracked `.github/` file
-  go to the guardian; the setting off sends a tracked edit to the guardian, and a project-scope
-  attempt to turn it on is ignored. In the same test module, an edit-class file call whose target
+  a path outside the workspace go to the guardian; a tracked file under a protected path goes to
+  the guardian, not `tracked_edit`, while a deny or ask rule is decided by the floor; a tracked
+  instruction file and a tracked `.github/` file go to the guardian; a tracked symlink to an
+  untracked in-repo file, a symlink out of the work tree, and a new file in the memory root or in
+  a non-git root go to the guardian; the setting off sends a tracked edit to the guardian. In the same test module, an edit-class file call whose target
   is inside the scratch directory gives `scratch_write`; a symlink out of scratch, a shell command
-  that touches scratch, and the setting off go to the guardian. The choke-point test (every tool
+  that touches scratch, and the setting off go to the guardian. A `tracked_edit` or `scratch_write`
+  allow resets the consecutive-denial run (two denials, an allow, a denial: no pause). The choke-point test (every tool
   has a risk class) stays green.
+- Unit (`config_scope.rs`): a project-scope `true` for either setting is rejected with a scope
+  error, and `false` is accepted.
 - Unit (`trust.rs`): the extracted tracked helper keeps `classify_project_local`'s behavior
   (existing tests).
 - Dataset checks: the loader test that validates the whole dataset accepts `followup.jsonl`; the
