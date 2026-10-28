@@ -587,6 +587,44 @@ fn two_plugins_whose_servers_compose_to_one_name_are_an_error() {
 }
 
 #[test]
+fn plugin_server_names_follow_the_config_alphabet() {
+    let w = World::new();
+    let root = checkout(&w, "team", "p");
+    manifest(&root, "p", "");
+    for bad in ["my.server", "a b", "a_", "_a"] {
+        write(
+            &root.join(".mcp.json"),
+            &format!(r#"{{"mcpServers": {{"{bad}": {{"command": "x"}}}}}}"#),
+        );
+        let err = build_plugin(&root, "p", &context(&w.work)).unwrap_err();
+        assert!(
+            err.to_string().contains("not an MCP server name"),
+            "{bad}: {err}"
+        );
+    }
+}
+
+#[test]
+fn malformed_mcp_env_and_args_are_load_errors() {
+    let w = World::new();
+    let root = checkout(&w, "team", "p");
+    manifest(&root, "p", "");
+    for bad in [
+        r#"{"mcpServers": {"s": {"command": "x", "env": {"TOKEN": 5}}}}"#,
+        r#"{"mcpServers": {"s": {"command": "x", "env": "TOKEN"}}}"#,
+        r#"{"mcpServers": {"s": {"command": "x", "args": ["a", 5]}}}"#,
+        r#"{"mcpServers": {"s": {"command": "x", "args": "a"}}}"#,
+        r#"{"mcpServers": {"s": {"command": "x", "url": "https://x"}}}"#,
+    ] {
+        write(&root.join(".mcp.json"), bad);
+        assert!(
+            build_plugin(&root, "p", &context(&w.work)).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
 fn manifest_hooks_and_mcp_paths_merge_over_the_default_files() {
     let w = World::new();
     let root = checkout(&w, "team", "p");

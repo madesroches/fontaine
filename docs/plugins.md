@@ -161,8 +161,10 @@ plugin.
   skip with a warning. `timeout` seconds map to `timeout_secs`.
 - `.mcp.json` maps onto the MCP server settings. `env` values support `${VAR}` expansion, and
   server names are composed as `plugin_<plugin>_<name>`, so a ported plugin's
-  `mcp__plugin_<plugin>_<name>__<tool>` references resolve unchanged. A bare
-  `mcp__<name>__*` reference in a plugin file is rewritten to the composed name.
+  `mcp__plugin_<plugin>_<name>__<tool>` references resolve unchanged. A server name follows the
+  [MCP server name alphabet](mcp.md): letters, digits, `_` and `-`, with no `__` and no leading
+  or trailing `_`. A bare `mcp__<name>__*` reference in a plugin file is rewritten to the
+  composed name.
 - `${CLAUDE_PLUGIN_ROOT}` expands to the installed checkout and `${CLAUDE_PROJECT_DIR}` to the
   session's primary root, in hook commands and `.mcp.json` values. `${VAR}` reads any other
   variable from the process environment — its *value* lands in the hook command or server

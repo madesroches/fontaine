@@ -885,12 +885,19 @@ fn parse_mcp_file(
         return Ok(load);
     };
     for (name, spec) in servers {
-        if name.is_empty() || name.contains("__") {
+        if name.is_empty()
+            || name.contains("__")
+            || name.starts_with('_')
+            || name.ends_with('_')
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
             return Err(PluginError::in_plugin(
                 plugin,
                 path.to_path_buf(),
                 format!(
-                    "`{name}` is not an MCP server name: it must be non-empty and contain no `__`"
+                    "`{name}` is not an MCP server name: it must be non-empty, contain no `__`, neither start nor end with `_`, and use only letters, digits, `_` and `-`"
                 ),
             ));
         }
@@ -901,47 +908,124 @@ fn parse_mcp_file(
                 format!("the `.mcp.json` entry `{name}` is not an object"),
             )
         })?;
-        let env = object.get("env").and_then(Value::as_object).map(|map| {
-            map.iter()
-                .filter_map(|(k, v)| {
-                    v.as_str().map(|v| {
-                        (
-                            k.clone(),
-                            expand_vars(v, plugin, root, ctx, warnings, env_vars),
+        let env = match object.get("env") {
+            None => None,
+            Some(value) => {
+                let map = value.as_object().ok_or_else(|| {
+                    PluginError::in_plugin(
+                        plugin,
+                        path.to_path_buf(),
+                        format!(
+                            "the `.mcp.json` entry `{name}` has an `env` that is not an object"
+                        ),
+                    )
+                })?;
+                let mut out = BTreeMap::new();
+                for (var, spec) in map {
+                    let text = spec.as_str().ok_or_else(|| {
+                        PluginError::in_plugin(
+                            plugin,
+                            path.to_path_buf(),
+                            format!(
+                                "the `.mcp.json` entry `{name}` has a non-string `env` value for `{var}`"
+                            ),
                         )
-                    })
-                })
-                .collect::<BTreeMap<_, _>>()
-        });
-        let server = if let Some(url) = object.get("url").and_then(Value::as_str) {
-            McpServer {
-                command: None,
-                args: None,
-                env_vars: None,
-                url: Some(expand_vars(url, plugin, root, ctx, warnings, env_vars)),
-                env,
+                    })?;
+                    out.insert(
+                        var.clone(),
+                        expand_vars(text, plugin, root, ctx, warnings, env_vars),
+                    );
+                }
+                Some(out)
             }
-        } else if let Some(command) = object.get("command").and_then(Value::as_str) {
-            let args = object.get("args").and_then(Value::as_array).map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(|arg| expand_vars(arg, plugin, root, ctx, warnings, env_vars))
-                    .collect::<Vec<_>>()
-            });
-            McpServer {
-                command: Some(expand_vars(command, plugin, root, ctx, warnings, env_vars)),
+        };
+        let url = match object.get("url") {
+            None => None,
+            Some(value) => {
+                let text = value.as_str().ok_or_else(|| {
+                    PluginError::in_plugin(
+                        plugin,
+                        path.to_path_buf(),
+                        format!("the `.mcp.json` entry `{name}` has a non-string `url`"),
+                    )
+                })?;
+                Some(expand_vars(text, plugin, root, ctx, warnings, env_vars))
+            }
+        };
+        let command = match object.get("command") {
+            None => None,
+            Some(value) => {
+                let text = value.as_str().ok_or_else(|| {
+                    PluginError::in_plugin(
+                        plugin,
+                        path.to_path_buf(),
+                        format!("the `.mcp.json` entry `{name}` has a non-string `command`"),
+                    )
+                })?;
+                Some(expand_vars(text, plugin, root, ctx, warnings, env_vars))
+            }
+        };
+        let args = if command.is_some() {
+            match object.get("args") {
+                None => None,
+                Some(value) => {
+                    let items = value.as_array().ok_or_else(|| {
+                        PluginError::in_plugin(
+                            plugin,
+                            path.to_path_buf(),
+                            format!(
+                                "the `.mcp.json` entry `{name}` has an `args` that is not a list"
+                            ),
+                        )
+                    })?;
+                    let mut out = Vec::new();
+                    for item in items {
+                        let text = item.as_str().ok_or_else(|| {
+                            PluginError::in_plugin(
+                                plugin,
+                                path.to_path_buf(),
+                                format!("a `.mcp.json` `args` entry of `{name}` is not a string"),
+                            )
+                        })?;
+                        out.push(expand_vars(text, plugin, root, ctx, warnings, env_vars));
+                    }
+                    Some(out)
+                }
+            }
+        } else {
+            None
+        };
+        let server = match (command, url) {
+            (Some(command), None) => McpServer {
+                command: Some(command),
                 args,
                 env_vars: None,
                 url: None,
                 env,
+            },
+            (None, Some(url)) => McpServer {
+                command: None,
+                args: None,
+                env_vars: None,
+                url: Some(url),
+                env,
+            },
+            (Some(_), Some(_)) => {
+                return Err(PluginError::in_plugin(
+                    plugin,
+                    path.to_path_buf(),
+                    format!(
+                        "the `.mcp.json` entry `{name}` has both `command` and `url`; set exactly one"
+                    ),
+                ));
             }
-        } else {
-            return Err(PluginError::in_plugin(
-                plugin,
-                path.to_path_buf(),
-                format!("the `.mcp.json` entry `{name}` has neither `command` nor `url`"),
-            ));
+            (None, None) => {
+                return Err(PluginError::in_plugin(
+                    plugin,
+                    path.to_path_buf(),
+                    format!("the `.mcp.json` entry `{name}` has neither `command` nor `url`"),
+                ));
+            }
         };
         let composed = format!("plugin_{plugin}_{name}");
         load.composed.insert(name.clone(), composed.clone());
@@ -1455,6 +1539,12 @@ pub fn parse_catalog(text: &str, path: &Path) -> Result<Catalog, PluginError> {
     Ok(Catalog { name, plugins })
 }
 
+/// A `ref`, `sha` or `url` that reaches `git` as a positional argument. git reads a leading `-`
+/// as an option, so such a value is refused here rather than at the shell-out.
+fn git_positional_ok(value: &str) -> bool {
+    !value.is_empty() && !value.starts_with('-') && !value.chars().any(char::is_whitespace)
+}
+
 fn parse_source(value: Option<&Value>, path: &Path) -> Result<CatalogSource, PluginError> {
     let Some(value) = value else {
         return Err(PluginError::in_file(
@@ -1488,11 +1578,35 @@ fn parse_source(value: Option<&Value>, path: &Path) -> Result<CatalogSource, Plu
         .get("sha")
         .and_then(Value::as_str)
         .map(str::to_string);
+    if r#ref
+        .as_deref()
+        .is_some_and(|value| !git_positional_ok(value))
+    {
+        return Err(PluginError::in_file(
+            path.to_path_buf(),
+            "a plugin `source` `ref` must be a non-empty branch or tag name",
+        ));
+    }
+    if sha
+        .as_deref()
+        .is_some_and(|value| !git_positional_ok(value))
+    {
+        return Err(PluginError::in_file(
+            path.to_path_buf(),
+            "a plugin `source` `sha` must be a non-empty commit hash",
+        ));
+    }
     match kind {
         "github" => {
             let repo = object.get("repo").and_then(Value::as_str).ok_or_else(|| {
                 PluginError::in_file(path.to_path_buf(), "a `github` source has no `repo`")
             })?;
+            if !git_positional_ok(repo) {
+                return Err(PluginError::in_file(
+                    path.to_path_buf(),
+                    "a `github` source `repo` must be a non-empty `owner/repo`",
+                ));
+            }
             Ok(CatalogSource::Github {
                 repo: repo.to_string(),
                 r#ref,
@@ -1503,6 +1617,12 @@ fn parse_source(value: Option<&Value>, path: &Path) -> Result<CatalogSource, Plu
             let url = object.get("url").and_then(Value::as_str).ok_or_else(|| {
                 PluginError::in_file(path.to_path_buf(), "a `url` source has no `url`")
             })?;
+            if !git_positional_ok(url) {
+                return Err(PluginError::in_file(
+                    path.to_path_buf(),
+                    "a plugin `source` `url` must be a non-empty git URL",
+                ));
+            }
             Ok(CatalogSource::Url {
                 url: url.to_string(),
                 r#ref,
@@ -1766,6 +1886,29 @@ mod tests {
             path,
         );
         assert!(bad.unwrap_err().to_string().contains("npm"));
+    }
+
+    #[test]
+    fn catalog_sources_refuse_option_like_git_values() {
+        let path = Path::new("marketplace.json");
+        for field in ["ref", "sha"] {
+            let json = format!(
+                r#"{{"name":"t","plugins":[{{"name":"a","source":{{"source":"github","repo":"o/r","{field}":"-x"}}}}]}}"#
+            );
+            assert!(parse_catalog(&json, path).is_err(), "{field}");
+        }
+        assert!(
+            parse_catalog(
+                r#"{"name":"t","plugins":[{"name":"a","source":{"source":"url","url":"-x"}}]}"#,
+                path
+            )
+            .is_err()
+        );
+        assert!(parse_catalog(
+            r#"{"name":"t","plugins":[{"name":"a","source":{"source":"github","repo":"o/r","ref":"main","sha":"a1b2c3"}}]}"#,
+            path
+        )
+        .is_ok());
     }
 
     #[test]

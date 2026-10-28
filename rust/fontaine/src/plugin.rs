@@ -41,7 +41,7 @@ pub fn run(args: &PluginArgs, host: &Host) -> ExitCode {
         PluginAction::Update(args) => update(&dirs, host, &args.name),
         PluginAction::Enable(args) => set_enabled(&dirs, &args.name, true),
         PluginAction::Disable(args) => set_enabled(&dirs, &args.name, false),
-        PluginAction::List(format) => list(&dirs, format.format),
+        PluginAction::List(format) => list(&dirs, host, format.format),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -275,6 +275,23 @@ fn marketplace_add(dirs: &Dirs, add: &MarketplaceAddArgs) -> Result<(), String> 
         return fail(format!("{} is not a directory", source_path.display()));
     }
     let local = source_path.is_dir();
+    // A local directory is stored by its resolved absolute path, so a later `marketplace
+    // update` finds it from any working directory.
+    let stored_source = if local {
+        source_path
+            .canonicalize()
+            .map_err(|e| {
+                format!(
+                    "cannot resolve {}: {}",
+                    source_path.display(),
+                    fontaine_tools::error_chain::chain(&e)
+                )
+            })?
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        add.source.clone()
+    };
     let parent = dirs
         .config
         .join(plugins::PLUGINS_DIR)
@@ -325,7 +342,7 @@ fn marketplace_add(dirs: &Dirs, add: &MarketplaceAddArgs) -> Result<(), String> 
     }
     registry.marketplace.push(MarketplaceEntry {
         name: key.clone(),
-        url: add.source.clone(),
+        url: stored_source,
         pin,
     });
     write_under_lock(&dirs.config, &registry)?;
@@ -574,9 +591,12 @@ fn materialize(
 fn validate_components(root: &Path, build: &plugins::PluginBuild) -> Result<(), String> {
     let servers: Vec<String> = build.dir.mcp_names.values().cloned().collect();
     let mut warnings = Vec::new();
+    // Validate only the plugin's own files: the user and project scopes read `config_dir` and
+    // `project_root`, so point them at a path that holds no extension files.
+    let none = root.join(".fontaine-plugin-validation");
     extensions::load(&mut extensions::LoadParams {
-        config_dir: root,
-        project_root: root,
+        config_dir: &none,
+        project_root: &none,
         servers: &servers,
         plugins: std::slice::from_ref(&build.dir),
         warnings: &mut warnings,
@@ -725,7 +745,7 @@ fn set_enabled(dirs: &Dirs, name: &str, enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn list(dirs: &Dirs, format: ReportFormat) -> Result<(), String> {
+fn list(dirs: &Dirs, host: &Host, format: ReportFormat) -> Result<(), String> {
     let registry = plugins::read_registry(&dirs.config).map_err(|e| e.to_string())?;
     match format {
         ReportFormat::Json => {
@@ -735,13 +755,23 @@ fn list(dirs: &Dirs, format: ReportFormat) -> Result<(), String> {
                     "url": m.url,
                     "pin": m.pin,
                 })).collect::<Vec<_>>(),
-                "plugins": registry.plugin.iter().map(|p| serde_json::json!({
-                    "name": p.name,
-                    "marketplace": p.marketplace,
-                    "source": p.source,
-                    "pin": p.pin,
-                    "enabled": p.enabled,
-                })).collect::<Vec<_>>(),
+                "plugins": registry.plugin.iter().map(|p| {
+                    let counts = component_counts(dirs, host, p);
+                    serde_json::json!({
+                        "name": p.name,
+                        "marketplace": p.marketplace,
+                        "source": p.source,
+                        "pin": p.pin,
+                        "enabled": p.enabled,
+                        "components": counts.map(|s| serde_json::json!({
+                            "skills": s.skills,
+                            "agents": s.agents,
+                            "styles": s.styles,
+                            "hooks": s.hooks,
+                            "servers": s.servers,
+                        })),
+                    })
+                }).collect::<Vec<_>>(),
             });
             println!(
                 "{}",
@@ -754,8 +784,16 @@ fn list(dirs: &Dirs, format: ReportFormat) -> Result<(), String> {
                 return Ok(());
             }
             for plugin in &registry.plugin {
+                let counts = component_counts(dirs, host, plugin)
+                    .map(|s| {
+                        format!(
+                            "{} skill(s), {} agent(s), {} style(s), {} hook(s), {} server(s)",
+                            s.skills, s.agents, s.styles, s.hooks, s.servers
+                        )
+                    })
+                    .unwrap_or_else(|| "components unavailable".to_string());
                 println!(
-                    "{} ({}): {} — {}",
+                    "{} ({}): {} — {} — {}",
                     plugin.name,
                     plugin.marketplace,
                     if plugin.enabled {
@@ -763,12 +801,30 @@ fn list(dirs: &Dirs, format: ReportFormat) -> Result<(), String> {
                     } else {
                         "disabled"
                     },
-                    short_pin(&plugin.pin)
+                    short_pin(&plugin.pin),
+                    counts
                 );
             }
         }
     }
     Ok(())
+}
+
+/// The validated component counts of one installed plugin, for `list`. A missing checkout or an
+/// invalid manifest yields `None`: the plugin still lists, just without counts.
+fn component_counts(
+    dirs: &Dirs,
+    host: &Host,
+    plugin: &InstalledPlugin,
+) -> Option<plugins::PluginSummary> {
+    let root = checkout_dir(&dirs.config, &plugin.marketplace, &plugin.name);
+    if !root.is_dir() {
+        return None;
+    }
+    let ctx = plugin_context(host, &dirs.config);
+    plugins::build_plugin(&root, &plugin.name, &ctx)
+        .ok()
+        .map(|build| build.summary)
 }
 
 fn short_pin(pin: &str) -> &str {

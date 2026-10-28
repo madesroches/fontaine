@@ -48,6 +48,8 @@ async fn the_plugin_cli_installs_lists_updates_and_removes_a_local_marketplace()
     let value: serde_json::Value = serde_json::from_str(list.stdout.trim()).unwrap();
     assert_eq!(value["plugins"][0]["name"], json!("review"));
     assert_eq!(value["plugins"][0]["enabled"], json!(true));
+    assert_eq!(value["plugins"][0]["components"]["skills"], json!(1));
+    assert_eq!(value["plugins"][0]["components"]["servers"], json!(0));
 
     let disable = sandbox.run(&["plugin", "disable", "review"]).await;
     assert_eq!(disable.code, Some(0), "{}", disable.stderr);

@@ -1123,8 +1123,11 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
                 if url.is_empty() {
                     return bad(&key, "`url` must not be empty");
                 }
-                if server.args.is_some() || server.env_vars.is_some() {
-                    return bad(&key, "`args` and `env_vars` apply to stdio servers only");
+                if server.args.is_some() || server.env_vars.is_some() || server.env.is_some() {
+                    return bad(
+                        &key,
+                        "`args`, `env_vars` and `env` apply to stdio servers only",
+                    );
                 }
             }
             _ => return bad(&key, "set exactly one of `command` (stdio) or `url`"),
