@@ -381,6 +381,9 @@ All notable changes are recorded here. The format follows
   - A study of the oh-my-pi harness, with experiments in Docker behind a recording proxy and a tmux
     comparison of its terminal UI with Fontaine's: what lets the model iterate, what its safety posture
     gets wrong, and the follow-ups (#213).
+  - A study of the Hermes harness and its cron, watcher and gateway orchestration, with Docker
+    experiments against a local Ollama model and a fake Grafana and TeamCity service: what makes a
+    cheap unattended watcher work, where small models fail, and the follow-ups #258–#264 (#253).
 - Distribution
   - Release binaries for Linux, macOS and Windows built with `pg2` by cargo-dist on a `vX.Y.Z`
     tag, each archive carrying the license, readme and changelog; `cargo install --git

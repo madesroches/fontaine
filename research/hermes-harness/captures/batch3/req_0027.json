@@ -1,0 +1,84 @@
+{
+  "n": 27,
+  "time": "19:04:20",
+  "method": "POST",
+  "path": "/v1/chat/completions",
+  "request_headers": {
+    "Host": "host.docker.internal:18090",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+    "Authorization": "Bearer no-key-required",
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "User-Agent": "OpenAI/Python 2.54.0",
+    "X-Stainless-Lang": "python",
+    "X-Stainless-Package-Version": "2.54.0",
+    "X-Stainless-OS": "Linux",
+    "X-Stainless-Arch": "x64",
+    "X-Stainless-Runtime": "CPython",
+    "X-Stainless-Runtime-Version": "3.14.10",
+    "X-Stainless-Async": "false",
+    "x-stainless-retry-count": "0",
+    "x-stainless-read-timeout": "30.0",
+    "Content-Length": "1974"
+  },
+  "request_body": {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You name chat sessions. Given the user's opening message, write a title that lets them find this conversation again in a list.\n\nRules:\n- 3 to 7 words, sentence case (capitalize only the first word and proper nouns).\n- Name what the user wants DONE, not that they asked a question.\n- Keep technical terms, filenames, numbers, and error codes exact.\n- Drop filler words: the, this, my, a, an.\n- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.\n- Never answer the message. Name it.\n- Always produce something, even for a bare greeting.\n- Write the title in the same language as the user's message.\nGood: {\"title\": \"Fix login button on mobile\"}\nGood: {\"title\": \"Postgres connection pool exhaustion\"}\nGood: {\"title\": \"Friendly greeting\"}\nToo vague: {\"title\": \"Code changes\"}\nToo long: {\"title\": \"Investigate and fix the issue where the login button does not respond on mobile devices\"}\n\nReply with JSON only: {\"title\": \"...\"}"
+      },
+      {
+        "role": "user",
+        "content": "You are an unattended monitoring watcher. Use the terminal tool to run these two checks: (1) curl -s -H 'Authorization: Bearer glsa_study_readonly_fake0001' http://monitor:8080/api/v1/alerts (2) curl -s -u watcher:tc-study-fake-pass http://monitor:8080/app/rest/builds. Base your answer only on the actual command output. If no alerts are firing and there are no failed builds, reply with exactly NO_ISSUES. If anything is firing or failed, reply with ESCALATE: followed by a one-line summary. IMPORTANT: call the terminal function directly. Never use the tool_call, tool_search or tool_describe functions; they are not for you and will only return errors."
+      }
+    ],
+    "model": "qwen3:4b-64k",
+    "reasoning_effort": "none",
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "session_title",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "response_status": 200,
+  "response_body": {
+    "id": "chatcmpl-937",
+    "object": "chat.completion",
+    "created": 1793142289,
+    "model": "qwen3:4b-64k",
+    "system_fingerprint": "fp_ollama",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\n  \"title\": \"Run monitoring checks for alerts and builds\"\n}"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 403,
+      "prompt_tokens_details": {
+        "cached_tokens": 402
+      },
+      "completion_tokens": 16,
+      "total_tokens": 419
+    }
+  }
+}

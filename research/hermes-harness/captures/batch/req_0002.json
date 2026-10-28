@@ -1,0 +1,144 @@
+{
+  "n": 2,
+  "time": "17:27:31",
+  "method": "GET",
+  "path": "/api/tags",
+  "request_headers": {
+    "Host": "host.docker.internal:18090",
+    "Accept": "*/*",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+    "User-Agent": "python-httpx/0.28.1"
+  },
+  "request_body": null,
+  "response_status": 200,
+  "response_body": {
+    "models": [
+      {
+        "name": "qwen2.5-coder:7b-64k",
+        "model": "qwen2.5-coder:7b-64k",
+        "modified_at": "2026-10-27T17:06:10.082662794-04:00",
+        "size": 4683087207,
+        "digest": "a4d879cb06f457570847461c50e2833abd7a2246309363d80bb48eb147e4a0ee",
+        "details": {
+          "parent_model": "qwen2.5-coder:7b",
+          "format": "gguf",
+          "family": "qwen2",
+          "families": [
+            "qwen2"
+          ],
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M",
+          "context_length": 32768,
+          "embedding_length": 3584,
+          "runner": "llamacpp"
+        },
+        "capabilities": [
+          "completion",
+          "tools",
+          "insert"
+        ]
+      },
+      {
+        "name": "qwen3:4b-64k",
+        "model": "qwen3:4b-64k",
+        "modified_at": "2026-10-27T16:55:37.239125579-04:00",
+        "size": 2497293575,
+        "digest": "829c21abc3f7d501fd228e08d3b4383906a2de8afea5087508e1e4f418476e78",
+        "details": {
+          "parent_model": "qwen3:4b-20k",
+          "format": "gguf",
+          "family": "qwen3",
+          "families": [
+            "qwen3"
+          ],
+          "parameter_size": "4.0B",
+          "quantization_level": "Q4_K_M",
+          "context_length": 262144,
+          "embedding_length": 2560,
+          "runner": "llamacpp"
+        },
+        "capabilities": [
+          "completion",
+          "tools",
+          "thinking"
+        ]
+      },
+      {
+        "name": "qwen3:4b-20k",
+        "model": "qwen3:4b-20k",
+        "modified_at": "2026-10-23T16:16:38.032338135-04:00",
+        "size": 2497293575,
+        "digest": "e7af0a2929ff7b18acf9b5f57d1156b951996ae25524c12ed1e619c438fb2ac2",
+        "details": {
+          "parent_model": "qwen3:4b",
+          "format": "gguf",
+          "family": "qwen3",
+          "families": [
+            "qwen3"
+          ],
+          "parameter_size": "4.0B",
+          "quantization_level": "Q4_K_M",
+          "context_length": 262144,
+          "embedding_length": 2560,
+          "runner": "llamacpp"
+        },
+        "capabilities": [
+          "completion",
+          "tools",
+          "thinking"
+        ]
+      },
+      {
+        "name": "qwen2.5-coder:7b",
+        "model": "qwen2.5-coder:7b",
+        "modified_at": "2026-10-23T16:04:10.217553378-04:00",
+        "size": 4683087561,
+        "digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "qwen2",
+          "families": [
+            "qwen2"
+          ],
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M",
+          "context_length": 32768,
+          "embedding_length": 3584,
+          "runner": "ggml"
+        },
+        "capabilities": [
+          "completion",
+          "tools",
+          "insert"
+        ]
+      },
+      {
+        "name": "qwen3:4b",
+        "model": "qwen3:4b",
+        "modified_at": "2026-10-23T16:03:40.113109318-04:00",
+        "size": 2497293931,
+        "digest": "359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "qwen3",
+          "families": [
+            "qwen3"
+          ],
+          "parameter_size": "4.0B",
+          "quantization_level": "Q4_K_M",
+          "context_length": 262144,
+          "embedding_length": 2560,
+          "runner": "ggml"
+        },
+        "capabilities": [
+          "completion",
+          "tools",
+          "thinking"
+        ]
+      }
+    ]
+  }
+}

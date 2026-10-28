@@ -1,0 +1,3 @@
+docker: Error response from daemon: Conflict. The container name "/hermes-e1-smoke" is already in use by container "d5ca0891897d172ec4e6283fdede529b88f7537c064a9fde900c73c76f57b5ec". You have to remove (or rename) that container to be able to reuse that name.
+
+Run 'docker run --help' for more information
