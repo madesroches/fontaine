@@ -55,7 +55,9 @@ project-scope edits, scratch writes and status checks complete with nobody prese
   user's own typed messages, recorded by the harness; every other block is untrusted data.
   The `<untrusted>` tag stays as a delimiter (the `neutralize` guarantee is unchanged) but the
   two user blocks get a `source="user"` attribute so the prompt can refer to them precisely
-  (`block` and `list_block` gain an optional source-attribute parameter).
+  (`block` and `list_block` gain an optional source-attribute parameter). The attribute is
+  rendered before `kind` (`<untrusted source="user" kind="recent_user_messages">`), so every
+  existing `kind="...">` match on those blocks stays valid.
 - New prompt section "User messages", which refines Precedence rule 2 (explicit specific user
   intent) of `guardian_prompt.md`: what the user typed in those blocks is authoritative about
   *intent* (not about facts the guardian can check, such as whether a file exists). A user
@@ -139,8 +141,8 @@ it needs no guardian verdict.
 
 - New decision tier `tracked_edit` (beside `read_only_fast_path`), reached only after the whole
   floor (`deny → ask → critical-path → protected-path`) and user hooks have passed. A call gets it
-  when all of these hold: the tool is edit-class (the same `edit_class` test `acceptEdits` uses);
-  `scope.locate` places the target inside the primary workspace root (the memory root and
+  when all of these hold: the call is edit-class (the `edit_class` local, `call.risk == RiskClass::WorkspaceWrite`, that `acceptEdits` uses);
+  `Scope::find` on the tool's path argument places the target inside the primary workspace root (the memory root and
   `/add-dir` roots are excluded, so memory-write rules still reach the guardian, and scratch has
   its own stage); the target lies inside that root's git work tree; and the target is something
   the call cannot destroy: in the git index, a path that does not exist yet (creating a file
@@ -154,7 +156,7 @@ it needs no guardian verdict.
   right for trust, an ancestor-covered path or a case-variant name is not "in the index" here and
   goes to the guardian. The two callers share the index lookup, parameterized, or the helper is a
   separate exact-match function. It takes the canonical path from
-  `Scope::find`/`locate`; only the resolved path counts, never the literal one, so a tracked
+  `Scope::find`; only the resolved path counts, never the literal one, so a tracked
   symlink to an untracked in-repo file does not qualify, and a symlink whose target is outside the
   work tree or that fails to canonicalize does not qualify. For a path that does not exist yet the
   helper canonicalizes the parent to find its work tree.
@@ -177,8 +179,9 @@ it needs no guardian verdict.
 - Both stages apply only when the effective `mode == Auto` (Plan blocks edit-class calls earlier,
   and a child's mode is the lesser of its own and its parent's).
 - Agent configuration is excluded. The floor's protected paths already cover it; in `auto` the
-  floor hands a protected path to the guardian instead of prompting (`docs/permissions.md`), so
-  this stage must not allow it. Beyond those, the exclusion names the instruction files
+  floor hands a protected path to the guardian instead of prompting (`docs/permissions.md`), and
+  the early protected-path return to `Verdict::Guardian` in `auto` (`permissions.rs` ~742) is
+  what keeps those paths out of this stage. Beyond those, the exclusion names the instruction files
   the guardian reads as `project_instructions` and `.github/`, because an edit there changes later security decisions or what CI
   runs. Those paths fall through to the guardian rather than being allowed or denied here, where
   an explicit request in the user's own message that names the file clears them.
@@ -216,7 +219,10 @@ it needs no guardian verdict.
    hardening bullets that make claimed authorization from non-user text an attack signal.
 4. `case.rs`, `live.rs`: optional `prior_denials` on a case; `request_for` maps it
    to `DenialRecord`s. `fontaine-evals/tests/live.rs` parses `<untrusted kind="{kind}">\n`
-   literally; make it tolerate the `source="user"` attribute.
+   literally; make it tolerate the `source="user" ` prefix before `kind`. The other tests that
+   find the block by `kind="recent_user_messages">`, `fontaine-tui/tests/schedule.rs` (~39) and
+   `fontaine-core/tests/agent_pipeline.rs` (~242), keep matching with that ordering; check them
+   and the prompt wording against it.
 5. `verdict.rs` / `prompt_builder.rs`: clarify the `rule`/`decision` description and
    `SCHEMA_ANSWER` text.
 6. `evals/dataset/followup.jsonl`: the cases above; `evals/README.md`: add a Case-format
@@ -232,18 +238,20 @@ it needs no guardian verdict.
    add `Tier::TrackedEdit` and `Tier::ScratchWrite` (`tier.rs`, names `tracked_edit` and
    `scratch_write`; `Tier::ALL` grows from 14 to 16, its array type becoming `[Tier; 16]`); add both stages in `permissions.rs` before
    `Verdict::Guardian` at the `Plan | Auto` arm, gated on the effective `mode == Auto`, with the
-   exclusions above, plumbing `state.ledger.view()` into the evaluator and resetting the breaker on
-   either allow; add `auto_tracked_edits` and `auto_scratch_writes` in `config.rs`, their two
+   exclusions above, plumbing `state.ledger.view()` into the evaluator and resetting the breaker where
+   these two tiers return (they return through `allow()`, which does not reset; the reset lives in
+   `guardian_allowed`, `gate.rs`, called from `settle`), for these two tiers only; add `auto_tracked_edits` and `auto_scratch_writes` in `config.rs`, their two
    `RULES` rows in `config_scope.rs` and their two rows in `config_catalog.rs` (the settings-panel catalog; `every_settings_leaf_has_a_row` fails without them). Update tests that `git init` and edit new or tracked files in `auto`
-   and expect the guardian (others found by running the suite; the `tests/permissions_auto.rs`
+   and expect the guardian (check the `.in_mode(Auto)` cases in `fontaine-tui/tests/tui.rs` and
+   the e2e Sandbox tests in `rust/fontaine/tests/` that use a git repo; others found by running the suite; the `tests/permissions_auto.rs`
    ~663-700 tests write new files in a plain temp dir without git and still reach the guardian). Every place that lists tier names gains the two names:
    `docs/schemas/headless-v1.schema.json` (closed `tier` enum), `docs/headless.md` (~174),
    `docs/architecture.md` (add the two pipeline steps to the numbered list, ~134), `docs/permissions.md` (~96-97, tier names), `evals/README.md` (`expected_tier` values),
-   `tasks/design/permissions.md` (tier enum).
-9. Docs and amendments: `docs/tools.md` scratch section (~100-122); fix the stale statements in
+   `tasks/design/permissions.md` (tier enum and the pipeline-step numbering, where the two stages sit after the floor and hooks and before the guardian), `tier.rs` (the doc comment listing tiers).
+9. Docs and amendments: `docs/tools.md` scratch section (~100-122, ~120); fix the stale statements in
    `docs/configuration.md` (the `### [permissions]` key table ~559-581 and the scope table
-   ~102-107: the two keys, project scope may only switch them off);
-   `docs/permissions.md` (~20, 83-84, 269-271: "the only guardian skips earned without a grant of
+   ~102-107: the two keys, project scope may only switch them off; ~603); `tasks/design/config.md` (the stale schema block ~79 and scope table ~179-182 gain the two keys);
+   `docs/permissions.md` (pipeline steps 1-6 ~60-87, including ~76-80 "guardian treats scratch like the workspace"; ~20, 83-84, 269-271: "the only guardian skips earned without a grant of
    yours"; also document the `tracked_edit` and `scratch_write` tiers and their exclusions) and `docs/guardian.md` (~3-12); `README.md` (~91: in `auto` a call is judged by the guardian only after the read-only fast path and similar steps) and a check of `docs/index.md` (~14); amend the AGENTS.md security-invariant text on the fast
    path (~lines 45-48) to name this second exception; master plan `## Decisions` lines (below) and
    the `CHANGELOG.md` entry at PR time.
@@ -255,6 +263,8 @@ it needs no guardian verdict.
 - `rust/fontaine-guardian/prompts/guardian_prompt.md`, `guardian_minimal.md`
 - `rust/fontaine-guardian/src/verdict.rs` (descriptions only)
 - `rust/fontaine-evals/src/case.rs`, `live.rs`, `tests/live.rs`
+- `rust/fontaine-tui/tests/schedule.rs`, `rust/fontaine-core/tests/agent_pipeline.rs` (check only:
+  they match `kind="recent_user_messages">`)
 - `evals/dataset/followup.jsonl` (new), `evals/README.md`
 - `rust/fontaine-core/src/permissions.rs`, `tier.rs`, `trust.rs`, `config.rs`, `config_scope.rs`,
   `config_catalog.rs`
@@ -262,7 +272,32 @@ it needs no guardian verdict.
 - `rust/fontaine-guardian/src/critique.rs` (`list_block` call-site argument only)
 - `rust/fontaine-core/tests/permissions_auto.rs` (tests that expect the guardian for such edits)
 - `docs/schemas/headless-v1.schema.json`, `docs/headless.md`, `docs/architecture.md`,
-  `docs/tools.md`, `tasks/design/permissions.md`, `AGENTS.md` (fast-path invariant)
+  `docs/tools.md`, `tasks/design/permissions.md`, `tasks/design/config.md`, `README.md`,
+  `AGENTS.md` (fast-path invariant)
+- `docs/guardian.md`, `docs/evals.md`, `docs/permissions.md`, `docs/configuration.md`,
+  `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
+
+## Decisions` lines (below) and
+   the `CHANGELOG.md` entry at PR time.
+
+## Files to Modify
+
+- `rust/fontaine-guardian/src/prompt_builder.rs` and its snapshots
+- `rust/fontaine-guardian/src/screen.rs` (the `blocks` call argument and the `stripped` test helper only; no prompt text)
+- `rust/fontaine-guardian/prompts/guardian_prompt.md`, `guardian_minimal.md`
+- `rust/fontaine-guardian/src/verdict.rs` (descriptions only)
+- `rust/fontaine-evals/src/case.rs`, `live.rs`, `tests/live.rs`
+- `rust/fontaine-tui/tests/schedule.rs`, `rust/fontaine-core/tests/agent_pipeline.rs` (check only:
+  they match `kind="recent_user_messages">`)
+- `evals/dataset/followup.jsonl` (new), `evals/README.md`
+- `rust/fontaine-core/src/permissions.rs`, `tier.rs`, `trust.rs`, `config.rs`, `config_scope.rs`,
+  `config_catalog.rs`
+  (tracked-file edits)
+- `rust/fontaine-guardian/src/critique.rs` (`list_block` call-site argument only)
+- `rust/fontaine-core/tests/permissions_auto.rs` (tests that expect the guardian for such edits)
+- `docs/schemas/headless-v1.schema.json`, `docs/headless.md`, `docs/architecture.md`,
+  `docs/tools.md`, `tasks/design/permissions.md`, `tasks/design/config.md`, `README.md`,
+  `AGENTS.md` (fast-path invariant)
 - `docs/guardian.md`, `docs/evals.md`, `docs/permissions.md`, `docs/configuration.md`,
   `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
 
@@ -281,6 +316,7 @@ it needs no guardian verdict.
 - 2026-10-27: Deviation from Claude Code — user reaffirmation after a denial counts for soft
   denies only when it restates or approves the denied action in the user's own message; there is
   no Path B (agent-proposal-plus-"yes"), because the guardian is never shown agent prose. (#256)
+- 2026-10-27: Reframe the existing user blocks (`source="user"`) rather than add a structured "user vouched" field, which would duplicate `recent_user_messages` and add a second injection surface. (#256)
 - AFK: Followup attack cases 5-7 are ids `attack-followup-NN` (not `followup-NN`) so the `--filter attack:*` fixture test passes unchanged; `tests/fixture.rs` is not modified.
 - AFK: The screen stage keeps its system prompts, steering question and input byte-identical (`blocks` takes a flag so only `user_message` marks `source="user"`); it is opt-in and never before the floor, so no re-fit.
 - 2026-10-27: Deviation — `auto` mode allows edits inside the workspace to git-tracked files, new
