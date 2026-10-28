@@ -54,27 +54,36 @@ Rules enforced in `AgentTool::call`, before reserving a slot:
 
 ### Seeding the child's context (core)
 
-`CoreChildRunner::spawn`, when `request.agent_type.inherits_context`:
+rig-agent saves the conversation to the store only when a run reaches `AgentRunStep::Done`, so
+while the parent's `agent` tool runs mid-turn `Session::store()` holds only completed turns: it
+lacks the current user prompt, this turn's earlier assistant/tool messages and the in-flight call
+(and in headless `-p`, a single turn, it is empty). The store is therefore not the source.
 
-1. Load the root conversation: `ChildContext` gains
-   `parent_conversation: Arc<dyn Fn() -> BoxFuture<'static, Result<Conversation, SessionError>> + Send + Sync>`,
-   an async fallible closure over `load_async(store, CONVERSATION_LOG)` returning the whole
-   `Conversation`, so tests can supply a fixed one; the typed error keeps its `source()` and is
-   rendered once with `fontaine_tools::error_chain::chain` at the `ChildRunner::spawn` seam as
-   `could not start: <chain>`. `child_runner` has no `Session` today, so `agent/setup.rs` passes
-   it the session store (`p.session.store()`, a cheap `DirStore` clone, as `rust/fontaine-core/src/agent/build.rs:246` does)
-   as a new parameter, and the closure captures that clone.
-2. Drop a trailing assistant message whose tool calls have no results yet: at spawn time the
-   parent's in-flight `agent` call is exactly that. Whether rig-memory has saved it by then is
-   verified first (Implementation Steps, step 1); the trim is a no-op if not.
-3. Build a fresh `MemoryStore::default()`, put only the trimmed loaded `Conversation` (no prompt)
-   into it with `save_async` under `"main"`, then proceed exactly as for any child. The fork's own
-   first user turn is the run prompt passed through `drive` (`run_child` -> `drive`, which appends
-   it via `agent.prompt`), prefixed with a one-line harness note naming it as a fork task
-   ("You are a forked subagent of the conversation above; do only the task below and report.");
-   it is never also stored, or the child would see it twice. `set_entries`
-   does not carry compaction asides (`session.rs:650-670` re-adds them with `add_aside`), so the
-   loaded `Conversation` is cloned wholesale, keeping a compacted parent compacted in the child.
+1. Snapshot hook: a root-only `AgentHook` (the `SteeringHook` pattern, `steering.rs`) implements
+   `completion_call`; on every model call of the root agent it overwrites a shared
+   `ParentContext` slot (`Arc<Mutex<Option<Vec<Arc<Message>>>>>`, cheap `Arc<Message>` clones)
+   with `event.history` followed by `event.prompt`. The hook is registered on the root builder
+   only (children never feed it). The slot always holds exactly what the model read when it issued
+   the in-flight `agent` call: the in-flight assistant message (and the other calls it made in
+   parallel, with their results) is by construction not in it, so no dangling-call trimming exists.
+   Parallel `agent` calls of one assistant message share one snapshot.
+2. `ChildContext` gains `parent_context: ParentContext` (tests construct a fixed one). In
+   `CoreChildRunner::spawn`, when `request.agent_type.inherits_context`, the snapshot is read; an
+   empty slot, or a `Conversation` built from it for which `validate()` fails, fails the spawn
+   (`could not start: <reason>`), never an empty-context fork. The snapshot ends in a user-role
+   message (the user's prompt, or the tool results that answered the previous assistant message;
+   rig's tool results are user-role), so a bridge assistant message "Understood. I will take this
+   on as a forked subagent." is appended to the child's stored conversation; the fork's task is
+   then the run prompt passed through `drive` (`run_child` -> `drive`, via `agent.prompt`),
+   prefixed with the one-line note "You are a forked subagent of the conversation above; do only
+   the task below and report.", and never also stored. History therefore alternates
+   user/assistant/user with no consecutive user turns a strict provider could reject.
+3. Build a fresh `MemoryStore::default()`, `save_async` the conversation under `"main"`, then
+   proceed exactly as for any child. rig-memory's fork module (`fork_log`/`turn_cut`) is not used:
+   it copies persisted logs up to a turn boundary (`at_rest`: no pending calls, model owes
+   nothing), which would discard exactly the current turn the fork needs, and children have
+   in-memory stores. Compaction asides are not carried; the snapshot is the messages the model
+   actually read, so a compacted parent stays compacted in the child.
 
 The child's preamble (the `preamble` closure at `rust/fontaine-core/src/agent/setup.rs:493`,
 which chooses the fork layer from `agent_type.inherits_context`) is `subagent_layer("fork", None)` on the standard assembly, with a distinct
@@ -89,8 +98,8 @@ the task you were given"; a fork does not reuse the parent's exact system prompt
   copied context is promoted to intent.
 - **Mode**: `fork` is `Inherit`, so the existing tighter-of-own-and-parent rule applies per call;
   the type cannot be configured looser.
-- **Fail closed**: if the parent conversation cannot be read, the spawn fails
-  (`could not start: <chain>`), never falling back to an empty-context fork that would silently
+- **Fail closed**: if the parent snapshot is missing or does not validate, the spawn fails
+  (`could not start: <reason>`), never falling back to an empty-context fork that would silently
   lack what the prompt assumes.
 - No new tool, so the risk-class choke-point test is unaffected; `agent` stays `Arbitrary`, and a
   rule such as `agent(fork)` in `deny`/`ask` works through the existing specifier matching.
@@ -106,24 +115,22 @@ the task you were given"; a fork does not reuse the parent's exact system prompt
 
 ## Implementation Steps
 
-1. Probe (test in `fontaine-core`): drive a turn whose model calls `agent`, and read the stored
-   conversation from inside the runner to confirm whether the in-flight assistant tool call is
-   already persisted. Record the answer as a Decisions line.
-2. `fontaine-agents/src/registry.rs`: add `inherits_context` to `AgentType` (default false in all
+1. `fontaine-agents/src/registry.rs`: add `inherits_context` to `AgentType` (default false in all
    constructors/loaders), fixing the sites the new field breaks: `fontaine-core/src/extensions.rs:327`
    (`load_agent`), `registry.rs:148,162`, `tests/seam.rs:296,315,364,525`,
    `fontaine-core/src/child_runner.rs:455`, `agent/setup.rs:186`; add the built-in `fork` type,
    include it in `describe()`/`names()`.
-3. `fontaine-agents/src/spawn.rs`: the
+2. `fontaine-agents/src/spawn.rs`: the
    `model` refusal and the root-only refusal; updated tool description and `prompt` parameter
    description (`spawn.rs` ~156, "The task, with all the context it needs.") saying a fork needs
    only a short task.
-4. `fontaine-core/src/child_runner.rs`: `parent_conversation` closure field on `ChildContext`, seeding
-   in `spawn` (load, trim dangling call, copy only the trimmed conversation into the child's store,
-   and pass the fork-note-prefixed prompt as the run prompt through `drive`, not into the store); wire the
-   store-backed closure in `agent/setup.rs::child_runner`; add the distinct `fork` layer text
-   in `fontaine-core/src/prompt.rs`.
-5. `docs/agents.md`: update "Two types are built in" (line 31) to three; note that a user, project or
+3. `fontaine-core/src/child_runner.rs`: `parent_context` slot on `ChildContext`; seeding in `spawn`
+   (read snapshot, validate, append bridge message, copy into the child's store, pass the
+   fork-note-prefixed prompt as the run prompt through `drive`, not into the store); a root-only
+   snapshot hook (new `fontaine-core/src/fork_context.rs`, `steering.rs` pattern) registered on the
+   root builder in `agent/build.rs`, its slot shared with `agent/setup.rs::child_runner`; add the
+   distinct `fork` layer text in `fontaine-core/src/prompt.rs`.
+4. `docs/agents.md`: update "Two types are built in" (line 31) to three; note that a user, project or
    `[agents.types]` entry named `fork` replaces the built-in and loses the capability (four places,
    later replace earlier); reword the `prompt` row of the agent tool table (line 13, "it cannot see the
    conversation") per type, new `fork` row in Agent types, a "Forking the conversation" subsection
@@ -131,13 +138,13 @@ the task you were given"; a fork does not reuse the parent's exact system prompt
    not the `/fork` slash command (an alias of `/branch`, `docs/tui.md`), and the note that a
    large inherited context is billed on the first call and can exhaust the child's default budget,
    ending `BudgetExhausted`). `CHANGELOG.md` Added entry (#39).
-6. Master plan `## Decisions`: dated lines for the deviations below.
+5. Master plan `## Decisions`: dated lines for the deviations below.
 
 ## Files to Modify
 
 - `rust/fontaine-agents/src/registry.rs`, `spawn.rs`
 - `rust/fontaine-agents/tests/seam.rs`
-- `rust/fontaine-core/src/child_runner.rs`, `rust/fontaine-core/src/agent/setup.rs`,
+- `rust/fontaine-core/src/child_runner.rs`, `rust/fontaine-core/src/fork_context.rs` (new), `rust/fontaine-core/src/agent/build.rs`, `rust/fontaine-core/src/agent/setup.rs`,
   `rust/fontaine-core/src/prompt.rs`, `rust/fontaine-core/src/extensions.rs`
 - `docs/agents.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
@@ -146,6 +153,9 @@ the task you were given"; a fork does not reuse the parent's exact system prompt
 - 2026-10-27: Deviation from the issue text — the guardian ledger is shared, not cloned, for a fork: the tree's one intent source is the root ledger, and a copy would create a second one.
 - 2026-10-27: Only the main conversation can fork; a fork always runs on the session model (no `model` override). Children's contexts are in-memory only, so forking from a child would need a second context-reading path for little value.
 - 2026-10-27: A fork uses the child preamble with a distinct `fork` layer, not the parent's exact system prompt; the parent's assembled prompt is not retained by `ChildContext` and carries root-only sections (memory, scheduling, skill index) a child must not get. Prompt-cache sharing is not measured.
+- AFK 2026-10-27: In-flight context comes from a root-only `completion_call` snapshot hook (history + prompt of the latest root model call), not the stored log, because rig-agent saves only at `Done`; an empty or unpaired snapshot fails the spawn closed.
+- AFK 2026-10-27: The fork's history ends in the user-role snapshot, so a synthetic bridge assistant message separates it from the task prompt; the cut needs no trimming (the snapshot excludes the in-flight assistant message, `validate()` must pass), and rig-memory's fork module is unused (turn-boundary log copy; would drop the current turn).
+- AFK 2026-10-27: A large inherited context versus the default child budget (`subagent_token_budget` 200000) is documented only (docs/agents.md); no guard and no new config.
 - 2026-10-27: Forking is an agent type, not a `fork: true` argument: a type reuses toolset, mode, model, listing, `agent(fork)` rule matching and telemetry unchanged.
 
 ## Documentation
@@ -162,7 +172,11 @@ All offline, no live APIs.
   resolves with all parent tools and mode Inherit; extend the `seam.rs:362` test to refuse `model`
   on `fork`; a call from a child is refused.
 - `fontaine-core` unit tests with `rig_core::test_utils` deterministic models: the child's first
-  completion request contains the parent's prior messages followed by the prefixed prompt; a
-  dangling in-flight assistant tool call is trimmed; a compacted parent's asides (summary) are
-  present in the child's store; an unreadable parent conversation fails the spawn with the cause
-  chained.
+  completion request contains the parent's snapshot, the bridge assistant message, then the
+  prefixed prompt (no consecutive user turns); the snapshot hook keeps the latest call's
+  history+prompt and excludes the in-flight assistant message; an empty slot or an unpaired
+  snapshot fails the spawn.
+- End-to-end through the headless `-p` surface (single turn, empty stored log): a deterministic
+  model's first reply calls `agent` with type `fork`; the fork's first request must contain that
+  turn's user message (and, in a second variant, an earlier tool call/result of the same turn).
+  This is what guards against an empty fork.
