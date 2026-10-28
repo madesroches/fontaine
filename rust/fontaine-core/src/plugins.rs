@@ -7,7 +7,7 @@
 //! commit, and are the explicit action that approves a plugin's executables; a plugin's content
 //! can only ever tighten permissions, never loosen them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -108,11 +108,34 @@ impl PluginError {
     }
 }
 
+/// The hooks one plugin (or all plugins together) bring, kept per event so a hook runs only
+/// at the event its entry names.
+#[derive(Clone, Debug, Default)]
+pub struct PluginHooks {
+    pub pre_tool_use: Vec<Hook>,
+    pub post_tool_use: Vec<Hook>,
+    pub permission_denied: Vec<Hook>,
+}
+
+impl PluginHooks {
+    pub fn len(&self) -> usize {
+        self.pre_tool_use.len() + self.post_tool_use.len() + self.permission_denied.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// What one installed, validated plugin contributes to a session.
 #[derive(Clone, Debug, Default)]
 pub struct PluginBuild {
     pub dir: PluginDir,
-    pub hooks: Vec<Hook>,
+    pub hooks: PluginHooks,
+    /// Every `${VAR}` the plugin's hook commands and `.mcp.json` values reference from the
+    /// process environment, for the install summary: a variable's value can reach a plugin's
+    /// server or hook, so the approval should name the variables.
+    pub env_vars: BTreeSet<String>,
     pub servers: BTreeMap<String, McpServer>,
     pub deny: Vec<SourcedRule>,
     pub ask: Vec<SourcedRule>,
@@ -140,7 +163,7 @@ pub struct PluginSummary {
 #[derive(Clone, Debug, Default)]
 pub struct PluginContributions {
     pub dirs: Vec<PluginDir>,
-    pub hooks: Vec<Hook>,
+    pub hooks: PluginHooks,
     pub servers: BTreeMap<String, McpServer>,
     pub deny: Vec<SourcedRule>,
     pub ask: Vec<SourcedRule>,
@@ -299,8 +322,9 @@ pub fn validate_plugins_toml(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Plugin and marketplace names: letters, digits, `.`, `_` and `-`, starting alphanumeric,
-/// never containing `__` (the separator MCP tool names split on).
+/// Plugin and marketplace names: letters, digits, `_` and `-`, starting alphanumeric, never
+/// containing `__` (the separator MCP tool names split on). `.` stays out so a composed MCP
+/// server name (`plugin_<name>_<server>`) is always a valid rule and tool name.
 pub fn valid_plugin_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
@@ -310,7 +334,7 @@ pub fn valid_plugin_name(name: &str) -> bool {
         && !name.contains("__")
         && name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 fn plugin_origin() -> Origin {
@@ -372,7 +396,11 @@ pub fn load_installed(
         }
         let build = build_plugin(&root, &entry.name, ctx)?;
         out.dirs.push(build.dir);
-        out.hooks.extend(build.hooks);
+        out.hooks.pre_tool_use.extend(build.hooks.pre_tool_use);
+        out.hooks.post_tool_use.extend(build.hooks.post_tool_use);
+        out.hooks
+            .permission_denied
+            .extend(build.hooks.permission_denied);
         out.servers.extend(build.servers);
         out.deny.extend(build.deny);
         out.ask.extend(build.ask);
@@ -475,8 +503,9 @@ pub fn build_plugin(
     let mut build = PluginBuild::default();
     build.dir.name = registry_name.to_string();
     build.dir.root = root.to_path_buf();
+    let mut env_vars = BTreeSet::new();
 
-    let mcp = parse_mcp(root, registry_name, ctx, &mut warnings)?;
+    let mcp = parse_mcp(root, registry_name, ctx, &mut warnings, &mut env_vars)?;
     for (bare, composed) in &mcp.composed {
         build.dir.mcp_names.insert(bare.clone(), composed.clone());
     }
@@ -489,8 +518,10 @@ pub fn build_plugin(
         ctx,
         &build.dir.mcp_names,
         &mut warnings,
+        &mut env_vars,
     )?;
     build.summary.hooks = build.hooks.len();
+    build.env_vars = env_vars;
 
     let permissions = parse_permissions(&manifest, registry_name, &manifest_path)?;
     build.deny = permissions.deny;
@@ -522,7 +553,7 @@ pub fn build_plugin(
             registry_name,
         )?);
     }
-    if let Some(extra) = strings_of(object, "skills") {
+    if let Some(extra) = strings_of(object, "skills", registry_name, &manifest_path)? {
         for rel in extra {
             skill_bases.push(inside(&canonical_root, &root.join(&rel), registry_name)?);
         }
@@ -540,7 +571,7 @@ pub fn build_plugin(
         ("agents", "agents", &mut build.dir.agents),
         ("outputStyles", "output-styles", &mut build.dir.styles),
     ] {
-        let bases = match strings_of(object, key) {
+        let bases = match strings_of(object, key, registry_name, &manifest_path)? {
             Some(list) => list
                 .into_iter()
                 .map(|rel| inside(&canonical_root, &root.join(&rel), registry_name))
@@ -596,19 +627,39 @@ fn inside(root: &Path, path: &Path, plugin: &str) -> Result<PathBuf, PluginError
     Ok(resolved)
 }
 
-/// A manifest component-path key: one string or an array of strings.
-fn strings_of(object: &serde_json::Map<String, Value>, key: &str) -> Option<Vec<String>> {
-    let value = object.get(key)?;
+/// A manifest component-path key: one string or an array of strings. A non-string entry is a
+/// load error naming the plugin, not something to skip over.
+fn strings_of(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+    plugin: &str,
+    path: &Path,
+) -> Result<Option<Vec<String>>, PluginError> {
+    let Some(value) = object.get(key) else {
+        return Ok(None);
+    };
     if let Some(text) = value.as_str() {
-        return Some(vec![text.to_string()]);
+        return Ok(Some(vec![text.to_string()]));
     }
-    value.as_array().map(|items| {
-        items
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect()
-    })
+    let Some(items) = value.as_array() else {
+        return Err(PluginError::in_plugin(
+            plugin,
+            path.to_path_buf(),
+            format!("the `{key}` component path is not a string or a list of strings"),
+        ));
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let Some(text) = item.as_str() else {
+            return Err(PluginError::in_plugin(
+                plugin,
+                path.to_path_buf(),
+                format!("a `{key}` component path is not a string"),
+            ));
+        };
+        out.push(text.to_string());
+    }
+    Ok(Some(out))
 }
 
 fn sorted_entries(dir: &Path) -> Vec<PathBuf> {
@@ -700,6 +751,7 @@ fn parse_mcp(
     plugin: &str,
     ctx: &PluginContext<'_>,
     warnings: &mut Vec<String>,
+    env_vars: &mut BTreeSet<String>,
 ) -> Result<McpLoad, PluginError> {
     let path = root.join(MCP_FILE);
     let mut load = McpLoad {
@@ -742,8 +794,12 @@ fn parse_mcp(
         let env = object.get("env").and_then(Value::as_object).map(|map| {
             map.iter()
                 .filter_map(|(k, v)| {
-                    v.as_str()
-                        .map(|v| (k.clone(), expand_vars(v, plugin, root, ctx, warnings)))
+                    v.as_str().map(|v| {
+                        (
+                            k.clone(),
+                            expand_vars(v, plugin, root, ctx, warnings, env_vars),
+                        )
+                    })
                 })
                 .collect::<BTreeMap<_, _>>()
         });
@@ -752,7 +808,7 @@ fn parse_mcp(
                 command: None,
                 args: None,
                 env_vars: None,
-                url: Some(expand_vars(url, plugin, root, ctx, warnings)),
+                url: Some(expand_vars(url, plugin, root, ctx, warnings, env_vars)),
                 env,
             }
         } else if let Some(command) = object.get("command").and_then(Value::as_str) {
@@ -760,11 +816,11 @@ fn parse_mcp(
                 items
                     .iter()
                     .filter_map(Value::as_str)
-                    .map(|arg| expand_vars(arg, plugin, root, ctx, warnings))
+                    .map(|arg| expand_vars(arg, plugin, root, ctx, warnings, env_vars))
                     .collect::<Vec<_>>()
             });
             McpServer {
-                command: Some(expand_vars(command, plugin, root, ctx, warnings)),
+                command: Some(expand_vars(command, plugin, root, ctx, warnings, env_vars)),
                 args,
                 env_vars: None,
                 url: None,
@@ -790,11 +846,12 @@ fn parse_hooks(
     ctx: &PluginContext<'_>,
     mcp_names: &BTreeMap<String, String>,
     warnings: &mut Vec<String>,
-) -> Result<Vec<Hook>, PluginError> {
+    env_vars: &mut BTreeSet<String>,
+) -> Result<PluginHooks, PluginError> {
     let path = root.join(HOOKS_FILE);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(PluginHooks::default()),
         Err(e) => {
             return Err(PluginError::in_plugin(
                 plugin,
@@ -806,11 +863,12 @@ fn parse_hooks(
     let value: Value = serde_json::from_str(&text)
         .map_err(|e| PluginError::in_plugin(plugin, path.clone(), format!("not JSON: {e}")))?;
     let Some(events) = value.get("hooks").and_then(Value::as_object) else {
-        return Ok(Vec::new());
+        return Ok(PluginHooks::default());
     };
-    let mut hooks = Vec::new();
+    let mut hooks = PluginHooks::default();
     for (event, entries) in events {
-        let Some(event_name) = event_of(event) else {
+        // Fontaine has exactly these three hook events; the rest are ignored.
+        let Some(into) = event_lists(&mut hooks, event) else {
             continue;
         };
         let entries = entries.as_array().ok_or_else(|| {
@@ -887,11 +945,14 @@ fn parse_hooks(
                     Some(text) => match map_hook_matcher(text, mcp_names) {
                         Ok(Some(rules)) => {
                             for rule in rules.iter().skip(1) {
-                                hooks.push(Hook {
+                                into.push(Hook {
                                     matcher: Some(rule.clone()),
-                                    command: expand_vars(command, plugin, root, ctx, warnings),
+                                    command: expand_vars(
+                                        command, plugin, root, ctx, warnings, env_vars,
+                                    ),
                                     timeout_secs: object.get("timeout").and_then(Value::as_u64),
                                     origin: plugin_origin(),
+                                    plugin: Some(plugin.to_string()),
                                 });
                             }
                             Some(rules[0].clone())
@@ -916,12 +977,12 @@ fn parse_hooks(
                         }
                     },
                 };
-                let _ = event_name;
-                hooks.push(Hook {
+                into.push(Hook {
                     matcher,
-                    command: expand_vars(command, plugin, root, ctx, warnings),
+                    command: expand_vars(command, plugin, root, ctx, warnings, env_vars),
                     timeout_secs: object.get("timeout").and_then(Value::as_u64),
                     origin: plugin_origin(),
+                    plugin: Some(plugin.to_string()),
                 });
             }
         }
@@ -929,12 +990,12 @@ fn parse_hooks(
     Ok(hooks)
 }
 
-/// Claude Code's hook events; the rest are ignored.
-fn event_of(event: &str) -> Option<&'static str> {
+/// The hook list one Claude Code hook event maps onto; unknown events map to nothing.
+fn event_lists<'a>(hooks: &'a mut PluginHooks, event: &str) -> Option<&'a mut Vec<Hook>> {
     match event {
-        "PreToolUse" => Some("pre_tool_use"),
-        "PostToolUse" => Some("post_tool_use"),
-        "PermissionDenied" => Some("permission_denied"),
+        "PreToolUse" => Some(&mut hooks.pre_tool_use),
+        "PostToolUse" => Some(&mut hooks.post_tool_use),
+        "PermissionDenied" => Some(&mut hooks.permission_denied),
         _ => None,
     }
 }
@@ -1137,6 +1198,7 @@ pub(crate) fn expand_vars(
     plugin_root: &Path,
     ctx: &PluginContext<'_>,
     warnings: &mut Vec<String>,
+    env_vars: &mut BTreeSet<String>,
 ) -> String {
     let root = plugin_root.display().to_string();
     let project = ctx.project_root.display().to_string();
@@ -1150,16 +1212,19 @@ pub(crate) fn expand_vars(
             match name {
                 "CLAUDE_PLUGIN_ROOT" => out.push_str(&root),
                 "CLAUDE_PROJECT_DIR" => out.push_str(&project),
-                _ => match (ctx.env)(name) {
-                    Some(value) => out.push_str(&value.to_string_lossy()),
-                    None => {
-                        out.push_str(&text[at..at + 2 + end + 1]);
-                        warn_once(
-                            warnings,
-                            format!("plugin `{plugin}` leaves `${{{name}}}` unexpanded"),
-                        );
+                _ => {
+                    env_vars.insert(name.to_string());
+                    match (ctx.env)(name) {
+                        Some(value) => out.push_str(&value.to_string_lossy()),
+                        None => {
+                            out.push_str(&text[at..at + 2 + end + 1]);
+                            warn_once(
+                                warnings,
+                                format!("plugin `{plugin}` leaves `${{{name}}}` unexpanded"),
+                            );
+                        }
                     }
-                },
+                }
             }
             at += 2 + end + 1;
             continue;
@@ -1324,11 +1389,19 @@ impl crate::config::Config {
             }
         }
         let origin = plugin_origin();
-        crate::config::union_hooks(&mut self.hooks.pre_tool_use, Some(&plugins.hooks), origin);
-        crate::config::union_hooks(&mut self.hooks.post_tool_use, Some(&plugins.hooks), origin);
+        crate::config::union_hooks(
+            &mut self.hooks.pre_tool_use,
+            Some(&plugins.hooks.pre_tool_use),
+            origin,
+        );
+        crate::config::union_hooks(
+            &mut self.hooks.post_tool_use,
+            Some(&plugins.hooks.post_tool_use),
+            origin,
+        );
         crate::config::union_hooks(
             &mut self.hooks.permission_denied,
-            Some(&plugins.hooks),
+            Some(&plugins.hooks.permission_denied),
             origin,
         );
         for (name, server) in &plugins.servers {
@@ -1353,10 +1426,12 @@ impl crate::config::Config {
 
 /// A stable content hash of a directory tree, `.git` excluded: a local-directory marketplace's
 /// pin. A content change moves the pin even when the catalog file is untouched; a metadata-only
-/// git operation does not.
+/// git operation does not. Symlinks are followed, so the hash covers what `copy_tree` copies;
+/// directory cycles through symlinks are cut at the second visit.
 pub fn content_hash(dir: &Path) -> Result<String, String> {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
+    let mut visited = std::collections::HashSet::new();
     while let Some(current) = stack.pop() {
         let entries = std::fs::read_dir(&current)
             .map_err(|e| format!("cannot read {}: {}", current.display(), e))?;
@@ -1367,9 +1442,23 @@ pub fn content_hash(dir: &Path) -> Result<String, String> {
                 continue;
             }
             let kind = entry.file_type().map_err(|e| e.to_string())?;
-            if kind.is_dir() {
-                stack.push(path);
-            } else if kind.is_file() {
+            // `symlink_metadata`-based `file_type` does not follow links; `metadata` does,
+            // matching the copy that `copy_tree` makes of the tree.
+            let (is_dir, is_file) = if kind.is_symlink() {
+                let followed = std::fs::metadata(&path)
+                    .map_err(|e| format!("cannot follow {}: {}", path.display(), e))?;
+                (followed.is_dir(), followed.is_file())
+            } else {
+                (kind.is_dir(), kind.is_file())
+            };
+            if is_dir {
+                let real = path
+                    .canonicalize()
+                    .map_err(|e| format!("cannot resolve {}: {}", path.display(), e))?;
+                if visited.insert(real) {
+                    stack.push(path);
+                }
+            } else if is_file {
                 files.push(path);
             }
         }
@@ -1402,10 +1491,10 @@ mod tests {
 
     #[test]
     fn plugin_and_marketplace_names_follow_the_alphabet() {
-        for name in ["review", "team-tools", "a.b", "A1", "1a"] {
+        for name in ["review", "team-tools", "A1", "1a", "a_b"] {
             assert!(valid_plugin_name(name), "{name}");
         }
-        for name in ["", ".x", "-x", "a__b", "a b", "a/b", "a:b"] {
+        for name in ["", ".x", "-x", "a.b", "a__b", "a b", "a/b", "a:b"] {
             assert!(!valid_plugin_name(name), "{name}");
         }
     }
@@ -1419,10 +1508,22 @@ mod tests {
             env: &env,
         };
         let mut warnings = Vec::new();
+        let mut env_vars = BTreeSet::new();
         let text = "${CLAUDE_PLUGIN_ROOT}/bin ${CLAUDE_PROJECT_DIR} ${TOKEN} ${MISSING}";
-        let out = expand_vars(text, "p", Path::new("/cfg/p"), &ctx, &mut warnings);
+        let out = expand_vars(
+            text,
+            "p",
+            Path::new("/cfg/p"),
+            &ctx,
+            &mut warnings,
+            &mut env_vars,
+        );
         assert_eq!(out, "/cfg/p/bin /work t0ken ${MISSING}");
         assert_eq!(warnings, vec!["plugin `p` leaves `${MISSING}` unexpanded"]);
+        assert_eq!(
+            env_vars,
+            BTreeSet::from(["TOKEN".to_string(), "MISSING".to_string()])
+        );
     }
 
     #[test]

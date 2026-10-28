@@ -331,16 +331,18 @@ pub fn plugins(registry: &Registry, extensions: &Extensions, config: &Config) ->
                 .iter()
                 .chain(&config.hooks.post_tool_use)
                 .chain(&config.hooks.permission_denied)
-                .filter(|hook| hook.origin.slot == Slot::Plugin)
+                .filter(|hook| hook.plugin.as_deref() == Some(plugin.name.as_str()))
                 .count();
+            let server_prefix = format!("plugin_{}_", plugin.name);
             let servers = config
                 .mcp_servers
                 .keys()
                 .filter(|name| {
-                    config
-                        .mcp_origins
-                        .get(*name)
-                        .is_some_and(|origin| origin.slot == Slot::Plugin)
+                    name.starts_with(&server_prefix)
+                        && config
+                            .mcp_origins
+                            .get(*name)
+                            .is_some_and(|origin| origin.slot == Slot::Plugin)
                 })
                 .count();
             let pin = if plugin.pin.len() > 7 {
@@ -558,6 +560,7 @@ mod tests {
                 slot,
                 user_trust: true,
             },
+            plugin: None,
         }
     }
 

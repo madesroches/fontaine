@@ -515,6 +515,11 @@ pub struct Hook {
     pub timeout_secs: Option<u64>,
     #[serde(skip)]
     pub origin: Origin,
+    /// The plugin a plugin-origin hook came from, for per-plugin reporting. Not part of
+    /// equality: the same hook from two plugins dedupes to one, as the same hook from two
+    /// scopes does.
+    #[serde(skip)]
+    pub plugin: Option<String>,
 }
 
 impl PartialEq for Hook {

@@ -510,8 +510,8 @@ changes stay on the CLI; an interactive browse-and-install surface is a follow-u
   `settings.json`, `themes/`, `monitors/`, `workflows/`, `channels`, `userConfig`) warn at
   install and startup instead of silently degrading; `${CLAUDE_PROJECT_DIR}` expands and other
   unexpanded `${...}` references warn.
-- 2026-10-28: Plugin and marketplace names follow Claude Code's alphabet (letters, digits, `.`,
-  `_`, `-`, starting alphanumeric), extended from `valid_name`'s; `__` stays forbidden. Plugin
+- 2026-10-28: Plugin and marketplace names follow Claude Code's alphabet minus `.` (see the
+  master plan's Decisions; `.` breaks composed MCP server names in the rule grammar). Plugin
   `agents/` and `commands/` load recursively, with multi-segment `plugin:sub:name` names.
 
 ## Documentation

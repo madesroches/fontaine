@@ -28,6 +28,7 @@ url = "https://mcp.example.com/docs"
 | `command` | The program of a stdio server. It starts in the primary workspace root. |
 | `args` | Its arguments. Stdio only. |
 | `env_vars` | The names of environment variables to pass through. Stdio only. |
+| `env` | Literal variables set on the server, after the pass-through and [`[env]`](#declaring-servers) layers, replacing a variable of the same name. Stdio only. |
 | `url` | The endpoint of a streamable HTTP server. It is reached through the proxy, extra CA roots and client certificate of [`[network]`](configuration.md#network). |
 
 A server name contains letters, digits, `_` and `-`, and has no `__` and no leading or trailing `_`.
@@ -37,7 +38,11 @@ A server name contains letters, digits, `_` and `-`, and has no `__` and no lead
 variables it needs to find programs) and the variables named in `env_vars`. Values never appear in
 configuration, and the API keys of your model accounts and the telemetry credentials are not
 passed unless you name them. Every entry of [`[env]`](configuration.md#env) is set on the server as
-well, replacing a copied variable of the same name. The server's standard error is not shown in the terminal UI; it goes to
+well, replacing a copied variable of the same name, and a server's own `env` map lands last,
+replacing a variable the other layers set. `env` values are literal: they are not expanded and
+cannot reach into the process environment. A [plugin's](plugins.md) `.mcp.json` `env` values, in
+contrast, are expanded at load, and the variables a plugin references are named in the install
+summary. The server's standard error is not shown in the terminal UI; it goes to
 the debug file (`--debug-file`).
 
 **Where they are declared.** The user file, `--settings` and an untracked `settings.local.toml` of

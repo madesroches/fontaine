@@ -62,8 +62,9 @@ A marketplace is a git repository or local directory with
 "github"` (`repo`, cloned over HTTPS) or `source: "url"` (`url`, any git URL). `github` and `url`
 entries may pin a `ref` (branch or tag) or `sha`, which install honors. Claude Code's other source
 types are refused with an error naming the entry. `version` is informational; the pin is the
-commit. Names use letters, digits, `.`, `_` and `-`, start with a letter or digit, and never
-contain `__`.
+commit. Names use letters, digits, `_` and `-`, start with a letter or digit, and never contain
+`__` or `.`: a plugin name becomes part of its MCP servers' composed names, which follow the
+stricter MCP name alphabet.
 
 ## Registry and checkouts
 
@@ -162,8 +163,11 @@ plugin.
   `mcp__plugin_<plugin>_<name>__<tool>` references resolve unchanged. A bare
   `mcp__<name>__*` reference in a plugin file is rewritten to the composed name.
 - `${CLAUDE_PLUGIN_ROOT}` expands to the installed checkout and `${CLAUDE_PROJECT_DIR}` to the
-  session's primary root, in hook commands and `.mcp.json` values. Any other `${...}` reference
-  left unexpanded warns at load.
+  session's primary root, in hook commands and `.mcp.json` values. `${VAR}` reads any other
+  variable from the process environment — its *value* lands in the hook command or server
+  env/URL, so a plugin can move an environment variable (including a credential) into its own
+  server. Install and update name every referenced variable in the summary they print before
+  you approve; a reference to a variable that is not set stays literal and warns.
 - LSP server components are unsupported (Fontaine has no LSP integration) and are ignored with a
   warning. Claude Code components with no Fontaine equivalent (`bin/`, plugin `settings.json`,
   `themes/`, `monitors/`, `workflows/`, `channels`, `dependencies`, `userConfig`) warn at install

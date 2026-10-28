@@ -135,10 +135,11 @@ fn plugin_hooks_and_servers_carry_a_tighten_only_origin() {
     let build = build_plugin(&root, "p", &context(&w.work)).unwrap();
     assert_eq!(build.summary.hooks, 1);
     assert_eq!(build.summary.servers, 1);
-    let hook = &build.hooks[0];
+    let hook = &build.hooks.pre_tool_use[0];
     assert_eq!(hook.origin.slot, Slot::Plugin);
     assert!(!hook.origin.user_trust);
     assert_eq!(hook.matcher.as_deref(), Some("shell"));
+    assert_eq!(hook.plugin.as_deref(), Some("p"));
     let server = build.servers.get("plugin_p_local").unwrap();
     assert_eq!(
         server
@@ -173,7 +174,7 @@ fn a_plugin_manifest_may_only_add_deny_side_permissions() {
     let mut config = w.load().unwrap();
     let contributions = plugins::PluginContributions {
         dirs: Vec::new(),
-        hooks: Vec::new(),
+        hooks: Default::default(),
         servers: Default::default(),
         deny: build.deny,
         ask: build.ask,
@@ -373,7 +374,7 @@ fn apply_plugins_refuses_a_composed_name_that_shadows_a_configured_server() {
     // Pretend a plugin ships a server that composes to `s`.
     let contributions = plugins::PluginContributions {
         dirs: Vec::new(),
-        hooks: Vec::new(),
+        hooks: Default::default(),
         servers: [(
             "s".to_string(),
             fontaine_core::config::McpServer {
@@ -397,6 +398,90 @@ fn apply_plugins_refuses_a_composed_name_that_shadows_a_configured_server() {
 }
 
 #[test]
+fn a_hook_runs_only_at_the_event_its_entry_names() {
+    let w = World::new();
+    plugins::write_registry(&w.config, &registry("team", "p", true)).unwrap();
+    let root = checkout(&w, "team", "p");
+    manifest(&root, "p", "");
+    write(
+        &root.join("hooks/hooks.json"),
+        r#"{"hooks": {
+            "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "post"}]}],
+            "PermissionDenied": [{"matcher": "Write", "hooks": [{"type": "command", "command": "deny"}]}],
+            "SessionStart": [{"hooks": [{"type": "command", "command": "ignored"}]}]
+        }}"#,
+    );
+    let contributions = load_installed(&w.config, &context(&w.work)).unwrap();
+    let mut config = w.load().unwrap();
+    config.apply_plugins(&contributions).unwrap();
+
+    assert!(config.hooks.pre_tool_use.is_empty());
+    assert_eq!(config.hooks.post_tool_use.len(), 1);
+    assert_eq!(config.hooks.permission_denied.len(), 1);
+    assert_eq!(config.hooks.post_tool_use[0].command, "post");
+    assert_eq!(config.hooks.permission_denied[0].command, "deny");
+}
+
+#[test]
+fn a_dotted_plugin_name_is_refused_so_composed_mcp_names_stay_valid() {
+    let w = World::new();
+    let root = checkout(&w, "team", "a.b");
+    manifest(&root, "a.b", "");
+    let err = build_plugin(&root, "a.b", &context(&w.work)).unwrap_err();
+    assert!(err.to_string().contains("not a plugin name"));
+}
+
+#[test]
+fn a_non_string_manifest_component_path_is_a_load_error() {
+    let w = World::new();
+    let root = checkout(&w, "team", "p");
+    manifest(&root, "p", r#", "skills": ["./skills", 5]"#);
+    let err = build_plugin(&root, "p", &context(&w.work)).unwrap_err();
+    assert!(err.to_string().contains("not a string"));
+}
+
+#[test]
+fn build_plugin_records_the_environment_variables_a_plugin_reads() {
+    let w = World::new();
+    let root = checkout(&w, "team", "p");
+    manifest(&root, "p", "");
+    write(
+        &root.join("hooks/hooks.json"),
+        r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "lint ${HOME}"}]}]}}"#,
+    );
+    write(
+        &root.join(".mcp.json"),
+        r#"{"mcpServers": {"s": {"url": "https://example.com/${API_TOKEN}"}}}"#,
+    );
+    let build = build_plugin(&root, "p", &context(&w.work)).unwrap();
+    assert_eq!(
+        build.env_vars,
+        std::collections::BTreeSet::from(["HOME".to_string(), "API_TOKEN".to_string()])
+    );
+}
+
+#[test]
+fn the_content_hash_follows_symlinks_the_way_the_copy_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("payload"), "v1").unwrap();
+    std::fs::create_dir_all(dir.path().join("plugins")).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path().join("payload"), dir.path().join("plugins/p"))
+        .unwrap();
+    #[cfg(unix)]
+    {
+        let with_link = plugins::content_hash(dir.path()).unwrap();
+        // A change to the link target moves the pin, as a copied-content change would.
+        std::fs::write(outside.path().join("payload"), "v2").unwrap();
+        assert_ne!(plugins::content_hash(dir.path()).unwrap(), with_link);
+        // A cycle through a directory link is cut, not followed forever.
+        std::os::unix::fs::symlink(dir.path(), dir.path().join("loop")).unwrap();
+        assert!(plugins::content_hash(dir.path()).is_ok());
+    }
+}
+
+#[test]
 fn an_identical_plugin_hook_keeps_the_plugin_origin() {
     let w = World::new();
     let mut config = w.load().unwrap();
@@ -408,19 +493,25 @@ fn an_identical_plugin_hook_keeps_the_plugin_origin() {
             slot: Slot::Project,
             user_trust: false,
         },
+        plugin: None,
     };
     config.hooks.pre_tool_use.push(project_hook);
     let contributions = plugins::PluginContributions {
         dirs: Vec::new(),
-        hooks: vec![fontaine_core::config::Hook {
-            matcher: None,
-            command: "true".to_string(),
-            timeout_secs: None,
-            origin: Origin {
-                slot: Slot::Plugin,
-                user_trust: false,
-            },
-        }],
+        hooks: plugins::PluginHooks {
+            pre_tool_use: vec![fontaine_core::config::Hook {
+                matcher: None,
+                command: "true".to_string(),
+                timeout_secs: None,
+                origin: Origin {
+                    slot: Slot::Plugin,
+                    user_trust: false,
+                },
+                plugin: Some("p".to_string()),
+            }],
+            post_tool_use: Vec::new(),
+            permission_denied: Vec::new(),
+        },
         servers: Default::default(),
         deny: Vec::new(),
         ask: Vec::new(),

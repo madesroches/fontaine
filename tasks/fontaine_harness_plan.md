@@ -366,9 +366,11 @@ scorecard run (see `## Remaining work`).
 - 2026-10-28: Claude Code components with no Fontaine equivalent (`bin/`, plugin `settings.json`,
   `themes/`, `monitors/`, `workflows/`, `channels`, `userConfig`) warn at install and startup;
   `${CLAUDE_PROJECT_DIR}` expands and other unexpanded `${...}` references warn.
-- 2026-10-28: Plugin and marketplace names follow Claude Code's alphabet (letters, digits, `.`,
-  `_`, `-`, starting alphanumeric), extended from `valid_name`'s; `__` stays forbidden. Plugin
-  `agents/` and `commands/` load recursively, with multi-segment `plugin:sub:name` names.
+- 2026-10-28: Plugin and marketplace names follow Claude Code's alphabet minus `.` (letters,
+  digits, `_`, `-`, starting alphanumeric); `__` stays forbidden. `.` would leak into composed
+  MCP server names (`plugin_<name>_<server>`), which the MCP rule grammar rejects — a dotted
+  name made any matcher on its own servers a startup error. Plugin `agents/` and `commands/`
+  load recursively, with multi-segment `plugin:sub:name` names.
 
 - 2026-10-28: Deviation (development escape hatch, #271) — `/guardian-disable` turns the guardian
   and the deterministic floor off for the rest of the current session, after a confirmation, and

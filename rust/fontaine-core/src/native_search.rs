@@ -100,6 +100,7 @@ mod tests {
             command: "true".to_string(),
             timeout_secs: None,
             origin: Default::default(),
+            plugin: None,
         });
         config
     }

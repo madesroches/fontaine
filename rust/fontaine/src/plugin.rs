@@ -104,6 +104,18 @@ fn temp_workdir(parent: &Path) -> Result<PathBuf, String> {
             fontaine_tools::error_chain::chain(&e)
         )
     })?;
+    // A killed run leaves its temp directory behind; sweep the stale ones before adding ours.
+    for entry in std::fs::read_dir(parent)
+        .map_err(|e| format!("cannot read {}: {}", parent.display(), e))?
+        .flatten()
+    {
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with(".tmp-")
+            && entry.file_type().is_ok_and(|t| t.is_dir())
+        {
+            remove_dir(&entry.path());
+        }
+    }
     let dir = parent.join(format!(".tmp-{}", Uuid::new_v4()));
     std::fs::create_dir(&dir).map_err(|e| {
         format!(
@@ -252,6 +264,16 @@ fn marketplace_add(dirs: &Dirs, add: &MarketplaceAddArgs) -> Result<(), String> 
     let _lock = lock_registry(&dirs.config)?;
     let mut registry = read_under_lock(&dirs.config)?;
     let source_path = Path::new(&add.source);
+    // A source that names a path (not a git URL) must exist, so a typo fails here instead of
+    // surfacing as a confusing git error.
+    let looks_like_path = add.source.starts_with('.')
+        || add.source.starts_with('/')
+        || add.source.starts_with('~')
+        || (add.source.len() > 2 && add.source.as_bytes()[1] == b':') // a Windows drive letter
+        || (!add.source.contains("://") && !add.source.contains('@') && add.source.contains('/'));
+    if looks_like_path && !source_path.is_dir() {
+        return fail(format!("{} is not a directory", source_path.display()));
+    }
     let local = source_path.is_dir();
     let parent = dirs
         .config
@@ -407,9 +429,13 @@ fn remote_head(checkout: &Path) -> Result<String, String> {
     match git(checkout, &["rev-parse", "origin/HEAD"]) {
         Ok(sha) if !sha.is_empty() => Ok(sha),
         _ => {
+            // `ls-remote --symref` prints the symref resolution first ("ref: refs/heads/main")
+            // and the sha on its own line; the sha is what a checkout takes.
             let output = git(checkout, &["ls-remote", "--symref", "origin", "HEAD"])?;
             for line in output.lines() {
-                if let Some(sha) = line.split('\t').next() {
+                let mut fields = line.split('\t');
+                let sha = fields.next().unwrap_or("");
+                if fields.next() == Some("HEAD") && !sha.starts_with("ref:") && !sha.is_empty() {
                     return Ok(sha.to_string());
                 }
             }
@@ -483,8 +509,9 @@ fn install(dirs: &Dirs, host: &Host, spec: &str) -> Result<(), String> {
         }
     };
     print_summary(&entry, &build);
-    let target = checkout_dir(&dirs.config, &market.name, name);
-    replace_dir(&temp, &target)?;
+    // Record the install before moving the checkout in: a recorded plugin whose checkout is
+    // missing degrades to a warning, while a checkout with no registry entry is an orphan.
+    let before = registry.clone();
     registry.plugin.push(InstalledPlugin {
         name: name.to_string(),
         marketplace: market.name.clone(),
@@ -493,6 +520,11 @@ fn install(dirs: &Dirs, host: &Host, spec: &str) -> Result<(), String> {
         enabled: true,
     });
     write_under_lock(&dirs.config, &registry)?;
+    let target = checkout_dir(&dirs.config, &market.name, name);
+    if let Err(e) = replace_dir(&temp, &target) {
+        let _ = write_under_lock(&dirs.config, &before);
+        return Err(e);
+    }
     println!("installed plugin `{name}` ({})", short_pin(&pin));
     Ok(())
 }
@@ -574,6 +606,19 @@ fn print_summary(entry: &CatalogPlugin, build: &plugins::PluginBuild) {
     for name in build.dir.mcp_names.values() {
         println!("  MCP server {name}");
     }
+    if !build.env_vars.is_empty() {
+        // Name the variables, never their values: a reference moves the variable's value into
+        // a hook command or a server env/URL, and the install approves that.
+        println!(
+            "  reads environment variables: {}",
+            build
+                .env_vars
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     print_warnings(
         &build
             .warnings
@@ -648,11 +693,17 @@ fn update(dirs: &Dirs, host: &Host, name: &str) -> Result<(), String> {
         }
     };
     print_summary(&entry, &build);
-    let target = checkout_dir(&dirs.config, &market.name, name);
-    replace_dir(&temp, &target)?;
+    // Record the move before replacing the checkout, and put the old registry back if the
+    // replacement fails (replace_dir restores the old checkout itself).
+    let before = registry.clone();
     registry.plugin[at].pin = pin.clone();
     registry.plugin[at].source = entry.source.display();
     write_under_lock(&dirs.config, &registry)?;
+    let target = checkout_dir(&dirs.config, &market.name, name);
+    if let Err(e) = replace_dir(&temp, &target) {
+        let _ = write_under_lock(&dirs.config, &before);
+        return Err(e);
+    }
     println!("plugin `{name}` moved to {}", short_pin(&pin));
     Ok(())
 }
