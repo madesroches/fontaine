@@ -1,0 +1,51 @@
+{
+  "n": 46,
+  "time": "18:12:16",
+  "method": "GET",
+  "path": "/v1/models",
+  "request_headers": {
+    "Host": "host.docker.internal:18090",
+    "Accept": "*/*",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+    "User-Agent": "python-httpx/0.28.1",
+    "Authorization": "Bearer no-key-required"
+  },
+  "request_body": null,
+  "response_status": 200,
+  "response_body": {
+    "object": "list",
+    "data": [
+      {
+        "id": "qwen2.5-coder:7b-64k",
+        "object": "model",
+        "created": 1793135170,
+        "owned_by": "library"
+      },
+      {
+        "id": "qwen3:4b-64k",
+        "object": "model",
+        "created": 1793134537,
+        "owned_by": "library"
+      },
+      {
+        "id": "qwen3:4b-20k",
+        "object": "model",
+        "created": 1792786598,
+        "owned_by": "library"
+      },
+      {
+        "id": "qwen2.5-coder:7b",
+        "object": "model",
+        "created": 1792785850,
+        "owned_by": "library"
+      },
+      {
+        "id": "qwen3:4b",
+        "object": "model",
+        "created": 1792785820,
+        "owned_by": "library"
+      }
+    ]
+  }
+}

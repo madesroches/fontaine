@@ -1,0 +1,16 @@
+{
+  "n": 32,
+  "time": "17:57:29",
+  "method": "GET",
+  "path": "/api/v1/models",
+  "request_headers": {
+    "Host": "host.docker.internal:18090",
+    "Accept": "*/*",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+    "User-Agent": "python-httpx/0.28.1"
+  },
+  "request_body": null,
+  "response_status": 404,
+  "response_body": "404 page not found"
+}
