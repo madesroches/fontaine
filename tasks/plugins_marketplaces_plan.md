@@ -40,6 +40,11 @@
     a portability cost.
   - Minor: `plugin marketplace list`'s plugin count is installed plugins per marketplace,
     not catalog entries.
+- 2026-10-28: **Code-review fixes (plugins).** `Config::apply_plugins` is idempotent (`/resume`
+  and `/branch` reuse the resolved config), two installed plugins whose servers compose to one
+  name are a startup error instead of silently shadowing each other, and manifest
+  `hooks`/`mcpServers` path keys now merge over the default file (inline objects warn). Four
+  regression tests added; fmt/clippy/tests green.
   Status: **done.**
 
 ## Overview
@@ -116,7 +121,9 @@ my-plugin/
 `hooks`, `mcpServers`, `outputStyles` — which point at files or directories inside the plugin.
 They are honored with Claude Code's per-key semantics, because getting them wrong would drop or
 duplicate a ported plugin's content: `commands`, `agents` and `outputStyles` *replace* the
-default scan, `skills` *adds* to it, and `hooks` and `mcpServers` *merge* over the default file.
+default scan, `skills` *adds* to it, and `hooks` and `mcpServers` *merge* over the default file
+(`hooks` and `mcpServers` take a file path or a list of paths; an inline config object is not
+loaded and warns).
 (`lspServers` paths get the same ignore-with-warning as a default LSP component.)
 `commands/<name>.md` files, default directory or manifest paths, load as user-invocable skills,
 as Claude Code's commands-merged-into-skills does; plugin skill rules apply to them. Other
@@ -165,9 +172,9 @@ object with `source: "github"` (`repo: "owner/repo"`, cloned over HTTPS) or `sou
 `ref` (branch or tag) or `sha`, which install honors (see the CLI table). Claude Code's other
 plugin source types (`git-subdir`, `npm`, `archive`, `command`) are refused with an error naming
 the entry, never silently skipped. `version` is informational; the pin is the commit.
-Marketplace and plugin names use `valid_name`'s alphabet plus `.` and must start with a letter
-or digit (Claude Code's name rules); they may not contain `__`, the separator MCP tool names
-split on (see Component mapping).
+Marketplace and plugin names use `valid_name`'s alphabet minus `.` and must start with a letter
+or digit; they may not contain `__`, the separator MCP tool names split on, and `.` stays out so
+a composed MCP server name is always a valid rule and tool name (see Component mapping).
 
 ### Registry and checkouts
 
@@ -355,17 +362,20 @@ widen (`registry.rs:140`, converted to an exhaustive match — see above).
   `PermissionDenied`, mapping onto `pre_tool_use`, `post_tool_use` and `permission_denied`. Only
   shell-form `type: "command"` hooks are supported: any other `type` (`prompt`, `http`, agent
   hooks) is a load error naming the file, and an entry with `args` (Claude Code's exec form)
-  skips with a warning, as an un-mappable matcher does.
+  skips with a warning, as an un-mappable matcher does. A manifest `hooks` path (or list of
+  paths) merges over the default `hooks/hooks.json`; an inline object warns.
 - **`.mcp.json`**: `{"mcpServers": {"<name>": {"command", "args", "env"}}}` or `{"url"}` maps
   onto `McpServer`. `env` values support `${VAR}` expansion; to carry literal values `McpServer`
   gains an optional `env: BTreeMap<String, String>` applied to the child after the scrub, beside
   `env_vars`. Server names are composed as Claude Code composes them, `plugin_<plugin>_<name>`,
-  so a ported plugin's `mcp__plugin_<plugin>_<name>__<tool>` references resolve unchanged and two
-  plugins cannot fight over `mcp__github__*`. A plugin file that names one of the plugin's own
-  servers bare (`mcp__<name>__*` in `tools`, `disallowedTools` or `allowed-tools`) is rewritten
-  to the composed name at load, before validation against the session's servers. A composed name
-  that equals any configured non-plugin server is a startup error naming the plugin: a plugin
-  never shadows a server the user or the repository defined. `.mcp.json` server keys may not
+  so a ported plugin's `mcp__plugin_<plugin>_<name>__<tool>` references resolve unchanged. A
+  plugin file that names one of the plugin's own servers bare (`mcp__<name>__*` in `tools`,
+  `disallowedTools` or `allowed-tools`) is rewritten to the composed name at load, before
+  validation against the session's servers. A composed name that equals any configured
+  non-plugin server, or that two installed plugins both compose to, is a startup error naming
+  the plugin: a plugin never shadows a server the user, the repository or another plugin
+  defined. A manifest `mcpServers` path (or list of paths) merges over the default `.mcp.json`
+  (a later file replaces a same-named server); an inline object warns. `.mcp.json` server keys may not
   contain `__`. Long composed names hit provider tool-name length limits sooner; the install
   summary shows them so an oversized name is visible before install.
 - **LSP servers**: a `lspServers` key or directory is ignored with a startup warning naming the
@@ -513,6 +523,11 @@ changes stay on the CLI; an interactive browse-and-install surface is a follow-u
 - 2026-10-28: Plugin and marketplace names follow Claude Code's alphabet minus `.` (see the
   master plan's Decisions; `.` breaks composed MCP server names in the rule grammar). Plugin
   `agents/` and `commands/` load recursively, with multi-segment `plugin:sub:name` names.
+- 2026-10-28: A manifest `hooks`/`mcpServers` key takes a file path or list of paths that merge
+  over the default file; Claude Code's inline config-object form is not loaded and warns instead
+  of failing the plugin.
+- 2026-10-28: Two enabled plugins whose MCP servers compose to one name are a startup error, not
+  a silent shadow: `_` in plugin and server names makes the composed name ambiguous.
 
 ## Documentation
 
@@ -540,9 +555,10 @@ source needs no network); JSON fixtures stand in for remote catalogs.
 
 - Unit: `plugin.json` / `marketplace.json` / `hooks.json` / `.mcp.json` parsing, unknown-key
   tolerance, malformed entries naming the file; the component-path manifest keys honored with
-  their per-key replace/add/merge semantics, `skills` and `outputStyles` included;
+  their per-key replace/add/merge semantics, `skills` and `outputStyles` included, and manifest
+  `hooks`/`mcpServers` paths merging over the default files with an inline object warning;
   `commands/*.md` loading as skills; recursive `agents/` and `commands/` loading with
-  multi-segment `plugin:sub:name` names; name validation with `.` accepted and a leading letter
+  multi-segment `plugin:sub:name` names; name validation with `.` rejected and a leading letter
   or digit required; `__` rejected in plugin, marketplace and server names; `dependencies`,
   `userConfig`, `bin/` and `settings.json` warn; exec-form hook entries skip with a warning and
   non-`command` hook types are load errors; bare in-plugin `mcp__` references rewritten
@@ -573,8 +589,10 @@ source needs no network); JSON fixtures stand in for remote catalogs.
   (the call still asks / reaches the guardian) while its `deny` denies; a plugin MCP tool is
   `arbitrary` and asks in `manual`; plugin deny/ask rules match their calls; plugin
   `hard_deny`/`soft_deny` appear in `effective_auto_mode` and `allow` never does; a composed
-  server name colliding with a configured non-plugin server is a startup error naming the
-  plugin; a plugin skill's `!` commands run without workspace trust and through the permission
+  server name colliding with a configured non-plugin server, and two installed plugins whose
+  servers compose to one name, are startup errors naming the plugin; re-applying plugin
+  contributions to the resolved config is a no-op (the session-switch path reuses it); a plugin
+  skill's `!` commands run without workspace trust and through the permission
   pipeline; a plugin agent naming an MCP server the plugin does not ship and the session does
   not have is skipped with a warning, while one naming anything else the session lacks is an
   exit-2 startup error naming the file; a plugin agent type rejects a per-call `model` override
