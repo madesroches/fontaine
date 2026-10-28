@@ -51,6 +51,15 @@ async fn editing_a_tracked_file_skips_the_guardian() {
 }
 
 #[tokio::test]
+async fn editing_a_tracked_notebook_skips_the_guardian() {
+    let (rig, fake) = repo_rig(&["analysis.ipynb"], "", false);
+    let args = json!({"path": "analysis.ipynb"});
+    assert!(allowed(&rig.check("notebook_edit", args).await));
+    assert_eq!(last_tier(&rig), Tier::TrackedEdit);
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
 async fn a_new_file_and_a_file_the_session_created_skip_the_guardian() {
     let (rig, fake) = repo_rig(&["a.txt"], "", false);
     assert!(allowed(
