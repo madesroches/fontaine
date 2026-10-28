@@ -33,6 +33,9 @@ pub const QUIET_LIMIT: Duration = Duration::from_secs(60);
 /// How long a job thread reads on after the process exited, for output something it left
 /// running still writes; then the rest of the group is killed.
 const PIPE_GRACE: Duration = Duration::from_millis(100);
+/// The longest a job thread drains queued output after its process exited and its group was
+/// killed; only a process that escaped the group and kept the pipe open can reach it.
+const DRAIN_BOUND: Duration = Duration::from_secs(10);
 /// Jobs kept after they ended, newest.
 const RETAINED: usize = 50;
 /// Lines of the end of the output a completion notice carries.
@@ -557,10 +560,13 @@ fn end_note(job: &Job) -> JobNote {
     };
     match &job.monitor {
         Some(monitor) => {
-            if monitor.lost > 0 {
-                text.push_str(&format!("[{} earlier lines dropped]\n", monitor.lost));
+            let capped = monitor.pending.len().saturating_sub(MONITOR_LINES);
+            let dropped = monitor.lost + capped;
+            if dropped > 0 {
+                text.push_str(&format!("[{dropped} earlier lines dropped]\n"));
             }
-            for line in &monitor.pending {
+            let dropped = capped;
+            for line in monitor.pending.iter().skip(dropped) {
                 text.push_str(clip(line.trim_end_matches('\n'), NOTICE_LINE));
                 text.push('\n');
             }
@@ -1088,15 +1094,20 @@ fn run(shared: &Shared, id: &str, mut process: Process, control: &Control, monit
     match end {
         End::Exited(_) => {
             // Whatever the shell left running is killed even when it let go of the pipes, so a
-            // job stays one command line.
-            read_rest(shared, id, &process);
+            // job stays one command line. With the group dead the channel disconnects once the
+            // queued lines are taken.
             process.kill().ok();
-            read_rest(shared, id, &process);
+            if !drain(shared, id, &process, &mut written, DRAIN_BOUND) {
+                shared.append(
+                    id,
+                    &OutputLine::Err("[some output lines may be missing]\n".to_owned()),
+                );
+            }
         }
         _ => {
             process.stop(STOP_GRACE).ok();
             forced = process.forced();
-            read_rest(shared, id, &process);
+            drain(shared, id, &process, &mut written, PIPE_GRACE);
         }
     }
     let remote = process.remote().map(str::to_owned);
@@ -1111,15 +1122,22 @@ fn run(shared: &Shared, id: &str, mut process: Process, control: &Control, monit
     );
 }
 
-/// Takes output until the pipe's end, for at most [`PIPE_GRACE`]; whether the end came.
-fn read_rest(shared: &Shared, id: &str, process: &Process) -> bool {
-    let deadline = Instant::now() + PIPE_GRACE;
+/// Takes output until the pipe's end, for at most `bound` and [`OUTPUT_CAP`] in all; whether the
+/// end came.
+fn drain(shared: &Shared, id: &str, process: &Process, written: &mut u64, bound: Duration) -> bool {
+    let deadline = Instant::now() + bound;
     loop {
         match process
             .lines()
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
         {
-            Ok(line) => shared.append(id, &line),
+            Ok(line) => {
+                *written += line.text().len() as u64;
+                shared.append(id, &line);
+                if *written > OUTPUT_CAP {
+                    return false;
+                }
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return true,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return false,
         }

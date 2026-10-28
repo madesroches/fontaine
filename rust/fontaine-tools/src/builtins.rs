@@ -379,7 +379,7 @@ impl ShellTool {
             .map_err(|e| job_error(&e))?;
         if background {
             return Ok(format!(
-                "[started in the background as {id}. You are told when it ends; use job_output                  to read its output, job_cancel to stop it.]"
+                "[started in the background as {id}. You are told when it ends; use job_output to read its output, job_cancel to stop it.]"
             ));
         }
         let ran = jobs.foreground(&id, timeout, quiet, !no_promote).await;

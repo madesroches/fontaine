@@ -121,6 +121,11 @@ async fn a_background_job_is_listed_read_and_cancelled_through_the_tools() {
         "{}",
         text(&out)
     );
+    assert!(
+        text(&out).contains("use job_output to read its output"),
+        "{}",
+        text(&out)
+    );
     let id = job_id(&text(&out));
 
     let listed = text(&call(&tools, "job_output", json!({})).await.unwrap());

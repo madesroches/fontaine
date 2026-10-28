@@ -477,6 +477,34 @@ fn a_monitor_posts_at_most_two_hundred_lines_and_one_notification_a_second() {
 }
 
 #[test]
+fn a_monitors_end_note_carries_at_most_two_hundred_lines() {
+    let (shared, _) = bare_monitor(0, 450, None);
+    let inner = shared.inner.lock().unwrap();
+    let note = end_note(&inner.jobs[0]);
+    assert_eq!(note.text.matches("line ").count(), MONITOR_LINES);
+    assert!(
+        note.text.contains("[250 earlier lines dropped]"),
+        "{}",
+        note.text
+    );
+    assert!(note.text.contains("line 449\n") && !note.text.contains("line 249\n"));
+}
+
+#[tokio::test]
+async fn a_command_that_prints_a_lot_and_exits_keeps_the_end_of_its_output() {
+    let (jobs, _) = jobs();
+    let id = start(&jobs, "seq 1 300000", false);
+    let ran = jobs
+        .foreground(&id, Duration::from_secs(20), None, true)
+        .await;
+    assert!(ran.end.is_some());
+    assert_eq!(
+        ran.chunk.lines.last().map(|(_, l)| l.as_str()),
+        Some("300000\n")
+    );
+}
+
+#[test]
 fn a_monitor_past_its_notification_total_is_terminated() {
     let (shared, sink) = bare_monitor(MONITOR_NOTIFICATIONS, 3, None);
     shared.monitor_tick("job-test");
