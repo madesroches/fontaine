@@ -20,6 +20,7 @@ use crate::adjudication::project_instructions;
 use crate::child_runner::{ChildContext, CoreChildRunner, MainModel, NotificationStage};
 use crate::config::{Account, AgentMode, Config};
 use crate::extensions::Extensions;
+use crate::fork_context::ParentContext;
 use crate::gate::{AutoContext, ScreenStage, SessionState, StateParams, no_guardian};
 use crate::instructions::{self, InstructionStage, Sources};
 use crate::models::{GuardianModel, Models};
@@ -196,6 +197,7 @@ pub fn build_agent_types(config: &Config, extensions: &Extensions) -> AgentTypes
                 Some(AgentMode::DontAsk) => ModeSetting::DontAsk,
             },
             origin: TypeOrigin::Config,
+            inherits_context: false,
         });
     }
     for agent in extensions
@@ -498,7 +500,11 @@ fn child_runner(
                     preamble_home.as_deref(),
                 );
                 let instructions = instructions::load(&sources).files;
-                let layer = prompt::subagent_layer(&agent_type.name, agent_type.prompt.as_deref());
+                let layer = if agent_type.inherits_context {
+                    prompt::fork_layer()
+                } else {
+                    prompt::subagent_layer(&agent_type.name, agent_type.prompt.as_deref())
+                };
                 prompt::assemble(&PromptParts {
                     roots: &roots,
                     scratch: preamble_state.scratch.as_deref(),
@@ -514,6 +520,7 @@ fn child_runner(
             }),
             approver: approver.clone(),
             record_content,
+            parent_context: ParentContext::default(),
         }),
     })
 }

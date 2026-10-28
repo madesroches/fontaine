@@ -1,4 +1,4 @@
-//! The agent types a session can spawn: the built-in two, `[agents.types]` entries and agent
+//! The agent types a session can spawn: the built-in three, `[agents.types]` entries and agent
 //! files in one registry. A type names a model, a toolset and a mode; the toolset a child
 //! really gets is that set cut down to what its parent has.
 
@@ -71,7 +71,13 @@ pub struct AgentType {
     pub model: Option<ModelSpec>,
     pub mode: ModeSetting,
     pub origin: TypeOrigin,
+    /// Whether the child starts from a copy of its parent's conversation. Only the built-in
+    /// `fork` has it: no agent file or config entry can set it.
+    pub inherits_context: bool,
 }
+
+/// The built-in type whose child starts from a copy of the main conversation.
+pub const FORK_TYPE: &str = "fork";
 
 /// The tool a toolset entry names: `shell(git *)` is `shell`.
 pub fn entry_tool(entry: &str) -> &str {
@@ -141,8 +147,8 @@ pub struct AgentTypes {
 }
 
 impl AgentTypes {
-    /// The types every session has: a read-only `explore` and a `worker` that can edit and
-    /// run commands.
+    /// The types every session has: a read-only `explore`, a `worker` that can edit and run
+    /// commands, and a `fork` that starts from the main conversation.
     pub fn builtin() -> AgentTypes {
         let mut types = AgentTypes::default();
         types.insert(AgentType {
@@ -158,6 +164,7 @@ impl AgentTypes {
             model: Some(ModelSpec::GuardianDefault),
             mode: ModeSetting::Inherit,
             origin: TypeOrigin::Builtin,
+            inherits_context: false,
         });
         types.insert(AgentType {
             name: "worker".to_string(),
@@ -182,6 +189,20 @@ impl AgentTypes {
             model: Some(ModelSpec::Main),
             mode: ModeSetting::Inherit,
             origin: TypeOrigin::Builtin,
+            inherits_context: false,
+        });
+        types.insert(AgentType {
+            name: FORK_TYPE.to_string(),
+            description: "Starts from a copy of your conversation, so it needs only a short task in `prompt`."
+                .to_string(),
+            prompt: None,
+            tools: None,
+            // Only the main conversation has a human to ask.
+            disallowed: vec!["ask_user_question".to_string()],
+            model: None,
+            mode: ModeSetting::Inherit,
+            origin: TypeOrigin::Builtin,
+            inherits_context: true,
         });
         types
     }

@@ -338,6 +338,7 @@ fn load_agent(path: &Path, scope: Scope, servers: &[String]) -> Result<AgentType
             Scope::User => TypeOrigin::UserFile(path.to_path_buf()),
             Scope::Project => TypeOrigin::ProjectFile(path.to_path_buf()),
         },
+        inherits_context: false,
         name,
     })
 }

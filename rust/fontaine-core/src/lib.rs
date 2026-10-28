@@ -17,6 +17,7 @@ pub mod export;
 pub mod extensions;
 pub mod file_lock;
 pub mod floor;
+pub mod fork_context;
 pub mod frontmatter;
 pub mod gate;
 pub mod goal;

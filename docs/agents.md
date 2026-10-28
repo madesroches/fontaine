@@ -10,7 +10,7 @@ and background tasks, with stricter permission rules.
 | Argument | Meaning |
 |---|---|
 | `agent_type` | One of the [agent types](#agent-types). Required. |
-| `prompt` | The task, with everything the subagent needs: it cannot see the conversation. Required. |
+| `prompt` | The task. A subagent cannot see the conversation, so it needs everything in `prompt`; a [`fork`](#forking-the-conversation) already has the conversation and needs only a short task. Required. |
 | `model` | Optional: `$main`, `$guardian_default` or `<account>/<model>`. |
 | `background` | Optional, default `false`. |
 
@@ -31,19 +31,22 @@ The model gets no tool to list, inspect or kill agents: those are controls for y
 
 ## Agent types
 
-Two types are built in:
+Three types are built in:
 
 | Type | Model | Tools |
 |---|---|---|
 | `explore` | `$guardian_default` | `ls`, `read`, `glob`, `grep`, `send_message` |
 | `worker` | `$main` | `ls`, `read`, `glob`, `grep`, `edit`, `write`, `notebook_edit`, `shell`, `send_message` |
+| `fork` | the session model | every tool the main conversation has, except `ask_user_question` |
 
 `$main` is the session model. `$guardian_default` is the top-ranked validated guardian model your
 accounts offer, or the session model when there is none.
 
 Types come from four places, later ones replacing earlier ones of the same name: the built-in
 ones, [agent files](#agent-files) in your config directory, `[agents.types.<name>]` entries, and
-agent files in the repository.
+agent files in the repository. A type of yours named `fork` replaces the built-in one and loses its
+ability to inherit the conversation: starting from the conversation is a built-in capability that no
+file or config entry can grant.
 
 ```toml
 [agents.types.reviewer]
@@ -56,6 +59,33 @@ mode = "inherit"
 The toolset a subagent really gets is that list **cut down to what its parent has**: a type can
 never reach a tool its parent lacks. `agent` is withheld from a subagent at the nesting limit.
 A subagent with `todo_write` keeps its own list, which is not shown in the UI and not saved with the session.
+
+## Forking the conversation
+
+`fork` starts a subagent from a copy of the main conversation instead of a briefing. It sees what
+the main model saw when it made the call: the earlier turns, this turn's prompt and everything the
+turn has done so far. Its `prompt` is its task, which can be short because the context is already
+there. It then works like any subagent, with the same permission checks, the mode-never-looser rule,
+budgets and limits, and it appears in the agents panel as `fork`.
+
+- It runs on the session model, so `model` is refused: the session model produced the context it
+  inherits.
+- Only the main conversation can fork; a subagent that calls `fork` is refused and should start a
+  typed subagent instead.
+- Nothing in the copied context becomes the user's intent for the guardian. Intent is still only
+  your own messages, and the copied tool results and model text stay untrusted data.
+- If the main conversation's context cannot be copied, the fork does not start; it is never started
+  empty.
+- A `fork` uses the subagent system prompt with a fork-specific note, not the main conversation's
+  exact prompt, which carries sections only the main conversation gets, such as memory and
+  scheduling.
+- The inherited context is billed on the fork's first call, so a long conversation can use up the
+  default subagent token budget (`subagent_token_budget`) quickly, and the fork then ends as
+  `BudgetExhausted` with a partial result.
+- Forking is a rule target like any type: `deny = ["agent(fork)"]` forbids it.
+
+This is not the `/fork` slash command, an alias of `/branch` that splits your own session
+(see [the TUI](tui.md)).
 
 ## Modes: never looser than the parent
 
