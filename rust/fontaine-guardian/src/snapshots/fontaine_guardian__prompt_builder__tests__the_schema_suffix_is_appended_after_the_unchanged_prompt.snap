@@ -1,0 +1,15 @@
+---
+source: fontaine-guardian/src/prompt_builder.rs
+assertion_line: 432
+expression: "&schema[system.len()..]"
+---
+
+
+## Answer format in this conversation
+
+There is no `submit` function in this conversation. Ignore every instruction above to call it. Instead reply with exactly one JSON object and nothing else, with these four fields:
+
+- `decision`: `allow`, `deny` or `escalate`;
+- `rule`: `allow` exactly when the decision is `allow`, otherwise the best-fitting label from the list above;
+- `explanation`: one to three sentences;
+- `confidence`: a number from 0 to 1.

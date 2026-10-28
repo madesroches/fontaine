@@ -4,19 +4,19 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rig_agent::agent::{AgentHook, HookContext, OutcomeAction, OutcomeEvent};
 use rig_agent::completion::StructuredOutputError;
-use rig_agent::extractor::ExtractorBuilder;
 use rig_core::DynModel;
 use rig_core::completion::Usage;
-use rig_core::message::Message;
 use rig_core::operation::Completion;
 use tracing::Instrument;
 
 use crate::cache::{CacheKey, VerdictCache, digest};
 use crate::profile::Profile;
-use crate::prompt_builder::{Rendered, render};
+use crate::prompt_builder::{Rendered, render, with_schema_answer};
 use crate::request::AdjudicationRequest;
+use crate::structured::{
+    self, ModeResolver, Notifier, Options, OutputMode, OutputProbe, Tally, lacks_tool_support,
+};
 use crate::verdict::{AuditLabel, Decision, FailClosed, Verdict};
 
 const TARGET: &str = "fontaine::telemetry";
@@ -59,19 +59,6 @@ impl Default for Settings {
     }
 }
 
-/// rig's structured-output errors carry no usage, so every billed response is tallied as it
-/// arrives; a fail-closed adjudication still spent those tokens.
-struct UsageTally(Arc<Mutex<Usage>>);
-
-impl AgentHook for UsageTally {
-    async fn on_outcome(&self, _ctx: &HookContext, event: OutcomeEvent<'_>) -> OutcomeAction {
-        if let Some(response) = event.completion() {
-            *self.0.lock().expect("the usage tally lock is not poisoned") += response.usage;
-        }
-        OutcomeAction::Proceed
-    }
-}
-
 enum Backend {
     Ready(Box<DynModel<Completion>>),
     Unavailable(String),
@@ -94,6 +81,8 @@ pub struct Adjudication {
     pub profile: Profile,
     /// Tokens this adjudication spent; empty on a cache hit.
     pub usage: Usage,
+    /// The transport the verdict was obtained on; absent when the model could not be asked.
+    pub transport: Option<OutputMode>,
 }
 
 pub struct Guardian {
@@ -104,6 +93,7 @@ pub struct Guardian {
     /// Extra request parameters, e.g. the one that turns thinking off for a model that refuses a
     /// forced tool call while thinking.
     additional_params: Option<serde_json::Value>,
+    mode: ModeResolver,
 }
 
 impl Guardian {
@@ -114,6 +104,7 @@ impl Guardian {
             settings,
             cache: Mutex::default(),
             additional_params: None,
+            mode: ModeResolver::default(),
         }
     }
 
@@ -130,12 +121,31 @@ impl Guardian {
             settings,
             cache: Mutex::default(),
             additional_params: None,
+            mode: ModeResolver::default(),
         }
     }
 
     pub fn with_additional_params(mut self, params: Option<serde_json::Value>) -> Self {
         self.additional_params = params;
         self
+    }
+
+    /// Asks `probe` which transport the model can use, once. Without one, verdicts travel as
+    /// a forced tool call.
+    pub fn with_output_probe(mut self, probe: Arc<dyn OutputProbe>) -> Self {
+        self.mode.set_probe(probe);
+        self
+    }
+
+    pub fn with_notifier(mut self, notifier: Notifier) -> Self {
+        self.mode.set_notifier(notifier);
+        self
+    }
+
+    /// The transport verdicts are asked for on, resolved on the first call. `Err` is why the
+    /// model cannot be asked at all.
+    pub async fn resolve_mode(&self) -> Result<OutputMode, String> {
+        self.mode.resolve().await
     }
 
     pub fn label(&self) -> &str {
@@ -207,7 +217,7 @@ impl Guardian {
 
     async fn run(&self, request: &AdjudicationRequest) -> Adjudication {
         let started = Instant::now();
-        let finish = |outcome: Outcome| self.finish(request, started, outcome);
+        let finish = |outcome: Outcome| self.finish(request, started, outcome, None);
 
         let model = match &self.backend {
             Backend::Ready(model) => model,
@@ -220,8 +230,23 @@ impl Guardian {
             }
         };
 
+        let mode = match self.mode.resolve().await {
+            Ok(mode) => mode,
+            Err(reason) => {
+                return finish(Outcome::FailClosed(
+                    FailClosed::Unavailable,
+                    format!("the guardian model {} is unavailable: {reason}", self.label),
+                    Usage::default(),
+                ));
+            }
+        };
+
+        let finish = |outcome: Outcome| self.finish(request, started, outcome, Some(mode));
         let profile = self.settings.profile;
-        let (shaped, rendered) = self.prompt(request);
+        let (shaped, mut rendered) = self.prompt(request);
+        if mode == OutputMode::Schema {
+            rendered.system = with_schema_answer(&rendered.system);
+        }
         let key = CacheKey {
             tool: shaped.tool_call.tool.clone(),
             args_digest: shaped.tool_call.args_digest.clone(),
@@ -245,20 +270,22 @@ impl Guardian {
             });
         }
 
-        let spent = Arc::new(Mutex::new(Usage::default()));
-        let tally = || *spent.lock().expect("the usage tally lock is not poisoned");
-        let mut builder = ExtractorBuilder::<Verdict>::new(model.as_ref().clone())
-            .add_hook(UsageTally(spent.clone()))
-            .append_preamble(&rendered.system)
-            .max_tokens(MAX_TOKENS)
-            .retries(EXTRACTOR_RETRIES);
-        if let Some(params) = &self.additional_params {
-            builder = builder.additional_params(params.clone());
-        }
-        let extractor = builder.build();
+        let spent = Tally::default();
+        let options = Options {
+            retries: EXTRACTOR_RETRIES,
+            max_tokens: MAX_TOKENS,
+            additional_params: self.additional_params.as_ref(),
+        };
         let extraction = tokio::time::timeout(
             self.settings.timeout,
-            extractor.extract(Message::user(rendered.user)),
+            structured::run::<Verdict>(
+                model,
+                mode,
+                &rendered.system,
+                rendered.user,
+                options,
+                &spent,
+            ),
         )
         .await;
         match extraction {
@@ -268,14 +295,21 @@ impl Guardian {
                     "the guardian did not answer within {} seconds",
                     self.settings.timeout.as_secs()
                 ),
-                tally(),
+                spent.total(),
             )),
             Ok(Err(StructuredOutputError::Prompt(error))) => {
                 tracing::warn!(error = %error, "the guardian model call failed");
+                let explanation = if lacks_tool_support(&error) {
+                    format!(
+                        "the guardian model could not be used: this model does not support tool calls, so the guardian could not use the `submit` output tool: {error}"
+                    )
+                } else {
+                    format!("the guardian model could not be reached: {error}")
+                };
                 finish(Outcome::FailClosed(
                     FailClosed::Error,
-                    format!("the guardian model could not be reached: {error}"),
-                    tally(),
+                    explanation,
+                    spent.total(),
                 ))
             }
             Ok(Err(error)) => {
@@ -283,20 +317,20 @@ impl Guardian {
                 finish(Outcome::FailClosed(
                     FailClosed::Unparseable,
                     format!("the guardian's answer was not a valid verdict: {error}"),
-                    tally(),
+                    spent.total(),
                 ))
             }
-            Ok(Ok(response)) => {
+            Ok(Ok(verdict)) => {
                 if self.settings.cache {
                     self.cache
                         .lock()
                         .expect("the verdict cache lock is not poisoned")
-                        .insert(key, response.output.clone(), tokio::time::Instant::now());
+                        .insert(key, verdict.clone(), tokio::time::Instant::now());
                 }
                 finish(Outcome::Verdict {
-                    verdict: response.output,
+                    verdict,
                     cache_hit: false,
-                    usage: Box::new(tally()),
+                    usage: Box::new(spent.total()),
                 })
             }
         }
@@ -308,6 +342,7 @@ impl Guardian {
         request: &AdjudicationRequest,
         started: Instant,
         outcome: Outcome,
+        transport: Option<OutputMode>,
     ) -> Adjudication {
         let latency_ms = started.elapsed().as_millis() as u64;
         let base =
@@ -327,6 +362,7 @@ impl Guardian {
                     model: self.label.clone(),
                     profile: self.settings.profile,
                     usage,
+                    transport,
                 }
             };
         match outcome {

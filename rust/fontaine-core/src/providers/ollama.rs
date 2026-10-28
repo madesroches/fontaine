@@ -13,8 +13,11 @@ use rig_core::wire::{Descriptor, Encoded, Mode, Wire};
 use rig_core::{DynModel, Model};
 
 use super::{AccountClient, ConnectContext, CredentialPolicy, Provider};
-use crate::transport::caused_client;
+use crate::transport::{caused_client, reqwest_client};
+use fontaine_guardian::{OutputMode, OutputProbe, ProbeOutcome};
 use fontaine_tools::error_chain::chain;
+
+const DEFAULT_ENDPOINT: &str = "http://localhost:11434";
 
 pub struct Ollama;
 
@@ -39,7 +42,7 @@ impl Provider for Ollama {
     }
 
     fn default_endpoint(&self) -> Option<&'static str> {
-        Some("http://localhost:11434")
+        Some(DEFAULT_ENDPOINT)
     }
 
     fn accepts_model_options(&self) -> bool {
@@ -54,8 +57,18 @@ impl Provider for Ollama {
         if let Some(key) = ctx.api_key() {
             config = config.with_api_key(key);
         }
+        let base_url = ctx
+            .base_url()
+            .unwrap_or(DEFAULT_ENDPOINT)
+            .trim_end_matches('/')
+            .to_owned();
         Ok(Arc::new(Connected {
             client: config.connect(caused_client(ctx.network).map_err(|e| chain(&e))?),
+            show: Show {
+                http: reqwest_client(ctx.network).map_err(|e| chain(&e))?,
+                base_url,
+                api_key: ctx.api_key(),
+            },
             context_tokens: ctx.account.ollama_context_tokens(),
             think: ctx.account.think,
         }))
@@ -64,8 +77,92 @@ impl Provider for Ollama {
 
 struct Connected {
     client: Client,
+    show: Show,
     context_tokens: u32,
     think: Option<bool>,
+}
+
+/// What `/api/show` needs, which rig's client does not expose.
+#[derive(Clone)]
+struct Show {
+    http: reqwest::Client,
+    base_url: String,
+    api_key: Option<String>,
+}
+
+impl std::fmt::Debug for Show {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Show")
+            .field("base_url", &self.base_url)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Asks the daemon what a model can do, without loading it.
+#[derive(Debug)]
+struct CapabilityProbe {
+    show: Show,
+    model: String,
+}
+
+impl OutputProbe for CapabilityProbe {
+    fn probe(&self) -> BoxFuture<'_, ProbeOutcome> {
+        async move {
+            match self.capabilities().await {
+                Ok(capabilities) => outcome_for(capabilities.as_deref()),
+                Err(e) => {
+                    tracing::debug!(error = %chain(&e), "the Ollama capability probe failed");
+                    ProbeOutcome::Unreachable
+                }
+            }
+        }
+        .boxed()
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ShowReply {
+    capabilities: Option<Vec<String>>,
+}
+
+impl CapabilityProbe {
+    /// `None` when the daemon is too old to report them.
+    async fn capabilities(&self) -> Result<Option<Vec<String>>, reqwest::Error> {
+        let mut request = self
+            .show
+            .http
+            .post(format!("{}/api/show", self.show.base_url))
+            .json(&serde_json::json!({ "model": self.model }));
+        if let Some(key) = &self.show.api_key {
+            request = request.bearer_auth(key);
+        }
+        let reply: ShowReply = request
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)?
+            .error_for_status()
+            .map_err(reqwest::Error::without_url)?
+            .json()
+            .await
+            .map_err(reqwest::Error::without_url)?;
+        Ok(reply.capabilities)
+    }
+}
+
+/// A model with tool support takes the benchmarked tool path. One that can generate but has no
+/// tool template takes the schema-constrained path. A daemon that reports nothing gives no
+/// evidence to swap the path on, so it stays on the tool path and fails loudly if it must.
+fn outcome_for(capabilities: Option<&[String]>) -> ProbeOutcome {
+    let has = |name: &str| capabilities.is_some_and(|c| c.iter().any(|c| c == name));
+    match capabilities {
+        None | Some([]) => ProbeOutcome::Mode(OutputMode::Tool),
+        _ if has("tools") => ProbeOutcome::Mode(OutputMode::Tool),
+        _ if has("completion") => ProbeOutcome::Mode(OutputMode::Schema),
+        Some(listed) => ProbeOutcome::Incapable(format!(
+            "cannot generate text (capabilities: {})",
+            listed.join(", ")
+        )),
+    }
 }
 
 /// The native chat wire with every request pinned to the account's window. Ollama loads a model
@@ -148,11 +245,50 @@ impl AccountClient for Connected {
         .erase()
     }
 
+    fn output_probe(&self, model: &str) -> Option<Arc<dyn OutputProbe>> {
+        Some(Arc::new(CapabilityProbe {
+            show: self.show.clone(),
+            model: model.to_owned(),
+        }))
+    }
+
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>> {
         async move {
             let list = self.client.list_models().await.map_err(Box::new)?;
             Ok(list.data.into_iter().map(|m| m.id).collect())
         }
         .boxed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn caps(names: &[&str]) -> Option<Vec<String>> {
+        Some(names.iter().map(|n| n.to_string()).collect())
+    }
+
+    #[test]
+    fn capabilities_choose_the_transport() {
+        let outcome = |names: Option<Vec<String>>| outcome_for(names.as_deref());
+        assert_eq!(
+            outcome(caps(&["completion", "tools"])),
+            ProbeOutcome::Mode(OutputMode::Tool)
+        );
+        assert_eq!(
+            outcome(caps(&["completion", "vision"])),
+            ProbeOutcome::Mode(OutputMode::Schema)
+        );
+        assert_eq!(
+            outcome(caps(&["embedding"])),
+            ProbeOutcome::Incapable("cannot generate text (capabilities: embedding)".into())
+        );
+    }
+
+    #[test]
+    fn a_daemon_that_reports_nothing_keeps_the_tool_path() {
+        assert_eq!(outcome_for(None), ProbeOutcome::Mode(OutputMode::Tool));
+        assert_eq!(outcome_for(Some(&[])), ProbeOutcome::Mode(OutputMode::Tool));
     }
 }

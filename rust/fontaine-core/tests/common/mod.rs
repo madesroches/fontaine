@@ -120,6 +120,7 @@ pub fn audit_record(session_id: &str) -> fontaine_core::audit::DecisionRecord {
         guardian_profile: None,
         guardian_verdict: None,
         guardian_cache_hit: None,
+        verdict_transport: None,
         guardian_latency_ms: None,
         fail_closed_reason: None,
         screen_risk: None,

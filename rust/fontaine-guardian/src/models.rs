@@ -28,6 +28,18 @@ pub struct ModelEntry {
     pub scored_on: String,
     /// Which dataset the scores are for.
     pub dataset_version: String,
+    /// The verdict transport the scores were measured on. Not part of the lookup: a model has one
+    /// entry, for the transport that cleared the bar (`tool` when both did).
+    #[serde(default = "tool_transport", skip_serializing_if = "is_tool_transport")]
+    pub transport: String,
+}
+
+fn tool_transport() -> String {
+    "tool".to_string()
+}
+
+fn is_tool_transport(transport: &String) -> bool {
+    transport == "tool"
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -69,6 +81,7 @@ mod tests {
             p95_ms: p95,
             scored_on: "2026-01-01".into(),
             dataset_version: "abc".into(),
+            transport: "tool".into(),
         }
     }
 

@@ -27,6 +27,17 @@ enum ProfileArg {
     Minimal,
 }
 
+/// How a `live:` run asks the guardian model for its verdict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum TransportArg {
+    /// A forced `submit` tool call
+    Tool,
+    /// The provider's schema-constrained output, for a model with no tool support
+    Schema,
+    /// What a session would pick for the model
+    Auto,
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "fontaine-evals",
@@ -117,6 +128,12 @@ struct RunArgs {
     #[arg(long, value_enum, default_value = "full")]
     profile: ProfileArg,
 
+    /// How a `live:` guardian is asked for its verdict: `tool` (a forced `submit` call),
+    /// `schema` (schema-constrained output, no tools) or `auto` (what a session would pick for
+    /// the model) [default: auto]
+    #[arg(long, value_enum, value_name = "TRANSPORT")]
+    verdict_transport: Option<TransportArg>,
+
     /// Restrict scoring to a kind (`guardian`, `pipeline`, `scanner`) or a category glob
     #[arg(long, value_name = "KIND|CATEGORY-GLOB")]
     filter: Option<String>,
@@ -171,6 +188,10 @@ pub struct CaseResult {
     /// Why a live adjudication did not end in a verdict the model gave.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fail_closed: Option<String>,
+    /// The transport (`tool` or `schema`) the guardian was asked for this verdict on, in a live
+    /// run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
     /// What the screen stage did with the case, in a cascade run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade: Option<CascadeStep>,
@@ -229,6 +250,10 @@ pub struct Summary {
     /// The dataset the numbers are for, in a live run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dataset_version: Option<String>,
+    /// The transport the guardian cases were judged on, in a live run: `tool`, `schema` or
+    /// `mixed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict_transport: Option<String>,
     pub latency_ms: BTreeMap<String, Latency>,
     /// The screen analysis, in a `screen:` run.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -314,6 +339,15 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> u8 {
     }
 }
 
+/// The mode a `--verdict-transport` forces; `auto` and no flag leave it to the model.
+fn forced_mode(transport: Option<TransportArg>) -> Option<fontaine_guardian::OutputMode> {
+    match transport {
+        Some(TransportArg::Tool) => Some(fontaine_guardian::OutputMode::Tool),
+        Some(TransportArg::Schema) => Some(fontaine_guardian::OutputMode::Schema),
+        Some(TransportArg::Auto) | None => None,
+    }
+}
+
 fn usage(message: &str) -> u8 {
     eprintln!("fontaine-evals: {message}");
     EXIT_USAGE
@@ -353,6 +387,11 @@ fn run_score(args: &RunArgs) -> u8 {
         return usage(&format!(
             "unsupported --guardian `{guardian}`; supported modes are `fixture`, `none`, `live:<account>/<model>` and `screen:<model>`"
         ));
+    }
+    if args.verdict_transport.is_some() && live_spec.is_none() {
+        return usage(
+            "`--verdict-transport` chooses how a `live:` guardian is asked; `fixture`, `none` and `screen:` have no model to ask",
+        );
     }
     if args.resume.is_some() && live_spec.is_none() {
         return usage("`--resume` continues a `live:` run");
@@ -500,11 +539,15 @@ fn run_score(args: &RunArgs) -> u8 {
             Profile::Full => fontaine_guardian::Profile::Full,
             Profile::Minimal => fontaine_guardian::Profile::Minimal,
         };
-        let mut connected =
-            match live::connect(spec, guardian_profile, &|name| std::env::var_os(name)) {
-                Ok(connected) => connected,
-                Err(e) => return usage(&e),
-            };
+        let mut connected = match live::connect(
+            spec,
+            guardian_profile,
+            forced_mode(args.verdict_transport),
+            &|name| std::env::var_os(name),
+        ) {
+            Ok(connected) => connected,
+            Err(e) => return usage(&e),
+        };
         if let Some(c) = &cascade
             && let Err(e) = live::add_screen(
                 &mut connected,
@@ -643,6 +686,7 @@ fn run_score(args: &RunArgs) -> u8 {
     });
 
     if let Some((live, version)) = &live_run {
+        summary.verdict_transport = common_transport(&results);
         // A cascade's rates are not the guardian model's, so they never enter the models file.
         if cascade_screen.is_none()
             && let Err(e) = update_models(args, live, profile, &summary, version)
@@ -895,9 +939,22 @@ fn unscored(case: &Case, error: String) -> Scored {
         explanation: Some(error),
         escape_class: None,
         fail_closed: Some("runner_error".to_string()),
+        transport: None,
         cascade: None,
         screen: None,
     }))
+}
+
+/// The one transport every guardian verdict of a run travelled on, `mixed` if they differ, and
+/// `None` when no verdict was asked for.
+fn common_transport(results: &[CaseResult]) -> Option<String> {
+    let mut seen = results.iter().filter_map(|r| r.transport.as_deref());
+    let first = seen.next()?;
+    Some(if seen.all(|t| t == first) {
+        first.to_string()
+    } else {
+        "mixed".to_string()
+    })
 }
 
 fn progress(r: &CaseResult) -> String {
@@ -937,7 +994,15 @@ fn update_models(
         by_class: summary.catch_by_class.clone(),
     };
     let today = report::today();
+    let transport = summary.verdict_transport.as_deref().unwrap_or("tool");
+    if transport == "mixed" {
+        eprintln!(
+            "fontaine-evals: the guardian cases were judged on more than one transport; the models file is left as it was"
+        );
+        return Ok(());
+    }
     let card = Scorecard {
+        transport,
         kind: live.kind,
         model: &live.model,
         rates: &rates,
@@ -987,6 +1052,7 @@ fn score_pipeline(case: &Case, decision: String, tier: String, latency_ms: u64) 
         explanation: None,
         escape_class: None,
         fail_closed: None,
+        transport: None,
         cascade: None,
         screen: None,
     }
@@ -1139,6 +1205,7 @@ fn score_fixture(case: &Case) -> CaseResult {
         explanation: None,
         escape_class: None,
         fail_closed: None,
+        transport: None,
         cascade: None,
         screen: None,
     }
@@ -1226,6 +1293,7 @@ fn summarize(params: SummaryParams<'_>) -> Summary {
         catch_by_class: rates.by_class,
         escape_classes: report::escape_classes(selected, results),
         dataset_version: None,
+        verdict_transport: None,
         screen: None,
         latency_ms: BTreeMap::from([(
             guardian.to_string(),

@@ -86,22 +86,25 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    guardian's explanation (and is a denial in a headless run). Three denials in a row, or twenty
    in a session, pause `auto` and prompting resumes until you approve a call.
 
-Every decision is appended to the audit log (`<data dir>/audit/<session id>.jsonl`, readable by
-the current user only) before anything else sees it: the time, session, agent and tool-call ids,
-the tool, a SHA-256 digest of the arguments (never the arguments), the `tier` that decided, the
-`decision` (`allow`, `deny` or `prompt`), the rule and its source, and the latency. A human's
-answer to a prompt adds a second record with `tier = human`. The same record is projected to the
-`tool_decision` telemetry event and to the headless `gate_decision` event, so the three agree.
-The `tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
-`read_only_fast_path`, `tier05`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`, `plan_block` and
-`human`. A guardian decision also records the guardian model and profile, its verdict, confidence,
-whether the verdict came from the cache, how long the guardian took, and, when it failed closed,
-the reason (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`). With a
-[screen stage](guardian.md#the-screen-stage) configured, the record also carries `screen_risk`,
+Every decision is appended to the audit log (`<data dir>/audit/<session id>.jsonl`, readable by the
+current user only) before anything else sees it: the time, session, agent and tool-call ids, the
+tool, a SHA-256 digest of the arguments (never the arguments), the `tier` that decided, the
+`decision` (`allow`, `deny` or `prompt`), the rule and its source, and the latency. A human's answer
+to a prompt adds a second record with `tier = human`. The same record is projected to the
+`tool_decision` telemetry event and to the headless `gate_decision` event, so the three agree. The
+`tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
+`read_only_fast_path`, `tier05`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`,
+`plan_block` and `human`. A guardian decision also records the guardian model and profile, its
+verdict, confidence, whether the verdict came from the cache, how long the guardian took, the
+`verdict_transport` it was asked on (`tool`, a forced `submit` call, or `schema`, for an Ollama
+model with no tool support; see [Models with no tool
+support](guardian.md#models-with-no-tool-support)) and, when it failed closed, the reason (`error`,
+`timeout`, `unparseable`, `low_confidence` or `unavailable`). With a [screen
+stage](guardian.md#the-screen-stage) configured, the record also carries `screen_risk`,
 `screen_allow_risk`, `screen_steering`, `screen_model`, `screen_latency_ms` and `screen_outcome`,
-and a call the screen stopped or, with an `allow_threshold`, allowed has `tier = screen`
-(`decision = prompt` or `deny` for a stop, `allow` for an allow). When an enforcing screen settles
-a call while the guardian request that raced it is still pending, the record also carries
+and a call the screen stopped or, with an `allow_threshold`, allowed has `tier = screen` (`decision
+= prompt` or `deny` for a stop, `allow` for an allow). When an enforcing screen settles a call while
+the guardian request that raced it is still pending, the record also carries
 `guardian_dropped_input_tokens`, an estimate of that request's input, with
 `guardian_dropped_provider`, `guardian_dropped_model` and `guardian_dropped_priced`. They are
 projected onto `tool_decision` as `guardian.dropped_input_tokens`, `guardian.dropped_provider`,

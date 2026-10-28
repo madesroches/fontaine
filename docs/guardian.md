@@ -17,9 +17,12 @@ The guardian is itself an attack surface: the arguments of the call it judges, t
 read and the instructions in a repository are all text an attacker may have written. So:
 
 - **It has no tools.** One stateless request per adjudication, with no conversation that grows and
-  nothing to call. Its only output is a structured verdict, extracted through the model library's
-  typed-extraction path (a required `submit` function), which works on any tool-capable model,
-  Ollama included.
+  nothing to call. Its only output is a structured verdict, which reaches Fontaine on one of two
+  paths. The default asks for it through a required `submit` function, which needs a model with
+  tool support. For an Ollama model that has no tool support, the request instead carries the
+  verdict's JSON schema as the daemon's `format`, which constrains the answer and needs no tool
+  template. Either way the answer is parsed and validated the same way, and anything that does not
+  parse is a denial.
 - **Everything it is shown is data.** The request is rendered into delimited `<untrusted>` blocks;
   text that would close a block is neutralized, and anything credential-shaped is redacted before
   it is rendered. The system prompt says that nothing inside those blocks is an instruction.
@@ -274,11 +277,44 @@ model = "work/claude-haiku-5-5"
   to switch to `manual`. In a headless run every adjudication is denied with `GuardianUnavailable`,
   and the `init` event and stderr say so.
 - For endpoints with no catalog match (a custom `openai-compatible` endpoint, Ollama, an
-  `opencode-go` account), only a model set explicitly in `guardian.model` is used. A small local
+  `opencode-go` account), only a model set explicitly in `guardian.model` is used, except for the
+  validated list's own `opencode-go` entry (`claude-haiku-5-5`), which an `opencode-go` account
+  that serves it picks up as its default guardian. A small local
   model can be both the agent and the guardian; judge it by its own scorecard run. The guardian
   prompt is longer than Ollama's default 4096-token window, so an `ollama` account requests
   `context_tokens` (16384 by default) and the daemon refuses a prompt that still does not fit; the
   guardian then denies the call.
+
+### Models with no tool support
+
+A model served by Ollama that reports no `tools` capability (`gemma3:4b`, for example) cannot take
+a forced `submit` call: the daemon answers `400 ... does not support tools`. Fontaine asks the
+daemon what the model can do (`/api/show`, which does not load it) and picks the path from the
+answer:
+
+- a model that reports `tools` uses the `submit` path, the one every scorecard entry was measured
+  on;
+- a model that reports `completion` but not `tools` uses the schema-constrained path, and Fontaine
+  says so once, when the guardian is set up (at startup, and after `/guardian-model`). The
+  scanner on that model takes the same path;
+- a model that cannot generate text at all (an embedding model) makes the guardian unavailable
+  with `ollama/<model> cannot generate text (capabilities: embedding)`, and every gated call is
+  denied until you pick another guardian;
+- a daemon too old to report capabilities (no `capabilities` list) is treated as a `submit` model
+  for the guardian's life. A question that goes unanswered (unreachable daemon, HTTP error or
+  timeout) is treated as a `submit` model for that call only, so a failure stays as loud as it is
+  today, and is asked again on the next call.
+
+There is no setting for this: the path follows what the model reports. If a daemon claims tool
+support the model lacks, the call is denied and the explanation says that the model does not
+support tool calls and so could not use the `submit` output tool; pick another model.
+
+The schema-constrained path is not benchmarked unless a model is listed for it. The constraint
+fixes the shape of the answer, not its quality, and a small model may reason less before it fills
+the schema. The audit log records which path judged each call as `verdict_transport` (`tool` or
+`schema`), and `fontaine-evals --verdict-transport` scores a model on either; see
+[the scorecard](evals.md#verdict-transport). Until a model's own schema run clears the inclusion
+bar, it works only when you set it in `[guardian] model`.
 
 ## The minimal profile
 

@@ -2,4 +2,11 @@
 # (`fontaine-evals --guardian live:<account>/<model>`); entries clear the inclusion bar on the
 # dataset named by `dataset_version`. Empty until a scorecard run fills it, in which case the
 # guardian falls back to the main model.
-models = []
+[[models]]
+kind = "opencode-go"
+model = "claude-haiku-5-5"
+catch_rate = 0.9918032786885246
+false_deny_rate = 0.0392156862745098
+p95_ms = 2378
+scored_on = "2026-10-27"
+dataset_version = "d1740a7c65ae"

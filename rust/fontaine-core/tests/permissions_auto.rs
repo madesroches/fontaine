@@ -280,6 +280,7 @@ async fn a_guardian_denial_comes_back_with_its_label_and_explanation() {
     assert_eq!(record.guardian_profile.as_deref(), Some("full"));
     assert_eq!(record.guardian_verdict.as_deref(), Some("deny"));
     assert_eq!(record.guardian_cache_hit, Some(false));
+    assert_eq!(record.verdict_transport.as_deref(), Some("tool"));
     assert!(record.guardian_latency_ms.is_some());
     assert_eq!(record.confidence, Some(0.97));
     assert_eq!(record.fail_closed_reason, None);

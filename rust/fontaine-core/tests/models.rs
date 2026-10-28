@@ -330,6 +330,7 @@ fn entry(kind: &str, model: &str, catch: f64) -> ModelEntry {
         p95_ms: 900,
         scored_on: "2026-01-01".into(),
         dataset_version: "abc".into(),
+        transport: "tool".into(),
     }
 }
 

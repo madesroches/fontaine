@@ -7,7 +7,8 @@ use fontaine_agents::mode::ModeSetting;
 use fontaine_agents::registry::{AgentType, AgentTypes, ModelSpec, TypeOrigin};
 use fontaine_agents::tree::{AgentTree, Limits};
 use fontaine_guardian::{
-    AllowSettings, Guardian, Profile, Screen, ScreenSettings, Settings as GuardianSettings,
+    AllowSettings, Guardian, ModeNotice, Profile, Screen, ScreenSettings,
+    Settings as GuardianSettings,
 };
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::result_pipeline::{ResultPipeline, StageKind};
@@ -36,6 +37,17 @@ pub fn build_guardian(
     config: &Config,
     profile: Profile,
 ) -> Guardian {
+    build_guardian_telling(model, config, profile, None)
+}
+
+/// [`build_guardian`] whose first resolution of the model's output transport is reported
+/// through `approver`.
+pub fn build_guardian_telling(
+    model: Option<&GuardianModel>,
+    config: &Config,
+    profile: Profile,
+    approver: Option<&Arc<dyn Approver>>,
+) -> Guardian {
     let settings = GuardianSettings {
         timeout: std::time::Duration::from_secs(config.guardian.timeout_secs),
         confidence_threshold: config.guardian.confidence_threshold,
@@ -47,12 +59,18 @@ pub fn build_guardian(
         },
     };
     match model {
-        Some(GuardianModel::Ready(handle)) => Guardian::new(
-            handle.completion.clone(),
-            handle.reference.to_string(),
-            settings,
-        )
-        .with_additional_params(handle.thinking_off.clone()),
+        Some(GuardianModel::Ready(handle)) => {
+            let label = handle.reference.to_string();
+            let mut guardian = Guardian::new(handle.completion.clone(), label.clone(), settings)
+                .with_additional_params(handle.thinking_off.clone());
+            if let Some(probe) = &handle.output_probe {
+                guardian = guardian.with_output_probe(probe.clone());
+            }
+            match approver {
+                Some(approver) => guardian.with_notifier(mode_notifier(approver.clone(), label)),
+                None => guardian,
+            }
+        }
         Some(GuardianModel::Unavailable { reference, reason }) => {
             Guardian::unavailable(reference.to_string(), reason, settings)
         }
@@ -67,6 +85,31 @@ pub fn build_guardian(
                 settings,
             )
         }
+    }
+}
+
+fn mode_notifier(approver: Arc<dyn Approver>, label: String) -> fontaine_guardian::Notifier {
+    Arc::new(move |notice| {
+        match notice {
+            ModeNotice::Schema => approver.notice(&format!(
+                "guardian model {label} has no tool support, so its verdicts use the schema-constrained output path"
+            )),
+            ModeNotice::Incapable(reason) => approver.warn(&format!(
+                "guardian model {label} {reason}: every guardian-gated call is denied until the guardian model is changed"
+            )),
+        }
+    })
+}
+
+/// Resolves the guardian's output transport in the background so a notice reaches the user at
+/// startup. A call never waits on this: it resolves the transport itself when it needs it.
+pub(crate) fn warm_output_mode(guardian: &Arc<Guardian>) {
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        let guardian = guardian.clone();
+        runtime.spawn(async move {
+            // The outcome is reported through the notifier and re-derived per call.
+            let _ = guardian.resolve_mode().await;
+        });
     }
 }
 
@@ -214,11 +257,16 @@ pub(super) fn session_state(setup: &AgentSetup, tree: &Arc<AgentTree>) -> Arc<Se
             .collect(),
         scratch: setup.scratch.clone(),
         memory_root: setup.memory_root.clone(),
-        guardian: Arc::new(build_guardian(
-            setup.models.guardian.as_ref(),
-            &setup.config,
-            setup.guardian_profile,
-        )),
+        guardian: {
+            let guardian = Arc::new(build_guardian_telling(
+                setup.models.guardian.as_ref(),
+                &setup.config,
+                setup.guardian_profile,
+                Some(&setup.approver),
+            ));
+            warm_output_mode(&guardian);
+            guardian
+        },
         auto: AutoContext {
             environment,
             rules,

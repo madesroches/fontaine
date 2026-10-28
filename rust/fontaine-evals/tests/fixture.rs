@@ -560,3 +560,29 @@ fn workspace_paths_escaping_the_root_are_rejected_on_any_platform() {
         assert!(load_dataset(dir.path()).is_err(), "cwd {path}");
     }
 }
+
+#[test]
+fn verdict_transport_is_rejected_for_every_mode_without_a_model_to_ask() {
+    for guardian in ["fixture", "none", "screen:laya"] {
+        let out = run(&[
+            "--dataset",
+            seed_dir().to_str().unwrap(),
+            "--guardian",
+            guardian,
+            "--verdict-transport",
+            "schema",
+        ]);
+        assert_eq!(code(&out), 2, "{guardian}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("--verdict-transport"),
+            "{guardian}: {}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
+fn an_unknown_verdict_transport_is_a_usage_error() {
+    let out = run_fixture(&seed_dir(), &["--verdict-transport", "carrier-pigeon"]);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+}
