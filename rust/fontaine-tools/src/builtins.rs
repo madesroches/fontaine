@@ -1,14 +1,15 @@
 //! The built-in tool set, each tool wrapped in the gate. File tools and `shell` are rig's own,
 //! configured rather than forked: one confined instance per workspace root.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rig_core::completion::ToolAnnotations;
-use rig_core::tool::{DynamicTool, Tool, ToolContext, ToolExecutionError, args_schema};
+use rig_core::tool::{DynamicTool, ExitStatus, Tool, ToolContext, ToolExecutionError, args_schema};
 pub use rig_tools::Seen;
-use rig_tools::process::Launcher;
+use rig_tools::process::{Launcher, Process, Spawn};
 use rig_tools::{
     Edit, List, ListArgs, MAX_FILES, MAX_MATCHES, OutputLimit, Read, Search, SearchArgs, Shell,
     ShellArgs, ShellRun, Write,
@@ -16,8 +17,14 @@ use rig_tools::{
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::error_chain::chain;
+use crate::gate::{AgentId, ROOT_AGENT};
 use crate::git_bash::{GitBash, sh_command};
 use crate::guarded::{Guard, GuardedTool};
+use crate::jobs::tools::{JobCancelTool, JobOutputTool, MonitorTool, job_error};
+use crate::jobs::{
+    End, JobError, Jobs, Kill, MAX_RUNNING, NoPromote, OUTPUT_CAP, QUIET_LIMIT, Start, cut,
+};
 use crate::notebook::{NOTEBOOK_STEER, NotebookEdit, NotebookRead};
 use crate::risk::{RiskClass, ToolSource, registered_risk};
 use crate::scope::{Scope, glob_target};
@@ -236,12 +243,47 @@ impl Tool for Grep {
     }
 }
 
+/// The seconds a call waits before its command moves to the background or is stopped.
+const DEFAULT_TIMEOUT: u64 = 120;
+
+/// How long a call may print nothing: only a call with the default timeout has a limit, since
+/// one that names its timeout may be quiet as long as that.
+fn quiet_for(timeout_secs: Option<u64>, timeout: Duration) -> Option<Duration> {
+    match timeout_secs {
+        None => Some(QUIET_LIMIT).filter(|quiet| *quiet < timeout),
+        Some(_) => None,
+    }
+}
+
+/// The arguments of `shell`: rig's, and whether the command starts in the background.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellCall {
+    pub command: String,
+    pub timeout_secs: Option<u64>,
+    pub cwd: Option<String>,
+    pub run_in_background: Option<bool>,
+}
+
+impl ShellCall {
+    fn shell_args(&self) -> ShellArgs {
+        ShellArgs {
+            command: self.command.clone(),
+            timeout_secs: self.timeout_secs,
+            cwd: self.cwd.clone(),
+        }
+    }
+}
+
 /// rig's `shell`, with the command kept off the Windows command line when it runs through
-/// Git Bash.
+/// Git Bash. For the main agent a call is a job: one that outlives its timeout moves to the
+/// background instead of being stopped.
 #[derive(Clone, Debug)]
 pub struct ShellTool {
     pub shell: Shell,
     pub through_env: bool,
+    /// Where the main agent's calls run as jobs; without it `shell` is rig's, unchanged.
+    pub jobs: Option<Arc<Jobs>>,
 }
 
 impl ShellTool {
@@ -266,20 +308,187 @@ impl ShellTool {
         let (shell, args) = self.prepared(args);
         shell.run(args).await
     }
+
+    /// Starts the command `args` names in the workspace, as rig's `shell` does, its stdout and
+    /// stderr in pipes of their own.
+    pub(crate) fn launch(&self, args: ShellArgs) -> Result<Process, ToolExecutionError> {
+        let (shell, args) = self.prepared(args);
+        let base = shell.launcher.cwd.as_deref();
+        let dir = match &args.cwd {
+            Some(dir) => {
+                if shell.confine {
+                    shell.workspace.place(base, true, dir)?;
+                }
+                Some(
+                    shell
+                        .workspace
+                        .join(base.unwrap_or(Path::new("")), Path::new(dir)),
+                )
+            }
+            None => base.map(Path::to_path_buf),
+        };
+        let how = Spawn {
+            stdin: None,
+            merge_stderr: false,
+        };
+        let line = [OsString::from("-c"), OsString::from(&args.command)];
+        shell
+            .workspace
+            .spawn(
+                &shell.launcher,
+                dir.as_deref(),
+                OsStr::new("sh"),
+                &line,
+                how,
+            )
+            .map_err(|source| ToolExecutionError::other(chain(&JobError::Spawn { source })))
+    }
+
+    async fn call_job(
+        &self,
+        context: &mut ToolContext,
+        jobs: &Jobs,
+        call: ShellCall,
+    ) -> Result<String, ToolExecutionError> {
+        let max = self.shell.max_timeout.max(1);
+        let timeout = Duration::from_secs(
+            call.timeout_secs
+                .unwrap_or(DEFAULT_TIMEOUT.min(self.shell.max_timeout))
+                .clamp(1, max),
+        );
+        let quiet = quiet_for(call.timeout_secs, timeout);
+        let background = call.run_in_background.unwrap_or(false);
+        if background && !jobs.has_room() {
+            return Err(job_error(&JobError::TooMany));
+        }
+        let no_promote = context
+            .get::<NoPromote>()
+            .ok()
+            .flatten()
+            .is_some_and(|flag| flag.0);
+        let process = self.launch(call.shell_args())?;
+        let id = jobs
+            .start(
+                Start {
+                    command: call.command,
+                    background,
+                    monitor: None,
+                },
+                process,
+            )
+            .map_err(|e| job_error(&e))?;
+        if background {
+            return Ok(format!(
+                "[started in the background as {id}. You are told when it ends; use job_output                  to read its output, job_cancel to stop it.]"
+            ));
+        }
+        let ran = jobs.foreground(&id, timeout, quiet, !no_promote).await;
+        let limit = self.shell.cut.unwrap_or_default();
+        let (mut text, fact) = cut::cut(&ran.chunk.lines, ran.chunk.missed, limit);
+        let silent = ran.chunk.lines.is_empty();
+        let status = match &ran.end {
+            None => {
+                text.push_str(&format!(
+                    "[still running after {}s; moved to background job {id}. Its output so far \
+                     is above. Use job_output to read more or wait for it, job_cancel to stop \
+                     it. You are told when it ends.]",
+                    timeout.as_secs()
+                ));
+                None
+            }
+            Some(info) => {
+                let stopped = cut::stopped(info.forced, info.remote.as_deref());
+                let (line, status) = match info.end {
+                    End::Exited(status) => cut::exit_line(status),
+                    End::Killed(Kill::Timeout) => {
+                        cut::timed_out_line(timeout.as_secs(), max, &stopped, silent)
+                    }
+                    End::Killed(Kill::Quiet) => {
+                        cut::quiet_line(quiet.unwrap_or_default().as_secs(), &stopped, silent)
+                    }
+                    End::Killed(Kill::Cap) => (
+                        format!(
+                            "[stopped: {MAX_RUNNING} jobs are already running, so it could not \
+                             move to the background; {stopped}. Stop one with job_cancel and \
+                             run it again]"
+                        ),
+                        ExitStatus::Killed,
+                    ),
+                    End::Runaway => cut::runaway_line(OUTPUT_CAP / 1024 / 1024, &stopped),
+                    End::Killed(_) => (
+                        format!("[terminated before it ended: {stopped}]"),
+                        ExitStatus::Killed,
+                    ),
+                    End::Lost => {
+                        return Err(ToolExecutionError::other("waiting for the command failed"));
+                    }
+                };
+                text.push_str(&line);
+                Some(status)
+            }
+        };
+        if let Some(status) = status {
+            context.insert_result(status)?;
+        }
+        if let Some(fact) = fact {
+            context.insert_result(fact)?;
+        }
+        Ok(text)
+    }
 }
 
 impl Tool for ShellTool {
     const NAME: &'static str = Shell::NAME;
-    type Args = ShellArgs;
+    type Args = ShellCall;
     type Output = String;
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        self.shell.description()
+        let max = self.shell.max_timeout.max(1);
+        let kept = match self.shell.cut {
+            Some(cut) => format!(
+                "; past {} lines or {} KB, its first and last lines and the lines with errors \
+                 or failures from between",
+                cut.lines,
+                cut.bytes / 1024
+            ),
+            None => String::new(),
+        };
+        format!(
+            "Run a shell command with `sh -c` in the current directory, or in cwd. stdin is \
+             empty. Returns the exit code and stdout and stderr interleaved line by line{kept}. \
+             A command still running at timeout_secs (default {}, at most {max}), or, with the \
+             default, once it printed nothing for {}s, keeps running as a background job and \
+             you are told when it ends; pass run_in_background for a server or a long build you \
+             do not need to wait for, and keep its process in the foreground of the command \
+             (`npm start`, not `npm start &`). Do not poll with `sleep`: use job_output with \
+             wait_secs. A command that prints more than {} MB is killed. Use it to build, test, \
+             run programs and use git. Each call starts a fresh `sh`: a `cd` or a variable does \
+             not carry over to the next call. Do not start programs that wait for input, such \
+             as editors or pagers. Do not assume a git repository: a failed `git` command ends \
+             a `&&` chain. Check formatting only of files you changed.",
+            DEFAULT_TIMEOUT.min(self.shell.max_timeout).max(1),
+            QUIET_LIMIT.as_secs(),
+            OUTPUT_CAP / 1024 / 1024,
+        )
     }
 
     fn parameters(&self) -> serde_json::Value {
-        self.shell.parameters()
+        let mut schema = self.shell.parameters();
+        if let Some(properties) = schema
+            .get_mut("properties")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            properties.insert(
+                "run_in_background".to_owned(),
+                json!({
+                    "type": ["boolean", "null"],
+                    "description": "Start the command as a background job and return at once; \
+                                    you are told when it ends.",
+                }),
+            );
+        }
+        schema
     }
 
     fn annotations(&self) -> ToolAnnotations {
@@ -289,10 +498,26 @@ impl Tool for ShellTool {
     async fn call(
         &self,
         context: &mut ToolContext,
-        args: ShellArgs,
+        args: ShellCall,
     ) -> Result<String, ToolExecutionError> {
-        let (shell, args) = self.prepared(args);
-        shell.call(context, args).await
+        let agent = context
+            .get::<AgentId>()
+            .ok()
+            .flatten()
+            .map_or_else(|| ROOT_AGENT.to_string(), |id| id.0);
+        match (&self.jobs, agent == ROOT_AGENT) {
+            (Some(jobs), true) => {
+                let jobs = jobs.clone();
+                self.call_job(context, &jobs, args).await
+            }
+            _ => {
+                if args.run_in_background == Some(true) {
+                    return Err(job_error(&JobError::NotRoot));
+                }
+                let (shell, shell_args) = self.prepared(args.shell_args());
+                shell.call(context, shell_args).await
+            }
+        }
     }
 }
 
@@ -392,6 +617,7 @@ pub fn shell_for(root: &Path, settings: &ShellSettings) -> ShellTool {
             ..Shell::default()
         },
         through_env: settings.git_bash.is_some(),
+        jobs: None,
     }
 }
 
@@ -409,6 +635,9 @@ pub struct BuiltinEnv {
     /// rebuilt keeps the instance running.
     pub searxng: Arc<SearxngChild>,
     pub network: Arc<LoadedNetwork>,
+    /// The session's jobs. Passing the same one again when the registry is rebuilt keeps the
+    /// running ones.
+    pub jobs: Arc<Jobs>,
 }
 
 pub struct Registered {
@@ -498,7 +727,36 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             scope.clone(),
             risk_of(ShellTool::NAME),
             guard.clone(),
-            |root| shell_for(root, &env.shell),
+            |root| ShellTool {
+                jobs: Some(env.jobs.clone()),
+                ..shell_for(root, &env.shell)
+            },
+        )),
+        register(GuardedTool::single(
+            JobOutputTool {
+                jobs: env.jobs.clone(),
+                limit: OutputLimit::default(),
+            },
+            risk_of(JobOutputTool::NAME),
+            guard.clone(),
+        )),
+        register(GuardedTool::single(
+            JobCancelTool {
+                jobs: env.jobs.clone(),
+                limit: OutputLimit::default(),
+            },
+            risk_of(JobCancelTool::NAME),
+            guard.clone(),
+        )),
+        register(GuardedTool::single(
+            MonitorTool {
+                shell: ShellTool {
+                    jobs: Some(env.jobs.clone()),
+                    ..shell_for(scope.primary(), &env.shell)
+                },
+            },
+            risk_of(MonitorTool::NAME),
+            guard.clone(),
         )),
         register(GuardedTool::single(
             Webfetch::new(env.webfetch.clone(), &env.network).map_err(|source| BuildError {
@@ -541,5 +799,26 @@ impl std::fmt::Display for BuildError {
 impl std::error::Error for BuildError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.source)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_default_timeout_has_a_quiet_limit() {
+        let two_minutes = Duration::from_secs(120);
+        assert_eq!(quiet_for(None, two_minutes), Some(QUIET_LIMIT));
+        assert_eq!(quiet_for(Some(120), two_minutes), None);
+        assert_eq!(quiet_for(None, Duration::from_secs(30)), None);
+    }
+
+    #[test]
+    fn the_model_cannot_pass_an_argument_the_tool_does_not_define() {
+        let parsed: Result<ShellCall, _> = serde_json::from_value(
+            json!({"command": "ls", "run_in_background": true, "max_timeout": 0}),
+        );
+        assert!(parsed.is_err());
     }
 }

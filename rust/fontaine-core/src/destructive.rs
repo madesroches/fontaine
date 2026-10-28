@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use fontaine_tools::descriptor::{Destructive, find};
+use fontaine_tools::descriptor::{Destructive, find, is_shell_class};
 use fontaine_tools::names::is_mcp;
 use fontaine_tools::preclassify::{SimpleCommand, analyze, program_name};
 use fontaine_tools::scope::Scope;
@@ -62,7 +62,7 @@ pub fn derive(tool: &str, args: &Value, facts: &Facts<'_>) -> bool {
     match find(tool).map(|d| d.destructive) {
         Some(Destructive::Never) => false,
         Some(Destructive::FileWrite) => file_write(args, facts),
-        Some(Destructive::Shell) => shell(args, facts),
+        Some(Destructive::Shell) => shell(tool, args, facts),
         // A tool that runs at all can do anything: a spawned agent, a message, the network.
         Some(Destructive::Always) | None => true,
     }
@@ -82,11 +82,11 @@ fn file_write(args: &Value, facts: &Facts<'_>) -> bool {
     }
 }
 
-fn shell(args: &Value, facts: &Facts<'_>) -> bool {
+fn shell(tool: &str, args: &Value, facts: &Facts<'_>) -> bool {
     let Some(command) = args.get("command").and_then(Value::as_str) else {
         return true;
     };
-    if facts.scope.locate("shell", args).is_err() {
+    if facts.scope.locate(tool, args).is_err() {
         return true;
     }
     let analysis = analyze(command);
@@ -293,7 +293,7 @@ pub fn touched_paths(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
                 fontaine_tools::scope::glob_target(text("path"), text("pattern").unwrap_or(""));
             out.push(resolve(&base));
         }
-        "shell" => {
+        tool if is_shell_class(tool) => {
             let Some(command) = text("command") else {
                 return out;
             };

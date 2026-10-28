@@ -232,6 +232,53 @@ async fn a_subagent_report_is_flagged_before_the_parent_reads_it() {
 }
 
 #[tokio::test]
+async fn a_job_note_is_screened_like_a_tool_result_and_carries_the_job_header() {
+    use fontaine_agents::tree::NotificationKind;
+
+    let world = World::new();
+    let fake = Fake::new(flagged());
+    let start = ScannerStart {
+        backend: Some(Backend::Ready(fake.clone())),
+        notices: Vec::new(),
+    };
+    let built = build_with_scanner(&world, Manual, Vec::new(), false, start);
+    built.runtime.state.agents().post_to_root(
+        "job-3f2a",
+        NotificationKind::Job,
+        format!("[Background job job-3f2a ended (exit code 0) after 4s.]\n{REPORT}"),
+    );
+    let prompt = built.runtime.notification_prompt().await.unwrap();
+    assert!(
+        prompt.contains("agents or background jobs you started have news"),
+        "{prompt}"
+    );
+    assert!(prompt.contains(REPORT), "{prompt}");
+    assert!(
+        prompt.contains("flagged as possible prompt injection"),
+        "the job output went through the scanner: {prompt}"
+    );
+    let seen = fake.seen.lock().unwrap();
+    assert_eq!(seen[0].0, "job_output");
+    assert!(seen[0].1.contains(REPORT));
+}
+
+#[tokio::test]
+async fn clear_ends_running_jobs_and_drops_their_notes_without_being_refused() {
+    use fontaine_agents::tree::NotificationKind;
+
+    let world = World::new();
+    let built = build(&world, Manual, Vec::new(), false);
+    built.runtime.state.agents().post_to_root(
+        "job-3f2a",
+        NotificationKind::Job,
+        "[Background job job-3f2a ended]".to_string(),
+    );
+    built.runtime.clear_conversation().await.unwrap();
+    assert!(!built.runtime.state.agents().has_notifications(ROOT_AGENT));
+    assert!(built.runtime.jobs().snapshot().is_empty());
+}
+
+#[tokio::test]
 async fn with_the_scanner_off_a_report_is_delivered_as_it_was() {
     let world = World::new();
     let built = build(&world, Manual, Vec::new(), false);

@@ -323,6 +323,7 @@ fn skills(w_setup: impl FnOnce(&World)) -> Skills {
         hide_mcp_names: false,
         websearch: None,
         searxng: Default::default(),
+        jobs: Default::default(),
         network: Default::default(),
         extension: None,
         pre_images: None,

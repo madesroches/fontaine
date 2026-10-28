@@ -3,7 +3,10 @@
 //! A background agent that needs an approval is listed here, so it never hides behind the main
 //! conversation's transcript.
 
+use std::time::Duration;
+
 use fontaine_agents::runner::ChildStatus;
+use fontaine_tools::jobs::format_age;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -27,6 +30,17 @@ pub struct PanelRow {
     pub stopped_because: Option<String>,
 }
 
+/// One background job or monitor of the main agent, as the driver reads it from the registry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobRow {
+    pub id: String,
+    pub command: String,
+    pub monitor: bool,
+    pub age: Duration,
+    pub running: bool,
+    pub state: String,
+}
+
 /// What the panel shows for the row that is open.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Detail {
@@ -44,11 +58,14 @@ pub enum PanelKey {
     None,
     Close,
     Kill(String),
+    KillJob(String),
 }
 
 #[derive(Default)]
 pub struct AgentsPanel {
     rows: Vec<PanelRow>,
+    /// The background jobs, listed below the agents; the selection runs through both.
+    jobs: Vec<JobRow>,
     selected: usize,
     open: bool,
     pub detail: Option<Detail>,
@@ -90,17 +107,50 @@ impl AgentsPanel {
 
     /// Replaces the rows, keeping the selection on the same agent.
     pub fn set_rows(&mut self, rows: Vec<PanelRow>) {
-        let id = self.selected_id();
+        let id = self.selected_entry_id();
         self.rows = rows;
-        self.selected = id
-            .and_then(|id| self.rows.iter().position(|r| r.id == id))
-            .unwrap_or_else(|| self.selected.min(self.rows.len().saturating_sub(1)));
+        self.reselect(id);
+    }
+
+    /// Replaces the job rows, keeping the selection on the same entry.
+    pub fn set_jobs(&mut self, jobs: Vec<JobRow>) {
+        let id = self.selected_entry_id();
+        self.jobs = jobs;
+        self.reselect(id);
+    }
+
+    fn reselect(&mut self, id: Option<String>) {
+        let at = id.and_then(|id| {
+            self.rows.iter().position(|r| r.id == id).or_else(|| {
+                self.jobs
+                    .iter()
+                    .position(|j| j.id == id)
+                    .map(|at| at + self.rows.len())
+            })
+        });
+        self.selected = at.unwrap_or_else(|| self.selected.min(self.len().saturating_sub(1)));
+    }
+
+    fn len(&self) -> usize {
+        self.rows.len() + self.jobs.len()
+    }
+
+    fn selected_entry_id(&self) -> Option<String> {
+        match self.selected.checked_sub(self.rows.len()) {
+            None => self.rows.get(self.selected).map(|r| r.id.clone()),
+            Some(job) => self.jobs.get(job).map(|j| j.id.clone()),
+        }
+    }
+
+    pub fn jobs(&self) -> &[JobRow] {
+        &self.jobs
     }
 
     pub fn rows(&self) -> &[PanelRow] {
         &self.rows
     }
 
+    /// The selected agent; none when a job is selected.
     pub fn selected_id(&self) -> Option<String> {
         self.rows.get(self.selected).map(|r| r.id.clone())
     }
@@ -114,7 +164,7 @@ impl AgentsPanel {
         if key.kind == KeyEventKind::Release {
             return PanelKey::None;
         }
-        let n = self.rows.len();
+        let n = self.len();
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') if self.open => {
                 self.open = false;
@@ -127,13 +177,24 @@ impl AgentsPanel {
             KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab if n > 0 && !self.open => {
                 self.selected = (self.selected + 1) % n;
             }
-            KeyCode::Enter | KeyCode::Char('i') if n > 0 => self.open = true,
+            KeyCode::Enter | KeyCode::Char('i') if self.selected < self.rows.len() => {
+                self.open = true;
+            }
             KeyCode::Char('x') | KeyCode::Char('K')
                 if n > 0 && !key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
-                let row = &self.rows[self.selected];
-                if row.status.is_running() {
-                    return PanelKey::Kill(row.id.clone());
+                match self.selected.checked_sub(self.rows.len()) {
+                    None => {
+                        let row = &self.rows[self.selected];
+                        if row.status.is_running() {
+                            return PanelKey::Kill(row.id.clone());
+                        }
+                    }
+                    Some(job) => {
+                        if let Some(row) = self.jobs.get(job).filter(|row| row.running) {
+                            return PanelKey::KillJob(row.id.clone());
+                        }
+                    }
                 }
             }
             _ => {}
@@ -144,15 +205,21 @@ impl AgentsPanel {
     pub fn body(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let dim = Style::default().add_modifier(Modifier::DIM);
-        if self.rows.is_empty() {
-            return vec![Line::styled("No subagents have been started.", dim)];
+        if self.len() == 0 {
+            return vec![Line::styled(
+                "No subagents or background jobs have been started.",
+                dim,
+            )];
         }
         if self.open
             && let Some(detail) = &self.detail
         {
             return self.detail_lines(detail, width, theme);
         }
-        let mut out = vec![Line::styled("Subagents", bold.fg(theme.heading))];
+        let mut out = Vec::new();
+        if !self.rows.is_empty() {
+            out.push(Line::styled("Subagents", bold.fg(theme.heading)));
+        }
         for (i, row) in self.rows.iter().enumerate() {
             let marker = if i == self.selected { ">" } else { " " };
             let indent = "  ".repeat(row.depth.saturating_sub(1));
@@ -178,6 +245,32 @@ impl AgentsPanel {
                 for piece in wrap(&format!("    stopped: {why}"), width) {
                     out.push(Line::styled(piece, dim));
                 }
+            }
+        }
+        if !self.jobs.is_empty() {
+            out.push(Line::styled("Background jobs", bold.fg(theme.heading)));
+        }
+        for (i, job) in self.jobs.iter().enumerate() {
+            let selected = self.rows.len() + i == self.selected;
+            let marker = if selected { ">" } else { " " };
+            let kind = if job.monitor { "monitor " } else { "" };
+            let head = format!(
+                "{marker} {} {kind}{} {}",
+                job.id,
+                job.state,
+                format_age(job.age)
+            );
+            let style = if selected {
+                bold.add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            for piece in wrap(&head, width) {
+                out.push(Line::styled(piece, style));
+            }
+            let command = job.command.lines().next().unwrap_or_default();
+            for piece in wrap(&format!("    {command}"), width) {
+                out.push(Line::styled(piece, dim));
             }
         }
         out
@@ -209,12 +302,12 @@ impl AgentsPanel {
 
     pub fn footer(&self) -> Vec<Line<'static>> {
         let dim = Style::default().add_modifier(Modifier::DIM);
-        let hint = if self.rows.is_empty() {
+        let hint = if self.len() == 0 {
             "Esc closes"
         } else if self.open {
             "Esc goes back · x kills this agent"
         } else {
-            "up/down select · Enter looks inside · x kills · Esc closes"
+            "up/down select · Enter looks inside an agent · x kills · Esc closes"
         };
         vec![Line::styled(hint, dim)]
     }
@@ -277,6 +370,48 @@ mod tests {
             row("agent-2", ChildStatus::Running),
         ]);
         assert_eq!(panel.selected_id().as_deref(), Some("agent-2"));
+    }
+
+    fn job(id: &str, running: bool) -> JobRow {
+        JobRow {
+            id: id.into(),
+            command: "npm start".into(),
+            monitor: false,
+            age: Duration::from_secs(252),
+            running,
+            state: if running { "running" } else { "exit code 0" }.into(),
+        }
+    }
+
+    #[test]
+    fn jobs_are_listed_below_the_agents_and_only_a_running_one_is_killed_by_its_own_key() {
+        let mut panel = AgentsPanel::new();
+        panel.set_rows(vec![row("agent-1", ChildStatus::Running)]);
+        panel.set_jobs(vec![job("job-3f2a", true), job("job-9c01", false)]);
+        let text: String = panel
+            .body(80, &Theme::default())
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Background jobs"), "{text}");
+        assert!(text.contains("job-3f2a running 4m12s"), "{text}");
+        assert!(text.contains("npm start"), "{text}");
+        assert_eq!(
+            panel.handle_key(key(KeyCode::Char('x'))),
+            PanelKey::Kill("agent-1".into())
+        );
+        panel.handle_key(key(KeyCode::Down));
+        assert_eq!(panel.selected_id(), None);
+        assert_eq!(
+            panel.handle_key(key(KeyCode::Char('x'))),
+            PanelKey::KillJob("job-3f2a".into())
+        );
+        panel.handle_key(key(KeyCode::Down));
+        assert_eq!(panel.handle_key(key(KeyCode::Char('x'))), PanelKey::None);
+        // A refresh keeps the selection on the same job.
+        panel.set_jobs(vec![job("job-0000", true), job("job-9c01", false)]);
+        assert_eq!(panel.selected_entry_id().as_deref(), Some("job-9c01"));
     }
 
     #[test]

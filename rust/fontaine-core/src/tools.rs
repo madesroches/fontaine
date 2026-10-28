@@ -8,6 +8,7 @@ use fontaine_tools::checkpoint::PreImages;
 use fontaine_tools::gate::ToolGate;
 use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::guarded::{Guard, GuardedTool};
+use fontaine_tools::jobs::Jobs;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::{RiskClass, ToolSource, registered_risk};
 use fontaine_tools::scope::Scope;
@@ -93,6 +94,8 @@ pub struct RegistryParams {
     pub websearch: Option<WebsearchConfig>,
     /// The SearXNG process, owned by the runtime so a rebuild does not restart it.
     pub searxng: Arc<SearxngChild>,
+    /// The session's jobs, owned by the runtime so a rebuild keeps the running ones.
+    pub jobs: Arc<Jobs>,
     pub extension: Option<ExtensionTools>,
     /// Saves a file before `write` or `edit` changes it; `None` saves nothing.
     pub pre_images: Option<Arc<dyn PreImages>>,
@@ -134,6 +137,7 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
         websearch: params.websearch,
         searxng: params.searxng,
         network: params.network,
+        jobs: params.jobs,
     })
     .map_err(|e| fontaine_tools::error_chain::chain(&e))?;
     if let Some(extension) = params.extension {

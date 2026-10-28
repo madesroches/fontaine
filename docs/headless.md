@@ -112,6 +112,11 @@ none is running; then the `result` is emitted. `--max-turns` and `--max-budget-u
 turns and the subagents' spend, and a run stopped by either kills the running subagents and drops
 their reports.
 
+[Background jobs](tools.md#background-jobs) are not waited for. A notice from a job that ended
+before the answer is delivered like a subagent's report, in a further turn; a job still running
+when the run ends is terminated, so a headless run leaves no process behind. Jobs persist across the
+messages of one stream-json run and end with it.
+
 ## Exit codes
 
 | Code | Meaning |

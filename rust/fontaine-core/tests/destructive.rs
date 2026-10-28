@@ -423,3 +423,36 @@ fn launched_and_scripted_programs_are_judged_by_what_they_run() {
         assert!(!shell_is(command), "{command}");
     }
 }
+
+#[test]
+fn a_monitor_is_judged_by_the_same_command_analysis_as_the_shell() {
+    let (_dir, scope, view) = world();
+    let facts = Facts {
+        scope: &scope,
+        view: &view,
+    };
+    for command in [
+        "rm -rf build",
+        "git push",
+        "ls > out.txt",
+        "tail -f app.log",
+        "git status",
+        "echo $(date)",
+        "curl https://example.com",
+        "cat log | grep error",
+    ] {
+        let args = json!({ "command": command });
+        assert_eq!(
+            derive("monitor", &args, &facts),
+            derive("shell", &args, &facts),
+            "{command}"
+        );
+    }
+    assert!(derive("monitor", &json!({ "command": "rm x" }), &facts));
+    assert!(!derive(
+        "monitor",
+        &json!({ "command": "git status" }),
+        &facts
+    ));
+    assert!(!derive("job_output", &json!({}), &facts));
+}

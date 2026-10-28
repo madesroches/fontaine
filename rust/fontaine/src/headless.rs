@@ -847,6 +847,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             Ok(None) => break,
             Err(message) => {
                 eprintln!("fontaine: {message}");
+                runtime.jobs().terminate_all().await;
                 return 2;
             }
         };
@@ -879,6 +880,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             .filter(|_| handled.goal_ran && !failed);
         if failed {
             runtime.state.agents().kill_all();
+            runtime.jobs().terminate_all().await;
         }
         if stream_events {
             emit_line(&result_event(
@@ -896,6 +898,8 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
         }
     }
     runtime.state.agents().kill_all();
+    // Jobs still running when the run ends are not waited for; they end with it.
+    runtime.jobs().terminate_all().await;
 
     let Some(last) = last else {
         eprintln!("fontaine: no prompt: the input held no user message");

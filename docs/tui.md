@@ -658,7 +658,7 @@ their reports. Headless runs accept `-p "/goal <condition>"`; see
 
 ## The agents panel
 
-`/agents` (or `/tasks`) or Ctrl-T opens a list with one row per [subagent](agents.md): its id and type, its
+`/agents` (or `/tasks`) or Ctrl-T opens a list with one row per [subagent](agents.md), and below it one row per [background job](tools.md#background-jobs) of the main conversation (its id, its state, its age and the start of its command): an agent row shows its id and type, its
 model, its status (`running`, `waiting-on-permission`, `done`, `killed`, `budget-exhausted` or
 `failed`) and what it has used against its budget, such as `1500 / 200000 tok · $0.0021 / $2.00`
 (`cost n/a` when the model has no known price). Up and Down select a row; Enter looks inside it:
@@ -669,8 +669,13 @@ model, its status (`running`, `waiting-on-permission`, `done`, `killed`, `budget
 - its **transcript**: what it said and which tools it called.
 
 `x` kills the selected subagent: its row shows `killed` and what it had spent, and its pending
-approval prompts are cancelled as denied. Esc goes back, and closes the panel. While the panel is
+approval prompts are cancelled as denied. On a job row it stops the job and its process group,
+and the main conversation is told in a note that the job was killed by you; Enter does nothing on a
+job row. Esc goes back, and closes the panel. While the panel is
 open it has the keyboard, so a pending approval waits until you close it.
 
 When a background subagent finishes while nothing is running, the main conversation gets a turn of
-its own to read the report.
+its own to read the report. A background job that ends, or a monitor that prints lines, does the
+same: the transcript says `a background job reported back` and the turn reads the job's notice,
+which names the output as untrusted data. `/clear` and `/rewind` stop running jobs and discard their
+notices; `/branch` is refused while a notice is waiting.

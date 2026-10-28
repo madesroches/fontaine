@@ -77,6 +77,7 @@ pub fn env_with(scope: Arc<Scope>, gate: Arc<dyn ToolGate>) -> BuiltinEnv {
         websearch: None,
         searxng: Default::default(),
         network: Default::default(),
+        jobs: Default::default(),
     }
 }
 

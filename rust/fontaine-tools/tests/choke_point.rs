@@ -13,7 +13,7 @@ use fontaine_tools::risk::RiskClass;
 use rig_core::tool::{Tool, ToolContext};
 use rig_tools::{OutputLimit, Seen, WriteArgs};
 
-const EXPECTED: [(&str, RiskClass); 9] = [
+const EXPECTED: [(&str, RiskClass); 12] = [
     ("read", RiskClass::ReadOnly),
     ("ls", RiskClass::ReadOnly),
     ("glob", RiskClass::ReadOnly),
@@ -22,6 +22,9 @@ const EXPECTED: [(&str, RiskClass); 9] = [
     ("edit", RiskClass::WorkspaceWrite),
     ("notebook_edit", RiskClass::WorkspaceWrite),
     ("shell", RiskClass::Arbitrary),
+    ("job_output", RiskClass::ReadOnly),
+    ("job_cancel", RiskClass::Arbitrary),
+    ("monitor", RiskClass::Arbitrary),
     ("webfetch", RiskClass::Arbitrary),
 ];
 
@@ -171,11 +174,27 @@ mod unix {
 
     #[tokio::test]
     async fn a_longer_timeout_than_the_maximum_is_cut_to_it() {
+        use fontaine_tools::jobs::NoPromote;
+
         let d = Dirs::new();
         let mut env = env_with(scope(&d.dir("work"), &[]), Arc::new(AllowAll::default()));
         env.shell.max_timeout_secs = 1;
         let tools = registry(&env);
         let started = std::time::Instant::now();
+        // A call that must not move to the background ends at the clamped timeout.
+        let mut context = common::as_root();
+        context.insert(NoPromote(true)).unwrap();
+        let out = common::tool(&tools, "shell")
+            .tool
+            .run_with(
+                &mut context,
+                json!({"command": "sleep 30", "timeout_secs": 600}),
+            )
+            .await
+            .unwrap();
+        assert!(started.elapsed().as_secs() < 20);
+        assert!(text(&out).contains("timed out after 1s"), "{}", text(&out));
+        // The main agent's call moves to the background at the same clamped timeout.
         let out = call(
             &tools,
             "shell",
@@ -183,8 +202,11 @@ mod unix {
         )
         .await
         .unwrap();
-        assert!(started.elapsed().as_secs() < 20);
-        assert!(text(&out).contains("timed out after 1s"), "{}", text(&out));
+        assert!(
+            text(&out).contains("still running after 1s; moved to background job"),
+            "{}",
+            text(&out)
+        );
     }
 
     #[tokio::test]

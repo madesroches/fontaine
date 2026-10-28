@@ -74,13 +74,17 @@ impl<R: FnMut(&mut App)> Ui<R> {
         &mut self,
         runtime: &mut AgentRuntime,
     ) -> Option<TurnEnd> {
+        let jobs = runtime.state.agents().has_job_notifications()
+            && !runtime.state.agents().has_agent_notifications();
         let prompt = runtime.notification_prompt().await?;
         if let Some(end) = self.refresh_native_search(runtime) {
             return Some(end);
         }
-        self.app
-            .transcript
-            .notice("a background agent reported back");
+        self.app.transcript.notice(if jobs {
+            "a background job reported back"
+        } else {
+            "a background agent reported back"
+        });
         Some(self.turn(runtime, prompt, None).await)
     }
 
@@ -167,6 +171,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::RetryDenied(index) if retry => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
                         Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                        Action::KillJob(id) => self.kill_job(runtime, &id),
                         Action::PickModel(purpose, reference) => {
                             self.pending_pick = Some((purpose, reference));
                         }
@@ -320,6 +325,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::RetryDenied(index) => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
                         Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                        Action::KillJob(id) => self.kill_job(runtime, &id),
                         Action::PickModel(purpose, reference) => {
                             self.pending_pick = Some((purpose, reference));
                         }

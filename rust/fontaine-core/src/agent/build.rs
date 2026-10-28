@@ -178,6 +178,7 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
         network: p.setup.network.clone(),
         websearch,
         searxng: p.setup.searxng.clone(),
+        jobs: p.setup.jobs.clone(),
         extension: Some(ExtensionTools(extension_tools(p, ledger_window))),
         pre_images: Some(Arc::new(StoreCapture(p.session.checkpoints().clone()))),
     })

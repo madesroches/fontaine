@@ -8,6 +8,19 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Background shell jobs and a `monitor` tool (#25). A main-conversation `shell` command still
+  running at its `timeout_secs` (or, with the default timeout, after 60 s without output) is no
+  longer stopped: the call returns the output so far and a job id, the command keeps running, and
+  the main conversation is told when it ends in a notification that starts a turn of its own.
+  `run_in_background` starts a command as a job at once, `job_output` lists jobs and reads new
+  output (`wait_secs` replaces polling with `sleep`), `job_cancel` stops one, and `monitor` delivers
+  each line a command prints as a notification. Job output is untrusted data and passes the
+  tool-result scanner like any result; the guardian still judges the command when `shell` or
+  `monitor` is called, a `shell` deny or ask rule and hook matcher also cover `monitor`, and the
+  limits (8 running jobs, 1 MiB buffer, 64 MB output, no way for the model to lift the 600 s
+  timeout) are the harness's. Subagents keep kill-at-timeout; jobs end with the session, and the
+  agents panel lists and kills them. `BashOutput`, `TaskOutput`, `KillShell`, `KillBash`,
+  `TaskStop` and `Monitor` map to the new tools.
 - A built-in `fork` agent type starts a subagent from a copy of the main conversation, including
   the current turn, so its `prompt` can be a short task (#39). It runs on the session model, can be
   started only by the main conversation, and fails to start rather than run without the context. The

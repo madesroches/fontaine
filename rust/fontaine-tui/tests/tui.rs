@@ -1214,6 +1214,54 @@ async fn a_pick_made_during_a_notification_turn_applies_when_the_turn_ends() {
     .await;
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_moved_to_the_background_wakes_an_idle_interface_when_it_ends() {
+    let server = start(vec![Route::new(
+        "root task",
+        vec![
+            // Past its one second, the command moves to a background job.
+            Turn::tool(
+                "c1",
+                "shell",
+                json!({"command": "sleep 2; echo job-finished-output", "timeout_secs": 1}),
+            ),
+            Turn::text("it runs in the background"),
+            Turn::text("noted the job ended"),
+        ],
+    )])
+    .await;
+    let w = World::routed(&server.uri(), "\n[permissions]\nallow = [\"shell\"]\n");
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("root task");
+        ui.wait_for("it runs in the background").await;
+        idle(&ui).await;
+        // The job ends while nothing is running: the notification turn is the interface's own.
+        ui.wait_for("a background job reported back").await;
+        ui.wait_for("noted the job ended").await;
+    })
+    .await;
+    let requests = bodies(&server).await;
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests[1].contains("moved to background job job-"),
+        "{}",
+        requests[1]
+    );
+    assert!(
+        requests[2].contains("ended (exit code 0)"),
+        "{}",
+        requests[2]
+    );
+    assert!(
+        requests[2].contains("job-finished-output"),
+        "{}",
+        requests[2]
+    );
+    assert!(requests[2].contains("agents or background jobs you started have news"));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn plan_enters_plan_mode_and_a_description_is_sent_in_that_mode() {
     let w = World::new(vec![

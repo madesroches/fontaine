@@ -39,6 +39,18 @@ pub struct ToolDescriptor {
     pub checkpointed: bool,
 }
 
+impl ToolDescriptor {
+    /// Whether the tool runs a command line, so command analysis applies to its calls.
+    pub fn shell_class(&self) -> bool {
+        self.specifier == Specifier::Shell
+    }
+}
+
+/// Whether the tool named `name` runs a command line.
+pub fn is_shell_class(name: &str) -> bool {
+    find(name).is_some_and(ToolDescriptor::shell_class)
+}
+
 const fn row(
     name: &'static str,
     risk: RiskClass,
@@ -68,6 +80,30 @@ pub static TOOLS: &[ToolDescriptor] = &[
         Destructive::Shell,
         Specifier::Shell,
         &["Bash"],
+    ),
+    row(
+        "job_output",
+        RiskClass::ReadOnly,
+        true,
+        Destructive::Never,
+        Specifier::None,
+        &["BashOutput", "TaskOutput"],
+    ),
+    row(
+        "job_cancel",
+        RiskClass::Arbitrary,
+        true,
+        Destructive::Never,
+        Specifier::None,
+        &["KillShell", "KillBash", "TaskStop"],
+    ),
+    row(
+        "monitor",
+        RiskClass::Arbitrary,
+        false,
+        Destructive::Shell,
+        Specifier::Shell,
+        &["Monitor"],
     ),
     row(
         "read",
@@ -262,7 +298,9 @@ mod tests {
             if matches!(d.destructive, Destructive::FileWrite) || d.specifier == Specifier::Path {
                 assert!(!d.path_free, "{} names a path", d.name);
             }
-            if d.destructive == Destructive::Never {
+            // `job_cancel` stops only a process this session started, by id, and names no path:
+            // the one tool that is never destructive yet not read-only.
+            if d.destructive == Destructive::Never && d.name != "job_cancel" {
                 assert_eq!(d.risk, RiskClass::ReadOnly, "{}", d.name);
             }
         }
@@ -287,13 +325,51 @@ mod tests {
     }
 
     #[test]
+    fn the_shell_class_is_every_row_that_takes_a_command_line() {
+        let shell_class: Vec<_> = TOOLS
+            .iter()
+            .filter(|d| d.shell_class())
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(shell_class, ["shell", "monitor"]);
+        assert!(is_shell_class("monitor") && !is_shell_class("job_output"));
+        assert!(!is_shell_class("no_such_tool"));
+        assert_eq!(find_claude("Monitor").map(|d| d.name), Some("monitor"));
+        assert_eq!(find_claude("Bash").map(|d| d.name), Some("shell"));
+    }
+
+    #[test]
     fn rows_are_pinned() {
         use Destructive as D;
         use RiskClass as R;
         use Specifier as S;
         type Pinned = (&'static str, R, bool, D, S, &'static [&'static str]);
-        let expected: [Pinned; 19] = [
+        let expected: [Pinned; 22] = [
             ("shell", R::Arbitrary, false, D::Shell, S::Shell, &["Bash"]),
+            (
+                "job_output",
+                R::ReadOnly,
+                true,
+                D::Never,
+                S::None,
+                &["BashOutput", "TaskOutput"],
+            ),
+            (
+                "job_cancel",
+                R::Arbitrary,
+                true,
+                D::Never,
+                S::None,
+                &["KillShell", "KillBash", "TaskStop"],
+            ),
+            (
+                "monitor",
+                R::Arbitrary,
+                false,
+                D::Shell,
+                S::Shell,
+                &["Monitor"],
+            ),
             ("read", R::ReadOnly, false, D::Never, S::Path, &["Read"]),
             (
                 "edit",

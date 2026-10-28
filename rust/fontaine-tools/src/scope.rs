@@ -49,7 +49,7 @@ fn fields_of(tool: &str) -> Option<PathFields> {
         "read" | "write" | "edit" | "notebook_edit" => Some(PathFields::Required("path")),
         "ls" | "grep" => Some(PathFields::Optional("path")),
         "glob" => Some(PathFields::Glob),
-        "shell" => Some(PathFields::Optional("cwd")),
+        name if crate::descriptor::is_shell_class(name) => Some(PathFields::Optional("cwd")),
         _ => None,
     }
 }

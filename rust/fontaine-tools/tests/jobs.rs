@@ -1,0 +1,260 @@
+//! The job-backed `shell`, `job_output`, `job_cancel` and `monitor` tools through the registry.
+#![cfg(unix)]
+
+mod common;
+
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use common::{AllowAll, Dirs, call, env_with, registry, scope, text, tool};
+use fontaine_tools::builtins::Registered;
+use fontaine_tools::gate::AgentId;
+use fontaine_tools::jobs::{JobNote, JobSink, Jobs};
+use rig_core::tool::ToolContext;
+use serde_json::json;
+
+#[derive(Default)]
+struct Notes(Mutex<Vec<JobNote>>);
+
+impl JobSink for Notes {
+    fn post(&self, note: JobNote) {
+        self.0.lock().unwrap().push(note);
+    }
+}
+
+fn session() -> (Dirs, Vec<Registered>, Arc<Jobs>, Arc<Notes>) {
+    let d = Dirs::new();
+    let env = env_with(scope(&d.dir("work"), &[]), Arc::new(AllowAll::default()));
+    let notes = Arc::new(Notes::default());
+    env.jobs.set_sink(notes.clone());
+    let jobs = env.jobs.clone();
+    let tools = registry(&env);
+    (d, tools, jobs, notes)
+}
+
+fn as_child() -> ToolContext {
+    let mut context = ToolContext::new();
+    context.insert(AgentId("child-1".to_string())).unwrap();
+    context
+}
+
+async fn run_as_child(
+    tools: &[Registered],
+    name: &str,
+    args: serde_json::Value,
+) -> Result<String, String> {
+    tool(tools, name)
+        .tool
+        .run_with(&mut as_child(), args)
+        .await
+        .map(|out| out.render())
+        .map_err(|e| e.model_output().render())
+}
+
+fn job_id(text: &str) -> String {
+    let at = text.find("job-").expect("a job id in the text");
+    text[at..at + 8].to_string()
+}
+
+async fn until(what: &str, mut ready: impl FnMut() -> bool) {
+    let give_up = Instant::now() + Duration::from_secs(20);
+    while !ready() {
+        assert!(Instant::now() < give_up, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_command_that_ends_in_time_reads_as_it_always_did_and_leaves_no_job() {
+    let (_d, tools, _, _) = session();
+    let out = call(&tools, "shell", json!({"command": "echo hi; exit 2"}))
+        .await
+        .unwrap();
+    assert_eq!(text(&out), "hi\n[exit code 2]");
+    let listed = call(&tools, "job_output", json!({})).await.unwrap();
+    assert_eq!(text(&listed), "No jobs.");
+}
+
+#[tokio::test]
+async fn a_command_past_its_timeout_is_handed_back_with_its_output_and_reports_its_end() {
+    let (_d, tools, jobs, notes) = session();
+    let out = call(
+        &tools,
+        "shell",
+        json!({"command": "echo start; sleep 2; echo done", "timeout_secs": 1}),
+    )
+    .await
+    .unwrap();
+    let shown = text(&out);
+    assert!(
+        shown.starts_with("start\n[still running after 1s; moved to background job job-"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("job_output") && shown.contains("job_cancel"),
+        "{shown}"
+    );
+    let id = job_id(&shown);
+    until("the completion note", || {
+        !notes.0.lock().unwrap().is_empty()
+    })
+    .await;
+    let notes = notes.0.lock().unwrap().clone();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].job, id);
+    assert!(notes[0].text.contains("ended (exit code 0)") && notes[0].text.contains("done"));
+    jobs.terminate_all().await;
+}
+
+#[tokio::test]
+async fn a_background_job_is_listed_read_and_cancelled_through_the_tools() {
+    let (_d, tools, _, notes) = session();
+    let out = call(
+        &tools,
+        "shell",
+        json!({"command": "echo up; sleep 30", "run_in_background": true}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        text(&out).contains("started in the background as job-"),
+        "{}",
+        text(&out)
+    );
+    let id = job_id(&text(&out));
+
+    let listed = text(&call(&tools, "job_output", json!({})).await.unwrap());
+    assert!(
+        listed.contains(&id) && listed.contains("running") && listed.contains("sleep 30"),
+        "{listed}"
+    );
+
+    let read = text(
+        &call(&tools, "job_output", json!({"id": id, "wait_secs": 10}))
+            .await
+            .unwrap(),
+    );
+    assert!(read.starts_with("up\n"), "{read}");
+    assert!(read.contains(&format!("[{id} is running")), "{read}");
+
+    let again = text(&call(&tools, "job_output", json!({"id": id})).await.unwrap());
+    assert!(again.starts_with("(no new output)"), "{again}");
+
+    let cancelled = text(&call(&tools, "job_cancel", json!({"id": id})).await.unwrap());
+    assert!(cancelled.contains("ended: cancelled"), "{cancelled}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        notes.0.lock().unwrap().is_empty(),
+        "the model cancelled it itself"
+    );
+}
+
+#[tokio::test]
+async fn a_subagent_gets_no_jobs_and_keeps_kill_at_timeout() {
+    let (_d, tools, jobs, _) = session();
+    let refused = run_as_child(
+        &tools,
+        "shell",
+        json!({"command": "sleep 30", "run_in_background": true}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refused.contains("only the main agent runs background jobs"),
+        "{refused}"
+    );
+
+    let out = run_as_child(
+        &tools,
+        "shell",
+        json!({"command": "sleep 30", "timeout_secs": 1}),
+    )
+    .await
+    .unwrap();
+    assert!(out.contains("timed out after 1s and stopped"), "{out}");
+    assert!(jobs.snapshot().is_empty(), "a subagent's call is no job");
+
+    for (name, args) in [
+        ("job_output", json!({})),
+        ("job_cancel", json!({"id": "job-0000"})),
+        ("monitor", json!({"command": "true", "description": "x"})),
+    ] {
+        let refused = run_as_child(&tools, name, args).await.unwrap_err();
+        assert!(
+            refused.contains("only available to the main agent"),
+            "{name}: {refused}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_ninth_background_job_is_refused_naming_job_cancel() {
+    let (_d, tools, jobs, _) = session();
+    for _ in 0..8 {
+        call(
+            &tools,
+            "shell",
+            json!({"command": "sleep 30", "run_in_background": true}),
+        )
+        .await
+        .unwrap();
+    }
+    let refused = call(
+        &tools,
+        "shell",
+        json!({"command": "sleep 30", "run_in_background": true}),
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.model_output().render().contains("job_cancel"));
+    let refused = call(
+        &tools,
+        "monitor",
+        json!({"command": "sleep 30", "description": "x"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.model_output().render().contains("job_cancel"));
+    jobs.terminate_all().await;
+}
+
+#[tokio::test]
+async fn a_monitor_delivers_its_lines_as_notifications() {
+    let (_d, tools, jobs, notes) = session();
+    let out = call(
+        &tools,
+        "monitor",
+        json!({"command": "echo ping; sleep 30", "description": "pings", "timeout_secs": 60}),
+    )
+    .await
+    .unwrap();
+    let id = job_id(&text(&out));
+    until("the notification", || !notes.0.lock().unwrap().is_empty()).await;
+    let first = notes.0.lock().unwrap()[0].clone();
+    assert!(
+        first.text.contains("ping") && first.text.contains("pings"),
+        "{}",
+        first.text
+    );
+    let refused = call(&tools, "job_output", json!({"id": id}))
+        .await
+        .unwrap_err();
+    assert!(refused.model_output().render().contains("notifications"));
+    jobs.terminate_all().await;
+}
+
+#[test]
+fn the_shell_definition_offers_jobs_and_no_longer_forbids_servers() {
+    let d = Dirs::new();
+    let tool = fontaine_tools::builtins::shell_for(&d.dir("w"), &Default::default());
+    use rig_core::tool::Tool;
+    let description = tool.description();
+    assert!(description.contains("run_in_background") && description.contains("wait_secs"));
+    assert!(!description.contains("servers in the foreground"));
+    let schema = tool.parameters();
+    assert_eq!(
+        schema["properties"]["run_in_background"]["type"],
+        json!(["boolean", "null"])
+    );
+    assert!(schema["properties"]["command"].is_object());
+}
