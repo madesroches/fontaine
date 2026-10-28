@@ -77,6 +77,8 @@ pub enum Action {
     OpenRewind,
     /// The human asked to stop a subagent.
     KillAgent(String),
+    /// The human asked to kill a background job.
+    KillJob(String),
     /// The provider dialog asks for something done.
     Providers(DialogKey),
     /// The human answered the question about starting a repository's MCP server.
@@ -658,6 +660,7 @@ impl App {
                     Action::None
                 }
                 PanelKey::Kill(id) => Action::KillAgent(id),
+                PanelKey::KillJob(id) => Action::KillJob(id),
             };
         }
         if self.approval.is_none() && !self.questions.is_empty() {

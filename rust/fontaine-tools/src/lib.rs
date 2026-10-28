@@ -8,6 +8,7 @@ pub mod error_chain;
 pub mod gate;
 pub mod git_bash;
 pub mod guarded;
+pub mod jobs;
 pub mod lock;
 pub mod names;
 pub mod notebook;

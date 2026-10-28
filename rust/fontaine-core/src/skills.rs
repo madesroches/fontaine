@@ -6,6 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use fontaine_tools::gate::AgentId;
+use fontaine_tools::jobs::NoPromote;
 use fontaine_tools::lock::lock;
 use fontaine_tools::skill::SkillSource;
 use futures::future::BoxFuture;
@@ -191,6 +192,11 @@ impl SkillRuntime {
         context
             .insert(AgentId(agent.to_string()))
             .expect("the agent id serializes");
+        // The command's output is spliced into the skill's text, so it must end at the timeout
+        // rather than move to the background and leave a note in its place.
+        context
+            .insert(NoPromote(true))
+            .expect("the flag serializes");
         match shell
             .run_with(&mut context, json!({ "command": command }))
             .await

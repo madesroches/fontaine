@@ -155,6 +155,7 @@ fn params(rig: &Rig) -> RegistryParams {
         hide_mcp_names: false,
         websearch: None,
         searxng: Default::default(),
+        jobs: Default::default(),
         network: Default::default(),
         extension: Some(extension()),
         pre_images: None,
@@ -180,7 +181,7 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         .filter(|name| *name != "websearch")
         .collect();
     assert_eq!(unique, expected);
-    // The nine beyond the built-ins are exactly these.
+    // The ones beyond the built-ins are exactly these.
     let extras: BTreeSet<&str> = [
         "agent",
         "skill",
@@ -203,6 +204,9 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         "edit",
         "notebook_edit",
         "shell",
+        "job_output",
+        "job_cancel",
+        "monitor",
         "webfetch",
     ]
     .into_iter()
@@ -260,11 +264,11 @@ fn every_registered_tool_has_a_descriptor_row_and_its_class() {
 }
 
 #[test]
-fn without_the_extension_the_registry_is_the_nine_built_ins() {
+fn without_the_extension_the_registry_is_the_twelve_built_ins() {
     let rig = Rig::new(Manual);
     let mut p = params(&rig);
     p.extension = None;
-    assert_eq!(registry(p).unwrap().len(), 9);
+    assert_eq!(registry(p).unwrap().len(), 12);
 }
 
 async fn serve(

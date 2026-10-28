@@ -7,7 +7,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use fontaine_tools::descriptor::{Specifier, find};
+use fontaine_tools::descriptor::{Specifier, find, is_shell_class};
 use fontaine_tools::names::{is_builtin, is_mcp};
 use fontaine_tools::preclassify::{ShellAnalysis, analyze, program_name, raw_mentions_word};
 use fontaine_tools::scope::{Scope, glob_target};
@@ -397,8 +397,14 @@ pub struct CallContext<'a> {
     pub home: Option<&'a Path>,
 }
 
-fn tool_matches(rule_tool: &str, name: &str) -> bool {
+/// Whether a rule for `rule_tool` covers a call to the tool `name`. A deny or ask rule for
+/// `shell` covers every tool that runs a command line, so a prohibition cannot be stepped around
+/// by running the same command through another tool; an allow rule covers only the tool it names.
+fn tool_matches(rule_tool: &str, name: &str, posture: Posture) -> bool {
     if rule_tool == name {
+        return true;
+    }
+    if posture.lenient() && rule_tool == "shell" && is_shell_class(name) {
         return true;
     }
     if !is_mcp(rule_tool) || !is_mcp(name) {
@@ -418,7 +424,7 @@ fn tool_matches(rule_tool: &str, name: &str) -> bool {
 
 /// Whether `rule` covers the call.
 pub fn matches(rule: &Rule, call: &CallContext<'_>, posture: Posture) -> bool {
-    if !tool_matches(&rule.tool, call.tool) {
+    if !tool_matches(&rule.tool, call.tool, posture) {
         return false;
     }
     let Some(spec) = rule.specifier.as_deref() else {
@@ -659,8 +665,9 @@ fn wildcard_is_broad(words: &[String]) -> bool {
 /// Whether an allow rule is one `auto` suspends.
 pub fn is_broad_code_execution(rule: &Rule) -> bool {
     match (rule.tool.as_str(), rule.specifier.as_deref()) {
-        ("shell" | "agent", None) => true,
-        ("shell", Some(spec)) => {
+        ("agent", None) => true,
+        (tool, None) if is_shell_class(tool) => true,
+        (tool, Some(spec)) if is_shell_class(tool) => {
             let Ok(spec) = shell_spec(spec) else {
                 return false;
             };

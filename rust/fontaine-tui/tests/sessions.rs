@@ -165,8 +165,7 @@ async fn branch_is_refused_while_a_subagent_runs() {
             ui.wait_for("launched").await;
             idle(&ui).await;
             ui.send("/branch");
-            ui.wait_for("/branch is refused until they finish or are killed")
-                .await;
+            ui.wait_for("refused").await;
         })
         .await;
     assert_eq!(outcome, DriveOutcome::Exit);

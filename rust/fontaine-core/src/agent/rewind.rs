@@ -4,7 +4,6 @@
 use std::fmt;
 
 use fontaine_tools::error_chain::chain;
-use fontaine_tools::gate::ROOT_AGENT;
 
 use super::AgentRuntime;
 use crate::checkpoint::{CodeReport, RewindPlan, RewindWhat, TurnSummary};
@@ -81,7 +80,7 @@ impl AgentRuntime {
         overwrite_changed: bool,
     ) -> Result<RewindOutcome, RewindError> {
         let agents = self.state.agents();
-        if agents.any_running() || agents.has_notifications(ROOT_AGENT) {
+        if agents.any_running() || agents.has_agent_notifications() {
             return Err(RewindError::SubagentsRunning);
         }
         let checkpoints = self.session.checkpoints();
@@ -90,6 +89,7 @@ impl AgentRuntime {
                 .rewind_conversation(plan.conv_n)
                 .await
                 .map_err(RewindError::Conversation)?;
+            self.end_jobs().await;
         }
         let code = what
             .includes_code()

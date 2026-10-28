@@ -110,6 +110,18 @@ the guardian request that raced it is still pending, the record also carries
 projected onto `tool_decision` as `guardian.dropped_input_tokens`, `guardian.dropped_provider`,
 `guardian.dropped_model` and `guardian.dropped_priced`; see [Telemetry](telemetry.md#metrics).
 
+## Background jobs and monitors
+
+`shell` is judged when it is called; a command that later moves to the background, or that was
+started with `run_in_background`, is not asked about again. `job_output` is read-only and names no
+path, so it takes the fast path. `job_cancel` is an `arbitrary` tool that can only signal a process
+this session started, by id. `monitor` is an `arbitrary` tool with `shell`'s command analysis: the
+critical-path floor, the destructive class and `shell` deny and ask rules (and hook matchers) cover
+it, so a `shell(git push)` deny also stops a `monitor` that runs `git push`. An allow rule does not
+cross over: `shell(...)` allows are for `shell` only, and the read-only pre-classifier never
+allows a `monitor` by itself, so allow one with `monitor(tail *)` or let the guardian judge it. In
+`auto`, `monitor` with no specifier is a broad allow like `shell`, and is set aside.
+
 ## Scheduled prompts
 
 `cron_create` is an `arbitrary` tool, and always a destructive call for the guardian (so a low-confidence allow is denied), even though it touches no file: it plants model-written text
@@ -161,7 +173,8 @@ grammar: `Tool` or `Tool(specifier)`. A bare tool name matches every call of the
 | `websearch` | none | the tool name; the destination is the configured backend, not a host the model picks, so `domain:` does not apply |
 | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | none | the registered tool name |
 | `agent`, `skill` | the agent type or skill name | exact name |
-| `send_message`, `ask_user_question`, `todo_write`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup` | none | the tool name |
+| `monitor` | words, as for `shell` | the parsed command line, as for `shell`; a `shell` deny or ask rule covers `monitor` too, an allow rule does not |
+| `send_message`, `ask_user_question`, `todo_write`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup`, `job_output`, `job_cancel` | none | the tool name |
 
 Deny and ask rules fail toward matching; allow rules fail toward not matching:
 

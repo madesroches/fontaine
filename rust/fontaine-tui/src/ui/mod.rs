@@ -10,7 +10,7 @@ mod turn;
 
 use std::path::Path;
 
-use crate::agents_panel::{AgentsPanel, Detail, PanelRow};
+use crate::agents_panel::{AgentsPanel, Detail, JobRow, PanelRow};
 use crate::config_panel::ConfigKey;
 use crate::denials::{DeniedList, UnavailablePrompt};
 use crate::ui::schedule::IDLE_POLL;
@@ -88,8 +88,22 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }),
             _ => None,
         };
+        let job_rows: Vec<JobRow> = runtime
+            .jobs()
+            .snapshot()
+            .into_iter()
+            .map(|job| JobRow {
+                id: job.id,
+                command: job.command,
+                monitor: job.monitor,
+                age: job.age,
+                running: job.running,
+                state: job.state,
+            })
+            .collect();
         if let Some(panel) = &mut self.app.agents {
             panel.set_rows(panel_rows);
+            panel.set_jobs(job_rows);
             panel.detail = detail;
         }
     }
@@ -273,6 +287,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         .await
                 }
                 Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                Action::KillJob(id) => self.kill_job(runtime, &id),
                 Action::PickModel(purpose, reference) => {
                     self.apply_pick(runtime, purpose, &reference).await;
                 }
@@ -286,6 +301,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     fn kill_agent(&mut self, runtime: &AgentRuntime, id: &str) {
         if runtime.state.agents().kill(id) {
+            self.app.transcript.notice(format!("killed {id}"));
+        }
+    }
+
+    /// A background job killed from the panel; the model is told by the job's own note.
+    fn kill_job(&mut self, runtime: &AgentRuntime, id: &str) {
+        if runtime.jobs().kill_by_user(id) {
             self.app.transcript.notice(format!("killed {id}"));
         }
     }

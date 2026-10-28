@@ -1738,6 +1738,7 @@ dependencies = [
  "brush-parser",
  "futures",
  "htmd",
+ "libc",
  "rcgen",
  "reqwest",
  "rig-core",

@@ -14,6 +14,7 @@ use fontaine_guardian::{
     Adjudication, Decision as GuardianDecision, FailClosed, ScreenOutcome, ScreenScores, WireIds,
 };
 use fontaine_tools::ask_user::{Question, QuestionReply};
+use fontaine_tools::descriptor::is_shell_class;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
 use fontaine_tools::lock::lock;
@@ -712,7 +713,7 @@ impl PermissionPipeline {
                 },
             );
         }
-        if tool == "shell"
+        if is_shell_class(tool)
             && let Some(command) = args.get("command").and_then(Value::as_str)
         {
             let env = CriticalEnv {
@@ -759,6 +760,8 @@ impl PermissionPipeline {
                 rule: None,
             };
         }
+        // Only `shell` is classified here: a monitor is a long-lived watcher whose command the
+        // read-only table says nothing about, so it needs a `Monitor` allow rule or the guardian.
         if tool == "shell"
             && let Some(command) = args.get("command").and_then(Value::as_str)
         {
@@ -1756,7 +1759,7 @@ fn names_no_path(tool: &str) -> bool {
 pub fn summarize(tool: &str, args: &Value) -> String {
     let text = |key: &str| args.get(key).and_then(Value::as_str);
     let line = match tool {
-        "shell" => text("command").map(str::to_string),
+        tool if is_shell_class(tool) => text("command").map(str::to_string),
         "read" | "write" | "edit" | "notebook_edit" => text("path").map(str::to_string),
         "webfetch" => text("url").map(str::to_string),
         "websearch" => text("query").map(str::to_string),

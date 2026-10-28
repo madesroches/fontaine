@@ -5,12 +5,13 @@ use std::sync::{Arc, RwLock};
 
 use fontaine_agents::mode::ModeSetting;
 use fontaine_agents::registry::{AgentType, AgentTypes, ModelSpec, TypeOrigin};
-use fontaine_agents::tree::{AgentTree, Limits};
+use fontaine_agents::tree::{AgentTree, Limits, NotificationKind};
 use fontaine_guardian::{
     AllowSettings, Guardian, ModeNotice, Profile, Screen, ScreenSettings,
     Settings as GuardianSettings,
 };
 use fontaine_tools::error_chain::chain;
+use fontaine_tools::jobs::{JobNote, JobSink};
 use fontaine_tools::result_pipeline::{ResultPipeline, StageKind};
 use fontaine_tools::scope::Scope;
 use rig_agent::tool::server::{ToolServer, ToolServerHandle};
@@ -320,6 +321,9 @@ pub(super) fn gates(
     super::warn_if_no_search(setup);
     let (pipeline, post_hooks) = permission_pipeline(setup, state);
     let retained = retained(setup)?;
+    retained
+        .jobs
+        .set_sink(Arc::new(TreeJobs { tree: tree.clone() }));
     let instruction_stage = instruction_stage(setup, state);
     let (results, llm_scanner) = result_pipeline(
         setup.scanner.backend.take(),
@@ -336,6 +340,19 @@ pub(super) fn gates(
         results,
         llm_scanner,
     })
+}
+
+/// Queues a job's news in the main conversation's inbox, where the surface that runs turns
+/// finds it.
+struct TreeJobs {
+    tree: Arc<AgentTree>,
+}
+
+impl JobSink for TreeJobs {
+    fn post(&self, note: JobNote) {
+        self.tree
+            .post_to_root(&note.job, NotificationKind::Job, note.text);
+    }
 }
 
 /// The stage that brings nested instruction files into tool results, wired to the session's
@@ -439,6 +456,7 @@ pub(super) fn retained(setup: &AgentSetup) -> Result<Setup, RuntimeError> {
         scheduling: setup.scheduling,
         env: setup.env.clone(),
         searxng: Arc::default(),
+        jobs: Arc::default(),
     })
 }
 

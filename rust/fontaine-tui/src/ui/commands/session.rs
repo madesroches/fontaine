@@ -63,7 +63,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let agents = runtime.state.agents();
         if agents.any_running() || agents.has_notifications(ROOT_AGENT) {
             self.app.transcript.error(
-                "subagents are still running or have reports to deliver; /branch is refused until they finish or are killed",
+                "subagents are still running, or reports or background-job notices are waiting to be delivered; /branch is refused until they finish, are killed or are delivered",
             );
             return Continue(());
         }

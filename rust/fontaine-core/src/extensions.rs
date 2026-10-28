@@ -455,6 +455,21 @@ mod tests {
     }
 
     #[test]
+    fn the_job_tools_map_from_their_claude_code_names() {
+        assert_eq!(map_tool_entry("Monitor").unwrap(), "monitor");
+        assert_eq!(
+            map_tool_entry("Monitor(tail *)").unwrap(),
+            "monitor(tail *)"
+        );
+        for name in ["BashOutput", "TaskOutput"] {
+            assert_eq!(map_tool_entry(name).unwrap(), "job_output");
+        }
+        for name in ["KillShell", "KillBash", "TaskStop"] {
+            assert_eq!(map_tool_entry(name).unwrap(), "job_cancel");
+        }
+    }
+
+    #[test]
     fn web_search_maps_to_websearch() {
         assert_eq!(map_tool_entry("WebSearch").unwrap(), "websearch");
     }

@@ -15,7 +15,10 @@ result passes one post-call step before the model sees it.
 | `write` | workspace write | Replaces a whole file. The file's earlier contents are saved first for [`/rewind`](checkpoints.md). |
 | `edit` | workspace write | Replaces text in a file. The file must have been read first. The file's earlier contents are saved first for [`/rewind`](checkpoints.md). |
 | `notebook_edit` | workspace write | Saves the notebook for [`/rewind`](checkpoints.md) first. Edits one cell of a Jupyter notebook (`.ipynb`): `replace` a cell's source (default), `insert` a new cell after `cell_id` (at the start when none) or `delete` a cell. Arguments: `path`, `cell_id`, `cell_type` (`code` or `markdown`; required to insert), `edit_mode`, `new_source`. Name a cell by its id, or `cell-N` (0-based) when it has none. Replacing a code cell clears its outputs. The notebook must have been read first, and is refused if it changed since. The rest of the notebook and its key order are kept; indentation other than spaces is normalized to nbformat's 1-space form, and number formatting outside the edited cell may be normalized (`1e-05` becomes `0.00001`). A `.ipynb` that does not parse as a notebook (invalid JSON, nbformat 3) is read as plain text. `edit` and `write` still work on a notebook but their descriptions point the model here. |
-| `shell` | arbitrary | Runs a shell command. |
+| `shell` | arbitrary | Runs a shell command. A command still running at its timeout keeps running as a [background job](#background-jobs). Arguments: `command`, `timeout_secs`, `cwd`, `run_in_background`. |
+| `job_output` | read-only | Lists the [background jobs](#background-jobs) you started, or reads what one printed since it was last read. Arguments: `id`, `wait_secs` (0 to 60). Main conversation only. |
+| `job_cancel` | arbitrary | Stops a background job or monitor with its whole process group. Argument: `id`. Main conversation only. |
+| `monitor` | arbitrary | Runs a command in the background and delivers each line it prints as a [notification](#monitor). Arguments: `command`, `description`, `timeout_secs`. Main conversation only. |
 | `webfetch` | arbitrary | Fetches one web page. |
 | `websearch` | arbitrary | Searches the web through the backend set in [`[websearch]`](configuration.md#websearch); registered when one is configured, or by default when `docker` or `podman` is installed. Arguments: `query`, `allowed_domains`, `blocked_domains`. |
 | `agent` | arbitrary | Starts a [subagent](agents.md) and returns its report, or an id when it runs in the background. |
@@ -61,11 +64,11 @@ outside every root, is outside the fast path.
 File-tool calls on such a path are denied with a hint to use the session's scratch directory or to
 add the directory with `/add-dir` or `--add-dir`; they are never offered for approval.
 
-The `skill`, `ask_user_question`, `todo_write`, `cron_jobs`, `cron_delete` and `schedule_wakeup` tools are the read-only tools that name no path. `skill` takes
+The `skill`, `ask_user_question`, `todo_write`, `cron_jobs`, `cron_delete`, `schedule_wakeup` and `job_output` tools are the read-only tools that name no path. `skill` takes
 only a skill name, resolved against the skills loaded at startup, so all it can do is put that
 skill's text in the conversation. `ask_user_question` can only show you text and collect your
 choice, and its answer comes from you alone, never from a permission mode. `todo_write` takes only
-the task list, which it keeps in the session. The three scheduling tools only list, cancel or re-time
+the task list, which it keeps in the session. `job_output` takes the id of a job this session started and returns only what that job printed; the command that made the job was judged when it was called. The three scheduling tools only list, cancel or re-time
 scheduled text; `cron_create` is [arbitrary](permissions.md#scheduled-prompts) because it plants model-written text that
 later runs as a turn without you typing anything. None needs a scope check. The deterministic floor
 still runs first, so a deny or ask rule or a `pre_tool_use` hook can block any of them. An MCP tool
@@ -138,9 +141,14 @@ are resolved.
 - **Confinement.** The `cwd` is resolved like any other path, and one outside every root is
   refused. What the command itself does is not confined: it can `cd` anywhere, which is why
   `shell` is an arbitrary tool.
-- **Timeout.** A call may ask for a `timeout_secs`; a longer request is cut to 600 seconds.
-  Without one the default is 120 seconds, and a call that prints nothing for 60 seconds is stopped.
-  A command that prints more than 10 MB is killed.
+- **Timeout.** A call may ask for a `timeout_secs`; a longer request is cut to 600 seconds, and no
+  argument lifts that cap. Without one the default is 120 seconds, and a call that prints nothing
+  for 60 seconds counts as having reached it. What happens then depends on who called: the main
+  conversation's command is not stopped but [moved to a background job](#background-jobs), and the
+  result says so; a subagent's command is stopped, as is any command a [skill](extensions.md#skills)
+  runs for its text. A command that prints more than 64 MB is killed in the main conversation, and
+  more than 10 MB in a subagent.
+  `run_in_background` starts the command as a job without waiting.
 - **Output.** Past 2,000 lines or 50 KB the result keeps the first and last lines and the lines
   with errors or failures from between.
 - **Environment.** The child process does not inherit the telemetry credentials (every
@@ -155,6 +163,71 @@ are resolved.
   overrides the search. When Git for Windows cannot be found, Fontaine exits with code 2 and a
   message naming Git for Windows and the variable. The command reaches Git Bash as written,
   including every `\\`; a syntax error names `eval` rather than `-c`.
+
+## Background jobs
+
+Every `shell` call of the main conversation runs as a job. One that ends within its timeout
+returns exactly what a plain command returns and leaves nothing behind. One still running at its
+timeout is not stopped: the call returns the output so far and the id of the job, such as
+`job-3f2a`, and the command keeps running. `run_in_background: true` skips the wait and returns the
+id at once, which is how to start a server or a long build. Keep the command's process in the
+foreground of the command line (`npm start`, not `npm start &`): once the shell exits, what it left
+running is killed as soon as the shell exits, so `server &` dies with its shell.
+
+- **Being told.** When a background job ends, the main conversation gets a notification with the
+  exit status, the time it ran and the last 40 lines (at most 50 KB; a monitor's batch is cut
+  the same way, keeping the newest lines and saying how many were dropped), framed as a harness note that says the
+  output is data from a program and not the user. It starts a turn of its own when nothing else
+  is running, and reaches the model with the next tool result when a turn is in progress.
+  Job output is screened like any tool result: the tool-result scanner, secret redaction and
+  `post_tool_use` hooks all see it. A job the model stopped itself posts nothing, and neither does
+  one whose end `job_output` already returned.
+- **`job_output`.** With no `id` it lists every job: id, state, age and the start of its command.
+  With an `id` it returns what the job printed since it was last read and whether it still runs.
+  `wait_secs` (at most 60) waits for new output or the job's end, so the model has no need to poll
+  with `sleep`. A job that ended and was already reported in a notification answers with a short
+  marker instead of its output.
+- **`job_cancel`.** Stops the job's whole process group (`SIGTERM`, then `SIGKILL` after 2 seconds)
+  and returns what it printed since it was last read, not counting what a notification already
+  carried. A job that already ended is left as it is.
+- **Output.** A job keeps its latest 1 MiB of output, in lines, with escape sequences removed and
+  secrets redacted as in a plain `shell` result; earlier lines are dropped and counted. Past 2,000
+  lines or 50 KB a read is cut as a `shell` result is.
+- **Limits.** These are fixed by the harness and nothing the model passes can raise them: at most 8
+  background jobs and monitors running at once (a ninth is refused with a message naming
+  `job_cancel`, and a command that would move to the background past the cap is stopped instead),
+  50 finished jobs kept, and no per-job deadline for a background job, since a development server
+  is a legitimate use.
+- **Who can use them.** Only the main conversation. A subagent's `shell` call never becomes a job
+  and keeps its kill-at-timeout; its `run_in_background`, `job_output`, `job_cancel` and `monitor`
+  calls are refused.
+- **Permissions.** The command is judged by the [permission pipeline](permissions.md) when
+  `shell` is called, as for any command. Moving to the background does not ask again.
+  `job_output` is read-only and names no path; `job_cancel` is an arbitrary tool because it
+  signals a process, but it can only reach a job this session started, by id.
+- **Ending.** Every job is terminated when the session ends: on exit of the terminal UI, at the
+  end of a headless run, and on `/resume` and `/branch`. `/clear` and a `/rewind` that restores the
+  conversation terminate running jobs and drop the notes they queued. The [agents panel](tui.md#the-agents-panel) lists the jobs
+  and kills one.
+
+## Monitor
+
+`monitor` runs a command as a job whose output lines are delivered to the model as notifications
+instead of being read. It is for something that prints a line when something changes: a log, a
+build, a poll loop. Arguments: `command`, `description` (shown with each notification) and
+`timeout_secs` (default 300, at most 3,600). It runs in the primary root with the same environment
+and confinement as `shell`, and is judged by the same command analysis (the floor, the guardian,
+`shell` deny and ask rules), but the read-only pre-classifier never lets it through on its own:
+allow it with a `monitor(...)` rule or leave it to the guardian.
+
+- Lines are batched for half a second, at most one notification is posted per second, each carries
+  at most 200 lines, and a monitor that has sent 1,000 notifications is terminated with a final
+  notice, so a chatty script cannot become an unbounded loop.
+- It ends at its timeout or when its command ends, with a final notice either way; `job_cancel`
+  stops it early and posts nothing. `job_output` on a monitor is refused: its lines arrive as
+  notifications, and only the listing without an `id` shows it.
+- Like the other job tools it is for the main conversation only, and it counts against the limit
+  of 8 running jobs.
 
 ## Web fetch
 

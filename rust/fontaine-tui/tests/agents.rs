@@ -386,3 +386,62 @@ async fn a_project_local_server_waits_for_workspace_trust_too() {
     .await;
     assert!(!marker(&w).exists());
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn killing_a_job_row_stops_its_process_and_tells_the_model() {
+    let server = start(vec![Route::new(
+        "root task",
+        vec![
+            Turn::tool(
+                "c1",
+                "shell",
+                json!({
+                    "command": "sleep 120 & echo $! > job.pid; wait",
+                    "run_in_background": true,
+                }),
+            ),
+            Turn::text("job started"),
+            Turn::text("saw the kill"),
+        ],
+    )])
+    .await;
+    let w = World::routed(&server.uri(), "\n[permissions]\nallow = [\"shell\"]\n");
+    let work = w.work.clone();
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("root task");
+        ui.wait_for("job started").await;
+        idle(&ui).await;
+        ctrl_t(&ui);
+        ui.wait_for("Background jobs").await;
+        let screen = ui.screen();
+        assert!(screen.contains("sleep 120"), "{screen}");
+        // With no subagents, the job is the selected row.
+        ui.press(KeyCode::Char('x'));
+        ui.wait_for("killed job-").await;
+        ui.wait_for("saw the kill").await;
+    })
+    .await;
+    let pid: u32 = std::fs::read_to_string(work.join("job.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let alive = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .map(|stat| {
+            !stat
+                .rsplit_once(") ")
+                .is_some_and(|(_, rest)| rest.starts_with('Z'))
+        })
+        .unwrap_or(false);
+    assert!(!alive, "the job's process is gone");
+    let bodies: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .collect();
+    assert!(bodies.last().unwrap().contains("was killed by the user"));
+}

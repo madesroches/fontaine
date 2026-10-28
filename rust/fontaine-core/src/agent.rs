@@ -9,13 +9,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use fontaine_agents::registry::AgentTypes;
-use fontaine_agents::tree::AgentTree;
+use fontaine_agents::tree::{AgentTree, NotificationKind};
 use fontaine_guardian::Profile;
 use fontaine_mcp::Connected;
 use fontaine_tools::builtins::Seen;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::{CallView, ROOT_AGENT};
 use fontaine_tools::git_bash::GitBash;
+use fontaine_tools::jobs::Jobs;
 use fontaine_tools::lock::write_recovering;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::RiskClass;
@@ -205,6 +206,9 @@ pub(crate) struct Setup {
     /// The SearXNG process `[websearch] command` starts, created once so a registry rebuild
     /// reuses it. Dropping the runtime stops it.
     searxng: Arc<SearxngChild>,
+    /// The session's background jobs, created once so a registry rebuild keeps the running
+    /// ones. Dropping the runtime terminates them.
+    pub(crate) jobs: Arc<Jobs>,
 }
 
 /// One line when the main model has no way to search: no provider search for its account, no
@@ -490,38 +494,69 @@ impl AgentRuntime {
         Ok(text)
     }
 
-    /// The reports and messages queued for the main conversation, as a prompt for a turn of
-    /// its own. They pass through the result pipeline like any tool result.
+    /// The reports, messages and job notes queued for the main conversation, as a prompt for a
+    /// turn of its own. They pass through the result pipeline like any tool result: agent notes
+    /// as `agent` results, job output as `job_output` results.
     pub async fn notification_prompt(&self) -> Option<String> {
         let tree = self.state.agents();
         let notes = tree.take_notifications(ROOT_AGENT);
         if notes.is_empty() {
             return None;
         }
+        // No model call produced these results, so hooks get no tool_use_id for them.
+        self.state.clear_current_call(ROOT_AGENT);
+        let (jobs, agents): (Vec<_>, Vec<_>) = notes
+            .iter()
+            .partition(|note| note.kind == NotificationKind::Job);
+        let mut screened = Vec::new();
+        if !agents.is_empty() {
+            screened.push(
+                self.screened_notes("agent", RiskClass::Arbitrary, &agents)
+                    .await,
+            );
+        }
+        if !jobs.is_empty() {
+            screened.push(
+                self.screened_notes("job_output", RiskClass::ReadOnly, &jobs)
+                    .await,
+            );
+        }
+        let news = if jobs.is_empty() {
+            "agents you started or that wrote to you have news"
+        } else {
+            "agents or background jobs you started have news"
+        };
+        Some(format!(
+            "[Harness note, not the user's words: {news}.]\n\n{}",
+            screened.join("\n\n")
+        ))
+    }
+
+    async fn screened_notes(
+        &self,
+        tool: &str,
+        risk: RiskClass,
+        notes: &[&fontaine_agents::tree::Notification],
+    ) -> String {
         let text = notes
             .iter()
-            .map(fontaine_agents::tree::Notification::render)
+            .map(|note| note.render())
             .collect::<Vec<_>>()
             .join("\n\n");
         let args = json!({});
-        // No model call produced this result, so hooks get no tool_use_id for it.
-        self.state.clear_current_call(ROOT_AGENT);
         let view = CallView {
-            tool: "agent",
-            risk: RiskClass::Arbitrary,
+            tool,
+            risk,
             args: &args,
             agent: ROOT_AGENT,
             annotations: None,
             requires_user_interaction: false,
         };
         let (screened, _) = self.results.run(view, Ok(ToolOutput::text(text))).await;
-        let screened = match screened {
+        match screened {
             Ok(output) => output.render(),
             Err(error) => error.model_output().render(),
-        };
-        Some(format!(
-            "[Harness note, not the user's words: agents you started or that wrote to you have news.]\n\n{screened}"
-        ))
+        }
     }
 
     /// The prompt for a turn on a scheduled task that came due. It is a harness note, not the
@@ -757,10 +792,11 @@ impl AgentRuntime {
     /// finished subagent's report is undelivered, which would otherwise reach the empty context.
     pub async fn clear_conversation(&self) -> Result<(), ClearError> {
         let agents = self.state.agents();
-        if agents.any_running() || agents.has_notifications(ROOT_AGENT) {
+        if agents.any_running() || agents.has_agent_notifications() {
             return Err(ClearError::SubagentsRunning);
         }
         self.session.clear().await?;
+        self.end_jobs().await;
         self.state.append(Record::ContextCleared {});
         if let Err(e) = self.session.todos().clear() {
             self.approver
@@ -778,6 +814,18 @@ impl AgentRuntime {
         // The goal was set under the intent this clear drops.
         self.clear_goal();
         Ok(())
+    }
+
+    /// Terminates the running background jobs and drops the notes they queued: they belong to
+    /// the conversation that is about to be emptied.
+    pub(crate) async fn end_jobs(&self) {
+        self.setup.jobs.terminate_all().await;
+        self.state.agents().discard_job_notifications();
+    }
+
+    /// The session's background jobs, for the surface that lists and kills them.
+    pub fn jobs(&self) -> &Arc<Jobs> {
+        &self.setup.jobs
     }
 
     /// `/context`: what fills the window now, estimated.

@@ -767,3 +767,77 @@ async fn a_deny_rule_beats_a_server_marker() {
     assert_eq!(rig.audit()[0].tier, Tier::DenyRule);
     assert_eq!(rig.approver.asked(), 0);
 }
+
+#[test]
+fn a_shell_deny_or_ask_rule_also_covers_monitor_but_an_allow_rule_does_not() {
+    let f = Fixture::new();
+    for posture in [Posture::Deny, Posture::Ask] {
+        assert!(f.hit("shell(git push)", "monitor", shell("git push"), posture));
+        assert!(f.hit("shell(git push)", "monitor", shell("ls; git push"), posture));
+        assert!(f.hit("shell", "monitor", shell("anything"), posture));
+        assert!(!f.hit("shell(git push)", "monitor", shell("git status"), posture));
+        // The rule names the shell; it does not reach tools that run no command line.
+        assert!(!f.hit("shell", "job_output", json!({}), posture));
+    }
+    assert!(!f.hit(
+        "shell(git status)",
+        "monitor",
+        shell("git status"),
+        Posture::Allow
+    ));
+    assert!(f.hit(
+        "monitor(git status)",
+        "monitor",
+        shell("git status"),
+        Posture::Allow
+    ));
+    assert_eq!(
+        fontaine_tools::descriptor::find_claude("Monitor").map(|d| d.name),
+        Some("monitor")
+    );
+}
+
+#[test]
+fn a_monitor_is_broad_code_execution_like_the_shell() {
+    for text in ["monitor", "monitor(bash)", "monitor(python3 *)"] {
+        assert!(is_broad_code_execution(&rule(text)), "{text}");
+    }
+    assert!(!is_broad_code_execution(&rule("monitor(npm test)")));
+}
+
+#[tokio::test]
+async fn a_shell_deny_rule_stops_a_monitor_and_an_allow_rule_for_the_shell_does_not_allow_one() {
+    let settings = "[permissions]\nallow = [\"shell(touch x)\"]\ndeny = [\"shell(git push)\"]\n";
+    let rig = Rig::with(Options::new(DontAsk).settings(settings));
+    let d = rig
+        .check(
+            "monitor",
+            json!({"command": "git push", "description": "d"}),
+        )
+        .await;
+    assert!(!allowed(&d));
+    assert_eq!(rig.audit().last().unwrap().tier, Tier::DenyRule);
+    let d = rig
+        .check("monitor", json!({"command": "touch x", "description": "d"}))
+        .await;
+    assert!(!allowed(&d), "a shell allow rule does not allow monitor");
+    let d = rig.check("shell", shell("touch x")).await;
+    assert!(allowed(&d));
+}
+
+#[tokio::test]
+async fn the_floor_applies_to_monitor_as_it_does_to_the_shell() {
+    let allow_all = "[permissions]\nallow = [\"shell\", \"shell(rm *)\", \"monitor\"]\n";
+    let rig = Rig::with(Options::new(DontAsk).settings(allow_all));
+    for tool in ["shell", "monitor"] {
+        let d = rig
+            .check(tool, json!({"command": "rm -rf /", "description": "d"}))
+            .await;
+        assert!(!allowed(&d), "{tool}");
+        assert_eq!(
+            rig.audit().last().unwrap().tier,
+            Tier::CriticalPath,
+            "{tool}"
+        );
+    }
+}
