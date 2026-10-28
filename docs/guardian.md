@@ -277,7 +277,9 @@ model = "work/claude-haiku-5-5"
   to switch to `manual`. In a headless run every adjudication is denied with `GuardianUnavailable`,
   and the `init` event and stderr say so.
 - For endpoints with no catalog match (a custom `openai-compatible` endpoint, Ollama, an
-  `opencode-go` account), only a model set explicitly in `guardian.model` is used. A small local
+  `opencode-go` account), only a model set explicitly in `guardian.model` is used, except for the
+  validated list's own `opencode-go` entry (`claude-haiku-5-5`), which an `opencode-go` account
+  that serves it picks up as its default guardian. A small local
   model can be both the agent and the guardian; judge it by its own scorecard run. The guardian
   prompt is longer than Ollama's default 4096-token window, so an `ollama` account requests
   `context_tokens` (16384 by default) and the daemon refuses a prompt that still does not fit; the

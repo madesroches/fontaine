@@ -17,7 +17,10 @@ All notable changes are recorded here. The format follows
   with its capabilities, a `400 ... does not support tools` denial now says what is missing, and the
   audit log gains `verdict_transport`. `fontaine-evals --verdict-transport tool|schema|auto` scores
   either path, and `guardian_models.toml` entries may record the `transport` they were measured
-  on.
+  on. The list now has its first entry, `claude-haiku-5-5` on an `opencode-go` account (99.2%
+  catch, 3.9% false-deny, p95 2.4 s), which an `opencode-go` account that serves it uses as the
+  default guardian when none is set; the scorecards of the other local and hosted models are in
+  `evals/scorecards/`.
 - `notebook_edit` edits one cell of a Jupyter notebook (`replace`, `insert` or `delete`, by cell id
   or `cell-N`); a code cell's outputs are cleared when its source is replaced. `read` shows a
   `.ipynb` as its cells, ids and text outputs, `NotebookEdit` rules and `allowed-tools` entries now
