@@ -620,8 +620,19 @@ fn sorted_entries(dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn skill_components(dir: &Path) -> Vec<PluginFile> {
-    sorted_entries(dir)
+/// Skills at a base the manifest or default layout names: a file is one skill, a directory
+/// holds `<name>/SKILL.md` subdirectories.
+fn skill_components(base: &Path) -> Vec<PluginFile> {
+    if base.is_file() {
+        return (base.extension().is_some_and(|e| e == "md"))
+            .then(|| PluginFile {
+                path: base.to_path_buf(),
+                segments: Vec::new(),
+            })
+            .into_iter()
+            .collect();
+    }
+    sorted_entries(base)
         .into_iter()
         .filter(|p| p.is_dir())
         .filter_map(|child| {
@@ -635,6 +646,12 @@ fn skill_components(dir: &Path) -> Vec<PluginFile> {
 }
 
 fn markdown_files(dir: &Path, segments: &[String]) -> Vec<PluginFile> {
+    if dir.is_file() {
+        return vec![PluginFile {
+            path: dir.to_path_buf(),
+            segments: segments.to_vec(),
+        }];
+    }
     sorted_entries(dir)
         .into_iter()
         .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "md"))
@@ -646,6 +663,15 @@ fn markdown_files(dir: &Path, segments: &[String]) -> Vec<PluginFile> {
 }
 
 fn walk_markdown(dir: &Path, segments: &mut Vec<String>, out: &mut Vec<PluginFile>) {
+    if dir.is_file() {
+        if dir.extension().is_some_and(|e| e == "md") {
+            out.push(PluginFile {
+                path: dir.to_path_buf(),
+                segments: segments.clone(),
+            });
+        }
+        return;
+    }
     for entry in sorted_entries(dir) {
         if entry.is_dir() {
             let name = entry

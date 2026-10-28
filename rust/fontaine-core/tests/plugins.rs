@@ -268,6 +268,49 @@ fn a_plugin_agent_naming_an_external_server_is_skipped_with_a_warning() {
 }
 
 #[test]
+fn manifest_paths_naming_files_load_as_components() {
+    let w = World::new();
+    let root = checkout(&w, "team", "p");
+    manifest(
+        &root,
+        "p",
+        r#", "skills": ["./skills/scan.md", "./skills/extra"], "commands": ["./commands/init.md"], "agents": ["./agents/audit.md"], "outputStyles": ["./styles/terse.md"]"#,
+    );
+    write(
+        &root.join("skills/scan.md"),
+        "---\ndescription: scans\n---\nScan",
+    );
+    write(
+        &root.join("skills/extra/SKILL.md"),
+        "---\ndescription: extra\n---\nExtra",
+    );
+    write(
+        &root.join("commands/init.md"),
+        "---\ndescription: inits\n---\nInit",
+    );
+    write(
+        &root.join("agents/audit.md"),
+        "---\ndescription: audits\n---\nAudit",
+    );
+    write(
+        &root.join("styles/terse.md"),
+        "---\ndescription: terse\n---\nStyle",
+    );
+
+    let build = build_plugin(&root, "p", &context(&w.work)).unwrap();
+    assert_eq!(build.summary.skills, 3); // two skills/ + one commands/
+    assert_eq!(build.summary.agents, 1);
+    assert_eq!(build.summary.styles, 1);
+
+    let extensions = load_extensions(&w, std::slice::from_ref(&build.dir));
+    assert!(extensions.skill("p:scan").is_some());
+    assert!(extensions.skill("p:extra").is_some());
+    assert!(extensions.skill("p:init").is_some());
+    assert_eq!(extensions.agent_types[0].name, "p:audit");
+    assert_eq!(extensions.output_styles[0].name, "p:terse");
+}
+
+#[test]
 fn two_components_of_one_plugin_cannot_land_on_one_name() {
     let w = World::new();
     let root = checkout(&w, "team", "p");

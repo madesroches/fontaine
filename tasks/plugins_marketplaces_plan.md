@@ -15,8 +15,32 @@
   `expand_vars` (`plugins.rs`), `inspect_err` instead of `map_err` cleanup in the CLI, a
   needless borrow at the two `materialize` call sites, a `cloned_ref_to_slice_refs` in
   `tests/plugins.rs`, and `/plugins` moved after `/plan` in the `BUILTINS` table (the
-  sorted-by-name test caught it). Status: **done, pending only the live-network manual checks
-  below (Manual Verification 1–2), which are a human step.**
+  sorted-by-name test caught it).
+- 2026-10-28: **Manual Verification 1–2 done.** Check 1 (local marketplace): add/install/list
+  against a real local git marketplace, both pins moved through `marketplace update` +
+  `plugin update`, and a real headless `fontaine -p` run loaded and invoked the namespaced
+  `review:review` skill (local Ollama model, fully offline). A PreToolUse hook added to the
+  fixture fired on a real tool call with `${CLAUDE_PLUGIN_ROOT}` expanded to the installed
+  checkout. Check 2 (real HTTPS marketplace): `claude-market/marketplace` added and installed
+  unmodified; `plugin-builder:init` loaded and ran in a headless session. Real-world findings
+  and fixes:
+  - **Fixed: manifest component paths naming files were dropped.** Real manifests (e.g.
+    claude-market's `plugin-builder`) list `skills`/`commands`/`agents`/`outputStyles` as
+    `.md` file paths, not directories; the loaders only scanned directories, so the plugin
+    installed with 0 components. `skill_components`, `walk_markdown` and `markdown_files`
+    now accept a file base, and a manifest-named skill file takes its default name from the
+    file stem (a `skills/<name>/SKILL.md` keeps its directory name). Covered by a new test.
+  - Per the recorded Decisions, the official Anthropic marketplaces (`anthropics/claude-
+    plugins-official`, `anthropics/claude-plugins-community`) are **refused at `marketplace
+    add`** because their catalogs carry `git-subdir` source entries — correct per plan, but
+    it means the most prominent real marketplaces do not load. Revisit as a follow-up if
+    users hit it.
+  - Real agent files ship Claude Code model aliases (`model: haiku`), which install refuses
+    per the tighten-only rules (a plugin agent cannot pick a model). Also per plan; noted as
+    a portability cost.
+  - Minor: `plugin marketplace list`'s plugin count is installed plugins per marketplace,
+    not catalog entries.
+  Status: **done.**
 
 ## Overview
 

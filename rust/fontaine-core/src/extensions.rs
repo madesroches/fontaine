@@ -536,13 +536,21 @@ fn load_plugin(
     };
 
     for file in &plugin.skills {
-        let dir_name = file
-            .path
-            .parent()
-            .and_then(Path::file_name)
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let mut skill = load_skill(&file.path, &dir_name, Scope::Plugin)?;
+        // `skills/<name>/SKILL.md` names the skill after its directory; a manifest path naming
+        // a bare file names it after the file stem.
+        let default_name = if file.path.file_name().is_some_and(|n| n == SKILL_FILE) {
+            file.path
+                .parent()
+                .and_then(Path::file_name)
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        } else {
+            file.path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let mut skill = load_skill(&file.path, &default_name, Scope::Plugin)?;
         let name = namespaced(&plugin.name, &file.segments, &skill.name);
         take(name.clone(), &file.path)?;
         skill.name = name;
