@@ -49,7 +49,8 @@ pub enum Record {
         to: String,
     },
     /// The human turned the guardian and the permission floor off or back on with
-    /// `/guardian-disable` and `/guardian-enable`. Session-scoped, never persisted.
+    /// `/guardian-disable` and `/guardian-enable`. The toggle state is session-scoped and never
+    /// carried into another session; the record itself is kept in this session's ledger.
     GuardianOff {
         off: bool,
     },
