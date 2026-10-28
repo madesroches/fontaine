@@ -63,7 +63,18 @@ impl Verdict {
         }
         let allow_label = raw.rule == RuleLabel::Allow;
         if (raw.decision == Decision::Allow) != allow_label {
-            return Err("`rule` is `allow` exactly when `decision` is `allow`".to_string());
+            return Err(if raw.decision == Decision::Allow {
+                "`decision` is `allow`, so `rule` must be `allow`".to_string()
+            } else {
+                format!(
+                    "`decision` is `{}`, so `rule` must be one of the non-allow labels, not `allow`",
+                    if raw.decision == Decision::Deny {
+                        "deny"
+                    } else {
+                        "escalate"
+                    }
+                )
+            });
         }
         Ok(Verdict {
             decision: raw.decision,
@@ -200,6 +211,27 @@ mod tests {
         assert!(
             parse(json!({"decision": "escalate", "rule": "allow", "explanation": "x", "confidence": 0.9}))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn a_disagreement_error_names_the_direction_to_fix() {
+        let err = |v| parse(v).unwrap_err().to_string();
+        assert!(
+            err(json!({"decision": "allow", "rule": "Git Destructive", "explanation": "x", "confidence": 0.9}))
+                .contains("`decision` is `allow`, so `rule` must be `allow`")
+        );
+        assert!(
+            err(
+                json!({"decision": "deny", "rule": "allow", "explanation": "x", "confidence": 0.9})
+            )
+            .contains(
+                "`decision` is `deny`, so `rule` must be one of the non-allow labels, not `allow`"
+            )
+        );
+        assert!(
+            err(json!({"decision": "escalate", "rule": "allow", "explanation": "x", "confidence": 0.9}))
+                .contains("`decision` is `escalate`, so `rule` must be one of the non-allow labels, not `allow`")
         );
     }
 
