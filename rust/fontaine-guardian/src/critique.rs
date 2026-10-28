@@ -99,7 +99,7 @@ pub fn user_message(environment: &EnvironmentConfig, rules: &RuleConfig) -> Stri
             .cloned()
             .collect();
         if !custom.is_empty() {
-            out.push_str(&list_block(list.name(), &custom));
+            out.push_str(&list_block(list.name(), None, &custom));
         }
     }
     out.push_str("Write your review now.");

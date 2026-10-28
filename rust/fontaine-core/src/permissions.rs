@@ -33,7 +33,7 @@ use crate::floor::{self, CriticalEnv};
 use crate::gate::{
     DeniedCall, RetrySource, ScreenStage, SessionState, UNREGISTERED_AGENT, permission_mode,
 };
-use crate::ledger::Record;
+use crate::ledger::{Existence, Record};
 use crate::permission_rules::{
     CallContext, Posture, RuleSource, SourcedRule, is_broad_code_execution, matches, parse_rule,
     propose,
@@ -41,6 +41,7 @@ use crate::permission_rules::{
 use crate::preview::{self, DiffPreview};
 use crate::runtime_error::RuntimeError;
 use crate::tier::Tier;
+use crate::trust::{self, Tracking};
 use crate::user_config;
 
 const TARGET: &str = "fontaine::telemetry";
@@ -872,7 +873,11 @@ impl PermissionPipeline {
             PermissionMode::Manual => self.would_prompt(mode, needs_approval()),
             // Plan mode never edits (refused above); what is left is consequential, and the
             // guardian judges it as it does in `auto`.
-            PermissionMode::Plan | PermissionMode::Auto => Verdict::Guardian,
+            PermissionMode::Plan => Verdict::Guardian,
+            PermissionMode::Auto => match self.unjudged_edit(call, args) {
+                Some(tier) => Verdict::Allow { tier, rule: None },
+                None => Verdict::Guardian,
+            },
             PermissionMode::AcceptEdits => {
                 if edit_class && located.is_ok() {
                     Verdict::Allow {
@@ -883,6 +888,64 @@ impl PermissionPipeline {
                     self.would_prompt(mode, needs_approval())
                 }
             }
+        }
+    }
+
+    /// The tier of an `auto` edit that needs no guardian verdict: a file-tool write into the
+    /// session scratch directory, or an edit to a file git tracks, a file that does not exist yet
+    /// or one this session created. Only reached after the whole floor and the hooks have passed,
+    /// and a protected path never gets here. Anything uncertain answers `None`, which leaves the
+    /// call to the guardian.
+    fn unjudged_edit(&self, call: &CallView<'_>, args: &Value) -> Option<Tier> {
+        if call.risk != RiskClass::WorkspaceWrite
+            || !matches!(call.tool, "edit" | "write" | "notebook_edit")
+        {
+            return None;
+        }
+        let given = args.get("path")?.as_str()?;
+        let scope = self.state.scope();
+        let (root, resolved) = scope.find(given).ok()?;
+        let edits = self.state.auto_edits;
+
+        if edits.scratch
+            && let Some(scratch) = &self.state.scratch
+            && floor::under(&resolved, scratch).is_some()
+        {
+            return Some(Tier::ScratchWrite);
+        }
+        if !edits.tracked || root != 0 {
+            return None;
+        }
+        let primary = scope.primary();
+        if let Some(memory) = &self.state.memory_root
+            && floor::under(&resolved, memory).is_some()
+        {
+            return None;
+        }
+        // Relative to the root, so a directory named `rules` above the workspace means nothing.
+        let excluded = |path: &Path| {
+            floor::under(path, primary)
+                .is_some_and(|rel| floor::is_instruction_or_ci_path(&rel, floor::FOLD_CASE))
+        };
+        if excluded(&resolved) || excluded(&scope.written(given)) {
+            return None;
+        }
+        match trust::tracking(primary, &resolved) {
+            Tracking::Tracked => Some(Tier::TrackedEdit),
+            Tracking::Untracked => {
+                let absent = matches!(
+                    std::fs::symlink_metadata(&resolved),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound
+                );
+                let created = self
+                    .state
+                    .ledger
+                    .view()
+                    .existence(&resolved.to_string_lossy())
+                    == Existence::CreatedThisSession;
+                (absent || created).then_some(Tier::TrackedEdit)
+            }
+            Tracking::Unknown => None,
         }
     }
 
@@ -1021,6 +1084,11 @@ impl PermissionPipeline {
         Self::note(tier, Decision::Allow);
         self.emit(self.record(cx, tier, Decision::Allow, rule, None));
         self.state.append(self.action(cx, tier));
+        // Routine edits between denials keep a run of them from pausing `auto` for an absent
+        // user; the guardian breaker's pause itself is only lifted by a human.
+        if matches!(tier, Tier::TrackedEdit | Tier::ScratchWrite) {
+            self.state.guardian_allowed();
+        }
         GateDecision::Allow {
             args: cx.args.clone(),
         }

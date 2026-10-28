@@ -11,6 +11,10 @@ pub enum Tier {
     ProtectedPath,
     Hook,
     ReadOnlyFastPath,
+    /// `auto` only: an edit to a tracked, new or session-created file, after the floor.
+    TrackedEdit,
+    /// `auto` only: a file-tool write inside the session scratch directory, after the floor.
+    ScratchWrite,
     Tier05,
     AllowRule,
     Mode,
@@ -22,13 +26,15 @@ pub enum Tier {
 }
 
 impl Tier {
-    pub const ALL: [Tier; 14] = [
+    pub const ALL: [Tier; 16] = [
         Tier::DenyRule,
         Tier::AskRule,
         Tier::CriticalPath,
         Tier::ProtectedPath,
         Tier::Hook,
         Tier::ReadOnlyFastPath,
+        Tier::TrackedEdit,
+        Tier::ScratchWrite,
         Tier::Tier05,
         Tier::AllowRule,
         Tier::Mode,
@@ -47,6 +53,8 @@ impl Tier {
             Tier::ProtectedPath => "protected_path",
             Tier::Hook => "hook",
             Tier::ReadOnlyFastPath => "read_only_fast_path",
+            Tier::TrackedEdit => "tracked_edit",
+            Tier::ScratchWrite => "scratch_write",
             Tier::Tier05 => "tier05",
             Tier::AllowRule => "allow_rule",
             Tier::Mode => "mode",

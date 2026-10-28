@@ -121,6 +121,7 @@ const CHECKPOINTS: &str =
     "checkpoint storage is a recovery aid the user sizes, so only the user file sets it";
 const GOAL: &str =
     "goal turns run unattended, so only the user file or --settings sets how long they may run";
+const AUTO_EDITS: &str = "only `false` may be set here: a repository cannot widen what `auto` lets through without a guardian verdict";
 const TELEMETRY: &str = "only `enabled = false` may be set here";
 
 fn is_tightening_mode(v: &toml::Value) -> bool {
@@ -166,6 +167,8 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::any("permissions.ask"),
     Rule::user_trust("permissions.allow", TIGHTEN),
     Rule::user_trust("permissions.additional_directories", TIGHTEN),
+    Rule::if_project_local("permissions.auto_tracked_edits", is_false, AUTO_EDITS),
+    Rule::if_project_local("permissions.auto_scratch_writes", is_false, AUTO_EDITS),
     Rule::any("hooks.pre_tool_use"),
     Rule::any("hooks.post_tool_use"),
     Rule::any("hooks.permission_denied"),
@@ -470,6 +473,16 @@ mod tests {
             "permissions.additional_directories",
             "[permissions]\nadditional_directories = [\"/tmp\"]\n",
             None,
+        ),
+        (
+            "permissions.auto_tracked_edits",
+            "[permissions]\nauto_tracked_edits = false\n",
+            Some("[permissions]\nauto_tracked_edits = true\n"),
+        ),
+        (
+            "permissions.auto_scratch_writes",
+            "[permissions]\nauto_scratch_writes = false\n",
+            Some("[permissions]\nauto_scratch_writes = true\n"),
         ),
         (
             "hooks.pre_tool_use",

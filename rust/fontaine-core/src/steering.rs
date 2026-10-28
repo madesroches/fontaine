@@ -135,6 +135,7 @@ mod tests {
             auto: AutoContext::default(),
             agents: Arc::new(AgentTree::new(Limits::default())),
             reveal_mcp_names: false,
+            auto_edits: crate::gate::AutoEdits::default(),
         }));
         let steering = Steering::default();
         (

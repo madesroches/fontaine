@@ -81,6 +81,22 @@ pub struct ChildRestrictions {
     pub deny: Vec<Rule>,
 }
 
+/// Which edits `auto` lets through after the floor without asking the guardian.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AutoEdits {
+    pub tracked: bool,
+    pub scratch: bool,
+}
+
+impl Default for AutoEdits {
+    fn default() -> Self {
+        AutoEdits {
+            tracked: true,
+            scratch: true,
+        }
+    }
+}
+
 pub struct StateParams {
     pub session_id: String,
     pub mode: PermissionMode,
@@ -107,6 +123,7 @@ pub struct StateParams {
     pub agents: Arc<AgentTree>,
     /// Telemetry may carry MCP server and tool names (`log_tool_details`).
     pub reveal_mcp_names: bool,
+    pub auto_edits: AutoEdits,
 }
 
 /// The guardian's standing inputs, fixed for the session: the expanded rule lists, the
@@ -273,6 +290,7 @@ pub struct SessionState {
     mode: Arc<RwLock<PermissionMode>>,
     agents: Arc<AgentTree>,
     reveal_mcp_names: bool,
+    pub auto_edits: AutoEdits,
     decisions_by_agent: Mutex<HashMap<String, std::collections::VecDeque<DecisionRecord>>>,
     waiting: Mutex<HashMap<String, usize>>,
     agent_logs: Mutex<HashMap<String, Vec<String>>>,
@@ -319,6 +337,7 @@ impl SessionState {
             mode,
             agents: params.agents,
             reveal_mcp_names: params.reveal_mcp_names,
+            auto_edits: params.auto_edits,
             decisions_by_agent: Mutex::default(),
             waiting: Mutex::default(),
             agent_logs: Mutex::default(),
@@ -830,6 +849,7 @@ mod tests {
             auto: AutoContext::default(),
             agents: Arc::new(AgentTree::new(Limits::default())),
             reveal_mcp_names: false,
+            auto_edits: AutoEdits::default(),
         }));
         let holder = state.clone();
         let _ = std::thread::spawn(move || {

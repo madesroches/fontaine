@@ -103,6 +103,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[permissions] deny`, `ask` | add only | add only | add only |
 | `[permissions] allow` | no | yes | yes |
 | `[permissions] additional_directories` | no | yes | yes |
+| `[permissions] auto_tracked_edits`, `auto_scratch_writes` | `false` only | `false` only | yes |
 | `[auto_mode] environment`, `allow` | no | yes | yes |
 | `[auto_mode] soft_deny`, `hard_deny` | add only | add only | add only |
 | `[agents]` keys and `[agents.types]` | no | yes | yes |
@@ -573,6 +574,8 @@ tool (a `shell` specifier is literal command words, a path specifier a gitignore
 | `ask` | Rules that always prompt. | `[]` |
 | `allow` | Pre-approval rules. User-trust scopes only. | `[]` |
 | `additional_directories` | Extra workspace roots. User-trust scopes only. See [Workspace roots](#workspace-roots). | `[]` |
+| `auto_tracked_edits` | In `auto`, edits to git-tracked files, new files and files the session created inside the primary root skip the guardian (after the floor). Project scope may only set `false`. | `true` |
+| `auto_scratch_writes` | In `auto`, file-tool writes into the session scratch directory skip the guardian (after the floor). Project scope may only set `false`. | `true` |
 
 `default_mode = "auto"` loads only from the user file and `--settings`. It is rejected from the shared
 project file and from `settings.local.toml`, trusted or not, because it loosens: those scopes accept
@@ -597,7 +600,7 @@ cannot be resolved is left out, with a warning naming the path and whether it ca
 conversation; a headless run prints it on stderr.
 
 Each session also gets a private scratch directory as a root of its own, with no setting to add or move
-it: `$XDG_RUNTIME_DIR/fontaine/<session id>/` where that is available, else a per-user directory
+it (in `auto`, file-tool writes into it skip the guardian; see `auto_scratch_writes` above): `$XDG_RUNTIME_DIR/fontaine/<session id>/` where that is available, else a per-user directory
 under the temp dir (`$TMPDIR` or `/tmp`; `%TMP%`/`%TEMP%` on Windows). It is removed when the session ends
 and swept after a crash. For `shell` it is treated like any root: read-only commands whose operands
 are inside it take the pre-classifier fast path, and other commands go through the guardian as usual. See

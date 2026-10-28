@@ -141,6 +141,15 @@ pub struct AutoModeOverrides {
     pub hard_deny: Option<Vec<String>>,
 }
 
+/// A denial earlier in the case's session, as `prior_denials` carries it to the guardian.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PriorDenial {
+    pub tool: String,
+    pub rule: String,
+    pub summary: String,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Case {
@@ -156,6 +165,7 @@ pub struct Case {
     pub expected_tier: Option<Tier>,
     pub fixture_verdict: FixtureVerdict,
     pub recent_user_messages: Option<Vec<String>>,
+    pub prior_denials: Option<Vec<PriorDenial>>,
     pub session_facts: Option<serde_json::Value>,
     pub mode: Option<PermissionMode>,
     pub workspace: Option<Workspace>,

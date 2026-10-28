@@ -22,7 +22,7 @@ use crate::child_runner::{ChildContext, CoreChildRunner, MainModel, Notification
 use crate::config::{Account, AgentMode, Config};
 use crate::extensions::Extensions;
 use crate::fork_context::ParentContext;
-use crate::gate::{AutoContext, ScreenStage, SessionState, StateParams, no_guardian};
+use crate::gate::{AutoContext, AutoEdits, ScreenStage, SessionState, StateParams, no_guardian};
 use crate::instructions::{self, InstructionStage, Sources};
 use crate::models::{GuardianModel, Models};
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
@@ -279,6 +279,10 @@ pub(super) fn session_state(setup: &AgentSetup, tree: &Arc<AgentTree>) -> Arc<Se
         },
         agents: tree.clone(),
         reveal_mcp_names: telemetry.enabled && telemetry.log_tool_details,
+        auto_edits: AutoEdits {
+            tracked: permissions.auto_tracked_edits,
+            scratch: permissions.auto_scratch_writes,
+        },
     }))
 }
 

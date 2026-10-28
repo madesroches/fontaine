@@ -475,6 +475,8 @@ pub struct PermissionsSection {
     pub ask: Option<Vec<String>>,
     pub allow: Option<Vec<String>>,
     pub additional_directories: Option<Vec<String>>,
+    pub auto_tracked_edits: Option<bool>,
+    pub auto_scratch_writes: Option<bool>,
 }
 
 /// Where a hook or an MCP server came from, which decides whether it needs workspace trust and
@@ -1314,6 +1316,11 @@ pub struct Permissions {
     pub ask: Vec<SourcedRule>,
     pub allow: Vec<SourcedRule>,
     pub additional_directories: Vec<String>,
+    /// In `auto`, edits to tracked files, new files and files this session created skip the
+    /// guardian.
+    pub auto_tracked_edits: bool,
+    /// In `auto`, file-tool writes inside the session scratch directory skip the guardian.
+    pub auto_scratch_writes: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1581,6 +1588,8 @@ impl Config {
                 ask: Vec::new(),
                 allow: Vec::new(),
                 additional_directories: Vec::new(),
+                auto_tracked_edits: true,
+                auto_scratch_writes: true,
             },
             hooks: Hooks::default(),
             mcp_servers: BTreeMap::new(),
@@ -1744,6 +1753,12 @@ impl Config {
                 &mut t.additional_directories,
                 p.additional_directories.as_deref(),
             );
+            if let Some(v) = p.auto_tracked_edits {
+                t.auto_tracked_edits = v;
+            }
+            if let Some(v) = p.auto_scratch_writes {
+                t.auto_scratch_writes = v;
+            }
         }
         if let Some(h) = &s.hooks {
             union_hooks(

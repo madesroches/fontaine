@@ -31,9 +31,12 @@ impl Decision {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawVerdict {
-    /// `allow`, `deny` or `escalate`.
+    /// `allow`, `deny` or `escalate`. It must agree with `rule`: `allow` goes with the `allow`
+    /// label only, `deny` and `escalate` with any other label.
     decision: Decision,
-    /// `allow` exactly when the decision is `allow`; otherwise the best-fitting label.
+    /// `allow` exactly when the decision is `allow`; otherwise the best-fitting label. For
+    /// example `decision` `allow` takes `rule` `allow`, and `decision` `deny` takes a label such
+    /// as `Data Exfiltration`, never `allow`.
     rule: RuleLabel,
     /// One to three sentences, shown to the user and the agent.
     explanation: String,

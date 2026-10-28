@@ -43,9 +43,13 @@ all tests pass:
 - **The deterministic floor (`deny → ask → critical-path → protected-path`) gates EVERY mode** — no mode,
   flag, or verdict reaches past it. No regex matching on tool arguments anywhere.
 - **The fast path is earned by Fontaine-enforced workspace containment, not by a label.**
-  Read-only ≠ safe; MCP-declared `readOnlyHint` never skips the guardian. The one exception is the
-  opt-in, user-scope `[guardian.screen] allow_threshold`: a verdict of the composed guardian (a
-  steering-hardened local screen), never before the floor; see the master plan's Decisions.
+  Read-only ≠ safe; MCP-declared `readOnlyHint` never skips the guardian. There are two
+  exceptions. The opt-in, user-scope `[guardian.screen] allow_threshold`: a verdict of the composed
+  guardian (a steering-hardened local screen), never before the floor. And in `auto`, after the
+  floor and hooks, file-tool edits to git-tracked, new or session-created files in the primary
+  root (`tracked_edit`) and file-tool writes into the session scratch directory (`scratch_write`);
+  instruction files and `.github/` are excluded, and project scope can only switch them off. See
+  the master plan's Decisions.
 - **A child subagent's effective mode is never looser than its parent's.**
 - **Project-scope config can only tighten** (deny/ask additions); loosening keys are
   user-scope only. Project-defined executables (MCP servers, hooks, skill commands) load as in

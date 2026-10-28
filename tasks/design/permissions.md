@@ -135,7 +135,7 @@ second record with `tier = human`.
 **Tier enum** (defined once, on `DecisionRecord.tier`; the audit log, the `tool_decision` telemetry
 event, the headless `gate_decision` event and the eval `expected_tier` all carry exactly these values,
 with no projection or renaming): `deny_rule` | `ask_rule` | `critical_path` | `protected_path` (the
-floor, in check order) | `hook` | `read_only_fast_path` (step 4) | `tier05` (step 5) | `allow_rule`
+floor, in check order) | `hook` | `read_only_fast_path` (step 4) | `tracked_edit` and `scratch_write` (`auto` only, after the floor and hooks, before the guardian) | `tier05` (step 5) | `allow_rule`
 (step 5a) | `mode` (step 6: manual/acceptEdits prompt, acceptEdits edit auto-allow) | `guardian` (steps 7, 9) |
 `screen` (step 7/9: the screen stage's stop or allow) | `dont_ask` (step 8) | `plan_block` (step 9 edit block) | `human`. Two outcomes map explicitly: a prompt (or headless Deny) caused by the loop-breaker pause carries `guardian`; the pre-Phase-4 plan-mode step-9 fall-through prompt (and its headless Deny) carries `mode`. A protected-path call routed to the guardian in `auto` records `tier = guardian`; in manual/acceptEdits/dontAsk/headless it records `protected_path`.
 

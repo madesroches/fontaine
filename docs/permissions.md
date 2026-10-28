@@ -17,7 +17,7 @@ run (`fontaine -p`) starts in `manual`, as Claude Code's `-p` starts in `default
 | `acceptEdits` | `write`, `edit` and `notebook_edit` inside the workspace roots run; everything else asks. |
 | `plan` | No edit ever runs: `write`, `edit` and `notebook_edit` are blocked outright. Other consequential calls (write-capable or unparsed `shell`, `webfetch`, `websearch`, every MCP call, shell reads outside the roots) go to the guardian, as in `auto`. |
 | `dontAsk` | Denied. Only calls that are pre-approved run. |
-| `auto` | The [guardian](guardian.md) decides: allow, deny with a reason, or ask you. |
+| `auto` | The [guardian](guardian.md) decides: allow, deny with a reason, or ask you. Edits to tracked, new and session-created files and file-tool writes into scratch skip it (step 6 below). |
 
 In the terminal UI, `/permissions` shows the mode and the effective rules with the scope each came
 from, including session and always grants; in `auto` it marks the broad allow rules that mode sets
@@ -73,14 +73,33 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    A file-tool call (`read`, `ls`, `glob`, `grep`, `write`, `edit`, `notebook_edit`) that names a path outside
    every root is denied, with a hint naming the session's scratch directory and `/add-dir`: the
    file tools are confined to the roots, so an approval could never make the call run. The scratch
-   directory is an ordinary root (see [Tools](tools.md#the-scratch-directory)): this step, the floor
-   and the guardian treat a path in it like one in the workspace, and `shell` treats it like any root:
+   directory is an ordinary root (see [Tools](tools.md#the-scratch-directory)): this step and the
+   floor treat a path in it like one in the workspace, and `shell` treats it like any root:
    read-only commands whose operands are inside it take the pre-classifier fast path, and other
    commands go through the guardian as usual. Claude Code prompts for a write outside the workspace; Fontaine denies
    it and offers the scratch directory instead.
 4. **Shell pre-classifier**, below.
 5. **Allow rules**, below.
-6. **The mode**, as in the table above. In `auto`, and for the consequential calls of `plan`,
+6. **Edits that skip the guardian (`auto` only).** After the floor and the hooks, a `write`,
+   `edit` or `notebook_edit` call is allowed without a guardian verdict in two cases. A file-tool
+   write whose resolved target is inside the session scratch directory is audited as
+   `tier = scratch_write`; a shell command that touches scratch is not a file-tool call and goes
+   to the guardian. An edit inside the primary workspace root is audited as `tier = tracked_edit`
+   when the target is a file git tracks (an exact entry in the index for the resolved path), a path
+   that does not exist yet in a git work tree, or a file this session created. Symlinks are
+   resolved first, so a link is judged by its target. These go to the guardian as before: an
+   existing file git does not track, such as `.env` or uncommitted work that predates the
+   session; any path in a root that is not a git work tree; the auto-memory store and `/add-dir`
+   roots; the protected paths above; instruction files (`FONTAINE.md`,
+   `FONTAINE.local.md`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`), anything under a `rules`
+   directory and anything under `.github`, because an edit there changes later decisions or what
+   CI runs; and every shell command. A request in your own message that names an excluded file
+   clears the guardian's soft deny for it. `@import`ed files are not excluded. Both allows
+   end a run of consecutive guardian denials, so routine work between denials keeps `auto` from
+   pausing. Turn them off with
+   [`auto_tracked_edits` and `auto_scratch_writes`](configuration.md#permissions); project scope
+   may only switch them off.
+7. **The mode**, as in the table above. In `auto`, and for the consequential calls of `plan`,
    this is the guardian: it answers allow, deny or escalate. An allow runs the call; a deny comes
    back to the agent as `Denied by guardian: [Rule] explanation`; an escalate asks you with the
    guardian's explanation (and is a denial in a headless run). Three denials in a row, or twenty
@@ -93,8 +112,8 @@ tool, a SHA-256 digest of the arguments (never the arguments), the `tier` that d
 to a prompt adds a second record with `tier = human`. The same record is projected to the
 `tool_decision` telemetry event and to the headless `gate_decision` event, so the three agree. The
 `tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
-`read_only_fast_path`, `tier05`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`,
-`plan_block` and `human`. A guardian decision also records the guardian model and profile, its
+`read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `allow_rule`, `mode`, `screen`,
+`guardian`, `dont_ask`, `plan_block` and `human`. A guardian decision also records the guardian model and profile, its
 verdict, confidence, whether the verdict came from the cache, how long the guardian took, the
 `verdict_transport` it was asked on (`tool`, a forced `submit` call, or `schema`, for an Ollama
 model with no tool support; see [Models with no tool
@@ -279,6 +298,6 @@ checked: files a recursive search reaches under a directory (`grep -r KEY .`) ar
 one by one. `read` deny rules are not a containment boundary for shell; use a `shell` deny or
 ask rule, or the protected paths.
 
-A pre-classified call is audited with `tier = tier05`. In `auto` these calls and the read-only
-fast path are the only guardian skips earned without a grant of yours; an out-of-scope read such
+A pre-classified call is audited with `tier = tier05`. In `auto` these calls, the read-only
+fast path and the [tracked and scratch edits](#the-pipeline) are the only guardian skips earned without a grant of yours; an out-of-scope read such
 as `ls ../`, anything the pre-classifier cannot fully parse, and every MCP tool go to the guardian.

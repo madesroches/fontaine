@@ -344,6 +344,55 @@ pub enum LocalClassification {
     Project(ProjectDemotion),
 }
 
+/// Whether git's index lists a file, as an edit without a guardian verdict needs to know it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Tracking {
+    /// The index has an exact entry for the path.
+    Tracked,
+    /// The path is inside the work tree but the index has no entry for it.
+    Untracked,
+    /// No work tree encloses `root`, the path lies outside it, or git could not be read.
+    Unknown,
+}
+
+/// Looks `resolved` up in the index of the work tree that encloses `root`. Unlike
+/// `classify_project_local`, which treats an ancestor entry (submodule, sparse directory) and a
+/// case variant as tracked because trust errs toward project scope, only an exact,
+/// case-sensitive entry for the resolved path counts. A path that does not exist yet is looked
+/// up through its canonical parent.
+pub fn tracking(root: &Path, resolved: &Path) -> Tracking {
+    let Ok((repo, workdir)) = discover(root) else {
+        return Tracking::Unknown;
+    };
+    let canonical = match std::fs::canonicalize(resolved) {
+        Ok(path) => path,
+        Err(_) => {
+            let (Some(parent), Some(name)) = (resolved.parent(), resolved.file_name()) else {
+                return Tracking::Unknown;
+            };
+            match std::fs::canonicalize(parent) {
+                Ok(parent) => parent.join(name),
+                Err(_) => return Tracking::Unknown,
+            }
+        }
+    };
+    let Ok(relative) = canonical.strip_prefix(&workdir) else {
+        return Tracking::Unknown;
+    };
+    let Ok(relative) = gix::path::into_bstr(relative) else {
+        return Tracking::Unknown;
+    };
+    let relative = gix::path::to_unix_separators(relative).into_owned();
+    let Ok(index) = repo.index_or_empty() else {
+        return Tracking::Unknown;
+    };
+    if !relative.is_empty() && index.entry_by_path(relative.as_ref()).is_some() {
+        Tracking::Tracked
+    } else {
+        Tracking::Untracked
+    }
+}
+
 /// User trust is earned only by a file git does not know about (untracked or ignored — both
 /// mean absent from the index) in a trusted root. Everything else is project scope.
 pub fn classify_project_local(

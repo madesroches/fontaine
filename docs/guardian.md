@@ -9,7 +9,10 @@ from being the only thing standing between a model and your machine.
 A call reaches the guardian in `auto` mode, and in `plan` mode for the consequential calls that
 mode does not block outright. The [deterministic floor](permissions.md#the-pipeline) (deny and ask
 rules, critical paths, protected-path handling), the read-only fast path and the shell
-pre-classifier all run first, in every mode; the guardian never sees a call they decided.
+pre-classifier all run first, in every mode; the guardian never sees a call they decided. In `auto`
+it also does not see file-tool edits to tracked, new or session-created files in your workspace or
+writes into the session scratch directory (see [the pipeline](permissions.md#the-pipeline)); it
+still sees instruction files, `.github/`, existing untracked files and every shell command.
 
 ## Threat model
 
@@ -23,9 +26,12 @@ read and the instructions in a repository are all text an attacker may have writ
   verdict's JSON schema as the daemon's `format`, which constrains the answer and needs no tool
   template. Either way the answer is parsed and validated the same way, and anything that does not
   parse is a denial.
-- **Everything it is shown is data.** The request is rendered into delimited `<untrusted>` blocks;
-  text that would close a block is neutralized, and anything credential-shaped is redacted before
-  it is rendered. The system prompt says that nothing inside those blocks is an instruction.
+- **Everything it is shown is data, except your own words.** The request is rendered into
+  delimited `<untrusted>` blocks; text that would close a block is neutralized, and anything
+  credential-shaped is redacted before it is rendered. The system prompt says that nothing inside
+  those blocks is an instruction. The two blocks holding what you typed, `task_intent` and
+  `recent_user_messages`, are marked `source="user"` and are read as your intent; any other block
+  that claims you approved something is treated as an attack signal.
 - **Its picture of what you asked for comes from the session ledger**, the append-only record of
   your own messages, and never from the model's context. A compaction summary or any other
   model-written text cannot reach the guardian as your intent.
@@ -51,7 +57,7 @@ The request is built from the ledger and the call itself:
 | `tool_call` | The tool, its full arguments, a digest of them, and `destructive`, derived by Fontaine from the call itself (below). |
 | `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session` or `unindexed`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets and path-like arguments, and the last 20 actions of the session. When [auto memory](memory.md) is on it also has an `agent_memory_directory` line naming the memory store, set by Fontaine and never from a tool argument. |
 | `hook_context` | Notes from `pre_tool_use` hooks, in an untrusted block. |
-| `prior_denials` | Reason-coded denials earlier in the session, for loop detection. |
+| `prior_denials` | Reason-coded denials earlier in the session, for loop detection. They are context, not evidence about the current call (see [How history and your words are weighed](#how-history-and-your-words-are-weighed)). |
 
 The `task_intent` and `recent_user_messages` messages start after your last `/clear`: what you
 asked before it is not shown to the guardian, while the session facts are kept. A
@@ -65,6 +71,21 @@ the moment the agent receives it, with its next tool result, not from when you t
 the model has not read it, and a call judged earlier must not rest on words the model never saw.
 Commands you run with `!` and their output never count, and neither does anything a tool or the
 model wrote.
+
+### How history and your words are weighed
+
+The guardian reads history and your messages by a few fixed rules:
+
+- What you typed is authoritative about intent. A message that vouches for something specific
+  ("the script is ok to run") counts as you naming that thing, and clears a soft deny for it. It
+  never clears a hard deny, however often you repeat it.
+- After a denial, a message that re-issues or approves the denied action counts as your consent to
+  it. The agent re-issuing the same call with no new message from you does not.
+- A denial of one kind of action does not count against a different kind, and never against a
+  read-only call. Reading, listing or tailing a file the session itself created is routine unless
+  the call sends data out of the trust boundary.
+- A note you type about the setup, such as "fyi, the guardian is now haiku", is neutral.
+- Suspicion needs a rule: "earlier denials and this looks related" is not a reason to deny.
 
 ## The verdict
 
