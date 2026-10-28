@@ -37,8 +37,10 @@ A third built-in type, `fork`: description "Starts from a copy of your conversat
 only a short task in `prompt`", `tools: None` (every tool the parent has, still cut to the
 parent's and with `agent` withheld at the depth limit), `mode: Inherit`, `model: None`.
 `AgentType` gains `inherits_context: bool` (true only for `fork`; agent files and
-`[agents.types]` entries cannot set it, so it stays a built-in capability). `SpawnRequest` carries
-the same flag so the `ChildRunner` seam stays free of registry lookups.
+`[agents.types]` entries cannot set it, so it stays a built-in capability). `SpawnRequest` already
+carries `agent_type: AgentType`, so the runner reads `request.agent_type.inherits_context`; no new
+request field. A user agent file, project file or `[agents.types]` entry named `fork` replaces the
+built-in (later of the four places wins) and loses the capability (`inherits_context` false).
 
 Rules enforced in `AgentTool::call`, before reserving a slot:
 
@@ -52,12 +54,13 @@ Rules enforced in `AgentTool::call`, before reserving a slot:
 
 ### Seeding the child's context (core)
 
-`CoreChildRunner::spawn`, when `request.inherits_context`:
+`CoreChildRunner::spawn`, when `request.agent_type.inherits_context`:
 
 1. Load the root conversation: `ChildContext` gains
-   `parent_conversation: Arc<dyn Fn() -> BoxFuture<'static, Result<Conversation, String>> + Send + Sync>`,
+   `parent_conversation: Arc<dyn Fn() -> BoxFuture<'static, Result<Conversation, SessionError>> + Send + Sync>`,
    an async fallible closure over `load_async(store, CONVERSATION_LOG)` returning the whole
-   `Conversation`, so tests can supply a fixed one and a read failure maps to
+   `Conversation`, so tests can supply a fixed one; the typed error keeps its `source()` and is
+   rendered once with `fontaine_tools::error_chain::chain` at the `ChildRunner::spawn` seam as
    `could not start: <chain>`. `child_runner` has no `Session` today, so `agent/setup.rs` passes
    it the session store (`p.session.store()`, a cheap `DirStore` clone, as `rust/fontaine-core/src/agent/build.rs:246` does)
    as a new parameter, and the closure captures that clone.
@@ -73,8 +76,8 @@ Rules enforced in `AgentTool::call`, before reserving a slot:
    does not carry compaction asides (`session.rs:650-670` re-adds them with `add_aside`), so the
    loaded `Conversation` is cloned wholesale, keeping a compacted parent compacted in the child.
 
-The child's preamble (the `preamble` closure at `rust/fontaine-core/src/agent/setup.rs:~501`,
-which chooses the fork layer from `inherits_context`) is `subagent_layer("fork", None)` on the standard assembly, with a distinct
+The child's preamble (the `preamble` closure at `rust/fontaine-core/src/agent/setup.rs:493`,
+which chooses the fork layer from `agent_type.inherits_context`) is `subagent_layer("fork", None)` on the standard assembly, with a distinct
 `fork` layer text in `prompt.rs` ("you are a forked subagent; the conversation above is the
 parent's") in place of the typed-subagent line "You cannot see that agent's conversation; work from
 the task you were given"; a fork does not reuse the parent's exact system prompt (see Decisions).
@@ -111,7 +114,7 @@ the task you were given"; a fork does not reuse the parent's exact system prompt
    (`load_agent`), `registry.rs:148,162`, `tests/seam.rs:296,315,364,525`,
    `fontaine-core/src/child_runner.rs:455`, `agent/setup.rs:186`; add the built-in `fork` type,
    include it in `describe()`/`names()`.
-3. `fontaine-agents/src/runner.rs` + `spawn.rs`: add `inherits_context` to `SpawnRequest`; the
+3. `fontaine-agents/src/spawn.rs`: the
    `model` refusal and the root-only refusal; updated tool description and `prompt` parameter
    description (`spawn.rs` ~156, "The task, with all the context it needs.") saying a fork needs
    only a short task.
@@ -120,7 +123,9 @@ the task you were given"; a fork does not reuse the parent's exact system prompt
    and pass the fork-note-prefixed prompt as the run prompt through `drive`, not into the store); wire the
    store-backed closure in `agent/setup.rs::child_runner`; add the distinct `fork` layer text
    in `fontaine-core/src/prompt.rs`.
-5. `docs/agents.md`: reword the `prompt` row of the agent tool table (line 13, "it cannot see the
+5. `docs/agents.md`: update "Two types are built in" (line 31) to three; note that a user, project or
+   `[agents.types]` entry named `fork` replaces the built-in and loses the capability (four places,
+   later replace earlier); reword the `prompt` row of the agent tool table (line 13, "it cannot see the
    conversation") per type, new `fork` row in Agent types, a "Forking the conversation" subsection
    (context copied, same model, main-conversation only, rule `agent(fork)`, a sentence that this is
    not the `/fork` slash command (an alias of `/branch`, `docs/tui.md`), and the note that a
@@ -130,7 +135,7 @@ the task you were given"; a fork does not reuse the parent's exact system prompt
 
 ## Files to Modify
 
-- `rust/fontaine-agents/src/registry.rs`, `runner.rs`, `spawn.rs`
+- `rust/fontaine-agents/src/registry.rs`, `spawn.rs`
 - `rust/fontaine-agents/tests/seam.rs`
 - `rust/fontaine-core/src/child_runner.rs`, `rust/fontaine-core/src/agent/setup.rs`,
   `rust/fontaine-core/src/prompt.rs`, `rust/fontaine-core/src/extensions.rs`
@@ -153,7 +158,7 @@ the task you were given"; a fork does not reuse the parent's exact system prompt
 All offline, no live APIs.
 
 - `fontaine-agents` unit tests (fake runner, `tests/seam.rs`): the flag-propagation test (request
-  reaches the runner with `inherits_context` true, false for `explore`) also asserts `fork`
+  reaches the runner with `agent_type.inherits_context` true, false for `explore`) also asserts `fork`
   resolves with all parent tools and mode Inherit; extend the `seam.rs:362` test to refuse `model`
   on `fork`; a call from a child is refused.
 - `fontaine-core` unit tests with `rig_core::test_utils` deterministic models: the child's first
