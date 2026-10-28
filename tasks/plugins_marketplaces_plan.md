@@ -8,9 +8,9 @@ Claude Code's plugins bundle skills, agents, hooks, MCP servers, LSP servers and
 into one directory with a manifest, installed from git-hosted marketplaces that catalog them
 ([plugins/overview](https://code.claude.com/docs/en/plugins/overview)). This plan adds the same
 unit to Fontaine: a plugin is a directory in the extension layout (`skills/`, `agents/`,
-`output-styles/`, hooks, MCP servers) plus a manifest, and a marketplace is a git repository with
-a catalog file. Fontaine reads Claude Code's manifest paths and component formats so existing
-plugins and marketplaces load unmodified.
+`output-styles/`, `commands/` as skills, hooks, MCP servers) plus a manifest, and a marketplace
+is a git repository with a catalog file. Fontaine reads Claude Code's manifest paths and
+component formats so existing plugins and marketplaces load unmodified.
 
 Installs are user-scope only and pinned by commit: `fontaine plugin install` is the explicit
 action that approves a plugin's executables, the way trusting a workspace approves a repository's.
@@ -30,9 +30,9 @@ deny-side additions. LSP server components are not supported (Fontaine has no LS
   (`load_skill`), a project agent file cannot pick a model and can only narrow (`load_agent`).
 - Hooks and MCP servers are settings, not files in the extension layout: `[[hooks.pre_tool_use]]`
   etc. and `[mcp.servers.<name>]` merge in `config.rs` (`union_hooks` :1928, server merge :1780),
-  each carrying an `Origin { slot, user_trust }` (:484). `Origin::is_project()` gates repository
-  executables on workspace trust and voids their `allow`/`retry`; `user_trust` decides whether an
-  `allow` counts. `Slot` is the config column enum in the same file.
+  each carrying an `Origin { slot, user_trust }` (:485). `Origin::is_project()` gates repository
+  executables on workspace trust; `user_trust` decides whether a hook's `allow`/`retry` counts.
+  `Slot` is the config column enum in the same file.
 - The workspace-trust prompt summarizes project hooks/servers/skills in
   `trust_summary` (`rust/fontaine/src/lib.rs:160`); headless loads project executables without
   asking.
@@ -65,13 +65,21 @@ my-plugin/
   skills/<name>/SKILL.md
   agents/<name>.md
   output-styles/<name>.md
+  commands/<name>.md            # loaded as user-invocable skills, as Claude Code does
   hooks/hooks.json              # Claude Code's hook schema
   .mcp.json                     # Claude Code's MCP schema
 ```
 
-`plugin.json` unknown keys are ignored (as frontmatter unknown keys are), except the two
-Fontaine extension keys below, which are validated. `${CLAUDE_PLUGIN_ROOT}` in hook commands and
-`.mcp.json` values expands to the installed checkout path at load time, as Claude Code does.
+`plugin.json` also carries Claude Code's component-path keys — `commands`, `agents`, `hooks`,
+`mcpServers` — which point at files or directories inside the plugin, merged over the defaults.
+They are honored: the referenced paths load with the same schemas as the default locations,
+because silently ignoring them would drop a ported plugin's content. (`lspServers` paths get the
+same ignore-with-warning as a default LSP component.) `commands/<name>.md` files, default
+directory or manifest paths, load as user-invocable skills, as Claude Code's
+commands-merged-into-skills does; plugin skill rules apply to them. Other unknown keys are
+ignored (as frontmatter unknown keys are), except the two Fontaine extension keys below, which
+are validated. `${CLAUDE_PLUGIN_ROOT}` in hook commands and `.mcp.json` values expands to the
+installed checkout path at load time, as Claude Code does.
 
 A manifest may carry two Fontaine-only keys (a Claude Code loader ignores them):
 
@@ -107,7 +115,8 @@ A marketplace is a git repository or local directory with `.claude-plugin/market
 `source` is a path inside the marketplace repository, or an object with `source: "github"`
 (`repo: "owner/repo"`, cloned over HTTPS) or `source: "git"` (`url`). A string source that is a
 URL is treated as `"git"`, as Claude Code does. `version` is informational; the pin is the
-commit. Marketplace names and plugin names use `valid_name`'s alphabet.
+commit. Marketplace names and plugin names use `valid_name`'s alphabet and may not contain `__`,
+the separator MCP tool names split on (see Component mapping).
 
 ### Registry and checkouts
 
@@ -125,15 +134,18 @@ One new tree under the config dir:
 [[marketplace]]
 name = "team-tools"
 url = "https://github.com/team/tools-marketplace"   # or a local path
-commit = "a1b2c3..."                              # pinned catalog commit
+pin = "a1b2c3..."                                 # pinned catalog commit; a content hash for a local directory
 
 [[plugin]]
 name = "review"
 marketplace = "team-tools"
 source = "./plugins/review"
-commit = "d4e5f6..."                              # pinned install commit
+pin = "d4e5f6..."                                 # pinned install commit
 enabled = true
 ```
+
+Plugin names are unique across marketplaces in the registry — component names are `plugin:name`
+— and install enforces it by refusing a name that is already installed from anywhere.
 
 The file is written with `owner_only::write_atomic` under a mutex, never across an await, as
 `SessionTodos` writes `todos.json`. A missing file means no marketplaces and no plugins. A
@@ -149,11 +161,11 @@ are CLI commands, not session commands: they run outside any session, need no pe
 
 | Command | Effect |
 |---|---|
-| `fontaine plugin marketplace add <url-or-path> [--name N]` | Clone (or copy a local dir), resolve the pinned commit, read the catalog, register it. A catalog that does not parse is an error and nothing is kept. |
-| `fontaine plugin marketplace list` | Name, url, pinned commit, plugin count. |
+| `fontaine plugin marketplace add <url-or-path> [--name N]` | Clone (or copy a local dir), resolve the pin, read the catalog, register it under the catalog's `name` (`--name` overrides the registry key; the catalog keeps its own). A catalog that does not parse is an error and nothing is kept. |
+| `fontaine plugin marketplace list` | Name, url, pin, plugin count. |
 | `fontaine plugin marketplace update [name]` | Fetch, move the pin to the remote default-branch HEAD, report old -> new sha. Does not touch installed plugins. |
 | `fontaine plugin marketplace remove <name>` | Refuses while an installed plugin names it; else drops clone and registry entry. |
-| `fontaine plugin install <name>@<marketplace>` | Resolve the entry in the pinned catalog, clone/copy the plugin at the resolved commit, validate manifest and every component, record it enabled. Fails atomically: a failed install leaves no registry entry and no checkout. |
+| `fontaine plugin install <name>@<marketplace>` | Resolve the entry in the pinned catalog, clone/copy the plugin at the resolved commit, validate manifest and every component, record it enabled. Refuses a plugin name already installed from any marketplace (registry-wide uniqueness). Fails atomically: a failed install leaves no registry entry and no checkout. |
 | `fontaine plugin uninstall <name>` | Remove checkout and registry entry. |
 | `fontaine plugin update <name>` | Re-fetch the source, move the pin, re-validate; a validation failure keeps the old checkout live. |
 | `fontaine plugin enable / disable <name>` | Flip the registry flag; a disabled plugin stays on disk and contributes nothing. |
@@ -185,25 +197,32 @@ pub struct PluginContributions {
     pub soft_deny: Vec<String>,
     pub warnings: Vec<String>,
 }
-pub fn load_installed(config_dir: &Path) -> PluginContributions
+pub fn load_installed(config_dir: &Path) -> Result<PluginContributions, PluginError>
 ```
 
+`PluginError` names the plugin and the file at fault; a startup that gets one stops with exit
+code 2, as extension load errors do. `warnings` is for non-fatal degradation only (a vanished
+checkout, an ignored LSP component).
+
 - `extensions::LoadParams` gains `plugins: &[PluginDir]`; `load` walks each plugin's `skills/`,
-  `agents/`, `output-styles/` after the user root and before the project root. Files load with a
-  new `Scope::Plugin`.
-- Config gains `Slot::Plugin`. `Origin::is_project()` is unchanged (plugin executables are not
-  gated on workspace trust: install approved them, in the TUI and headless alike). A new
-  `Origin::is_third_party()` (`is_project() || slot == Plugin`) is what voids a hook's
-  `allow`/`retry` and keeps plugin rules out of `allow`; every current `is_project()` check that
-  means "cannot loosen" moves to it. `trust_summary` is untouched: plugins are not repository
-  content.
-- Startup (`rust/fontaine/src/lib.rs`, both TUI and headless paths) calls `load_installed`,
-  merges hooks/servers/rules into the `Config` after `config::load`, and passes the dirs into
-  `extensions::load`. `servers` in `extensions::LoadParams` includes plugin server names, so a
-  plugin agent file may name its own plugin's `mcp__` tools.
+  `commands/` (as skills), `agents/`, `output-styles/` after the user root and before the
+  project root. Files load with a new `Scope::Plugin`.
+- Config gains `Slot::Plugin`. Plugin hooks and servers carry
+  `Origin { slot: Slot::Plugin, user_trust: false }`. The `user_trust: false` is what voids a
+  hook's `allow`/`retry` (`can_allow`/`can_retry` in `user_hooks.rs` return it), and
+  `is_project()` staying false keeps plugin executables out of the workspace-trust gate: install
+  approved them, in the TUI and headless alike. No `is_project()` call site changes — its checks
+  are the trust gate, the trust summary and origin display, and plugins join none of them.
+  `trust_summary` is untouched: plugins are not repository content.
+- Startup (`rust/fontaine/src/lib.rs`, the shared `prepare_session` path the TUI and headless
+  runs both take) calls `load_installed`, merges hooks/servers/rules into the `Config` after
+  `config::load`, and passes the dirs into
+  `extensions::load`. `servers` in `extensions::LoadParams` includes the composed plugin server
+  names (`plugin_<plugin>_<name>`), so a plugin agent file may name its own plugin's `mcp__`
+  tools.
 - A plugin whose checkout vanished (deleted by hand) contributes nothing and warns once; a plugin
-  whose manifest no longer validates (after a hand edit) is a startup error naming it, as with
-  extension files.
+  whose manifest no longer validates (after a hand edit) is the `Err` of `load_installed`, a
+  startup error naming it, as with extension files.
 
 ### `Scope::Plugin` semantics
 
@@ -218,8 +237,11 @@ Plugin prompt content is third-party even though the user installed it, so it fo
 
 Components are namespaced `plugin:name`, as Claude Code's `/my-plugin:review`: `valid_name`
 gains a plugin form that allows exactly one `:` separator, and the loader prefixes skill, agent
-and style names with the plugin name. The namespace makes collisions impossible by construction,
-so the user > plugin > project precedence is only a tie-break for identical full names.
+and style names with the plugin name. A component's own declared `name` must still match the
+plain `valid_name` form — the `:` form exists only after prefixing. The namespace makes
+collisions impossible by construction: user and project names cannot contain `:` and plugin
+names are unique in the registry, so the same-name replacement logic in `load` never fires on a
+plugin component and no cross-scope tie-break is needed.
 `/skills` shows the scope as `plugin <name>`; `TypeOrigin` gains `PluginFile(PathBuf)` beside
 `UserFile`/`ProjectFile`, treated like `ProjectFile` where the registry asks whether a type can
 widen (`registry.rs:140`).
@@ -235,9 +257,15 @@ widen (`registry.rs:140`).
 - **`.mcp.json`**: `{"mcpServers": {"<name>": {"command", "args", "env"}}}` or `{"url"}` maps
   onto `McpServer`. `env` values support `${VAR}` expansion; to carry literal values `McpServer`
   gains an optional `env: BTreeMap<String, String>` applied to the child after the scrub, beside
-  `env_vars`. Server names are prefixed with the plugin name (`<plugin>_<name>`, `_` because
-  `validate_mcp_name` forbids nothing there) so two plugins cannot fight over `mcp__github__*`
-  and permission rules can name a plugin's servers.
+  `env_vars`. Server names are composed as Claude Code composes them, `plugin_<plugin>_<name>`,
+  so a ported plugin's `mcp__plugin_<plugin>_<name>__<tool>` references resolve unchanged and two
+  plugins cannot fight over `mcp__github__*`. A plugin file that names one of the plugin's own
+  servers bare (`mcp__<name>__*` in `tools`, `disallowedTools` or `allowed-tools`) is rewritten
+  to the composed name at load, before validation against the session's servers. A composed name
+  that equals any configured non-plugin server is a startup error naming the plugin: a plugin
+  never shadows a server the user or the repository defined. `.mcp.json` server keys may not
+  contain `__`. Long composed names hit provider tool-name length limits sooner; the install
+  summary shows them so an oversized name is visible before install.
 - **LSP servers**: a `lspServers` key or directory is ignored with a startup warning naming the
   plugin, so a plugin that needs one is visibly degraded rather than silently.
 
@@ -253,20 +281,23 @@ changes stay on the CLI; an interactive browse-and-install surface is a follow-u
 1. `fontaine-core/src/plugins.rs`: registry (`plugins.toml`) read/write with
    `owner_only::write_atomic`, manifest/catalog/component JSON parsing (`serde_json` is already a
    core dependency), `PluginContributions`, `load_installed`. Unit tests.
-2. `fontaine-core`: `Slot::Plugin` in `config.rs`, `Origin::is_third_party()`, move the
-   cannot-loosen checks onto it (hook `allow`/`retry` voiding, rule source checks);
+2. `fontaine-core`: `Slot::Plugin` in `config.rs`; plugin hooks and servers get
+   `Origin { slot: Slot::Plugin, user_trust: false }` — the `user_trust: false` voids
+   `allow`/`retry`, and no `is_project()` call site changes (its checks are the workspace-trust
+   gate, the trust summary and origin display, which plugins stay out of);
    `RuleSource::Plugin` in `permission_rules.rs`; `McpServer.env`; merge of plugin hooks,
    servers and deny/ask rules into `Config` (a `Config::apply_plugins(&PluginContributions)`);
    plugin `hard_deny`/`soft_deny` spliced in `effective_auto_mode`; `TypeOrigin::PluginFile`.
 3. `fontaine-core/src/extensions.rs`: `Scope::Plugin`, namespaced names (`valid_name` plugin
-   form, prefixing), `LoadParams.plugins`, precedence (user > plugin > project), plugin files
-   under project permission rules.
+   form, prefixing), `LoadParams.plugins`, the bare in-plugin MCP reference rewriting, plugin
+   files under project permission rules.
 4. `fontaine/src/cli.rs` + a new `fontaine/src/plugin.rs`: the `plugin` subcommand tree, git
    helpers (clone/fetch/rev-parse via `std::process::Command`), install/update/uninstall/enable/
    disable, the pre-install component summary, atomic failure semantics.
-5. `fontaine/src/lib.rs`: `load_installed` + `Config::apply_plugins` on both startup paths, the
-   vanished-checkout warning, `extensions::LoadParams` call-site updates (also
-   `fontaine-tui/tests/common/mod.rs:338` and `rust/fontaine-core/tests/common/runtime.rs:166`).
+5. `fontaine/src/lib.rs`: `load_installed` + `Config::apply_plugins` on the shared session
+   startup path, plus the vanished-checkout warning, `extensions::LoadParams` call-site updates
+   (also `fontaine-tui/tests/common/mod.rs:338`, `rust/fontaine-core/tests/common/runtime.rs:166`
+   and `rust/fontaine-core/tests/extensions.rs:28`).
 6. TUI: `/plugins` (`Command::Plugins`, `BUILTINS` sorted position, dispatch arm, listing);
    `/mcp` and `/hooks` origin labels.
 7. Docs, changelog, parity-matrix row, master-plan Decisions lines (see Decisions).
@@ -276,14 +307,18 @@ changes stay on the CLI; an interactive browse-and-install surface is a follow-u
 ## Files to Modify
 
 - `rust/fontaine-core/src/plugins.rs` (new), `lib.rs`, `config.rs`, `config_scope.rs` (no new
-  settings keys, but the schema pin tests must not see `plugins.toml` as settings; verify),
+  settings keys; the pin tests cover the `Settings` schema only, so `plugins.toml` does not
+  interact with them),
   `permission_rules.rs`, `extensions.rs`, `rust/fontaine-agents/src/registry.rs`
 - `rust/fontaine/src/cli.rs`, `plugin.rs` (new), `lib.rs`
 - `rust/fontaine-tui/src/commands.rs`, the `/plugins` report beside the `/skills` one
-- `rust/fontaine-mcp` or wherever `McpServer`'s child env is built (apply the new `env` map)
+- `rust/fontaine-core/src/agent/mcp.rs`, where `Transport::Stdio.env` is populated: merge the new
+  `McpServer.env` map over the `[env]` entries (the transport already applies a literal env map
+  after the scrub)
 - Tests: `rust/fontaine-core/tests/plugins.rs` (new), `extensions.rs`, `config.rs`,
   `permission_rules.rs`, `choke_point.rs` (plugin MCP names are dynamic `mcp__*`, expected sets
-  unchanged), `rust/fontaine/tests/plugin.rs` (new, CLI), `rust/fontaine-tui/tests/tui.rs`
+  unchanged), `rust/fontaine/tests/plugin.rs` (new, CLI), `rust/fontaine-tui/tests/tui.rs`,
+  `rust/fontaine-core/tests/docs.rs` (new `plugins.toml` validator arm)
 - Docs: `docs/plugins.md` (new), `docs/index.md`, `docs/extensions.md`, `docs/mcp.md`,
   `docs/hooks.md`, `docs/permissions.md`, `docs/guardian.md`, `docs/tui.md`, `docs/headless.md`,
   `docs/configuration.md`, `CHANGELOG.md`, `research/research-claude-code-parity.md`,
@@ -341,8 +376,10 @@ changes stay on the CLI; an interactive browse-and-install surface is a follow-u
   deny/ask additions. `docs/guardian.md`: deny-side guardian additions from plugins.
   `docs/tui.md`: `/plugins`. `docs/headless.md`: plugins load in headless runs.
   `docs/configuration.md`: `plugins.toml` described as a registry, not a settings file.
-- `docs/` TOML blocks are schema-validated by `rust/fontaine-core/tests/docs.rs`; any JSON
-  examples must parse as the documented schemas.
+- `docs/` TOML blocks are schema-validated by `rust/fontaine-core/tests/docs.rs`, where a bare
+  ```toml block is checked as a settings file: `tests/docs.rs` gains a `plugins.toml` arm beside
+  `trust.toml`/`credentials.toml`, and the registry examples are tagged ```toml plugins.toml.
+  Any JSON examples must parse as the documented schemas.
 
 ## Testing Strategy
 
@@ -350,27 +387,32 @@ All offline. Git fixtures are local repositories (a path or `file://` URL as the
 source needs no network); JSON fixtures stand in for remote catalogs.
 
 - Unit: `plugin.json` / `marketplace.json` / `hooks.json` / `.mcp.json` parsing, unknown-key
-  tolerance, malformed entries naming the file; name validation and the one-`:` namespaced form;
-  `${CLAUDE_PLUGIN_ROOT}` and `.mcp.json` `${VAR}` expansion; registry round-trip, atomic write,
-  corrupt file warns and loads nothing; matcher mapping through `map_tool_entry`; `permissions`
+  tolerance, malformed entries naming the file; the component-path manifest keys honored;
+  `commands/*.md` loading as skills; name validation and the one-`:` namespaced form; `__`
+  rejected in plugin, marketplace and server names; bare in-plugin `mcp__` references rewritten
+  to the composed server name; `${CLAUDE_PLUGIN_ROOT}` and `.mcp.json` `${VAR}` expansion;
+  registry round-trip, atomic write, corrupt file warns and loads nothing; matcher mapping
+  through `map_tool_entry`; `permissions`
   / `guardian` manifest keys (deny/ask accepted, `allow` or `environment` a load error naming
   the plugin).
 - Git lifecycle (local repos): marketplace add pins the HEAD sha; update moves the pin and
   reports old -> new; install at the catalog's pinned commit; update re-validates and a broken
   new revision keeps the old checkout; remove refuses while installed; uninstall deletes the
-  checkout; a failed install leaves neither entry nor directory; a source that vanishes
+  checkout; a failed install leaves neither entry nor directory; install refuses a plugin name
+  already installed from another marketplace; a source that vanishes
   mid-update fails with the error chain.
 - Scope enforcement (the security core, so every line is automated): a plugin skill's
   `allowed-tools` lends nothing; a plugin agent file with `model` or `permissionMode: inherit`
   is an exit-2 startup error naming the file; a plugin hook answering `allow` does not allow
   (the call still asks / reaches the guardian) while its `deny` denies; a plugin MCP tool is
   `arbitrary` and asks in `manual`; plugin deny/ask rules match their calls; plugin
-  `hard_deny`/`soft_deny` appear in `effective_auto_mode` and `allow` never does.
+  `hard_deny`/`soft_deny` appear in `effective_auto_mode` and `allow` never does; a composed
+  server name colliding with a configured non-plugin server is a startup error naming the
+  plugin.
 - Session integration (fixture models, no live APIs): a session with an installed fixture plugin
   lists the namespaced skill in the system prompt, runs `/plugin:name`, registers the plugin's
-  `mcp__<plugin>_<server>__*` tools, and a deleted checkout warns and contributes nothing;
-  `extensions::LoadParams.plugins` precedence (user > plugin > project) on an identical full
-  name.
+  `mcp__plugin_<plugin>_<server>__*` tools, and a deleted checkout warns and contributes
+  nothing.
 - CLI tests drive `fontaine plugin ...` against fixture marketplaces: list output, `--format
   json`, enable/disable flipping the registry without touching the checkout.
 - TUI: `/plugins` listing; `/mcp` and `/hooks` show plugin origins.
