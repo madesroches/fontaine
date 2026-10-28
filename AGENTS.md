@@ -39,9 +39,17 @@ all tests pass:
 - **The guardian is fail-closed on every non-verdict outcome**: error, timeout, unparseable
   output, low confidence on a destructive class → Deny.
 - **No config value disables the guardian.** No zero-guardian mode ships; containers get
-  `[guardian] profile = "minimal"`, never off.
+  `[guardian] profile = "minimal"`, never off. The one exception is the interactive-only,
+  session-scoped `/guardian-disable` command (see the floor invariant below): it is not config,
+  not a mode, never persisted, never settable from project scope, and never inherited by a
+  subagent.
 - **The deterministic floor (`deny → ask → critical-path → protected-path`) gates EVERY mode** — no mode,
-  flag, or verdict reaches past it. No regex matching on tool arguments anywhere.
+  flag, or verdict reaches past it. No regex matching on tool arguments anywhere. The one
+  deliberate exception is `/guardian-disable`: after an explicit confirmation in the terminal UI
+  it turns the guardian and the floor off for the current session only, until `/guardian-enable`,
+  as a development escape hatch; it is blocked in headless runs, is not inherited by subagents,
+  and every toggle is recorded in the ledger and the audit log. The record of this deviation
+  lives in the master plan's Decisions.
 - **The fast path is earned by Fontaine-enforced workspace containment, not by a label.**
   Read-only ≠ safe; MCP-declared `readOnlyHint` never skips the guardian. There are two
   exceptions. The opt-in, user-scope `[guardian.screen] allow_threshold`: a verdict of the composed

@@ -23,10 +23,13 @@ pub enum Tier {
     DontAsk,
     PlanBlock,
     Human,
+    /// The session escape hatch `/guardian-disable` is on: the call ran before the floor and
+    /// the guardian, so nothing judged it.
+    GuardianOff,
 }
 
 impl Tier {
-    pub const ALL: [Tier; 16] = [
+    pub const ALL: [Tier; 17] = [
         Tier::DenyRule,
         Tier::AskRule,
         Tier::CriticalPath,
@@ -43,6 +46,7 @@ impl Tier {
         Tier::DontAsk,
         Tier::PlanBlock,
         Tier::Human,
+        Tier::GuardianOff,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -63,6 +67,7 @@ impl Tier {
             Tier::DontAsk => "dont_ask",
             Tier::PlanBlock => "plan_block",
             Tier::Human => "human",
+            Tier::GuardianOff => "guardian_off",
         }
     }
 }

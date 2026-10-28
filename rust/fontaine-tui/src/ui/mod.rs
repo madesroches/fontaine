@@ -27,6 +27,7 @@ use fontaine_tools::lock::read_recovering;
 impl<R: FnMut(&mut App)> Ui<R> {
     fn draw(&mut self, runtime: &AgentRuntime) {
         self.app.mode = runtime.state.mode();
+        self.app.guardian_off = runtime.state.guardian_off();
         self.app.model = runtime.models.main.reference.to_string();
         self.app.prune_closed();
         let rows = runtime.state.agents().rows();
@@ -294,7 +295,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Action::Providers(request) => self.provider_request(runtime, request).await,
                 Action::Config(change) => self.config_change(runtime, change),
                 Action::OpenPicker(slot) => self.open_config_picker(runtime, slot).await,
-                Action::Server(_) | Action::None | Action::Interrupt | Action::Queue(_) => {}
+                Action::Server(_)
+                | Action::None
+                | Action::Interrupt
+                | Action::Queue(_)
+                | Action::GuardianOff(_) => {}
             }
         }
     }
@@ -333,6 +338,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(Command::GuardianModel(reference)) => {
                 self.guardian_model(runtime, &reference).await
             }
+            Some(Command::GuardianDisable) => return self.guardian_disable(runtime).await,
+            Some(Command::GuardianEnable) => self.guardian_enable(runtime),
             Some(Command::Login(account)) => self.login(runtime, &account).await,
             Some(Command::Help) => {
                 let (skills, _) = crate::commands::skill_menu(runtime.slash_skills());

@@ -589,6 +589,42 @@ impl Ui {
         self.wait_for(text).await;
         tokio::time::sleep(Duration::from_millis(450)).await;
     }
+
+    /// Like [`wait_for`], but only the live area (the current frame, not the scrollback), so a
+    /// dialog opened twice is not matched by its earlier rendering.
+    pub async fn wait_for_live(&self, text: &str) {
+        for _ in 0..1000 {
+            if self.live().contains(text) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!(
+            "timed out waiting for live `{text}`; the live area shows:\n{}",
+            self.live()
+        );
+    }
+
+    /// [`wait_for_live`] then the answer-key grace period.
+    pub async fn wait_for_live_prompt(&self, text: &str) {
+        self.wait_for_live(text).await;
+        tokio::time::sleep(Duration::from_millis(450)).await;
+    }
+
+    /// Polls the live area until `done` holds, like [`Self::wait_until`] but without the
+    /// scrollback.
+    pub async fn wait_until_live(&self, what: &str, done: impl Fn(&str) -> bool) {
+        for _ in 0..1000 {
+            if done(&self.live()) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!(
+            "timed out waiting for live {what}; the live area shows:\n{}",
+            self.live()
+        );
+    }
 }
 
 /// A chat-completions endpoint whose every answer is the guardian verdict `verdict`.

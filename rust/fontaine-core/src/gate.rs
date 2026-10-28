@@ -17,7 +17,7 @@ use fontaine_tools::scope::Scope;
 use rig_core::completion::Usage;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::audit::{AuditLog, DecisionRecord};
+use crate::audit::{AuditLog, Decision, DecisionRecord, args_digest, now_rfc3339};
 use crate::config::{PermissionMode, Slot};
 use crate::ledger::{Ledger, Record};
 use crate::permission_rules::{
@@ -288,6 +288,7 @@ pub struct SessionState {
     pub memory_root: Option<PathBuf>,
     inner: RwLock<Inner>,
     mode: Arc<RwLock<PermissionMode>>,
+    guardian_off: RwLock<bool>,
     agents: Arc<AgentTree>,
     reveal_mcp_names: bool,
     pub auto_edits: AutoEdits,
@@ -335,6 +336,7 @@ impl SessionState {
             scratch: params.scratch,
             memory_root: params.memory_root,
             mode,
+            guardian_off: RwLock::new(false),
             agents: params.agents,
             reveal_mcp_names: params.reveal_mcp_names,
             auto_edits: params.auto_edits,
@@ -403,6 +405,63 @@ impl SessionState {
             from = from.as_str(),
             to = to.as_str(),
             "permission_mode_changed"
+        );
+    }
+
+    /// Whether the session escape hatch is on: every root call runs before the floor and the
+    /// guardian. The interactive TUI is the only place that sets this.
+    pub fn guardian_off(&self) -> bool {
+        *read(&self.guardian_off, "guardian off")
+    }
+
+    /// Turns the escape hatch on or off for the rest of the session. The toggle is recorded in
+    /// the ledger and the audit log; it is never persisted and never loosens a subagent.
+    pub fn set_guardian_off(&self, off: bool) {
+        let from = std::mem::replace(&mut *write(&self.guardian_off, "guardian off"), off);
+        if from == off {
+            return;
+        }
+        self.append(Record::GuardianOff { off });
+        crate::permissions::record_decision(
+            self,
+            &DecisionRecord {
+                ts: now_rfc3339(),
+                session_id: self.session_id.clone(),
+                agent_id: ROOT_AGENT.to_string(),
+                tool_use_id: None,
+                tool: "guardian".to_string(),
+                args_digest: args_digest(&serde_json::json!({ "off": off })),
+                original_args_digest: None,
+                tier: crate::tier::Tier::GuardianOff,
+                decision: Decision::Allow,
+                rule: Some(if off { "guardian_off" } else { "guardian_on" }.to_string()),
+                confidence: None,
+                guardian_model: None,
+                latency_ms: 0,
+                guardian_profile: None,
+                guardian_verdict: None,
+                guardian_cache_hit: None,
+                verdict_transport: None,
+                guardian_latency_ms: None,
+                fail_closed_reason: None,
+                screen_risk: None,
+                screen_allow_risk: None,
+                screen_steering: None,
+                screen_model: None,
+                screen_latency_ms: None,
+                screen_outcome: None,
+                guardian_dropped_input_tokens: None,
+                guardian_dropped_provider: None,
+                guardian_dropped_model: None,
+                guardian_dropped_priced: None,
+                permission_mode: self.mode().as_str().to_string(),
+                headless: false,
+                explanation: Some(if off {
+                    "guardian disabled".to_string()
+                } else {
+                    "guardian enabled".to_string()
+                }),
+            },
         );
     }
 

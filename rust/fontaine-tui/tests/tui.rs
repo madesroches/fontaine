@@ -90,6 +90,36 @@ async fn a_denial_reason_reaches_the_model() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn guardian_disable_asks_first_and_the_indicator_follows_the_toggle() {
+    let w = World::new(vec![]);
+    w.run(|ui| async move {
+        idle(&ui).await;
+
+        ui.send("/guardian-disable");
+        ui.wait_for_live_prompt("Turn the guardian off for this session?")
+            .await;
+        ui.press(KeyCode::Char('n'));
+        ui.wait_for("guardian left on").await;
+        assert!(!ui.live().contains("⚠ guardian off"), "{}", ui.live());
+
+        ui.send("/guardian-disable");
+        ui.wait_for_live_prompt("Turn the guardian off for this session?")
+            .await;
+        ui.press(KeyCode::Char('y'));
+        ui.wait_for_live("⚠ guardian off").await;
+        assert!(ui.live().contains("⚠ guardian off"), "{}", ui.live());
+
+        ui.send("/guardian-enable");
+        ui.wait_until_live("the guardian chip to clear", |s| {
+            !s.contains("⚠ guardian off")
+        })
+        .await;
+        assert!(!ui.live().contains("⚠ guardian off"), "{}", ui.live());
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn shift_tab_cycles_the_mode_and_the_status_bar_follows() {
     let w = World::new(vec![]);
     w.run(|ui| async move {

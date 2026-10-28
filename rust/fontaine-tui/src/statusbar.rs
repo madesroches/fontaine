@@ -69,16 +69,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         Some((_, true)) => " · ◎ goal paused".to_string(),
         Some((age, false)) => format!(" · ◎ goal {}", goal::duration_text(age)),
     };
-    let line = Line::from(vec![
-        Span::styled(
-            format!(" {} ", mode_label(app.mode)),
-            mode_style(app.mode, &app.theme),
-        ),
-        Span::styled(
-            format!("· {}{agents}{scheduled}{goal} · {hint}", app.model),
-            dim,
-        ),
-    ]);
+    let mut spans = vec![Span::styled(
+        format!(" {} ", mode_label(app.mode)),
+        mode_style(app.mode, &app.theme),
+    )];
+    if app.guardian_off {
+        spans.push(Span::styled(
+            " ⚠ guardian off ",
+            Style::default()
+                .fg(app.theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans.push(Span::styled(
+        format!("· {}{agents}{scheduled}{goal} · {hint}", app.model),
+        dim,
+    ));
+    let line = Line::from(spans);
     frame.render_widget(Paragraph::new(line), area);
 }
 

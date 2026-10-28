@@ -226,10 +226,11 @@ impl Overlay {
 }
 
 /// What sits above the message box, if anything: the denied list, the unavailable-guardian
-/// prompt, the MCP server prompt, the model picker, the resume picker, the rewind picker, the settings panel, the provider dialog, the agents panel, the approval prompt, the model's
-/// questions, the history search or the file completion list, then the `/` menu (at most `MAX_MENU_ROWS` rows
-/// and a key-help footer), in that order of precedence, which is the order `App::handle_key`
-/// routes keys in.
+/// prompt, the MCP server prompt, the guardian-off confirmation, the model picker, the resume
+/// picker, the rewind picker, the settings panel, the provider dialog, the agents panel, the
+/// approval prompt, the model's questions, the history search or the file completion list, then
+/// the `/` menu (at most `MAX_MENU_ROWS` rows and a key-help footer), in that order of
+/// precedence, which is the order `App::handle_key` routes keys in.
 pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Overlay {
     let theme = &app.theme;
     if let Some(list) = &app.denied {
@@ -246,6 +247,12 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
         return Overlay {
             instance: Some(prompt.id),
             ..Overlay::new("MCP server", prompt.body(width, theme), prompt.footer())
+        };
+    }
+    if let Some(prompt) = &app.guardian_off_prompt {
+        return Overlay {
+            instance: Some(prompt.id),
+            ..Overlay::new("guardian", prompt.body(width, theme), prompt.footer())
         };
     }
     if let Some(picker) = &app.models {

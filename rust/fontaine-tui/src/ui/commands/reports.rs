@@ -22,6 +22,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             model: &runtime.models.main.reference.to_string(),
             guardian_label: guardian.label(),
             guardian_unavailable: guardian.unavailable_reason(),
+            guardian_off: runtime.state.guardian_off(),
             guardian_profile: runtime.guardian_profile().as_str(),
             output_style: runtime.output_style(),
             mcp_connected,
@@ -31,13 +32,16 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     pub(crate) fn permissions(&mut self, runtime: &AgentRuntime) {
-        let text = reports::permissions(
+        let mut text = reports::permissions(
             runtime.state.mode(),
             &runtime.state.rules(),
             &runtime.state.suspended_allow_rules(),
             &runtime.roots(),
             self.user_config.as_deref(),
         );
+        if runtime.state.guardian_off() {
+            text.push_str("\nguardian is off for this session; these rules are not being enforced");
+        }
         self.app.transcript.notice(text);
     }
 

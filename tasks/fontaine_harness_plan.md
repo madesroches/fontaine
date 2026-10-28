@@ -326,6 +326,15 @@ scorecard run (see `## Remaining work`).
 
 ## Decisions
 
+- 2026-10-28: Deviation (development escape hatch, #271) — `/guardian-disable` turns the guardian
+  and the deterministic floor off for the rest of the current session, after a confirmation, and
+  `/guardian-enable` turns them back on. It is interactive-only and session-scoped: never saved to
+  config, never settable from project scope, and never inherited by a subagent (children keep the
+  tighter of their own and the parent's posture). Every toggle is recorded in the ledger and the
+  audit log. This carves a deliberate exception into the "no zero-guardian mode" and "the floor
+  gates every mode" invariants for development; the read-only fast path and the result scanner are
+  not the exception's subject, since with the floor off every call is allowed before either is
+  reached.
 - 2026-10-27: Background shell jobs and `monitor` (#25) are root-only; a subagent's `shell` keeps kill-at-timeout, a job keeps its output in a 1 MiB in-memory buffer with no spool files, and `job_cancel` (not `job_kill`) is `arbitrary` and path-free, because jobs must stay one session's, one writer's state and a spool file would add a write surface and path handling. A `shell` deny or ask rule and hook matcher also cover `monitor`; an allow rule does not, because a prohibition must not be sidestepped by running the same command through another tool. See `tasks/background_shell_jobs_plan.md`.
 - 2026-10-25: Locks guarding permission, guardian, spend, model-selection or durable-record state panic on poison via `fontaine_tools::lock`; only display and advisory state recovers (`*_recovering`, reason at the call site), because a corrupted permission state must end the session rather than keep deciding (#186).
 - 2026-10-25: One `todo_write` tool (the whole list replaced per call) stands in for Claude Code's TaskCreate/TaskGet/TaskList/TaskUpdate, because a single replace-all call is one testable path and Claude Code's `TodoWrite` already works that way (#22).

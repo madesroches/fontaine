@@ -39,7 +39,8 @@
         "guardian",
         "dont_ask",
         "plan_block",
-        "human"
+        "human",
+        "guardian_off"
       ]
     },
     "usage_bucket": {

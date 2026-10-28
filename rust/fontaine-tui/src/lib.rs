@@ -12,6 +12,7 @@ pub mod complete;
 pub mod config_panel;
 pub mod denials;
 pub mod diff;
+pub mod guardian_prompt;
 pub mod history;
 pub mod input;
 pub mod linear;

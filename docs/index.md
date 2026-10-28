@@ -30,7 +30,7 @@ describe what the current build does; each page covers one topic.
 - [Skills, agent files and output styles](extensions.md): the extension files, their
   frontmatter, slash commands and porting from `.claude/`.
 - [The terminal UI](tui.md): keys, the status bar, approval prompts, the guardian's denials,
-  `/denied`, `/login`, `/model`, `/guardian-model`, `/add-dir`, `/output-style`, `/help`,
+  `/denied`, `/login`, `/model`, `/guardian-model`, `/guardian-disable`, `/guardian-enable`, `/add-dir`, `/output-style`, `/help`,
   `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plan`, `/copy`, `/expand`, `/memory`, `/init`,
   `/clear`, `/compact`,
   `/context`, `/config`, `/theme`, `/loop` and scheduled prompts, `/goal`, `/resume`, `/branch`,

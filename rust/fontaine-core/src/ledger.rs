@@ -48,6 +48,12 @@ pub enum Record {
         from: String,
         to: String,
     },
+    /// The human turned the guardian and the permission floor off or back on with
+    /// `/guardian-disable` and `/guardian-enable`. The toggle state is session-scoped and never
+    /// carried into another session; the record itself is kept in this session's ledger.
+    GuardianOff {
+        off: bool,
+    },
     Approval {
         tool: String,
         agent: String,
@@ -301,6 +307,7 @@ impl LedgerView {
                 self.user_messages.truncate(keep);
             }
             Record::ModeChange { .. }
+            | Record::GuardianOff { .. }
             | Record::Approval { .. }
             | Record::Grant { .. }
             | Record::Resumed { .. }

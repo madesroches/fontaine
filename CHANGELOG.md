@@ -19,6 +19,14 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `/guardian-disable` and `/guardian-enable` commands (development escape hatch, #271). The
+  disable command asks for confirmation, then turns the guardian and the deterministic permission
+  floor off for the rest of the session, with a warning chip in the status bar until re-enabled.
+  It is interactive-only and session-scoped: it is never saved to settings, a project cannot set
+  it, and subagents are never loosened by it. Every toggle is recorded in the session ledger and
+  the audit log. This is a deliberate deviation from the security invariants, recorded in the
+  master plan's decisions.
+
 - Background shell jobs and a `monitor` tool (#25). A main-conversation `shell` command still
   running at its `timeout_secs` (or, with the default timeout, after 60 s without output) is no
   longer stopped: the call returns the output so far and a job id, the command keeps running, and

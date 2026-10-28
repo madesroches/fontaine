@@ -242,6 +242,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             | Action::Queue(_)
                             | Action::EditQueued
                             | Action::Shell(_)
+                            | Action::GuardianOff(_)
                             | Action::CancelWakeup => {}
                         },
                     },
