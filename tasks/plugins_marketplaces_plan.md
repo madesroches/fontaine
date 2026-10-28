@@ -140,15 +140,21 @@ pin = "a1b2c3..."                                 # pinned catalog commit; a con
 name = "review"
 marketplace = "team-tools"
 source = "./plugins/review"
-pin = "d4e5f6..."                                 # pinned install commit
+pin = "d4e5f6..."                                 # pinned install commit; for a path source, the marketplace's pin
 enabled = true
 ```
 
 Plugin names are unique across marketplaces in the registry — component names are `plugin:name`
 — and install enforces it by refusing a name that is already installed from anywhere.
+Marketplace names are unique too: `marketplace add` refuses a registry name already registered.
+A plugin that lives at a path inside its marketplace repository shares that repository's
+history, so its `pin` is the marketplace's pin; only `github`/`git` sources get a pin of their
+own.
 
 The file is written with `owner_only::write_atomic` under a mutex, never across an await, as
-`SessionTodos` writes `todos.json`. A missing file means no marketplaces and no plugins. A
+`SessionTodos` writes `todos.json`. Every mutation holds a lock file beside `plugins.toml`
+around the whole read-modify-write, so two concurrent `fontaine plugin` processes serialize
+instead of losing each other's entries. A missing file means no marketplaces and no plugins. A
 corrupt file loads nothing and warns once through `Approver::warn`, as an unparseable
 `todos.json` does: a broken registry never silently enables or disables anything, it just skips
 plugins for the run.
@@ -161,13 +167,13 @@ are CLI commands, not session commands: they run outside any session, need no pe
 
 | Command | Effect |
 |---|---|
-| `fontaine plugin marketplace add <url-or-path> [--name N]` | Clone (or copy a local dir), resolve the pin, read the catalog, register it under the catalog's `name` (`--name` overrides the registry key; the catalog keeps its own). A catalog that does not parse is an error and nothing is kept. |
+| `fontaine plugin marketplace add <url-or-path> [--name N]` | Clone (or copy a local dir), resolve the pin, read the catalog, register it under the catalog's `name` (`--name` overrides the registry key; the catalog keeps its own). Refuses a registry name that is already registered. A catalog that does not parse is an error and nothing is kept. |
 | `fontaine plugin marketplace list` | Name, url, pin, plugin count. |
 | `fontaine plugin marketplace update [name]` | Fetch, move the pin to the remote default-branch HEAD, report old -> new sha. Does not touch installed plugins. |
 | `fontaine plugin marketplace remove <name>` | Refuses while an installed plugin names it; else drops clone and registry entry. |
-| `fontaine plugin install <name>@<marketplace>` | Resolve the entry in the pinned catalog, clone/copy the plugin at the resolved commit, validate manifest and every component, record it enabled. Refuses a plugin name already installed from any marketplace (registry-wide uniqueness). Fails atomically: a failed install leaves no registry entry and no checkout. |
+| `fontaine plugin install <name>@<marketplace>` | Resolve the entry in the pinned catalog. A `github`/`git` source clones at the remote's current HEAD, which becomes the pin; a path source copies from the pinned marketplace checkout and takes the marketplace's pin (same repository). The manifest's `name` must equal the catalog entry's — namespacing and MCP server composition both use it — and a mismatch is an install error. Validate the manifest and every component, record it enabled. Refuses a plugin name already installed from any marketplace (registry-wide uniqueness). Fails atomically: a failed install leaves no registry entry and no checkout. |
 | `fontaine plugin uninstall <name>` | Remove checkout and registry entry. |
-| `fontaine plugin update <name>` | Re-fetch the source, move the pin, re-validate; a validation failure keeps the old checkout live. |
+| `fontaine plugin update <name>` | A `github`/`git` source is re-fetched and the pin moves to the new HEAD; a path source is re-copied from the current marketplace checkout and takes the marketplace's pin, so it moves only after `marketplace update` (the two-step stays explicit). Re-validate; a validation failure keeps the old checkout live. |
 | `fontaine plugin enable / disable <name>` | Flip the registry flag; a disabled plugin stays on disk and contributes nothing. |
 | `fontaine plugin list [--format json]` | Name, marketplace, pinned short sha, enabled, component counts. |
 
@@ -175,7 +181,9 @@ Git operations shell out to `git` through `std::process::Command` (fixed argv, n
 `memory.rs` does; a missing `git` is an error naming it. Pinning: `git clone`, then
 `git rev-parse HEAD` recorded as the pin, and the checkout stays at that sha; update is
 `git fetch` + checkout of the new sha + registry rewrite. A local-directory marketplace is copied
-and pinned by content hash of the catalog file (no commit exists); `update` re-copies it.
+and pinned by a content hash of the whole tree — catalog and plugin sources — so a content
+change moves the pin even when the catalog file is untouched; `update` re-copies and re-hashes
+it.
 
 Install/update print what the plugin brings before touching the registry: counts of skills,
 agents, styles, hooks, servers, and its deny/ask and guardian additions, so the approval the
@@ -201,8 +209,9 @@ pub fn load_installed(config_dir: &Path) -> Result<PluginContributions, PluginEr
 ```
 
 `PluginError` names the plugin and the file at fault; a startup that gets one stops with exit
-code 2, as extension load errors do. `warnings` is for non-fatal degradation only (a vanished
-checkout, an ignored LSP component).
+code 2, as extension load errors do. `warnings` is for non-fatal degradation only: a vanished
+checkout, an ignored LSP component, a hook entry skipped over an un-mappable matcher, an agent
+file skipped over an absent external MCP server.
 
 - `extensions::LoadParams` gains `plugins: &[PluginDir]`; `load` walks each plugin's `skills/`,
   `commands/` (as skills), `agents/`, `output-styles/` after the user root and before the
@@ -232,8 +241,23 @@ Plugin prompt content is third-party even though the user installed it, so it fo
 - A plugin skill's `allowed-tools` is validated and ignored: a plugin cannot approve calls.
 - A plugin agent file cannot pick a model, its `permissionMode` is `default` or `dontAsk`, and
   its `tools` must be tools the session has (built-ins or servers of the session, including the
-  plugin's own). `inherit` is an error, as for project files.
+  plugin's own). `inherit` is an error, as for project files. One relaxation: a `tools` entry
+  naming an MCP server the plugin does not ship and the session does not have skips the agent
+  file with a warning instead of failing startup — whether that server exists is the user's
+  configuration, not a defect in the file. Install validates against built-ins and the plugin's
+  own composed servers and warns about such external references in its summary. Entries naming
+  anything else the session lacks (an unknown tool, a missing server the plugin itself ships)
+  stay load errors.
+- `!` commands in plugin skills run without the workspace-trust gate: install approved the
+  plugin's content, as it did for its hooks and MCP servers. They still go through the shell
+  tool's permission pipeline (`skills.rs` `run_command`).
 - The executable-key refusal (`hooks`, `mcpServers` in frontmatter) applies unchanged.
+
+The project-rule checks compare `scope == Scope::Project` (`load_agent`'s model and `tools`
+checks in `extensions.rs`): adding the variant compiles without touching them, which would
+silently drop the checks for plugin files. They move to a `Scope::is_tightened()` helper — true
+for `Project` and `Plugin` — or to exhaustive matches, so a future variant cannot skip them
+either. The trust gate in `skills.rs` `run_command` stays `Project`-only by the decision above.
 
 Components are namespaced `plugin:name`, as Claude Code's `/my-plugin:review`: `valid_name`
 gains a plugin form that allows exactly one `:` separator, and the loader prefixes skill, agent
@@ -250,10 +274,17 @@ widen (`registry.rs:140`).
 
 - **`hooks/hooks.json`**: Claude Code's schema (`{"hooks": {"PreToolUse": [{"matcher": "...",
   "hooks": [{"type": "command", "command": "...", "timeout": N}]}]}}`) maps onto `Hook` entries:
-  matcher strings map through `map_tool_entry` (`Bash` -> `shell`), `timeout` seconds to
-  `timeout_secs`, `${CLAUDE_PLUGIN_ROOT}` expanded. Unknown events (`SessionStart`, ...) are
-  ignored; a malformed entry is a load error naming the file. Only `type: "command"` is
-  supported; `"prompt"` hooks are refused.
+  `timeout` seconds to `timeout_secs`, `${CLAUDE_PLUGIN_ROOT}` expanded. Claude Code matchers are
+  regexes over tool names while a Fontaine matcher is a permission rule, so the supported subset
+  is: a single tool name (`Bash` -> `shell` through `map_tool_entry`), an alternation of
+  mappable names (`Write|Edit` expands to one `Hook` per alternative), and a trailing `.*` or
+  `*` (the rule's wildcard form). The bare in-plugin server rewrite applies to matchers too, so
+  a hook matching one of the plugin's own servers fires on the composed name. A matcher outside
+  this subset skips its hook entry with a warning (in `PluginContributions::warnings`, shown in
+  the install summary and at startup) rather than failing the plugin: an un-mappable regex must
+  not make an idiomatic plugin uninstallable, and the skipped hook is visible. A structurally
+  malformed entry is still a load error naming the file. Unknown events (`SessionStart`, ...) are
+  ignored. Only `type: "command"` is supported; `"prompt"` hooks are refused.
 - **`.mcp.json`**: `{"mcpServers": {"<name>": {"command", "args", "env"}}}` or `{"url"}` maps
   onto `McpServer`. `env` values support `${VAR}` expansion; to carry literal values `McpServer`
   gains an optional `env: BTreeMap<String, String>` applied to the child after the scrub, beside
@@ -363,13 +394,28 @@ changes stay on the CLI; an interactive browse-and-install surface is a follow-u
   Plugin-to-plugin dependencies are not supported (Claude Code's manifest has none).
 - 2026-10-28: `${CLAUDE_PLUGIN_ROOT}` keeps its Claude Code name for portability, expanding to
   the installed checkout.
+- 2026-10-28: A path-source plugin's pin is the marketplace's pin (same repository), and
+  `plugin update` for one re-copies from the current marketplace checkout, so it moves only
+  after `marketplace update` — the explicit two-step stands.
+- 2026-10-28: `!` commands in plugin skills run without the workspace-trust gate — install is
+  the approval, as for plugin hooks and MCP servers — and still pass the permission pipeline.
+- 2026-10-28: Hook matchers support single tool names, `|` alternation and trailing wildcards;
+  a matcher outside that subset skips its hook entry with a warning rather than failing the
+  plugin (Claude Code matchers are regexes over tool names).
+- 2026-10-28: A plugin agent file naming an MCP server the plugin does not ship and the session
+  does not have is skipped with a warning, not an exit-2 startup error: whether that server
+  exists is the user's configuration, not a defect in the file.
+- 2026-10-28: A local-directory marketplace pins a content hash of its whole tree, so plugin
+  content changes move the pin. Registry mutations hold a lock file beside `plugins.toml`
+  around the read-modify-write, and `marketplace add` refuses a duplicate registry name.
 
 ## Documentation
 
 - `docs/plugins.md` (new): what a plugin is, the layout and manifest (including the Fontaine-only
-  `permissions`/`guardian` keys), marketplaces, every CLI command, pinning and updates,
-  enable/disable, the tighten-only rule and what install approves, namespacing, LSP unsupported,
-  porting notes for Claude Code plugins.
+  `permissions`/`guardian` keys), marketplaces, every CLI command, pinning and updates
+  (including the path-source pin rule), enable/disable, the tighten-only rule and what install
+  approves, namespacing, LSP unsupported, porting notes for Claude Code plugins (the supported
+  hook-matcher subset, skipped-with-warning degradation).
 - `docs/index.md`: the one-line entry. `docs/extensions.md`: plugin scope in the roots table and
   the scope rules. `docs/mcp.md` / `docs/hooks.md`: plugin origin behavior (start without the
   workspace-trust gate; `allow`/`retry` ignored). `docs/permissions.md`: `RuleSource::Plugin`,
@@ -392,14 +438,20 @@ source needs no network); JSON fixtures stand in for remote catalogs.
   rejected in plugin, marketplace and server names; bare in-plugin `mcp__` references rewritten
   to the composed server name; `${CLAUDE_PLUGIN_ROOT}` and `.mcp.json` `${VAR}` expansion;
   registry round-trip, atomic write, corrupt file warns and loads nothing; matcher mapping
-  through `map_tool_entry`; `permissions`
+  through `map_tool_entry`, `|` alternation expansion, trailing-wildcard mapping, an un-mappable
+  matcher warns and skips its hook entry, bare in-plugin server references in matchers rewritten
+  to the composed name; `permissions`
   / `guardian` manifest keys (deny/ask accepted, `allow` or `environment` a load error naming
   the plugin).
 - Git lifecycle (local repos): marketplace add pins the HEAD sha; update moves the pin and
-  reports old -> new; install at the catalog's pinned commit; update re-validates and a broken
-  new revision keeps the old checkout; remove refuses while installed; uninstall deletes the
-  checkout; a failed install leaves neither entry nor directory; install refuses a plugin name
-  already installed from another marketplace; a source that vanishes
+  reports old -> new; a path-source install copies from the pinned marketplace checkout and
+  takes the marketplace's pin; `plugin update` for a path source re-copies after `marketplace
+  update` and moves the pin with it; a `github`/`git`-source update re-fetches and re-validates
+  and a broken new revision keeps the old checkout; remove refuses while installed; uninstall
+  deletes the checkout; a failed install leaves neither entry nor directory; install refuses a
+  plugin name already installed from another marketplace; `marketplace add` refuses a duplicate
+  registry name; a catalog/manifest name mismatch is an install error; a local marketplace's
+  tree hash moves when plugin content changes without a catalog edit; a source that vanishes
   mid-update fails with the error chain.
 - Scope enforcement (the security core, so every line is automated): a plugin skill's
   `allowed-tools` lends nothing; a plugin agent file with `model` or `permissionMode: inherit`
@@ -408,7 +460,10 @@ source needs no network); JSON fixtures stand in for remote catalogs.
   `arbitrary` and asks in `manual`; plugin deny/ask rules match their calls; plugin
   `hard_deny`/`soft_deny` appear in `effective_auto_mode` and `allow` never does; a composed
   server name colliding with a configured non-plugin server is a startup error naming the
-  plugin.
+  plugin; a plugin skill's `!` commands run without workspace trust and through the permission
+  pipeline; a plugin agent naming an MCP server the plugin does not ship and the session does
+  not have is skipped with a warning, while one naming anything else the session lacks is an
+  exit-2 startup error naming the file.
 - Session integration (fixture models, no live APIs): a session with an installed fixture plugin
   lists the namespaced skill in the system prompt, runs `/plugin:name`, registers the plugin's
   `mcp__plugin_<plugin>_<server>__*` tools, and a deleted checkout warns and contributes
@@ -425,13 +480,8 @@ Only live-network behavior is checked by hand.
 
 1. Build a two-plugin local marketplace, `marketplace add` it, install one plugin with a skill
    and a hook; run `fontaine -p "use the <plugin>:<skill> skill"` and confirm the namespaced
-   skill loads; run `fontaine plugin update` after a new commit and confirm the pin moves.
+   skill loads; commit a change in the marketplace, run `marketplace update` then `fontaine
+   plugin update`, and confirm both pins move.
 2. Add a real public Claude Code marketplace over HTTPS (for example Anthropic's official one),
    install a small plugin, and confirm the manifests load unmodified and `${CLAUDE_PLUGIN_ROOT}`
    hook commands run. This catches schema drift fixtures cannot.
-
-## Open Questions
-
-- Whether `fontaine plugin update` should also refresh the marketplace catalog first (one
-  command) or require `marketplace update` explicitly; the plan takes the explicit two-step,
-  matching the recorded pins.
