@@ -277,40 +277,6 @@ it needs no guardian verdict.
 - `docs/guardian.md`, `docs/evals.md`, `docs/permissions.md`, `docs/configuration.md`,
   `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
 
-## Decisions` lines (below) and
-   the `CHANGELOG.md` entry at PR time.
-
-## Files to Modify
-
-- `rust/fontaine-guardian/src/prompt_builder.rs` and its snapshots
-- `rust/fontaine-guardian/src/screen.rs` (the `blocks` call argument and the `stripped` test helper only; no prompt text)
-- `rust/fontaine-guardian/prompts/guardian_prompt.md`, `guardian_minimal.md`
-- `rust/fontaine-guardian/src/verdict.rs` (descriptions only)
-- `rust/fontaine-evals/src/case.rs`, `live.rs`, `tests/live.rs`
-- `rust/fontaine-tui/tests/schedule.rs`, `rust/fontaine-core/tests/agent_pipeline.rs` (check only:
-  they match `kind="recent_user_messages">`)
-- `evals/dataset/followup.jsonl` (new), `evals/README.md`
-- `rust/fontaine-core/src/permissions.rs`, `tier.rs`, `trust.rs`, `config.rs`, `config_scope.rs`,
-  `config_catalog.rs`
-  (tracked-file edits)
-- `rust/fontaine-guardian/src/critique.rs` (`list_block` call-site argument only)
-- `rust/fontaine-core/tests/permissions_auto.rs` (tests that expect the guardian for such edits)
-- `docs/schemas/headless-v1.schema.json`, `docs/headless.md`, `docs/architecture.md`,
-  `docs/tools.md`, `tasks/design/permissions.md`, `tasks/design/config.md`, `README.md`,
-  `AGENTS.md` (fast-path invariant)
-- `docs/guardian.md`, `docs/evals.md`, `docs/permissions.md`, `docs/configuration.md`,
-  `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
-
-## Trade-offs
-
-- **Prompt rules vs. a structured "user vouched" field.** The request already carries the user's
-  messages as harness-recorded data; the failure was how they are framed, not a missing channel.
-  A new structured field would duplicate `recent_user_messages` and invite a second place for
-  injection. Chosen: reframe the existing blocks.
-- **Trusted tag for user blocks vs. keeping `<untrusted>` with `source="user"`.** A separate
-  non-untrusted tag would make the block look like instructions; the user's text may itself
-  contain pasted material. The attribute keeps one delimiter and one `neutralize` path.
-
 ## Decisions
 
 - 2026-10-27: Deviation from Claude Code — user reaffirmation after a denial counts for soft
