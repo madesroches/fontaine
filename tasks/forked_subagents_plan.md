@@ -59,19 +59,22 @@ Rules enforced in `AgentTool::call`, before reserving a slot:
    an async fallible closure over `load_async(store, CONVERSATION_LOG)` returning the whole
    `Conversation`, so tests can supply a fixed one and a read failure maps to
    `could not start: <chain>`. `child_runner` has no `Session` today, so `agent/setup.rs` passes
-   it the session store (`p.session.store()`, a cheap `DirStore` clone, as `build.rs:246` does)
+   it the session store (`p.session.store()`, a cheap `DirStore` clone, as `rust/fontaine-core/src/agent/build.rs:246` does)
    as a new parameter, and the closure captures that clone.
 2. Drop a trailing assistant message whose tool calls have no results yet: at spawn time the
    parent's in-flight `agent` call is exactly that. Whether rig-memory has saved it by then is
-   verified first (Implementation Steps, step 1); the trim is a no-op if not. The fork's own first user turn is
-   the `prompt`, prefixed with a one-line harness note naming it as a fork task
-   ("You are a forked subagent of the conversation above; do only the task below and report.").
-3. Build a fresh `MemoryStore::default()`, put the (trimmed, prompt-appended) loaded `Conversation`
-   into it with `save_async` under `"main"`, then proceed exactly as for any child. `set_entries`
+   verified first (Implementation Steps, step 1); the trim is a no-op if not.
+3. Build a fresh `MemoryStore::default()`, put only the trimmed loaded `Conversation` (no prompt)
+   into it with `save_async` under `"main"`, then proceed exactly as for any child. The fork's own
+   first user turn is the run prompt passed through `drive` (`run_child` -> `drive`, which appends
+   it via `agent.prompt`), prefixed with a one-line harness note naming it as a fork task
+   ("You are a forked subagent of the conversation above; do only the task below and report.");
+   it is never also stored, or the child would see it twice. `set_entries`
    does not carry compaction asides (`session.rs:650-670` re-adds them with `add_aside`), so the
    loaded `Conversation` is cloned wholesale, keeping a compacted parent compacted in the child.
 
-The child's preamble is `subagent_layer("fork", None)` on the standard assembly, with a distinct
+The child's preamble (the `preamble` closure at `rust/fontaine-core/src/agent/setup.rs:~501`,
+which chooses the fork layer from `inherits_context`) is `subagent_layer("fork", None)` on the standard assembly, with a distinct
 `fork` layer text in `prompt.rs` ("you are a forked subagent; the conversation above is the
 parent's") in place of the typed-subagent line "You cannot see that agent's conversation; work from
 the task you were given"; a fork does not reuse the parent's exact system prompt (see Decisions).
@@ -113,10 +116,12 @@ the task you were given"; a fork does not reuse the parent's exact system prompt
    description (`spawn.rs` ~156, "The task, with all the context it needs.") saying a fork needs
    only a short task.
 4. `fontaine-core/src/child_runner.rs`: `parent_conversation` closure field on `ChildContext`, seeding
-   in `spawn` (load, trim dangling call, copy into the child's store, prefix the prompt); wire the
+   in `spawn` (load, trim dangling call, copy only the trimmed conversation into the child's store,
+   and pass the fork-note-prefixed prompt as the run prompt through `drive`, not into the store); wire the
    store-backed closure in `agent/setup.rs::child_runner`; add the distinct `fork` layer text
    in `fontaine-core/src/prompt.rs`.
-5. `docs/agents.md`: new `fork` row in Agent types, a "Forking the conversation" subsection
+5. `docs/agents.md`: reword the `prompt` row of the agent tool table (line 13, "it cannot see the
+   conversation") per type, new `fork` row in Agent types, a "Forking the conversation" subsection
    (context copied, same model, main-conversation only, rule `agent(fork)`, a sentence that this is
    not the `/fork` slash command (an alias of `/branch`, `docs/tui.md`), and the note that a
    large inherited context is billed on the first call and can exhaust the child's default budget,
