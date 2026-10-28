@@ -23,6 +23,7 @@ use super::Setup;
 use crate::checkpoint::StoreCapture;
 use crate::child_runner::{CoreChildRunner, LedgerWindow};
 use crate::config::Config;
+use crate::fork_context::ParentContextHook;
 use crate::gate::SessionState;
 use crate::instructions::{self, InstructionStage, Loaded, Sources};
 use crate::memory;
@@ -247,6 +248,9 @@ fn finish_builder(p: &Parts<'_>, preamble: String) -> (Agent, bool) {
         .conversation(CONVERSATION_LOG);
     let mut builder = apply_common(builder, p.state, p.config.telemetry.records_content())
         .add_hook(SteeringHook::new(p.steering.clone(), p.state.clone()))
+        .add_hook(ParentContextHook::new(
+            p.runner.context.parent_context.clone(),
+        ))
         .tool_server_handle(p.tool_server.clone());
     if let Some(schema) = &p.setup.json_schema {
         builder = builder.output_schema_raw(schema.clone());

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use fontaine_tools::gate::AgentId;
+use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use rig_core::tool::{Tool, ToolContext, ToolExecutionError, ToolOutput};
 use serde::Deserialize;
 use serde_json::json;
@@ -135,8 +135,9 @@ impl Tool for AgentTool {
     fn description(&self) -> String {
         format!(
             "Start a subagent: a separate conversation with its own context that works on one \
-             task and returns a report. Give it everything it needs in `prompt`; it cannot see \
-             this conversation. By default the call waits for the report and returns it; with \
+             task and returns a report. Give it everything it needs in `prompt`: a subagent \
+             cannot see this conversation, except a `fork`, which starts from a copy of it and \
+             needs only a short task. By default the call waits for the report and returns it; with \
              `background` set it returns an `agent_id` at once and the report arrives later as \
              a notification. A subagent has a subset of your tools and never more authority than \
              you, and every call it makes passes the same permission checks. Agent types:\n{}",
@@ -153,7 +154,7 @@ impl Tool for AgentTool {
                     "enum": self.types.names(),
                     "description": "Which kind of subagent to start.",
                 },
-                "prompt": { "type": "string", "description": "The task, with all the context it needs." },
+                "prompt": { "type": "string", "description": "The task. A subagent cannot see this conversation, so give it all the context it needs; a `fork` already has the conversation and needs only a short task." },
                 "model": {
                     "type": "string",
                     "description": "Optional model for this agent: `$main`, `$guardian_default` or `<account>/<model>`. Defaults to the agent type's model.",
@@ -181,6 +182,18 @@ impl Tool for AgentTool {
                 self.types.describe()
             )));
         };
+        if agent_type.inherits_context {
+            if caller != ROOT_AGENT {
+                return Err(ToolExecutionError::refused(
+                    "only the main conversation can fork itself; start a typed subagent and put what it needs in `prompt`",
+                ));
+            }
+            if args.model.is_some() {
+                return Err(ToolExecutionError::invalid_args(
+                    "a fork runs on the session model; leave `model` out",
+                ));
+            }
+        }
         let model = match args.model.as_deref() {
             Some(text) => {
                 if !agent_type.accepts_model_override() {

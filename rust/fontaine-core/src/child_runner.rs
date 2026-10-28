@@ -10,6 +10,7 @@ use fontaine_agents::root_ledger::{AgentEvent, RootLedger};
 use fontaine_agents::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, SpawnRequest};
 use fontaine_agents::tree::AgentTree;
 use fontaine_guardian::WireIds;
+use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::CallView;
 use fontaine_tools::lock::{lock, lock_recovering, read};
 use fontaine_tools::result_pipeline::{ResultStage, ToolOutcome, append_note};
@@ -21,6 +22,7 @@ use tokio::sync::watch;
 use tracing::Instrument;
 
 use crate::agent::apply_common;
+use crate::fork_context::{FORK_NOTE, ParentContext};
 use crate::gate::{ChildRestrictions, SessionState, spend_of};
 use crate::ledger::Record;
 use crate::models::{ModelHandle, SharedSwitcher};
@@ -113,6 +115,8 @@ pub struct ChildContext {
     pub preamble: Preamble,
     pub approver: Arc<dyn Approver>,
     pub record_content: bool,
+    /// What the main agent's model last read, for the agent types that inherit context.
+    pub parent_context: ParentContext,
 }
 
 pub struct CoreChildRunner {
@@ -255,6 +259,16 @@ impl ChildRunner for CoreChildRunner {
         Box::pin(async move {
             let context = &self.context;
             let model = context.model_for(&request.model).await?;
+            let forked = request.agent_type.inherits_context;
+            let store = if forked {
+                context
+                    .parent_context
+                    .seed("main")
+                    .await
+                    .map_err(|e| format!("could not fork the conversation: {}", chain(&e)))?
+            } else {
+                MemoryStore::default()
+            };
             context
                 .state
                 .agents()
@@ -277,7 +291,7 @@ impl ChildRunner for CoreChildRunner {
             let tools = fork_tools(&context.tool_server, &request.tools);
             let builder = AgentBuilder::new(model.completion.clone())
                 .preamble((context.preamble)(&request.agent_type))
-                .memory(MemoryStore::default())
+                .memory(store)
                 .conversation("main");
             let agent = apply_common(builder, &state, context.record_content)
                 .tool_server_handle(tools)
@@ -303,7 +317,11 @@ impl ChildRunner for CoreChildRunner {
             });
 
             let id = request.id.clone();
-            let prompt = request.prompt;
+            let prompt = if forked {
+                format!("{FORK_NOTE}\n\n{}", request.prompt)
+            } else {
+                request.prompt
+            };
             let task_state = state.clone();
             tokio::spawn(
                 async move {
@@ -461,6 +479,7 @@ mod tests {
             model: None,
             mode: ModeSetting::Inherit,
             origin: TypeOrigin::Builtin,
+            inherits_context: false,
         }
     }
 

@@ -8,6 +8,10 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- A built-in `fork` agent type starts a subagent from a copy of the main conversation, including
+  the current turn, so its `prompt` can be a short task (#39). It runs on the session model, can be
+  started only by the main conversation, and fails to start rather than run without the context. The
+  guardian's intent source is unchanged.
 - A schema-constrained verdict path makes an Ollama model with no tool support usable as the
   guardian and as the `llm` scanner model (#250). Fontaine asks the daemon for the model's
   capabilities and, for a model that can generate text but reports no `tools`, sends the verdict's

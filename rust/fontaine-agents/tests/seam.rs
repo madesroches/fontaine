@@ -31,6 +31,7 @@ struct Spawned {
     background: bool,
     prompt: String,
     human: Vec<String>,
+    inherits_context: bool,
 }
 
 #[derive(Default)]
@@ -138,6 +139,7 @@ impl ChildRunner for FakeRunner {
                 background: request.background,
                 prompt: request.prompt.clone(),
                 human: request.ledger.human_messages(),
+                inherits_context: request.agent_type.inherits_context,
             });
             let (report, _) = watch::channel(None);
             let child = Arc::new(FakeChild {
@@ -302,6 +304,7 @@ async fn a_toolset_never_exceeds_the_parents() {
         model: None,
         mode: fontaine_agents::mode::ModeSetting::Inherit,
         origin: TypeOrigin::Config,
+        inherits_context: false,
     });
     let rig = rig_with(tree_limits, types, RootMode::Ladder(Ladder::Manual));
     *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
@@ -321,6 +324,7 @@ async fn an_explicit_mode_is_never_looser_than_the_parents() {
         model: None,
         mode: fontaine_agents::mode::ModeSetting::Manual,
         origin: TypeOrigin::Config,
+        inherits_context: false,
     });
     let strict = rig_with(
         Limits::default(),
@@ -370,6 +374,7 @@ async fn an_invalid_model_and_a_model_on_a_project_type_are_error_results() {
         model: None,
         mode: fontaine_agents::mode::ModeSetting::Manual,
         origin: TypeOrigin::ProjectFile("repo-reviewer.md".into()),
+        inherits_context: false,
     });
     let rig = rig_with(Limits::default(), types, RootMode::Ladder(Ladder::Manual));
     *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
@@ -531,6 +536,7 @@ async fn nesting_stops_at_three_layers_and_the_agent_tool_is_withheld_there() {
         model: None,
         mode: fontaine_agents::mode::ModeSetting::Inherit,
         origin: TypeOrigin::Config,
+        inherits_context: false,
     });
     let rig = rig_with(
         Limits {
@@ -724,4 +730,75 @@ async fn a_call_that_does_not_say_whose_it_is_is_not_served_as_the_root_agents()
         .await
         .unwrap_err();
     assert!(error.model_output().render().contains("which agent"));
+}
+
+#[tokio::test]
+async fn a_fork_inherits_the_parents_tools_and_mode_and_only_it_inherits_context() {
+    let rig = rig();
+    *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
+    spawn(&rig, args("fork", "short task")).await.unwrap();
+    spawn(&rig, args("explore", "look")).await.unwrap();
+    let spawned = rig.runner.spawned();
+    assert!(spawned[0].inherits_context);
+    assert!(!spawned[1].inherits_context);
+    assert_eq!(spawned[0].model, ModelSpec::Main);
+    assert_eq!(spawned[0].mode, Ladder::Auto);
+    assert_eq!(
+        spawned[0].tools,
+        [
+            "ls",
+            "read",
+            "glob",
+            "grep",
+            "edit",
+            "write",
+            "shell",
+            "agent",
+            "send_message"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_fork_refuses_a_model_and_a_call_from_a_child() {
+    let rig = rig();
+    *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
+    let mut with_model = args("fork", "x");
+    with_model.model = Some("$main".into());
+    let error = spawn(&rig, with_model).await.unwrap_err();
+    assert!(error.contains("session model"), "{error}");
+
+    let from_child = rig
+        .agent
+        .call(&mut as_agent("agent-1"), args("fork", "x"))
+        .await
+        .unwrap_err()
+        .model_output()
+        .render();
+    assert!(
+        from_child.contains("only the main conversation"),
+        "{from_child}"
+    );
+    assert!(rig.runner.spawned().is_empty());
+    assert!(rig.tree.running_ids().is_empty());
+}
+
+#[tokio::test]
+async fn a_configured_type_named_fork_replaces_the_built_in_and_loses_the_capability() {
+    let mut types = AgentTypes::builtin();
+    types.insert(AgentType {
+        name: "fork".into(),
+        description: "".into(),
+        prompt: None,
+        tools: None,
+        disallowed: vec![],
+        model: None,
+        mode: fontaine_agents::mode::ModeSetting::Inherit,
+        origin: TypeOrigin::Config,
+        inherits_context: false,
+    });
+    let rig = rig_with(Limits::default(), types, RootMode::Ladder(Ladder::Manual));
+    *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
+    spawn(&rig, args("fork", "x")).await.unwrap();
+    assert!(!rig.runner.spawned()[0].inherits_context);
 }
