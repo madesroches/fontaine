@@ -163,10 +163,12 @@ pub fn build_with_env(
 ) -> AgentRuntime {
     let config = world.load().unwrap();
     let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
-    let loaded = extensions::load(&LoadParams {
+    let loaded = extensions::load(&mut LoadParams {
         config_dir: &world.config,
         project_root: &world.work,
         servers: &servers,
+        plugins: &[],
+        warnings: &mut Vec::new(),
     })
     .unwrap();
     let memory_root = world

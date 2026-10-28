@@ -35,6 +35,8 @@ pub enum Command {
     Mcp(String),
     Hooks,
     Skills,
+    /// `/plugins`: the installed plugins and their components.
+    Plugins,
     /// `/loop [interval] <prompt>`, `/loop list` or `/loop stop [id]`.
     Loop(String),
     /// `/goal <condition>`, `/goal` or `/goal clear`.
@@ -271,6 +273,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: Some("[description]"),
         description: "enter plan mode, optionally with a task",
         command: Command::Plan,
+    },
+    Builtin {
+        name: "plugins",
+        aliases: &[],
+        hint: None,
+        description: "the installed plugins",
+        command: |_| Command::Plugins,
     },
     Builtin {
         name: "rename",

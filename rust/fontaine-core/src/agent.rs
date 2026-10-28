@@ -419,6 +419,11 @@ impl AgentRuntime {
         &self.extensions
     }
 
+    /// The user config directory, for reports that read the plugin registry.
+    pub fn config_dir(&self) -> &Path {
+        &self.setup.config_dir
+    }
+
     pub fn agent_types(&self) -> &Arc<AgentTypes> {
         &self.agent_types
     }

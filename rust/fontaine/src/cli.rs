@@ -130,6 +130,68 @@ pub enum Command {
     /// Inspect the rules the guardian judges against
     #[command(name = "auto-mode")]
     AutoMode(AutoModeArgs),
+    /// Install and manage plugins and marketplaces
+    Plugin(PluginArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PluginArgs {
+    #[command(subcommand)]
+    pub action: PluginAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum PluginAction {
+    /// Add, list, update or remove a marketplace
+    Marketplace(MarketplaceArgs),
+    /// Install a plugin: `fontaine plugin install <name>@<marketplace>`
+    Install(NameArgs),
+    /// Remove an installed plugin
+    Uninstall(NameArgs),
+    /// Update an installed plugin to its source's new revision
+    Update(NameArgs),
+    /// Enable an installed plugin
+    Enable(NameArgs),
+    /// Disable an installed plugin (it stays on disk and contributes nothing)
+    Disable(NameArgs),
+    /// List installed plugins
+    List(FormatArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct MarketplaceArgs {
+    #[command(subcommand)]
+    pub action: MarketplaceAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum MarketplaceAction {
+    /// Register a marketplace from a git URL or local directory
+    Add(MarketplaceAddArgs),
+    /// List registered marketplaces
+    List,
+    /// Move a marketplace's pin to the remote default-branch HEAD
+    Update { name: Option<String> },
+    /// Remove a marketplace (refused while a plugin names it)
+    Remove { name: String },
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct MarketplaceAddArgs {
+    /// A git URL or a local directory
+    #[arg(value_name = "URL|PATH")]
+    pub source: String,
+
+    /// Override the registry key; the catalog keeps its own name
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct NameArgs {
+    /// A plugin name, or `name@marketplace` for install
+    #[arg(value_name = "NAME")]
+    pub name: String,
 }
 
 #[derive(Args, Debug, Clone)]

@@ -120,6 +120,7 @@ fn rank(slot: Slot) -> u8 {
         Slot::ProjectLocal => 2,
         Slot::Project => 3,
         Slot::User => 4,
+        Slot::Plugin => 5,
     }
 }
 

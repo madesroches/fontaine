@@ -82,6 +82,7 @@ fn hook(matcher: Option<&str>, command: String, origin: Origin) -> Hook {
         command,
         timeout_secs: Some(10),
         origin,
+        plugin: None,
     }
 }
 

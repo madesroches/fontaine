@@ -515,6 +515,11 @@ pub struct Hook {
     pub timeout_secs: Option<u64>,
     #[serde(skip)]
     pub origin: Origin,
+    /// The plugin a plugin-origin hook came from, for per-plugin reporting. Not part of
+    /// equality: the same hook from two plugins dedupes to one, as the same hook from two
+    /// scopes does.
+    #[serde(skip)]
+    pub plugin: Option<String>,
 }
 
 impl PartialEq for Hook {
@@ -539,6 +544,9 @@ pub struct McpServer {
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
     pub env_vars: Option<Vec<String>>,
+    /// Literal variables set on the child after the scrub; plugin `.mcp.json` `env` maps land
+    /// here, already expanded.
+    pub env: Option<BTreeMap<String, String>>,
     pub url: Option<String>,
 }
 
@@ -1115,8 +1123,11 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
                 if url.is_empty() {
                     return bad(&key, "`url` must not be empty");
                 }
-                if server.args.is_some() || server.env_vars.is_some() {
-                    return bad(&key, "`args` and `env_vars` apply to stdio servers only");
+                if server.args.is_some() || server.env_vars.is_some() || server.env.is_some() {
+                    return bad(
+                        &key,
+                        "`args`, `env_vars` and `env` apply to stdio servers only",
+                    );
                 }
             }
             _ => return bad(&key, "set exactly one of `command` (stdio) or `url`"),
@@ -1399,6 +1410,8 @@ pub enum Slot {
     ProjectLocal,
     Project,
     User,
+    /// A plugin: installed by the user, but its content is third-party and tighten-only.
+    Plugin,
 }
 
 impl Slot {
@@ -1409,6 +1422,7 @@ impl Slot {
             Slot::ProjectLocal => "project-local",
             Slot::Project => "project",
             Slot::User => "user",
+            Slot::Plugin => "plugin",
         }
     }
 }
@@ -1526,6 +1540,11 @@ pub struct Config {
     /// Where each server in `mcp_servers` was defined.
     pub mcp_origins: BTreeMap<String, Origin>,
     pub auto_mode: AutoMode,
+    /// Deny-side guardian prose a plugin contributes, spliced into the guardian's rule lists.
+    /// Kept apart from `auto_mode` so re-applying plugins replaces these rather than
+    /// accumulating entries of plugins that are no longer installed.
+    pub plugin_hard_deny: Vec<String>,
+    pub plugin_soft_deny: Vec<String>,
     pub agents: Agents,
     pub context: Context,
     pub schedule: Schedule,
@@ -1550,13 +1569,13 @@ impl Config {
         fontaine_guardian::RuleConfig,
     ) {
         let auto_mode = &self.auto_mode;
+        let mut hard_deny = auto_mode.hard_deny.clone();
+        hard_deny.extend(self.plugin_hard_deny.iter().cloned());
+        let mut soft_deny = auto_mode.soft_deny.clone();
+        soft_deny.extend(self.plugin_soft_deny.iter().cloned());
         (
             fontaine_guardian::EnvironmentConfig::expand(&auto_mode.environment),
-            fontaine_guardian::RuleConfig::expand(
-                &auto_mode.hard_deny,
-                &auto_mode.soft_deny,
-                &auto_mode.allow,
-            ),
+            fontaine_guardian::RuleConfig::expand(&hard_deny, &soft_deny, &auto_mode.allow),
         )
     }
 
@@ -1595,6 +1614,8 @@ impl Config {
             mcp_servers: BTreeMap::new(),
             mcp_origins: BTreeMap::new(),
             auto_mode: AutoMode::default(),
+            plugin_hard_deny: Vec::new(),
+            plugin_soft_deny: Vec::new(),
             agents: Agents {
                 max_parallel: 4,
                 subagent_token_budget: 200_000,
@@ -1917,7 +1938,7 @@ impl Config {
     }
 }
 
-fn union<T: PartialEq + Clone>(target: &mut Vec<T>, items: Option<&[T]>) {
+pub(crate) fn union<T: PartialEq + Clone>(target: &mut Vec<T>, items: Option<&[T]>) {
     for item in items.unwrap_or_default() {
         if !target.contains(item) {
             target.push(item.clone());
@@ -1925,7 +1946,7 @@ fn union<T: PartialEq + Clone>(target: &mut Vec<T>, items: Option<&[T]>) {
     }
 }
 
-fn union_hooks(target: &mut Vec<Hook>, items: Option<&[Hook]>, origin: Origin) {
+pub(crate) fn union_hooks(target: &mut Vec<Hook>, items: Option<&[Hook]>, origin: Origin) {
     // The same hook defined in several scopes is kept once, under the origin with more trust.
     let rank = |o: Origin| (o.user_trust, !o.is_project());
     for item in items.unwrap_or_default() {
@@ -1933,6 +1954,7 @@ fn union_hooks(target: &mut Vec<Hook>, items: Option<&[Hook]>, origin: Origin) {
             Some(kept) => {
                 if rank(origin) > rank(kept.origin) {
                     kept.origin = origin;
+                    kept.plugin = item.plugin.clone();
                 }
             }
             None => target.push(Hook {

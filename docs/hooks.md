@@ -143,6 +143,15 @@ repository chose:
   `ask`, `updatedInput`, `guardian_context` and `additionalContext` work as for any hook. An
   untracked `settings.local.toml` of a trusted root is your own file, and its hooks' `allow` counts.
 
+## Hooks a plugin defines
+
+A [plugin's](plugins.md) `hooks/hooks.json` loads as hook commands and starts without the
+workspace-trust gate: install approved them. They can only tighten, like a repository's hooks —
+their `allow` and `retry` never count, while `deny`, `ask`, `updatedInput`, `guardian_context` and
+`additionalContext` work as usual. Claude Code's matchers over tool names map to Fontaine rules
+where they can; an un-mappable matcher skips its hook entry with a warning, and non-`command` hook
+types are load errors.
+
 ## Spans
 
 Each run of a hook is a `fontaine.hook` span under the `fontaine.permission` span of the call. See

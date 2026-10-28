@@ -511,6 +511,15 @@ fn account_and_server_shapes() {
         )
         .is_err()
     );
+    assert!(
+        parse_settings(
+            "[mcp.servers.s]\nurl = \"https://b\"\nenv = { X = \"1\" }\n",
+            Path::new("u.toml"),
+            Column::User
+        )
+        .is_err(),
+        "`env` applies to stdio servers only"
+    );
     assert!(parse_settings("[mcp.servers.s]\n", Path::new("u.toml"), Column::User).is_err());
     for empty in ["command", "url"] {
         let text = format!("[mcp.servers.s]\n{empty} = \"\"\n");

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use fontaine_core::config::{Column, validate_settings};
 use fontaine_core::credentials::validate_credentials_toml;
+use fontaine_core::plugins::validate_plugins_toml;
 use fontaine_core::trust::validate_trust_toml;
 
 fn repo_root() -> PathBuf {
@@ -92,6 +93,7 @@ fn every_toml_block_validates() {
             let result = match schema {
                 Some("trust.toml") => validate_trust_toml(&fence.body),
                 Some("credentials.toml") => validate_credentials_toml(&fence.body),
+                Some("plugins.toml") => validate_plugins_toml(&fence.body),
                 None => {
                     validate_settings(&fence.body, &page, Column::User).map_err(|e| e.to_string())
                 }

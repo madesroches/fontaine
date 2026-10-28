@@ -49,6 +49,10 @@ A headless run takes its credentials from `api_key_env` or from a `credentials.t
 data directory; it never prompts. Store them in the terminal UI with `/login`, or provision the
 file in CI. See [Credentials](configuration.md#credentials).
 
+Enabled [plugins](plugins.md) load in a headless run exactly as they do in the terminal UI: their
+hooks, MCP servers and skill `!` commands run without the workspace-trust gate, because install
+approved them.
+
 The budget is checked between model calls, and before each goal evaluation and goal turn. A call that pushes the spend over the cap stops the
 run before its tool calls execute; an answer that was already complete is kept. The spend includes
 the guardian's calls, the goal evaluator's calls and the subagents' model calls.

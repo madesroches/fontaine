@@ -53,6 +53,8 @@ pub enum TypeOrigin {
     UserFile(PathBuf),
     /// A file in the repository: it can only narrow, so it never picks a model.
     ProjectFile(PathBuf),
+    /// A file in an installed plugin: third-party, so it follows the project rules.
+    PluginFile(PathBuf),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,10 +136,13 @@ impl AgentType {
         out
     }
 
-    /// Whether a per-call `model` may replace this type's model. A repository's type stays on
-    /// the session model: it must not end up on a model the repository steered.
+    /// Whether a per-call `model` may replace this type's model. A repository's or a plugin's
+    /// type stays on the session model: it must not end up on a model it steered.
     pub fn accepts_model_override(&self) -> bool {
-        !matches!(self.origin, TypeOrigin::ProjectFile(_))
+        match self.origin {
+            TypeOrigin::Builtin | TypeOrigin::Config | TypeOrigin::UserFile(_) => true,
+            TypeOrigin::ProjectFile(_) | TypeOrigin::PluginFile(_) => false,
+        }
     }
 }
 
@@ -340,6 +345,8 @@ mod tests {
         let mut ty = AgentTypes::builtin().get("explore").unwrap().clone();
         assert!(ty.accepts_model_override());
         ty.origin = TypeOrigin::ProjectFile("x.md".into());
+        assert!(!ty.accepts_model_override());
+        ty.origin = TypeOrigin::PluginFile("x.md".into());
         assert!(!ty.accepts_model_override());
     }
 

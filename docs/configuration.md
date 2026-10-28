@@ -27,9 +27,10 @@ Files in these directories:
 | File | Purpose |
 |---|---|
 | `<config dir>/config.toml` | The user settings file. |
+| `<config dir>/plugins.toml` | The [plugin and marketplace](plugins.md) registry, written by the `fontaine plugin` CLI. It is not a settings file. |
 | `<data dir>/trust.toml` | Workspace trust record (see [Workspace trust](#workspace-trust)). |
 | `<data dir>/credentials.toml` | Stored API keys (see [Credentials](#credentials)). |
-| `<config dir>/config.lock`, `<data dir>/trust.lock`, `<data dir>/credentials.lock` | Empty lock files beside the files they guard. Sessions hold one while they edit that file, so concurrent edits do not overwrite each other, and briefly while they read the settings or trust file, so a read waits for an edit in progress; safe to delete when no session is running. |
+| `<config dir>/config.lock`, `<config dir>/plugins.lock`, `<data dir>/trust.lock`, `<data dir>/credentials.lock` | Empty lock files beside the files they guard. Sessions hold one while they edit that file, so concurrent edits do not overwrite each other, and briefly while they read the settings or trust file, so a read waits for an edit in progress; safe to delete when no session is running. |
 | `<data dir>/history.jsonl` | What you submitted in the terminal UI, for Up and Ctrl-R recall (see [History](tui.md#history)). Readable by the current user only. |
 | `<data dir>/recent_models.json` | The models you last switched to with `/model` and `/guardian-model`, for the picker's Recent group (see [Choosing a model](tui.md#choosing-a-model)). Readable by the current user only. |
 

@@ -1,6 +1,7 @@
 mod auto_mode;
 pub mod cli;
 pub mod headless;
+mod plugin;
 pub mod telemetry;
 
 use std::ffi::OsString;
@@ -18,6 +19,7 @@ use fontaine_core::memory;
 use fontaine_core::models::{self, Models, ResolveParams, Switcher};
 use fontaine_core::notice::Notice;
 use fontaine_core::permissions::DenyAll;
+use fontaine_core::plugins;
 use fontaine_core::scanner_stage::{self, ScannerStart};
 use fontaine_core::scratch::{self, Scratch};
 use fontaine_core::session::{self, Session, SessionError};
@@ -247,6 +249,12 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
         return ExitCode::from(code);
     }
 
+    // Plugin and marketplace changes run outside any session and need no permission pipeline:
+    // the user typed them.
+    if let Some(cli::Command::Plugin(args)) = &cli.command {
+        return plugin::run(args, &host);
+    }
+
     let sink = match DebugSink::open(cli.debug_file.as_deref(), (host.env)(telemetry::LOG_VAR)) {
         Ok(sink) => sink,
         Err(e) => {
@@ -318,14 +326,21 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
     } else {
         None
     };
-    let (mut prep, mut scratch) =
-        match prepare_session(&cli, &config, &host, &dirs, mode, project_executables, true) {
-            Ok(prepared) => prepared,
-            Err(code) => {
-                print_warnings(&ax_warnings);
-                return ExitCode::from(code);
-            }
-        };
+    let (mut prep, mut scratch) = match prepare_session(
+        &cli,
+        &mut config,
+        &host,
+        &dirs,
+        mode,
+        project_executables,
+        true,
+    ) {
+        Ok(prepared) => prepared,
+        Err(code) => {
+            print_warnings(&ax_warnings);
+            return ExitCode::from(code);
+        }
+    };
     // Headless has no conversation to show them in. Printing now, before models are resolved,
     // keeps them on stderr when a later startup check exits.
     if headless.is_some() {
@@ -402,7 +417,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             };
             (prep, scratch) = match prepare_session(
                 &cli,
-                &config,
+                &mut config,
                 &host,
                 &dirs,
                 mode,
@@ -605,7 +620,7 @@ fn open_session(
 
 fn prepare_session(
     cli: &Cli,
-    config: &Config,
+    config: &mut Config,
     host: &Host,
     dirs: &Dirs,
     mode: PermissionMode,
@@ -681,19 +696,53 @@ fn prepare_session(
     };
     // Last, so the scratch root stays the final root.
     roots.roots.extend(scratch_path.clone());
+    // Enabled plugins are third-party but user-installed: they load in the TUI and headless
+    // alike, and install is the approval that lets their hooks, servers and skill commands run
+    // without the workspace-trust gate.
+    let contributions = plugins::load_installed(
+        &dirs.config,
+        &plugins::PluginContext {
+            project_root: &config.workspace,
+            env: &*host.env,
+        },
+    )
+    .map_err(|e| {
+        print_warnings(&warnings);
+        eprintln!("fontaine: {e}");
+        e.exit_code()
+    })?;
+    config.apply_plugins(&contributions).map_err(|e| {
+        print_warnings(&warnings);
+        eprintln!("fontaine: {e}");
+        e.exit_code()
+    })?;
+    warnings.extend(
+        contributions
+            .warnings
+            .iter()
+            .map(|warning| Notice::warning(warning.clone(), None)),
+    );
     // Declined trust keeps a repository's servers from starting, but its agent files may still
     // name their tools: toolset cutting drops them.
     let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
-    let extensions = extensions::load(&extensions::LoadParams {
+    let mut extension_warnings = Vec::new();
+    let extensions = extensions::load(&mut extensions::LoadParams {
         config_dir: &dirs.config,
         project_root: &config.workspace,
         servers: &servers,
+        plugins: &contributions.dirs,
+        warnings: &mut extension_warnings,
     })
     .map_err(|e| {
         print_warnings(&warnings);
         eprintln!("fontaine: {e}");
         e.exit_code()
     })?;
+    warnings.extend(
+        extension_warnings
+            .iter()
+            .map(|warning| Notice::warning(warning.clone(), None)),
+    );
     let home = (host.env)(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
