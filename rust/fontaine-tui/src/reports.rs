@@ -345,11 +345,7 @@ pub fn plugins(registry: &Registry, extensions: &Extensions, config: &Config) ->
                             .is_some_and(|origin| origin.slot == Slot::Plugin)
                 })
                 .count();
-            let pin = if plugin.pin.len() > 7 {
-                &plugin.pin[..7]
-            } else {
-                &plugin.pin
-            };
+            let pin = short_pin(&plugin.pin);
             format!(
                 "{} ({}): {} — pin {} — {} skill(s), {} agent(s), {} style(s), {} hook(s), {} server(s)",
                 plugin.name,
@@ -365,6 +361,15 @@ pub fn plugins(registry: &Registry, extensions: &Extensions, config: &Config) ->
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The short form of a pin for display; safe on a hand-edited, non-ASCII pin.
+fn short_pin(pin: &str) -> &str {
+    let mut end = pin.len().min(7);
+    while !pin.is_char_boundary(end) {
+        end -= 1;
+    }
+    &pin[..end]
 }
 
 /// Where the auto-memory store is and whether this session uses it.

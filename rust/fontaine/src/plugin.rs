@@ -227,6 +227,22 @@ fn clone_git(url: &str, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Expands a leading `~` (or `~/`) to the home directory, so a tilde path names the same
+/// directory it would in a shell. Git URLs never start with `~`, so other sources are left
+/// alone.
+fn expand_tilde(source: &str) -> String {
+    let Some(home) = ::dirs::home_dir() else {
+        return source.to_string();
+    };
+    if source == "~" {
+        return home.to_string_lossy().into_owned();
+    }
+    if let Some(rest) = source.strip_prefix("~/") {
+        return home.join(rest).to_string_lossy().into_owned();
+    }
+    source.to_string()
+}
+
 /// Checks out the entry's `sha` or `ref`, or leaves the clone at its current HEAD.
 fn pin_clone(dest: &Path, source: &CatalogSource) -> Result<String, String> {
     match source {
@@ -263,18 +279,23 @@ fn plugin_context<'a>(host: &'a Host, project_root: &'a Path) -> PluginContext<'
 fn marketplace_add(dirs: &Dirs, add: &MarketplaceAddArgs) -> Result<(), String> {
     let _lock = lock_registry(&dirs.config)?;
     let mut registry = read_under_lock(&dirs.config)?;
-    let source_path = Path::new(&add.source);
+    let source = expand_tilde(&add.source);
+    let source_path = Path::new(&source);
     // A source that names a path (not a git URL) must exist, so a typo fails here instead of
     // surfacing as a confusing git error.
-    let looks_like_path = add.source.starts_with('.')
-        || add.source.starts_with('/')
-        || add.source.starts_with('~')
-        || (add.source.len() > 2 && add.source.as_bytes()[1] == b':') // a Windows drive letter
-        || (!add.source.contains("://") && !add.source.contains('@') && add.source.contains('/'));
+    let looks_like_path = source.starts_with('.')
+        || source.starts_with('/')
+        || (source.len() > 2 && source.as_bytes()[1] == b':') // a Windows drive letter
+        || (!source.contains("://") && !source.contains('@') && source.contains('/'));
     if looks_like_path && !source_path.is_dir() {
         return fail(format!("{} is not a directory", source_path.display()));
     }
     let local = source_path.is_dir();
+    // A bare relative name carries no remote markers, so it is a path, not a git URL; git
+    // reads it the same way, and a typo fails with the same message as an absolute path.
+    if !local && !source.contains("://") && !source.contains('@') && !source.contains(':') {
+        return fail(format!("{} is not a directory", source_path.display()));
+    }
     // A local directory is stored by its resolved absolute path, so a later `marketplace
     // update` finds it from any working directory.
     let stored_source = if local {
@@ -290,7 +311,7 @@ fn marketplace_add(dirs: &Dirs, add: &MarketplaceAddArgs) -> Result<(), String> 
             .to_string_lossy()
             .into_owned()
     } else {
-        add.source.clone()
+        source.clone()
     };
     let parent = dirs
         .config
@@ -304,7 +325,7 @@ fn marketplace_add(dirs: &Dirs, add: &MarketplaceAddArgs) -> Result<(), String> 
             cleanup(&temp);
         })?;
     } else {
-        if let Err(e) = clone_git(&add.source, &temp) {
+        if let Err(e) = clone_git(&source, &temp) {
             cleanup(&temp);
             return Err(e);
         }
@@ -440,24 +461,24 @@ fn marketplace_update(dirs: &Dirs, name: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-/// The remote default-branch HEAD of a clone, preferring `origin/HEAD` set by clone.
+/// The remote default-branch HEAD of a clone.
 fn remote_head(checkout: &Path) -> Result<String, String> {
     git(checkout, &["fetch", "--quiet", "origin"])?;
+    // `ls-remote --symref` prints the symref resolution first ("ref: refs/heads/main") and the
+    // sha on its own line; the sha is what a checkout takes. Ask the remote rather than the
+    // local `origin/HEAD`, whose symref stays on the default branch the clone first saw.
+    if let Ok(output) = git(checkout, &["ls-remote", "--symref", "origin", "HEAD"]) {
+        for line in output.lines() {
+            let mut fields = line.split('\t');
+            let sha = fields.next().unwrap_or("");
+            if fields.next() == Some("HEAD") && !sha.starts_with("ref:") && !sha.is_empty() {
+                return Ok(sha.to_string());
+            }
+        }
+    }
     match git(checkout, &["rev-parse", "origin/HEAD"]) {
         Ok(sha) if !sha.is_empty() => Ok(sha),
-        _ => {
-            // `ls-remote --symref` prints the symref resolution first ("ref: refs/heads/main")
-            // and the sha on its own line; the sha is what a checkout takes.
-            let output = git(checkout, &["ls-remote", "--symref", "origin", "HEAD"])?;
-            for line in output.lines() {
-                let mut fields = line.split('\t');
-                let sha = fields.next().unwrap_or("");
-                if fields.next() == Some("HEAD") && !sha.starts_with("ref:") && !sha.is_empty() {
-                    return Ok(sha.to_string());
-                }
-            }
-            fail("could not resolve the remote's default branch")
-        }
+        _ => fail("could not resolve the remote's default branch"),
     }
 }
 
@@ -828,5 +849,32 @@ fn component_counts(
 }
 
 fn short_pin(pin: &str) -> &str {
-    if pin.len() > 7 { &pin[..7] } else { pin }
+    let mut end = pin.len().min(7);
+    while !pin.is_char_boundary(end) {
+        end -= 1;
+    }
+    &pin[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_pins_never_split_a_character() {
+        assert_eq!(short_pin("a1b2c3d4"), "a1b2c3d");
+        assert_eq!(short_pin("abc"), "abc");
+        assert_eq!(short_pin(""), "");
+        // Seven bytes is mid-character for a multibyte pin.
+        assert_eq!(short_pin("éééé"), "ééé");
+    }
+
+    #[test]
+    fn tilde_paths_expand_to_the_home_directory() {
+        let home = ::dirs::home_dir().unwrap();
+        assert_eq!(expand_tilde("~"), home.to_string_lossy());
+        assert_eq!(expand_tilde("~/x"), home.join("x").to_string_lossy());
+        assert_eq!(expand_tilde("https://x/y"), "https://x/y");
+        assert_eq!(expand_tilde("plain"), "plain");
+    }
 }

@@ -281,12 +281,14 @@ pub fn read_registry(config_dir: &Path) -> Result<Registry, PluginError> {
             ));
         }
     };
-    toml::from_str(&text).map_err(|e: toml::de::Error| {
+    let registry: Registry = toml::from_str(&text).map_err(|e: toml::de::Error| {
         PluginError::in_file(
-            path,
+            path.clone(),
             crate::config::bare_toml_message(&text, e.span(), e.message()),
         )
-    })
+    })?;
+    registry_names_valid(&registry).map_err(|message| PluginError::in_file(path, message))?;
+    Ok(registry)
 }
 
 /// Writes the registry atomically, owner-only.
@@ -309,6 +311,12 @@ pub fn write_registry(config_dir: &Path, registry: &Registry) -> Result<(), Plug
 /// Schema check for `plugins.toml` text, used by the docs check.
 pub fn validate_plugins_toml(text: &str) -> Result<(), String> {
     let registry: Registry = toml::from_str(text).map_err(|e| e.to_string())?;
+    registry_names_valid(&registry)
+}
+
+/// Whether every registry name is a valid path component and composed MCP name. A corrupt or
+/// hand-edited registry must not steer a checkout path outside the plugins tree.
+fn registry_names_valid(registry: &Registry) -> Result<(), String> {
     for entry in &registry.marketplace {
         if !valid_plugin_name(&entry.name) {
             return Err(format!("`{}` is not a marketplace name", entry.name));
@@ -317,6 +325,9 @@ pub fn validate_plugins_toml(text: &str) -> Result<(), String> {
     for entry in &registry.plugin {
         if !valid_plugin_name(&entry.name) {
             return Err(format!("`{}` is not a plugin name", entry.name));
+        }
+        if !valid_plugin_name(&entry.marketplace) {
+            return Err(format!("`{}` is not a marketplace name", entry.marketplace));
         }
     }
     Ok(())
@@ -382,6 +393,15 @@ pub fn load_installed(
             });
         }
     };
+    if let Err(message) = registry_names_valid(&registry) {
+        return Ok(PluginContributions {
+            warnings: vec![format!(
+                "{} cannot be used ({message}): no plugin loads until it is fixed or removed",
+                path.display()
+            )],
+            ..PluginContributions::default()
+        });
+    }
 
     let mut out = PluginContributions::default();
     for entry in registry.plugin.iter().filter(|entry| entry.enabled) {
@@ -1643,15 +1663,43 @@ impl crate::config::Config {
     /// entries only tighten: hooks carry `user_trust: false` so their `allow`/`retry` never
     /// counts, and servers start without the workspace-trust gate (install approved them). A
     /// composed server name that collides with a configured non-plugin server is an error naming
-    /// the plugin. Re-applying the same contributions is a no-op: the session-switch path
-    /// reuses the already-resolved config.
+    /// the plugin. Re-applying replaces the previous plugin contributions, so the
+    /// session-switch path, which reuses the already-resolved config, converges to the current
+    /// registry rather than accumulating removed or changed plugins.
     pub fn apply_plugins(&mut self, plugins: &PluginContributions) -> Result<(), PluginError> {
+        // Strip the previous application first: the session-switch path reuses the resolved
+        // config, so a plugin removed, disabled or changed since the last application must not
+        // leave its old hooks, servers or rules behind.
+        self.hooks
+            .pre_tool_use
+            .retain(|hook| hook.origin.slot != Slot::Plugin);
+        self.hooks
+            .post_tool_use
+            .retain(|hook| hook.origin.slot != Slot::Plugin);
+        self.hooks
+            .permission_denied
+            .retain(|hook| hook.origin.slot != Slot::Plugin);
+        let plugin_servers: BTreeSet<&str> = self
+            .mcp_origins
+            .iter()
+            .filter(|(_, origin)| origin.slot == Slot::Plugin)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        self.mcp_servers
+            .retain(|name, _| !plugin_servers.contains(name.as_str()));
+        self.mcp_origins
+            .retain(|_, origin| origin.slot != Slot::Plugin);
+        self.permissions
+            .deny
+            .retain(|entry| entry.source != RuleSource::Plugin);
+        self.permissions
+            .ask
+            .retain(|entry| entry.source != RuleSource::Plugin);
+        self.plugin_hard_deny = plugins.hard_deny.clone();
+        self.plugin_soft_deny = plugins.soft_deny.clone();
+
         for name in plugins.servers.keys() {
-            let already_applied = self
-                .mcp_origins
-                .get(name)
-                .is_some_and(|origin| origin.slot == Slot::Plugin);
-            if self.mcp_servers.contains_key(name) && !already_applied {
+            if self.mcp_servers.contains_key(name) {
                 let plugin = plugins
                     .dirs
                     .iter()
@@ -1697,8 +1745,6 @@ impl crate::config::Config {
                 self.permissions.ask.push(entry.clone());
             }
         }
-        crate::config::union(&mut self.auto_mode.hard_deny, Some(&plugins.hard_deny));
-        crate::config::union(&mut self.auto_mode.soft_deny, Some(&plugins.soft_deny));
         Ok(())
     }
 }

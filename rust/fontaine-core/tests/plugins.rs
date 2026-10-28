@@ -6,9 +6,9 @@ mod common;
 use std::ffi::OsString;
 
 use common::{World, write};
-use fontaine_core::config::{Origin, Slot};
+use fontaine_core::config::{Hook, McpServer, Origin, Slot};
 use fontaine_core::extensions::{self, Scope};
-use fontaine_core::permission_rules::RuleSource;
+use fontaine_core::permission_rules::{RuleSource, SourcedRule, parse_rule};
 use fontaine_core::plugins::{
     self, InstalledPlugin, MarketplaceEntry, PluginContext, Registry, build_plugin, checkout_dir,
     load_installed,
@@ -522,6 +522,11 @@ fn an_identical_plugin_hook_keeps_the_plugin_origin() {
     config.apply_plugins(&contributions).unwrap();
     assert_eq!(config.hooks.pre_tool_use.len(), 1);
     assert_eq!(config.hooks.pre_tool_use[0].origin.slot, Slot::Plugin);
+    assert_eq!(
+        config.hooks.pre_tool_use[0].plugin.as_deref(),
+        Some("p"),
+        "a plugin hook replacing a project hook keeps its plugin attribution"
+    );
 }
 
 #[test]
@@ -684,4 +689,92 @@ fn inline_hooks_and_mcp_manifest_keys_warn_and_contribute_nothing() {
         "{:?}",
         build.warnings
     );
+}
+
+#[test]
+fn apply_plugins_replaces_the_previous_plugins_contributions() {
+    let w = World::new();
+    let mut config = w.load().unwrap();
+    let contributions = plugins::PluginContributions {
+        dirs: Vec::new(),
+        hooks: plugins::PluginHooks {
+            pre_tool_use: vec![Hook {
+                matcher: None,
+                command: "true".to_string(),
+                timeout_secs: None,
+                origin: Origin {
+                    slot: Slot::Plugin,
+                    user_trust: false,
+                },
+                plugin: Some("p".to_string()),
+            }],
+            post_tool_use: Vec::new(),
+            permission_denied: Vec::new(),
+        },
+        servers: [(
+            "plugin_p_s".to_string(),
+            McpServer {
+                command: Some("srv".to_string()),
+                args: None,
+                env_vars: None,
+                env: None,
+                url: None,
+            },
+        )]
+        .into_iter()
+        .collect(),
+        deny: vec![SourcedRule::new(
+            parse_rule("read(.env)").unwrap(),
+            RuleSource::Plugin,
+        )],
+        ask: Vec::new(),
+        hard_deny: vec!["never push on Fridays".to_string()],
+        soft_deny: Vec::new(),
+        warnings: Vec::new(),
+    };
+    config.apply_plugins(&contributions).unwrap();
+    assert_eq!(config.hooks.pre_tool_use.len(), 1);
+    assert_eq!(config.mcp_servers.len(), 1);
+    assert_eq!(config.permissions.deny.len(), 1);
+    assert_eq!(config.plugin_hard_deny, vec!["never push on Fridays"]);
+
+    config
+        .apply_plugins(&plugins::PluginContributions::default())
+        .unwrap();
+    assert!(config.hooks.pre_tool_use.is_empty());
+    assert!(config.mcp_servers.is_empty());
+    assert!(config.mcp_origins.is_empty());
+    assert!(config.permissions.deny.is_empty());
+    assert!(config.plugin_hard_deny.is_empty());
+}
+
+#[test]
+fn a_registry_name_that_would_escape_the_tree_is_inert() {
+    let w = World::new();
+    let registry = Registry {
+        marketplace: vec![MarketplaceEntry {
+            name: "team".to_string(),
+            url: "file://team".to_string(),
+            pin: "a1b2c3".to_string(),
+        }],
+        plugin: vec![InstalledPlugin {
+            name: "p".to_string(),
+            marketplace: "../evil".to_string(),
+            source: "./plugins/p".to_string(),
+            pin: "a1b2c3".to_string(),
+            enabled: true,
+        }],
+    };
+    plugins::write_registry(&w.config, &registry).unwrap();
+    let contributions = load_installed(&w.config, &context(&w.work)).unwrap();
+    assert!(contributions.dirs.is_empty());
+    assert!(
+        contributions
+            .warnings
+            .iter()
+            .any(|message| message.contains("cannot be used")),
+        "{:?}",
+        contributions.warnings
+    );
+    assert!(plugins::read_registry(&w.config).is_err());
 }

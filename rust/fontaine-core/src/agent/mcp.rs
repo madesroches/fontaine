@@ -61,15 +61,21 @@ fn merged_server_env(
 ) -> Vec<(OsString, OsString)> {
     let mut out = base;
     for (name, value) in extra.iter().flatten() {
-        match out
-            .iter_mut()
-            .find(|(key, _)| key.as_os_str() == name.as_str())
-        {
+        match out.iter_mut().find(|(key, _)| env_key_matches(key, name)) {
             Some(slot) => slot.1 = value.clone().into(),
             None => out.push((name.clone().into(), value.clone().into())),
         }
     }
     out
+}
+
+/// Environment variable names are case-insensitive on Windows and case-sensitive elsewhere.
+fn env_key_matches(key: &OsString, name: &str) -> bool {
+    if cfg!(windows) {
+        key.to_string_lossy().eq_ignore_ascii_case(name)
+    } else {
+        key.as_os_str() == name
+    }
 }
 
 fn server_description(server: &McpServer) -> String {
@@ -200,5 +206,25 @@ impl AgentRuntime {
             &plan.digest,
         )
         .map_err(|e| RuntimeError::caused("could not record the approval", e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::env_key_matches;
+    use std::ffi::OsString;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn env_keys_match_case_sensitively_off_windows() {
+        assert!(env_key_matches(&OsString::from("PATH"), "PATH"));
+        assert!(!env_key_matches(&OsString::from("PATH"), "path"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn env_keys_match_case_insensitively_on_windows() {
+        assert!(env_key_matches(&OsString::from("PATH"), "path"));
+        assert!(!env_key_matches(&OsString::from("PATH"), "HOME"));
     }
 }
