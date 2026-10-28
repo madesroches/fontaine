@@ -523,3 +523,127 @@ fn an_identical_plugin_hook_keeps_the_plugin_origin() {
     assert_eq!(config.hooks.pre_tool_use.len(), 1);
     assert_eq!(config.hooks.pre_tool_use[0].origin.slot, Slot::Plugin);
 }
+
+#[test]
+fn apply_plugins_is_idempotent_for_a_session_switch() {
+    let w = World::new();
+    let mut config = w.load().unwrap();
+    let contributions = plugins::PluginContributions {
+        dirs: Vec::new(),
+        hooks: Default::default(),
+        servers: [(
+            "plugin_p_s".to_string(),
+            fontaine_core::config::McpServer {
+                command: Some("srv".to_string()),
+                args: None,
+                env_vars: None,
+                env: None,
+                url: None,
+            },
+        )]
+        .into_iter()
+        .collect(),
+        deny: Vec::new(),
+        ask: Vec::new(),
+        hard_deny: Vec::new(),
+        soft_deny: Vec::new(),
+        warnings: Vec::new(),
+    };
+    config.apply_plugins(&contributions).unwrap();
+    config.apply_plugins(&contributions).unwrap();
+    assert_eq!(config.mcp_servers.len(), 1);
+    assert_eq!(config.mcp_origins["plugin_p_s"].slot, Slot::Plugin);
+}
+
+#[test]
+fn two_plugins_whose_servers_compose_to_one_name_are_an_error() {
+    let w = World::new();
+    let mut registry = Registry {
+        marketplace: vec![MarketplaceEntry {
+            name: "team".to_string(),
+            url: "file://team".to_string(),
+            pin: "a1b2c3".to_string(),
+        }],
+        plugin: Vec::new(),
+    };
+    for (name, mcp) in [
+        ("a", r#"{"mcpServers": {"b_c": {"command": "one"}}}"#),
+        ("a_b", r#"{"mcpServers": {"c": {"command": "two"}}}"#),
+    ] {
+        registry.plugin.push(InstalledPlugin {
+            name: name.to_string(),
+            marketplace: "team".to_string(),
+            source: format!("./plugins/{name}"),
+            pin: "a1b2c3".to_string(),
+            enabled: true,
+        });
+        let root = checkout(&w, "team", name);
+        manifest(&root, name, "");
+        write(&root.join(".mcp.json"), mcp);
+    }
+    plugins::write_registry(&w.config, &registry).unwrap();
+    let err = load_installed(&w.config, &context(&w.work)).unwrap_err();
+    assert!(err.to_string().contains("collides"), "{err}");
+}
+
+#[test]
+fn manifest_hooks_and_mcp_paths_merge_over_the_default_files() {
+    let w = World::new();
+    let root = checkout(&w, "team", "p");
+    manifest(
+        &root,
+        "p",
+        r#", "hooks": "./extra-hooks.json", "mcpServers": "./extra-mcp.json""#,
+    );
+    write(
+        &root.join("hooks/hooks.json"),
+        r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "default"}]}]}}"#,
+    );
+    write(
+        &root.join("extra-hooks.json"),
+        r#"{"hooks": {"PostToolUse": [{"hooks": [{"type": "command", "command": "extra"}]}]}}"#,
+    );
+    write(
+        &root.join(".mcp.json"),
+        r#"{"mcpServers": {"local": {"command": "default-srv"}}}"#,
+    );
+    write(
+        &root.join("extra-mcp.json"),
+        r#"{"mcpServers": {"local": {"command": "extra-srv"}, "other": {"command": "other-srv"}}}"#,
+    );
+    let build = build_plugin(&root, "p", &context(&w.work)).unwrap();
+    assert_eq!(build.summary.hooks, 2);
+    assert_eq!(build.summary.servers, 2);
+    assert_eq!(build.hooks.pre_tool_use[0].command, "default");
+    assert_eq!(build.hooks.post_tool_use[0].command, "extra");
+    assert_eq!(
+        build.servers["plugin_p_local"].command.as_deref(),
+        Some("extra-srv")
+    );
+    assert_eq!(
+        build.servers["plugin_p_other"].command.as_deref(),
+        Some("other-srv")
+    );
+}
+
+#[test]
+fn inline_hooks_and_mcp_manifest_keys_warn_and_contribute_nothing() {
+    let w = World::new();
+    let root = checkout(&w, "team", "p");
+    manifest(
+        &root,
+        "p",
+        r#", "hooks": {"PreToolUse": []}, "mcpServers": {"s": {"command": "x"}}"#,
+    );
+    let build = build_plugin(&root, "p", &context(&w.work)).unwrap();
+    assert_eq!(build.summary.hooks, 0);
+    assert_eq!(build.summary.servers, 0);
+    assert!(
+        build
+            .warnings
+            .iter()
+            .any(|message| message.contains("inline")),
+        "{:?}",
+        build.warnings
+    );
+}

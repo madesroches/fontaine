@@ -25,8 +25,9 @@ my-plugin/
 `plugin.json` also carries Claude Code's component-path keys — `commands`, `agents`, `skills`,
 `hooks`, `mcpServers`, `outputStyles` — which point at files or directories inside the plugin.
 `commands`, `agents` and `outputStyles` replace the default scan, `skills` adds to it, and `hooks`
-and `mcpServers` merge over the default file. Unknown keys are ignored except the two Fontaine
-extensions below.
+and `mcpServers` merge over the default file (`hooks` and `mcpServers` take a file path or a list
+of paths; an inline config object is not loaded and warns). Unknown keys are ignored except the
+two Fontaine extensions below.
 
 A manifest may carry two Fontaine-only keys (a Claude Code loader ignores them):
 

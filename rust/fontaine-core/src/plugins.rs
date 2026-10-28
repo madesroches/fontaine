@@ -395,6 +395,17 @@ pub fn load_installed(
             continue;
         }
         let build = build_plugin(&root, &entry.name, ctx)?;
+        for name in build.servers.keys() {
+            if out.servers.contains_key(name) {
+                return Err(PluginError::in_plugin(
+                    &entry.name,
+                    root.join(MANIFEST_FILE),
+                    format!(
+                        "its MCP server `{name}` collides with another installed plugin's server"
+                    ),
+                ));
+            }
+        }
         out.dirs.push(build.dir);
         out.hooks.pre_tool_use.extend(build.hooks.pre_tool_use);
         out.hooks.post_tool_use.extend(build.hooks.post_tool_use);
@@ -505,7 +516,42 @@ pub fn build_plugin(
     build.dir.root = root.to_path_buf();
     let mut env_vars = BTreeSet::new();
 
-    let mcp = parse_mcp(root, registry_name, ctx, &mut warnings, &mut env_vars)?;
+    let canonical_root = root.canonicalize().map_err(|e| {
+        PluginError::in_plugin(
+            registry_name,
+            root.to_path_buf(),
+            format!(
+                "cannot resolve it: {}",
+                fontaine_tools::error_chain::chain(&e)
+            ),
+        )
+    })?;
+
+    let mcp_paths = manifest_file_paths(
+        object,
+        "mcpServers",
+        registry_name,
+        &manifest_path,
+        &mut warnings,
+    )?;
+    let hook_paths = manifest_file_paths(
+        object,
+        "hooks",
+        registry_name,
+        &manifest_path,
+        &mut warnings,
+    )?;
+    let mcp_extra = resolved_component_paths(&canonical_root, root, registry_name, mcp_paths)?;
+    let hook_extra = resolved_component_paths(&canonical_root, root, registry_name, hook_paths)?;
+
+    let mcp = parse_mcp(
+        root,
+        registry_name,
+        ctx,
+        &mut warnings,
+        &mut env_vars,
+        &mcp_extra,
+    )?;
     for (bare, composed) in &mcp.composed {
         build.dir.mcp_names.insert(bare.clone(), composed.clone());
     }
@@ -519,6 +565,7 @@ pub fn build_plugin(
         &build.dir.mcp_names,
         &mut warnings,
         &mut env_vars,
+        &hook_extra,
     )?;
     build.summary.hooks = build.hooks.len();
     build.env_vars = env_vars;
@@ -532,17 +579,6 @@ pub fn build_plugin(
     build.summary.ask = build.ask.len();
     build.summary.hard_deny = build.hard_deny.len();
     build.summary.soft_deny = build.soft_deny.len();
-
-    let canonical_root = root.canonicalize().map_err(|e| {
-        PluginError::in_plugin(
-            registry_name,
-            root.to_path_buf(),
-            format!(
-                "cannot resolve it: {}",
-                fontaine_tools::error_chain::chain(&e)
-            ),
-        )
-    })?;
 
     // Skills: the default directory plus every manifest `skills` path.
     let mut skill_bases = Vec::new();
@@ -625,6 +661,60 @@ fn inside(root: &Path, path: &Path, plugin: &str) -> Result<PathBuf, PluginError
         ));
     }
     Ok(resolved)
+}
+
+/// The manifest `hooks` / `mcpServers` key: a path or list of paths naming files that merge
+/// over the default file. Inline config objects are Claude Code's other form; Fontaine loads
+/// only the path form, so an inline object contributes nothing and warns.
+fn manifest_file_paths(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+    plugin: &str,
+    path: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<Option<Vec<String>>, PluginError> {
+    let Some(value) = object.get(key) else {
+        return Ok(None);
+    };
+    if let Some(text) = value.as_str() {
+        return Ok(Some(vec![text.to_string()]));
+    }
+    let Some(items) = value.as_array() else {
+        warn_once(
+            warnings,
+            format!(
+                "plugin `{plugin}` has an inline `{key}` manifest key, which Fontaine does not load; it contributes nothing"
+            ),
+        );
+        return Ok(None);
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let Some(text) = item.as_str() else {
+            return Err(PluginError::in_plugin(
+                plugin,
+                path.to_path_buf(),
+                format!("a `{key}` component path is not a string"),
+            ));
+        };
+        out.push(text.to_string());
+    }
+    Ok(Some(out))
+}
+
+/// Resolves manifest-named component paths, keeping each inside the plugin checkout.
+fn resolved_component_paths(
+    canonical_root: &Path,
+    checkout: &Path,
+    plugin: &str,
+    rels: Option<Vec<String>>,
+) -> Result<Vec<PathBuf>, PluginError> {
+    let Some(rels) = rels else {
+        return Ok(Vec::new());
+    };
+    rels.into_iter()
+        .map(|rel| inside(canonical_root, &checkout.join(rel), plugin))
+        .collect()
 }
 
 /// A manifest component-path key: one string or an array of strings. A non-string entry is a
@@ -752,25 +842,45 @@ fn parse_mcp(
     ctx: &PluginContext<'_>,
     warnings: &mut Vec<String>,
     env_vars: &mut BTreeSet<String>,
+    extra: &[PathBuf],
 ) -> Result<McpLoad, PluginError> {
-    let path = root.join(MCP_FILE);
+    let mut load = parse_mcp_file(&root.join(MCP_FILE), root, plugin, ctx, warnings, env_vars)?;
+    for path in extra {
+        let more = parse_mcp_file(path, root, plugin, ctx, warnings, env_vars)?;
+        load.merge(more);
+    }
+    Ok(load)
+}
+
+/// Reads one `.mcp.json`-format file into named, composed servers. A missing file contributes
+/// nothing. The default file and manifest-named files merge; a later file replaces a server of
+/// the same name.
+fn parse_mcp_file(
+    path: &Path,
+    root: &Path,
+    plugin: &str,
+    ctx: &PluginContext<'_>,
+    warnings: &mut Vec<String>,
+    env_vars: &mut BTreeSet<String>,
+) -> Result<McpLoad, PluginError> {
     let mut load = McpLoad {
         servers: BTreeMap::new(),
         composed: BTreeMap::new(),
     };
-    let text = match std::fs::read_to_string(&path) {
+    let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(load),
         Err(e) => {
             return Err(PluginError::in_plugin(
                 plugin,
-                path,
+                path.to_path_buf(),
                 format!("cannot read it: {}", fontaine_tools::error_chain::chain(&e)),
             ));
         }
     };
-    let value: Value = serde_json::from_str(&text)
-        .map_err(|e| PluginError::in_plugin(plugin, path.clone(), format!("not JSON: {e}")))?;
+    let value: Value = serde_json::from_str(&text).map_err(|e| {
+        PluginError::in_plugin(plugin, path.to_path_buf(), format!("not JSON: {e}"))
+    })?;
     let Some(servers) = value.get("mcpServers").and_then(Value::as_object) else {
         return Ok(load);
     };
@@ -778,7 +888,7 @@ fn parse_mcp(
         if name.is_empty() || name.contains("__") {
             return Err(PluginError::in_plugin(
                 plugin,
-                path.clone(),
+                path.to_path_buf(),
                 format!(
                     "`{name}` is not an MCP server name: it must be non-empty and contain no `__`"
                 ),
@@ -787,7 +897,7 @@ fn parse_mcp(
         let object = spec.as_object().ok_or_else(|| {
             PluginError::in_plugin(
                 plugin,
-                path.clone(),
+                path.to_path_buf(),
                 format!("the `.mcp.json` entry `{name}` is not an object"),
             )
         })?;
@@ -829,7 +939,7 @@ fn parse_mcp(
         } else {
             return Err(PluginError::in_plugin(
                 plugin,
-                path.clone(),
+                path.to_path_buf(),
                 format!("the `.mcp.json` entry `{name}` has neither `command` nor `url`"),
             ));
         };
@@ -840,6 +950,20 @@ fn parse_mcp(
     Ok(load)
 }
 
+impl McpLoad {
+    fn merge(&mut self, other: McpLoad) {
+        for (bare, composed) in other.composed {
+            let server = other
+                .servers
+                .get(&composed)
+                .expect("a composed name maps to its server")
+                .clone();
+            self.composed.insert(bare, composed.clone());
+            self.servers.insert(composed, server);
+        }
+    }
+}
+
 fn parse_hooks(
     root: &Path,
     plugin: &str,
@@ -847,21 +971,51 @@ fn parse_hooks(
     mcp_names: &BTreeMap<String, String>,
     warnings: &mut Vec<String>,
     env_vars: &mut BTreeSet<String>,
+    extra: &[PathBuf],
 ) -> Result<PluginHooks, PluginError> {
-    let path = root.join(HOOKS_FILE);
-    let text = match std::fs::read_to_string(&path) {
+    let mut hooks = parse_hooks_file(
+        &root.join(HOOKS_FILE),
+        root,
+        plugin,
+        ctx,
+        mcp_names,
+        warnings,
+        env_vars,
+    )?;
+    for path in extra {
+        let more = parse_hooks_file(path, root, plugin, ctx, mcp_names, warnings, env_vars)?;
+        hooks.pre_tool_use.extend(more.pre_tool_use);
+        hooks.post_tool_use.extend(more.post_tool_use);
+        hooks.permission_denied.extend(more.permission_denied);
+    }
+    Ok(hooks)
+}
+
+/// Reads one Claude Code `hooks.json` file. A missing file contributes nothing. The default
+/// file and manifest-named files merge; both files' entries run for the events they name.
+fn parse_hooks_file(
+    path: &Path,
+    root: &Path,
+    plugin: &str,
+    ctx: &PluginContext<'_>,
+    mcp_names: &BTreeMap<String, String>,
+    warnings: &mut Vec<String>,
+    env_vars: &mut BTreeSet<String>,
+) -> Result<PluginHooks, PluginError> {
+    let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(PluginHooks::default()),
         Err(e) => {
             return Err(PluginError::in_plugin(
                 plugin,
-                path,
+                path.to_path_buf(),
                 format!("cannot read it: {}", fontaine_tools::error_chain::chain(&e)),
             ));
         }
     };
-    let value: Value = serde_json::from_str(&text)
-        .map_err(|e| PluginError::in_plugin(plugin, path.clone(), format!("not JSON: {e}")))?;
+    let value: Value = serde_json::from_str(&text).map_err(|e| {
+        PluginError::in_plugin(plugin, path.to_path_buf(), format!("not JSON: {e}"))
+    })?;
     let Some(events) = value.get("hooks").and_then(Value::as_object) else {
         return Ok(PluginHooks::default());
     };
@@ -874,7 +1028,7 @@ fn parse_hooks(
         let entries = entries.as_array().ok_or_else(|| {
             PluginError::in_plugin(
                 plugin,
-                path.clone(),
+                path.to_path_buf(),
                 format!("`hooks.{event}` is not an array"),
             )
         })?;
@@ -882,7 +1036,7 @@ fn parse_hooks(
             let entry_object = entry.as_object().ok_or_else(|| {
                 PluginError::in_plugin(
                     plugin,
-                    path.clone(),
+                    path.to_path_buf(),
                     format!("a `hooks.{event}` entry is not an object"),
                 )
             })?;
@@ -896,7 +1050,7 @@ fn parse_hooks(
                 .ok_or_else(|| {
                     PluginError::in_plugin(
                         plugin,
-                        path.clone(),
+                        path.to_path_buf(),
                         format!("a `hooks.{event}` entry has no `hooks` array"),
                     )
                 })?;
@@ -904,7 +1058,7 @@ fn parse_hooks(
                 let object = spec.as_object().ok_or_else(|| {
                     PluginError::in_plugin(
                         plugin,
-                        path.clone(),
+                        path.to_path_buf(),
                         format!("a `hooks.{event}` hook is not an object"),
                     )
                 })?;
@@ -915,7 +1069,7 @@ fn parse_hooks(
                 if kind != "command" {
                     return Err(PluginError::in_plugin(
                         plugin,
-                        path.clone(),
+                        path.to_path_buf(),
                         format!(
                             "a `{event}` hook of type `{kind}` is not supported; only shell-form `command` hooks load"
                         ),
@@ -936,7 +1090,7 @@ fn parse_hooks(
                     .ok_or_else(|| {
                         PluginError::in_plugin(
                             plugin,
-                            path.clone(),
+                            path.to_path_buf(),
                             format!("a `{event}` hook has no `command`"),
                         )
                     })?;
@@ -969,7 +1123,7 @@ fn parse_hooks(
                         Err(message) => {
                             return Err(PluginError::in_plugin(
                                 plugin,
-                                path.clone(),
+                                path.to_path_buf(),
                                 format!(
                                     "the `{event}` hook matcher `{text}` is malformed: {message}"
                                 ),
@@ -1369,10 +1523,15 @@ impl crate::config::Config {
     /// entries only tighten: hooks carry `user_trust: false` so their `allow`/`retry` never
     /// counts, and servers start without the workspace-trust gate (install approved them). A
     /// composed server name that collides with a configured non-plugin server is an error naming
-    /// the plugin.
+    /// the plugin. Re-applying the same contributions is a no-op: the session-switch path
+    /// reuses the already-resolved config.
     pub fn apply_plugins(&mut self, plugins: &PluginContributions) -> Result<(), PluginError> {
         for name in plugins.servers.keys() {
-            if self.mcp_servers.contains_key(name) {
+            let already_applied = self
+                .mcp_origins
+                .get(name)
+                .is_some_and(|origin| origin.slot == Slot::Plugin);
+            if self.mcp_servers.contains_key(name) && !already_applied {
                 let plugin = plugins
                     .dirs
                     .iter()
