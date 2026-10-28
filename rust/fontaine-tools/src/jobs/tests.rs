@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
 use rig_tools::process::{Launcher, Spawn};
