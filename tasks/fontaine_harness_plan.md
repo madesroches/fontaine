@@ -326,6 +326,50 @@ scorecard run (see `## Remaining work`).
 
 ## Decisions
 
+- 2026-10-28: Plugin hooks' `allow`/`retry` never count and plugin skills/agents follow project
+  permission rules, even though install is a user action (stricter than Claude Code).
+- 2026-10-28: Installs, updates and marketplace changes are CLI commands only; the TUI gets a
+  read-only `/plugins`. No interactive marketplace browser in v1.
+- 2026-10-28: LSP server components are unsupported (ignored with a warning); Fontaine has no
+  LSP integration. Mods stay skipped (parity doc).
+- 2026-10-28: Plugins may add `deny`/`ask` rules and `hard_deny`/`soft_deny` guardian entries via
+  Fontaine-only manifest keys, and nothing else that touches permissions or the guardian.
+- 2026-10-28: No project or local scope can add a marketplace or install/enable a plugin;
+  `plugins.toml` lives in the user config dir and is not a settings file.
+- 2026-10-28: Manifest and component files are read at Claude Code's paths
+  (`.claude-plugin/plugin.json`, `hooks/hooks.json`, `.mcp.json`,
+  `.claude-plugin/marketplace.json`) so existing marketplaces work unmodified.
+- 2026-10-28: Installs pin a commit, not a version tag; the catalog's `version` is display text.
+  Plugin-to-plugin dependencies are not supported; a `dependencies` key warns at install and
+  startup instead of resolving.
+- 2026-10-28: `${CLAUDE_PLUGIN_ROOT}` keeps its Claude Code name for portability, expanding to the
+  installed checkout.
+- 2026-10-28: A path-source plugin's pin is the marketplace's pin, and `plugin update` for one
+  re-copies from the current marketplace checkout, so it moves only after `marketplace update`.
+- 2026-10-28: `!` commands in plugin skills run without the workspace-trust gate — install is the
+  approval — and still pass the permission pipeline.
+- 2026-10-28: Hook matchers support single tool names, `|` alternation and trailing wildcards; a
+  matcher outside that subset skips its hook entry with a warning rather than failing the plugin.
+- 2026-10-28: A plugin agent file naming an MCP server the plugin does not ship and the session
+  does not have is skipped with a warning, not an exit-2 startup error.
+- 2026-10-28: A local-directory marketplace pins a content hash of its working tree (`.git`
+  excluded); registry mutations hold a lock file beside `plugins.toml`, clones and copies rename
+  into place under the lock, and `marketplace add` refuses a duplicate registry name.
+- 2026-10-28: Claude Code's plugin source types are `github`, `url` and relative paths only;
+  `git-subdir`, `npm`, `archive` and `command` sources are refused with a named error.
+- 2026-10-28: The catalog entry's `name` must equal the manifest's, an install error on mismatch,
+  keeping namespacing and MCP server composition unambiguous.
+- 2026-10-28: Bare in-plugin `mcp__<server>__*` references are rewritten to the composed
+  `plugin_<plugin>_<server>` name so idiomatic plugin files keep working.
+- 2026-10-28: Only shell-form `command` hooks load; other hook types are load errors and exec-form
+  (`args`) entries skip with a warning.
+- 2026-10-28: Claude Code components with no Fontaine equivalent (`bin/`, plugin `settings.json`,
+  `themes/`, `monitors/`, `workflows/`, `channels`, `userConfig`) warn at install and startup;
+  `${CLAUDE_PROJECT_DIR}` expands and other unexpanded `${...}` references warn.
+- 2026-10-28: Plugin and marketplace names follow Claude Code's alphabet (letters, digits, `.`,
+  `_`, `-`, starting alphanumeric), extended from `valid_name`'s; `__` stays forbidden. Plugin
+  `agents/` and `commands/` load recursively, with multi-segment `plugin:sub:name` names.
+
 - 2026-10-28: Deviation (development escape hatch, #271) — `/guardian-disable` turns the guardian
   and the deterministic floor off for the rest of the current session, after a confirmation, and
   `/guardian-enable` turns them back on. It is interactive-only and session-scoped: never saved to

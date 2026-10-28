@@ -224,8 +224,9 @@ Deny and ask rules fail toward matching; allow rules fail toward not matching:
 
 An invalid rule is a configuration error (exit code 2) naming the file and key. Rules from the
 shared project file may only tighten (`deny`, `ask`); `allow` comes from the user file, an
-untracked `settings.local.toml` and the command line. The audit log and the `gate_decision` event
-name the scope that contributed a rule, for example `shell(rm) [user]`.
+untracked `settings.local.toml` and the command line. A [plugin's](plugins.md) manifest may add
+`deny` and `ask` rules only. The audit log and the `gate_decision` event name the scope that
+contributed a rule, for example `shell(rm) [user]`; a plugin rule reads `[plugin]`.
 
 ### Allow rules
 

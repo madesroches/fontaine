@@ -45,7 +45,8 @@ read and the instructions in a repository are all text an attacker may have writ
   the audit log; see [Terminal UI](tui.md#commands).
 - **Rule prose can only restrict.** A shared project file may add to `soft_deny` and `hard_deny`
   but its text sits in the policy, so the prompt tells the guardian to ignore any entry that,
-  read literally, grants permission.
+  read literally, grants permission. A [plugin](plugins.md) manifest may add deny-side entries to
+  the same two lists, and nothing else.
 
 It is not a sandbox. A model can be talked into a bad verdict, and a command the guardian allows
 runs with your permissions. See [Known limits](#known-limits).

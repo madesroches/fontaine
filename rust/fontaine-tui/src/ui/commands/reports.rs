@@ -45,14 +45,24 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.transcript.notice(text);
     }
 
-    pub(crate) fn mcp(&mut self, argument: &str) {
+    pub(crate) fn mcp(&mut self, runtime: &AgentRuntime, argument: &str) {
         if !argument.is_empty() {
             self.app.transcript.error(format!(
                 "/mcp takes no arguments (`{argument}`): it only lists the servers; reconnecting, enabling and disabling are not supported yet"
             ));
             return;
         }
-        self.app.transcript.notice(reports::mcp(&self.mcp_status));
+        self.app
+            .transcript
+            .notice(reports::mcp_with_origins(&self.mcp_status, &runtime.config));
+    }
+
+    pub(crate) fn plugins(&mut self, runtime: &AgentRuntime) {
+        let text = match fontaine_core::plugins::read_registry(runtime.config_dir()) {
+            Ok(registry) => reports::plugins(&registry, runtime.extensions(), &runtime.config),
+            Err(e) => format!("cannot read the plugin registry: {e}"),
+        };
+        self.app.transcript.notice(text);
     }
 
     /// `/copy`: puts the `n`th latest assistant reply on the clipboard.

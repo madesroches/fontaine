@@ -1,6 +1,9 @@
 //! Starting the MCP servers a session is configured with, and the approval repository-defined
 //! ones need first.
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+
 use fontaine_mcp::{ServerSpec, Transport, connect as connect_server};
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::guarded::Guard;
@@ -39,6 +42,7 @@ fn server_digest(name: &str, server: &McpServer) -> String {
         "command": server.command,
         "args": server.args,
         "env_vars": server.env_vars,
+        "env": server.env,
         "url": server.url,
     });
     let bytes =
@@ -47,6 +51,25 @@ fn server_digest(name: &str, server: &McpServer) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// The transport's literal env map: `[env]` entries with the server's own `.mcp.json` `env`
+/// laid over them.
+fn merged_server_env(
+    base: Vec<(OsString, OsString)>,
+    extra: &Option<BTreeMap<String, String>>,
+) -> Vec<(OsString, OsString)> {
+    let mut out = base;
+    for (name, value) in extra.iter().flatten() {
+        match out
+            .iter_mut()
+            .find(|(key, _)| key.as_os_str() == name.as_str())
+        {
+            Some(slot) => slot.1 = value.clone().into(),
+            None => out.push((name.clone().into(), value.clone().into())),
+        }
+    }
+    out
 }
 
 fn server_description(server: &McpServer) -> String {
@@ -130,7 +153,7 @@ impl AgentRuntime {
                         command: command.clone(),
                         args: server.args.clone().unwrap_or_default(),
                         env_vars: server.env_vars.clone().unwrap_or_default(),
-                        env: tools::subprocess_env(&self.config),
+                        env: merged_server_env(tools::subprocess_env(&self.config), &server.env),
                         cwd: self.primary_root(),
                     },
                     (None, Some(url)) => Transport::Http { url: url.clone() },

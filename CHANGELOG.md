@@ -19,6 +19,18 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Plugins and marketplaces (#30). A plugin bundles Claude Code's extension files into one
+  directory with a manifest, and a marketplace is a git repository or local directory with a
+  catalog. Installs are user-scope only and pinned by commit; `fontaine plugin marketplace` and
+  `fontaine plugin` add, list, update and remove marketplaces and install, update, uninstall,
+  enable, disable and list plugins. Installed plugin content is third-party, so it loads under
+  tighten-only rules: its `allow` never counts, its skills cannot lend `allowed-tools`, its agent
+  files can only narrow, and its only permission or guardian effect is deny-side additions. Plugin
+  hooks, MCP servers and skill `!` commands start without the workspace-trust gate, because install
+  is the approval; the terminal UI adds a read-only `/plugins`. Components are namespaced
+  `plugin:name`, and `${CLAUDE_PLUGIN_ROOT}` expands to the installed checkout so existing plugins
+  port by copying.
+
 - `/guardian-disable` and `/guardian-enable` commands (development escape hatch, #271). The
   disable command asks for confirmation, then turns the guardian and the deterministic permission
   floor off for the rest of the session, with a warning chip in the status bar until re-enabled.

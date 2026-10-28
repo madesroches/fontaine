@@ -4,6 +4,7 @@
 //! mapped, a rule the validator rejects, or a key that would run something is an error naming
 //! the file, because ignoring it could widen what an agent may do.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +14,7 @@ use fontaine_tools::names::{is_builtin, is_mcp};
 
 use crate::frontmatter::{self, Document, Value};
 use crate::permission_rules::{Rule, parse_rule};
+use crate::plugins::{PluginDir, rewrite_mcp_reference};
 
 pub const SKILLS_DIR: &str = "skills";
 pub const SKILL_FILE: &str = "SKILL.md";
@@ -45,6 +47,17 @@ impl ExtensionError {
 pub enum Scope {
     User,
     Project,
+    /// A plugin: installed by the user, but its content is third-party and tighten-only, so it
+    /// follows the project permission rules rather than the user's.
+    Plugin,
+}
+
+impl Scope {
+    /// Whether the scope can only narrow permissions. Plugin content is third-party even though
+    /// the user installed it.
+    pub fn is_tightened(self) -> bool {
+        matches!(self, Scope::Project | Scope::Plugin)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -97,6 +110,11 @@ pub struct LoadParams<'a> {
     /// The MCP servers configured for this session. A project agent file may name their tools
     /// and no others: it cannot reach for a tool its parent does not have.
     pub servers: &'a [String],
+    /// Enabled, installed plugins, loaded after the user root and before the project root.
+    pub plugins: &'a [PluginDir],
+    /// Non-fatal degradation the caller shows (for example an agent file skipped over an
+    /// external MCP server).
+    pub warnings: &'a mut Vec<String>,
 }
 
 /// The Fontaine tool a Claude Code tool name stands for.
@@ -199,14 +217,14 @@ fn read_document(path: &Path) -> Result<Document, ExtensionError> {
     frontmatter::parse(&text).map_err(fail)
 }
 
-fn load_skill(path: &Path, dir_name: &str, scope: Scope) -> Result<Skill, ExtensionError> {
+fn load_skill(path: &Path, default_name: &str, scope: Scope) -> Result<Skill, ExtensionError> {
     let doc = read_document(path)?;
     let fail = |message: String| ExtensionError {
         file: path.to_path_buf(),
         message,
     };
     refuse_executable_keys(&doc, &["hooks", "mcpServers", "permissionMode"]).map_err(fail)?;
-    let name = doc.text("name").unwrap_or_else(|| dir_name.to_string());
+    let name = doc.text("name").unwrap_or_else(|| default_name.to_string());
     if !valid_name(&name) {
         return Err(fail(format!(
             "`{name}` is not a skill name: use letters, digits, `-` and `_`"
@@ -270,6 +288,22 @@ pub fn entry_name(entry: &str) -> &str {
 }
 
 fn load_agent(path: &Path, scope: Scope, servers: &[String]) -> Result<AgentType, ExtensionError> {
+    agent_from(path, scope, servers, None, &mut Vec::new())
+        .map(|agent| agent.expect("an agent file without a plugin rewrite never skips"))
+}
+
+/// Loads one agent file. A plugin file follows the project rules, with bare references to the
+/// plugin's own MCP servers rewritten to the composed name first. A plugin entry naming an MCP
+/// server neither the plugin ships nor the session has skips the file with a warning instead of
+/// failing startup: whether that server exists is the user's configuration, not a defect in the
+/// file.
+fn agent_from(
+    path: &Path,
+    scope: Scope,
+    servers: &[String],
+    mcp_names: Option<&BTreeMap<String, String>>,
+    warnings: &mut Vec<String>,
+) -> Result<Option<AgentType>, ExtensionError> {
     let doc = read_document(path)?;
     let fail = |message: String| ExtensionError {
         file: path.to_path_buf(),
@@ -287,44 +321,66 @@ fn load_agent(path: &Path, scope: Scope, servers: &[String]) -> Result<AgentType
         )));
     }
     let model = model_of(&doc).map_err(fail)?;
-    if scope == Scope::Project && model.is_some() {
-        return Err(fail(
-            "a project agent file cannot choose a model: it runs on the session model (leave `model` out or write `inherit`)"
-                .to_string(),
-        ));
+    if scope.is_tightened() && model.is_some() {
+        return Err(fail(format!(
+            "{} cannot choose a model: it runs on the session model (leave `model` out or write `inherit`)",
+            tightened_label(scope)
+        )));
     }
     let mode = match (scope, doc.text("permissionMode").as_deref().map(str::trim)) {
         (Scope::User, None | Some("inherit")) => ModeSetting::Inherit,
-        (_, Some("default" | "manual")) | (Scope::Project, None) => ModeSetting::Manual,
+        (Scope::User, Some("default" | "manual")) => ModeSetting::Manual,
         (_, Some("dontAsk")) => ModeSetting::DontAsk,
-        (Scope::Project, Some("inherit")) => {
-            return Err(fail(
-                "a project agent file cannot inherit its mode: write `permissionMode: default` or `dontAsk`"
-                    .to_string(),
-            ));
+        (_, Some("inherit")) if scope.is_tightened() => {
+            return Err(fail(format!(
+                "{} cannot inherit its mode: write `permissionMode: default` or `dontAsk`",
+                tightened_label(scope)
+            )));
         }
+        (_, None | Some("default" | "manual")) if scope.is_tightened() => ModeSetting::Manual,
         (_, Some(other)) => {
             return Err(fail(format!(
                 "`permissionMode: {other}` is not allowed in an agent file: only `inherit`, `default` and `dontAsk` are, so an agent never runs looser than the session"
             )));
         }
+        _ => unreachable!("every (scope, permissionMode) pair is covered"),
     };
-    let tools = map_tool_list(&doc, "tools").map_err(fail)?;
-    let disallowed = map_tool_list(&doc, "disallowedTools")
+    let mut tools = map_tool_list(&doc, "tools").map_err(fail)?;
+    let mut disallowed = map_tool_list(&doc, "disallowedTools")
         .map_err(fail)?
         .unwrap_or_default();
-    if scope == Scope::Project
+    if let Some(names) = mcp_names {
+        for entry in tools.iter_mut().flatten() {
+            *entry = rewrite_mcp_reference(entry, names);
+        }
+        for entry in &mut disallowed {
+            *entry = rewrite_mcp_reference(entry, names);
+        }
+    }
+    if scope.is_tightened()
         && let Some(entry) = tools
             .iter()
             .flatten()
             .find(|entry| !names_a_known_tool(entry, servers))
     {
+        if scope == Scope::Plugin
+            && let Some(server) = mcp_server_of(entry)
+            && let Some(names) = mcp_names
+            && !names.values().any(|composed| composed == server)
+        {
+            warnings.push(format!(
+                "{}: the agent file names `{entry}`, an MCP server neither the plugin nor the session has; it is skipped",
+                path.display()
+            ));
+            return Ok(None);
+        }
         return Err(fail(format!(
-            "`tools` names `{entry}`, which the session does not have: a project agent file can only use tools its parent has"
+            "`tools` names `{entry}`, which the session does not have: {} can only use tools its parent has",
+            tightened_label(scope)
         )));
     }
     let body = doc.body.trim();
-    Ok(AgentType {
+    Ok(Some(AgentType {
         description: doc
             .text("description")
             .filter(|d| !d.trim().is_empty())
@@ -337,10 +393,26 @@ fn load_agent(path: &Path, scope: Scope, servers: &[String]) -> Result<AgentType
         origin: match scope {
             Scope::User => TypeOrigin::UserFile(path.to_path_buf()),
             Scope::Project => TypeOrigin::ProjectFile(path.to_path_buf()),
+            Scope::Plugin => TypeOrigin::PluginFile(path.to_path_buf()),
         },
         inherits_context: false,
         name,
-    })
+    }))
+}
+
+fn tightened_label(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Project => "a project agent file",
+        Scope::Plugin => "a plugin agent file",
+        Scope::User => "an agent file",
+    }
+}
+
+/// The MCP server an entry names, for `mcp__<server>` and `mcp__<server>__<tool>` entries.
+fn mcp_server_of(entry: &str) -> Option<&str> {
+    entry_name(entry)
+        .strip_prefix(fontaine_tools::names::MCP_TOOL_PREFIX)
+        .and_then(|rest| rest.split("__").next())
 }
 
 fn load_style(path: &Path, scope: Scope) -> Result<OutputStyle, ExtensionError> {
@@ -386,47 +458,146 @@ fn markdown_files(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Loads every extension file of both scopes. The first file that cannot be loaded stops the
-/// load.
-pub fn load(params: &LoadParams<'_>) -> Result<Extensions, ExtensionError> {
+/// Loads every extension file of both scopes and every enabled plugin. The first file that
+/// cannot be loaded stops the load.
+pub fn load(params: &mut LoadParams<'_>) -> Result<Extensions, ExtensionError> {
     let project = params.project_root.join(crate::config::PROJECT_DIR);
-    let scopes = [
-        (params.config_dir, Scope::User),
-        (project.as_path(), Scope::Project),
-    ];
     let mut out = Extensions::default();
-    for (base, scope) in scopes {
-        for dir in sorted_entries(&base.join(SKILLS_DIR)) {
-            let file = dir.join(SKILL_FILE);
-            if !dir.is_dir() || !file.is_file() {
-                continue;
-            }
-            let dir_name = dir
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let skill = load_skill(&file, &dir_name, scope)?;
-            // A personal skill outranks a project one of the same name, as in Claude Code.
-            match out.skills.iter().position(|s| s.name == skill.name) {
-                Some(at) if out.skills[at].scope == Scope::User => {}
-                Some(at) => out.skills[at] = skill,
-                None => out.skills.push(skill),
-            }
-        }
-        for file in markdown_files(&base.join(AGENTS_DIR)) {
-            let agent = load_agent(&file, scope, params.servers)?;
-            // A project definition replaces a user one of the same name, and may only narrow.
-            out.agent_types.retain(|t| t.name != agent.name);
-            out.agent_types.push(agent);
-        }
-        for file in markdown_files(&base.join(STYLES_DIR)) {
-            let style = load_style(&file, scope)?;
-            out.output_styles.retain(|s| s.name != style.name);
-            out.output_styles.push(style);
-        }
+    let warnings: &mut Vec<String> = &mut *params.warnings;
+    load_scope(params.config_dir, Scope::User, params.servers, &mut out)?;
+    for plugin in params.plugins {
+        load_plugin(plugin, params.servers, warnings, &mut out)?;
     }
+    load_scope(project.as_path(), Scope::Project, params.servers, &mut out)?;
     out.skills.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
+}
+
+fn load_scope(
+    base: &Path,
+    scope: Scope,
+    servers: &[String],
+    out: &mut Extensions,
+) -> Result<(), ExtensionError> {
+    for dir in sorted_entries(&base.join(SKILLS_DIR)) {
+        let file = dir.join(SKILL_FILE);
+        if !dir.is_dir() || !file.is_file() {
+            continue;
+        }
+        let dir_name = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let skill = load_skill(&file, &dir_name, scope)?;
+        // A personal skill outranks a project one of the same name, as in Claude Code.
+        match out.skills.iter().position(|s| s.name == skill.name) {
+            Some(at) if out.skills[at].scope == Scope::User => {}
+            Some(at) => out.skills[at] = skill,
+            None => out.skills.push(skill),
+        }
+    }
+    for file in markdown_files(&base.join(AGENTS_DIR)) {
+        let agent = load_agent(&file, scope, servers)?;
+        // A project definition replaces a user one of the same name, and may only narrow.
+        out.agent_types.retain(|t| t.name != agent.name);
+        out.agent_types.push(agent);
+    }
+    for file in markdown_files(&base.join(STYLES_DIR)) {
+        let style = load_style(&file, scope)?;
+        out.output_styles.retain(|s| s.name != style.name);
+        out.output_styles.push(style);
+    }
+    Ok(())
+}
+
+fn load_plugin(
+    plugin: &PluginDir,
+    servers: &[String],
+    warnings: &mut Vec<String>,
+    out: &mut Extensions,
+) -> Result<(), ExtensionError> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut take = |name: String, path: &Path| -> Result<(), ExtensionError> {
+        if !valid_namespaced(&name) {
+            return Err(ExtensionError {
+                file: path.to_path_buf(),
+                message: format!(
+                    "`{name}` is not a plugin component name: each `:`-separated segment must use letters, digits, `-` and `_`"
+                ),
+            });
+        }
+        if !seen.insert(name.clone()) {
+            return Err(ExtensionError {
+                file: path.to_path_buf(),
+                message: format!("two components of the plugin load as `{name}`"),
+            });
+        }
+        Ok(())
+    };
+
+    for file in &plugin.skills {
+        let dir_name = file
+            .path
+            .parent()
+            .and_then(Path::file_name)
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut skill = load_skill(&file.path, &dir_name, Scope::Plugin)?;
+        let name = namespaced(&plugin.name, &file.segments, &skill.name);
+        take(name.clone(), &file.path)?;
+        skill.name = name;
+        out.skills.push(skill);
+    }
+    for file in &plugin.commands {
+        let stem = file
+            .path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut skill = load_skill(&file.path, &stem, Scope::Plugin)?;
+        let name = namespaced(&plugin.name, &file.segments, &skill.name);
+        take(name.clone(), &file.path)?;
+        skill.name = name;
+        out.skills.push(skill);
+    }
+    for file in &plugin.agents {
+        let Some(mut agent) = agent_from(
+            &file.path,
+            Scope::Plugin,
+            servers,
+            Some(&plugin.mcp_names),
+            warnings,
+        )?
+        else {
+            continue;
+        };
+        let name = namespaced(&plugin.name, &file.segments, &agent.name);
+        take(name.clone(), &file.path)?;
+        agent.name = name;
+        out.agent_types.retain(|t| t.name != agent.name);
+        out.agent_types.push(agent);
+    }
+    for file in &plugin.styles {
+        let mut style = load_style(&file.path, Scope::Plugin)?;
+        let name = namespaced(&plugin.name, &file.segments, &style.name);
+        take(name.clone(), &file.path)?;
+        style.name = name;
+        out.output_styles.retain(|s| s.name != style.name);
+        out.output_styles.push(style);
+    }
+    Ok(())
+}
+
+fn namespaced(plugin: &str, segments: &[String], base: &str) -> String {
+    let mut parts = Vec::with_capacity(2 + segments.len());
+    parts.push(plugin.to_string());
+    parts.extend(segments.iter().cloned());
+    parts.push(base.to_string());
+    parts.join(":")
+}
+
+fn valid_namespaced(name: &str) -> bool {
+    !name.is_empty() && name.split(':').all(valid_name)
 }
 
 #[cfg(test)]

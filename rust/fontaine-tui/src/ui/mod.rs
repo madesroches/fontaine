@@ -348,7 +348,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(Command::Status) => self.status(runtime),
             Some(Command::Theme(name)) => self.theme(&name),
             Some(Command::Permissions) => self.permissions(runtime),
-            Some(Command::Mcp(argument)) => self.mcp(&argument),
+            Some(Command::Mcp(argument)) => self.mcp(runtime, &argument),
             Some(Command::Hooks) => {
                 let hooks = &runtime.config.hooks;
                 self.app.transcript.notice(reports::hooks(
@@ -363,6 +363,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     .transcript
                     .notice(reports::skills(&runtime.extensions().skills));
             }
+            Some(Command::Plugins) => self.plugins(runtime),
             Some(Command::Loop(argument)) => {
                 return self.loop_command(runtime, &text, &argument).await;
             }

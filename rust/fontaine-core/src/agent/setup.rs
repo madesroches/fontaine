@@ -201,11 +201,12 @@ pub fn build_agent_types(config: &Config, extensions: &Extensions) -> AgentTypes
             inherits_context: false,
         });
     }
-    for agent in extensions
-        .agent_types
-        .iter()
-        .filter(|t| matches!(t.origin, TypeOrigin::ProjectFile(_)))
-    {
+    for agent in extensions.agent_types.iter().filter(|t| {
+        matches!(
+            t.origin,
+            TypeOrigin::ProjectFile(_) | TypeOrigin::PluginFile(_)
+        )
+    }) {
         types.insert(agent.clone());
     }
     types

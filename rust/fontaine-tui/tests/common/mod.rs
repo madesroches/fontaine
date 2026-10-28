@@ -335,12 +335,15 @@ impl World {
             Arc::new(move |name: &str| env.get(name).cloned());
         let switcher = Switcher::new(config.clone(), self.data.clone(), env.clone(), None);
         let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
-        let extensions = fontaine_core::extensions::load(&fontaine_core::extensions::LoadParams {
-            config_dir: &self.config_dir,
-            project_root: &self.work,
-            servers: &servers,
-        })
-        .unwrap();
+        let extensions =
+            fontaine_core::extensions::load(&mut fontaine_core::extensions::LoadParams {
+                config_dir: &self.config_dir,
+                project_root: &self.work,
+                servers: &servers,
+                plugins: &[],
+                warnings: &mut Vec::new(),
+            })
+            .unwrap();
         AgentSetup {
             config,
             config_dir: self.config_dir.clone(),

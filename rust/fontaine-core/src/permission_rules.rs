@@ -41,6 +41,8 @@ pub enum RuleSource {
     Session,
     /// The `allowed-tools` of a skill that is active this turn.
     Skill,
+    /// A plugin manifest's deny/ask additions; always tighten-only.
+    Plugin,
 }
 
 impl RuleSource {
@@ -49,6 +51,7 @@ impl RuleSource {
             RuleSource::Config(slot) => slot.label(),
             RuleSource::Session => "session",
             RuleSource::Skill => "skill",
+            RuleSource::Plugin => "plugin",
         }
     }
 }

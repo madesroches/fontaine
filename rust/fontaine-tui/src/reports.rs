@@ -5,12 +5,14 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use fontaine_core::config::{Hook, PermissionMode};
+use fontaine_agents::registry::TypeOrigin;
+use fontaine_core::config::{Config, Hook, PermissionMode, Slot};
 use fontaine_core::context::ContextUsage;
-use fontaine_core::extensions::{Scope, Skill};
+use fontaine_core::extensions::{Extensions, Scope, Skill};
 use fontaine_core::gate::Rules;
 use fontaine_core::instructions::{MemoryEntry, MemoryKind};
 use fontaine_core::permission_rules::SourcedRule;
+use fontaine_core::plugins::Registry;
 
 use crate::commands::{BUILTINS, MenuEntry, is_builtin};
 use crate::statusbar::mode_label;
@@ -200,6 +202,31 @@ pub fn mcp(servers: &[(String, McpState)]) -> String {
         .join("\n")
 }
 
+/// [`mcp`] with the origin label of each server, as `/mcp` shows it.
+pub fn mcp_with_origins(servers: &[(String, McpState)], config: &Config) -> String {
+    if servers.is_empty() {
+        return "no MCP servers configured".to_string();
+    }
+    servers
+        .iter()
+        .map(|(name, state)| {
+            let state = match state {
+                McpState::Connected => "connected".to_string(),
+                McpState::Failed(error) => format!("failed: {error}"),
+                McpState::LeftOff => "left off".to_string(),
+                McpState::NotTrusted => "not loaded (workspace not trusted)".to_string(),
+            };
+            let origin = config
+                .mcp_origins
+                .get(name)
+                .map(|origin| origin.slot.label())
+                .unwrap_or("configured");
+            format!("{name}: {state} [{origin}]")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn hooks(
     pre_tool_use: &[Hook],
     post_tool_use: &[Hook],
@@ -247,8 +274,12 @@ pub fn skills(skills: &[Skill]) -> String {
         .iter()
         .map(|skill| {
             let scope = match skill.scope {
-                Scope::User => "user",
-                Scope::Project => "project",
+                Scope::User => "user".to_string(),
+                Scope::Project => "project".to_string(),
+                Scope::Plugin => format!(
+                    "plugin {}",
+                    skill.name.split(':').next().unwrap_or(&skill.name)
+                ),
             };
             let mut line = format!("{} — {} [{scope}]", skill.name, skill.description);
             if !skill.user_invocable {
@@ -261,6 +292,74 @@ pub fn skills(skills: &[Skill]) -> String {
                 let _ = write!(line, " (hidden by /{})", skill.name);
             }
             line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `/plugins`: installed plugins from the registry, with their loaded component counts.
+pub fn plugins(registry: &Registry, extensions: &Extensions, config: &Config) -> String {
+    if registry.plugin.is_empty() {
+        return "no plugins installed".to_string();
+    }
+    registry
+        .plugin
+        .iter()
+        .map(|plugin| {
+            let prefix = format!("{}:", plugin.name);
+            let skills = extensions
+                .skills
+                .iter()
+                .filter(|skill| skill.scope == Scope::Plugin && skill.name.starts_with(&prefix))
+                .count();
+            let agents = extensions
+                .agent_types
+                .iter()
+                .filter(|agent| {
+                    matches!(agent.origin, TypeOrigin::PluginFile(_))
+                        && agent.name.starts_with(&prefix)
+                })
+                .count();
+            let styles = extensions
+                .output_styles
+                .iter()
+                .filter(|style| style.scope == Scope::Plugin && style.name.starts_with(&prefix))
+                .count();
+            let hooks = config
+                .hooks
+                .pre_tool_use
+                .iter()
+                .chain(&config.hooks.post_tool_use)
+                .chain(&config.hooks.permission_denied)
+                .filter(|hook| hook.origin.slot == Slot::Plugin)
+                .count();
+            let servers = config
+                .mcp_servers
+                .keys()
+                .filter(|name| {
+                    config
+                        .mcp_origins
+                        .get(*name)
+                        .is_some_and(|origin| origin.slot == Slot::Plugin)
+                })
+                .count();
+            let pin = if plugin.pin.len() > 7 {
+                &plugin.pin[..7]
+            } else {
+                &plugin.pin
+            };
+            format!(
+                "{} ({}): {} — pin {} — {} skill(s), {} agent(s), {} style(s), {} hook(s), {} server(s)",
+                plugin.name,
+                plugin.marketplace,
+                if plugin.enabled { "enabled" } else { "disabled" },
+                pin,
+                skills,
+                agents,
+                styles,
+                hooks,
+                servers
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")

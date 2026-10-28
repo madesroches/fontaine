@@ -12,7 +12,8 @@ read from `.claude/`; instruction files are (see [Instruction files](instruction
 
 They live under two roots: `<config dir>/` (yours, loaded in every session) and
 `<root>/.fontaine/` (the repository's, from the primary workspace root only). Extra roots added
-with `--add-dir` contribute nothing. These files are prompt content, so they load whether or not
+with `--add-dir` contribute nothing. Installed [plugins](plugins.md) load between the two, under
+namespaced `plugin:name` names. These files are prompt content, so they load whether or not
 you trust the workspace; what they may *do* is limited as described below.
 
 ## Frontmatter
@@ -154,6 +155,11 @@ A file in a repository can only narrow what its parent can do:
 - `permissionMode` is `default` (the default) or `dontAsk`, never `inherit`;
 - every tool in `tools` is a tool the parent has: a built-in tool, or a tool of an MCP server that
   is configured for the session.
+
+A plugin's agent files follow the same project rules. One relaxation: a plugin agent file that
+names an MCP server neither the plugin ships nor the session has is skipped with a warning, not an
+exit-2 startup error — whether that server exists is your configuration, not a defect in the
+file.
 
 A file that breaks these is an error that stops startup with exit code 2.
 

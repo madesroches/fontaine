@@ -25,10 +25,12 @@ fn load_for(
     servers: &[&str],
 ) -> Result<Extensions, fontaine_core::extensions::ExtensionError> {
     let servers: Vec<String> = servers.iter().map(|s| s.to_string()).collect();
-    load(&LoadParams {
+    load(&mut LoadParams {
         config_dir: &w.config,
         project_root: &w.work,
         servers: &servers,
+        plugins: &[],
+        warnings: &mut Vec::new(),
     })
 }
 

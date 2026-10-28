@@ -2,6 +2,22 @@
 
 **GitHub Issue**: https://github.com/madesroches/fontaine/issues/30
 
+## Progress
+
+- 2026-10-28: Implemented end to end (offline): core `plugins.rs` (registry, manifest/catalog/
+  hooks/`.mcp.json` parsing, `PluginContributions`, `load_installed`, `Config::apply_plugins`),
+  `Slot::Plugin` / `RuleSource::Plugin` / `TypeOrigin::PluginFile` / `McpServer.env`, plugin scope
+  in `extensions::load`, the `fontaine plugin` CLI, the `/plugins` report, and the docs/changelog/
+  parity/Decisions updates. Core unit and integration tests and the offline CLI tests are in.
+- 2026-10-28: Full verification gate is green: `cargo fmt --check`, `cargo clippy --all-targets
+  -- -D warnings`, `cargo test` (all suites), `cargo deny check`, and the Windows
+  `x86_64-pc-windows-gnu` clippy target. Fixes along the way: collapsed a nested `if` in
+  `expand_vars` (`plugins.rs`), `inspect_err` instead of `map_err` cleanup in the CLI, a
+  needless borrow at the two `materialize` call sites, a `cloned_ref_to_slice_refs` in
+  `tests/plugins.rs`, and `/plugins` moved after `/plan` in the `BUILTINS` table (the
+  sorted-by-name test caught it). Status: **done, pending only the live-network manual checks
+  below (Manual Verification 1–2), which are a human step.**
+
 ## Overview
 
 Claude Code's plugins bundle skills, agents, hooks, MCP servers, LSP servers and output styles

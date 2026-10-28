@@ -539,6 +539,9 @@ pub struct McpServer {
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
     pub env_vars: Option<Vec<String>>,
+    /// Literal variables set on the child after the scrub; plugin `.mcp.json` `env` maps land
+    /// here, already expanded.
+    pub env: Option<BTreeMap<String, String>>,
     pub url: Option<String>,
 }
 
@@ -1399,6 +1402,8 @@ pub enum Slot {
     ProjectLocal,
     Project,
     User,
+    /// A plugin: installed by the user, but its content is third-party and tighten-only.
+    Plugin,
 }
 
 impl Slot {
@@ -1409,6 +1414,7 @@ impl Slot {
             Slot::ProjectLocal => "project-local",
             Slot::Project => "project",
             Slot::User => "user",
+            Slot::Plugin => "plugin",
         }
     }
 }
@@ -1917,7 +1923,7 @@ impl Config {
     }
 }
 
-fn union<T: PartialEq + Clone>(target: &mut Vec<T>, items: Option<&[T]>) {
+pub(crate) fn union<T: PartialEq + Clone>(target: &mut Vec<T>, items: Option<&[T]>) {
     for item in items.unwrap_or_default() {
         if !target.contains(item) {
             target.push(item.clone());
@@ -1925,7 +1931,7 @@ fn union<T: PartialEq + Clone>(target: &mut Vec<T>, items: Option<&[T]>) {
     }
 }
 
-fn union_hooks(target: &mut Vec<Hook>, items: Option<&[Hook]>, origin: Origin) {
+pub(crate) fn union_hooks(target: &mut Vec<Hook>, items: Option<&[Hook]>, origin: Origin) {
     // The same hook defined in several scopes is kept once, under the origin with more trust.
     let rank = |o: Origin| (o.user_trust, !o.is_project());
     for item in items.unwrap_or_default() {

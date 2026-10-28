@@ -43,7 +43,9 @@ the debug file (`--debug-file`).
 **Where they are declared.** The user file, `--settings` and an untracked `settings.local.toml` of
 a trusted root declare servers that start at once. A server declared in a repository's shared
 `.fontaine/settings.toml` is [asked about](#servers-a-repository-defines) first. Extra workspace
-roots (`--add-dir`) never contribute servers.
+roots (`--add-dir`) never contribute servers. A [plugin's](plugins.md) `.mcp.json` servers start
+without the workspace-trust gate: install approved them, in the terminal UI and headless runs
+alike.
 
 ## Tool names
 
