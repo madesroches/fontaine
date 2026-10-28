@@ -244,7 +244,7 @@ it needs no guardian verdict.
    `docs/configuration.md` (the `### [permissions]` key table ~559-581 and the scope table
    ~102-107: the two keys, project scope may only switch them off);
    `docs/permissions.md` (~20, 83-84, 269-271: "the only guardian skips earned without a grant of
-   yours") and `docs/guardian.md` (~3-12); `README.md` (~91: in `auto` a call is judged by the guardian only after the read-only fast path and similar steps) and a check of `docs/index.md` (~14); amend the AGENTS.md security-invariant text on the fast
+   yours"; also document the `tracked_edit` and `scratch_write` tiers and their exclusions) and `docs/guardian.md` (~3-12); `README.md` (~91: in `auto` a call is judged by the guardian only after the read-only fast path and similar steps) and a check of `docs/index.md` (~14); amend the AGENTS.md security-invariant text on the fast
    path (~lines 45-48) to name this second exception; master plan `## Decisions` lines (below) and
    the `CHANGELOG.md` entry at PR time.
 
@@ -302,14 +302,7 @@ it needs no guardian verdict.
 
 ## Documentation
 
-`docs/guardian.md` (data bullet, request table, new history subsection), `evals/README.md`
-(`prior_denials` row, `followup.jsonl` paragraph), `docs/evals.md` (follow-up slice section and
-the dataset-version note, as for `memory.jsonl`), `docs/permissions.md` (the `tracked_edit` and
-`scratch_write` tiers and their exclusions), `docs/configuration.md` (the two settings), `docs/tools.md` (scratch section),
-`README.md` (~91, the `auto` guardian-order sentence), `docs/index.md` (~14, check),
-`docs/headless.md`, `docs/architecture.md` and `docs/schemas/headless-v1.schema.json` (tier names),
-`docs/guardian.md` and `docs/permissions.md` (stale "only guardian skips" statements),
-`tasks/design/permissions.md`, `AGENTS.md`, `CHANGELOG.md`.
+See Implementation Steps 6-9 and "Files to Modify".
 
 ## Testing Strategy
 
