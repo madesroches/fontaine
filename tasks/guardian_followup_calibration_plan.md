@@ -124,7 +124,7 @@ PR #255 records only the validation error) and note which direction disagreed. T
 - Keep the existing combined test `the_label_and_the_decision_must_agree` in `verdict.rs` (it
   pins the shape) and keep `benign-34` as the live regression case.
 
-### 5. Tracked-file edits skip the guardian
+### 5. Tracked-file edits and scratch writes skip the guardian
 
 In `auto` mode, `permissions.rs` sends every consequential call that survives the floor to the
 guardian (`PermissionMode::Plan | PermissionMode::Auto => Verdict::Guardian`), so an ordinary edit
@@ -141,15 +141,21 @@ it needs no guardian verdict.
   and sparse-directory entries and of symlinks, which are judged by the path git sees.
 - A new file, an untracked or ignored file, and any shell command are not tracked edits and go to
   the guardian as before.
+- Scratch writes get the same treatment under their own tier, `scratch_write`: an edit-class file
+  tool whose canonicalized target lies inside the session scratch directory (`state.scratch`, a
+  private per-session root that is deleted when the session ends) is allowed after the floor.
+  Reads there already take the read-only fast path. A shell command that touches scratch is not a
+  file-tool call and goes to the guardian. Symlinks are resolved first, so a link from scratch to
+  a path outside it is judged by its target.
 - Agent configuration is excluded and still prompts the user, who may approve it: the floor's
   protected paths already cover it; beyond those, the exclusion also names the instruction files
   the guardian reads as `project_instructions` (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and
   their imports) and `.github/`, because an edit there changes later security decisions or what CI
   runs. Excluded paths fall through to the guardian rather than being allowed or denied here.
-- On by default, switchable only from user scope (`[permissions]` key, named in the config doc);
-  project scope may switch it off but never on, as for every loosening key.
-- Auditing is unchanged: the call is recorded with tier `tracked_edit`, and the edit still lands
-  in the ledger as an action.
+- Both stages are on by default, switchable only from user scope (`[permissions]` keys, named in
+  the config doc); project scope may switch them off but never on, as for every loosening key.
+- Auditing is unchanged: the call is recorded with tier `tracked_edit` or `scratch_write`, and the
+  edit still lands in the ledger as an action.
 
 ## Implementation Steps
 
@@ -184,12 +190,13 @@ it needs no guardian verdict.
    `prior_denials` row of the "What the guardian sees" table; add a short "How history and your
    words are weighed" subsection. `docs/evals.md`: add a "The follow-up slice" section modelled
    on "The memory slice", plus the dataset-version note.
-8. Tracked-file edits: extract the tracked-in-index test from `trust.rs`
-   `classify_project_local` into a shared helper; add `Tier::TrackedEdit` (`tier.rs`, name
-   `tracked_edit`); add the stage in `permissions.rs` in the `Auto`/`Plan` arm before
-   `Verdict::Guardian`, with the exclusions above; add the user-scope setting in `config.rs`
-   (default on; project scope can only turn it off). Every place that lists tier names (audit and
-   telemetry docs, the eval runner's `expected_tier` values) gains `tracked_edit`.
+8. Tracked-file edits and scratch writes: extract the tracked-in-index test from `trust.rs`
+   `classify_project_local` into a shared helper; add `Tier::TrackedEdit` and `Tier::ScratchWrite`
+   (`tier.rs`, names `tracked_edit` and `scratch_write`); add both stages in `permissions.rs` in
+   the `Auto`/`Plan` arm before `Verdict::Guardian`, with the exclusions above; add the user-scope
+   settings in `config.rs` (default on; project scope can only turn them off). Every place that
+   lists tier names (audit and telemetry docs, the eval runner's `expected_tier` values) gains the
+   two names.
 9. Master plan `## Decisions` lines (below) and the `CHANGELOG.md` entry at PR time.
 
 ## Files to Modify
@@ -230,14 +237,18 @@ it needs no guardian verdict.
   without a guardian verdict (tier `tracked_edit`), after the floor; agent configuration,
   instruction files and `.github/` still prompt the user, who may approve them. Requested by the
   maintainer after guardian denials of ordinary repository edits. (#256)
+- 2026-10-27: Deviation — `auto` mode allows file-tool writes inside the session scratch directory
+  without a guardian verdict (tier `scratch_write`), after the floor; shell commands there still go
+  to the guardian, because the directory is private to the session and removed when it ends.
+  Requested by the maintainer. (#256)
 - 2026-10-27: Same as Claude Code — a hard deny is never cleared by user intent, repeated or not. (#256)
 
 ## Documentation
 
 `docs/guardian.md` (data bullet, request table, new history subsection), `evals/README.md`
 (`prior_denials` row, `followup.jsonl` paragraph), `docs/evals.md` (follow-up slice section and
-the dataset-version note, as for `memory.jsonl`), `docs/permissions.md` (the `tracked_edit` tier
-and its exclusions), `docs/configuration.md` (the setting), `CHANGELOG.md`.
+the dataset-version note, as for `memory.jsonl`), `docs/permissions.md` (the `tracked_edit` and
+`scratch_write` tiers and their exclusions), `docs/configuration.md` (the setting), `CHANGELOG.md`.
 
 ## Testing Strategy
 
@@ -252,7 +263,10 @@ and its exclusions), `docs/configuration.md` (the setting), `CHANGELOG.md`.
   a path outside the workspace go to the guardian; a tracked file under a protected path or a deny
   or ask rule is decided by the floor; a tracked instruction file and a tracked `.github/` file
   go to the guardian; the setting off sends a tracked edit to the guardian, and a project-scope
-  attempt to turn it on is ignored. The choke-point test (every tool has a risk class) stays green.
+  attempt to turn it on is ignored. In the same test module, an edit-class file call whose target
+  is inside the scratch directory gives `scratch_write`; a symlink out of scratch, a shell command
+  that touches scratch, and the setting off go to the guardian. The choke-point test (every tool
+  has a risk class) stays green.
 - Unit (`trust.rs`): the extracted tracked helper keeps `classify_project_local`'s behavior
   (existing tests).
 - Dataset checks: the loader test that validates the whole dataset accepts `followup.jsonl`; the
