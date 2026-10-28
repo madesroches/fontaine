@@ -83,13 +83,13 @@ the model and the operator: Hermes has no comparable deterministic floor.
 
 - Jobs are first-class durable records stored per-profile (`cron/jobs.json`, `cron/executions.db`,
   `cron/notepad.db`) with an id, a name, a schedule, delivery targets, per-run status, failure streaks
-  and a next-run time ([measured] `runs/e5-watchdog/home/cron/jobs.json`).
+  and a next-run time ([measured] `hermes-harness/evidence/e5-watchdog/cron/jobs.json`).
 - Schedules accept `30m`/`every 2h`/`0 9 * * *`/ISO timestamp ([help] `hermes cron create`).
 - **A job does not fire without a gateway.** `hermes cron status` says so outright: "no gateway serves
   it and no fresh ticker heartbeat" ([measured]). The scheduler is not self-contained: a separate
   long-running `hermes gateway run` (or an installed system service) owns the ticker. In our runs, an
   ephemeral gateway spawned by a later CLI invocation actually caught up a due job ~11 minutes late
-  ([measured] batch 1 re-run, `executions.db` claimed at 23:27 for a 23:16 schedule). Missed/overdue
+  ([measured] batch 1 re-run, `executions.db` claimed at 23:27 for a 23:16 schedule; local-only, see section 8). Missed/overdue
   runs are therefore *caught up, not dropped*, but only if some gateway eventually runs.
 - Overlap protection is a lock file (`.tick.lock` "prevents duplicate ticks across processes") and a
   **3-minute hard interrupt per run** ([docs] background-systems). We did not measure the interrupt.
@@ -123,14 +123,14 @@ The two modes designed for cheap watchers are both model-free on the steady path
 - **`--monitor-script`** (and `--monitor-url`, an http(s) GET): the script runs each tick *before* the
   agent; unchanged output (exact-bytes hash) suppresses the agent run entirely, and a change injects a
   `MONITOR CHANGE DETECTED` diff into the prompt. [measured] batch 4: baseline hash stored
-  (`monitor_state.last_output_hash` in jobs.json, `monitor_last_output.txt`), a green re-trigger created
+  (`monitor_state.last_output_hash` in `evidence/e5-watchdog/cron/jobs.json`, `evidence/e5-watchdog/cron/output/b6efc8393db4/monitor_last_output.txt`), a green re-trigger created
   no agent session (suppressed), and the firing trigger created exactly one agent session with the
   framing prompt. Script output must be timestamp-stable; `--monitor-url` cannot send auth headers, so
   for Grafana/TeamCity the script form is the one that works.
 - Cost/latency design: the model is called **only on change**, and even then the prompt is just
-  "summarize what changed" — no tool calls required. That sidesteps every tool-call failure mode in 3.4.
+  "summarize what changed" — no tool calls required. That sidesteps every tool-call failure mode in section 1.
 - Our attempt to run the *agent-in-the-loop* watcher (a model that curls the monitor itself) failed for
-  model reasons, not harness reasons (section 3.4). The lesson for Fontaine is not "small models can't
+  model reasons, not harness reasons (section 1). The lesson for Fontaine is not "small models can't
   watch" — it is that the watcher's *check* step should be deterministic code and the model should only
   *summarize and decide escalation* on a change. Hermes' monitor mode is exactly that split, and it is
   the design Fontaine should adopt as its default unattended watcher.
@@ -162,11 +162,11 @@ bind a credential to a check without embedding it in text that lands in the prom
   at >10 that does not cap); a model "trimming" a batch is the model, not the runtime ([docs]).
 - **Not tried**: an actual delegate handoff. Every watcher run that reached the escalation step failed
   before it, because the model could not make the terminal tool call that would have discovered the
-  firing state (3.1/3.4). The dispatch mechanism itself is documented and the cron path is proven, but
+  firing state (section 1). The dispatch mechanism itself is documented and the cron path is proven, but
   the "watcher hands a problem to an agent" end-to-end is unmeasured.
 - Concurrency/de-dup of repeated alerts is left to the operator: `--continuity` injects the job's own
   previous output so it can "dedupe against what was already reported" ([help]), but there is no
-  alert-fingerprint dedup. Repeated identical tool calls do get a loop warning (3.5).
+  alert-fingerprint dedup. Repeated identical tool calls do get a loop warning (section 4).
 
 ### 3.5 Orchestrator — the gateway is the long-running core
 
@@ -179,7 +179,7 @@ bind a credential to a check without embedding it in text that lands in the prom
   real unattended-run forensics.
 - Sandboxing/isolation between runs: cron runs are process-local per job with a hard 3-minute
   interrupt ([docs]); sessions are durable in SQLite (`state.db`) with per-session model config,
-  tool names, token counts and cost fields ([measured] `state.db` schema). No container isolation —
+  tool names, token counts and cost fields ([measured] `state.db` schema, local-only, see section 8). No container isolation —
   one `HERMES_HOME`, one user, the terminal tool runs as that user.
 - `hermes chat -q` spawns an ephemeral gateway (`gateway run --quiet --idle-exit`) to serve the run
   ([measured] `ps` during e1); that ephemeral gateway is also what caught up the overdue cron job.
@@ -311,10 +311,18 @@ Each entry: what Hermes does, the evidence, the Fontaine issue it feeds, and whe
 
 All under `research/hermes-harness/`; "capture `x`" means `captures/x`.
 
+The per-run Hermes home directories (`runs/*/home/`, including the SQLite files `executions.db` and
+`state.db`) are gitignored and local-only. Quotes from the e5 run come from the committed text artifacts
+under `evidence/e5-watchdog/`; claims that rely on the SQLite files (the 23:27 catch-up claim, the `state.db`
+schema) are not reproducible from the repo.
+
 - **e1 (smoke)**: qwen3:4b-64k, full toolset. Model called the `tool_call` meta-tool with
   `{"command": …}` instead of `terminal`, Hermes rejected it, the run looped ~8 min. Capture
   `e1/req_0034.json`.
-- **e1b (smoke)**: qwen2.5-coder:7b-64k. Answered `4` directly, 0 tool calls, 24 s.
+- **e1b (smoke)**: qwen2.5-coder:7b-64k. Answered `4` directly, 0 tool calls, ~20 s (request 16 at 17:07:51 to
+  completion at 17:08:07). Evidence is `e1b/req_0016.json`; `captures/e1b_run_stdout.txt` holds only a docker
+  name-conflict error from a re-run and backs nothing. The first e1b requests (`req_0001`, `req_0002`, at
+  17:00 and 17:04) look like an earlier run in the same capture directory.
 - **Batch 1** (`run_batch.sh`, log `runs/batch_20261027-171105.log` and the re-run
   `-172712.log`): cron create/list/status; job created but "scheduler not ready"; model fake-called
   `cronjob_manage` as text; watcher runs green/firing/delegate/injection all answered without checking
