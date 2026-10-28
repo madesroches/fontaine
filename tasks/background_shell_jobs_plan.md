@@ -28,7 +28,7 @@ still judges the command at the `shell` / `monitor` call, and the model cannot l
   `OutputLimit::tail` are public and are the building blocks (rig-tools `process.rs`);
   `Process::run` is not used, since it blocks holding `&mut Process`.
 - A harness-started turn for news exists: a background subagent's report is queued with
-  `AgentTree::deliver` as a `Notification` (`fontaine-agents/src/tree.rs:53`), the TUI idle loop
+  `notify_report` as a `Notification` (`fontaine-agents/src/tree.rs:53`, `:621`), the TUI idle loop
   starts `notification_turn` when `tree.has_notifications(ROOT_AGENT)` (`fontaine-tui/src/ui/mod.rs:195`),
   and `AgentRuntime::notification_prompt` (`fontaine-core/src/agent.rs:495`) renders the queued
   notes as a `[Harness note, not the user's words ...]` prompt after running them through the
@@ -86,8 +86,10 @@ pub trait JobSink: Send + Sync {
   `PIPE_GRACE`), the group kill after it, the quiet limit and the total-output cap. Rig's 10 MB
   runaway-output kill does not apply; the 1 MiB buffer below is the cap, and the job thread
   kills a job that has produced more than 64 MiB in total. The spawn replicates rig's
-  `Shell::start` cwd confinement (`workspace.place`) before `Launcher::spawn`, and `ShellTool::call`
-  applies `prepared()` (the Git Bash `through_env` rewrite) to the command first.
+  `Shell::start` cwd confinement (`workspace.place`) and goes through `workspace.spawn` with
+  `merge_stderr: false` and null stdin, and `ShellTool::call` applies `prepared()` (the Git Bash
+  `through_env` rewrite) to the command first; `prepared()` takes `ShellArgs`, so the new `ShellCall`
+  gets a small adapter to it.
   The foreground call does not own the process; it waits on the job.
   This is what makes promotion possible: promotion is just the foreground call returning early
   while the job thread keeps going.
@@ -105,15 +107,16 @@ pub trait JobSink: Send + Sync {
   texts are produced by `jobs/cut.rs`, which reimplements rig's private `killed()`,
   `STATUS_STARTS`, `SILENT`, `plain()` and `Kept` helpers, not only the cutter. A job ended by
   `job_kill` has a `killed_by_us` flag set before it is terminated, so its result does not read
-  "killed by signal ... which this tool did not send". Dropping the future (turn cancelled) while the job is still foreground terminates its
-  group, as `KillOnDrop` does today; a promoted job is not affected by a drop.
+  "killed by signal ... which this tool did not send". Dropping the future (turn cancelled) while the job is still foreground sends a kill request to
+  the job thread, which stops the group; a promoted job is not affected by a drop.
 - **Daemonizing commands.** After the shell exits, the job thread waits its post-exit pipe grace
   (100 ms) and then kills the whole group, so `server &` under `run_in_background` dies 100 ms
   after the shell exits. The `shell` description and `docs/tools.md` say a background job must
   keep its process in the foreground of the command (`run_in_background` with `npm start`, not
   `npm start &`).
-- **`job_kill` on an ended job.** `Group` stays non-zero after the child is reaped, so `job_kill`
-  checks the job's state under the registry lock first and does nothing to an ended job, and the
+- **`job_kill` on an ended job.** `job_kill` checks the job's state under the registry lock first
+  and does nothing to an ended job (rig zeroes the `Group` id on reap and on kill, so the group is not
+  a liveness check), and the
   job thread drops its `Process` (and clears the kill request) before it marks the job ended.
 - **Promotion.** Past `timeout_secs` (default 120, still cut to `max_timeout` = 600), or, with the
   default timeout, past the 60 s quiet limit, a root-agent call returns instead of stopping:
@@ -135,9 +138,9 @@ pub trait JobSink: Send + Sync {
   per session (a foreground call is not counted until promoted). A ninth `run_in_background`
   `shell` or `monitor` is refused with a message naming `job_kill`; a promotion past the cap stops
   the command and the result says it was stopped because 8 jobs are already running, naming
-  `job_kill`. A finished job's record and buffer are kept until the model has
+  `job_kill`; the promotion path checks the cap before it returns the moved-to-background text. A finished job's record and buffer are kept until the model has
   read it or 50 newer jobs exist (a foreground call that ended in time is removed at once; this
-  applies to promoted and flagged jobs). No per-job deadline for a background job, since a dev server is a
+  applies to promoted and flagged jobs). No per-job deadline for a background job (monitor's `timeout_secs` aside), since a dev server is a
   legitimate use; every job is terminated when the runtime that owns the registry
   is dropped (`/resume`, `/branch`, process exit) and explicitly at the end of a headless run and on
   TUI exit. `/clear` clears the conversation within the same session and leaves running jobs
@@ -168,12 +171,18 @@ floor), the pre-classifier `read_paths` call (`permissions.rs:762`), `scope.loca
 (`destructive.rs:89`) and path resolution (`destructive.rs:296`), `is_broad_code_execution`
 (`permission_rules.rs:662-663`), `summarize()` (`permissions.rs:1759`) and `fields_of` in
 `scope.rs:52`. `skills.rs:182` and `agent/build.rs:186` name the one real `shell` tool and stay as
-they are. Each of the others moves to a descriptor predicate (`Specifier::Shell`) instead of a name check,
-so `monitor` is covered by all of them. Rule and hook-matcher matching is exact tool-name
+they are. Each of the others moves to a named descriptor predicate (`shell_class()`, true for rows with
+`Specifier::Shell`) instead of a name check, so `monitor` is covered by all of them, with one
+exception: the pre-classifier tier never auto-allows `monitor`; read-only classification there
+applies only to `shell`, so `monitor tail -f log` still needs a `Monitor` allow rule or the guardian. Rule and hook-matcher matching is exact tool-name
 equality (`permission_rules.rs` ~396-419) and `find_claude` maps `Bash` only to `shell`, so rule
-matching also moves to the predicate (Step 11): a `shell(...)` / `Bash(...)` deny or ask rule and
-a hook matcher for them also cover `monitor`; an allow rule does not. `monitor` reuses `shell_for(primary_root)` for its launcher and confinement. Both new read tools and
-`monitor` are root-agent only, refused at call time for a subagent as `ask_user_question` is.
+matching also moves to the predicate (Step 11), keyed by `Posture` inside `tool_matches` / `matches`:
+Deny and Ask widen to every shell-class tool, Allow stays exact. A `shell(...)` / `Bash(...)` deny or
+ask rule and a hook matcher for them also cover `monitor`; an allow rule does not.
+`is_broad_code_execution` covers `(monitor, None)` like `(shell, None)`. `monitor` reuses `shell_for(primary_root)` for its launcher and confinement. Both new read tools and
+`monitor` are root-agent only, refused at call time for a subagent as `ask_user_question` is. The refusal is call-time only:
+`AgentType::toolset` (`fontaine-agents/src/registry.rs`) still shows inheriting subagent types the
+tool definitions, and the tools stay out of its `disallowed` list.
 `monitor`'s `cwd` is not offered; it runs in the primary root.
 
 ### Notifications
@@ -193,7 +202,8 @@ Core implements `JobSink` by calling it; `Jobs` stays free of the agent crate.
   a monitor that exceeds 1,000 notifications in total is terminated with a final notice saying so
   (a chatty script must not turn into an unbounded model loop). The end of a monitor posts a
   final `ended` note.
-- `Notification::render` for `Job` follows the existing `Report` wording and is delivered through
+- `Notification::render` for `Job` has its own wording (the `Report` text "from background agent
+  {from}" does not fit a job) and is delivered through
   `AgentRuntime::notification_prompt`, i.e. through the result pipeline (steering-hardened scanner,
   secret redaction, hooks), so job output is screened like any tool result. The prompt's header
   line becomes `agents or background jobs you started have news` when a job note is present.
@@ -212,8 +222,10 @@ Core implements `JobSink` by calling it; `Jobs` stays free of the agent crate.
 - TUI: `notification_turn` already fires from `tree.has_notifications(ROOT_AGENT)`; its transcript
   notice reads `a background agent reported back` / `a background job reported back` by kind.
   Headless: `wait_for_news` also ends its wait when a job note arrives, but does not wait for
-  running jobs to finish; jobs still running when the run ends are terminated (matches `claude -p`
-  not outliving the answer).
+  running jobs to finish (its `background_running()` check counts agents only); jobs still running
+  when the run ends are terminated (matches `claude -p` not outliving the answer). A note already
+  queued when the answer arrives is drained and runs one more turn, as for agent reports. Jobs
+  persist across stream-json messages within one run and are terminated only at its end.
 
 ### Surfacing to the human
 
@@ -244,10 +256,14 @@ or long build you do not need to wait for. Do not poll with `sleep`: use `job_ou
    `ShellTool::run` (used by `!` shell mode, `rust/fontaine-core/src/user_shell.rs`) on the old direct path: a user-typed `!cmd` is not a
    model job. Skill shell injection (`skills.rs` `run_command`) goes through the registered tool,
    so `run_command` (`rust/fontaine-core/src/skills.rs`) inserts a `NoPromote` value into the
-   `ToolContext` that `ShellTool::call` reads, never a model-visible argument; the job-backed path kills at the timeout as today, so
+   `ToolContext` that `ShellTool::call` reads (a serde-derived type with `impl ContextValue` and a
+   `KEY`, like `AgentId` at `gate.rs:15-19`), never a model-visible argument; the job-backed path kills at the timeout as today, so
    no promotion message can land in skill text and the trailing `[exit code 0]` `strip_suffix`
-   handling is unchanged. Thread `Arc<Jobs>` through `BuiltinEnv` and
-   `RegistryParams` (like `searxng`, built in `Setup` so `AgentRuntime::rebuild()` keeps running jobs).
+   handling is unchanged. The job-backed call inserts `ExitStatus` and `OutputCut` into the context
+   itself with `insert_result`. Thread `Arc<Jobs>` through `BuiltinEnv` and
+   `RegistryParams` (like `searxng`); `Setup` (`agent/setup.rs`) builds and owns it, implements
+   `JobSink` and hands it to `AgentRuntime` as a field (`agent.rs`), so `AgentRuntime::rebuild()`
+   keeps running jobs.
 3. `ShellArgs` is rig's; add a fontaine-side flat, hand-written `ShellCall` struct (`command`,
    `timeout_secs`, `cwd`, `run_in_background`) with `deny_unknown_fields` (serde ignores
    `deny_unknown_fields` inside `flatten`, so no flatten over `ShellArgs`). The override covers
@@ -258,27 +274,28 @@ or long build you do not need to wait for. Do not poll with `sleep`: use `job_ou
 5. `fontaine-tools/src/jobs.rs` tools `JobOutputTool`, `JobKillTool` and their rows in
    `descriptor.rs`; register in `agent/build.rs:extension_tools` beside the todo tool.
 6. `fontaine-agents/src/tree.rs`: `NotificationKind::Job`, `post_to_root` (wrapper over the push
-   helper shared with `notify_report`); `fontaine-core`
-   implements `JobSink` and holds the `Arc<Jobs>` in `Setup` (`agent/setup.rs`) beside `searxng`,
-   reaching `AgentRuntime` as a field (`agent.rs`).
+   helper shared with `notify_report`); `fontaine-core`'s
+   `JobSink` implementation (step 2) calls it.
 7. `notification_prompt` header wording; TUI notice by kind; headless `wait_for_news`.
 8. Session-end cleanup: `Drop` on `Jobs` (which owns the join and kill handles; job threads hold
    only `Arc<Shared>`) terminates every job (the primary mechanism, as for
    `searxng`, which has only a `Drop` teardown); add an explicit async `terminate_all` call in the
-   headless end-of-run path and the TUI exit path.
+   headless end-of-run path (beside both `kill_all()` calls, `headless.rs` ~881 and ~898, and before
+   the early `return 2` exits at ~828, ~850 and ~902) and the TUI exit path.
 
 ### Phase 2: human surface
 
-9. Agents panel rows for jobs (list, kill).
+9. Agents panel rows for jobs (list, kill); the TUI reaches `Jobs::snapshot()` and the job kill
+   through the `Arc<Jobs>` on `AgentRuntime` (step 2).
 
 ### Phase 3: monitor
 
 10. Replace the `tool == "shell"` name checks at `permissions.rs:715`, `:762`, `:1759`,
-    `destructive.rs:89`, `:296`, `permission_rules.rs:662-663` and `scope.rs:52` with a descriptor
-    predicate (`Specifier::Shell`); `skills.rs:182` and `agent/build.rs:186` stay by name.
+    `destructive.rs:89`, `:296`, `permission_rules.rs:662-663` and `scope.rs:52` with the
+    `shell_class()` descriptor predicate (the pre-classifier at `:762` allows only `shell`); `skills.rs:182` and `agent/build.rs:186` stay by name.
 11. Rule and hook-matcher matching (`permission_rules.rs` `tool_matches` / `matches`, the hook
-    matcher) treats every `Specifier::Shell` tool as covered by `shell` / `Bash` deny and ask rules
-    and hook matchers; an allow rule for `shell(...)` / `Bash(...)` does not apply to `monitor`.
+    matcher) treats every `shell_class()` tool as covered by `shell` / `Bash` deny and ask rules
+    and hook matchers (Deny and Ask widen, Allow stays exact, by `Posture`); an allow rule for `shell(...)` / `Bash(...)` does not apply to `monitor`.
     `find_claude("Monitor")` keeps resolving to `monitor`. Tests: a `shell(...)` deny and a
     `Bash(...)` ask each hit `monitor`; a `Bash(...)` allow does not allow `monitor`;
     `find_claude("Monitor")` is `monitor`.
@@ -317,11 +334,14 @@ or long build you do not need to wait for. Do not poll with `sleep`: use `job_ou
 - `ToolContext` carries a `NoPromote` value (never a model argument) that skill shell injection
   sets so the call kills at the timeout instead of promoting.
 - `monitor` shares `shell`'s descriptor row and command analysis (pre-classifier, destructive
-  derive, critical-path floor), via a `Specifier::Shell` predicate.
-- Rule and hook-matcher matching treats every `Specifier::Shell` tool as covered by `shell` /
+  derive, critical-path floor), via a `shell_class()` descriptor predicate, except that the pre-classifier tier never auto-allows
+  `monitor` (read-only classification applies only to `shell`).
+- Rule and hook-matcher matching treats every `shell_class()` tool as covered by `shell` /
   `Bash` deny and ask rules and hook matchers; an allow rule for them does not apply to `monitor`,
   which needs its own `Monitor(...)` allow.
-- 8 running jobs and 1 MiB per job are harness constants in `jobs.rs`; a `[shell]` key, if ever
+- The job limits (8 running jobs, 1 MiB buffer and 64 MiB output cap per job, 60 s quiet limit,
+  100 ms pipe grace, 50 retained jobs, 1,000 monitor notifications, 200 lines and 1 notification per
+  second per monitor, 40 tail lines) are harness constants, defined only in `jobs.rs`; a `[shell]` key, if ever
   added, is a loosening key and therefore user-scope only.
 
 ## Documentation
@@ -346,8 +366,8 @@ Unit tests (no live API):
 - `jobs`: a command that ends in time returns exactly today's result text and leaves no job; one
   that outlives the timeout is promoted (`sleep` plus echo) with the output so far, keeps running,
   and its completion posts one note to a fake sink; `run_in_background` returns at once; the quiet
-  limit promotes only with the default timeout; dropping the foreground future terminates the
-  group but a promoted job survives a drop; `job_kill` ends the whole process group (a child
+  limit promotes only with the default timeout; dropping the foreground future stops the
+  group via the job thread but a promoted job survives a drop; `job_kill` ends the whole process group (a child
   `sleep` is gone); the 8-job cap; ring buffer drops are counted and the cursor returns only new
   lines; `wait_secs` returns early on new output and on exit; a subagent id is refused and keeps
   kill-at-timeout; `terminate_all` kills every group.
@@ -362,7 +382,9 @@ Unit tests (no live API):
 - Core: `notification_prompt` runs job text through the result pipeline (a fake stage observes
   it) and uses the job header.
 - Integration (headless `fontaine -p` with a deterministic completion model): a scripted run that
-  backgrounds `sleep 1; echo done`, finishes its answer, and gets a notification turn; a run that
+  backgrounds a job which has already ended before the answer (or whose script waits on a marker
+  file the test creates after the answer), so the note is queued deterministically, and gets a
+  notification turn; a run that
   ends with a job still running terminates it (no orphan process).
 - TUI (`fontaine-tui/tests/tui.rs`, like the test near line 1177): a scripted model backgrounds a
   job with `timeout_secs` 1; the job's completion drives a notification turn through the real idle
