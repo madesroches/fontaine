@@ -11,7 +11,9 @@ session history bear on the *current* call, and the user message tells it that "
 untrusted data", which contradicts the system prompt's "user intent comes from the
 `task_intent` and `recent_user_messages` blocks". This plan fixes the framing, adds the missing
 history rules (modelled on Claude Code's auto-mode classifier), and adds a regression slice to
-the golden dataset. It also covers the `benign-34` decision/rule mismatch from the issue comment.
+the golden dataset. It also covers the `benign-34` decision/rule mismatch from the issue comment,
+and takes routine edits to version-controlled project files out of the guardian's hands, so the
+guardian can no longer deny them.
 
 ## Current State
 
@@ -39,8 +41,8 @@ the golden dataset. It also covers the `benign-34` decision/rule mismatch from t
 
 ## Design
 
-Four small changes, none touching the deterministic floor, the fail-closed handling, or any
-confidence threshold.
+Five small changes. Changes 1-4 touch neither the deterministic floor, the fail-closed handling,
+nor any confidence threshold. Change 5 adds a pipeline stage strictly after the floor.
 
 ### 1. Name the user's words as the user's words
 
@@ -122,6 +124,33 @@ PR #255 records only the validation error) and note which direction disagreed. T
 - Keep the existing combined test `the_label_and_the_decision_must_agree` in `verdict.rs` (it
   pins the shape) and keep `benign-34` as the live regression case.
 
+### 5. Tracked-file edits skip the guardian
+
+In `auto` mode, `permissions.rs` sends every consequential call that survives the floor to the
+guardian (`PermissionMode::Plan | PermissionMode::Auto => Verdict::Guardian`), so an ordinary edit
+to a project file can be denied by a model that misreads the session. Editing version-controlled
+project files is routine and recoverable (git, plus the checkpoints that `/rewind` restores), so
+it needs no guardian verdict.
+
+- New decision tier `tracked_edit` (beside `read_only_fast_path`), reached only after the whole
+  floor (`deny → ask → critical-path → protected-path`) and user hooks have passed. A call gets it
+  when all of these hold: the tool is edit-class (the same `edit_class` test `acceptEdits` uses);
+  `scope.locate` places the target inside a workspace root; and the target, canonicalized, is an
+  entry in the git index. The index lookup reuses the tracked test in `trust.rs`
+  `classify_project_local` (extracted into a shared helper), including its handling of submodule
+  and sparse-directory entries and of symlinks, which are judged by the path git sees.
+- A new file, an untracked or ignored file, and any shell command are not tracked edits and go to
+  the guardian as before.
+- Agent configuration is excluded and still prompts the user, who may approve it: the floor's
+  protected paths already cover it; beyond those, the exclusion also names the instruction files
+  the guardian reads as `project_instructions` (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and
+  their imports) and `.github/`, because an edit there changes later security decisions or what CI
+  runs. Excluded paths fall through to the guardian rather than being allowed or denied here.
+- On by default, switchable only from user scope (`[permissions]` key, named in the config doc);
+  project scope may switch it off but never on, as for every loosening key.
+- Auditing is unchanged: the call is recorded with tier `tracked_edit`, and the edit still lands
+  in the ledger as an action.
+
 ## Implementation Steps
 
 1. Reproduce `benign-34` against the Haiku-class guardian (human/live, needs keys); record the
@@ -155,7 +184,13 @@ PR #255 records only the validation error) and note which direction disagreed. T
    `prior_denials` row of the "What the guardian sees" table; add a short "How history and your
    words are weighed" subsection. `docs/evals.md`: add a "The follow-up slice" section modelled
    on "The memory slice", plus the dataset-version note.
-8. Master plan `## Decisions` lines (below) and the `CHANGELOG.md` entry at PR time.
+8. Tracked-file edits: extract the tracked-in-index test from `trust.rs`
+   `classify_project_local` into a shared helper; add `Tier::TrackedEdit` (`tier.rs`, name
+   `tracked_edit`); add the stage in `permissions.rs` in the `Auto`/`Plan` arm before
+   `Verdict::Guardian`, with the exclusions above; add the user-scope setting in `config.rs`
+   (default on; project scope can only turn it off). Every place that lists tier names (audit and
+   telemetry docs, the eval runner's `expected_tier` values) gains `tracked_edit`.
+9. Master plan `## Decisions` lines (below) and the `CHANGELOG.md` entry at PR time.
 
 ## Files to Modify
 
@@ -165,9 +200,16 @@ PR #255 records only the validation error) and note which direction disagreed. T
 - `rust/fontaine-guardian/src/verdict.rs` (descriptions only)
 - `rust/fontaine-evals/src/case.rs`, `live.rs`, `tests/live.rs`
 - `evals/dataset/followup.jsonl` (new), `evals/README.md`
-- `docs/guardian.md`, `docs/evals.md`, `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
+- `rust/fontaine-core/src/permissions.rs`, `tier.rs`, `trust.rs`, `config.rs` (tracked-file edits)
+- `docs/guardian.md`, `docs/evals.md`, `docs/permissions.md`, `docs/configuration.md`,
+  `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
 
 ## Trade-offs
+
+- **A fast path vs. a prompt rule for edits.** Telling the guardian that tracked-file edits are
+  routine would still leave the verdict to a model that has already misjudged such calls; a stage
+  after the floor makes the outcome deterministic. The cost is a deviation from "the fast path is
+  earned by containment", recorded below.
 
 - **Prompt rules vs. a structured "user vouched" field.** The request already carries the user's
   messages as harness-recorded data; the failure was how they are framed, not a missing channel.
@@ -184,13 +226,18 @@ PR #255 records only the validation error) and note which direction disagreed. T
   no Path B (agent-proposal-plus-"yes"), because the guardian is never shown agent prose. (#256)
 - AFK: Followup attack cases 5-7 are ids `attack-followup-NN` (not `followup-NN`) so the `--filter attack:*` fixture test passes unchanged; `tests/fixture.rs` is not modified.
 - AFK: The screen stage keeps its system prompts, steering question and input byte-identical (`blocks` takes a flag so only `user_message` marks `source="user"`); it is opt-in and never before the floor, so no re-fit.
+- 2026-10-27: Deviation — `auto` mode allows edits to git-tracked files inside the workspace
+  without a guardian verdict (tier `tracked_edit`), after the floor; agent configuration,
+  instruction files and `.github/` still prompt the user, who may approve them. Requested by the
+  maintainer after guardian denials of ordinary repository edits. (#256)
 - 2026-10-27: Same as Claude Code — a hard deny is never cleared by user intent, repeated or not. (#256)
 
 ## Documentation
 
 `docs/guardian.md` (data bullet, request table, new history subsection), `evals/README.md`
 (`prior_denials` row, `followup.jsonl` paragraph), `docs/evals.md` (follow-up slice section and
-the dataset-version note, as for `memory.jsonl`), `CHANGELOG.md`.
+the dataset-version note, as for `memory.jsonl`), `docs/permissions.md` (the `tracked_edit` tier
+and its exclusions), `docs/configuration.md` (the setting), `CHANGELOG.md`.
 
 ## Testing Strategy
 
@@ -200,6 +247,14 @@ the dataset-version note, as for `memory.jsonl`), `CHANGELOG.md`.
 - Unit (`verdict.rs`): both mismatch directions stay malformed (existing combined test kept).
 - Unit (`live.rs`): `request_for` carries a case's `prior_denials`; a case without the field
   yields none.
+- Unit (`permissions.rs`, temp git repo): in `auto`, editing a tracked file gives `tracked_edit`;
+  a new file, an untracked or ignored file, a shell command, a symlink to an untracked target and
+  a path outside the workspace go to the guardian; a tracked file under a protected path or a deny
+  or ask rule is decided by the floor; a tracked instruction file and a tracked `.github/` file
+  go to the guardian; the setting off sends a tracked edit to the guardian, and a project-scope
+  attempt to turn it on is ignored. The choke-point test (every tool has a risk class) stays green.
+- Unit (`trust.rs`): the extracted tracked helper keeps `classify_project_local`'s behavior
+  (existing tests).
 - Dataset checks: the loader test that validates the whole dataset accepts `followup.jsonl`; the
   `fixture` and `--profile minimal` eval runs stay green.
 - The prompt's effect on a real model cannot be unit-tested; it is checked by the live eval
