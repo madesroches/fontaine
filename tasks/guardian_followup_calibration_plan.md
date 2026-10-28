@@ -148,15 +148,21 @@ it needs no guardian verdict.
   A new file in a root that is not in a git work tree is not covered. Everything else, including a
   ledger `PreExisting` or `Unindexed` path that is not in the index, goes to the guardian.
 - The index lookup is a helper extracted from the index-lookup part of `trust.rs`
-  `classify_project_local` (the rest of that function is trust-store logic and stays), including
-  its handling of submodule and sparse-directory entries. It takes the canonical path from
+  `classify_project_local` (the rest of that function is trust-store logic and stays). It
+  requires an exact, case-sensitive index entry for the resolved path: unlike `classify_project_local`,
+  which keeps its ancestor (submodule, sparse-directory) and case-insensitive matching because that is
+  right for trust, an ancestor-covered path or a case-variant name is not "in the index" here and
+  goes to the guardian. The two callers share the index lookup, parameterized, or the helper is a
+  separate exact-match function. It takes the canonical path from
   `Scope::find`/`locate`; only the resolved path counts, never the literal one, so a tracked
   symlink to an untracked in-repo file does not qualify, and a symlink whose target is outside the
   work tree or that fails to canonicalize does not qualify. For a path that does not exist yet the
   helper canonicalizes the parent. The helper reports "not in a work tree" separately from "not
   tracked", so a new file outside git is still "new" where the stage allows it.
 - The permissions evaluator does not read the ledger today; the stage takes `state.ledger.view()`
-  and asks `existence` for the `created_this_session` case. That value comes from the
+  and asks `existence` for the `created_this_session` case, looking up the resolved `path_key`
+  that `existence` uses. Only the `write` tool marks a path created (when it did not exist at allow
+  time); `edit`, `notebook_edit` and shell never mark anything. That value comes from the
   session-start file walk, not from git's index, so "pre-existing or unindexed" is not the
   complement of "tracked"; the stage tests the index itself.
 - An existing untracked or ignored file that predates the session, such as `.env` or uncommitted
@@ -195,8 +201,8 @@ it needs no guardian verdict.
    the answer shows a systematic pattern the schema wording cannot fix, file a follow-up rather
    than loosening validation.
 2. `prompt_builder.rs`: add `source="user"` to the two user blocks (`block` and `list_block` gain an optional
-   source-attribute parameter); rewrite the
-   `user_message` header; update the four insta snapshots in `src/snapshots/`.
+   source-attribute parameter; the `list_block(list.name(), None, &custom)` call in `critique.rs` takes the new argument); rewrite the
+   `user_message` header; update the snapshots in `src/snapshots/` that render user blocks (two today).
    The screen stage is left exactly as calibrated: `blocks` gains a parameter saying whether to
    mark the user blocks, `user_message` passes true and `screen_message` (`blocks(request,
    false)`) passes false, so the screen's input is byte-identical and `SYSTEM_PROMPT`,
@@ -222,19 +228,22 @@ it needs no guardian verdict.
    words are weighed" subsection. `docs/evals.md`: add a "The follow-up slice" section modelled
    on "The memory slice", plus the dataset-version note.
 8. Tracked-file edits and scratch writes: extract the index-lookup part of `trust.rs`
-   `classify_project_local` into a shared helper (resolved path only; reports not-in-work-tree);
+   `classify_project_local` into a helper (resolved path only; exact case-sensitive entry, no
+   ancestor match; reports not-in-work-tree; `classify_project_local` keeps its ancestor/icase behavior);
    add `Tier::TrackedEdit` and `Tier::ScratchWrite` (`tier.rs`, names `tracked_edit` and
-   `scratch_write`; `Tier::ALL` grows from 14 to 16); add both stages in `permissions.rs` before
+   `scratch_write`; `Tier::ALL` grows from 14 to 16, its array type becoming `[Tier; 16]`); add both stages in `permissions.rs` before
    `Verdict::Guardian` at the `Plan | Auto` arm, gated on the effective `mode == Auto`, with the
    exclusions above, plumbing `state.ledger.view()` into the evaluator and resetting the breaker on
    either allow; add `auto_tracked_edits` and `auto_scratch_writes` in `config.rs` and their two
-   `RULES` rows in `config_scope.rs`. Update tests that edit new or tracked files in `auto` and
-   expect the guardian (`tests/permissions_auto.rs` ~663-700, `tests/choke_point.rs`, others found
-   by running the suite). Every place that lists tier names gains the two names:
+   `RULES` rows in `config_scope.rs`. Update tests that `git init` and edit new or tracked files in `auto`
+   and expect the guardian (others found by running the suite; the `tests/permissions_auto.rs`
+   ~663-700 tests write new files in a plain temp dir without git and still reach the guardian). Every place that lists tier names gains the two names:
    `docs/schemas/headless-v1.schema.json` (closed `tier` enum), `docs/headless.md` (~174),
-   `docs/architecture.md` (pipeline diagram), `evals/README.md` (`expected_tier` values),
+   `docs/architecture.md` (add the two pipeline steps to the numbered list, ~134), `docs/permissions.md` (~96-97, tier names), `evals/README.md` (`expected_tier` values),
    `tasks/design/permissions.md` (tier enum).
 9. Docs and amendments: `docs/tools.md` scratch section (~100-122); fix the stale statements in
+   `docs/configuration.md` (the `### [permissions]` key table ~559-581 and the scope table
+   ~102-107: the two keys, project scope may only switch them off);
    `docs/permissions.md` (~20, 83-84, 269-271: "the only guardian skips earned without a grant of
    yours") and `docs/guardian.md` (~3-12); amend the AGENTS.md security-invariant text on the fast
    path (~lines 45-48) to name this second exception; master plan `## Decisions` lines (below) and
@@ -250,8 +259,8 @@ it needs no guardian verdict.
 - `evals/dataset/followup.jsonl` (new), `evals/README.md`
 - `rust/fontaine-core/src/permissions.rs`, `tier.rs`, `trust.rs`, `config.rs`, `config_scope.rs`
   (tracked-file edits)
-- `rust/fontaine-core/tests/permissions_auto.rs`, `choke_point.rs` (tests that expect the guardian
-  for such edits)
+- `rust/fontaine-guardian/src/critique.rs` (`list_block` call-site argument only)
+- `rust/fontaine-core/tests/permissions_auto.rs` (tests that expect the guardian for such edits)
 - `docs/schemas/headless-v1.schema.json`, `docs/headless.md`, `docs/architecture.md`,
   `docs/tools.md`, `tasks/design/permissions.md`, `AGENTS.md` (fast-path invariant)
 - `docs/guardian.md`, `docs/evals.md`, `docs/permissions.md`, `docs/configuration.md`,
