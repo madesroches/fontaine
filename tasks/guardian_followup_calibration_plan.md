@@ -151,9 +151,9 @@ it needs no guardian verdict.
   Reads there already take the read-only fast path. A shell command that touches scratch is not a
   file-tool call and goes to the guardian. Symlinks are resolved first, so a link from scratch to
   a path outside it is judged by its target.
-- Agent configuration is excluded. The floor's protected paths already cover it: the floor never
-  reads the user's words, so it prompts even when the user just asked for the edit, and the
-  user's approval at the prompt is what clears it. Beyond those, the exclusion also names the instruction files
+- Agent configuration is excluded. The floor's protected paths already cover it; in `auto` the
+  floor hands a protected path to the guardian instead of prompting (`docs/permissions.md`), so
+  this stage must not allow it. Beyond those, the exclusion also names the instruction files
   the guardian reads as `project_instructions` (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and
   their imports) and `.github/`, because an edit there changes later security decisions or what CI
   runs. Those paths fall through to the guardian rather than being allowed or denied here, where
@@ -243,7 +243,7 @@ it needs no guardian verdict.
   files and files created this session without a guardian verdict (tier `tracked_edit`), after the
   floor; Claude Code gives the same scope to its classifier but still asks it. Existing untracked
   files that predate the session, agent configuration, instruction files and `.github/` still go
-  to the guardian or prompt the user, who may approve them. Requested by the maintainer after
+  to the guardian, where an explicit request from the user clears them. Requested by the maintainer after
   guardian denials of ordinary repository edits. (#256)
 - 2026-10-27: Deviation — `auto` mode allows file-tool writes inside the session scratch directory
   without a guardian verdict (tier `scratch_write`), after the floor; shell commands there still go
