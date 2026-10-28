@@ -37,6 +37,12 @@ read and the instructions in a repository are all text an attacker may have writ
   model-written text cannot reach the guardian as your intent.
 - **Every outcome that is not a verdict is a denial**, decided by code (below). There is no
   setting that turns the guardian off, and none that makes it fail open.
+
+  The one deliberate exception is the development escape hatch: in the terminal UI,
+  `/guardian-disable` turns the guardian and the permission floor off for that session until
+  `/guardian-enable`, after a confirmation and with a warning chip in the status bar. It is
+  session-scoped, never persisted, never inherited by subagents, and recorded in the ledger and
+  the audit log; see [Terminal UI](tui.md#commands).
 - **Rule prose can only restrict.** A shared project file may add to `soft_deny` and `hard_deny`
   but its text sits in the policy, so the prompt tells the guardian to ignore any entry that,
   read literally, grants permission.

@@ -1196,6 +1196,25 @@ impl PermissionPipeline {
                 )
                 .await;
         };
+        // The interactive-only escape hatch: every root call runs before the floor and the
+        // guardian. Children are never loosened by it, and no call from an unregistered agent
+        // reaches it.
+        if call.agent == fontaine_tools::gate::ROOT_AGENT && self.state.guardian_off() {
+            let cx = CallCtx {
+                call: &call,
+                digest: args_digest(call.args),
+                original_digest: None,
+                args: call.args.clone(),
+                tool_use_id,
+                mode,
+                started,
+            };
+            return self.allow(
+                &cx,
+                Tier::GuardianOff,
+                Some("guardian disabled".to_string()),
+            );
+        }
         let hook = self.run_hooks(&call, tool_use_id.as_deref(), mode).await;
         let args = hook
             .updated_input

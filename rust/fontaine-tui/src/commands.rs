@@ -20,6 +20,10 @@ pub enum Command {
     OutputStyle(String),
     Model(String),
     GuardianModel(String),
+    /// `/guardian-disable`: turn the guardian and the permission floor off for this session.
+    GuardianDisable,
+    /// `/guardian-enable`: turn the guardian and the permission floor back on.
+    GuardianEnable,
     /// `/login [account]`.
     Login(String),
     Help,
@@ -169,6 +173,20 @@ pub const BUILTINS: &[Builtin] = &[
         hint: Some("[<condition> | clear]"),
         description: "keep working until a condition is met",
         command: Command::Goal,
+    },
+    Builtin {
+        name: "guardian-disable",
+        aliases: &[],
+        hint: None,
+        description: "turn the guardian off for this session (escape hatch)",
+        command: |_| Command::GuardianDisable,
+    },
+    Builtin {
+        name: "guardian-enable",
+        aliases: &[],
+        hint: None,
+        description: "turn the guardian back on",
+        command: |_| Command::GuardianEnable,
     },
     Builtin {
         name: "guardian-model",
@@ -685,6 +703,14 @@ mod tests {
         assert_eq!(
             parse_command("/guardian-model a/b"),
             Some(Command::GuardianModel("a/b".into()))
+        );
+        assert_eq!(
+            parse_command("/guardian-disable"),
+            Some(Command::GuardianDisable)
+        );
+        assert_eq!(
+            parse_command("/guardian-enable"),
+            Some(Command::GuardianEnable)
         );
         assert_eq!(
             parse_command("/login go"),

@@ -19,6 +19,7 @@ use crate::commands::{MenuEntry, builtin_menu, match_menu, parse_command};
 use crate::complete::{self, Mention};
 use crate::config_panel::{ConfigKey, ConfigPanel};
 use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt};
+use crate::guardian_prompt::GuardianOffPrompt;
 use crate::history::History;
 use crate::input::InputBuffer;
 use crate::model_picker::{ModelPicker, PickerKey, PickerPurpose};
@@ -89,6 +90,8 @@ pub enum Action {
     Config(ConfigKey),
     /// The settings panel hands over to the picker for a model setting.
     OpenPicker(ModelSlot),
+    /// The human answered the `/guardian-disable` confirmation.
+    GuardianOff(bool),
 }
 
 /// Ctrl-R: the query typed so far and the history entry it found.
@@ -125,6 +128,10 @@ pub struct App {
     pub todos: TodoPanel,
     /// A repository's MCP server waiting for the human's say-so.
     pub server: Option<ServerPrompt>,
+    /// The `/guardian-disable` confirmation while it is open.
+    pub guardian_off_prompt: Option<GuardianOffPrompt>,
+    /// The escape hatch is on; the status bar says so for as long as it stays on.
+    pub guardian_off: bool,
     /// The `/model` or `/guardian-model` picker while it is open.
     pub models: Option<ModelPicker>,
     /// The `/resume` picker while it is open.
@@ -176,6 +183,7 @@ pub struct App {
     pub theme: Theme,
     approvals_opened: u64,
     servers_opened: u64,
+    guardian_off_opened: u64,
     questions_opened: u64,
 }
 
@@ -208,6 +216,8 @@ impl App {
             agents: None,
             todos: TodoPanel::default(),
             server: None,
+            guardian_off_prompt: None,
+            guardian_off: false,
             models: None,
             resume: None,
             rewind: None,
@@ -236,6 +246,7 @@ impl App {
             theme: Theme::default(),
             approvals_opened: 0,
             servers_opened: 0,
+            guardian_off_opened: 0,
             questions_opened: 0,
         }
     }
@@ -424,6 +435,13 @@ impl App {
         self.server = Some(prompt);
     }
 
+    pub fn begin_guardian_off(&mut self) {
+        self.guardian_off_opened += 1;
+        let mut prompt = GuardianOffPrompt::new();
+        prompt.id = self.guardian_off_opened;
+        self.guardian_off_prompt = Some(prompt);
+    }
+
     pub fn begin_unavailable(&mut self, prompt: UnavailablePrompt) {
         self.unavailable = Some(prompt);
     }
@@ -488,6 +506,7 @@ impl App {
                     || self.denied.is_some()
                     || self.unavailable.is_some()
                     || self.server.is_some()
+                    || self.guardian_off_prompt.is_some()
                     || self.models.is_some()
                     || self.resume.is_some()
                     || self.rewind.is_some()
@@ -518,6 +537,7 @@ impl App {
             || self.denied.is_some()
             || self.unavailable.is_some()
             || self.server.is_some()
+            || self.guardian_off_prompt.is_some()
             || self.models.is_some()
             || self.resume.is_some()
             || self.rewind.is_some()
@@ -569,6 +589,15 @@ impl App {
                 Some(answer) => {
                     self.server = None;
                     Action::Server(answer)
+                }
+                None => Action::None,
+            };
+        }
+        if let Some(prompt) = &mut self.guardian_off_prompt {
+            return match prompt.handle_key(key) {
+                Some(answer) => {
+                    self.guardian_off_prompt = None;
+                    Action::GuardianOff(answer)
                 }
                 None => Action::None,
             };

@@ -25,7 +25,13 @@ const PROMPT: &str = "> ";
 const WIDTH: usize = 1000;
 
 /// Dialogs that wait for an answer, which ring the bell when they open.
-const NEEDS_ANSWER: &[&str] = &["approval", "question", "MCP server", "guardian unavailable"];
+const NEEDS_ANSWER: &[&str] = &[
+    "approval",
+    "question",
+    "MCP server",
+    "guardian unavailable",
+    "guardian",
+];
 
 /// One line as plain text. A selected row, which the dialogs mark by reversing it (and the `@`
 /// list by a bold `> ` row), becomes `selected: <text>`.
@@ -1070,6 +1076,13 @@ mod tests {
             out.contains('\x07') && out.contains("MCP server:"),
             "{out:?}"
         );
+
+        let mut rig = Rig::new();
+        rig.app.running = true;
+        rig.render();
+        rig.app.begin_guardian_off();
+        let out = rig.render();
+        assert!(out.contains('\x07') && out.contains("guardian:"), "{out:?}");
 
         let mut rig = Rig::new();
         rig.app.running = true;

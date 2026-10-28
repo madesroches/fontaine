@@ -81,6 +81,7 @@ pub struct StatusInfo<'a> {
     pub model: &'a str,
     pub guardian_label: &'a str,
     pub guardian_unavailable: Option<&'a str>,
+    pub guardian_off: bool,
     pub guardian_profile: &'a str,
     pub output_style: Option<&'a str>,
     pub mcp_connected: usize,
@@ -108,16 +109,23 @@ pub fn status(info: &StatusInfo) -> String {
     }
     let _ = write!(out, "\nmode: {}", mode_label(info.mode));
     let _ = write!(out, "\nmodel: {}", info.model);
-    match info.guardian_unavailable {
-        Some(reason) => {
-            let _ = write!(out, "\nguardian: unavailable ({reason})");
-        }
-        None => {
-            let _ = write!(
-                out,
-                "\nguardian: {} (profile {})",
-                info.guardian_label, info.guardian_profile
-            );
+    if info.guardian_off {
+        let _ = write!(
+            out,
+            "\nguardian: OFF for this session (every call runs unchecked)"
+        );
+    } else {
+        match info.guardian_unavailable {
+            Some(reason) => {
+                let _ = write!(out, "\nguardian: unavailable ({reason})");
+            }
+            None => {
+                let _ = write!(
+                    out,
+                    "\nguardian: {} (profile {})",
+                    info.guardian_label, info.guardian_profile
+                );
+            }
         }
     }
     let _ = write!(
@@ -479,6 +487,7 @@ mod tests {
             model: "work/claude",
             guardian_label: "work/haiku",
             guardian_unavailable: None,
+            guardian_off: false,
             guardian_profile: "full",
             output_style: None,
             mcp_connected: 1,
