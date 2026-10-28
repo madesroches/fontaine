@@ -124,7 +124,7 @@ PR #255 records only the validation error) and note which direction disagreed. T
 - Keep the existing combined test `the_label_and_the_decision_must_agree` in `verdict.rs` (it
   pins the shape) and keep `benign-34` as the live regression case.
 
-### 5. Tracked-file edits and scratch writes skip the guardian
+### 5. Project-scope edits and scratch writes skip the guardian
 
 In `auto` mode, `permissions.rs` sends every consequential call that survives the floor to the
 guardian (`PermissionMode::Plan | PermissionMode::Auto => Verdict::Guardian`), so an ordinary edit
@@ -135,12 +135,16 @@ it needs no guardian verdict.
 - New decision tier `tracked_edit` (beside `read_only_fast_path`), reached only after the whole
   floor (`deny → ask → critical-path → protected-path`) and user hooks have passed. A call gets it
   when all of these hold: the tool is edit-class (the same `edit_class` test `acceptEdits` uses);
-  `scope.locate` places the target inside a workspace root; and the target, canonicalized, is an
-  entry in the git index. The index lookup reuses the tracked test in `trust.rs`
+  `scope.locate` places the target inside a workspace root; and the target, canonicalized, is
+  something the call cannot destroy: an entry in the git index, a path that does not exist yet
+  (creating a file destroys nothing), or a path the ledger shows this session created
+  (`created_this_session`). The index lookup reuses the tracked test in `trust.rs`
   `classify_project_local` (extracted into a shared helper), including its handling of submodule
   and sparse-directory entries and of symlinks, which are judged by the path git sees.
-- A new file, an untracked or ignored file, and any shell command are not tracked edits and go to
-  the guardian as before.
+- This follows Claude Code's "local operations within project scope" allowance, which does not
+  cover Write/Edit "onto an existing untracked or out-of-repo path": an existing untracked or
+  ignored file that predates the session (`pre_existing` or `unindexed`), such as `.env` or
+  uncommitted work, and any shell command go to the guardian as before.
 - Scratch writes get the same treatment under their own tier, `scratch_write`: an edit-class file
   tool whose canonicalized target lies inside the session scratch directory (`state.scratch`, a
   private per-session root that is deleted when the session ends) is allowed after the floor.
@@ -233,10 +237,12 @@ it needs no guardian verdict.
   no Path B (agent-proposal-plus-"yes"), because the guardian is never shown agent prose. (#256)
 - AFK: Followup attack cases 5-7 are ids `attack-followup-NN` (not `followup-NN`) so the `--filter attack:*` fixture test passes unchanged; `tests/fixture.rs` is not modified.
 - AFK: The screen stage keeps its system prompts, steering question and input byte-identical (`blocks` takes a flag so only `user_message` marks `source="user"`); it is opt-in and never before the floor, so no re-fit.
-- 2026-10-27: Deviation — `auto` mode allows edits to git-tracked files inside the workspace
-  without a guardian verdict (tier `tracked_edit`), after the floor; agent configuration,
-  instruction files and `.github/` still prompt the user, who may approve them. Requested by the
-  maintainer after guardian denials of ordinary repository edits. (#256)
+- 2026-10-27: Deviation — `auto` mode allows edits inside the workspace to git-tracked files, new
+  files and files created this session without a guardian verdict (tier `tracked_edit`), after the
+  floor; Claude Code gives the same scope to its classifier but still asks it. Existing untracked
+  files that predate the session, agent configuration, instruction files and `.github/` still go
+  to the guardian or prompt the user, who may approve them. Requested by the maintainer after
+  guardian denials of ordinary repository edits. (#256)
 - 2026-10-27: Deviation — `auto` mode allows file-tool writes inside the session scratch directory
   without a guardian verdict (tier `scratch_write`), after the floor; shell commands there still go
   to the guardian, because the directory is private to the session and removed when it ends.
@@ -258,8 +264,9 @@ the dataset-version note, as for `memory.jsonl`), `docs/permissions.md` (the `tr
 - Unit (`verdict.rs`): both mismatch directions stay malformed (existing combined test kept).
 - Unit (`live.rs`): `request_for` carries a case's `prior_denials`; a case without the field
   yields none.
-- Unit (`permissions.rs`, temp git repo): in `auto`, editing a tracked file gives `tracked_edit`;
-  a new file, an untracked or ignored file, a shell command, a symlink to an untracked target and
+- Unit (`permissions.rs`, temp git repo): in `auto`, editing a tracked file, creating a new file
+  and editing a file created this session give `tracked_edit`; an existing untracked or ignored
+  file that predates the session, a shell command, a symlink to such a target and
   a path outside the workspace go to the guardian; a tracked file under a protected path or a deny
   or ask rule is decided by the floor; a tracked instruction file and a tracked `.github/` file
   go to the guardian; the setting off sends a tracked edit to the guardian, and a project-scope
