@@ -11,6 +11,7 @@ use rig_core::DynModel;
 use rig_core::catalog::ModelSpec;
 use rig_core::completion::Usage;
 use rig_core::conversation::Author;
+use rig_core::message::Message;
 use rig_core::operation::Completion;
 pub use rig_memory::CompactReason;
 use rig_memory::{
@@ -440,6 +441,16 @@ impl Session {
 
     pub fn store(&self) -> DirStore {
         self.store.clone()
+    }
+
+    /// Appends a failed run's committed messages to the conversation, so the next run loads
+    /// the interrupted task. rig-memory saves a run's messages only when the run finishes;
+    /// the recovery hook hands them here when it fails.
+    pub async fn append_messages(
+        &self,
+        messages: &[Arc<Message>],
+    ) -> Result<(), rig_memory::SessionError> {
+        crate::turn_recovery::append_messages(&self.store, CONVERSATION_LOG, messages).await
     }
 
     /// Compacts the conversation once it passes `window` tokens, when that is sooner than the

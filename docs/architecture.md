@@ -152,6 +152,12 @@ denial. [Permissions](permissions.md) describes each step.
 a callback that may stop the run between model calls. Headless prints the events as JSON lines; the
 terminal UI renders them and answers approval prompts concurrently with the run.
 
+A run that fails — a provider error, the turn limit, a cancel — still saves what it committed to
+the conversation, so the next turn (or typing `retry`) continues the task instead of starting
+over. A retryable transport failure (a cut connection, throttling, a 5xx) is retried twice with a
+short backoff before the turn fails, on the main agent and on subagents alike; a retry re-drives
+the run on a harness continuation note, and only a failure that outlives the retries reaches you.
+
 ## The session ledger
 
 Each session keeps two stores, plus a task list, a schedule and a goal file, in `<data dir>/sessions/<session id>/`:

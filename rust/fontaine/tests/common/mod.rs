@@ -28,6 +28,9 @@ pub enum Turn {
     },
     /// An HTTP failure.
     Fail(u16),
+    /// Part of a streamed answer, then the body ends without the closing frames: a cut
+    /// connection, as the wire sees one.
+    Cut(String),
 }
 
 impl Turn {
@@ -41,6 +44,10 @@ impl Turn {
             name: name.to_string(),
             args,
         }
+    }
+
+    pub fn cut(prefix: &str) -> Turn {
+        Turn::Cut(prefix.to_string())
     }
 }
 
@@ -120,6 +127,13 @@ fn chat_response(turn: &Turn, usage: Usage) -> ResponseTemplate {
             frames.push(chat_chunk(json!({}), Some("tool_calls")));
         }
         Turn::Fail(status) => return ResponseTemplate::new(*status).set_body_string("scripted"),
+        Turn::Cut(prefix) => {
+            frames.push(chat_chunk(
+                json!({"role": "assistant", "content": prefix}),
+                None,
+            ));
+            return sse(frames);
+        }
     }
     let usage = json!({
         "id": "chatcmpl-scripted",
@@ -153,6 +167,9 @@ fn chat_json(turn: &Turn, usage: Usage) -> ResponseTemplate {
             }],
         }),
         Turn::Fail(status) => return ResponseTemplate::new(*status).set_body_string("scripted"),
+        Turn::Cut(_) => {
+            return ResponseTemplate::new(500).set_body_string("a cut is only streamed");
+        }
     };
     ResponseTemplate::new(200).set_body_json(json!({
         "id": "chatcmpl-scripted",
@@ -234,6 +251,14 @@ fn responses_response(turn: &Turn, usage: Usage, id: usize) -> ResponseTemplate 
             json!([done])
         }
         Turn::Fail(status) => return ResponseTemplate::new(*status).set_body_string("scripted"),
+        Turn::Cut(prefix) => {
+            frames.push(event(
+                "response.output_text.delta",
+                json!({"type": "response.output_text.delta", "output_index": 0,
+                       "content_index": 0, "item_id": format!("msg_{id}"), "delta": prefix}),
+            ));
+            return sse(frames);
+        }
     };
     frames.push(event(
         "response.completed",
