@@ -183,10 +183,19 @@ it needs no guardian verdict.
 - Agent configuration is excluded. The floor's protected paths already cover it; in `auto` the
   floor hands a protected path to the guardian instead of prompting (`docs/permissions.md`), and
   the early protected-path return to `Verdict::Guardian` in `auto` (`permissions.rs` ~742) is
-  what keeps those paths out of this stage. Beyond those, the exclusion names the instruction files
-  the guardian reads as `project_instructions` and `.github/`, because an edit there changes later security decisions or what CI
-  runs. Those paths fall through to the guardian rather than being allowed or denied here, where
-  an explicit request in the user's own message that names the file clears them.
+  what keeps those paths out of this stage. Beyond those, the exclusion is a new
+  helper in `floor.rs` beside `PROTECTED_FILES` (e.g. `pub fn is_instruction_or_ci_path(path, fold)`),
+  because an edit there changes later security decisions or what CI runs. It takes the resolved
+  canonical path and matches, case-folded like `same()` (`fold` as the floor computes it), the
+  exact basenames `FONTAINE.md`, `FONTAINE.local.md`, `CLAUDE.md`, `CLAUDE.local.md` and `AGENTS.md`
+  at any depth, any file under a directory named `rules`, and any path component named `.github`.
+  A similar name (`AGENTS.md.bak`, `notes/CLAUDE.md.txt`) does not match. The floor's own list
+  stays as is (`floor.rs` tests assert these paths are not protected), and `COUNTING_NAMES` in
+  `instructions/mod.rs` (private, no `AGENTS.md`) is not reused. `@import` targets are not excluded:
+  they are arbitrary paths and the loader keeps no durable list of loaded paths (`Seen` is local to
+  one load), so no name predicate can cover them. Excluded paths fall through to the guardian: no
+  new `soft_deny` rule, the guardian judges them as before, and an explicit request in the user's own
+  message that names the file clears a soft deny.
 - Two settings, `[permissions] auto_tracked_edits` and `auto_scratch_writes` (`Option<bool>` on
   `PermissionsSection`, `bool` on `Permissions`, default true). Project scope may switch them off
   but never on: two `Rule::if_project_local(key, is_false, reason)` rows in `RULES` in
@@ -243,7 +252,7 @@ it needs no guardian verdict.
    add `Tier::TrackedEdit` and `Tier::ScratchWrite` (`tier.rs`, names `tracked_edit` and
    `scratch_write`; `Tier::ALL` grows from 14 to 16, its array type becoming `[Tier; 16]`); add both stages in `permissions.rs` before
    `Verdict::Guardian` at the `Plan | Auto` arm, gated on the effective `mode == Auto`, with the
-   exclusions above, plumbing `state.ledger.view()` into the evaluator and resetting the breaker where
+   exclusions above (the protected-path early return plus the new `floor.rs` instruction/`.github/` helper), plumbing `state.ledger.view()` into the evaluator and resetting the breaker where
    these two tiers return (they return through `allow()`, which does not reset; the reset lives in
    `guardian_allowed`, `gate.rs`, called from `settle`), for these two tiers only, without counting it as a resume while auto is paused (`permissions.rs` ~1526); keep the new tiers out of the `matches!(tier, Tier::ReadOnlyFastPath | Tier::Tier05)` arm (~982) so the edit's paths are recorded in the ledger; add `auto_tracked_edits` and `auto_scratch_writes` in `config.rs`, their two
    `RULES` rows in `config_scope.rs` and their two rows in `config_catalog.rs` (the settings-panel catalog; `every_settings_leaf_has_a_row` fails without them). Update tests that `git init` and edit new or tracked files in `auto`
@@ -271,6 +280,7 @@ it needs no guardian verdict.
 - `rust/fontaine-tui/tests/schedule.rs`, `rust/fontaine-core/tests/agent_pipeline.rs` (check only:
   they match `kind="recent_user_messages">`)
 - `evals/dataset/followup.jsonl` (new), `evals/README.md`
+- `rust/fontaine-core/src/floor.rs` (new instruction/`.github/` path helper beside `PROTECTED_FILES`; the protected list and its tests are unchanged)
 - `rust/fontaine-core/src/permissions.rs`, `tier.rs`, `trust.rs`, `config.rs`, `config_scope.rs`,
   `config_catalog.rs`
   (tracked-file edits)
@@ -306,6 +316,7 @@ it needs no guardian verdict.
 - 2026-10-27: The fast-path exception in the AGENTS.md security invariants gains a second
   exception naming these tiers (after the floor, scoped as above). (#256)
 - 2026-10-27: Same as Claude Code — a hard deny is never cleared by user intent, repeated or not. (#256)
+- AFK: The `tracked_edit` exclusion of instruction files and `.github/` is a new `floor.rs` helper (resolved canonical path, case-folded like `same()`: basenames `FONTAINE.md`, `FONTAINE.local.md`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` at any depth, anything under `rules/`, any `.github` component); excluded paths fall through to the guardian with no new `soft_deny` rule, and `@import` targets are not excluded (the loader keeps no durable path list). (#256)
 
 ## Documentation
 
@@ -323,8 +334,12 @@ See Implementation Steps 6-9 and "Files to Modify".
   and editing a file created this session give `tracked_edit`; an existing untracked or ignored
   file that predates the session, a shell command, a symlink to such a target and
   a path outside the workspace go to the guardian; a tracked file under a protected path goes to
-  the guardian, not `tracked_edit`, while a deny or ask rule is decided by the floor; a tracked
-  instruction file and a tracked `.github/` file go to the guardian; a tracked symlink to an
+  the guardian, not `tracked_edit`, while a deny or ask rule is decided by the floor; each of
+  `FONTAINE.md`, `FONTAINE.local.md`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` (also in a
+  subdirectory and in different case on a folding filesystem), a file under `rules/` and a file
+  under `.github/` go to the guardian when tracked; `AGENTS.md.bak` and `notes/CLAUDE.md.txt`
+  do not match and give `tracked_edit`; a symlink resolving to one of these names matches by its
+  resolved path; an `@import`ed arbitrary file is not excluded; a tracked symlink to an
   untracked in-repo file, a symlink out of the work tree, and a new file in the memory root or in
   a non-git root go to the guardian; the setting off sends a tracked edit to the guardian. In the same test module, an edit-class file call whose target
   is inside the scratch directory gives `scratch_write`; a symlink out of scratch, a shell command
