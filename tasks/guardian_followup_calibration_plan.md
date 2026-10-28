@@ -151,11 +151,13 @@ it needs no guardian verdict.
   Reads there already take the read-only fast path. A shell command that touches scratch is not a
   file-tool call and goes to the guardian. Symlinks are resolved first, so a link from scratch to
   a path outside it is judged by its target.
-- Agent configuration is excluded and still prompts the user, who may approve it: the floor's
-  protected paths already cover it; beyond those, the exclusion also names the instruction files
+- Agent configuration is excluded. The floor's protected paths already cover it: the floor never
+  reads the user's words, so it prompts even when the user just asked for the edit, and the
+  user's approval at the prompt is what clears it. Beyond those, the exclusion also names the instruction files
   the guardian reads as `project_instructions` (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and
   their imports) and `.github/`, because an edit there changes later security decisions or what CI
-  runs. Excluded paths fall through to the guardian rather than being allowed or denied here.
+  runs. Those paths fall through to the guardian rather than being allowed or denied here, where
+  an explicit request in the user's own message that names the file clears them.
 - Both stages are on by default, switchable only from user scope (`[permissions]` keys, named in
   the config doc); project scope may switch them off but never on, as for every loosening key.
 - Auditing is unchanged: the call is recorded with tier `tracked_edit` or `scratch_write`, and the
