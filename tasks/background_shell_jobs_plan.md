@@ -199,7 +199,7 @@ Core implements `JobSink` by calling it; `Jobs` stays free of the agent crate.
   (it consumed the news).
 - **Monitor lines.** The monitor job thread batches lines for 500 ms (so a burst is one
   notification), posts at most 1 notification per second and at most 200 lines per notification;
-  a monitor that exceeds 1,000 notifications in total is terminated with a final notice saying so
+  a monitor that has sent 1,000 notifications in total is terminated with a final notice saying so
   (a chatty script must not turn into an unbounded model loop). A monitor always posts a
   final `ended` note when it ends, unless the model cancelled it with `job_cancel`.
   `job_output(id)` on a monitor job is refused with a message saying monitor lines arrive as

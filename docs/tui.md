@@ -678,5 +678,5 @@ open it has the keyboard, so a pending approval waits until you close it.
 When a background subagent finishes while nothing is running, the main conversation gets a turn of
 its own to read the report. A background job that ends, or a monitor that prints lines, does the
 same: the transcript says `a background job reported back` and the turn reads the job's notice,
-which names the output as untrusted data. `/clear` and `/rewind` stop running jobs and discard their
+which names the output as untrusted data. `/clear` and a `/rewind` that restores the conversation stop running jobs and discard their
 notices; `/branch` is refused while a notice is waiting.

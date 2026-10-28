@@ -273,9 +273,43 @@ async fn clear_ends_running_jobs_and_drops_their_notes_without_being_refused() {
         NotificationKind::Job,
         "[Background job job-3f2a ended]".to_string(),
     );
+    let process = rig_tools::process::Launcher::default()
+        .spawn(
+            "sh",
+            ["-c", "sleep 30"],
+            rig_tools::process::Spawn::default(),
+        )
+        .expect("sh starts");
+    built
+        .runtime
+        .jobs()
+        .start(
+            fontaine_tools::jobs::Start {
+                command: "sleep 30".to_owned(),
+                background: true,
+                monitor: None,
+            },
+            process,
+        )
+        .expect("the job starts");
+    assert!(
+        built
+            .runtime
+            .jobs()
+            .snapshot()
+            .iter()
+            .any(|job| job.running)
+    );
     built.runtime.clear_conversation().await.unwrap();
     assert!(!built.runtime.state.agents().has_notifications(ROOT_AGENT));
-    assert!(built.runtime.jobs().snapshot().is_empty());
+    assert!(
+        !built
+            .runtime
+            .jobs()
+            .snapshot()
+            .iter()
+            .any(|job| job.running)
+    );
 }
 
 #[tokio::test]

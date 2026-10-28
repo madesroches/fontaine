@@ -206,8 +206,8 @@ running is killed as soon as the shell exits, so `server &` dies with its shell.
   `job_output` is read-only and names no path; `job_cancel` is an arbitrary tool because it
   signals a process, but it can only reach a job this session started, by id.
 - **Ending.** Every job is terminated when the session ends: on exit of the terminal UI, at the
-  end of a headless run, and on `/resume` and `/branch`. `/clear` and `/rewind` terminate running
-  jobs and drop the notes they queued. The [agents panel](tui.md#the-agents-panel) lists the jobs
+  end of a headless run, and on `/resume` and `/branch`. `/clear` and a `/rewind` that restores the
+  conversation terminate running jobs and drop the notes they queued. The [agents panel](tui.md#the-agents-panel) lists the jobs
   and kills one.
 
 ## Monitor

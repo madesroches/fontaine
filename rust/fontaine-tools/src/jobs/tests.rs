@@ -373,6 +373,15 @@ async fn the_user_killing_a_job_tells_the_model_and_leaves_the_tail_readable() {
 }
 
 #[tokio::test]
+async fn the_user_killing_a_monitor_says_monitor() {
+    let (jobs, sink) = jobs();
+    let id = monitor(&jobs, "sleep 30", Duration::from_secs(60));
+    assert!(jobs.kill_by_user(&id));
+    until("the note", || !sink.notes().is_empty()).await;
+    assert!(sink.notes()[0].text.starts_with("[Monitor "));
+}
+
+#[tokio::test]
 async fn a_monitor_is_refused_by_job_output_but_listed() {
     let (jobs, _) = jobs();
     let id = monitor(&jobs, "sleep 30", Duration::from_secs(60));
@@ -434,7 +443,10 @@ fn bare_monitor(
         mode: Mode::Background,
         started: old,
         last_output: old,
-        buffer: Buffer::new(),
+        buffer: Buffer {
+            next: pending as u64,
+            ..Buffer::new()
+        },
         cursor: 0,
         control: Arc::new(Control {
             kill: AtomicU8::new(0),
@@ -506,7 +518,7 @@ async fn a_command_that_prints_a_lot_and_exits_keeps_the_end_of_its_output() {
 
 #[test]
 fn a_monitor_past_its_notification_total_is_terminated() {
-    let (shared, sink) = bare_monitor(MONITOR_NOTIFICATIONS, 3, None);
+    let (shared, sink) = bare_monitor(MONITOR_NOTIFICATIONS - 1, 3, None);
     shared.monitor_tick("job-test");
     assert_eq!(sink.notes().len(), 1);
     let inner = shared.inner.lock().unwrap();

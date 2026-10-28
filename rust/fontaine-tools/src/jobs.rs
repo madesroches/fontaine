@@ -498,7 +498,7 @@ impl Shared {
         monitor.last_post = Some(now);
         monitor.since = (!monitor.pending.is_empty()).then_some(now);
         monitor.posted += 1;
-        if monitor.posted > MONITOR_NOTIFICATIONS {
+        if monitor.posted >= MONITOR_NOTIFICATIONS {
             job.control.request(Kill::Flood);
         }
         let note = JobNote {
@@ -530,9 +530,14 @@ impl Shared {
             Some(Kill::Model) => job.reported = true,
             Some(Kill::Shutdown | Kill::Cap) => {}
             Some(Kill::User) => {
+                let kind = if job.monitor.is_some() {
+                    "Monitor"
+                } else {
+                    "Background job"
+                };
                 let note = JobNote {
                     job: job.id.clone(),
-                    text: format!("[Background job {} was killed by the user.]", job.id),
+                    text: format!("[{kind} {} was killed by the user.]", job.id),
                 };
                 self.post(note);
             }
