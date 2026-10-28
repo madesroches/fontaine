@@ -256,7 +256,8 @@ fn tracking_wants_an_exact_index_entry_inside_the_work_tree() {
         tracking(&work, &work.join("no/dir/new.txt")),
         Tracking::Unknown
     );
-    #[cfg(unix)]
+    // macOS volumes are case-insensitive by default: KEPT.txt resolves to kept.txt.
+    #[cfg(all(unix, not(target_os = "macos")))]
     assert_eq!(tracking(&work, &work.join("KEPT.txt")), Tracking::Untracked);
     let outside = std::fs::canonicalize(&w.root).unwrap().join("x.txt");
     assert_eq!(tracking(&work, &outside), Tracking::Unknown);
