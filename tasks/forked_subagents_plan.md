@@ -44,11 +44,12 @@ the same flag so the `ChildRunner` seam stays free of registry lookups.
 
 Rules enforced in `AgentTool::call`, before reserving a slot:
 
+- Root-only: refuse when `caller != ROOT_AGENT` (`fontaine_tools::gate`), with
+  `ToolExecutionError::refused`, before `reserve`.
 - `model` is refused for `fork` (invalid-args error: a fork runs on the session model, the one that
   produced the context it inherits). `explore`/`worker` behavior is unchanged.
-- Only the main conversation can fork: the root's context is the stored conversation; a child's is
-  an unpersisted in-memory store. A call from a child to `fork` returns a refused error ("only the
-  main conversation can fork itself; start a typed subagent and put what it needs in `prompt`").
+  Message: "only the main conversation can fork itself; start a typed subagent and put what it
+  needs in `prompt`" (a child's context is an unpersisted in-memory store).
 
 ### Seeding the child's context (core)
 
@@ -56,8 +57,8 @@ Rules enforced in `AgentTool::call`, before reserving a slot:
 
 1. `load_async(session.store(), CONVERSATION_LOG)` the root conversation (needs a `Session` handle
    or a `Fn() -> DirStore` in `ChildContext`; `ChildContext` gains
-   `parent_conversation: Arc<dyn ParentConversation>`, a small trait in `child_runner.rs`
-   implemented over `Session`, so tests can supply a fixed history).
+   `parent_conversation: Arc<dyn Fn() -> Vec<Message>>`, built over `Session` in `setup.rs`, so
+   tests can supply a fixed history).
 2. Drop a trailing assistant message whose tool calls have no results yet: at spawn time the
    parent's in-flight `agent` call is exactly that. Whether rig-memory has saved it by then is
    verified first (step 1 below); the trim is a no-op if not. The fork's own first user turn is
@@ -67,8 +68,10 @@ Rules enforced in `AgentTool::call`, before reserving a slot:
    `save_async` under `"main"`, then proceed exactly as for any child. Compaction asides are
    copied with the entries so a compacted parent stays compacted in the child.
 
-The child's preamble is the existing `subagent_layer("fork", None)` on the standard assembly; a
-fork does not reuse the parent's exact system prompt (see Trade-offs).
+The child's preamble is `subagent_layer("fork", None)` on the standard assembly, with a distinct
+`fork` layer text in `prompt.rs` ("you are a forked subagent; the conversation above is the
+parent's") in place of the typed-subagent line "You cannot see that agent's conversation; work from
+the task you were given"; a fork does not reuse the parent's exact system prompt (see Trade-offs).
 
 ### Security and budget invariants
 
@@ -77,16 +80,11 @@ fork does not reuse the parent's exact system prompt (see Trade-offs).
   copied context is promoted to intent.
 - **Mode**: `fork` is `Inherit`, so the existing tighter-of-own-and-parent rule applies per call;
   the type cannot be configured looser.
-- **Budget**: the child's first model call is billed at the full inherited context size. That
-  spend counts against the child's `subagent_token_budget` / cost budget like any other call, so
-  a large parent context can exhaust a fork's default 200k-token budget on its first turn. The
-  report is then `BudgetExhausted` with a clear reason; no special-casing.
 - **Fail closed**: if the parent conversation cannot be read, the spawn fails
   (`could not start: <chain>`), never falling back to an empty-context fork that would silently
   lack what the prompt assumes.
 - No new tool, so the risk-class choke-point test is unaffected; `agent` stays `Arbitrary`, and a
-  rule such as `agent(fork)` in `deny`/`ask` works through the existing specifier matching
-  (verified by a test).
+  rule such as `agent(fork)` in `deny`/`ask` works through the existing specifier matching.
 
 ### Surfaces
 
@@ -104,21 +102,23 @@ fork does not reuse the parent's exact system prompt (see Trade-offs).
    constructors/loaders), add the built-in `fork` type, include it in `describe()`/`names()`.
 3. `fontaine-agents/src/runner.rs` + `spawn.rs`: add `inherits_context` to `SpawnRequest`; the
    `model` refusal and the root-only refusal; updated tool description.
-4. `fontaine-core/src/child_runner.rs`: `ParentConversation` trait, `ChildContext` field, seeding
+4. `fontaine-core/src/child_runner.rs`: `parent_conversation` closure field on `ChildContext`, seeding
    in `spawn` (load, trim dangling call, copy into the child's store, prefix the prompt); wire the
-   `Session` implementation in `agent/setup.rs::child_runner`.
+   `Session`-backed closure in `agent/setup.rs::child_runner`; add the distinct `fork` layer text
+   in `fontaine-core/src/prompt.rs`.
 5. `docs/agents.md`: new `fork` row in Agent types, a "Forking the conversation" subsection
-   (context copied, same model, budget note, main-conversation only, rule `agent(fork)`);
-   `docs/tools.md` if it mirrors the tool description. `CHANGELOG.md` Added entry (#39).
+   (context copied, same model, main-conversation only, rule `agent(fork)`, and the note that a
+   large inherited context is billed on the first call and can exhaust the child's default budget,
+   ending `BudgetExhausted`). `CHANGELOG.md` Added entry (#39).
 6. Master plan `## Decisions`: dated lines for the deviations below.
 
 ## Files to Modify
 
 - `rust/fontaine-agents/src/registry.rs`, `runner.rs`, `spawn.rs`
-- `rust/fontaine-agents/tests/seam.rs` (FakeRunner gains the new field)
-- `rust/fontaine-core/src/child_runner.rs`, `rust/fontaine-core/src/agent/setup.rs`
-- `rust/fontaine-core/tests/choke_point.rs` (NoRunner, if the trait changed)
-- `docs/agents.md`, `docs/tools.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
+- `rust/fontaine-agents/tests/seam.rs`
+- `rust/fontaine-core/src/child_runner.rs`, `rust/fontaine-core/src/agent/setup.rs`,
+  `rust/fontaine-core/src/prompt.rs`
+- `docs/agents.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
 
@@ -138,31 +138,22 @@ fork does not reuse the parent's exact system prompt (see Trade-offs).
 
 - 2026-10-27: Deviation from the issue text — the guardian ledger is shared, not cloned, for a fork: the tree's one intent source is the root ledger.
 - 2026-10-27: Only the main conversation can fork; a fork always runs on the session model (no `model` override).
+- 2026-10-27: A fork uses the child preamble with a distinct `fork` layer, not the parent's exact system prompt; prompt-cache sharing is not measured.
 
 ## Documentation
 
 `docs/agents.md` (type table, new subsection, the "cannot see the conversation" wording),
-`docs/tools.md` if it repeats the `agent` description, `CHANGELOG.md`.
+`CHANGELOG.md`.
 
 ## Testing Strategy
 
 All offline, no live APIs.
 
 - `fontaine-agents` unit tests (fake runner, `tests/seam.rs`): `fork` resolves with all parent tools
-  and mode inherit; `model` on `fork` is refused; a call from a child is refused; the request
-  reaches the runner with `inherits_context` true and false for `explore`; the `agent(fork)` deny
-  rule blocks it.
+  (one assert that its mode is Inherit); `model` on `fork` is refused; a call from a child is refused; the request
+  reaches the runner with `inherits_context` true and false for `explore`.
 - `fontaine-core` unit tests with `rig_core::test_utils` deterministic models: the child's first
   completion request contains the parent's prior messages followed by the prefixed prompt; a
   dangling in-flight assistant tool call is trimmed; a compacted parent's summary carries over; the
   parent's stored conversation is unchanged after the child runs (the child writes only its own
   store); an unreadable parent conversation fails the spawn with the cause chained.
-- A mode test: a fork spawned under `acceptEdits` then a parent cycle to `manual` asks on the
-  fork's next call (reuses the existing mode-follow test harness).
-- Budget test: a fork whose inherited context exceeds the token budget ends `BudgetExhausted`.
-
-## Open Questions
-
-- Should the fork keep the parent's system prompt exactly to share the provider prompt cache (as
-  Claude Code does)? Resolving it requires measuring cache hit rates on a real provider, a human
-  step; the plan ships the child preamble.
