@@ -72,6 +72,9 @@ impl Queued {
 - `Steering::queued()` keeps its `Vec<String>` signature (raws), so the display
   (`app.queued`, `view.rs queued_lines`, "queued: /review 42") is unchanged.
 - `Steering::retract()` returns `Vec<Queued>`.
+- `Steering::set_delivery_hold(bool)` holds replay delivery without hiding or consuming entries:
+  while held, `SteeringHook::steer` leaves the whole queue untouched and appends no ledger records;
+  `queued()` and `retract()` behave normally. Releasing the hold restores ordinary steering.
 - `SteeringHook::steer` delivers only the **leading run of `Message` entries** and stops at the
   first non-`Message` entry (`Skill`, `Command`, `Shell`), which stays queued with everything
   behind it. None of them can be delivered mid-turn: a skill's expansion is async, can run `!`
@@ -180,6 +183,12 @@ impl Queued {
   `submit` ahead of the call as today); `scheduled_turn`, `goal_turn`, `goal_step` and
   `notification_turn` seed it from their `EndOfTurn::Submit(subs)`. Each turn's own
   `EndOfTurn::Submit(subs)` back-extends `pending`.
+  **Replay-hold invariant:** when the loop starts a submission with later submissions still
+  pending, it sets steering's delivery hold; it releases the hold when the final pending
+  submission begins and on every exit from the execution loop. Thus a message typed during one
+  replay turn cannot steer ahead of older submissions waiting in `pending`: it retracts and
+  back-extends in typed order instead. Ordinary mid-turn steering resumes for the final pending
+  submission because no older queued input remains.
   Nothing sits in `pending` already expanded except `Expanded`, and a `Submission` that needs
   preparation is prepared at pop time, against live state: a
   `Submission::Skill` is expanded (see below) and run as the seeded `Expanded` is — as
@@ -187,11 +196,12 @@ impl Queued {
   Esc during a *turn* of the execution loop behaves exactly as an idle turn-interrupt:
   `RestoreToInput`, with the raws of the submissions still pending joined onto the restored
   text, so the loop loses nothing. Esc is live while a queued skill expands (expansion serves
-  keys), and that interrupt aborts the expansion as at idle: the idle interrupt notice shows
-  and the skill's raw is spent (it is in history and the ledger). A failed expansion likewise
-  shows the idle path's error notice and does not stop execution: the submissions behind it
-  execute on, each queued entry independent of the one that failed. Text typed while a queued
-  expansion executes is dropped, exactly as at an idle prompt today. A `Submission::Shell`
+  keys and the shared runner marks it running), and that interrupt aborts the expansion: the
+  interrupt notice shows and the skill's raw is spent (it is in history and the ledger). A
+  failed expansion likewise shows the idle path's error notice and does not stop execution: the
+  submissions behind it execute on, each queued entry independent of the one that failed.
+  Ordinary text typed while a queued expansion executes is dropped, exactly as at an idle prompt
+  today. A `Submission::Shell`
   strips the prefix and executes through the same `shell()` the idle `Action::Shell` path
   uses; while it runs, `shell_running` holds and nothing queues, exactly as an idle `!` run,
   and its output reaches the next submission's turn as it reaches the next message at idle.
@@ -204,6 +214,8 @@ impl Queued {
   — known check, `Record::UserMessage` of the raw text before expansion, `expand_serving`, error
   and interrupt notices — into a helper used by both idle `submit` and the execution loop, so a
   queued skill is ledgered, expanded and error-reported exactly as if typed at an idle prompt.
+  The runner sets `app.running` before expansion and clears it on success, error, interrupt and
+  input close, so Esc produces `Action::Interrupt` on both idle and queued expansion paths.
   (`expand_serving` already serves approvals while the skill's `!` commands run.)
 - Shared command dispatcher: extract `submit`'s `match parse_command` into a helper used by both
   `submit` and the execution loop, so a queued `/rename foo` or `/compact` does exactly what it
@@ -255,18 +267,20 @@ impl Queued {
 
 - Unknown slash names mid-turn: refused as today. Nothing queues while a `!` run holds the
   terminal — including one running from the queue; no agent run consumes the queue then.
-- Mid-turn steering of plain messages, per-command ledger text and execution-time recording (a
-  skill records its raw immediately before expansion, as at idle), the queue display, and
-  Up-takes-back editing (`edit_queued` restores raws, which re-parse on submit).
+- Mid-turn steering of plain messages when no older replay submissions are pending, per-command
+  ledger text and execution-time recording (a skill records its raw immediately before expansion,
+  as at idle), the queue display, and Up-takes-back editing (`edit_queued` restores raws, which
+  re-parse on submit).
 - Headless `fontaine -p`: no mid-turn input exists there.
 
 ## Implementation Steps
 
-1. `rust/fontaine-core/src/steering.rs`: add `Queued`, retype `queue`/`retract`, make
-   `SteeringHook::steer` deliver only the leading message run. Update the existing unit tests
-   (they queue strings) and add: a skill or command entry blocks mid-turn delivery of itself and
-   later entries; messages before it are still delivered, in order; `queued()` returns raws;
-   `retract` returns typed entries.
+1. `rust/fontaine-core/src/steering.rs`: add `Queued` and the delivery hold, retype
+   `queue`/`retract`, make `SteeringHook::steer` deliver only the leading message run and deliver
+   nothing while held. Update the existing unit tests (they queue strings) and add: a skill or
+   command entry blocks mid-turn delivery of itself and later entries; messages before it are
+   still delivered, in order; a hold leaves even a message-only queue and the ledger untouched,
+   and releasing it restores delivery; `queued()` returns raws; `retract` returns typed entries.
 2. `rust/fontaine-tui/src/commands.rs`: `Command::runs_mid_turn`. Unit test: each immediate-set
    command returns true; queued ones (`/compact`, `/model`, `/copy`) and `Command::Other` return
    false.
@@ -277,23 +291,27 @@ impl Queued {
    cleared; a built-in (`/rename later`) queues as `Queued::Command` with its raw; a `!echo hi`
    queues as `Queued::Shell` with its raw (and a bare `!` is ignored); an immediate-set command
    (`/todos`) yields `Action::Command` with its raw and clears the input; an unknown `/nope` is
-   still refused with the notice and keeps its text.
+   still refused with the notice and keeps its text. Delete the now-redundant
+   `enter_on_a_command_while_a_turn_runs_is_refused_as_before`, whose `/clear` refusal expectation
+   contradicts the new behavior.
 4. `rust/fontaine-tui/src/ui/turn.rs`: typed `end_of_turn`/`Submission` (with `Expanded`), the
    two queue arms, `converse`'s seeded-`pending` execution loop with command dispatch
    (`launch_dir` threaded in, turn-starting arms returning `Message` or `Expanded` to front-push),
-   modal suspension, the session-switch guard and queued shell execution, the extracted
-   skill-expansion helper, and the remembering `Action::Command` arm in the turn loop and
-   `serve_while`. Update `rust/fontaine-tui/src/ui/tests.rs`: message grouping, skill, command
-   and shell entries as separate submissions, interleaving order, restore joins raws (skill,
-   command and `!` raws included), and a dispatcher-returned `Message` or `Expanded` front-pushes
-   ahead of what was already pending.
+   the replay delivery-hold lifecycle, modal suspension, the session-switch guard and queued
+   shell execution, the extracted skill-expansion helper (including its running-state bracket),
+   and the remembering `Action::Command` arm in the turn loop and `serve_while`. Update
+   `rust/fontaine-tui/src/ui/tests.rs`: message grouping, skill, command and shell entries as
+   separate submissions, interleaving order, restore joins raws (skill, command and `!` raws
+   included), and a dispatcher-returned `Message` or `Expanded` front-pushes ahead of what was
+   already pending.
 5. `rust/fontaine-tui/src/ui/mod.rs`: extract `submit`'s dispatch into the shared helper;
    `submit`'s `Command::Other` arm calls the shared skill runner and seeds `converse` with the
    resulting `Expanded`; `edit_queued` maps entries to `raw()` before joining. Adapt the command
-   handlers in `ui/schedule.rs` and `ui/commands/{memory,model,providers,rewind,session}.rs` to
-   the handoff/modal/switch outcomes without changing their idle behavior. `notification_turn`,
-   `scheduled_turn`/`goal_turn` in `turn.rs` and `goal_step` in `ui/goal.rs` seed `converse`'s
-   `pending` from their `EndOfTurn::Submit` (`launch_dir` threaded through each).
+   handlers in `ui/schedule.rs`, `ui/providers.rs` and
+   `ui/commands/{memory,model,rewind,session}.rs` to the handoff/modal/switch outcomes without
+   changing their idle behavior. `notification_turn`, `scheduled_turn`/`goal_turn` in `turn.rs`
+   and `goal_step` in `ui/goal.rs` seed `converse`'s `pending` from their `EndOfTurn::Submit`
+   (`launch_dir` threaded through each).
 6. `rust/fontaine-tui/src/ui/commands/context.rs` and `ui/goal.rs`: restore retracted raws after
    a compaction or an interrupted goal evaluation.
 7. Integration tests (below).
@@ -301,7 +319,8 @@ impl Queued {
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/steering.rs` — `Queued`, typed queue, hook prefix delivery.
+- `rust/fontaine-core/src/steering.rs` — `Queued`, typed queue, hook prefix delivery and the
+  replay delivery hold.
 - `rust/fontaine-tui/src/commands.rs` — `Command::runs_mid_turn`.
 - `rust/fontaine-tui/src/app.rs` — `Action::Queue(Queued)`, `Action::Command`, `enter` running
   branch, tests.
@@ -312,45 +331,14 @@ impl Queued {
 - `rust/fontaine-tui/src/ui/goal.rs` — typed retract in `goal_step`.
 - `rust/fontaine-tui/src/ui/schedule.rs` — `/loop` turn handoff and first-iteration completion.
 - `rust/fontaine-tui/src/ui/commands/context.rs` — restore raws after `/compact`.
-- `rust/fontaine-tui/src/ui/commands/{memory,model,providers,rewind,session}.rs` — command
-  handoffs, modal outcomes and switch guards.
+- `rust/fontaine-tui/src/ui/providers.rs` — provider-dialog outcomes and action handling.
+- `rust/fontaine-tui/src/ui/commands/{memory,model,rewind,session}.rs` — command handoffs, modal
+  outcomes and switch guards.
 - `rust/fontaine-tui/src/ui/tests.rs` — `end_of_turn` grouping tests.
 - `rust/fontaine-tui/tests/extensions.rs` — end-to-end queued-input tests.
+- `rust/fontaine-tui/tests/tui.rs` — notification-turn replay coverage.
 - `docs/tui.md`, `docs/checkpoints.md` — behavior documentation.
 - `CHANGELOG.md` — Unreleased entry for queued skills, built-ins and `!` commands.
-
-## Trade-offs
-
-- **Skill waits for turn end vs. mid-turn delivery.** Claude Code queues commands and runs them
-  after the turn (per its docs), and expansion cannot run inside the sync steering hook anyway.
-  Delivering the raw `/name args` as steering text instead would send the model the invocation
-  without the skill's body — the failure the issue calls out.
-- **Barrier vs. reorder.** A queued skill blocks mid-turn delivery of messages queued after it.
-  The alternative (deliver later messages, hold the skill) sends the model a later message before
-  an earlier instruction; the barrier preserves typed order at the cost of those messages waiting
-  for turn end.
-- **Known-skill check at queue time (against `app.menu`)** vs. queueing every `Command::Other`
-  and erroring when it executes. Checking at queue time keeps the immediate refusal for typos,
-  and keeps the execution loop free of a dead-letter case; a name a built-in answers to is the
-  built-in, queued or immediate, exactly as at an idle prompt.
-- **Queued `!` runs after the turn** vs. mid-turn execution. Claude Code holds shell commands
-  until the turn ends and runs them one at a time; running one mid-turn would interleave its
-  output with the turn's live area and its approvals with the turn's prompts. The execution loop
-  already serializes, so a queued `!` falls out of the same machinery.
-- **Shared skill runner and command dispatcher** vs. duplicating the expand/ledger/error and
-  dispatch logic in the execution loop: extraction keeps one definition of "run a user-invoked
-  skill" and one of "run a built-in command" (open/closed: the execution loop adds callers, not
-  copies).
-- **Immediate set vs. queueing every built-in.** Claude Code runs a carve-out list mid-turn
-  (`/status`, `/permissions`, dialogs) and queues the rest. Fontaine's rule — synchronous, and
-  touches only UI state — picks the set from the code rather than copying the list, so a new
-  command is classified by what it does, not by remembering to update a table.
-- **Interrupt kills the entry currently executing vs. stopping the execution loop.** Claude
-  Code's Esc aborts only the running queued command; the entries behind it run next (its
-  restore-to-input-on-Esc behavior was a 2.1.0 regression,
-  [anthropics/claude-code#16905](https://github.com/anthropics/claude-code/issues/16905),
-  fixed in 2.1.4). Fontaine matches; `compact()`/`shell()` keep swallowing the interrupt — no
-  turn-end plumbing changes.
 
 ## Decisions
 
@@ -377,6 +365,9 @@ impl Queued {
   survive display, Up-takes-back editing and Esc-restore. `converse`'s `pending` is a seeded
   parameter so idle submit and the scheduled/goal/notification callers all enter through the
   one uniform pop loop.
+- 2026-10-29: strict typed order spans replay as well as a single steering queue: starting a
+  submission with later submissions pending holds steering delivery until the final pending
+  submission begins, so newer input cannot overtake the replay backlog.
 - 2026-10-29: a queued command that opens a picker or dialog suspends replay until that UI closes
   or is cancelled, applying the choice before the next entry. `/resume <argument>` and `/branch`
   (including a switch chosen in the bare `/resume` picker) are refused while later submissions
@@ -416,7 +407,8 @@ impl Queued {
 
 Unit tests (all constructed inputs; no live APIs):
 
-- `steering.rs`: prefix delivery stops at a skill entry and preserves order; skill entries reach
+- `steering.rs`: prefix delivery stops at a skill entry and preserves order; a delivery hold
+  leaves a message-only queue and its ledger untouched until released; skill entries reach
   `retract` typed; `queued()` returns raws; delivered messages still enter the ledger in order
   (existing test, updated).
 - `app.rs`: skill invocation queues with kind/name/argument/raw during a turn; a built-in
@@ -429,9 +421,10 @@ Unit tests (all constructed inputs; no live APIs):
   lines into their own submissions, keeps interleaved order, restores raws (including `/name
   args` and `!echo hi`) after an interrupt, and front-pushes either kind of dispatcher handoff.
 
-Integration tests in `rust/fontaine-tui/tests/extensions.rs` (scripted-model `World` harness,
-as `a_skill_runs_as_a_command_with_its_arguments` and the `tui.rs` queue tests use — a
-`tool_turn("c1", "shell", sleep)` keeps the turn open while input is sent):
+Integration tests use the scripted-model `World` harness, as
+`a_skill_runs_as_a_command_with_its_arguments` and the `tui.rs` queue tests do (a
+`tool_turn("c1", "shell", sleep)` keeps the turn open while input is sent). Unless noted, these
+cases go in `rust/fontaine-tui/tests/extensions.rs`:
 
 - A skill typed during a turn shows `queued: /review 42`, and once the turn answers, the skill
   runs as the next turn. With the script `[tool_turn(...), text_turn(current answer),
@@ -441,15 +434,21 @@ as `a_skill_runs_as_a_command_with_its_arguments` and the `tui.rs` queue tests u
   retract → expansion → turn across the real runtime.
 - A message queued after a skill is not steered into the running turn (barrier): the running
   turn's tool result carries neither, and both execute in order afterwards.
+- With skill `S` and message `M` retracted into pending replay, a newer message `N` typed during
+  `S` is held out of `S`'s tool results while `M` remains pending; `S`, `M` and `N` then run in
+  typed order. Ordinary steering resumes when the final pending submission begins.
 - Interrupting the turn with a skill queued puts `/review 42` back in the input; no expansion
   request is made (nothing is sent unseen).
 - A built-in queued mid-turn runs after the turn: `/rename later` typed during a turn shows
   `queued: /rename later`, and the rename notice and effect land after the answer, in order
-  behind a queued message. An immediate-set command (`/todos`) opens its panel while the turn
+  behind a queued message. An immediate-set command (`/status`) shows its report while the turn
   still runs, clears its input, and leaves the turn's tool result untouched.
 - A queued `/plan do x` exercises the command → dispatcher → `Message` handoff: the third model
   request sends `do x` with plan mode on, and the ledger records `"text":"do x"` once, preserving
   the idle command's text rather than inventing a second raw-command record.
+- Notification replay: extend `a_pick_made_during_a_notification_turn_applies_when_the_turn_ends`
+  in `tests/tui.rs` with a message queued during its delayed notification turn and one extra
+  routed response; the message becomes the next request after the notification answer.
 - Modal replay and switch safety: a queued `/rewind` followed by a message opens the picker after
   the current answer but makes no further model request until Esc closes it, then runs the
   message; a queued `/branch` followed by a message refuses the switch and runs the message in
@@ -458,8 +457,10 @@ as `a_skill_runs_as_a_command_with_its_arguments` and the `tui.rs` queue tests u
   and runs as a shell run after the answer, in typed order with the other queued entries; its
   output reaches the next message, as at idle.
 - Esc while a queued `!sleep` executes kills it as at idle, and the next queued entry still
-  executes afterwards (the shell's raw is spent, not restored). Esc while a queued `/compact`
-  executes aborts the compaction and execution continues with the next submission.
+  executes afterwards (the shell's raw is spent, not restored). Esc during a queued skill
+  expansion aborts only that expansion and continues with the next submission. Esc while a
+  queued `/compact` executes aborts the compaction and execution continues with the next
+  submission.
 
 ## Open Questions
 
