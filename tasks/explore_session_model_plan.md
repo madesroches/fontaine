@@ -54,9 +54,9 @@ This also matches Claude Code, whose built-in Explore agent inherits the session
 3. `docs/agents.md` — built-in types table: `explore | $main | …`; keep the
    `$guardian_default` explanation (still a valid explicit value) and add a half-sentence that it
    is opt-in only.
-4. `docs/configuration.md` — the `[agents.types]` example: either keep it (it now reads as
-   opting `explore` back into `$guardian_default`) with one clause saying so, or switch the
-   example to a custom type so it doesn't suggest overriding a built-in.
+4. `docs/configuration.md` — keep the `[agents.types.explore]` example and add one clause
+   saying it opts `explore` back into `$guardian_default`: with the default now `$main`, the
+   example reads as an explicit override, which is exactly how a user gets the old behavior.
 5. `CHANGELOG.md` — entry under the unreleased section: built-in `explore` subagents now run on
    the session model instead of `$guardian_default` (#286).
 
