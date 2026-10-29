@@ -51,18 +51,17 @@ The failed run's committed messages already reach Fontaine through the `RunSettl
 (`messages: Some(&[Arc<Message>])` on error as well as success). Persist them on error so the next
 run loads the interrupted task.
 
-- Add `Session::append_messages(&self, messages: &[Arc<Message>]) -> Result<(), rig_memory::SessionError>`
-  to `session.rs` next to `store()` (`session.rs:441`). It mirrors the engine's `Done` step:
-  `load_async(&self.store, CONVERSATION_LOG)`, `conversation.extend(messages.iter().cloned())`,
-  `save_async`. The messages a failed model call commits are already paired (no unanswered tool
-  calls), so they save as a canonical transcript.
-- Add a `RecoveryHook` in a new `rust/fontaine-core/src/turn_recovery.rs`, modeled on
-  `ParentContextHook` (`fork_context.rs`). It is generic over the store
-  (`RecoveryHook<S: AsyncStore>`) and holds the store, its log name and the session's
-  `Arc<dyn Approver>`. In `on_run_settled`, when the outcome is `SettledOutcome::Error(_)` and
-  `messages` is `Some`, it appends them through a shared `append_messages` helper (load, extend,
-  save). A failed save warns once through `Approver::warn` with the full `error_chain::chain`;
-  the run's outcome is unchanged. `Session::append_messages` delegates to the same helper.
+- Add an `append_messages(store, log, messages)` helper in the new
+  `rust/fontaine-core/src/turn_recovery.rs`. It mirrors the engine's `Done` step: `load_async`,
+  `conversation.extend(messages.iter().cloned())`, `save_async`. The messages a failed model
+  call commits are already paired (no unanswered tool calls), so they save as a canonical
+  transcript.
+- Add a `RecoveryHook` in the same module, modeled on `ParentContextHook` (`fork_context.rs`).
+  It is generic over the store (`RecoveryHook<S: AsyncStore>`) and holds the store, its log name
+  and the session's `Arc<dyn Approver>`. In `on_run_settled`, when the outcome is
+  `SettledOutcome::Error(_)` and `messages` is `Some`, it appends them through the helper (load,
+  extend, save). A failed save warns once through `Approver::warn` with the full
+  `error_chain::chain`; the run's outcome is unchanged.
 - Register the hook on the root agent in `finish_builder` (`agent/build.rs`) with
   `RecoveryHook::new(p.session.store(), CONVERSATION_LOG, p.approver.clone())`, and on every
   subagent in `CoreChildRunner::spawn` (`child_runner.rs`) with its own store and log `"main"`:
@@ -124,9 +123,9 @@ the provider's request log, not through telemetry.
 
 ## Implementation Steps
 
-1. **Conversation append.** Add `Session::append_messages` in `rust/fontaine-core/src/session.rs`,
-   importing `rig_core::message::Message`/`Arc` as needed. Unit-test it in `session.rs` or the new
-   recovery module with a `DirStore` in a temp dir: append on an empty log, append onto existing
+1. **Conversation append.** Add the `append_messages` helper in
+   `rust/fontaine-core/src/turn_recovery.rs`. Unit-test it in the recovery module with a
+   `MemoryStore` and a `DirStore` in a temp dir: append on an empty log, append onto existing
    entries, and a torn log remains readable.
 2. **Recovery hook.** Create `rust/fontaine-core/src/turn_recovery.rs` (`RecoveryHook<S>` plus
    the shared `append_messages` helper), register the module in `lib.rs`, add it in
@@ -143,7 +142,6 @@ the provider's request log, not through telemetry.
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/session.rs` — `Session::append_messages`
 - `rust/fontaine-core/src/turn_recovery.rs` — new `RecoveryHook` and `append_messages` helper
 - `rust/fontaine-core/src/lib.rs` — module registration
 - `rust/fontaine-core/src/agent/build.rs` — register the hook on the root agent
@@ -227,7 +225,7 @@ existing scripted endpoint helpers.
 - **Unit — `retryable` classification:** `Provider` and `Report` variants with retryable vs
   non-retryable statuses.
 - **Unit — `append_messages`:** appends to an empty and to an existing log (tested through the
-  shared helper on a `MemoryStore`; `Session::append_messages` delegates to it).
+  helper on a `MemoryStore`, plus a torn-log case on a `DirStore`).
 - **Integration (wiremock, headless `fontaine -p`):** add a scripted reply that emits part of an SSE
   body and ends without `[DONE]` (an early stream end, which rig classifies as a retryable transport
   error — the closest offline stand-in for a connection reset). Script `[cut, text]`, run
