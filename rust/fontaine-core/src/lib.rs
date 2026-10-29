@@ -51,6 +51,7 @@ pub mod tools;
 pub mod transport;
 pub mod trust;
 pub mod turn;
+pub mod turn_recovery;
 pub mod user_config;
 pub mod user_hooks;
 pub mod user_shell;

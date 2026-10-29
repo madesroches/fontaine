@@ -22,6 +22,19 @@ use crate::preview::DiffPreview;
 /// forever.
 pub const DEFAULT_MAX_TURNS: usize = 1000;
 
+/// The retries a transient transport failure earns, on top of the first attempt.
+const MAX_RETRIES: usize = 2;
+
+/// The pause before the first retry; it doubles each time. A reset connection needs a
+/// moment, not a hammer.
+const BACKOFF: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// A retry's prompt. The failed attempt's committed messages are already saved by the
+/// recovery hook, so the run only needs to be told to go on. Model context, never a ledger
+/// user message.
+const RETRY_NOTE: &str = "[Harness note, not the user's words: the previous model call failed \
+before it finished; continue the task.]";
+
 #[derive(Clone, Debug)]
 pub enum SessionEvent {
     /// A fragment of the answer as it streams.
@@ -196,14 +209,69 @@ async fn next_fed(feed: &mut Option<&mut DecisionFeed>) -> Option<Published> {
     }
 }
 
+/// Whether a failed attempt is a transient transport failure worth trying again: a reset
+/// connection, a cut stream, a timeout, throttling or a 5xx. rig does the classification.
+fn retryable(error: &PromptError) -> bool {
+    match error {
+        PromptError::Provider(e) => e.is_retryable(),
+        PromptError::Report(report) => report.is_retryable(),
+        _ => false,
+    }
+}
+
+/// How a single attempt ended: a settled turn, or a model failure the caller may retry.
+enum DriveEnd {
+    Outcome(TurnOutcome),
+    Failed(Box<PromptError>),
+}
+
 /// Drives one agent's stream, reporting what happens to `on_event`. The root's run also
 /// forwards the decisions the pipeline makes for the whole tree through `feed`; a subagent's
-/// run has none.
+/// run has none. A retryable transport failure is retried a bounded number of times before
+/// the failure settles the turn; the recovery hook has saved the failed attempt by then, so
+/// a retry continues the task on a continuation note instead of starting over.
 pub async fn drive(
-    params: Drive<'_>,
+    mut params: Drive<'_>,
     mut feed: Option<&mut DecisionFeed>,
     on_event: &mut (dyn FnMut(SessionEvent) -> Flow + Send),
 ) -> TurnOutcome {
+    for attempt in 0..=MAX_RETRIES {
+        let end = drive_once(
+            Drive {
+                agent: params.agent,
+                state: params.state,
+                agent_id: params.agent_id,
+                prompt: std::mem::take(&mut params.prompt),
+                max_turns: params.max_turns,
+                priced: params.priced,
+                model: params.model.clone(),
+                provider: params.provider.clone(),
+                native_search: params.native_search,
+                span: params.span.clone(),
+            },
+            feed.as_deref_mut(),
+            on_event,
+        )
+        .await;
+        let error = match end {
+            DriveEnd::Outcome(outcome) => return outcome,
+            DriveEnd::Failed(error) => error,
+        };
+        if attempt == MAX_RETRIES || !retryable(&error) {
+            return TurnOutcome::Failed(failure_text(&error, params.native_search));
+        }
+        tokio::time::sleep(BACKOFF * (1 << attempt)).await;
+        params.prompt = RETRY_NOTE.to_string();
+    }
+    unreachable!("the last attempt always returns")
+}
+
+/// One attempt of `drive`, with the model failure kept typed for the retry decision.
+async fn drive_once(
+    params: Drive<'_>,
+    mut feed: Option<&mut DecisionFeed>,
+    on_event: &mut (dyn FnMut(SessionEvent) -> Flow + Send),
+) -> DriveEnd {
     let mut tool_context = ToolContext::new();
     // Every tool call must name its agent; an untagged call is refused.
     tool_context
@@ -338,7 +406,7 @@ pub async fn drive(
     }
 
     if stopped && failure.is_none() {
-        TurnOutcome::Stopped
+        DriveEnd::Outcome(TurnOutcome::Stopped)
     } else if let Some(e) = failure {
         if let Some(class) = error_class(&e) {
             let status = e.provider_response_status().map(|s| u64::from(s.as_u16()));
@@ -354,12 +422,57 @@ pub async fn drive(
             );
         }
         match e {
-            e @ PromptError::MaxTurns { .. } => TurnOutcome::MaxTurns(e.to_string()),
-            other => TurnOutcome::Failed(failure_text(&other, params.native_search)),
+            e @ PromptError::MaxTurns { .. } => {
+                DriveEnd::Outcome(TurnOutcome::MaxTurns(e.to_string()))
+            }
+            other => DriveEnd::Failed(Box::new(other)),
         }
     } else if let Some(response) = final_response {
-        TurnOutcome::Answer(response.output())
+        DriveEnd::Outcome(TurnOutcome::Answer(response.output()))
     } else {
-        TurnOutcome::Failed("the run ended without an answer".to_string())
+        DriveEnd::Outcome(TurnOutcome::Failed(
+            "the run ended without an answer".to_string(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::StatusCode;
+    use rig_core::error::ErrorReport;
+    use rig_core::{ProviderError, ProviderResponseError};
+
+    fn provider_error(status: StatusCode) -> PromptError {
+        PromptError::Provider(ProviderError::ProviderResponse(ProviderResponseError::new(
+            status, "boom",
+        )))
+    }
+
+    #[test]
+    fn throttling_and_server_errors_are_retried_client_errors_are_not() {
+        assert!(retryable(&provider_error(StatusCode::TOO_MANY_REQUESTS)));
+        assert!(retryable(&provider_error(
+            StatusCode::INTERNAL_SERVER_ERROR
+        )));
+        assert!(!retryable(&provider_error(StatusCode::BAD_REQUEST)));
+    }
+
+    #[test]
+    fn a_relayed_report_keeps_its_classification() {
+        let error = ProviderError::ProviderResponse(ProviderResponseError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "boom",
+        ));
+        assert!(retryable(&PromptError::Report(ErrorReport::from(&error))));
+    }
+
+    #[test]
+    fn a_cancel_is_not_retried() {
+        let cancelled = PromptError::Cancelled {
+            chat_history: Vec::new(),
+            reason: "test".to_string(),
+        };
+        assert!(!retryable(&cancelled));
     }
 }

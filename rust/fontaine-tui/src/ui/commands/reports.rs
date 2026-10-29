@@ -52,14 +52,21 @@ impl<R: FnMut(&mut App)> Ui<R> {
             ));
             return;
         }
-        self.app
-            .transcript
-            .notice(reports::mcp_with_origins(&self.mcp_status, &runtime.config));
+        self.app.transcript.notice(reports::mcp_with_origins(
+            &self.mcp_status,
+            &runtime.config.mcp_origins,
+        ));
     }
 
     pub(crate) fn plugins(&mut self, runtime: &AgentRuntime) {
         let text = match fontaine_core::plugins::read_registry(runtime.config_dir()) {
-            Ok(registry) => reports::plugins(&registry, runtime.extensions(), &runtime.config),
+            Ok(registry) => reports::plugins(
+                &registry,
+                runtime.extensions(),
+                &runtime.config.hooks,
+                &runtime.config.mcp_servers,
+                &runtime.config.mcp_origins,
+            ),
             Err(e) => format!("cannot read the plugin registry: {e}"),
         };
         self.app.transcript.notice(text);

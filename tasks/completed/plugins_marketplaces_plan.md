@@ -46,6 +46,15 @@
   `hooks`/`mcpServers` path keys now merge over the default file (inline objects warn). Four
   regression tests added; fmt/clippy/tests green.
   Status: **done.**
+- 2026-10-28: **Review fixes on `resilience`.** A plugin hook identical to another scope's hook
+  now merges by attribution only (`union_hooks` no longer replaces the kept origin for
+  plugin-origin hooks): the previous replacement let `apply_plugins`' strip phase remove a
+  project's own hook after the plugin was disabled. `apply_plugins` also clears stale plugin
+  attribution on surviving hooks before re-applying. A path-source install canonicalizes the
+  marketplace checkout before the escape check (symlinked config dirs failed spuriously), a
+  plugin `.mcp.json` URL server carrying `args`/`env` is a load error (settings refuse the
+  same), and `short_pin` lives in `fontaine_core::plugins` (was duplicated in the CLI and the
+  TUI).
 
 ## Overview
 

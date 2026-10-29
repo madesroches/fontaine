@@ -29,6 +29,7 @@ use crate::models::{ModelHandle, SharedSwitcher};
 use crate::permission_rules::parse_rule;
 use crate::permissions::Approver;
 use crate::turn::{DEFAULT_MAX_TURNS, Drive, Flow, SessionEvent, TurnOutcome, drive};
+use crate::turn_recovery::RecoveryHook;
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -291,9 +292,10 @@ impl ChildRunner for CoreChildRunner {
             let tools = fork_tools(&context.tool_server, &request.tools);
             let builder = AgentBuilder::new(model.completion.clone())
                 .preamble((context.preamble)(&request.agent_type))
-                .memory(store)
+                .memory(store.clone())
                 .conversation("main");
             let agent = apply_common(builder, &state, context.record_content)
+                .add_hook(RecoveryHook::new(store, "main", context.approver.clone()))
                 .tool_server_handle(tools)
                 .build();
             state.set_child_restrictions(&request.id, restrictions(&request.agent_type));

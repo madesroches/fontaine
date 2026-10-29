@@ -390,7 +390,7 @@ fn marketplace_list(dirs: &Dirs) -> Result<(), String> {
             "{} — {} — pin {} — {} plugin(s)",
             marketplace.name,
             marketplace.url,
-            short_pin(&marketplace.pin),
+            plugins::short_pin(&marketplace.pin),
             installed
         );
     }
@@ -440,7 +440,7 @@ fn marketplace_update(dirs: &Dirs, name: Option<&str>) -> Result<(), String> {
         println!(
             "marketplace `{}` is already up to date ({})",
             entry.name,
-            short_pin(&old)
+            plugins::short_pin(&old)
         );
         return Ok(());
     }
@@ -455,8 +455,8 @@ fn marketplace_update(dirs: &Dirs, name: Option<&str>) -> Result<(), String> {
     println!(
         "marketplace `{}` moved {} -> {}",
         entry.name,
-        short_pin(&old),
-        short_pin(&new)
+        plugins::short_pin(&old),
+        plugins::short_pin(&new)
     );
     Ok(())
 }
@@ -563,7 +563,7 @@ fn install(dirs: &Dirs, host: &Host, spec: &str) -> Result<(), String> {
         let _ = write_under_lock(&dirs.config, &before);
         return Err(e);
     }
-    println!("installed plugin `{name}` ({})", short_pin(&pin));
+    println!("installed plugin `{name}` ({})", plugins::short_pin(&pin));
     Ok(())
 }
 
@@ -587,7 +587,12 @@ fn materialize(
                     fontaine_tools::error_chain::chain(&e)
                 )
             })?;
-            if !source.starts_with(&market_checkout) {
+            // Compare canonical to canonical: the config dir itself may sit behind a
+            // symlink, and the resolved source never carries one.
+            let market_root = market_checkout
+                .canonicalize()
+                .unwrap_or_else(|_| market_checkout.clone());
+            if !source.starts_with(&market_root) {
                 return fail(format!(
                     "the source of `{}` points outside its marketplace",
                     entry.name
@@ -745,7 +750,7 @@ fn update(dirs: &Dirs, host: &Host, name: &str) -> Result<(), String> {
         let _ = write_under_lock(&dirs.config, &before);
         return Err(e);
     }
-    println!("plugin `{name}` moved to {}", short_pin(&pin));
+    println!("plugin `{name}` moved to {}", plugins::short_pin(&pin));
     Ok(())
 }
 
@@ -822,7 +827,7 @@ fn list(dirs: &Dirs, host: &Host, format: ReportFormat) -> Result<(), String> {
                     } else {
                         "disabled"
                     },
-                    short_pin(&plugin.pin),
+                    plugins::short_pin(&plugin.pin),
                     counts
                 );
             }
@@ -848,26 +853,9 @@ fn component_counts(
         .map(|build| build.summary)
 }
 
-fn short_pin(pin: &str) -> &str {
-    let mut end = pin.len().min(7);
-    while !pin.is_char_boundary(end) {
-        end -= 1;
-    }
-    &pin[..end]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn short_pins_never_split_a_character() {
-        assert_eq!(short_pin("a1b2c3d4"), "a1b2c3d");
-        assert_eq!(short_pin("abc"), "abc");
-        assert_eq!(short_pin(""), "");
-        // Seven bytes is mid-character for a multibyte pin.
-        assert_eq!(short_pin("éééé"), "ééé");
-    }
 
     #[test]
     fn tilde_paths_expand_to_the_home_directory() {

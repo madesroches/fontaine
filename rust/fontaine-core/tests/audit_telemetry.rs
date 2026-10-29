@@ -281,8 +281,9 @@ fn api_errors(capture: &TraceCapture) -> Vec<rig_core::test_utils::CapturedEvent
 async fn a_failed_main_model_call_emits_an_api_error_without_the_message() {
     let capture = TraceCapture::default();
     let _guard = tracing::subscriber::set_default(capture.subscriber());
+    // A 400 fails without retries, so the one event below is the single attempt's.
     let w = World::new();
-    let built = build(&w, Manual, failing_turn(429), true);
+    let built = build(&w, Manual, failing_turn(400), true);
     let outcome = run_turn(
         TurnParams {
             agent: &built.runtime.agent,
@@ -303,7 +304,7 @@ async fn a_failed_main_model_call_emits_an_api_error_without_the_message() {
     let event = &events[0];
     assert_eq!(event.target, "fontaine::telemetry");
     assert_eq!(event.fields["error_class"], "provider_response");
-    assert_eq!(event.fields["status_code"], 429);
+    assert_eq!(event.fields["status_code"], 400);
     assert_eq!(event.fields["query_source"], "main");
     assert_eq!(event.fields["model"], "scripted");
     assert_eq!(event.fields["provider"], "mock");
@@ -318,8 +319,9 @@ async fn a_failed_main_model_call_emits_an_api_error_without_the_message() {
 async fn a_failed_subagent_call_reports_the_subagent_as_its_source() {
     let capture = TraceCapture::default();
     let _guard = tracing::subscriber::set_default(capture.subscriber());
+    // A 400 fails without retries, so the one event below is the single attempt's.
     let w = World::new();
-    let built = build(&w, Manual, failing_turn(500), true);
+    let built = build(&w, Manual, failing_turn(400), true);
     let outcome = drive(
         Drive {
             agent: &built.runtime.agent,
@@ -342,7 +344,7 @@ async fn a_failed_subagent_call_reports_the_subagent_as_its_source() {
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0].fields["query_source"], "subagent");
     assert_eq!(events[0].fields["agent.id"], "child-1");
-    assert_eq!(events[0].fields["status_code"], 500);
+    assert_eq!(events[0].fields["status_code"], 400);
 }
 
 #[tokio::test]

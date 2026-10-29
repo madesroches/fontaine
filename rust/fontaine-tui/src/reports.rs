@@ -1,12 +1,13 @@
 //! The text of the read-only commands. Each builder takes plain data, so the report can be
 //! tested without a runtime; `lib.rs` gathers the inputs.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use fontaine_agents::registry::TypeOrigin;
-use fontaine_core::config::{Config, Hook, PermissionMode, Slot};
+use fontaine_core::config::{Hook, Hooks, McpServer, Origin, PermissionMode, Slot};
 use fontaine_core::context::ContextUsage;
 use fontaine_core::extensions::{Extensions, Scope, Skill};
 use fontaine_core::gate::Rules;
@@ -186,24 +187,11 @@ pub fn permissions(
     out
 }
 
-pub fn mcp(servers: &[(String, McpState)]) -> String {
-    if servers.is_empty() {
-        return "no MCP servers configured".to_string();
-    }
-    servers
-        .iter()
-        .map(|(name, state)| match state {
-            McpState::Connected => format!("{name}: connected"),
-            McpState::Failed(error) => format!("failed: {error}"),
-            McpState::LeftOff => format!("{name}: left off"),
-            McpState::NotTrusted => format!("{name}: not loaded (workspace not trusted)"),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// [`mcp`] with the origin label of each server, as `/mcp` shows it.
-pub fn mcp_with_origins(servers: &[(String, McpState)], config: &Config) -> String {
+/// The `/mcp` listing: each server's state with the label of the scope that contributed it.
+pub fn mcp_with_origins(
+    servers: &[(String, McpState)],
+    origins: &BTreeMap<String, Origin>,
+) -> String {
     if servers.is_empty() {
         return "no MCP servers configured".to_string();
     }
@@ -216,8 +204,7 @@ pub fn mcp_with_origins(servers: &[(String, McpState)], config: &Config) -> Stri
                 McpState::LeftOff => "left off".to_string(),
                 McpState::NotTrusted => "not loaded (workspace not trusted)".to_string(),
             };
-            let origin = config
-                .mcp_origins
+            let origin = origins
                 .get(name)
                 .map(|origin| origin.slot.label())
                 .unwrap_or("configured");
@@ -298,7 +285,13 @@ pub fn skills(skills: &[Skill]) -> String {
 }
 
 /// `/plugins`: installed plugins from the registry, with their loaded component counts.
-pub fn plugins(registry: &Registry, extensions: &Extensions, config: &Config) -> String {
+pub fn plugins(
+    registry: &Registry,
+    extensions: &Extensions,
+    hooks: &Hooks,
+    servers: &BTreeMap<String, McpServer>,
+    origins: &BTreeMap<String, Origin>,
+) -> String {
     if registry.plugin.is_empty() {
         return "no plugins installed".to_string();
     }
@@ -325,27 +318,24 @@ pub fn plugins(registry: &Registry, extensions: &Extensions, config: &Config) ->
                 .iter()
                 .filter(|style| style.scope == Scope::Plugin && style.name.starts_with(&prefix))
                 .count();
-            let hooks = config
-                .hooks
+            let hooks = hooks
                 .pre_tool_use
                 .iter()
-                .chain(&config.hooks.post_tool_use)
-                .chain(&config.hooks.permission_denied)
+                .chain(&hooks.post_tool_use)
+                .chain(&hooks.permission_denied)
                 .filter(|hook| hook.plugin.as_deref() == Some(plugin.name.as_str()))
                 .count();
             let server_prefix = format!("plugin_{}_", plugin.name);
-            let servers = config
-                .mcp_servers
+            let servers = servers
                 .keys()
                 .filter(|name| {
                     name.starts_with(&server_prefix)
-                        && config
-                            .mcp_origins
+                        && origins
                             .get(*name)
                             .is_some_and(|origin| origin.slot == Slot::Plugin)
                 })
                 .count();
-            let pin = short_pin(&plugin.pin);
+            let pin = fontaine_core::plugins::short_pin(&plugin.pin);
             format!(
                 "{} ({}): {} — pin {} — {} skill(s), {} agent(s), {} style(s), {} hook(s), {} server(s)",
                 plugin.name,
@@ -361,15 +351,6 @@ pub fn plugins(registry: &Registry, extensions: &Extensions, config: &Config) ->
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// The short form of a pin for display; safe on a hand-edited, non-ASCII pin.
-fn short_pin(pin: &str) -> &str {
-    let mut end = pin.len().min(7);
-    while !pin.is_char_boundary(end) {
-        end -= 1;
-    }
-    &pin[..end]
 }
 
 /// Where the auto-memory store is and whether this session uses it.
@@ -735,20 +716,92 @@ mod tests {
     }
 
     #[test]
-    fn mcp_shows_each_state() {
-        assert_eq!(mcp(&[]), "no MCP servers configured");
-        let text = mcp(&[
-            ("a".into(), McpState::Connected),
+    fn mcp_shows_each_state_with_its_origin() {
+        let origins = BTreeMap::from([
             (
-                "b".into(),
-                McpState::Failed("MCP server `b` failed: boom".into()),
+                "a".to_string(),
+                Origin {
+                    slot: Slot::User,
+                    user_trust: true,
+                },
             ),
-            ("c".into(), McpState::LeftOff),
-            ("d".into(), McpState::NotTrusted),
+            (
+                "plugin_p_srv".to_string(),
+                Origin {
+                    slot: Slot::Plugin,
+                    user_trust: false,
+                },
+            ),
         ]);
+        assert_eq!(mcp_with_origins(&[], &origins), "no MCP servers configured");
+        let text = mcp_with_origins(
+            &[
+                ("a".into(), McpState::Connected),
+                (
+                    "b".into(),
+                    McpState::Failed("MCP server `b` failed: boom".into()),
+                ),
+                ("c".into(), McpState::LeftOff),
+                ("plugin_p_srv".into(), McpState::NotTrusted),
+            ],
+            &origins,
+        );
         assert_eq!(
             text,
-            "a: connected\nfailed: MCP server `b` failed: boom\nc: left off\nd: not loaded (workspace not trusted)"
+            "a: connected [user]\nb: failed: MCP server `b` failed: boom [configured]\nc: left off [configured]\nplugin_p_srv: not loaded (workspace not trusted) [plugin]"
+        );
+    }
+
+    #[test]
+    fn plugins_lists_components_with_their_counts() {
+        let registry = Registry {
+            marketplace: Vec::new(),
+            plugin: vec![fontaine_core::plugins::InstalledPlugin {
+                name: "p".to_string(),
+                marketplace: "team".to_string(),
+                source: "./plugins/p".to_string(),
+                pin: "a1b2c3d4e5".to_string(),
+                enabled: true,
+            }],
+        };
+        let mut extensions = Extensions::default();
+        extensions.skills.push(skill("p:review", Scope::Plugin));
+        extensions.skills.push(skill("mine", Scope::User));
+        let mut hooks = Hooks::default();
+        let mut plugin_hook = hook(None, "check.sh", Slot::Plugin, None);
+        plugin_hook.plugin = Some("p".to_string());
+        hooks.pre_tool_use.push(plugin_hook);
+        let servers = BTreeMap::from([(
+            "plugin_p_srv".to_string(),
+            McpServer {
+                command: Some("srv".to_string()),
+                args: None,
+                env_vars: None,
+                env: None,
+                url: None,
+            },
+        )]);
+        let origins = BTreeMap::from([(
+            "plugin_p_srv".to_string(),
+            Origin {
+                slot: Slot::Plugin,
+                user_trust: false,
+            },
+        )]);
+        let text = plugins(&registry, &extensions, &hooks, &servers, &origins);
+        assert_eq!(
+            text,
+            "p (team): enabled — pin a1b2c3d — 1 skill(s), 0 agent(s), 0 style(s), 1 hook(s), 1 server(s)"
+        );
+        assert_eq!(
+            plugins(
+                &Registry::default(),
+                &extensions,
+                &hooks,
+                &servers,
+                &origins
+            ),
+            "no plugins installed"
         );
     }
 

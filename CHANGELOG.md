@@ -8,6 +8,12 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- A failed model call no longer loses the interrupted turn (#281). The run's committed messages
+  are saved to the conversation when a run fails, so typing `retry` (or any next message)
+  continues the same task, and a retryable transport failure — a cut connection, throttling, a
+  5xx — is retried twice with a short backoff before the failure reaches you, on the main agent
+  and on subagents alike.
+
 - The guardian no longer over-corrects on benign follow-ups after a denial (#256). The two blocks
   holding the user's own messages are marked `source="user"` and read as intent, so "the script is
   ok to run" clears a soft deny for that script, and the prompt gains rules for session history: a
