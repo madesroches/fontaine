@@ -22,8 +22,11 @@ a 51-file, +6,013-line diff) die mid-work at ~200k tokens with only a partial re
   (`rust/fontaine-core/src/agent/setup.rs:220`), so **every** subagent is capped.
 - `child_runner.rs:405` stops the child at the next event once
   `budget_tree.exhausted_of(&budget_id)` fires and reports `ChildStatus::BudgetExhausted` with
-  the partial text (`child_runner.rs:446`); `spawn.rs:120` wraps that as
+  the partial text (`child_runner.rs:446`); `rust/fontaine-agents/src/spawn.rs:121` wraps that as
   `[Partial result: the subagent stopped because its token budget is spent ...]`.
+- `child_runner.rs:282` tells the user "the token budget still applies" whenever a child's cost
+  budget is set on an unpriced model — unconditionally, so with no default cap the notice would
+  be wrong; `budget.rs`'s module doc makes the same claim ("the token cap still binds").
 - `Budget.tokens` is already `Option<u64>` (`rust/fontaine-agents/src/budget.rs:27`) and
   `Budget::default()` is uncapped, so nothing downstream needs to learn what `None` means.
 - The TUI already renders an uncapped row as `"<n> tok"` (`rust/fontaine-tui/src/agents_panel.rs:86`);
@@ -45,6 +48,9 @@ Make the resolved value optional and default it to unset:
 4. `agent/setup.rs:220` — `tokens: config.agents.subagent_token_budget` (drop the `Some(...)`
    wrap).
 5. `config_catalog.rs:404` — render with `opt(c.agents.subagent_token_budget)`.
+6. `child_runner.rs:282` — the unpriced-cost notice's tail "the token budget still applies"
+   only when `request.budget.tokens.is_some()`; `budget.rs`'s module doc becomes "a token cap,
+   if set, still binds".
 
 That is the whole behavior change: with no key set, `Limits.subagent.tokens` is `None`,
 `Budget::exhausted` never fires on tokens, and the child runs until it answers, is killed, fails,
@@ -62,21 +68,25 @@ ever adds a cap (tightens), which the scope rules allow.
 3. `rust/fontaine-core/src/config_catalog.rs`: use `opt(...)` for the
    `agents.subagent_token_budget` row.
 4. Tests (below).
-5. Docs: `docs/configuration.md:687` (description becomes "opt-in per-subagent token cap …",
+5. `rust/fontaine-core/src/child_runner.rs`: condition the unpriced-cost notice's token tail on
+   a token budget being set; reword the `rust/fontaine-agents/src/budget.rs` module doc.
+6. Docs: `docs/configuration.md:687` (description becomes "opt-in per-subagent token cap …",
    default column `200000` → none/unset) and `docs/agents.md` (:137 table row; reword :83 — a
    fork's inherited context is billed on its first call and counts against an explicit
    `subagent_token_budget` or the cost budget, not a default one). `docs/tui.md:667`: the agents
    panel example `1500 / 200000 tok · $0.0021 / $2.00` no longer matches a default session —
    show the uncapped form and note the `/ <cap>` form appears when a budget is set.
-6. `tasks/fontaine_harness_plan.md` `## Decisions`: dated entry that subagents are uncapped by
+7. `tasks/fontaine_harness_plan.md` `## Decisions`: dated entry that subagents are uncapped by
    default for Claude Code parity (#285).
-7. `CHANGELOG.md` `Changed` entry.
+8. `CHANGELOG.md` `Changed` entry.
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/config.rs`
 - `rust/fontaine-core/src/agent/setup.rs`
 - `rust/fontaine-core/src/config_catalog.rs`
+- `rust/fontaine-core/src/child_runner.rs`
+- `rust/fontaine-agents/src/budget.rs` (module doc)
 - `rust/fontaine-tui/src/agents_panel.rs` (test only)
 - `rust/fontaine-tui/tests/agents.rs` (explicit budget in one test's config)
 - `docs/configuration.md`, `docs/agents.md`, `docs/tui.md`
@@ -108,9 +118,9 @@ limits table) and `docs/tui.md` (:667 agents-panel example).
 - Config unit tests (`config.rs`): the resolved default has `subagent_token_budget == None`;
   setting `[agents] subagent_token_budget` resolves to `Some(v)`; an outer-scope value survives
   an inner scope that does not set the key.
-- Catalog: the `agents.subagent_token_budget` row renders the unset placeholder (as
-  `agents.session_token_budget` does) with no key set, and the number with one set — pinned by
-  the config unit tests if the catalog already has row coverage there, else a small row test.
+- Catalog: extend `defaults_render_as_documented` in `config_catalog.rs` with
+  `effective("agents.subagent_token_budget", &c) == "unset"` (as `agents.session_token_budget`
+  renders), plus a set-key case asserting the number.
 - `agent_limits` unit coverage that an unset key yields `Limits.subagent.tokens == None` and a
   set key yields `Some(v)` (the wiring the bug lived in).
 - TUI `agents_panel.rs`: a row with `token_budget: None` renders `"<n> tok"` (the rendering
