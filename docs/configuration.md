@@ -699,8 +699,8 @@ Agent files in `agents/` define types too; see [Extensions](extensions.md#agent-
 [agents]
 max_parallel = 4
 
-[agents.types.explore]
-model = "$guardian_default"
+[agents.types.reviewer]
+model = "work/claude-sonnet-5"
 tools = ["ls", "read", "glob", "grep"]
 mode = "inherit"
 ```

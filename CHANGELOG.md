@@ -8,6 +8,12 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- Built-in `explore` subagents now run on the session model instead of `$guardian_default`
+  (#286). A session whose main model is on another account no longer routes every `explore`
+  spawn at the guardian model's account, so that account's quota no longer takes explore agents
+  down while the session model is healthy. `$guardian_default` remains a valid model value for
+  types you define.
+
 - A failed model call no longer loses the interrupted turn (#281). The run's committed messages
   are saved to the conversation when a run fails, so typing `retry` (or any next message)
   continues the same task, and a retryable transport failure — a cut connection, throttling, a

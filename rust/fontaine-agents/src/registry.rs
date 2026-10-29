@@ -166,7 +166,7 @@ impl AgentTypes {
                     .to_vec(),
             ),
             disallowed: Vec::new(),
-            model: Some(ModelSpec::GuardianDefault),
+            model: Some(ModelSpec::Main),
             mode: ModeSetting::Inherit,
             origin: TypeOrigin::Builtin,
             inherits_context: false,
@@ -331,6 +331,13 @@ mod tests {
         ty.tools = None;
         let parent = names(&["read", "mcp__gh__issue"]);
         assert_eq!(ty.toolset(&parent), parent);
+    }
+
+    #[test]
+    fn the_built_in_explore_runs_on_the_session_model() {
+        let types = AgentTypes::builtin();
+        let explore = types.get("explore").unwrap();
+        assert_eq!(explore.model, Some(ModelSpec::Main));
     }
 
     #[test]
