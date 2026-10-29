@@ -57,7 +57,7 @@ ever adds a cap (tightens), which the scope rules allow.
 ## Implementation Steps
 
 1. `rust/fontaine-core/src/config.rs`: make the resolved field `Option<u64>`, default `None`,
-   merge to `Some(v)`; update the config unit tests that assert the resolved agents defaults.
+   merge to `Some(v)`; add the config unit tests for the resolved agents defaults.
 2. `rust/fontaine-core/src/agent/setup.rs`: pass the `Option` through in `agent_limits`.
 3. `rust/fontaine-core/src/config_catalog.rs`: use `opt(...)` for the
    `agents.subagent_token_budget` row.
@@ -65,7 +65,9 @@ ever adds a cap (tightens), which the scope rules allow.
 5. Docs: `docs/configuration.md:687` (description becomes "opt-in per-subagent token cap …",
    default column `200000` → none/unset) and `docs/agents.md` (:137 table row; reword :83 — a
    fork's inherited context is billed on its first call and counts against an explicit
-   `subagent_token_budget` or the cost budget, not a default one).
+   `subagent_token_budget` or the cost budget, not a default one). `docs/tui.md:667`: the agents
+   panel example `1500 / 200000 tok · $0.0021 / $2.00` no longer matches a default session —
+   show the uncapped form and note the `/ <cap>` form appears when a budget is set.
 6. `tasks/fontaine_harness_plan.md` `## Decisions`: dated entry that subagents are uncapped by
    default for Claude Code parity (#285).
 7. `CHANGELOG.md` `Changed` entry.
@@ -76,7 +78,8 @@ ever adds a cap (tightens), which the scope rules allow.
 - `rust/fontaine-core/src/agent/setup.rs`
 - `rust/fontaine-core/src/config_catalog.rs`
 - `rust/fontaine-tui/src/agents_panel.rs` (test only)
-- `docs/configuration.md`, `docs/agents.md`
+- `rust/fontaine-tui/tests/agents.rs` (explicit budget in one test's config)
+- `docs/configuration.md`, `docs/agents.md`, `docs/tui.md`
 - `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -97,8 +100,8 @@ ever adds a cap (tightens), which the scope rules allow.
 
 ## Documentation
 
-`docs/configuration.md` (:687, `[agents]` table) and `docs/agents.md` (:83 fork note, :137
-limits table).
+`docs/configuration.md` (:687, `[agents]` table), `docs/agents.md` (:83 fork note, :137
+limits table) and `docs/tui.md` (:667 agents-panel example).
 
 ## Testing Strategy
 
@@ -112,6 +115,10 @@ limits table).
   set key yields `Some(v)` (the wiring the bug lived in).
 - TUI `agents_panel.rs`: a row with `token_budget: None` renders `"<n> tok"` (the rendering
   branch exists today but has no test).
+- `rust/fontaine-tui/tests/agents.rs`
+  (`a_killed_subagents_row_shows_killed_and_its_spend_against_its_budget`) asserts the capped
+  form `1500 / 200000 tok` while relying on today's default: give it an explicit
+  `[agents] subagent_token_budget = 200000` in its config so it keeps pinning the capped row.
 - Existing integration tests `rust/fontaine/tests/parallel_agents.rs:234` and :290 set explicit
   budgets and keep passing unchanged — they pin that the opt-in cap still stops a child and
   returns a partial report, which is the regression that matters once the default is gone.
