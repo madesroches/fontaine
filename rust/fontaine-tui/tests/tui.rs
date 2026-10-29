@@ -984,6 +984,37 @@ async fn interrupting_a_bang_command_records_it_and_tells_the_agent_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn esc_during_a_queued_bang_run_kills_it_and_the_next_entry_still_runs() {
+    let w = World::new(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("answer"),
+        text_turn("next reply"),
+    ])
+    .with_config(ALLOW_SLEEP);
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("!sleep 30");
+        ui.wait_for("queued: !sleep 30").await;
+        ui.send("next entry");
+        ui.wait_for("queued: next entry").await;
+        ui.wait_for("answer").await;
+        // The queued run holds the terminal now; Esc kills it like an idle one.
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        ui.press(KeyCode::Esc);
+        ui.wait_for("interrupted").await;
+        ui.wait_for("next reply").await;
+        idle(&ui).await;
+        // The run's raw is spent, not restored to the input.
+        assert!(!ui.live().contains("!sleep 30"), "{}", ui.live());
+    })
+    .await;
+    let requests = w.requests();
+    assert_eq!(requests.len(), 3, "{requests:?}");
+    assert!(requests[2].contains("next entry"), "{}", requests[2]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn history_persists_across_runs() {
     let w = World::new(vec![text_turn("ok")]);
     w.run(|ui| async move {
@@ -1216,16 +1247,21 @@ async fn a_pick_made_during_a_notification_turn_applies_when_the_turn_ends() {
                 ),
                 Turn::text("launched"),
                 Turn::text("noted the report"),
+                // The queued turn that replays after the turn ends routes here too: the
+                // first user message of its request is still "root task".
+                Turn::text("queued reply"),
             ],
         )
         .delay(2, 3000),
         Route::new("child-A", vec![Turn::text("child done")]).delay(0, 1500),
     ])
     .await;
-    let w = World::routed(
-        &server.uri(),
-        &format!("{OTHER}\n[permissions]\nallow = [\"agent\"]\n"),
+    // The picked account must serve the post-switch replay, so it points at the same server.
+    let extra = format!(
+        "\n[accounts.other]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"second\", \"third\"]\n\n[permissions]\nallow = [\"agent\"]\n",
+        server.uri()
     );
+    let w = World::routed(&server.uri(), &extra);
     w.run(|ui| async move {
         idle(&ui).await;
         ui.send("root task");
@@ -1236,12 +1272,32 @@ async fn a_pick_made_during_a_notification_turn_applies_when_the_turn_ends() {
         ui.wait_for("a background agent reported back").await;
         ui.type_text("third");
         ui.press(KeyCode::Enter);
+        // A message queued during the notification turn replays once it ends.
+        ui.send("queued after the pick");
+        ui.wait_for("queued: queued after the pick").await;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert!(!ui.screen().contains("model is now"), "{}", ui.screen());
         ui.wait_for("model is now other/third").await;
         assert!(ui.screen().contains("noted the report"), "{}", ui.screen());
+        ui.wait_for("queued reply").await;
+        // The deferred pick applied before the queued turn: the notice precedes it.
+        let screen = ui.screen();
+        let switch = screen
+            .find("model is now other/third")
+            .expect("the switch notice");
+        let turn = screen
+            .find("> queued after the pick")
+            .expect("the queued turn's line");
+        assert!(
+            switch < turn,
+            "the switch precedes the queued turn:\n{screen}"
+        );
     })
     .await;
+    let sent = bodies(&server).await;
+    let last = sent.last().unwrap();
+    assert!(last.contains("queued after the pick"), "{last}");
+    assert!(last.contains("\"model\":\"third\""), "{last}");
 }
 
 #[cfg(unix)]
@@ -1484,6 +1540,63 @@ async fn text_typed_while_compacting_comes_back_to_the_input() {
             .any(|b| b.contains("typed while compacting"))
     );
     assert!(!w.ledger_text().contains("typed while compacting"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn esc_during_a_queued_compact_aborts_it_and_the_next_entry_still_runs() {
+    // One conversation, one route: the first user message of every request matches it, the
+    // queued commands included.
+    let server = start(vec![
+        Route::new(
+            "main",
+            vec![
+                Turn::text("reply 1"),
+                Turn::text("reply 2"),
+                Turn::text("reply 3"),
+                Turn::tool("c9", "shell", json!({"command": "sleep 1"})),
+                Turn::text("turn answered"),
+                // The summarizer's answer, held back so Esc can land mid-compaction.
+                Turn::text("THE-SUMMARY"),
+                Turn::text("after compact reply"),
+            ],
+        )
+        .delay(5, 1500),
+    ])
+    .await;
+    let w = World::routed_known(
+        &server.uri(),
+        "\n[permissions]\nallow = [\"shell(sleep *)\"]\n",
+    );
+    w.run(|ui| async move {
+        idle(&ui).await;
+        for (word, reply) in [("one", "reply 1"), ("two", "reply 2"), ("three", "reply 3")] {
+            ui.send(&format!("main {word}"));
+            ui.wait_for(reply).await;
+        }
+        ui.send("main during turn");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("/compact");
+        ui.wait_for("queued: /compact").await;
+        ui.send("after compact");
+        ui.wait_for("queued: after compact").await;
+        ui.wait_for("turn answered").await;
+        // The queued compaction runs now; Esc aborts only it.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        ui.press(KeyCode::Esc);
+        ui.wait_for("interrupted").await;
+        ui.wait_for("after compact reply").await;
+        idle(&ui).await;
+        assert!(
+            !ui.screen().contains("compacted the conversation"),
+            "{}",
+            ui.screen()
+        );
+    })
+    .await;
+    let sent = bodies(&server).await;
+    let last = sent.last().unwrap();
+    assert!(last.contains("after compact"), "{last}");
+    assert!(!last.contains("THE-SUMMARY"), "{last}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

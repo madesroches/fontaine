@@ -1,13 +1,10 @@
 //! `/memory` and `/init`.
 
 use std::ffi::OsString;
-use std::ops::ControlFlow;
 use std::path::Path;
 
 use fontaine_core::agent::AgentRuntime;
-use fontaine_core::instructions::{self, MemoryKind};
-use fontaine_core::ledger::Record;
-use fontaine_core::prompt;
+use fontaine_core::instructions::MemoryKind;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::git_bash::{GitBash, base_path, sh_command};
 
@@ -164,28 +161,6 @@ impl<R: FnMut(&mut App)> Ui<R> {
             )),
             None => {}
         }
-    }
-
-    /// `/init`: has the agent write the project instruction file, or improve the one there.
-    pub(crate) async fn init(
-        &mut self,
-        runtime: &mut AgentRuntime,
-        argument: &str,
-    ) -> ControlFlow<()> {
-        if !argument.is_empty() {
-            self.app
-                .transcript
-                .error(format!("/init takes no argument, not `{argument}`"));
-            return ControlFlow::Continue(());
-        }
-        let (target, existing) = instructions::init_target(&runtime.primary_root());
-        // Recorded before the turn so the guardian judging the write has this intent.
-        runtime.append(Record::UserMessage {
-            text: format!("/init: create or improve {}", target.display()),
-        });
-        let prompt = prompt::init_prompt(&target, existing);
-        self.converse(runtime, "/init".to_string(), Some(prompt))
-            .await
     }
 }
 

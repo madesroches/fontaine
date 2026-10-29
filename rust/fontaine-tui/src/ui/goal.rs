@@ -1,61 +1,19 @@
 //! `/goal` and the turns it leads to: the evaluation between turns, its verdict notices and
 //! the goal turn that follows a verdict of not met.
 
+use std::collections::VecDeque;
 use std::ops::ControlFlow::{self, Break, Continue};
+use std::path::Path;
 
 use fontaine_core::agent::AgentRuntime;
-use fontaine_core::goal::{Applied, GoalArg, Judgment, Step, first_turn_prompt, parse_goal_arg};
-use fontaine_core::ledger::{GoalEvent, Record};
+use fontaine_core::goal::{Applied, Judgment, Step};
+use fontaine_core::ledger::GoalEvent;
 use fontaine_core::turn::TurnOutcome;
-use fontaine_tools::error_chain::chain;
 
 use crate::ui::turn::{EndOfTurn, Serve, TurnEnd, end_of_turn};
 use crate::{App, Ui};
 
 impl<R: FnMut(&mut App)> Ui<R> {
-    pub(super) async fn goal_command(
-        &mut self,
-        runtime: &mut AgentRuntime,
-        typed: &str,
-        argument: &str,
-    ) -> ControlFlow<()> {
-        match parse_goal_arg(argument) {
-            GoalArg::Status => {
-                let status = runtime.session.goal().status(runtime.tree_spend());
-                self.app.transcript.notice(status.describe());
-            }
-            GoalArg::Clear => match runtime.clear_goal() {
-                Some(cleared) => self
-                    .app
-                    .transcript
-                    .notice(format!("Goal cleared: {}", cleared.condition)),
-                None => self.app.transcript.notice("No goal set"),
-            },
-            GoalArg::Set(condition) => {
-                if let Err(e) = runtime.set_goal(&condition) {
-                    self.app.transcript.error(chain(&e));
-                    return Continue(());
-                }
-                self.app
-                    .transcript
-                    .notice(format!("Goal set: {}", condition.trim()));
-                // The first turn is the user's: the line they typed is the intent the
-                // guardian reads, and later goal turns are harness notes.
-                runtime.append(Record::UserMessage {
-                    text: typed.to_string(),
-                });
-                return self
-                    .converse(
-                        runtime,
-                        typed.to_string(),
-                        Some(first_turn_prompt(&condition)),
-                    )
-                    .await;
-            }
-        }
-        Continue(())
-    }
-
     /// Shows how a turn ended for the goal: a pause the turn caused.
     pub(super) fn goal_after_turn(&mut self, runtime: &AgentRuntime, end: &TurnEnd) {
         let paused = match end {
@@ -73,6 +31,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     pub(super) async fn goal_step(
         &mut self,
         runtime: &mut AgentRuntime,
+        launch_dir: &Path,
     ) -> Option<ControlFlow<()>> {
         let pending = runtime.next_goal_step()?;
         self.app.running = true;
@@ -99,13 +58,16 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
         };
         let step = applied.as_ref().map(|applied| self.show_verdict(applied));
-        // What the human typed during the evaluation is the next turn, ahead of any goal turn.
+        // What the human typed during the evaluation runs next, ahead of any goal turn.
         let finished = TurnEnd::Finished(TurnOutcome::Answer(String::new()));
-        if let EndOfTurn::Submit(next) = end_of_turn(&finished, runtime.steering.retract()) {
-            return Some(self.converse(runtime, next, None).await);
+        if let EndOfTurn::Submit(submissions) = end_of_turn(&finished, runtime.steering.retract()) {
+            return Some(
+                self.converse(runtime, launch_dir, VecDeque::from(submissions))
+                    .await,
+            );
         }
         match step.flatten() {
-            Some(next) => Some(self.goal_turn(runtime, next).await),
+            Some(next) => Some(self.goal_turn(runtime, launch_dir, next).await),
             None => Some(Continue(())),
         }
     }

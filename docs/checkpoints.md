@@ -21,11 +21,12 @@ Saving is a recovery aid, not a permission decision: it runs only after the call
 never blocks or denies an edit.
 
 A prompt counts when you submit it: a typed message, a slash command or skill that sends a prompt,
-`/init`, `/plan <task>`, `/goal <condition>`, the first run of a `/loop` line, and a message queued
-during a turn once it is sent as the next turn. Turns Fontaine starts itself (later `/loop`
-iterations, scheduled tasks, goal continuation turns) and messages that steer a running turn do not
-make a new one; their edits belong to the prompt before them. In a headless `fontaine -p` run each
-message is a prompt too, so a later `--resume` can rewind it.
+`/init`, `/plan <task>`, `/goal <condition>`, the first run of a `/loop` line, and a message — or a
+queued skill or prompt-sending command — once it executes after the turn it was queued during.
+Turns Fontaine starts itself (later `/loop` iterations, scheduled tasks, goal continuation turns)
+and messages that steer a running turn do not make a new one; their edits belong to the prompt
+before them. In a headless `fontaine -p` run each message is a prompt too, so a later `--resume`
+can rewind it.
 
 ## Opening the picker
 

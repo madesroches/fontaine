@@ -1,8 +1,6 @@
 use std::ops::ControlFlow::{self, Break, Continue};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
-use crate::resume_picker::ResumePicker;
 use crate::{App, SessionTarget, Ui};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::ledger::Record;
@@ -11,21 +9,6 @@ use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::ROOT_AGENT;
 
 impl<R: FnMut(&mut App)> Ui<R> {
-    /// `/resume [name-or-id]`: switches to the session named, or opens the picker.
-    pub(crate) fn resume(&mut self, runtime: &AgentRuntime, argument: &str) -> ControlFlow<()> {
-        if argument.is_empty() {
-            let others = session::list(&self.data_dir, Some(&self.app.primary_root))
-                .into_iter()
-                .filter(|info| info.id != runtime.session.id)
-                // Every launch writes a start, so a session nothing was said in is only noise.
-                .filter(|info| info.name.is_some() || info.first_prompt.is_some())
-                .collect();
-            self.app.resume = Some(ResumePicker::new(others, SystemTime::now()));
-            return Continue(());
-        }
-        self.switch_to(runtime, argument)
-    }
-
     /// Leaves for the session `text` names (an id or a name), once it is known to exist.
     pub(crate) fn switch_to(&mut self, runtime: &AgentRuntime, text: &str) -> ControlFlow<()> {
         self.switch_from(&runtime.session.id, text)

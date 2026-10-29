@@ -240,6 +240,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             | Action::None
                             | Action::Submit(_)
                             | Action::Queue(_)
+                            | Action::Command { .. }
                             | Action::EditQueued
                             | Action::Shell(_)
                             | Action::GuardianOff(_)

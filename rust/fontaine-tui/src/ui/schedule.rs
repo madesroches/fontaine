@@ -1,6 +1,8 @@
 //! `/loop` and the scheduled turns it and the model's scheduling tools lead to.
 
+use std::collections::VecDeque;
 use std::ops::ControlFlow::{self, Continue};
+use std::path::Path;
 use std::time::Duration;
 
 use fontaine_core::agent::AgentRuntime;
@@ -12,6 +14,7 @@ use fontaine_core::schedule::{
 use fontaine_tools::error_chain::chain;
 
 use crate::commands::{Interval, LoopRequest, parse_loop};
+use crate::ui::turn::Submission;
 use crate::{App, Ui};
 
 /// The longest an idle interface sleeps with a task pending before it looks at the clock again,
@@ -85,6 +88,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     pub(super) async fn loop_command(
         &mut self,
         runtime: &mut AgentRuntime,
+        launch_dir: &Path,
         typed: &str,
         argument: &str,
     ) -> ControlFlow<()> {
@@ -109,7 +113,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 let Some(prompt) = self.start_interval(&scheduler, interval) else {
                     return Continue(());
                 };
-                return self.first_iteration(runtime, typed, prompt).await;
+                return self
+                    .first_iteration(runtime, launch_dir, typed, prompt)
+                    .await;
             }
             LoopRequest::SelfPaced(prompt) => {
                 match scheduler.begin_loop(&prompt) {
@@ -129,7 +135,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     "self-paced loop: the model picks the delay between iterations; Esc at the idle prompt or /loop stop ends it",
                 );
                 let model_prompt = format!("{prompt}\n\n{SELF_PACED_NOTE}");
-                let flow = self.first_iteration(runtime, typed, model_prompt).await;
+                let flow = self
+                    .first_iteration(runtime, launch_dir, typed, model_prompt)
+                    .await;
                 if flow.is_continue() {
                     self.end_of_iteration(runtime);
                 }
@@ -168,18 +176,27 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     /// The first iteration runs now as the line the human typed, which is what the guardian
-    /// then takes as their intent for every later one.
+    /// then takes as their intent for every later one. The generic replay dispatch never
+    /// handles `/loop`; this seeding keeps the loop's own completion bookkeeping intact.
     async fn first_iteration(
         &mut self,
         runtime: &mut AgentRuntime,
+        launch_dir: &Path,
         typed: &str,
         prompt: String,
     ) -> ControlFlow<()> {
         runtime.append(Record::UserMessage {
             text: typed.to_string(),
         });
-        self.converse(runtime, typed.to_string(), Some(prompt))
-            .await
+        self.converse(
+            runtime,
+            launch_dir,
+            VecDeque::from([Submission::Expanded {
+                text: typed.to_string(),
+                prompt,
+            }]),
+        )
+        .await
     }
 
     fn list_schedule(&mut self, scheduler: &Scheduler) {

@@ -76,7 +76,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         };
         let queued = runtime.steering.retract();
         if !queued.is_empty() {
-            self.app.restore_to_input(&queued.join("\n\n"));
+            let raws: Vec<&str> = queued.iter().map(|entry| entry.raw()).collect();
+            self.app.restore_to_input(&raws.join("\n\n"));
         }
         self.app.running = false;
         self.app.deny_pending();

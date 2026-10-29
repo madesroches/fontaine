@@ -5,6 +5,7 @@ use std::sync::Arc;
 use fontaine_core::config::PermissionMode;
 use fontaine_core::notice::Severity;
 use fontaine_core::permissions::{Answer, ApprovalRequest, Offers};
+use fontaine_core::steering::Queued;
 use fontaine_core::tier::Tier;
 use fontaine_core::turn::{SessionEvent, TurnOutcome};
 use fontaine_tools::gate::ROOT_AGENT;
@@ -14,7 +15,9 @@ use tokio::sync::oneshot;
 use crate::provider_dialog::DialogKey;
 use crate::recent::RecentModels;
 use crate::ui::providers::queue_provider_request;
-use crate::ui::turn::{EndOfTurn, TurnEnd, end_of_turn};
+use crate::ui::turn::{
+    CommandOutcome, EndOfTurn, Submission, TurnEnd, end_of_turn, front_push, restore_block,
+};
 use crate::{App, Prompt, Ui, transcript};
 
 #[test]
@@ -68,16 +71,29 @@ fn ask() -> (Prompt, oneshot::Receiver<Answer>) {
     (Prompt::Ask(Box::new(request), reply), answer)
 }
 
-fn texts(messages: &[&str]) -> Vec<String> {
-    messages.iter().map(ToString::to_string).collect()
+fn messages(texts: &[&str]) -> Vec<Queued> {
+    texts
+        .iter()
+        .map(|text| Queued::Message((*text).to_string()))
+        .collect()
+}
+
+fn skill(raw: &str) -> Queued {
+    let rest = raw.trim_start_matches('/');
+    let (name, argument) = rest.split_once(' ').unwrap_or((rest, ""));
+    Queued::Skill {
+        raw: raw.to_string(),
+        name: name.to_string(),
+        argument: argument.to_string(),
+    }
 }
 
 #[test]
 fn queued_messages_are_sent_after_an_answer() {
     let end = TurnEnd::Finished(TurnOutcome::Answer("done".into()));
     assert_eq!(
-        end_of_turn(&end, texts(&["one", "two"])),
-        EndOfTurn::Submit("one\n\ntwo".into())
+        end_of_turn(&end, messages(&["one", "two"])),
+        EndOfTurn::Submit(vec![Submission::Message("one\n\ntwo".into())])
     );
 }
 
@@ -89,9 +105,107 @@ fn queued_messages_go_back_when_the_turn_did_not_complete() {
         TurnEnd::Finished(TurnOutcome::MaxTurns("limit".into())),
     ] {
         assert_eq!(
-            end_of_turn(&end, texts(&["one", "two"])),
+            end_of_turn(&end, messages(&["one", "two"])),
             EndOfTurn::RestoreToInput("one\n\ntwo".into())
         );
+    }
+}
+
+#[test]
+fn skills_commands_and_shell_lines_are_submissions_of_their_own_in_typed_order() {
+    let end = TurnEnd::Finished(TurnOutcome::Answer("done".into()));
+    let entries = vec![
+        Queued::Message("one".into()),
+        skill("/review 42"),
+        Queued::Message("two".into()),
+        Queued::Command("/rename later".into()),
+        Queued::Shell("!echo hi".into()),
+        Queued::Message("three".into()),
+    ];
+    assert_eq!(
+        end_of_turn(&end, entries),
+        EndOfTurn::Submit(vec![
+            Submission::Message("one".into()),
+            Submission::Skill {
+                raw: "/review 42".into(),
+                name: "review".into(),
+                argument: "42".into(),
+            },
+            // The message behind the skill is not steered ahead of it: it waits its turn.
+            Submission::Message("two".into()),
+            Submission::Command("/rename later".into()),
+            Submission::Shell("!echo hi".into()),
+            Submission::Message("three".into()),
+        ])
+    );
+}
+
+#[test]
+fn a_restore_joins_every_entrys_raw_as_typed() {
+    let entries = vec![
+        skill("/review 42"),
+        Queued::Message("plain".into()),
+        Queued::Command("/rename later".into()),
+        Queued::Shell("!echo hi".into()),
+    ];
+    for end in [
+        TurnEnd::Interrupted,
+        TurnEnd::Finished(TurnOutcome::Failed("x".into())),
+    ] {
+        assert_eq!(
+            end_of_turn(&end, entries.clone()),
+            EndOfTurn::RestoreToInput("/review 42\n\nplain\n\n/rename later\n\n!echo hi".into())
+        );
+    }
+}
+
+#[test]
+fn replay_restoration_puts_older_pending_raws_first_and_the_draft_last() {
+    let mut pending = VecDeque::from(vec![
+        Submission::Skill {
+            raw: "/review 42".into(),
+            name: "review".into(),
+            argument: "42".into(),
+        },
+        Submission::Message("behind".into()),
+    ]);
+    let outcome = CommandOutcome::Turn(Submission::Message("/plan do x".into()));
+    if let CommandOutcome::Turn(sub) = outcome {
+        front_push(&mut pending, sub);
+    }
+    // A dispatcher hand-off runs immediately, ahead of everything already pending.
+    assert_eq!(
+        pending.front(),
+        Some(&Submission::Message("/plan do x".into()))
+    );
+
+    let mut app = App::new(PermissionMode::Manual, "m".into());
+    app.input.set_text("draft");
+    let block = restore_block(&pending, "newly typed");
+    assert_eq!(block, "/plan do x\n\n/review 42\n\nbehind\n\nnewly typed");
+    app.restore_to_input(&block);
+    assert_eq!(
+        app.input.text(),
+        "/plan do x\n\n/review 42\n\nbehind\n\nnewly typed\n\ndraft"
+    );
+}
+
+#[test]
+fn the_front_push_puts_either_dispatcher_handoff_ahead_of_pending() {
+    for handoff in [
+        Submission::Message("do x".into()),
+        Submission::Expanded {
+            text: "/goal win".into(),
+            prompt: "expanded".into(),
+        },
+    ] {
+        let mut pending = VecDeque::from(vec![
+            Submission::Command("/rename later".into()),
+            Submission::Message("behind".into()),
+        ]);
+        front_push(&mut pending, handoff.clone());
+        assert_eq!(pending.front(), Some(&handoff));
+        assert_eq!(pending.len(), 3);
     }
 }
 
