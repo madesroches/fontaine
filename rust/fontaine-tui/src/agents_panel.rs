@@ -352,6 +352,25 @@ mod tests {
     }
 
     #[test]
+    fn an_uncapped_row_shows_only_what_it_spent() {
+        let mut panel = AgentsPanel::new();
+        let mut uncapped = row("agent-1", ChildStatus::Running);
+        uncapped.token_budget = None;
+        uncapped.cost_budget = None;
+        panel.set_rows(vec![uncapped]);
+        let text: String = panel
+            .body(80, &Theme::default())
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("1200 tok"), "{text}");
+        assert!(!text.contains("1200 /"), "{text}");
+        assert!(text.contains("$0.0042"), "{text}");
+        assert!(!text.contains("/ $"), "{text}");
+    }
+
+    #[test]
     fn only_a_running_agent_can_be_killed_and_selection_survives_a_refresh() {
         let mut panel = AgentsPanel::new();
         panel.set_rows(vec![

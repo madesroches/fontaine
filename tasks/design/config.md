@@ -107,8 +107,8 @@ hard_deny   = ["$defaults", "Never send repo contents to third-party code-review
 
 [agents]
 max_parallel = 4                  # concurrent subagents (v1 requirement, Claude Code-style)
-subagent_token_budget = 200000    # per-subagent cap; semantics in Phase 5 design
-subagent_cost_budget_usd = 2.0    # per-subagent spend cap; inactive (one-time notice) on a model with no catalog price, the token cap still binds
+# subagent_token_budget = 200000  # opt-in per-subagent cap, unset by default; semantics in Phase 5 design
+# subagent_cost_budget_usd = 2.0  # opt-in per-subagent spend cap, unset by default; inactive (one-time notice) on a model with no catalog price, a token cap, if set, still binds
 # session_token_budget / session_cost_budget_usd   # root-of-tree totals, default unset
 
 [agents.types]                    # per-type model + toolset + mode (`mode` accepts only `inherit`/`manual`/`dontAsk`, else load error (exit 2); default "inherit", never looser than parent; under a `plan` parent child edits are blocked and non-edits use the tighter of the child's mode and `manual`)

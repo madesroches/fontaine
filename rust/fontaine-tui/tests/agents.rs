@@ -49,7 +49,10 @@ async fn a_killed_subagents_row_shows_killed_and_its_spend_against_its_budget() 
         ),
     ])
     .await;
-    let w = World::routed(&server.uri(), ALLOW_AGENT);
+    let w = World::routed(
+        &server.uri(),
+        "\n[permissions]\nallow = [\"agent\"]\n\n[agents]\nsubagent_token_budget = 200000\n",
+    );
     w.run(|ui| async move {
         idle(&ui).await;
         ui.send("root task");

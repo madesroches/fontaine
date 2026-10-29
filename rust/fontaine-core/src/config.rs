@@ -1352,8 +1352,8 @@ pub struct AutoMode {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Agents {
     pub max_parallel: u32,
-    pub subagent_token_budget: u64,
-    pub subagent_cost_budget_usd: f64,
+    pub subagent_token_budget: Option<u64>,
+    pub subagent_cost_budget_usd: Option<f64>,
     pub session_token_budget: Option<u64>,
     pub session_cost_budget_usd: Option<f64>,
     pub types: BTreeMap<String, AgentType>,
@@ -1618,8 +1618,8 @@ impl Config {
             plugin_soft_deny: Vec::new(),
             agents: Agents {
                 max_parallel: 4,
-                subagent_token_budget: 200_000,
-                subagent_cost_budget_usd: 2.0,
+                subagent_token_budget: None,
+                subagent_cost_budget_usd: None,
                 session_token_budget: None,
                 session_cost_budget_usd: None,
                 types: BTreeMap::new(),
@@ -1815,10 +1815,10 @@ impl Config {
                 t.max_parallel = v;
             }
             if let Some(v) = a.subagent_token_budget {
-                t.subagent_token_budget = v;
+                t.subagent_token_budget = Some(v);
             }
             if let Some(v) = a.subagent_cost_budget_usd {
-                t.subagent_cost_budget_usd = v;
+                t.subagent_cost_budget_usd = Some(v);
             }
             if let Some(v) = a.session_token_budget {
                 t.session_token_budget = Some(v);
