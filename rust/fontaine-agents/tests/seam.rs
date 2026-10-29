@@ -346,7 +346,7 @@ async fn the_models_precedence_is_the_call_then_the_type_then_the_session() {
     let rig = rig();
     *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
     spawn(&rig, args("explore", "x")).await.unwrap();
-    assert_eq!(rig.runner.spawned()[0].model, ModelSpec::GuardianDefault);
+    assert_eq!(rig.runner.spawned()[0].model, ModelSpec::Main);
 
     let mut with_model = args("explore", "x");
     with_model.model = Some("work/claude-haiku".into());

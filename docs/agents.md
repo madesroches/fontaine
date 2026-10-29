@@ -35,12 +35,12 @@ Three types are built in:
 
 | Type | Model | Tools |
 |---|---|---|
-| `explore` | `$guardian_default` | `ls`, `read`, `glob`, `grep`, `send_message` |
+| `explore` | `$main` | `ls`, `read`, `glob`, `grep`, `send_message` |
 | `worker` | `$main` | `ls`, `read`, `glob`, `grep`, `edit`, `write`, `notebook_edit`, `shell`, `send_message` |
 | `fork` | the session model | every tool the main conversation has, except `ask_user_question` |
 
 `$main` is the session model. `$guardian_default` is the top-ranked validated guardian model your
-accounts offer, or the session model when there is none.
+accounts offer, or the session model when there is none; it is opt-in — no built-in type uses it.
 
 Types come from four places, later ones replacing earlier ones of the same name: the built-in
 ones, [agent files](#agent-files) in your config directory, `[agents.types.<name>]` entries, and
@@ -50,7 +50,7 @@ file or config entry can grant.
 
 ```toml
 [agents.types.reviewer]
-model = "$guardian_default"
+model = "work/claude-sonnet-5"
 tools = ["ls", "read", "glob", "grep"]
 mode = "inherit"
 ```
