@@ -54,9 +54,9 @@ This also matches Claude Code, whose built-in Explore agent inherits the session
 3. `docs/agents.md` — built-in types table: `explore | $main | …`; keep the
    `$guardian_default` explanation (still a valid explicit value) and add a half-sentence that it
    is opt-in only.
-4. `docs/configuration.md` — keep the `[agents.types.explore]` example and add one clause
-   saying it opts `explore` back into `$guardian_default`: with the default now `$main`, the
-   example reads as an explicit override, which is exactly how a user gets the old behavior.
+4. `docs/configuration.md` — switch the `[agents.types]` example to a custom type (e.g. a
+   `reviewer`) instead of `[agents.types.explore]`: with the default now `$main`, keeping
+   `model = "$guardian_default"` on `explore` would showcase an override no user wants.
 5. `CHANGELOG.md` — entry under the unreleased section: built-in `explore` subagents now run on
    the session model instead of `$guardian_default` (#286).
 
@@ -82,8 +82,8 @@ This also matches Claude Code, whose built-in Explore agent inherits the session
   and credential-presence resolution keeps its known-blind spot. Rejected.
 - **Session model for explore (chosen)**: no new machinery, no cross-account coupling, matches
   Claude Code. The cost is that explore tokens bill to the main model's account — acceptable:
-  users who want the cheap route can still set `model = "$guardian_default"` explicitly, now
-  with eyes open.
+  explore's job is reading the workspace, and nothing about that calls for a different,
+  quota-coupled account. `$guardian_default` stays a valid value for types a user defines.
 
 ## Decisions
 
