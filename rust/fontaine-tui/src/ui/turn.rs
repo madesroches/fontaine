@@ -379,8 +379,6 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
             Err(TurnEnd::InputClosed) => Break(()),
             Err(_) => {
-                self.app.deny_pending();
-                self.drain_prompts();
                 self.app.transcript.notice("interrupted");
                 Continue(SkillRun::Spent)
             }
