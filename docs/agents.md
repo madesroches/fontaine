@@ -147,8 +147,8 @@ dialog in front of you.
   cap it **stops**, its report is marked partial, and its pending approval prompts are cancelled as
   denied. When a session ceiling is set, every agent in the tree debits it, and no new subagent
   starts once it is spent.
-- A cost cap on a model with no known price is inactive, with a one-time notice; the token cap still
-  binds. (`--max-budget-usd` on a main model with no known price remains a usage error.)
+- A cost cap on a model with no known price is inactive, with a one-time notice; a token cap, if
+  set, still binds. (`--max-budget-usd` on a main model with no known price remains a usage error.)
 
 ## Agent files
 
