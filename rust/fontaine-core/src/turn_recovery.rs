@@ -92,4 +92,25 @@ mod tests {
         let conversation = load_async(&store, "main").await.unwrap();
         assert_eq!(conversation.messages().len(), 2);
     }
+
+    #[tokio::test]
+    async fn a_torn_log_remains_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = rig_memory::DirStore::open(dir.path()).unwrap();
+        append_messages(&store, "main", &[Arc::new(Message::user("one"))])
+            .await
+            .unwrap();
+        // A crash mid-write leaves a torn tail: bytes after the last newline.
+        let log = dir.path().join("logs").join("main.jsonl");
+        let mut bytes = std::fs::read(&log).unwrap();
+        bytes.extend_from_slice(b"{\"torn");
+        std::fs::write(&log, bytes).unwrap();
+        let conversation = load_async(&store, "main").await.unwrap();
+        assert_eq!(conversation.messages().len(), 1);
+        append_messages(&store, "main", &[Arc::new(Message::user("two"))])
+            .await
+            .unwrap();
+        let conversation = load_async(&store, "main").await.unwrap();
+        assert_eq!(conversation.messages().len(), 2);
+    }
 }

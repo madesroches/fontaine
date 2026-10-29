@@ -266,6 +266,15 @@ pub fn checkout_dir(config_dir: &Path, marketplace: &str, plugin: &str) -> PathB
         .join(plugin)
 }
 
+/// The short form of a pin for display; safe on a hand-edited, non-ASCII pin.
+pub fn short_pin(pin: &str) -> &str {
+    let mut end = pin.len().min(7);
+    while !pin.is_char_boundary(end) {
+        end -= 1;
+    }
+    &pin[..end]
+}
+
 /// Reads the registry without taking its lock; a caller that mutates it must hold
 /// [`crate::file_lock::lock`] on [`registry_path`] around the read-modify-write. A missing file
 /// is an empty registry.
@@ -1023,12 +1032,21 @@ fn parse_mcp_file(
                 url: None,
                 env,
             },
+            (None, Some(_)) if env.is_some() || object.contains_key("args") => {
+                return Err(PluginError::in_plugin(
+                    plugin,
+                    path.to_path_buf(),
+                    format!(
+                        "the `.mcp.json` entry `{name}` sets `args` or `env`, which apply to stdio servers only"
+                    ),
+                ));
+            }
             (None, Some(url)) => McpServer {
                 command: None,
                 args: None,
                 env_vars: None,
                 url: Some(url),
-                env,
+                env: None,
             },
             (Some(_), Some(_)) => {
                 return Err(PluginError::in_plugin(
@@ -1669,16 +1687,19 @@ impl crate::config::Config {
     pub fn apply_plugins(&mut self, plugins: &PluginContributions) -> Result<(), PluginError> {
         // Strip the previous application first: the session-switch path reuses the resolved
         // config, so a plugin removed, disabled or changed since the last application must not
-        // leave its old hooks, servers or rules behind.
-        self.hooks
-            .pre_tool_use
-            .retain(|hook| hook.origin.slot != Slot::Plugin);
-        self.hooks
-            .post_tool_use
-            .retain(|hook| hook.origin.slot != Slot::Plugin);
-        self.hooks
-            .permission_denied
-            .retain(|hook| hook.origin.slot != Slot::Plugin);
+        // leave its old hooks, servers or rules behind. A hook the plugin only lent its
+        // attribution to (an identical hook of another scope) survives; its attribution is
+        // cleared and the re-application below re-derives it.
+        for hooks in [
+            &mut self.hooks.pre_tool_use,
+            &mut self.hooks.post_tool_use,
+            &mut self.hooks.permission_denied,
+        ] {
+            hooks.retain(|hook| hook.origin.slot != Slot::Plugin);
+            for hook in hooks.iter_mut() {
+                hook.plugin = None;
+            }
+        }
         let plugin_servers: BTreeSet<&str> = self
             .mcp_origins
             .iter()
@@ -1813,6 +1834,15 @@ pub fn content_hash(dir: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_pins_never_split_a_character() {
+        assert_eq!(short_pin("a1b2c3d4"), "a1b2c3d");
+        assert_eq!(short_pin("abc"), "abc");
+        assert_eq!(short_pin(""), "");
+        // Seven bytes is mid-character for a multibyte pin.
+        assert_eq!(short_pin("éééé"), "ééé");
+    }
 
     #[test]
     fn plugin_and_marketplace_names_follow_the_alphabet() {

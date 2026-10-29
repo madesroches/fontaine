@@ -1952,7 +1952,14 @@ pub(crate) fn union_hooks(target: &mut Vec<Hook>, items: Option<&[Hook]>, origin
     for item in items.unwrap_or_default() {
         match target.iter_mut().find(|kept| *kept == item) {
             Some(kept) => {
-                if rank(origin) > rank(kept.origin) {
+                if origin.slot == Slot::Plugin {
+                    // A plugin's hook identical to another scope's merges by attribution
+                    // only: the kept origin stands, so stripping the plugin's hooks on a
+                    // re-application never takes the other scope's hook with it.
+                    if kept.plugin.is_none() {
+                        kept.plugin = item.plugin.clone();
+                    }
+                } else if rank(origin) > rank(kept.origin) {
                     kept.origin = origin;
                     kept.plugin = item.plugin.clone();
                 }

@@ -237,7 +237,7 @@ fn load_skill(path: &Path, default_name: &str, scope: Scope) -> Result<Skill, Ex
             .iter()
             .map(|entry| parse_rule(entry).expect("validated when the definition was loaded"))
             .collect(),
-        // Validated above; a repository's skill cannot approve anything.
+        // Validated above; a repository's or a plugin's skill cannot approve anything.
         _ => Vec::new(),
     };
     let flag = |key: &str, default: bool| {

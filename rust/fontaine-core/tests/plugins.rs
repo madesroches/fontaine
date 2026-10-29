@@ -482,7 +482,7 @@ fn the_content_hash_follows_symlinks_the_way_the_copy_does() {
 }
 
 #[test]
-fn an_identical_plugin_hook_keeps_the_plugin_origin() {
+fn an_identical_plugin_hook_merges_by_attribution_only() {
     let w = World::new();
     let mut config = w.load().unwrap();
     let project_hook = fontaine_core::config::Hook {
@@ -521,12 +521,21 @@ fn an_identical_plugin_hook_keeps_the_plugin_origin() {
     };
     config.apply_plugins(&contributions).unwrap();
     assert_eq!(config.hooks.pre_tool_use.len(), 1);
-    assert_eq!(config.hooks.pre_tool_use[0].origin.slot, Slot::Plugin);
+    assert_eq!(config.hooks.pre_tool_use[0].origin.slot, Slot::Project);
     assert_eq!(
         config.hooks.pre_tool_use[0].plugin.as_deref(),
         Some("p"),
-        "a plugin hook replacing a project hook keeps its plugin attribution"
+        "a plugin hook identical to a project hook merges by attribution only"
     );
+
+    // Re-applying without the plugin strips its contributions but must not take the
+    // project's own hook with it.
+    config
+        .apply_plugins(&plugins::PluginContributions::default())
+        .unwrap();
+    assert_eq!(config.hooks.pre_tool_use.len(), 1);
+    assert_eq!(config.hooks.pre_tool_use[0].origin.slot, Slot::Project);
+    assert_eq!(config.hooks.pre_tool_use[0].plugin, None);
 }
 
 #[test]
@@ -620,6 +629,8 @@ fn malformed_mcp_env_and_args_are_load_errors() {
         r#"{"mcpServers": {"s": {"command": "x", "args": ["a", 5]}}}"#,
         r#"{"mcpServers": {"s": {"command": "x", "args": "a"}}}"#,
         r#"{"mcpServers": {"s": {"command": "x", "url": "https://x"}}}"#,
+        r#"{"mcpServers": {"s": {"url": "https://x", "env": {"TOKEN": "1"}}}}"#,
+        r#"{"mcpServers": {"s": {"url": "https://x", "args": ["a"]}}}"#,
     ] {
         write(&root.join(".mcp.json"), bad);
         assert!(
