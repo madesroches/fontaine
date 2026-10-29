@@ -664,9 +664,9 @@ their reports. Headless runs accept `-p "/goal <condition>"`; see
 
 `/agents` (or `/tasks`) or Ctrl-T opens a list with one row per [subagent](agents.md), and below it one row per [background job](tools.md#background-jobs) of the main conversation (its id, its state, its age and the start of its command): an agent row shows its id and type, its
 model, its status (`running`, `waiting-on-permission`, `done`, `killed`, `budget-exhausted` or
-`failed`) and what it has used against its budget, such as `1500 tok · $0.0021 / $2.00`; the
-`/ <cap>` form (`1500 / 200000 tok`) appears for a budget that is set, and `cost n/a` shows when
-the model has no known price. Up and Down select a row; Enter looks inside it:
+`failed`) and what it has used, such as `1500 tok · $0.0021`; each `/ <cap>` form
+(`1500 / 200000 tok`, `$0.0021 / $2.00`) appears only for a budget that is set, and `cost n/a`
+shows when the model has no known price. Up and Down select a row; Enter looks inside it:
 
 - the calls it is **waiting for you** to decide, so an approval cannot hide behind the main
   transcript;

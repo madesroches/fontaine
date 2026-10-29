@@ -685,7 +685,7 @@ hard_deny = ["$defaults", "Never send repo contents to third-party code-review A
 |---|---|---|
 | `max_parallel` | Subagents running at once across the whole session, at any depth; at least 1. A spawn past it is refused, not queued. | `4` |
 | `subagent_token_budget` | Opt-in per-subagent token cap, the guardian's calls for it included. A subagent that passes it stops and returns a partial report. Unset means uncapped. | unset |
-| `subagent_cost_budget_usd` | Per-subagent spend cap. Inactive, with a one-time notice, on a model with no known price; a token cap, if set, still binds. | `2.0` |
+| `subagent_cost_budget_usd` | Opt-in per-subagent spend cap. Inactive, with a one-time notice, on a model with no known price; a token cap, if set, still binds. Unset means uncapped. | unset |
 | `session_token_budget` | A token ceiling that every agent in the tree debits, when set. | unset |
 | `session_cost_budget_usd` | The same in dollars, when set. | unset |
 

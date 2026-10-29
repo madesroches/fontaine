@@ -404,10 +404,9 @@ pub const KEYS: &[KeyRow] = &[
     row!("agents.subagent_token_budget", Scalar, |c, _| opt(c
         .agents
         .subagent_token_budget)),
-    row!("agents.subagent_cost_budget_usd", Scalar, |c, _| c
+    row!("agents.subagent_cost_budget_usd", Scalar, |c, _| opt(c
         .agents
-        .subagent_cost_budget_usd
-        .to_string()),
+        .subagent_cost_budget_usd)),
     row!("agents.session_token_budget", Scalar, |c, _| opt(c
         .agents
         .session_token_budget)),
@@ -600,6 +599,7 @@ mod tests {
         assert_eq!(effective("schedule.enabled", &c), "true");
         assert_eq!(effective("agents.max_parallel", &c), "4");
         assert_eq!(effective("agents.subagent_token_budget", &c), "unset");
+        assert_eq!(effective("agents.subagent_cost_budget_usd", &c), "unset");
         assert_eq!(effective("guardian.profile", &c), "full");
         assert_eq!(effective("guardian.scanner", &c), "off");
         assert_eq!(effective("guardian.screen.model", &c), "unset");
@@ -620,6 +620,9 @@ mod tests {
         let mut c = defaults();
         c.agents.subagent_token_budget = Some(200_000);
         assert_eq!(effective("agents.subagent_token_budget", &c), "200000");
+
+        c.agents.subagent_cost_budget_usd = Some(2.5);
+        assert_eq!(effective("agents.subagent_cost_budget_usd", &c), "2.5");
     }
 
     #[test]

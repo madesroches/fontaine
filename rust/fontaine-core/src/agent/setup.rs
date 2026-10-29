@@ -218,7 +218,7 @@ pub(super) fn agent_limits(config: &Config) -> Limits {
         max_parallel: config.agents.max_parallel,
         subagent: Budget {
             tokens: config.agents.subagent_token_budget,
-            cost_usd: Some(config.agents.subagent_cost_budget_usd),
+            cost_usd: config.agents.subagent_cost_budget_usd,
         },
         session: Budget {
             tokens: config.agents.session_token_budget,
@@ -592,13 +592,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_unset_subagent_token_budget_leaves_the_child_uncapped() {
+    fn unset_subagent_budgets_leave_the_child_uncapped() {
         let mut config = Config::defaults(PathBuf::from("."));
         let limits = agent_limits(&config);
         assert_eq!(limits.subagent.tokens, None);
+        assert_eq!(limits.subagent.cost_usd, None);
 
         config.agents.subagent_token_budget = Some(50_000);
+        config.agents.subagent_cost_budget_usd = Some(0.5);
         let limits = agent_limits(&config);
         assert_eq!(limits.subagent.tokens, Some(50_000));
+        assert_eq!(limits.subagent.cost_usd, Some(0.5));
     }
 }

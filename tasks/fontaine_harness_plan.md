@@ -657,6 +657,7 @@ scorecard run (see `## Remaining work`).
 - 2026-10-27: The fast-path exception in the AGENTS.md security invariants gains a second exception naming these tiers (after the floor, scoped as above); `[permissions] auto_tracked_edits` and `auto_scratch_writes` default true, and project scope may only set them false (#256).
 - AFK: The `tracked_edit` exclusion of instruction files and `.github/` is a `floor.rs` helper (resolved path relative to the root, case-folded like the protected list: basenames `FONTAINE.md`, `FONTAINE.local.md`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` at any depth, anything under `rules/`, any `.github` component); excluded paths fall through to the guardian with no new `soft_deny` rule, and `@import` targets are not excluded because the loader keeps no durable path list (#256).
 - 2026-10-28: No default per-subagent token cap at all — not a raised one; `subagent_token_budget` is opt-in only, for Claude Code parity (#285).
+- 2026-10-28: `subagent_cost_budget_usd` is likewise opt-in only — no default `$2.0`; no per-subagent budget binds unless the user sets one (#285).
 
 ## Open Questions
 

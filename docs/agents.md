@@ -80,8 +80,8 @@ budgets and limits, and it appears in the agents panel as `fork`.
   exact prompt, which carries sections only the main conversation gets, such as memory and
   scheduling.
 - The inherited context is billed on the fork's first call, so a long conversation counts
-  against an explicit `subagent_token_budget` or the cost budget from the start; with a tight
-  cap set, the fork can end as `BudgetExhausted` with a partial result.
+  against an explicit `subagent_token_budget` or `subagent_cost_budget_usd` from the start;
+  with a tight cap set, the fork can end as `BudgetExhausted` with a partial result.
 - Forking is a rule target like any type: `deny = ["agent(fork)"]` forbids it.
 
 This is not the `/fork` slash command, an alias of `/branch` that splits your own session
@@ -135,7 +135,7 @@ dialog in front of you.
 |---|---|---|
 | `[agents] max_parallel` | Subagents running at once across the whole session, at any depth. | `4` |
 | `[agents] subagent_token_budget` | Tokens one subagent may use; uncapped when unset. | unset |
-| `[agents] subagent_cost_budget_usd` | Dollars one subagent may spend. | `2.0` |
+| `[agents] subagent_cost_budget_usd` | Dollars one subagent may spend; uncapped when unset. | unset |
 | `[agents] session_token_budget` | A ceiling for the whole tree, when set. | unset |
 | `[agents] session_cost_budget_usd` | The same in dollars, when set. | unset |
 
@@ -147,8 +147,9 @@ dialog in front of you.
   cap it **stops**, its report is marked partial, and its pending approval prompts are cancelled as
   denied. When a session ceiling is set, every agent in the tree debits it, and no new subagent
   starts once it is spent.
-- A cost cap on a model with no known price is inactive, with a one-time notice; a token cap, if
-  set, still binds. (`--max-budget-usd` on a main model with no known price remains a usage error.)
+- A cost cap, when set, is inactive on a model with no known price, with a one-time notice; a
+  token cap, if set, still binds. (`--max-budget-usd` on a main model with no known price
+  remains a usage error.)
 
 ## Agent files
 
