@@ -22,8 +22,23 @@ fn defaults_with_no_files() {
     assert_eq!(c.guardian.profile, GuardianProfile::Full);
     assert_eq!(c.guardian.timeout_secs, 30);
     assert_eq!(c.agents.max_parallel, 4);
+    assert_eq!(c.agents.subagent_token_budget, None);
     assert!(!c.telemetry.enabled);
     assert!(c.accounts.is_empty());
+}
+
+#[test]
+fn a_set_subagent_token_budget_resolves_and_an_inner_scope_without_it_keeps_it() {
+    let w = World::new();
+    w.trusted_repo();
+    w.user_file("[agents]\nsubagent_token_budget = 200000\n");
+    let c = w.load().unwrap();
+    assert_eq!(c.agents.subagent_token_budget, Some(200_000));
+
+    w.local_file("[agents]\nmax_parallel = 2\n");
+    let c = w.load().unwrap();
+    assert_eq!(c.agents.subagent_token_budget, Some(200_000));
+    assert_eq!(c.agents.max_parallel, 2);
 }
 
 #[test]

@@ -464,6 +464,11 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- Subagents are no longer capped at 200,000 tokens by default (#285). A subagent now runs until
+  its task is done — matching Claude Code — instead of dying mid-work with a partial report on
+  the largest delegations. `[agents] subagent_token_budget` stays as an opt-in per-subagent cap;
+  the per-subagent cost budget and the session budgets are unchanged.
+
 - Each tool's decision inputs (risk class, path containment, destructive policy, rule specifier
   and Claude Code name) now live in one descriptor table, `fontaine-tools/src/descriptor.rs`, and
   the unknown-tool error lists Claude Code names in table order (#181).

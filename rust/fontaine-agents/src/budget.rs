@@ -1,5 +1,5 @@
 //! Per-agent spend and the caps it is held to. A cap that cannot be measured is inactive: a
-//! cost cap on a model with no catalog price never fires, and the token cap still binds.
+//! cost cap on a model with no catalog price never fires, and a token cap, if set, still binds.
 
 /// What one agent has used: its own model calls plus the guardian calls made for it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

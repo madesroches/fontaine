@@ -217,7 +217,7 @@ pub(super) fn agent_limits(config: &Config) -> Limits {
     Limits {
         max_parallel: config.agents.max_parallel,
         subagent: Budget {
-            tokens: Some(config.agents.subagent_token_budget),
+            tokens: config.agents.subagent_token_budget,
             cost_usd: Some(config.agents.subagent_cost_budget_usd),
         },
         session: Budget {
@@ -585,4 +585,20 @@ fn wire_root_tree(tree: &AgentTree, models: &Models, tool_server: &ToolServerHan
             .map(str::to_owned)
             .collect::<Vec<String>>()
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unset_subagent_token_budget_leaves_the_child_uncapped() {
+        let mut config = Config::defaults(PathBuf::from("."));
+        let limits = agent_limits(&config);
+        assert_eq!(limits.subagent.tokens, None);
+
+        config.agents.subagent_token_budget = Some(50_000);
+        let limits = agent_limits(&config);
+        assert_eq!(limits.subagent.tokens, Some(50_000));
+    }
 }

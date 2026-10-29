@@ -79,9 +79,9 @@ budgets and limits, and it appears in the agents panel as `fork`.
 - A `fork` uses the subagent system prompt with a fork-specific note, not the main conversation's
   exact prompt, which carries sections only the main conversation gets, such as memory and
   scheduling.
-- The inherited context is billed on the fork's first call, so a long conversation can use up the
-  default subagent token budget (`subagent_token_budget`) quickly, and the fork then ends as
-  `BudgetExhausted` with a partial result.
+- The inherited context is billed on the fork's first call, so a long conversation counts
+  against an explicit `subagent_token_budget` or the cost budget from the start; with a tight
+  cap set, the fork can end as `BudgetExhausted` with a partial result.
 - Forking is a rule target like any type: `deny = ["agent(fork)"]` forbids it.
 
 This is not the `/fork` slash command, an alias of `/branch` that splits your own session
@@ -134,7 +134,7 @@ dialog in front of you.
 | Key | Meaning | Default |
 |---|---|---|
 | `[agents] max_parallel` | Subagents running at once across the whole session, at any depth. | `4` |
-| `[agents] subagent_token_budget` | Tokens one subagent may use. | `200000` |
+| `[agents] subagent_token_budget` | Tokens one subagent may use; uncapped when unset. | unset |
 | `[agents] subagent_cost_budget_usd` | Dollars one subagent may spend. | `2.0` |
 | `[agents] session_token_budget` | A ceiling for the whole tree, when set. | unset |
 | `[agents] session_cost_budget_usd` | The same in dollars, when set. | unset |

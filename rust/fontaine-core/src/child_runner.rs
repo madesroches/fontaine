@@ -278,8 +278,13 @@ impl ChildRunner for CoreChildRunner {
                 && !model.priced()
                 && context.state.agents().first_unpriced_cap()
             {
+                let token_note = if request.budget.tokens.is_some() {
+                    "; the token budget still applies"
+                } else {
+                    ""
+                };
                 context.approver.notice(&format!(
-                    "the cost budget for subagents is inactive on {}, which has no known price; the token budget still applies",
+                    "the cost budget for subagents is inactive on {}, which has no known price{token_note}",
                     model.reference
                 ));
             }
