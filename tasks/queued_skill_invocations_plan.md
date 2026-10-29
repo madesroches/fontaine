@@ -6,11 +6,12 @@ Issue: madesroches/fontaine#292.
 
 A skill invocation (`/name args`) typed while a turn is running is currently refused outright
 ("a turn is running; wait for it or press Esc to interrupt"). It should queue exactly like a
-plain message and run — expanded as the skill it is — once the current turn ends. Built-in
-commands and `!` shell commands queue too, as Claude Code documents, and replay through the
+plain message and execute — expanded as the skill it is — once the current turn ends. Built-in
+commands and `!` shell commands queue too, as Claude Code documents, and execute through the
 same dispatch they would get at an idle prompt; a small set of purely-UI commands (panels,
 reports, theme) runs immediately mid-turn, Fontaine's analogue of Claude Code's run-immediately
-carve-outs. Only unknown slash names stay refused mid-turn.
+carve-outs. Only unknown slash names stay refused mid-turn. The lifecycle is the same for every
+input: entered, queued (or not), executed.
 
 ## Current State
 
@@ -52,10 +53,10 @@ pub enum Queued {
     Message(String),
     Skill { raw: String, name: String, argument: String },
     /// A built-in command exactly as typed (`/compact fix tests`); re-parsed and dispatched
-    /// when it replays.
+    /// when it executes.
     Command(String),
-    /// A `!` shell command as typed, prefix included (`!cargo test`); run as a shell command
-    /// when it replays.
+    /// A `!` shell command as typed, prefix included (`!cargo test`); executed as a shell
+    /// command when the turn ends.
     Shell(String),
 }
 
@@ -75,7 +76,7 @@ impl Queued {
   behind it. None of them can be delivered mid-turn: a skill's expansion is async, can run `!`
   commands that need approval, and must become a prompt of its own; a command or shell line
   steered into a tool result would read as model input it never was. The barrier also keeps the
-  order the user typed in: a message queued after one of them is sent after it runs, not steered
+  order the user typed in: a message queued after one of them is sent after it executes, not steered
   into the turn ahead of it.
 
 ### TUI: queue slash input (`rust/fontaine-tui/src/app.rs`, `commands.rs`)
@@ -133,7 +134,7 @@ impl Queued {
   `Action::CycleMode` today: a small dispatch calls the same handler methods `submit`'s arms
   call. The catch-all ignore lists in the main loop and the provider dialog gain the variant.
 
-### TUI: typed end-of-turn replay (`rust/fontaine-tui/src/ui/turn.rs`)
+### TUI: typed end-of-turn execution (`rust/fontaine-tui/src/ui/turn.rs`)
 
 - The two `Action::Queue(entry)` arms (`turn.rs:338`, `turn.rs:184`) pass the entry through:
   `self.remember(entry.raw()); runtime.steering.queue(entry);`
@@ -144,7 +145,7 @@ impl Queued {
       /// Consecutive queued messages joined with a blank line, as today.
       Message(String),
       Skill { raw: String, name: String, argument: String },
-      /// A built-in command as typed; re-parsed and run through `submit`'s dispatch.
+      /// A built-in command as typed; re-parsed and executed through `submit`'s dispatch.
       Command(String),
       /// A `!` shell command as typed; run through the idle `Action::Shell` path.
       Shell(String),
@@ -163,34 +164,37 @@ impl Queued {
 
 - `converse` gains a `pending: VecDeque<Submission>`: the initial `(text, expanded)` seeds it;
   each turn's `EndOfTurn::Submit(subs)` extends it; the loop pops one submission at a time. A
-  `Submission::Skill` is expanded (see below) and run as `converse(raw, Some(prompt))` is today.
-  On `RestoreToInput`, the raws of the submissions still pending are joined onto the restored
-  text, so an interrupted replay loses nothing. Esc is live while a replayed skill expands
-  (expansion serves keys), and that interrupt is treated like an interrupted turn: the
-  interrupted skill's raw and the pending raws go back to the input and the replay stops, as
-  undelivered queued text does today — expansion runs before any turn starts, so no
-  `RestoreToInput` covers it and the pending entries would otherwise vanish with `converse`'s
-  local queue. A failed expansion shows the idle path's error notice and does not stop the
-  replay: the submissions behind it run on, each queued entry independent of the one that
-  failed. Text typed while a replayed expansion runs is dropped, exactly as at an idle
-  prompt today. The same interrupt rule covers a replayed command that serves keys (a replayed
-  `/compact`): Esc stops the replay, and the command's raw and the pending raws go back to the
-  input. A replayed `Submission::Shell` strips the prefix and runs through the same `shell()`
-  the idle `Action::Shell` path uses; while it runs, `shell_running` holds and nothing queues,
-  exactly as an idle `!` run, and its output reaches the next submission's turn as it reaches
-  the next message at idle. Esc kills the run as at idle; the shell's own raw is spent, killed
-  or not (it is in history), and the pending raws go back to the input. Note the pitfall:
+  `Submission::Skill` is expanded (see below) and executed as `converse(raw, Some(prompt))` is
+  today.
+  Esc during a *turn* of the execution loop behaves exactly as an idle turn-interrupt:
+  `RestoreToInput`, with the raws of the submissions still pending joined onto the restored
+  text, so the loop loses nothing. Every other entry follows the idle rule that Esc kills the
+  current thing and nothing else. Esc is live while a queued skill expands (expansion serves
+  keys), and that interrupt aborts the expansion as at idle: the idle interrupt notice shows,
+  the skill's raw is spent (it is in history and the ledger), and execution continues with the
+  next submission. A failed expansion likewise shows the idle path's error notice and does not
+  stop execution: the submissions behind it execute on, each queued entry independent of the
+  one that failed. Text typed while a queued expansion executes is dropped, exactly as at an
+  idle prompt today. A queued `/compact` interrupted by Esc aborts the compaction as at idle
+  (the conversation is untouched), its raw is spent, and execution continues with the next
+  submission. A `Submission::Shell` strips the prefix and executes through the same
+  `shell()` the idle `Action::Shell` path uses; while it runs, `shell_running` holds and
+  nothing queues, exactly as an idle `!` run, and its output reaches the next submission's
+  turn as it reaches the next message at idle. Esc kills it as at idle; the shell's own
+  raw is spent, killed or not (it is in history), and execution continues with the next
+  submission. This matches Claude Code, where Esc aborts the currently running queued command
+  and the queued entries behind it run next. Note the pitfall:
   `converse` → skill-run → `converse` as separate async fns is async recursion; keep the
   dispatch inside `converse`'s own loop, with expansion factored into a helper that does not
   call `converse`.
 
 - Shared skill runner: extract the body of `submit`'s `Command::Other` arm (`ui/mod.rs:392-423`)
   — known check, `Record::UserMessage` of the raw text before expansion, `expand_serving`, error
-  and interrupt notices — into a helper used by both idle `submit` and queue replay, so a
-  replayed skill is ledgered, expanded and error-reported exactly as if typed at an idle prompt.
+  and interrupt notices — into a helper used by both idle `submit` and the execution loop, so a
+  queued skill is ledgered, expanded and error-reported exactly as if typed at an idle prompt.
   (`expand_serving` already serves approvals while the skill's `!` commands run.)
 - Shared command dispatcher: extract `submit`'s `match parse_command` into a helper used by both
-  `submit` and the replay loop, so a replayed `/rename foo` or `/compact` does exactly what it
+  `submit` and the execution loop, so a queued `/rename foo` or `/compact` does exactly what it
   would at an idle prompt. Two constraints fall out of running it inside `converse`'s loop:
   `launch_dir` (which `submit` takes and `converse` does not) is threaded in, and an arm that
   starts a turn — `/plan <task>`, `/goal <condition>`, `/loop`, `/init`, the skill arm — pushes
@@ -208,7 +212,7 @@ impl Queued {
 ### What does not change
 
 - Unknown slash names mid-turn: refused as today. Nothing queues while a `!` run holds the
-  terminal — including a replayed one; no agent run consumes the queue then.
+  terminal — including one running from the queue; no agent run consumes the queue then.
 - Mid-turn steering of plain messages, ledger timing (a queued entry becomes guardian intent
   when the model receives it — for a skill, when its turn starts), the queue display, and
   Up-takes-back editing (`edit_queued` restores raws, which re-parse on submit).
@@ -232,15 +236,15 @@ impl Queued {
    (`/todos`) yields `Action::Command`; an unknown `/nope` is still refused with the notice and
    keeps its text.
 4. `rust/fontaine-tui/src/ui/turn.rs`: typed `end_of_turn`/`Submission`, the two queue arms,
-   `converse`'s pending loop with the command dispatch (`launch_dir` threaded in) and the shell
-   replay, the extracted skill-expansion helper, and the `Action::Command` arm in the turn loop
-   and `serve_while`. Update `rust/fontaine-tui/src/ui/tests.rs`: message grouping, skill,
+   `converse`'s execution loop with the command dispatch (`launch_dir` threaded in) and
+   queued shell execution, the extracted skill-expansion helper, and the `Action::Command` arm in
+   the turn loop and `serve_while`. Update `rust/fontaine-tui/src/ui/tests.rs`: message grouping, skill,
    command and shell entries as separate submissions, interleaving order, restore joins raws
    (skill, command and `!` raws included).
 5. `rust/fontaine-tui/src/ui/mod.rs`: extract `submit`'s dispatch into the shared helper;
    `submit`'s `Command::Other` arm calls the shared skill runner; `edit_queued` maps entries to
    `raw()` before joining. `scheduled_turn`/`goal_turn` in `turn.rs` and `goal_step` in
-   `ui/goal.rs` replay submissions.
+   `ui/goal.rs` execute submissions.
 6. `rust/fontaine-tui/src/ui/commands/context.rs` and `ui/goal.rs`: restore retracted raws after
    a compaction or an interrupted goal evaluation.
 7. Integration tests (below).
@@ -252,10 +256,10 @@ impl Queued {
 - `rust/fontaine-tui/src/commands.rs` — `Command::runs_mid_turn`.
 - `rust/fontaine-tui/src/app.rs` — `Action::Queue(Queued)`, `Action::Command`, `enter` running
   branch, tests.
-- `rust/fontaine-tui/src/ui/turn.rs` — typed `end_of_turn`, `converse` replay loop, skill
+- `rust/fontaine-tui/src/ui/turn.rs` — typed `end_of_turn`, `converse` execution loop, skill
   helper, mid-turn command dispatch.
-- `rust/fontaine-tui/src/ui/mod.rs` — `submit`'s dispatch extracted and shared with replay;
-  `edit_queued` restores raws.
+- `rust/fontaine-tui/src/ui/mod.rs` — `submit`'s dispatch extracted and shared with the
+  execution loop; `edit_queued` restores raws.
 - `rust/fontaine-tui/src/ui/goal.rs` — typed retract in `goal_step`.
 - `rust/fontaine-tui/src/ui/commands/context.rs` — restore raws after `/compact`.
 - `rust/fontaine-tui/src/ui/tests.rs` — `end_of_turn` grouping tests.
@@ -273,36 +277,51 @@ impl Queued {
   an earlier instruction; the barrier preserves typed order at the cost of those messages waiting
   for turn end.
 - **Known-skill check at queue time (against `app.menu`)** vs. queueing every `Command::Other`
-  and erroring at replay. Checking at queue time keeps the immediate refusal for typos, and
-  keeps the replay path free of a dead-letter case; a name a built-in answers to is the
+  and erroring when it executes. Checking at queue time keeps the immediate refusal for typos,
+  and keeps the execution loop free of a dead-letter case; a name a built-in answers to is the
   built-in, queued or immediate, exactly as at an idle prompt.
 - **Queued `!` runs after the turn** vs. mid-turn execution. Claude Code holds shell commands
   until the turn ends and runs them one at a time; running one mid-turn would interleave its
-  output with the turn's live area and its approvals with the turn's prompts. The replay path
+  output with the turn's live area and its approvals with the turn's prompts. The execution loop
   already serializes, so a queued `!` falls out of the same machinery.
 - **Shared skill runner and command dispatcher** vs. duplicating the expand/ledger/error and
-  dispatch logic in the replay path: extraction keeps one definition of "run a user-invoked
-  skill" and one of "run a built-in command" (open/closed: the replay path adds callers, not
+  dispatch logic in the execution loop: extraction keeps one definition of "run a user-invoked
+  skill" and one of "run a built-in command" (open/closed: the execution loop adds callers, not
   copies).
 - **Immediate set vs. queueing every built-in.** Claude Code runs a carve-out list mid-turn
   (`/status`, `/permissions`, dialogs) and queues the rest. Fontaine's rule — synchronous, and
   touches only UI state — picks the set from the code rather than copying the list, so a new
   command is classified by what it does, not by remembering to update a table.
+- **Interrupt kills the entry currently executing vs. stopping the execution loop.** Claude
+  Code's Esc aborts only the running queued command; the entries behind it run next (its
+  restore-to-input-on-Esc behavior was a 2.1.0 regression,
+  [anthropics/claude-code#16905](https://github.com/anthropics/claude-code/issues/16905),
+  fixed in 2.1.4). Fontaine matches: execution continues after an interrupted `/compact`,
+  `!` run or skill expansion, and `compact()`/`shell()` keep swallowing the interrupt — no
+  turn-end plumbing changes. The loop still stops when Esc interrupts a *turn*, since that is
+  what an idle turn-interrupt does (`RestoreToInput`).
 
 ## Decisions
 
 - Semantics follow the issue and Claude Code's documented behavior: a command sent during a
   response is queued and runs after the turn finishes. Fontaine extends this to its built-in
-  commands, which queue as typed and replay through the same dispatch as at an idle prompt; the
+  commands, which queue as typed and execute through the same dispatch as at an idle prompt; the
   synchronous UI/report commands run immediately mid-turn, Fontaine's analogue of Claude Code's
   run-immediately carve-outs (membership differs from Claude Code's list — chosen by the rule,
   and `/add-dir` queues rather than getting Claude Code's mid-turn confirm). `!` shell commands
-  queue and run after the turn in typed order, one at a time, as Claude Code documents; the
+  queue and execute after the turn in typed order, one at a time, as Claude Code documents; the
   standing decision that nothing queues *while* a `!` run holds the terminal is untouched.
   Unknown slash names stay refused mid-turn.
-- A queued skill invocation becomes a checkpoint prompt when it runs after the turn, as
+- A queued skill invocation becomes a checkpoint prompt when it executes after the turn, as
   `docs/checkpoints.md` already frames queued messages ("a message queued during a turn once it
   is sent as the next turn").
+- 2026-10-29: Esc while a queued `/compact` or `!` shell run (or a queued skill expansion)
+  executes interrupts only that command/run/expansion, exactly as at an idle prompt; execution
+  continues with the next submission and nothing is restored to the input. Esc
+  stops the loop only when it interrupts a turn (`RestoreToInput`). Verified against Claude
+  Code 2.1.312: its Esc maps to a turn-scoped abort of the current dispatch only, an interrupt
+  never removes user-queued entries from its queue, and queued entries reach the input only
+  through the Up-arrow take-back.
 
 ## Documentation
 
@@ -310,11 +329,12 @@ impl Queued {
   a slash command queues like a message and runs when the turn ends, in the order typed: a skill
   as its expanded prompt, a built-in exactly as if submitted at that moment. Neither is steered
   into the running turn, and messages queued behind one wait with it. `!` shell commands queue
-  the same way and run after the turn, one at a time and in order; while one runs, nothing else
+  the same way and execute after the turn, one at a time and in order; while one executes,
+  nothing else
   queues. The commands that act on the UI alone (`/status`, `/theme`, the panels, ...) run
   immediately, turn or no turn.
 - `docs/checkpoints.md`, "What is tracked": a queued skill or prompt-sending command (`/plan
-  <task>`, `/goal <condition>`, `/init`, `/loop`) is a prompt when it runs after the turn (one
+  <task>`, `/goal <condition>`, `/init`, `/loop`) is a prompt when it executes after the turn (one
   clause; the current text already covers queued messages and idle skills/commands).
 
 ## Testing Strategy
@@ -344,7 +364,7 @@ as `a_skill_runs_as_a_command_with_its_arguments` and the `tui.rs` queue tests u
   ledger records `"/text":"/review 42"` once. This is the wiring unit tests cannot reach: queue →
   retract → expansion → turn across the real runtime.
 - A message queued after a skill is not steered into the running turn (barrier): the running
-  turn's tool result carries neither, and both replay in order afterwards.
+  turn's tool result carries neither, and both execute in order afterwards.
 - Interrupting the turn with a skill queued puts `/review 42` back in the input; no expansion
   request is made (nothing is sent unseen).
 - A built-in queued mid-turn runs after the turn: `/rename later` typed during a turn shows
@@ -354,6 +374,9 @@ as `a_skill_runs_as_a_command_with_its_arguments` and the `tui.rs` queue tests u
 - A `!echo hi` typed mid-turn shows `queued: !echo hi`, is never steered into the running turn,
   and runs as a shell run after the answer, in typed order with the other queued entries; its
   output reaches the next message, as at idle.
+- Esc while a queued `!sleep` executes kills it as at idle, and the next queued entry still
+  executes afterwards (the shell's raw is spent, not restored). Esc while a queued `/compact`
+  executes aborts the compaction and execution continues with the next submission.
 
 ## Open Questions
 
