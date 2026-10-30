@@ -36,6 +36,9 @@ use crate::error_chain::chain;
 use crate::lock::lock_recovering;
 use crate::procgroup;
 
+/// Bound on the stderr line kept in memory; the rest of a longer line is still drained.
+const STDERR_LINE_CAP: usize = 64 * 1024;
+
 /// How the server counts the characters of a line, negotiated at `initialize`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
@@ -394,16 +397,26 @@ impl Client {
             tokio::spawn(async move {
                 // Keep draining past undecodable bytes: dropping the pipe would EPIPE the server.
                 let mut reader = BufReader::new(stderr);
-                let mut buf = Vec::new();
+                let mut buf: Vec<u8> = Vec::new();
                 loop {
-                    buf.clear();
-                    if !matches!(reader.read_until(b'\n', &mut buf).await, Ok(n) if n > 0) {
-                        break;
+                    let chunk = match reader.fill_buf().await {
+                        Ok(chunk) if !chunk.is_empty() => chunk,
+                        _ => break,
+                    };
+                    let (used, ended) = match chunk.iter().position(|&b| b == b'\n') {
+                        Some(i) => (i + 1, true),
+                        None => (chunk.len(), false),
+                    };
+                    let room = STDERR_LINE_CAP.saturating_sub(buf.len());
+                    buf.extend_from_slice(&chunk[..used.min(room)]);
+                    reader.consume(used);
+                    if ended {
+                        let line = String::from_utf8_lossy(&buf).trim_end().to_owned();
+                        buf.clear();
+                        tracing::debug!(server = %name, "lsp stderr: {line}");
+                        // Advisory: the tail only decorates an error message.
+                        *lock_recovering(&tail) = line;
                     }
-                    let line = String::from_utf8_lossy(&buf).trim_end().to_owned();
-                    tracing::debug!(server = %name, "lsp stderr: {line}");
-                    // Advisory: the tail only decorates an error message.
-                    *lock_recovering(&tail) = line;
                 }
             })
         };

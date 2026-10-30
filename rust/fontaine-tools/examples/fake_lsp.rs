@@ -72,7 +72,11 @@ fn log(message: &Value) {
             .unwrap_or("")
             .to_string()
     };
-    let line = format!("{method} {uri}\n");
+    let mut line = format!("{method} {uri}\n");
+    if method == "textDocument/didOpen" {
+        let language = params["textDocument"]["languageId"].as_str().unwrap_or("");
+        line.push_str(&format!("languageId {language}\n"));
+    }
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

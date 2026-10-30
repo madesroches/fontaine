@@ -1705,7 +1705,10 @@ impl Config {
                     std::collections::btree_map::Entry::Vacant(slot) => {
                         slot.insert(name.clone());
                     }
-                    std::collections::btree_map::Entry::Occupied(_) => {
+                    std::collections::btree_map::Entry::Occupied(claimed) => {
+                        if *claimed.get() == name {
+                            continue;
+                        }
                         table.warnings.push(format!(
                             "LSP server \"{name}\" is not used for {extension} files"
                         ));

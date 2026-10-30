@@ -185,6 +185,13 @@ impl DiagnosticStore {
         }
     }
 
+    /// Content at `version` was sent to the server without an edit awaiting its diagnostics.
+    pub fn note_synced(&self, uri: &Url, version: i32) {
+        let mut state = lock_recovering(&self.state);
+        let file = state.files.entry(uri.clone()).or_default();
+        file.synced = Some(file.synced.map_or(version, |s| s.max(version)));
+    }
+
     /// An edit by `agent` is about to be synced to the server as `version`: the set that
     /// follows is the one for that content, and any set held for older content is stale.
     pub fn begin_sync(&self, uri: &Url, agent: &str, version: i32) {

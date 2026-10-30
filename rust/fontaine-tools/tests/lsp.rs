@@ -770,3 +770,20 @@ async fn shutdown_forgets_pending_diagnostics_and_failures() {
     servers.shutdown_all().await;
     assert_eq!(other_call(&stage, "root", false).await, "a file");
 }
+
+#[tokio::test]
+async fn a_mixed_case_extension_key_still_gives_the_language_id() {
+    let f = Fixture::new();
+    let mut spec = f.spec("fake", &[]);
+    spec.extension_to_language = [(".RS".to_string(), "rust".to_string())].into();
+    // Config::lsp_table lower-cases the keys it hands out as claims.
+    let claims = [(".rs".to_string(), "fake".to_string())].into();
+    let servers = LspServers::new(vec![spec], &claims, f.workspace.clone(), Arc::new(|_| None));
+    run(&f.tool(&servers), at("goToDefinition")).await.unwrap();
+    assert!(
+        f.log_lines().contains(&"languageId rust".to_string()),
+        "{:?}",
+        f.log_lines()
+    );
+    servers.shutdown_all().await;
+}

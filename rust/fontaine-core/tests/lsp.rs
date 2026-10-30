@@ -361,3 +361,14 @@ async fn clearing_the_conversation_forgets_pending_diagnostics() {
     runtime.clear_conversation().await.unwrap();
     assert!(!read_a(runtime).await.contains("Late diagnostics"));
 }
+
+#[test]
+fn a_server_naming_an_extension_in_two_cases_does_not_conflict_with_itself() {
+    let w = World::new();
+    w.user_file(
+        "[lsp.servers.ra]\ncommand = \"x\"\nextension_to_language = { \".rs\" = \"rust\", \".RS\" = \"rust\" }\n",
+    );
+    let table = w.load().unwrap().lsp_table();
+    assert_eq!(table.claims[".rs"], "ra");
+    assert!(table.warnings.is_empty(), "{:?}", table.warnings);
+}

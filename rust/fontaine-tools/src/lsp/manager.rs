@@ -198,8 +198,9 @@ impl LspServers {
             };
             let language = specs[index]
                 .extension_to_language
-                .get(extension)
-                .cloned()
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(extension))
+                .map(|(_, language)| language.clone())
                 .unwrap_or_default();
             extensions.insert(extension.to_ascii_lowercase(), (index, language));
         }
@@ -356,6 +357,8 @@ impl LspServers {
         };
         if let Some(agent) = edit_by {
             self.store.begin_sync(uri, agent, version);
+        } else {
+            self.store.note_synced(uri, version);
         }
         let sent = if send_open {
             client.notify::<DidOpenTextDocument>(DidOpenTextDocumentParams {
