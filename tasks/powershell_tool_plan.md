@@ -33,12 +33,15 @@ deterministic critical-path check to `Remove-Item` targets.
 
 **Tool.** `PowerShellTool` in `fontaine-tools` (new `powershell.rs`), same call shape as
 `ShellCall` minus `run_in_background` handling differences: `command`, `timeout_secs`, `cwd`,
-`run_in_background`. It reuses rig's `Shell` with a launcher prefix of
-`<powershell> -NoProfile -NonInteractive -Command` so scope confinement, timeout clamp, output
-cut and the job machinery are shared rather than copied. The command text is passed so PowerShell
-parses it exactly as judged (via `-EncodedCommand` UTF-16LE base64, avoiding Windows command-line
-re-parsing; the encoded form is an implementation detail never shown to the guardian or user, who
-see the plain command).
+`run_in_background`. rig's `Shell::run` hardwires `sh -c`, so a launcher prefix cannot work
+(it would yield `pwsh -Command sh -c ...`). `PowerShellTool` has its own run/launch path that
+spawns the interpreter with explicit argv `-NoProfile -NonInteractive -EncodedCommand <base64>`
+(UTF-16LE base64, avoiding Windows command-line re-parsing so PowerShell parses exactly what was
+judged). The launch helper is extracted from `ShellTool` taking program and argv as parameters, and
+shares timeout clamp, output cut and `Jobs::start` handling. The plain command is what `Jobs` and
+the foreground display show; the encoded form is never shown to the guardian or user.
+Hooks and `!` lines stay on Git Bash (non-goal, as in Claude Code); `agent/build.rs:193` and
+`skills.rs:183` `!` execution stay keyed on `"shell"`.
 
 **Interpreter discovery.** Prefer `pwsh.exe` (PowerShell 7) on PATH, then `powershell.exe`
 (Windows PowerShell 5.1 from `%SystemRoot%\System32\WindowsPowerShell\v1.0`).
@@ -47,22 +50,24 @@ interpreter is found**; absence is not a startup error (unlike Git Bash), the to
 exist. On other platforms it is never registered, so the model is not offered it.
 
 **Descriptor row.** `powershell`: `RiskClass::Arbitrary`, `path_free: false`,
-`Destructive::PowerShell` (new variant: always derived as destructive-unknown, since no parse can
-clear it), `Specifier::PowerShell` (new variant), Claude name `PowerShell`. A distinct specifier
-keeps it out of `is_shell_class`, so none of the POSIX analyses ever run on PowerShell text.
-Consequences, each handled explicitly:
+`Destructive::Always`, `Specifier::None` (already rejects specifiers and stays out of
+`is_shell_class`, so none of the POSIX analyses ever run on PowerShell text), Claude name
+`PowerShell`. Consequences, each handled explicitly:
 - No Tier 0.5: already true, because the gate is `tool == "shell"`.
-- Rules: a bare `powershell` rule names the tool whole. Deny and ask rules for `shell` also cover
-  `powershell` (lenient posture, as for `monitor`), so a prohibition cannot be stepped around.
-  Allow rules cover only the tool they name. Specifiers (`powershell(Get-ChildItem *)`) are not
-  supported: `Specifier::PowerShell` rejects them at config load with a message, since wildcard
-  matching on unparsed PowerShell would be the regex-on-arguments the project forbids.
-- Scope: `scope.rs` treats it as having an optional `cwd` path field; no extraction of paths from
-  the command text.
+- Rules: a bare `powershell` rule names the tool whole. `tool_matches` (`permission_rules.rs:410`)
+  gets an explicit `powershell` clause so bare `shell` deny/ask rules also cover `powershell`
+  (lenient posture, as for `monitor`); specifier'd `shell(...)` rules do not match it. Allow rules
+  cover only the tool they name. Specifiers (`powershell(Get-ChildItem *)`) are rejected by
+  `Specifier::None`.
+- Scope: `scope.rs` `fields_of` gets an explicit `"powershell"` arm returning
+  `PathFields::Optional("cwd")`; no extraction of paths from the command text. `destructive.rs`
+  `touched_paths` is intentionally empty for powershell.
 - Guardian: receives the plain command as `command`, tool name `powershell`. Unparseable-by-design,
-  so every call is judged; fail-closed behavior is unchanged.
-- `auto`-mode rule suspension: a blanket `powershell` allow rule is suspended in `auto` like a
-  blanket `shell` allow (add to the code-execution set).
+  so every call is judged; fail-closed behavior is unchanged. The rule-specifier text
+  (`permissions.rs:1921`) is the plain command.
+- `auto`-mode rule suspension: `is_broad_code_execution` (`permission_rules.rs:669-684`) gets a
+  `("powershell", None)` arm so a blanket `powershell` allow is suspended like a blanket `shell`
+  allow.
 
 **Critical path for `Remove-Item`.** New `floor::critical_powershell(command, cwd, env)` beside
 `critical_shell`, reusing `is_critical_target` and `CriticalEnv`. It is a deliberately small,
@@ -70,16 +75,21 @@ token-level scan, not a PowerShell parser, and its soundness rule mirrors the PO
 it cannot positively read as safe while a deleter is mentioned is critical.
 - Deleters (case-insensitive): `Remove-Item`, `ri`, `rm`, `rmdir`, `rd`, `del`, `erase`,
   plus `[IO.Directory]::Delete`,
-  `[System.IO.Directory]::Delete`, `[IO.File]::Delete` and `cmd /c rd|rmdir|del`.
+  `[System.IO.Directory]::Delete`, `[IO.File]::Delete` and `cmd /c rd|rmdir|del`. Detection is a
+  case-insensitive substring scan of the raw text, so quoted forms, `iex` payloads and
+  `[IO.Directory]::Delete`/`[IO.File]::Delete` are caught.
 - Tokenizer: splits on whitespace honoring single and double quotes and backtick escapes; a token
-  is "literal" only when it contains no `$`, `(`, `)`, `@`, `{`, `}`, backtick-escape-sensitive
-  `%`-env or `*`/`?` wildcard that could widen the target (a wildcard is critical only when the
-  literal prefix is itself critical or the pattern is bare `*`).
-- Operands: positional operands and values of `-Path`, `-LiteralPath`,; options
-  starting with `-` (`-Recurse`, `-Force`, `-WhatIf`) are skipped. A comma list (`a,b`) is split.
-  `$env:USERPROFILE`, `$HOME`, `~` and `%USERPROFILE%` resolve to the home directory; any other
-  variable, subexpression or pipeline-supplied target (`Get-ChildItem | Remove-Item`,
-  `... | % { Remove-Item $_ }`) is critical ("target cannot be resolved").
+  is "literal" only when it contains no `$`, `(`, `)`, `@`, `{`, `}`, `%` or `*`/`?` wildcard.
+  A non-literal command position (`&`, `.` or `$`-led) is critical.
+- Wildcards: judge the literal prefix; critical if the pattern is bare `*` or the prefix is critical.
+- Operands: positional operands and values of `-Path`, `-LiteralPath`, `-Include`, `-Exclude`,
+  `-Filter`; `-Param:value` forms are split and the value judged. Other options starting with `-`
+  (`-Recurse`, `-Force`, `-WhatIf`) are skipped. A comma list (`a,b`) is split. Zero resolved
+  operands is critical. `$env:USERPROFILE`, `$HOME` and `~` resolve to the home directory; `%` is
+  always unresolved (PowerShell does not expand `%VAR%`) except `%USERPROFILE%`, mapped to home
+  conservatively. Any other variable, subexpression or pipeline-supplied target
+  (`Get-ChildItem | Remove-Item`, `... | % { Remove-Item $_ }`) is critical ("target cannot be
+  resolved").
 - Chains: when a deleter appears and the text contains `;`, `|`, `&&`, `||`, `&`, a newline or
   `-Command`/`Invoke-Expression`/`iex`, it is critical ("deleter inside a command that is not one
   simple command") — the same conservatism as the POSIX path.
@@ -90,8 +100,9 @@ it cannot positively read as safe while a deleter is mentioned is critical.
 - Non-FileSystem providers (`HKLM:\`, `Env:`, `Cert:`) are not file deletes; `Remove-Item` on them
   is left to the guardian rather than the critical-path tier.
 
-`permissions.rs:734` dispatches by tool: `shell`/`monitor` → `critical_shell`, `powershell` →
-`critical_powershell`; the `Tier::CriticalPath` prompt/deny semantics are unchanged.
+The `permissions.rs:734` gate (`is_shell_class(tool) && ...`) is rewritten as a match/extra branch:
+`shell`/`monitor` → `critical_shell`, `powershell` → `critical_powershell`; the
+`Tier::CriticalPath` prompt/deny semantics are unchanged.
 
 **Jobs and subagents.** The job registry, `job_output`, `job_cancel` and background semantics are
 shared with `shell` through the common `Launcher`; the Windows process-tree kill is whatever rig's
@@ -102,22 +113,21 @@ prefer the dedicated file tools.
 
 ## Implementation Steps
 
-1. **Descriptor and names.** Add `Destructive::PowerShell` and `Specifier::PowerShell`; add the
-   `powershell` row (`Arbitrary`, Claude name `PowerShell`); update the descriptor table test and
-   `names` tests. Make destructive derivation (`destructive.rs`) return the always-destructive
-   class for it.
+1. **Descriptor and names.** Add the `powershell` row (`Arbitrary`, `Destructive::Always`,
+   `Specifier::None`, Claude name `PowerShell`); update the descriptor table test and `names` tests.
 2. **Discovery.** `fontaine-tools/src/powershell.rs`: `discover()` (PATH `pwsh`, then
    `powershell.exe`, `FONTAINE_POWERSHELL_PATH`), plus the `-EncodedCommand` encoder. Unit-test
    encoding round-trips (quotes, backslashes, non-ASCII, newlines).
 3. **Tool.** `PowerShellTool` + `powershell_for(root, settings)`; add `powershell:
    Option<PowerShellSettings>` to `ShellSettings`/`BuiltinEnv`; register in `builtins::registry`
-   when `Some` (Windows only; `None` elsewhere). Share the job-launch path with `ShellTool` rather
-   than duplicating it (extract the common launch helper).
+   when `Some` (Windows only; `None` elsewhere). Extract the launch helper from `ShellTool`
+   taking program and argv as parameters (sharing timeout, cut and `Jobs::start`); `PowerShellTool`
+   calls it with `-NoProfile -NonInteractive -EncodedCommand <base64>`.
 4. **Floor.** `floor::critical_powershell` with the tokenizer and deleter table; wire into
    `permissions.rs`.
-5. **Rules and config.** `permission_rules.rs`: deny/ask `shell` covers `powershell`; reject
-   specifiers on `powershell` rules at config load; extend the `auto` code-execution suspension.
-   Extension `map_tool_entry` and the Claude-name map accept `PowerShell`.
+5. **Rules and config.** `permission_rules.rs`: explicit `powershell` clause in `tool_matches` so
+   bare `shell` deny/ask rules cover `powershell`; `("powershell", None)` arm in
+   `is_broad_code_execution`. Extension `map_tool_entry` and the Claude-name map accept `PowerShell`.
 6. **Wiring.** Discover once at startup in `fontaine/src/lib.rs` / `agent/setup.rs` alongside Git
    Bash; pass into `ShellSettings`. Hooks and `!` lines stay on Git Bash.
 7. **Guardian prompt.** Confirm the tool name and `command` field render unchanged in
@@ -129,10 +139,16 @@ prefer the dedicated file tools.
 - `rust/fontaine-tools/src/descriptor.rs`, `names.rs` (tests), `builtins.rs`, `lib.rs`,
   new `powershell.rs`, `scope.rs`
 - `rust/fontaine-core/src/floor.rs`, `permissions.rs`, `permission_rules.rs`, `destructive.rs`,
-  `code_execution.rs`, `extensions.rs`, `agent/setup.rs`
+  `extensions.rs`, `agent/setup.rs`
+- `rust/fontaine-agents/src/registry.rs` (~190 worker tool list: the worker agent does NOT get
+  `powershell`)
 - `rust/fontaine/src/lib.rs`
-- `rust/fontaine-tools/tests/choke_point.rs` (expected set depends on platform)
-- `docs/tools.md`, `docs/permissions.md`, `docs/guardian.md`, `tasks/design/platforms.md`,
+- `rust/fontaine-core/tests/choke_point.rs` (~211 lists `monitor`)
+- `rust/fontaine-tools/tests/choke_point.rs` (EXPECTED of 12; the test injects a PowerShell
+  interpreter setting; expected set depends on platform)
+- `rust/fontaine/tests/headless_smoke.rs` (~43)
+- `docs/tools.md`, `docs/permissions.md`, `docs/guardian.md`, `docs/configuration.md` (~566 tool
+  names), `docs/extensions.md` (~67 Claude-name table), `tasks/design/platforms.md`,
   `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
 
 ## Trade-offs
@@ -142,17 +158,14 @@ prefer the dedicated file tools.
 - **Token-level critical scan vs. a PowerShell parser.** No sound lexer exists in-tree; a scan
   that treats everything unreadable near a deleter as critical errs toward prompting, which is
   the safe direction for the floor.
-- **`-EncodedCommand` vs. `-Command` with the text on the command line.** Encoding avoids
-  Windows quoting re-parse so the judged text is what runs, the same property the Git Bash
-  env-var path buys.
-- **No specifier rules.** Wildcard matching on unparsed PowerShell would be matching on tool
-  arguments without a sound parse.
 
 ## Decisions
 
 ## Documentation
 
 - `docs/tools.md`: the `powershell` tool, Windows-only, discovery and `FONTAINE_POWERSHELL_PATH`.
+- `docs/configuration.md` and `docs/extensions.md`: add `powershell` / `PowerShell` to the tool-name
+  lists and the Claude-name table.
 - `docs/permissions.md`: never pre-classified; bare-name rules only; `shell` deny/ask covers it;
   the `Remove-Item` critical-path behavior.
 - `docs/guardian.md`: every `powershell` call is judged.
@@ -174,13 +187,10 @@ Unit tests (no live APIs, runnable on every OS since the scan and encoder are pu
 - Descriptor table and choke-point tests: `powershell` has a row and risk class; the registered
   set equals the documented one with and without a PowerShell interpreter.
 - Permissions: never reaches Tier 0.5; reaches the guardian in `manual`/`auto`; `shell` deny/ask
-  rules cover it; `powershell(...)` specifier rejected; critical path prompts in every mode.
-- Windows-only integration test (`permissions_windows.rs` style, runs in the Windows CI leg):
+  rules cover it; `powershell(...)` specifier rejected (`Specifier::None`); specifier'd `shell(...)` rules do not
+  match it; critical path prompts in every mode.
+- Windows-only integration test (`rust/fontaine-tools/tests/shell.rs` is the model: `#![cfg(windows)]`, like
+  `a_double_backslash_reaches_git_bash_as_written`; runs in the Windows CI leg):
   a headless `powershell` call round-trips output, cwd and exit code, and runs a command
   containing quotes and a backslash path unchanged — catches the command-line re-parse a fake
   launcher could not.
-
-## Open Questions
-
-- Should hooks and `!` lines also be able to use PowerShell? Out of scope here; they stay on Git
-  Bash as in Claude Code.
