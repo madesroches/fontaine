@@ -521,6 +521,16 @@ All notable changes are recorded here. The format follows
   An omitted value still reads a job now and waits for a subagent to end. Any wait returns
   early when a message from another agent arrives or, in the main conversation, when the user
   types one (#301).
+- Subagents work as in Claude Code (#321). While any subagent exists, a list below the status line
+  shows `main` and each agent with its status, age and spend; Down on the prompt focuses it, Enter
+  views a row and x stops a running agent. Viewing an agent clears the screen and scrollback and
+  reprints that agent's transcript, drawn like the main chat; viewing `main` reprints the main
+  conversation. Text typed in an agent's view goes to that agent: a running one reads it at its next
+  tool result, and a `done` or `failed` one is resumed with it, reporting back to its parent as a
+  background agent does. Killed and budget-exhausted agents cannot be resumed. A message typed to an
+  agent is guardian intent only for that agent and its descendants (the ledger's `user_message`
+  record gains an optional `agent`). A subagent's decisions and denials now show only in its own
+  view. The agents panel's Enter opens the view in place of the old flat detail list (#299).
 
 #### Build and release
 
@@ -686,3 +696,5 @@ All notable changes are recorded here. The format follows
   chunks a terminal without that mode could paint one by one. When the live area changes height or
   settled lines are written above it, the live area is overwritten in place instead of being
   blanked and repainted, and settled lines no longer blank the rows they scroll over (#220).
+- Closing the agents panel no longer leaves the main chat blank with its last messages only in
+  scrollback; the shown transcript is reprinted when the panel pushed rows out of view (#296).
