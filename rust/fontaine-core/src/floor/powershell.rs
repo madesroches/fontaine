@@ -754,8 +754,8 @@ mod tests {
             "[scriptblock]::Create($s).Invoke()",
             "$ExecutionContext.InvokeCommand.InvokeScript($s)",
             "$ExecutionContext.InvokeCommand.NewScriptBlock($s)",
-            "# don't\nrm C:\\",
-            "<# it's #> Remove-Item C:\\",
+            "# don't\nrm $x",
+            "<# it's #> Remove-Item $x",
         ] {
             assert!(critical(command), "{command}");
         }
