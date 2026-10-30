@@ -241,10 +241,103 @@ async fn a_monitor_delivers_its_lines_as_notifications() {
         "{}",
         first.text
     );
-    let refused = call(&tools, "job_output", json!({"id": id}))
+    // A wait reports status instead of output; the note already posted is not repeated.
+    let waited = text(&call(&tools, "job_output", json!({"id": id})).await.unwrap());
+    assert!(waited.contains(&format!("[{id} is running")), "{waited}");
+    jobs.terminate_all().await;
+}
+
+#[tokio::test]
+async fn job_output_waits_on_a_monitor_and_reports_each_status() {
+    let (_d, tools, jobs, notes) = session();
+    let out = call(
+        &tools,
+        "monitor",
+        json!({
+            "command": "echo ping; sleep 1; echo pong; sleep 30",
+            "description": "pings",
+            "timeout_secs": 60,
+        }),
+    )
+    .await
+    .unwrap();
+    let id = job_id(&text(&out));
+
+    // Still running: no note since the wait began.
+    let started = Instant::now();
+    let waited = text(
+        &call(&tools, "job_output", json!({"id": id, "wait_secs": 10}))
+            .await
+            .unwrap(),
+    );
+    assert!(started.elapsed() < Duration::from_secs(9), "{waited}");
+    assert!(
+        waited.contains(&format!(
+            "[{id} has new output; its lines arrive as notifications"
+        )),
+        "{waited}"
+    );
+
+    // Ended while the wait is parked: how, after how long, and where the final output
+    // arrives. The end note is held for the wait and posted as its guard leaves.
+    let out = call(
+        &tools,
+        "monitor",
+        json!({"command": "sleep 0.5; echo quick", "description": "short", "timeout_secs": 60}),
+    )
+    .await
+    .unwrap();
+    let short = job_id(&text(&out));
+    let ended = text(
+        &call(&tools, "job_output", json!({"id": short, "wait_secs": 10}))
+            .await
+            .unwrap(),
+    );
+    assert!(
+        ended.contains(&format!("[{short} ended: exit code 0"))
+            && ended.contains("final output arrives as a notification"),
+        "{ended}"
+    );
+    until("the end note", || {
+        notes
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|note| note.text.contains(&format!("Monitor {short} ended")))
+    })
+    .await;
+    let end_note = notes
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|note| note.text.contains(&format!("Monitor {short} ended")))
+        .cloned()
+        .unwrap();
+    assert!(
+        end_note.text.contains("exit code 0") && end_note.text.contains("quick"),
+        "{}",
+        end_note.text
+    );
+    let again = text(
+        &call(&tools, "job_output", json!({"id": short}))
+            .await
+            .unwrap(),
+    );
+    assert!(
+        again.contains("ended: exit code 0") && again.contains("was already delivered"),
+        "{again}"
+    );
+
+    // An unknown id is still an error naming the job.
+    let missing = call(&tools, "job_output", json!({"id": "job-nope"}))
         .await
         .unwrap_err();
-    assert!(refused.model_output().render().contains("notifications"));
+    assert!(
+        missing.model_output().render().contains("there is no job"),
+        "{missing:?}"
+    );
     jobs.terminate_all().await;
 }
 

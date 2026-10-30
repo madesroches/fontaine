@@ -78,6 +78,26 @@ fn lines(chunk: &Chunk) -> String {
     chunk.lines.iter().map(|(_, line)| line.as_str()).collect()
 }
 
+fn as_read(output: JobOutput) -> Read {
+    match output {
+        JobOutput::Read(read) => read,
+        JobOutput::MonitorWait { id, .. } => panic!("expected a read of {id}, got a monitor wait"),
+    }
+}
+
+/// Unwraps a monitor wait's fields.
+fn as_wait(output: JobOutput) -> (Option<EndInfo>, bool, bool) {
+    match output {
+        JobOutput::MonitorWait {
+            end,
+            note_posted,
+            already_reported,
+            ..
+        } => (end, note_posted, already_reported),
+        JobOutput::Read(_) => panic!("expected a monitor wait, got a read"),
+    }
+}
+
 /// Whether the process `pid` is gone, or only waiting to be reaped.
 #[cfg(target_os = "linux")]
 fn gone(pid: u32) -> bool {
@@ -297,12 +317,12 @@ async fn the_buffer_drops_old_lines_and_counts_them_and_a_read_returns_only_new_
         }
     })
     .await;
-    let first = jobs.output(&id, Duration::ZERO).await.unwrap();
+    let first = as_read(jobs.output(&id, Duration::ZERO).await.unwrap());
     assert!(first.chunk.missed > 0, "lines were dropped");
     let kept: usize = first.chunk.lines.iter().map(|(_, line)| line.len()).sum();
     assert!(kept <= BUFFER_BYTES, "{kept}");
     assert_eq!(first.chunk.lines.last().map(|(seq, _)| *seq), Some(59999));
-    let second = jobs.output(&id, Duration::ZERO).await.unwrap();
+    let second = as_read(jobs.output(&id, Duration::ZERO).await.unwrap());
     assert!(second.chunk.is_empty());
     assert_eq!(second.chunk.missed, 0);
     jobs.terminate_all().await;
@@ -313,7 +333,7 @@ async fn waiting_returns_early_on_new_output() {
     let (jobs, _) = jobs();
     let id = start(&jobs, "sleep 1; echo news; sleep 30", true);
     let started = Instant::now();
-    let read = jobs.output(&id, Duration::from_secs(20)).await.unwrap();
+    let read = as_read(jobs.output(&id, Duration::from_secs(20)).await.unwrap());
     assert!(started.elapsed() < Duration::from_secs(10));
     assert_eq!(lines(&read.chunk), "news\n");
     assert!(read.end.is_none());
@@ -325,17 +345,17 @@ async fn the_end_news_goes_out_exactly_once_whichever_side_gets_it() {
     // The waiter holds the news when the job ends: no note.
     let (jobs, sink) = jobs();
     let id = start(&jobs, "sleep 1", true);
-    let read = jobs.output(&id, Duration::from_secs(20)).await.unwrap();
+    let read = as_read(jobs.output(&id, Duration::from_secs(20)).await.unwrap());
     assert!(read.end.is_some() && !read.already_reported);
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert!(sink.notes().is_empty(), "{:?}", sink.notes());
-    let again = jobs.output(&id, Duration::ZERO).await.unwrap();
+    let again = as_read(jobs.output(&id, Duration::ZERO).await.unwrap());
     assert!(again.already_reported, "the end was consumed");
 
     // The note goes out first: the read returns a marker.
     let id = start(&jobs, "echo quick", true);
     until("the note", || !sink.notes().is_empty()).await;
-    let read = jobs.output(&id, Duration::ZERO).await.unwrap();
+    let read = as_read(jobs.output(&id, Duration::ZERO).await.unwrap());
     assert!(read.already_reported);
     assert!(read.chunk.is_empty());
     assert_eq!(sink.notes().len(), 1);
@@ -368,7 +388,7 @@ async fn the_user_killing_a_job_tells_the_model_and_leaves_the_tail_readable() {
     assert!(jobs.kill_by_user(&id));
     until("the note", || !sink.notes().is_empty()).await;
     assert!(sink.notes()[0].text.contains("killed by the user"));
-    let read = jobs.output(&id, Duration::ZERO).await.unwrap();
+    let read = as_read(jobs.output(&id, Duration::ZERO).await.unwrap());
     assert!(read.user_killed && !read.already_reported);
     assert!(lines(&read.chunk).contains("before"));
 }
@@ -383,23 +403,191 @@ async fn the_user_killing_a_monitor_says_monitor() {
 }
 
 #[tokio::test]
-async fn a_monitor_is_refused_by_job_output_but_listed() {
+async fn a_monitor_wait_reports_status_and_never_output() {
     let (jobs, _) = jobs();
     let id = monitor(&jobs, "sleep 30", Duration::from_secs(60));
-    assert!(matches!(
-        jobs.output(&id, Duration::ZERO).await,
-        Err(JobError::Monitor(_))
-    ));
+    let started = Instant::now();
+    let (end, note_posted, already_reported) =
+        as_wait(jobs.output(&id, Duration::ZERO).await.unwrap());
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "a zero wait returns at once"
+    );
+    assert!(end.is_none() && !note_posted && !already_reported);
     assert!(
         jobs.snapshot()
             .iter()
-            .any(|job| job.monitor && job.id == id)
+            .any(|job| job.monitor && job.id == id),
+        "the monitor is still listed"
     );
     assert!(matches!(
         jobs.output("job-nope", Duration::ZERO).await,
         Err(JobError::UnknownJob(_))
     ));
     jobs.terminate_all().await;
+}
+
+#[tokio::test]
+async fn a_monitor_wait_wakes_when_a_notification_is_posted() {
+    let (jobs, sink) = jobs();
+    let id = monitor(
+        &jobs,
+        "sleep 1; echo ping; sleep 30",
+        Duration::from_secs(60),
+    );
+    let started = Instant::now();
+    let (end, note_posted, already_reported) =
+        as_wait(jobs.output(&id, Duration::from_secs(60)).await.unwrap());
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the wait returned after the post, not the deadline"
+    );
+    assert!(end.is_none() && note_posted && !already_reported);
+    let notes = sink.notes();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].text.contains("ping"), "{}", notes[0].text);
+    jobs.terminate_all().await;
+}
+
+#[tokio::test]
+async fn a_monitor_wait_returns_promptly_at_its_end_and_the_end_note_goes_out_once() {
+    let (jobs, sink) = jobs();
+    let id = monitor(&jobs, "echo done", Duration::from_secs(60));
+    let started = Instant::now();
+    let (end, _note_posted, already_reported) =
+        as_wait(jobs.output(&id, Duration::from_secs(60)).await.unwrap());
+    assert!(started.elapsed() < Duration::from_secs(10));
+    let end = end.expect("it ended");
+    assert!(matches!(end.end, End::Exited(status) if status.code() == Some(0)));
+    assert!(!already_reported);
+    let notes = sink.notes();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].text.contains("ended (exit code 0)") && notes[0].text.contains("done"),
+        "{}",
+        notes[0].text
+    );
+    // The end note was consumed by the wait's guard: a second wait reports it.
+    let (end, _, already_reported) = as_wait(jobs.output(&id, Duration::ZERO).await.unwrap());
+    assert!(end.is_some() && already_reported, "the end was reported");
+    assert_eq!(sink.notes().len(), 1, "the end note went out exactly once");
+}
+
+#[tokio::test]
+async fn a_monitor_wait_times_out_and_the_later_end_note_is_still_delivered_once() {
+    let (jobs, sink) = jobs();
+    let id = monitor(&jobs, "sleep 30", Duration::from_secs(2));
+    let started = Instant::now();
+    let (end, note_posted, already_reported) =
+        as_wait(jobs.output(&id, Duration::from_secs(1)).await.unwrap());
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(end.is_none() && !note_posted && !already_reported);
+    until("the end note", || !sink.notes().is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let notes = sink.notes();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].text.contains("ended (reached its timeout)"),
+        "{}",
+        notes[0].text
+    );
+}
+
+#[tokio::test]
+async fn a_dropped_monitor_wait_leaves_no_spurious_note_and_hands_the_held_end_note_on() {
+    let (jobs, sink) = jobs();
+    let id = monitor(&jobs, "sleep 2; echo late", Duration::from_secs(60));
+    let waiting = tokio::time::timeout(
+        Duration::from_millis(300),
+        jobs.output(&id, Duration::from_secs(30)),
+    );
+    assert!(waiting.await.is_err(), "the wait was dropped mid-wait");
+    until("the waiters count to settle", || {
+        lock(&jobs.shared.inner, "job registry")
+            .find(&id)
+            .is_some_and(|job| job.waiters == 0)
+    })
+    .await;
+    assert!(sink.notes().is_empty(), "{:?}", sink.notes());
+
+    // The end comes while a wait is parked: the note is held for it, and the leaving
+    // guard posts it exactly once.
+    let (end, _, already_reported) =
+        as_wait(jobs.output(&id, Duration::from_secs(30)).await.unwrap());
+    assert!(end.is_some() && !already_reported);
+    let notes = sink.notes();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].text.contains("ended") && notes[0].text.contains("late"),
+        "{}",
+        notes[0].text
+    );
+}
+
+#[tokio::test]
+async fn the_user_killing_a_monitored_wait_posts_one_end_note_with_the_tail() {
+    let (jobs, sink) = jobs();
+    let id = monitor(&jobs, "echo before; sleep 30", Duration::from_secs(60));
+    until("the output", || {
+        lock(&jobs.shared.inner, "job registry")
+            .find(&id)
+            .is_some_and(|job| job.buffer.next > 0)
+    })
+    .await;
+    let waiting = jobs.output(&id, Duration::from_secs(30));
+    let killing = async {
+        until("the wait to park", || {
+            lock(&jobs.shared.inner, "job registry")
+                .find(&id)
+                .is_some_and(|job| job.waiters > 0)
+        })
+        .await;
+        assert!(jobs.kill_by_user(&id));
+    };
+    let (output, ()) = tokio::join!(waiting, killing);
+    let (end, _, already_reported) = as_wait(output.unwrap());
+    assert!(matches!(end.map(|e| e.end), Some(End::Killed(Kill::User))));
+    assert!(!already_reported);
+    let notes = sink.notes();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].text.contains("killed by the user") && notes[0].text.contains("before"),
+        "{}",
+        notes[0].text
+    );
+    let (end, _, already_reported) = as_wait(jobs.output(&id, Duration::ZERO).await.unwrap());
+    assert!(end.is_some() && already_reported);
+    assert_eq!(sink.notes().len(), 1, "the end note went out exactly once");
+}
+
+#[tokio::test]
+async fn the_user_killing_an_unwatched_monitor_posts_the_end_note_at_once() {
+    let (jobs, sink) = jobs();
+    let id = monitor(&jobs, "echo before; sleep 30", Duration::from_secs(60));
+    until("the output", || {
+        lock(&jobs.shared.inner, "job registry")
+            .find(&id)
+            .is_some_and(|job| job.buffer.next > 0)
+    })
+    .await;
+    assert!(jobs.kill_by_user(&id));
+    until("the end note", || !sink.notes().is_empty()).await;
+    let notes = sink.notes();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].text.starts_with("[Monitor ") && notes[0].text.contains("killed by the user"),
+        "{}",
+        notes[0].text
+    );
+    assert!(notes[0].text.contains("before"), "the tail rides along");
+    // The cursor sits at the buffer end: a cancel returns the marker, not the output.
+    let read = jobs.cancel(&id).await.unwrap();
+    assert!(read.chunk.is_empty() && read.end.is_some());
+    let (end, _, already_reported) = as_wait(jobs.output(&id, Duration::ZERO).await.unwrap());
+    assert!(
+        end.is_some() && already_reported,
+        "nothing further is promised"
+    );
 }
 
 #[tokio::test]

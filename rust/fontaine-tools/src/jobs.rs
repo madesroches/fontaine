@@ -70,11 +70,7 @@ pub enum JobError {
     UnknownJob(String),
     TooMany,
     NotRoot,
-    /// `job_output` on a monitor, whose lines arrive as notifications.
-    Monitor(String),
-    Spawn {
-        source: io::Error,
-    },
+    Spawn { source: io::Error },
 }
 
 impl fmt::Display for JobError {
@@ -86,11 +82,6 @@ impl fmt::Display for JobError {
                 "{MAX_RUNNING} jobs are already running; stop one with job_cancel first"
             ),
             JobError::NotRoot => write!(f, "only the main agent runs background jobs"),
-            JobError::Monitor(id) => write!(
-                f,
-                "{id} is a monitor: its output lines arrive as notifications, not through \
-                 job_output; job_cancel stops it"
-            ),
             JobError::Spawn { .. } => write!(f, "could not run sh"),
         }
     }
@@ -506,6 +497,8 @@ impl Shared {
             text,
         };
         self.post(note);
+        // A wait parked on the watch otherwise sleeps until the next append or the end.
+        self.wake();
     }
 
     fn finish(&self, id: &str, info: EndInfo) {
@@ -530,16 +523,23 @@ impl Shared {
             Some(Kill::Model) => job.reported = true,
             Some(Kill::Shutdown | Kill::Cap) => {}
             Some(Kill::User) => {
-                let kind = if job.monitor.is_some() {
-                    "Monitor"
+                if job.monitor.is_none() {
+                    let note = JobNote {
+                        job: job.id.clone(),
+                        text: format!("[Background job {} was killed by the user.]", job.id),
+                    };
+                    self.post(note);
+                } else if job.waiters > 0 {
+                    // The parked wait takes the news; its guard posts the standard end note.
+                    job.held = true;
                 } else {
-                    "Background job"
-                };
-                let note = JobNote {
-                    job: job.id.clone(),
-                    text: format!("[{kind} {} was killed by the user.]", job.id),
-                };
-                self.post(note);
+                    // A monitor has no read path, so its end note must go out now, carrying
+                    // the tail; a later `job_cancel` finds the cursor at the buffer end.
+                    let note = end_note(job);
+                    job.reported = true;
+                    job.cursor = job.buffer.next;
+                    self.post(note);
+                }
             }
             _ if job.waiters > 0 => job.held = true,
             _ => {
@@ -656,6 +656,21 @@ pub struct Foreground {
     pub end: Option<EndInfo>,
     /// It was moved to the background for printing nothing, not for running past its timeout.
     pub quiet: bool,
+}
+
+/// What `job_output` returned: a read of a plain job's output, or a wait-only status for
+/// a monitor, which never carries output bytes.
+pub enum JobOutput {
+    Read(Read),
+    MonitorWait {
+        id: String,
+        age: Duration,
+        end: Option<EndInfo>,
+        /// A monitor note went out since the wait began.
+        note_posted: bool,
+        /// The monitor ended and its end note already went to the model.
+        already_reported: bool,
+    },
 }
 
 /// What a read of a job returned.
@@ -894,11 +909,16 @@ impl Jobs {
 
     /// New output from `id`, waiting up to `wait` for some or for its end. A job whose end the
     /// model was already told of in a note returns a marker instead, and one whose end this
-    /// returns posts no note.
-    pub async fn output(&self, id: &str, wait: Duration) -> Result<Read, JobError> {
+    /// returns posts no note. A monitor has no read path: the wait reports only whether a note
+    /// went out since it began, the monitor ended, or the wait expired, and its end note is
+    /// posted by the parked guard, exactly once.
+    pub async fn output(&self, id: &str, wait: Duration) -> Result<JobOutput, JobError> {
         let mut changes = self.shared.changed.subscribe();
         let deadline = Instant::now().checked_add(wait);
         let mut waiting: Option<WaitGuard> = None;
+        // A monitor wait reports a note posted after its call began; the count is the
+        // watermark, taken once.
+        let mut watermark: Option<usize> = None;
         loop {
             let done = {
                 let mut inner = lock(&self.shared.inner, "job registry");
@@ -906,13 +926,9 @@ impl Jobs {
                     .find_mut(id)
                     .ok_or_else(|| JobError::UnknownJob(id.to_owned()))?;
                 if job.monitor.is_some() {
-                    return Err(JobError::Monitor(id.to_owned()));
-                }
-                let fresh = job.buffer.next > job.cursor;
-                let expired = deadline.is_none_or(|at| Instant::now() >= at);
-                if job.ended.is_some() || fresh || expired || wait.is_zero() {
-                    Some(read(job, false))
-                } else {
+                    let watermark = *watermark.get_or_insert_with(|| {
+                        job.monitor.as_ref().map_or(0, |monitor| monitor.posted)
+                    });
                     if waiting.is_none() {
                         job.waiters += 1;
                         waiting = Some(WaitGuard {
@@ -920,7 +936,37 @@ impl Jobs {
                             id: id.to_owned(),
                         });
                     }
-                    None
+                    let note_posted = job
+                        .monitor
+                        .as_ref()
+                        .is_some_and(|monitor| monitor.posted > watermark);
+                    let expired = deadline.is_none_or(|at| Instant::now() >= at);
+                    if job.ended.is_some() || note_posted || expired {
+                        Some(JobOutput::MonitorWait {
+                            id: id.to_owned(),
+                            age: job.age(),
+                            end: job.ended.clone(),
+                            note_posted,
+                            already_reported: job.ended.is_some() && job.reported,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    let fresh = job.buffer.next > job.cursor;
+                    let expired = deadline.is_none_or(|at| Instant::now() >= at);
+                    if job.ended.is_some() || fresh || expired || wait.is_zero() {
+                        Some(JobOutput::Read(read(job, false)))
+                    } else {
+                        if waiting.is_none() {
+                            job.waiters += 1;
+                            waiting = Some(WaitGuard {
+                                shared: self.shared.clone(),
+                                id: id.to_owned(),
+                            });
+                        }
+                        None
+                    }
                 }
             };
             if let Some(done) = done {
