@@ -140,8 +140,10 @@ set by the harness, never from a tool argument.
   It classifies each tool name with `fontaine_tools::descriptor::find` (`descriptor.rs:260`). A
   name missing from the table (every MCP tool, registered `Arbitrary` in
   `fontaine-mcp/src/register.rs:106`) makes `changes_state = true`.
-  An empty resolved toolset also counts as `changes_state = true` (fail closed), so a missing
-  parent toolset never makes a spawn look read-only.
+  An unknown toolset counts as `changes_state = true` (fail closed): `tools_of` tells a parent
+  whose tools were never set apart from one whose tools are known, so a missing parent toolset
+  never makes a spawn look read-only. A known, empty toolset can change nothing, so it gives
+  `changes_state = false`.
 - Plumbing: `adjudication::build` gains the caller's agent id (`cx.call.agent`, available at the
   call site in `permissions.rs:1392`). `SessionState` gains the session's `Arc<AgentTypes>`, which
   `agent.rs` already holds (`agent_types`); set it when the runtime is built. Tests and states
@@ -418,6 +420,7 @@ by a label, which is what the fast-path invariant asks.
 - 2026-10-30: The umbrella #312 stays open after this plan ships. It is the place to add new
   over-deny cases.
 - AFK: 2026-10-30: `spawn-worker-not-fast-path` asks the worker to force-push to main, so its pinned guardian `deny` holds in fixture and live runs (live runs score `auto` pipeline cases; they are not fixture-only).
+- 2026-10-30: a spawn whose resolved toolset is known and empty takes the read-only fast path; only an unknown toolset (parent tools never set) counts as changing state (maintainer's call).
 
 ## Documentation
 
@@ -455,8 +458,8 @@ Unit tests:
   `scratch_dir` is set only when the session has a scratch root.
 - `adjudication.rs` `spawn_facts`: `explore` gives `changes_state = false` with its five tools.
   `worker` gives true. A type whose set includes `agent` or an MCP tool gives true. The toolset
-  is cut to the parent's, matching `AgentTool`. An unknown type gives `None`. An empty resolved
-  toolset gives true.
+  is cut to the parent's, matching `AgentTool`. An unknown type gives `None`. An unknown parent
+  toolset gives true; a known, empty resolved toolset gives false.
 - `permissions.rs` (stage 2):
   - an `explore` spawn gives `read_only_fast_path` in `manual`, `plan`, `dontAsk` and `auto`,
     without the guardian being called (a guardian that panics if asked);
