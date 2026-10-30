@@ -92,7 +92,8 @@ pub struct SessionFacts {
 pub struct SpawnFacts {
     pub agent_type: String,
     pub tools: Vec<String>,
-    /// False only when every tool in `tools` is read-only.
+    /// False only when every tool in `tools` is read-only, ignoring the `send_message` exemption
+    /// (see `fontaine_core::adjudication::spawn_facts`).
     pub changes_state: bool,
 }
 

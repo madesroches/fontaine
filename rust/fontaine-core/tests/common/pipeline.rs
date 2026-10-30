@@ -235,9 +235,8 @@ impl Rig {
         ));
         let agents = Arc::new(AgentTree::new(Limits::default()));
         agents.set_root_tools(|| {
-            fontaine_tools::descriptor::TOOLS
-                .iter()
-                .map(|d| d.name.to_string())
+            fontaine_tools::descriptor::names()
+                .map(String::from)
                 .collect()
         });
         let scripted = Arc::new(Scripted::default());

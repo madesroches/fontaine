@@ -282,6 +282,11 @@ pub fn find_claude(claude_name: &str) -> Option<&'static ToolDescriptor> {
     TOOLS.iter().find(|d| d.claude.contains(&claude_name))
 }
 
+/// Every tool name in the table, in table order.
+pub fn names() -> impl Iterator<Item = &'static str> {
+    TOOLS.iter().map(|d| d.name)
+}
+
 /// Every Claude Code name the table knows, in table order.
 pub fn claude_names() -> impl Iterator<Item = &'static str> {
     TOOLS.iter().flat_map(|d| d.claude.iter().copied())

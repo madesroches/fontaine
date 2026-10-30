@@ -324,10 +324,7 @@ mod tests {
     #[test]
     fn explore_cannot_change_state_and_worker_can() {
         let types = AgentTypes::builtin();
-        let all: Vec<&str> = fontaine_tools::descriptor::TOOLS
-            .iter()
-            .map(|d| d.name)
-            .collect();
+        let all: Vec<&str> = fontaine_tools::descriptor::names().collect();
         let explore = spawn(&types, &all, "explore").unwrap();
         let mut tools = explore.tools.clone();
         tools.sort();

@@ -268,9 +268,8 @@ fn facts_from(case: &Case, root: &str) -> SessionFacts {
 
 /// The parent toolset a guardian case's spawn is posed with: every built-in tool.
 fn builtin_tools() -> Vec<String> {
-    fontaine_tools::descriptor::TOOLS
-        .iter()
-        .map(|d| d.name.to_string())
+    fontaine_tools::descriptor::names()
+        .map(String::from)
         .collect()
 }
 

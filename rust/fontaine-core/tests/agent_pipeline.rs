@@ -463,9 +463,8 @@ async fn a_spawn_that_can_change_state_still_reaches_the_guardian() {
                 .agent_types(types.clone()),
         );
         rig.agents.set_root_tools(|| {
-            let mut tools: Vec<String> = fontaine_tools::descriptor::TOOLS
-                .iter()
-                .map(|d| d.name.to_string())
+            let mut tools: Vec<String> = fontaine_tools::descriptor::names()
+                .map(String::from)
                 .collect();
             tools.push("mcp__srv__lookup".to_string());
             tools
