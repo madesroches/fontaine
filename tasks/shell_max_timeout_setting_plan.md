@@ -52,7 +52,7 @@ max_timeout_secs = 1800
 - `config.rs`: `ShellSection { max_timeout_secs: Option<u64> }` with `deny_unknown_fields` and the same derives as `GoalSection` (`Clone, Debug, Default, Deserialize, JsonSchema`; `every_settings_leaf_has_a_row` walks the schema), held as
   `shell: Option<ShellSection>` on the settings struct. The merged config gains
   `shell: Shell { max_timeout_secs: u64 }`, default `600`. Validation: `1..=86_400`, else
-  `bad("shell.max_timeout_secs", "must be from 1 to 86400")`. The upper bound keeps
+  `bad("shell.max_timeout_secs", "must be between 1 and 86400")`. The upper bound keeps
   `Instant + Duration` far from overflow and is still a full day.
 - `config_scope.rs`: `Rule::user_or_cli("shell", SHELL)` with
   `SHELL = "how long a model's shell command may block or run is set only in the user file or --settings"`.

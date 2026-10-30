@@ -1215,7 +1215,10 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         && let Some(v) = sh.max_timeout_secs
         && !(1..=MAX_SHELL_TIMEOUT_SECS).contains(&v)
     {
-        return bad("shell.max_timeout_secs", "must be from 1 to 86400");
+        return bad(
+            "shell.max_timeout_secs",
+            &format!("must be between 1 and {MAX_SHELL_TIMEOUT_SECS}"),
+        );
     }
     if let Some(c) = &s.checkpoints {
         for (key, v) in [
