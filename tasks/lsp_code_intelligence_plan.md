@@ -41,8 +41,9 @@ user-role message.
   `Scanner` adds is scanned.
 - **Long-lived children.** `Jobs` (`fontaine-tools/src/jobs.rs:744`) and `SearxngChild`
   (`websearch.rs:330`) are held once in `Setup` (`fontaine-core/src/agent.rs:189-212`) so a
-  registry rebuild keeps them, and are ended on `/clear` and at exit (`agent.rs:826`,
-  `fontaine-tui/src/lib.rs:331`, `fontaine/src/headless.rs:850,883,902`). MCP stdio servers spawn
+  registry rebuild keeps them. `Jobs` end on `/clear`, `/rewind` and at exit (`end_jobs`,
+  `agent.rs:826-828`; `fontaine-tui/src/lib.rs:331`, `fontaine/src/headless.rs:850,883,902`);
+  `SearxngChild` lives until the runtime drops. MCP stdio servers spawn
   with `env_clear()` + `BASE_ENV` + `env_vars` + literal `env` + the `[env]` table, cwd at the
   primary root, stderr to `tracing::debug!` (`fontaine-mcp/src/servers.rs:211-243`,
   `fontaine-core/src/agent/mcp.rs:138-198`).
@@ -100,7 +101,10 @@ diagnostics = true
   alphabet check (MCP composes plugin names too, `plugins.rs:1068`).
 - **One server per extension**: the first registered (user config in name order, then plugins in
   install order) handles an extension; a later claimant gets a startup warning
-  `LSP server "<name>" is not used for <ext> files` (Claude Code's text).
+  `LSP server "<name>" is not used for <ext> files` (Claude Code's text). The extension map and
+  its warnings are computed during session preparation (`prepare_session` /
+  `Config::apply_plugins`), before `prep.warnings` reaches `AgentRuntime.startup_warnings`
+  (`fontaine/src/lib.rs:898`; `agent.rs:123,157`), not when `LspServers` is built in `Setup`.
 
 ### Module layout — `fontaine-tools/src/lsp/`
 
@@ -160,11 +164,11 @@ with the line's text. Output positions are converted back to 1-based.
   `scope.rs` `fields_of` (`path` required), `destructive.rs` `touched_paths`, and
   `permission_rules.rs` `path_args` (not a tree). So an in-root call takes the fast path and `lsp(src/**)` / deny rules match like `read`.
   Out-of-root refusal is the tool's own, not the gate's: allow rules and hook allows return Allow
-  before the `outside` deny and `DontAsk` skips it (`permissions.rs:836-888`), and extension tools
+  before the `outside` deny (`permissions.rs:836-888`), and extension tools
   registered via `GuardedTool::single` never call `locate` nor get `locate_path`'s absolute
   rewrite for non-primary roots. So the `lsp` tool resolves `path` against the session `Scope`
-  itself and refuses any path outside every root, before any `didOpen`, like the `read`/`edit`
-  fallback.
+  itself with `Scope::find` (`scope.rs:152-162`) and refuses any path outside every root, before
+  any `didOpen`, like `edit`'s per-root refusal.
 - Registered as an extension tool only when at least one server is configured (Claude Code's
   "inactive until a server exists"), in `extension_tools` (`fontaine-core/src/agent/build.rs:
   202-249`, pattern `if scheduling(p)` :226). The `explore` (`fontaine-agents/src/registry.rs:168`)
@@ -225,7 +229,10 @@ The diagnostics-store unit test pins this line.
 2. **Config.** `LspSection`/`LspServer` in `fontaine-core/src/config.rs` with validation;
    `config_scope.rs` row and an `lsp` entry in its `SNIPPETS` (required by
    `every_row_has_a_snippet_and_no_snippet_lacks_a_row`); `config_catalog.rs` row for `lsp.servers` (Map, like `mcp.servers`).
-3. **Plugins.** In `plugins.rs`, stop warning on the `lspServers` manifest key; load `.lsp.json` (the `lspServers/` directory
+3. **Plugins.** In `plugins.rs`, stop warning on the `lspServers` manifest key; load `.lsp.json`
+   and the path and array `lspServers` forms through `manifest_file_paths` (:695-731) +
+   `resolved_component_paths` (:734-745) so files stay inside the plugin checkout; the inline-map
+   form (Claude Code parity) is parsed separately, since MCP's loader has no inline form (the `lspServers/` directory
    warning stays: Claude Code has no such directory component); parse them into the
    same `LspServer` (camelCase mapping, strict, whole-file skip on an unknown key), composed names,
    precedence as designed. Target: `PluginContributions.servers` and `Config::apply_plugins`
@@ -248,7 +255,7 @@ The diagnostics-store unit test pins this line.
    existing startup-notice path.
 8. **System prompt.** One `# Tools` bullet in `fontaine-core/prompts/system_prompt.md`: prefer
    `lsp` over `grep` to find a symbol's definition or references when it is available, and read
-   the diagnostics note after an edit. Keep `prefix_stability` green (the bullet is static text;
+   the diagnostics note after an edit. Update the `the_assembled_prompt_is_stable` snapshot (the bullet is static text;
    tool availability already varies the tool list).
 9. **Docs and records** (see Documentation).
 
@@ -258,16 +265,17 @@ The diagnostics-store unit test pins this line.
 - `rust/fontaine-tools/src/lsp/{mod,client,manager,diagnostics,tool}.rs` (new), `src/lib.rs`
 - `rust/fontaine-tools/src/descriptor.rs`, `scope.rs`, `result_pipeline.rs`, `child_env.rs`,
   `websearch.rs` (process-group helpers move to a shared module)
-- `rust/fontaine-tools/tests/choke_point.rs`, `tests/lsp.rs`, `tests/lsp_live.rs`, `examples/fake_lsp.rs` (new)
+- `rust/fontaine-tools/tests/lsp.rs`, `tests/lsp_live.rs`, `examples/fake_lsp.rs` (new)
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`, `plugins.rs`,
   `tools.rs`, `permissions.rs`, `permission_rules.rs`, `destructive.rs`, `agent.rs`,
   `agent/setup.rs`, `agent/mcp.rs`, `agent/build.rs`, `prompts/system_prompt.md`
 - `rust/fontaine-core/tests/choke_point.rs`, (`docs.rs` iterates `TOOLS`, no edit)
-- `rust/fontaine-agents/src/registry.rs`
+- `rust/fontaine-agents/src/registry.rs` (`explore`/`worker` toolsets)
 - `rust/fontaine-mcp/src/servers.rs`
-- `rust/fontaine/examples/fake_lsp.rs` (new copy), `rust/fontaine/tests/lsp.rs` (new)
+- `rust/fontaine/examples/fake_lsp.rs` (new; thin `#[path]` wrapper over the `fontaine-tools` example, as `repo_mcp_server.rs`), `rust/fontaine/tests/lsp.rs` (new)
+- `rust/fontaine-core/tests/snapshots/system_prompt__the_assembled_prompt_is_stable.snap`
 - `rust/fontaine-tui/src/lib.rs`, `rust/fontaine/src/headless.rs`
-- `docs/tools.md`, `docs/configuration.md`, `docs/plugins.md`, `docs/permissions.md`, `research/research-claude-code-parity.md`, `tasks/fontaine_harness_plan.md`
+- `docs/tools.md`, `docs/configuration.md`, `docs/plugins.md`, `docs/permissions.md`, `docs/agents.md`, `docs/extensions.md`, `research/research-claude-code-parity.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
 
@@ -309,6 +317,8 @@ The diagnostics-store unit test pins this line.
   `--settings` only); `lsp` in the permission-rule tool-name list (:566).
 - `docs/plugins.md`: replace the "LSP server components are unsupported" bullet with how plugin
   servers load and are named.
+- `docs/agents.md`: `lsp` in the `explore`/`worker` toolsets (:57-58).
+- `docs/extensions.md`: an `LSP` → `lsp` row in the tool-name table (:56-77).
 - `docs/permissions.md`: `lsp` in the read-only fast-path tools list (:66) and the path-specifier
   tools list (:205).
 - `research/research-claude-code-parity.md`: LSP row → done, with the deviations above; the
@@ -372,9 +382,7 @@ indexing latency, `utf-16` handling, and that its flycheck diagnostics arrive on
 
 ## Manual Verification
 
-1. `rustup component list --installed` in `rust/` lists `rust-analyzer` after a `cargo --version`
-   there (toolchain file honoured).
-2. With `[lsp.servers.rust-analyzer]` in the user config, run `cargo run -p fontaine` in a scratch
+1. With `[lsp.servers.rust-analyzer]` in the user config, run `cargo run -p fontaine` in a scratch
    crate, ask for a deliberate type error with `edit`; the edit's result card shows the
    `Diagnostics (rust-analyzer)` note and a later result shows the flycheck error under
    `Late diagnostics`. Why manual: how the note reads in the TUI tool card is a judgment call.
