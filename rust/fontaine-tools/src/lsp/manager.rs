@@ -25,6 +25,7 @@ use super::client::{Client, Encoding, StartConfig, StartFailure};
 use super::diagnostics::{self, Diag, DiagnosticStore};
 use crate::child_env::server_env;
 use crate::error_chain::chain;
+use crate::lock::lock_recovering;
 use crate::scope::Scope;
 
 type EnvLookup = Arc<dyn Fn(&str) -> Option<OsString> + Send + Sync>;
@@ -175,6 +176,8 @@ pub struct LspServers {
     // Lower-cased extension with its dot, to the slot and language id that handle it.
     extensions: BTreeMap<String, (usize, String)>,
     store: Arc<DiagnosticStore>,
+    /// Serializes sync-and-wait per file: the store tracks one awaiting edit per URI.
+    edit_locks: std::sync::Mutex<HashMap<Url, Arc<Mutex<()>>>>,
     workspace: Arc<dyn LspWorkspace>,
     env: EnvLookup,
 }
@@ -216,6 +219,7 @@ impl LspServers {
             slots,
             extensions,
             store: Arc::new(DiagnosticStore::default()),
+            edit_locks: std::sync::Mutex::default(),
             workspace,
             env,
         })
@@ -451,6 +455,11 @@ impl LspServers {
             })
         };
         let uri = Url::from_file_path(path).ok()?;
+        let edit_lock = lock_recovering(&self.edit_locks)
+            .entry(uri.clone())
+            .or_default()
+            .clone();
+        let _edit = edit_lock.lock().await;
         let mut state = slot.state.lock().await;
         let client = match self.ensure(slot, &mut state).await {
             Ok(client) => client,

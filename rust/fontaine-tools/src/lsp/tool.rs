@@ -163,13 +163,18 @@ fn kind_name(kind: SymbolKind) -> &'static str {
 
 /// `heading`, then at most [`MAX_LOCATIONS`] of `lines`, then how many were left out.
 pub fn capped_list(heading: &str, lines: &[String]) -> String {
+    capped_total(heading, lines, lines.len())
+}
+
+/// `lines` holds at most the first [`MAX_LOCATIONS`] of `total` entries.
+fn capped_total(heading: &str, lines: &[String], total: usize) -> String {
     let mut out = heading.to_string();
     for line in lines.iter().take(MAX_LOCATIONS) {
         out.push('\n');
         out.push_str(line);
     }
-    if lines.len() > MAX_LOCATIONS {
-        out.push_str(&format!("\n… and {} more", lines.len() - MAX_LOCATIONS));
+    if total > MAX_LOCATIONS {
+        out.push_str(&format!("\n… and {} more", total - MAX_LOCATIONS));
     }
     out
 }
@@ -367,10 +372,15 @@ impl LspTool {
         let found = found
             .filter(|f| !f.is_empty())
             .ok_or_else(|| Self::empty(prepared))?;
-        let lines: Vec<String> = found.iter().map(|l| locator.location(l)).collect();
-        Ok(capped_list(
-            &format!("{}:", plural(lines.len(), noun)),
+        let lines: Vec<String> = found
+            .iter()
+            .take(MAX_LOCATIONS)
+            .map(|l| locator.location(l))
+            .collect();
+        Ok(capped_total(
+            &format!("{}:", plural(found.len(), noun)),
             &lines,
+            found.len(),
         ))
     }
 
@@ -426,30 +436,40 @@ impl LspTool {
                 },
             )
             .await?;
-        let lines: Vec<String> = match response {
-            Some(WorkspaceSymbolResponse::Flat(symbols)) => {
-                symbols.iter().map(|s| flat_symbol(locator, s)).collect()
-            }
-            Some(WorkspaceSymbolResponse::Nested(symbols)) => symbols
-                .iter()
-                .map(|symbol| {
-                    let place = match &symbol.location {
-                        OneOf::Left(location) => locator.location(location),
-                        // A server may leave the range for a later resolve; the file is
-                        // still a pointer.
-                        OneOf::Right(file) => locator.place(&file.uri, Position::new(0, 0)),
-                    };
-                    format!("{} ({}) {place}", symbol.name, kind_name(symbol.kind))
-                })
-                .collect(),
-            None => Vec::new(),
+        let (total, lines): (usize, Vec<String>) = match response {
+            Some(WorkspaceSymbolResponse::Flat(symbols)) => (
+                symbols.len(),
+                symbols
+                    .iter()
+                    .take(MAX_LOCATIONS)
+                    .map(|s| flat_symbol(locator, s))
+                    .collect(),
+            ),
+            Some(WorkspaceSymbolResponse::Nested(symbols)) => (
+                symbols.len(),
+                symbols
+                    .iter()
+                    .take(MAX_LOCATIONS)
+                    .map(|symbol| {
+                        let place = match &symbol.location {
+                            OneOf::Left(location) => locator.location(location),
+                            // A server may leave the range for a later resolve; the file is
+                            // still a pointer.
+                            OneOf::Right(file) => locator.place(&file.uri, Position::new(0, 0)),
+                        };
+                        format!("{} ({}) {place}", symbol.name, kind_name(symbol.kind))
+                    })
+                    .collect(),
+            ),
+            None => (0, Vec::new()),
         };
         if lines.is_empty() {
             return Err(Self::empty(prepared));
         }
-        Ok(capped_list(
-            &format!("{}:", plural(lines.len(), "symbol")),
+        Ok(capped_total(
+            &format!("{}:", plural(total, "symbol")),
             &lines,
+            total,
         ))
     }
 

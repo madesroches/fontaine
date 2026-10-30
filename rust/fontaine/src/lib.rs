@@ -722,6 +722,13 @@ fn prepare_session(
             .iter()
             .map(|warning| Notice::warning(warning.clone(), None)),
     );
+    warnings.extend(
+        config
+            .lsp_table()
+            .warnings
+            .into_iter()
+            .map(|warning| Notice::warning(warning, None)),
+    );
     // Declined trust keeps a repository's servers from starting, but its agent files may still
     // name their tools: toolset cutting drops them.
     let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();

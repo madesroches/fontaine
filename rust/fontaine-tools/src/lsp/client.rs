@@ -226,7 +226,7 @@ struct ClientState {
     server: Arc<str>,
     store: Arc<DiagnosticStore>,
     settings: Option<Value>,
-    folders: Vec<WorkspaceFolder>,
+    folders: Arc<Mutex<Vec<WorkspaceFolder>>>,
 }
 
 pub struct Client {
@@ -235,6 +235,7 @@ pub struct Client {
     process: ServerProcess,
     pub encoding: Encoding,
     pub folders_supported: bool,
+    folders: Arc<Mutex<Vec<WorkspaceFolder>>>,
     done: Arc<AtomicBool>,
     stderr_tail: Arc<Mutex<String>>,
     request_timeout: Duration,
@@ -290,7 +291,10 @@ fn router(state: ClientState) -> Router<ClientState> {
         .request::<UnregisterCapability, _>(|_, _| std::future::ready(Ok::<_, ResponseError>(())))
         .request::<WorkDoneProgressCreate, _>(|_, _| std::future::ready(Ok::<_, ResponseError>(())))
         .request::<lsp_types::request::WorkspaceFoldersRequest, _>(|state, ()| {
-            std::future::ready(Ok::<_, ResponseError>(Some(state.folders.clone())))
+            std::future::ready(Ok::<_, ResponseError>(Some(
+                // Advisory: a poisoned list still describes the roots well enough to answer.
+                lock_recovering(&state.folders).clone(),
+            )))
         });
     router
 }
@@ -388,8 +392,15 @@ impl Client {
         let drain = {
             let (tail, name) = (stderr_tail.clone(), config.name.clone());
             tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
+                // Keep draining past undecodable bytes: dropping the pipe would EPIPE the server.
+                let mut reader = BufReader::new(stderr);
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    if !matches!(reader.read_until(b'\n', &mut buf).await, Ok(n) if n > 0) {
+                        break;
+                    }
+                    let line = String::from_utf8_lossy(&buf).trim_end().to_owned();
                     tracing::debug!(server = %name, "lsp stderr: {line}");
                     // Advisory: the tail only decorates an error message.
                     *lock_recovering(&tail) = line;
@@ -402,11 +413,12 @@ impl Client {
             .iter()
             .filter_map(|p| workspace_folder(p))
             .collect();
+        let shared_folders = Arc::new(Mutex::new(folders.clone()));
         let state = ClientState {
             server: config.name.as_str().into(),
             store,
             settings: config.settings.clone(),
-            folders: folders.clone(),
+            folders: shared_folders.clone(),
         };
         let (mainloop, socket) = MainLoop::new_client(|_server| router(state));
         let done = Arc::new(AtomicBool::new(false));
@@ -430,6 +442,7 @@ impl Client {
             process,
             encoding: Encoding::Utf16,
             folders_supported: false,
+            folders: shared_folders,
             done,
             stderr_tail,
             request_timeout: config.request_timeout,
@@ -558,6 +571,8 @@ impl Client {
         let Some(folder) = workspace_folder(root) else {
             return;
         };
+        // Advisory: see the workspaceFolders handler.
+        lock_recovering(&self.folders).push(folder.clone());
         let event = WorkspaceFoldersChangeEvent {
             added: vec![folder],
             removed: Vec::new(),
