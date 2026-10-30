@@ -3,6 +3,7 @@
 //! tests exercise it.
 
 pub mod accessibility;
+pub mod agent_list;
 pub mod agents_panel;
 pub mod app;
 pub mod approval;
@@ -43,6 +44,7 @@ use std::time::Duration;
 
 use fontaine_core::agent::{AgentRuntime, AgentSetup, EnvLookup};
 use fontaine_core::config::PermissionMode;
+use fontaine_core::gate::AgentViewEvent;
 use fontaine_core::notice::{Notice, Severity};
 use fontaine_core::permissions::{
     Answer, ApprovalRequest, Approver, GuardianUnavailable, UnavailableChoice,
@@ -200,6 +202,8 @@ struct Ui<R> {
     app: App,
     input: UnboundedReceiver<Input>,
     prompts: UnboundedReceiver<Prompt>,
+    /// What every subagent run does, for the agents' own transcripts.
+    agent_events: UnboundedReceiver<(String, AgentViewEvent)>,
     render: R,
     recent: RecentModels,
     /// A model picked while a turn ran, applied once the turn is over: only the idle loop owns
@@ -258,12 +262,15 @@ pub async fn drive(
     let launcher = ui::Launcher::for_platform(setup.git_bash.clone());
     let mut runtime =
         AgentRuntime::new(setup).map_err(|e| fontaine_tools::error_chain::chain(&e))?;
+    let (agent_sink, agent_events) = unbounded_channel();
+    runtime.state.set_agent_event_sink(agent_sink);
     runtime.record_session_start().await;
     let theme = Theme::preset(runtime.config.tui.theme);
     let mut ui = Ui {
         app: App::new(mode, model),
         input,
         prompts,
+        agent_events,
         render,
         recent,
         pending_pick: None,
@@ -330,6 +337,10 @@ pub async fn drive(
     runtime.state.agents().kill_all();
     runtime.jobs().terminate_all().await;
     runtime.lsp().shutdown_all().await;
+    // What stays in the terminal is the main conversation, not an agent's view.
+    if ui.app.viewing.is_some() {
+        ui.app.view(None);
+    }
     ui.app.flush = true;
     (ui.render)(&mut ui.app);
     Ok(ui

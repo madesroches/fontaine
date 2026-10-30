@@ -717,7 +717,10 @@ async fn handle_message(
     let prompt = match goal::command(&text) {
         None => {
             runtime.begin_turn(&text, false);
-            runtime.append(Record::UserMessage { text: text.clone() });
+            runtime.append(Record::UserMessage {
+                text: text.clone(),
+                agent: None,
+            });
             text
         }
         Some(GoalArg::Status) => {
@@ -754,7 +757,7 @@ async fn handle_message(
             }
             involved = true;
             runtime.begin_turn(&text, false);
-            runtime.append(Record::UserMessage { text });
+            runtime.append(Record::UserMessage { text, agent: None });
             first_turn_prompt(&condition)
         }
     };

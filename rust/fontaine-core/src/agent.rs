@@ -58,6 +58,7 @@ mod build;
 mod goal;
 mod lsp;
 mod mcp;
+mod messaging;
 mod models;
 mod rewind;
 mod setup;
@@ -65,6 +66,7 @@ mod setup;
 pub(crate) use build::apply_common;
 use build::{Parts, build_agent};
 pub use mcp::{McpOutcome, McpServerPlan};
+pub use messaging::{Delivered, MessageRefusal};
 pub use models::{CredentialEffect, Switched};
 pub use rewind::{RewindError, RewindOutcome};
 pub use setup::{build_agent_types, build_guardian, build_guardian_telling, build_screen};
@@ -250,6 +252,7 @@ impl AgentRuntime {
         } = setup::gates(&mut setup, &tree, &state)?;
         let (extensions, skills) =
             setup::extension_runtimes(setup.extensions, &state, setup.project_executables);
+        let steering = Steering::default();
         let (main, tool_server, runner) = setup::subagent_support(
             &retained,
             &tree,
@@ -257,9 +260,9 @@ impl AgentRuntime {
             &setup.models,
             &setup.config,
             &setup.approver,
+            &steering,
         );
         let seen = Seen::default();
-        let steering = Steering::default();
         let (agent, pieces, loaded, native) = build_agent(&Parts {
             setup: &retained,
             roots: state.scope().roots(),

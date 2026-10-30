@@ -2,7 +2,7 @@
 //! session: key handling returns an [`Action`] for the driver to carry out, so tests can feed
 //! keys directly.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -14,6 +14,7 @@ use fontaine_tools::ask_user::{Question, QuestionReply};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::oneshot;
 
+use crate::agent_list::{AgentList, ListKey, ListRow};
 use crate::agents_panel::{AgentsPanel, PanelKey};
 use crate::approval::Approval;
 use crate::commands::{MenuEntry, builtin_menu, common_prefix, match_menu, parse_command};
@@ -86,6 +87,11 @@ pub enum Action {
     OpenRewind,
     /// The human asked to stop a subagent.
     KillAgent(String),
+    /// Text typed in a subagent's view, for that agent.
+    MessageAgent {
+        id: String,
+        text: String,
+    },
     /// The human asked to kill a background job.
     KillJob(String),
     /// The provider dialog asks for something done.
@@ -118,8 +124,32 @@ pub struct CompletionList {
     pub selected: usize,
 }
 
-pub struct App {
+/// What the human sees of one subagent: its own transcript, drawn like the main chat's.
+#[derive(Default)]
+pub struct AgentView {
     pub transcript: Transcript,
+}
+
+/// What a view that cannot run a command tells the human.
+pub const MAIN_ONLY: &str = "switch back to main to run this (↓ then Enter on main)";
+
+pub struct App {
+    /// The main conversation.
+    pub transcript: Transcript,
+    /// The subagents' transcripts, by agent id, filled as their events arrive.
+    pub agent_views: HashMap<String, AgentView>,
+    /// The agent whose transcript is on screen; `None` is the main conversation.
+    pub viewing: Option<String>,
+    /// The next render erases the screen and its scrollback and writes the shown transcript
+    /// again from the top.
+    pub reprint: bool,
+    /// The screen wrote transcript rows into scrollback while the agents panel covered the live
+    /// area, which leaves the last messages out of sight when it closes.
+    pub committed_under_overlay: bool,
+    /// The agents listed below the status line.
+    pub agent_list: AgentList,
+    /// What the human typed to the viewed agent that it has not read yet.
+    pub queued_agent: Vec<String>,
     pub input: InputBuffer,
     pub mode: PermissionMode,
     pub model: String,
@@ -217,6 +247,12 @@ impl App {
     pub fn new(mode: PermissionMode, model: String) -> App {
         App {
             transcript: Transcript::default(),
+            agent_views: HashMap::new(),
+            viewing: None,
+            reprint: false,
+            committed_under_overlay: false,
+            agent_list: AgentList::default(),
+            queued_agent: Vec::new(),
             input: InputBuffer::default(),
             mode,
             model,
@@ -260,6 +296,86 @@ impl App {
             guardian_off_opened: 0,
             questions_opened: 0,
         }
+    }
+
+    /// The transcript on screen.
+    pub fn shown(&self) -> &Transcript {
+        self.viewing
+            .as_ref()
+            .and_then(|id| self.agent_views.get(id))
+            .map_or(&self.transcript, |view| &view.transcript)
+    }
+
+    pub fn shown_mut(&mut self) -> &mut Transcript {
+        match &self.viewing {
+            Some(id) => &mut self.view_of(id.clone()).transcript,
+            None => &mut self.transcript,
+        }
+    }
+
+    /// The shown transcript beside the theme it is drawn with.
+    pub(crate) fn shown_with_theme(&mut self) -> (&mut Transcript, &Theme) {
+        let App {
+            transcript,
+            agent_views,
+            viewing,
+            theme,
+            ..
+        } = self;
+        let shown = match viewing.as_ref().and_then(|id| agent_views.get_mut(id)) {
+            Some(view) => &mut view.transcript,
+            None => transcript,
+        };
+        (shown, theme)
+    }
+
+    /// The view of `id`, started empty the first time it is asked for.
+    pub fn view_of(&mut self, id: String) -> &mut AgentView {
+        let glyphs = self.transcript.glyphs;
+        self.agent_views.entry(id).or_insert_with(|| {
+            let mut view = AgentView::default();
+            view.transcript.glyphs = glyphs;
+            view
+        })
+    }
+
+    /// Shows `target`'s transcript, `None` for the main conversation. The screen is erased and
+    /// the transcript written again on the next render.
+    pub fn view(&mut self, target: Option<String>) {
+        if let Some(id) = &target {
+            self.view_of(id.clone());
+        }
+        self.viewing = target;
+        self.reprint = true;
+        self.committed_under_overlay = false;
+        self.agent_list.focused = false;
+    }
+
+    /// The list row of the agent on screen, for the input box's header.
+    pub fn viewed_row(&self) -> Option<&ListRow> {
+        let id = self.viewing.as_deref()?;
+        self.agent_list
+            .rows()
+            .iter()
+            .find(|row| row.id.as_deref() == Some(id))
+    }
+
+    /// Notes where the main transcript ends, when an agent is on screen: what a command writes
+    /// there meanwhile belongs in the view the human is looking at.
+    pub(crate) fn notice_mark(&self) -> Option<usize> {
+        self.viewing.as_ref().map(|_| self.transcript.entries.len())
+    }
+
+    /// Moves what was written to the main transcript since `mark` into the shown one.
+    pub(crate) fn move_notices_to_shown(&mut self, mark: Option<usize>) {
+        let Some(mark) = mark else {
+            return;
+        };
+        if self.transcript.entries.len() <= mark {
+            return;
+        }
+        let moved = self.transcript.entries.split_off(mark);
+        self.shown_mut().entries.extend(moved);
     }
 
     /// Puts `text` in front of what is already in the input, as when queued messages come back.
@@ -697,6 +813,20 @@ impl App {
                 PanelKey::None => Action::None,
                 PanelKey::Close => {
                     self.agents = None;
+                    // Rows the screen wrote into scrollback while the panel was tall left the
+                    // last messages out of sight; the transcript is written again in full.
+                    if std::mem::take(&mut self.committed_under_overlay) {
+                        self.view(self.viewing.clone());
+                    }
+                    Action::None
+                }
+                PanelKey::View(id) => {
+                    self.agents = None;
+                    if self.viewing.as_deref() != Some(id.as_str()) {
+                        self.view(Some(id));
+                    } else if std::mem::take(&mut self.committed_under_overlay) {
+                        self.view(self.viewing.clone());
+                    }
                     Action::None
                 }
                 PanelKey::Kill(id) => Action::KillAgent(id),
@@ -707,7 +837,11 @@ impl App {
             self.question_key(key);
             return Action::None;
         }
+        if self.agent_list.focused && !control && !self.covered() {
+            return self.list_key(key);
+        }
         if control && key.code == KeyCode::Char('t') && !typing_reason {
+            self.agent_list.focused = false;
             self.agents = Some(AgentsPanel::new());
             return Action::None;
         }
@@ -718,7 +852,9 @@ impl App {
         if key.code == KeyCode::Esc && self.approval.is_none() && self.close_palette() {
             return Action::None;
         }
-        if key.code == KeyCode::Esc && self.running && !typing_reason {
+        // The main turn is out of sight in an agent's view, and Esc there must not stop what the
+        // human cannot see.
+        if key.code == KeyCode::Esc && self.running && !typing_reason && self.viewing.is_none() {
             return Action::Interrupt;
         }
         if self.approval.is_some() {
@@ -742,6 +878,7 @@ impl App {
         if key.code == KeyCode::Esc
             && !self.running
             && !self.shell_running
+            && self.viewing.is_none()
             && self.input.is_empty()
             && !self.history.navigating()
         {
@@ -769,6 +906,30 @@ impl App {
         self.refresh_completion();
         self.refresh_slash();
         action
+    }
+
+    /// Keys while the agent list below the status line has the keyboard.
+    fn list_key(&mut self, key: KeyEvent) -> Action {
+        match self.agent_list.handle_key(key, self.viewing.as_deref()) {
+            ListKey::None => Action::None,
+            ListKey::Blur { typed } => {
+                if typed {
+                    let action = self.message_key(key);
+                    self.refresh_completion();
+                    self.refresh_slash();
+                    return action;
+                }
+                Action::None
+            }
+            ListKey::View(target) => {
+                // Showing what is already shown would only erase the terminal's history.
+                if target != self.viewing {
+                    self.view(target);
+                }
+                Action::None
+            }
+            ListKey::Kill(id) => Action::KillAgent(id),
+        }
     }
 
     /// Forgets the menu's dismissal and selection once the text they were made for is gone,
@@ -997,6 +1158,15 @@ impl App {
                     self.input.set_text(&text);
                 }
             }
+            KeyCode::Down
+                if self.on_last_line()
+                    && self.agent_list.has_rows()
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+            {
+                self.agent_list.focus();
+            }
             _ => {
                 let before = self.input.text();
                 self.input.handle_key(key);
@@ -1015,7 +1185,8 @@ impl App {
     /// Up on the first line: the queued messages if there are any to take back, else older
     /// history.
     fn up(&mut self) -> Action {
-        if !self.queued.is_empty() && !self.shell_running {
+        // What is queued for the main conversation is out of sight in an agent's view.
+        if self.viewing.is_none() && !self.queued.is_empty() && !self.shell_running {
             return Action::EditQueued;
         }
         self.recall_older();
@@ -1042,6 +1213,9 @@ impl App {
         if text.trim().is_empty() {
             return Action::None;
         }
+        if let Some(id) = self.viewing.clone() {
+            return self.enter_in_view(id, &text);
+        }
         if self.shell_running {
             self.transcript
                 .notice("a shell command is running; wait for it or press Esc to interrupt");
@@ -1063,6 +1237,50 @@ impl App {
         }
         let text = self.input.take();
         Action::Submit(text.trim().to_string())
+    }
+
+    /// Enter in an agent's view: plain text goes to that agent. A built-in command runs against
+    /// the main conversation as usual, unless it would change that conversation, which the human
+    /// cannot see from here; skills and `!` lines are refused too, and the text stays in the
+    /// input.
+    fn enter_in_view(&mut self, id: String, text: &str) -> Action {
+        let text = text.trim();
+        if text.starts_with('!') {
+            self.shown_mut().notice(MAIN_ONLY);
+            return Action::None;
+        }
+        match parse_command(text) {
+            None => {
+                self.input.take();
+                Action::MessageAgent {
+                    id,
+                    text: text.to_string(),
+                }
+            }
+            Some(command) if command.main_only() => {
+                self.shown_mut().notice(MAIN_ONLY);
+                Action::None
+            }
+            Some(Command::Other { name, .. })
+                if self.menu.iter().any(|entry| entry.name == name) =>
+            {
+                self.shown_mut().notice(MAIN_ONLY);
+                Action::None
+            }
+            Some(_) => {
+                if self.running {
+                    return self.queue_during_turn(text);
+                }
+                if self.shell_running {
+                    self.shown_mut().notice(
+                        "a shell command is running; wait for it or press Esc to interrupt",
+                    );
+                    return Action::None;
+                }
+                let text = self.input.take();
+                Action::Submit(text.trim().to_string())
+            }
+        }
     }
 
     /// What Enter does on input typed while a turn runs: a known skill or any built-in but
@@ -1192,6 +1410,257 @@ mod tests {
             app.handle_input(key(KeyCode::Esc, KeyModifiers::NONE)),
             Action::Interrupt
         );
+    }
+
+    fn running_row(id: &str) -> ListRow {
+        ListRow {
+            id: Some(id.into()),
+            depth: 1,
+            agent_type: "worker".into(),
+            status: Some(fontaine_agents::runner::ChildStatus::Running),
+            elapsed: std::time::Duration::from_secs(3),
+            spend: "10 tok".into(),
+        }
+    }
+
+    fn with_agent_list() -> App {
+        let mut app = app();
+        let main = ListRow {
+            id: None,
+            depth: 0,
+            agent_type: String::new(),
+            status: None,
+            elapsed: std::time::Duration::ZERO,
+            spend: String::new(),
+        };
+        app.agent_list.set_rows(vec![main, running_row("agent-1")]);
+        app
+    }
+
+    #[test]
+    fn down_on_the_last_line_focuses_the_agent_list_and_enter_views_the_agent() {
+        let mut app = with_agent_list();
+        press(&mut app, KeyCode::Down);
+        assert!(app.agent_list.focused);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        assert_eq!(app.viewing.as_deref(), Some("agent-1"));
+        assert!(app.reprint);
+        assert!(!app.agent_list.focused);
+        // Back on main.
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.viewing, None);
+    }
+
+    #[test]
+    fn down_does_not_focus_the_list_from_a_line_that_is_not_the_last() {
+        let mut app = with_agent_list();
+        type_text(&mut app, "a");
+        app.handle_input(key(KeyCode::Enter, KeyModifiers::ALT));
+        type_text(&mut app, "b");
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Down);
+        assert!(!app.agent_list.focused);
+        // Nor while the list is empty.
+        let mut plain = self::app();
+        press(&mut plain, KeyCode::Down);
+        assert!(!plain.agent_list.focused);
+    }
+
+    #[test]
+    fn down_while_walking_history_goes_to_newer_entries_not_the_list() {
+        let mut app = with_agent_list();
+        app.history.push("older");
+        press(&mut app, KeyCode::Up);
+        assert!(app.history.navigating());
+        press(&mut app, KeyCode::Down);
+        assert!(!app.agent_list.focused);
+    }
+
+    #[test]
+    fn a_printable_key_with_the_list_focused_is_typed_in_the_prompt() {
+        let mut app = with_agent_list();
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char('h'));
+        assert!(!app.agent_list.focused);
+        assert_eq!(app.input.text(), "h");
+    }
+
+    #[test]
+    fn x_on_a_running_row_stops_it() {
+        let mut app = with_agent_list();
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            press(&mut app, KeyCode::Char('x')),
+            Action::KillAgent("agent-1".into())
+        );
+    }
+
+    fn viewing_app() -> App {
+        let mut app = with_agent_list();
+        app.view(Some("agent-1".into()));
+        app.menu.push(MenuEntry {
+            name: "review".into(),
+            description: String::new(),
+            hint: None,
+            aliases: Vec::new(),
+        });
+        app
+    }
+
+    fn submit(app: &mut App, text: &str) -> Action {
+        type_text(app, text);
+        press(app, KeyCode::Enter)
+    }
+
+    #[test]
+    fn text_typed_in_an_agents_view_goes_to_that_agent() {
+        let mut app = viewing_app();
+        assert_eq!(
+            submit(&mut app, "also count the lines"),
+            Action::MessageAgent {
+                id: "agent-1".into(),
+                text: "also count the lines".into()
+            }
+        );
+        assert!(app.input.is_empty());
+        // Even while the main turn runs, which the human cannot see.
+        app.running = true;
+        assert_eq!(
+            submit(&mut app, "and the words"),
+            Action::MessageAgent {
+                id: "agent-1".into(),
+                text: "and the words".into()
+            }
+        );
+    }
+
+    #[test]
+    fn commands_that_change_the_main_conversation_are_refused_and_the_text_stays() {
+        for line in [
+            "/clear",
+            "/compact",
+            "/rewind",
+            "/branch",
+            "/resume",
+            "/model",
+            "/model a/b",
+            "/output-style concise",
+            "/goal the build is green",
+            "/loop 5m check",
+            "/init",
+            "/plan add a test",
+            "/review",
+            "!ls",
+        ] {
+            let mut app = viewing_app();
+            assert_eq!(submit(&mut app, line), Action::None, "{line}");
+            assert_eq!(app.input.text(), line, "{line}");
+            let shown: String = app
+                .shown()
+                .lines(80, &app.theme)
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            assert!(shown.contains(MAIN_ONLY), "{line}: {shown}");
+            assert!(app.transcript.entries.is_empty(), "{line}");
+        }
+    }
+
+    #[test]
+    fn ui_commands_still_run_in_a_view() {
+        let mut app = viewing_app();
+        assert_eq!(submit(&mut app, "/plan"), Action::Submit("/plan".into()),);
+        assert_eq!(
+            submit(&mut app, "/status"),
+            Action::Submit("/status".into())
+        );
+        app.running = true;
+        assert!(matches!(
+            submit(&mut app, "/status"),
+            Action::Command { .. }
+        ));
+    }
+
+    #[test]
+    fn escape_in_a_view_never_interrupts_the_main_turn_and_never_opens_rewind() {
+        let mut app = viewing_app();
+        app.running = true;
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+        app.running = false;
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+        // On main the same presses do both.
+        app.view(None);
+        app.running = true;
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::Interrupt);
+        app.running = false;
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::OpenRewind);
+    }
+
+    #[test]
+    fn ctrl_c_still_interrupts_the_main_turn_from_a_view() {
+        let mut app = viewing_app();
+        app.running = true;
+        assert_eq!(
+            app.handle_input(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Action::Interrupt
+        );
+    }
+
+    #[test]
+    fn the_panel_views_an_agent_and_closing_it_after_a_commit_reprints() {
+        let mut app = app();
+        let mut panel = AgentsPanel::new();
+        panel.set_rows(vec![crate::agents_panel::PanelRow {
+            id: "agent-1".into(),
+            agent_type: "worker".into(),
+            model: "m".into(),
+            status: fontaine_agents::runner::ChildStatus::Done,
+            tokens: 1,
+            token_budget: None,
+            cost_usd: None,
+            cost_budget: None,
+            depth: 1,
+            stopped_because: None,
+        }]);
+        app.agents = Some(panel);
+        press(&mut app, KeyCode::Esc);
+        assert!(
+            !app.reprint,
+            "closing a panel that committed nothing keeps the screen"
+        );
+        app.agents = Some(AgentsPanel::new());
+        app.committed_under_overlay = true;
+        press(&mut app, KeyCode::Esc);
+        assert!(app.reprint);
+        assert!(!app.committed_under_overlay);
+        assert_eq!(app.viewing, None);
+    }
+
+    #[test]
+    fn what_a_command_wrote_while_an_agent_is_shown_moves_to_that_agents_view() {
+        let mut app = viewing_app();
+        let mark = app.notice_mark();
+        app.transcript.notice("plan mode on");
+        app.move_notices_to_shown(mark);
+        assert!(app.transcript.entries.is_empty());
+        let shown: String = app
+            .shown()
+            .lines(80, &app.theme)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(shown.contains("plan mode on"), "{shown}");
+        // On main nothing moves.
+        app.view(None);
+        let mark = app.notice_mark();
+        app.transcript.notice("kept");
+        app.move_notices_to_shown(mark);
+        assert_eq!(app.transcript.entries.len(), 1);
     }
 
     fn press(app: &mut App, code: KeyCode) -> Action {

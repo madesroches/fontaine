@@ -99,6 +99,7 @@ async fn the_guardians_request_and_rendered_prompt_are_byte_identical_with_and_w
         }
         built.runtime.state.append(Record::UserMessage {
             text: "tidy the repo".to_string(),
+            agent: None,
         });
         let request = adjudication::build(
             &built.runtime.state,

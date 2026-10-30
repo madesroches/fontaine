@@ -9,6 +9,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::agents_panel::status_label;
 use crate::app::App;
 use crate::theme::Theme;
 
@@ -50,7 +51,19 @@ fn mode_style(mode: PermissionMode, theme: &Theme) -> Style {
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let dim = Style::default().add_modifier(Modifier::DIM);
-    let hint = if app.running {
+    // In an agent's view the state is the agent's: the main turn is out of sight, and Esc does
+    // not stop it from here.
+    let viewed_state = app.viewing.as_ref().map(|id| {
+        let state = match app.viewed_row().and_then(|row| row.status) {
+            Some(status) if status.is_running() => "working".to_string(),
+            Some(status) => status_label(status).to_string(),
+            None => "no longer listed".to_string(),
+        };
+        format!("viewing {id} · {state} · ↓ then Enter on main to go back · shift+tab mode")
+    });
+    let hint = if let Some(text) = &viewed_state {
+        text.as_str()
+    } else if app.running {
         "working · esc to interrupt · shift+tab mode"
     } else {
         "shift+tab mode · /add-dir · /denied · /model · ctrl+t agents · /exit"

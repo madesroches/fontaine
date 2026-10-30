@@ -1881,7 +1881,7 @@ impl PermissionPipeline {
             }
         };
         if let Some(preview) = preview {
-            self.state.publish_preview(id, preview);
+            self.state.publish_preview(agent, id, preview);
         }
     }
 

@@ -41,6 +41,7 @@ fn earlier(w: &World, id: &str, name: Option<&str>, prompt: &str) {
         .ledger
         .append(Record::UserMessage {
             text: prompt.into(),
+            agent: None,
         })
         .unwrap();
     if let Some(name) = name {

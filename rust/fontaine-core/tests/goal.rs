@@ -883,6 +883,7 @@ async fn a_goal_turn_is_a_harness_note_and_adds_no_user_message() {
     );
     runtime.append(Record::UserMessage {
         text: "/goal the file exists".into(),
+        agent: None,
     });
     runtime.set_goal("the file exists").unwrap();
     runtime.goal_turn_ended(Some(&answer()));
@@ -1091,6 +1092,7 @@ fn a_goal_record_adds_nothing_to_what_the_user_asked() {
     f.ledger
         .append(Record::UserMessage {
             text: "/goal the build is green".into(),
+            agent: None,
         })
         .unwrap();
     f.ledger

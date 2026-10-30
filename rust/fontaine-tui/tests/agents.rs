@@ -448,3 +448,145 @@ async fn killing_a_job_row_stops_its_process_and_tells_the_model() {
         .collect();
     assert!(bodies.last().unwrap().contains("was killed by the user"));
 }
+
+/// The user-scope rules the agent-view tests run under: subagents may start and may sleep.
+const ALLOW_AGENT_AND_SLEEP: &str = "\n[permissions]\nallow = [\"agent\", \"shell(sleep *)\"]\n";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subagent_is_viewed_messaged_resumed_and_the_main_chat_comes_back_whole() {
+    let server = start(vec![
+        Route::new(
+            "root task",
+            vec![
+                Turn::tool("c1", "agent", spawn("worker", "child-A: go")),
+                Turn::text("launched"),
+                Turn::text("first report seen"),
+                Turn::text("second report seen"),
+            ],
+        ),
+        Route::new(
+            "child-A",
+            vec![
+                Turn::tool("k1", "shell", json!({"command": "sleep 2"})),
+                Turn::text("first answer"),
+                Turn::text("resumed answer"),
+            ],
+        ),
+    ])
+    .await;
+    let w = World::routed(&server.uri(), ALLOW_AGENT_AND_SLEEP);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("root task");
+        // The list sits below the status line, `main` first.
+        ui.wait_until("the agent list", |s| s.contains("◯ agent-1 worker running"))
+            .await;
+        assert!(ui.screen().contains("● main"), "{}", ui.screen());
+
+        // Down to the list, Down to the agent, Enter.
+        ui.press(KeyCode::Down);
+        ui.press(KeyCode::Down);
+        ui.press(KeyCode::Enter);
+        ui.wait_for("agent-1 · worker · running").await;
+        let screen = ui.screen();
+        assert!(screen.contains("> child-A: go"), "{screen}");
+        assert!(
+            !screen.contains("root task"),
+            "the main chat is gone from the terminal: {screen}"
+        );
+
+        // Typed while the agent runs: shown dimmed, then read at its next tool result.
+        ui.send("also count the lines");
+        ui.wait_for("queued: also count the lines").await;
+        ui.wait_for("> also count the lines").await;
+        ui.wait_for("first answer").await;
+        ui.wait_for("agent-1 · worker · done").await;
+
+        // The agent has ended, and typing resumes it.
+        ui.send("and the words");
+        ui.wait_for("> and the words").await;
+        ui.wait_for("resumed answer").await;
+
+        // Back to main: the whole chat is reprinted and holds no trace of the agent's lines.
+        ui.press(KeyCode::Down);
+        ui.press(KeyCode::Enter);
+        ui.wait_for("you resumed agent-1").await;
+        ui.wait_for("second report seen").await;
+        let screen = ui.screen();
+        assert!(screen.contains("launched"), "{screen}");
+        assert!(screen.contains("first report seen"), "{screen}");
+        assert!(!screen.contains("resumed answer"), "{screen}");
+        assert!(!screen.contains("> child-A: go"), "{screen}");
+    })
+    .await;
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    let child: Vec<String> = requests
+        .iter()
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .filter(|body| body.contains("child-A: go") && !body.contains("root task"))
+        .collect();
+    assert_eq!(child.len(), 3, "{child:?}");
+    assert!(
+        child[1].contains("The user sent this message while you were working")
+            && child[1].contains("also count the lines"),
+        "the agent read the message with its tool result"
+    );
+    assert!(
+        child[2].contains("and the words"),
+        "the resume carried the text"
+    );
+
+    // The words typed to the agent are intent for it, recorded when it read them.
+    let ledger = w.ledger_text();
+    assert!(
+        ledger.contains(r#""text":"also count the lines","agent":"agent-1""#),
+        "{ledger}"
+    );
+    assert!(
+        ledger.contains(r#""event":"resumed""#)
+            && ledger.find(r#""event":"resumed""#) < ledger.find(r#""text":"and the words""#),
+        "{ledger}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn typing_to_a_killed_agent_is_refused_and_the_text_stays() {
+    let server = start(vec![
+        Route::new(
+            "root task",
+            vec![
+                Turn::tool("c1", "agent", spawn("worker", "child-A: wait for the user")),
+                Turn::text("launched"),
+            ],
+        ),
+        Route::new(
+            "child-A",
+            vec![Turn::tool("k1", "shell", json!({"command": "echo hi"}))],
+        ),
+    ])
+    .await;
+    let w = World::routed(&server.uri(), ALLOW_AGENT);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("root task");
+        ui.wait_for_prompt("Allow shell (agent-1)?").await;
+        ctrl_t(&ui);
+        ui.wait_for("waiting-on-permission").await;
+        ui.press(KeyCode::Char('x'));
+        ui.wait_for("killed").await;
+        ui.press(KeyCode::Esc);
+        ui.wait_until("the approval is gone", |s| !s.contains("Allow shell"))
+            .await;
+
+        ui.press(KeyCode::Down);
+        ui.press(KeyCode::Down);
+        ui.press(KeyCode::Enter);
+        ui.wait_for("agent-1 · worker · killed").await;
+        ui.send("hello again");
+        ui.wait_for("agent-1 was killed; it cannot be resumed")
+            .await;
+        assert!(ui.live().contains("hello again"), "{}", ui.live());
+    })
+    .await;
+}

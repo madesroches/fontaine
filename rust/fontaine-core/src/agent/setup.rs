@@ -31,6 +31,7 @@ use crate::prompt::{self, PromptParts};
 use crate::runtime_error::RuntimeError;
 use crate::scanner_stage::{Backend, ScannerStage};
 use crate::skills::SkillRuntime;
+use crate::steering::Steering;
 use crate::tools;
 use crate::user_hooks::{self, CommandHook, HookProcess, PostHookStage};
 
@@ -493,6 +494,7 @@ pub(super) fn subagent_support(
     models: &Models,
     config: &Config,
     approver: &Arc<dyn Approver>,
+    steering: &Steering,
 ) -> (
     Arc<RwLock<MainModel>>,
     ToolServerHandle,
@@ -510,6 +512,7 @@ pub(super) fn subagent_support(
         &main,
         approver,
         config.telemetry.records_content(),
+        steering,
     );
     wire_root_tree(tree, models, &tool_server);
     (main, tool_server, runner)
@@ -523,6 +526,7 @@ fn child_runner(
     main: &Arc<RwLock<MainModel>>,
     approver: &Arc<dyn Approver>,
     record_content: bool,
+    steering: &Steering,
 ) -> Arc<CoreChildRunner> {
     let preamble_state = state.clone();
     let preamble_config_dir = retained.config_dir.clone();
@@ -563,6 +567,7 @@ fn child_runner(
             approver: approver.clone(),
             record_content,
             parent_context: ParentContext::default(),
+            steering: steering.clone(),
         }),
     })
 }

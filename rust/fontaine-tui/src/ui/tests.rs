@@ -36,6 +36,7 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         app: App::new(PermissionMode::Manual, "m".into()),
         input: unbounded_channel().1,
         prompts,
+        agent_events: unbounded_channel().1,
         render: |_: &mut App| {},
         recent: RecentModels::in_memory(),
         pending_pick: None,
@@ -322,4 +323,47 @@ fn expand_prints_a_call_and_reports_an_unknown_one() {
         2,
         "{all}"
     );
+}
+
+#[test]
+fn expand_and_copy_act_on_the_transcript_on_screen() {
+    let (_tx, rx) = unbounded_channel();
+    let mut ui = ui(rx);
+    ui.app.view(Some("agent-1".into()));
+    {
+        let view = ui.app.view_of("agent-1".into());
+        view.transcript.on_event(SessionEvent::ToolCall {
+            id: "c1".into(),
+            tool: "shell".into(),
+            args: serde_json::json!({ "command": "ls" }),
+        });
+        view.transcript.on_event(SessionEvent::ToolResult {
+            id: "c1".into(),
+            tool: "shell".into(),
+            success: true,
+            text: "a\nb".into(),
+        });
+        view.transcript
+            .on_event(SessionEvent::Assistant("the agent's reply".into()));
+    }
+    ui.expand("1");
+    ui.expand("9");
+    ui.copy("");
+    let lines = |transcript: &crate::transcript::Transcript| -> String {
+        transcript
+            .lines(80, &crate::theme::Theme::default())
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let shown = lines(ui.app.shown());
+    assert!(shown.contains("there is no tool call number 9"), "{shown}");
+    assert!(shown.contains("copied reply 1"), "{shown}");
+    assert!(ui.app.transcript.entries.is_empty());
 }

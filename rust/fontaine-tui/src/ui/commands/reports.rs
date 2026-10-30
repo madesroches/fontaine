@@ -77,22 +77,22 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let n = match commands::reply_number(argument) {
             Ok(n) => n,
             Err(e) => {
-                self.app.transcript.error(e);
+                self.app.shown_mut().error(e);
                 return;
             }
         };
-        let Some(reply) = self.app.transcript.assistant_reply(n).map(str::to_string) else {
+        let Some(reply) = self.app.shown().assistant_reply(n).map(str::to_string) else {
             self.app
-                .transcript
+                .shown_mut()
                 .error(format!("there is no assistant reply number {n} to copy"));
             return;
         };
         match (self.clipboard)(&reply) {
-            Ok(()) => self.app.transcript.notice(format!(
+            Ok(()) => self.app.shown_mut().notice(format!(
                 "copied reply {n} ({} characters) to the clipboard",
                 reply.chars().count()
             )),
-            Err(e) => self.app.transcript.error(format!(
+            Err(e) => self.app.shown_mut().error(format!(
                 "could not copy to the clipboard: {}",
                 fontaine_tools::error_chain::chain(&e)
             )),
@@ -104,12 +104,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let n = match commands::call_number(argument) {
             Ok(n) => n,
             Err(e) => {
-                self.app.transcript.error(e);
+                self.app.shown_mut().error(e);
                 return;
             }
         };
-        if let Err(e) = self.app.transcript.expand(n) {
-            self.app.transcript.error(e);
+        if let Err(e) = self.app.shown_mut().expand(n) {
+            self.app.shown_mut().error(e);
         }
     }
 }

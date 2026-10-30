@@ -63,6 +63,7 @@ async fn a_reopened_session_has_its_conversation_and_its_ledger() {
         .ledger
         .append(Record::UserMessage {
             text: "fix the build".into(),
+            agent: None,
         })
         .unwrap();
     first
@@ -83,6 +84,7 @@ async fn a_reopened_session_has_its_conversation_and_its_ledger() {
         .ledger
         .append(Record::UserMessage {
             text: "and again".into(),
+            agent: None,
         })
         .unwrap();
     let entries = again.ledger.read().unwrap();
@@ -110,7 +112,10 @@ async fn a_fork_is_a_copy_under_a_new_id_and_the_original_is_untouched() {
     assert_eq!(said(&source).await.len(), 1);
     assert_eq!(said(&fork).await.len(), 2);
     fork.ledger
-        .append(Record::UserMessage { text: "x".into() })
+        .append(Record::UserMessage {
+            text: "x".into(),
+            agent: None,
+        })
         .unwrap();
     assert_eq!(source.ledger.read().unwrap().len(), 1);
 }
@@ -223,6 +228,7 @@ async fn the_newest_session_of_a_root_is_found_and_other_roots_are_ignored() {
     old.ledger
         .append(Record::UserMessage {
             text: "again".into(),
+            agent: None,
         })
         .unwrap();
     assert_eq!(latest_for_root(&w.data, &w.work).as_deref(), Some(A));
@@ -292,7 +298,10 @@ const D: &str = "00000000-0000-4000-8000-00000000000d";
 fn say_to_ledger(session: &Session, text: &str) {
     session
         .ledger
-        .append(Record::UserMessage { text: text.into() })
+        .append(Record::UserMessage {
+            text: text.into(),
+            agent: None,
+        })
         .unwrap();
 }
 
@@ -416,6 +425,28 @@ async fn a_clear_resets_the_first_prompt_a_listing_shows() {
         list(&w.data, Some(&w.work))[0].first_prompt.as_deref(),
         Some("after")
     );
+}
+
+#[tokio::test]
+async fn what_was_typed_to_an_agent_names_no_session_and_is_no_first_prompt() {
+    let w = World::new();
+    let session = Session::create(&w.data, A).unwrap();
+    start(&session, &w.work);
+    session
+        .ledger
+        .append(Record::UserMessage {
+            text: "also count the lines".into(),
+            agent: Some("agent-1".into()),
+        })
+        .unwrap();
+    assert_eq!(list(&w.data, Some(&w.work))[0].first_prompt, None);
+    assert_eq!(session.suggested_name(), None);
+    say_to_ledger(&session, "fix the build");
+    assert_eq!(
+        list(&w.data, Some(&w.work))[0].first_prompt.as_deref(),
+        Some("fix the build")
+    );
+    assert_eq!(session.suggested_name().as_deref(), Some("fix the build"));
 }
 
 #[tokio::test]

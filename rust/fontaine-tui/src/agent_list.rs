@@ -1,0 +1,514 @@
+//! The list of agents below the status line: `main` and the subagents worth looking at, which
+//! Down from the prompt focuses. Enter views the selected agent's transcript, x stops it.
+
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
+
+use fontaine_agents::runner::ChildStatus;
+use fontaine_agents::tree::AgentRow;
+use fontaine_tools::jobs::format_age;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Line;
+
+use crate::agents_panel::{spend_text, status_label};
+
+/// How long an agent that failed, was killed or ran out of budget stays listed.
+pub const ENDED_LISTED: Duration = Duration::from_secs(30);
+
+/// One row: `main`, or a subagent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListRow {
+    /// `None` is the main conversation.
+    pub id: Option<String>,
+    pub depth: usize,
+    pub agent_type: String,
+    pub status: Option<ChildStatus>,
+    pub elapsed: Duration,
+    pub spend: String,
+}
+
+impl ListRow {
+    fn main() -> ListRow {
+        ListRow {
+            id: None,
+            depth: 0,
+            agent_type: String::new(),
+            status: None,
+            elapsed: Duration::ZERO,
+            spend: String::new(),
+        }
+    }
+}
+
+/// The rows to list: `main` first, then every running agent, the one being viewed, and those
+/// that failed, were killed or ran out of budget less than [`ENDED_LISTED`] ago and were not
+/// dismissed. An agent that is done leaves at once. Nothing is listed while no subagent is.
+pub fn rows(
+    agents: &[AgentRow],
+    viewing: Option<&str>,
+    dismissed: &HashSet<String>,
+    now: Instant,
+) -> Vec<ListRow> {
+    let listed = |row: &AgentRow| {
+        if row.status.is_running() || viewing == Some(row.id.as_str()) {
+            return true;
+        }
+        let recent = row
+            .ended
+            .is_some_and(|ended| now.saturating_duration_since(ended) < ENDED_LISTED);
+        match row.status {
+            ChildStatus::Failed | ChildStatus::Killed | ChildStatus::BudgetExhausted => {
+                recent && !dismissed.contains(&row.id)
+            }
+            _ => false,
+        }
+    };
+    let mut out = Vec::new();
+    let order = depth_first(agents);
+    for row in order {
+        if listed(row) {
+            out.push(ListRow {
+                id: Some(row.id.clone()),
+                depth: row.depth,
+                agent_type: row.agent_type.clone(),
+                status: Some(row.status),
+                elapsed: row
+                    .ended
+                    .unwrap_or(now)
+                    .saturating_duration_since(row.started),
+                spend: spend_text(
+                    row.spend.tokens(),
+                    row.budget.tokens,
+                    row.spend.cost_usd,
+                    row.budget.cost_usd,
+                ),
+            });
+        }
+    }
+    if out.is_empty() {
+        return out;
+    }
+    out.insert(0, ListRow::main());
+    out
+}
+
+/// The agents with each one's children right after it.
+fn depth_first(agents: &[AgentRow]) -> Vec<&AgentRow> {
+    fn walk<'a>(
+        agents: &'a [AgentRow],
+        parent: Option<&str>,
+        out: &mut Vec<&'a AgentRow>,
+        depth: usize,
+    ) {
+        // A corrupt parent link must not loop forever.
+        if depth > 64 {
+            return;
+        }
+        for row in agents {
+            let under = match (&row.parent, parent) {
+                (Some(p), Some(parent)) => p == parent,
+                (Some(p), None) => !agents.iter().any(|other| &other.id == p),
+                (None, _) => false,
+            };
+            if under {
+                out.push(row);
+                walk(agents, Some(&row.id), out, depth + 1);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(agents, None, &mut out, 0);
+    out
+}
+
+/// What a key did to the list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ListKey {
+    None,
+    /// Focus went back to the prompt; the key itself is for the prompt when `typed`.
+    Blur {
+        typed: bool,
+    },
+    /// Enter on a row: `None` is `main`.
+    View(Option<String>),
+    Kill(String),
+}
+
+#[derive(Default)]
+pub struct AgentList {
+    pub focused: bool,
+    selected: usize,
+    dismissed: HashSet<String>,
+    rows: Vec<ListRow>,
+}
+
+impl AgentList {
+    pub fn set_rows(&mut self, rows: Vec<ListRow>) {
+        let id = self.selected_id();
+        self.rows = rows;
+        if let Some(at) = id.and_then(|id| self.rows.iter().position(|r| r.id == id)) {
+            self.selected = at;
+        }
+        self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+        if self.rows.is_empty() {
+            self.focused = false;
+        }
+    }
+
+    /// An agent that runs again may be listed again when it ends.
+    pub fn forget_running(&mut self, agents: &[AgentRow]) {
+        self.dismissed.retain(|id| {
+            !agents
+                .iter()
+                .any(|row| row.id == *id && row.status.is_running())
+        });
+    }
+
+    pub fn dismissed(&self) -> &HashSet<String> {
+        &self.dismissed
+    }
+
+    pub fn has_rows(&self) -> bool {
+        !self.rows.is_empty()
+    }
+
+    /// Moves the keyboard here, on `main`.
+    pub fn focus(&mut self) {
+        if self.has_rows() {
+            self.focused = true;
+            self.selected = 0;
+        }
+    }
+
+    fn selected_id(&self) -> Option<Option<String>> {
+        self.rows.get(self.selected).map(|row| row.id.clone())
+    }
+
+    /// Whether a row is waiting for its 30 seconds to run out, which needs a redraw tick.
+    pub fn counts_time(&self) -> bool {
+        self.has_rows()
+    }
+
+    /// `viewing` is the agent on screen, whose row `x` does not stop.
+    pub fn handle_key(&mut self, key: KeyEvent, viewing: Option<&str>) -> ListKey {
+        if key.kind == KeyEventKind::Release {
+            return ListKey::None;
+        }
+        let plain = !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Up if plain => {
+                if self.selected == 0 {
+                    self.focused = false;
+                    return ListKey::Blur { typed: false };
+                }
+                self.selected -= 1;
+            }
+            KeyCode::Down if plain => {
+                self.selected = (self.selected + 1).min(self.rows.len().saturating_sub(1));
+            }
+            KeyCode::Esc => {
+                self.focused = false;
+                return ListKey::Blur { typed: false };
+            }
+            KeyCode::Enter => {
+                if let Some(id) = self.selected_id() {
+                    self.focused = false;
+                    return ListKey::View(id);
+                }
+            }
+            KeyCode::Char('x') if plain => {
+                let Some(row) = self.rows.get(self.selected).cloned() else {
+                    return ListKey::None;
+                };
+                match row.id {
+                    // Typing an x, as in Claude Code: the row cannot be stopped.
+                    None => {
+                        self.focused = false;
+                        return ListKey::Blur { typed: true };
+                    }
+                    Some(id) if viewing == Some(id.as_str()) => {
+                        self.focused = false;
+                        return ListKey::Blur { typed: true };
+                    }
+                    Some(id) => {
+                        if row.status.is_some_and(ChildStatus::is_running) {
+                            return ListKey::Kill(id);
+                        }
+                        self.dismissed.insert(id);
+                    }
+                }
+            }
+            KeyCode::Char(_) if plain => {
+                self.focused = false;
+                return ListKey::Blur { typed: true };
+            }
+            _ => {}
+        }
+        ListKey::None
+    }
+
+    /// The hint and the rows, at most `max` lines, the selection kept in sight.
+    pub fn lines(&self, viewing: Option<&str>, width: usize, max: usize) -> Vec<Line<'static>> {
+        if self.rows.is_empty() || max == 0 {
+            return Vec::new();
+        }
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        let mut out = Vec::new();
+        let mut room = max;
+        if self.focused && room > 1 {
+            out.push(Line::styled(
+                "↑/↓ select · Enter view · x stop · Esc back",
+                dim,
+            ));
+            room -= 1;
+        }
+        let first = (self.selected + 1).saturating_sub(room);
+        for (at, row) in self.rows.iter().enumerate().skip(first).take(room) {
+            let viewed = row.id.as_deref() == viewing;
+            let marker = if viewed { "●" } else { "◯" };
+            let indent = "  ".repeat(row.depth.saturating_sub(1));
+            let text = match (&row.id, row.status) {
+                (Some(id), Some(status)) => format!(
+                    "{marker} {indent}{id} {} {} {} {}",
+                    row.agent_type,
+                    status_label(status),
+                    format_age(row.elapsed),
+                    row.spend
+                ),
+                _ => format!("{marker} main"),
+            };
+            let shown: String = text.chars().take(width).collect();
+            let style = if self.focused && at == self.selected {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            out.push(Line::styled(shown, style));
+        }
+        out
+    }
+
+    /// The number of lines [`lines`](Self::lines) wants before any cap.
+    pub fn wanted_rows(&self) -> usize {
+        if self.rows.is_empty() {
+            0
+        } else {
+            self.rows.len() + usize::from(self.focused)
+        }
+    }
+
+    pub fn rows(&self) -> &[ListRow] {
+        &self.rows
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fontaine_agents::budget::{Budget, Spend};
+    use ratatui::crossterm::event::KeyCode;
+
+    fn agent(id: &str, parent: &str, status: ChildStatus, now: Instant) -> AgentRow {
+        AgentRow {
+            id: id.into(),
+            parent: Some(parent.into()),
+            agent_type: "worker".into(),
+            model: "m".into(),
+            status,
+            depth: if parent == "main" { 1 } else { 2 },
+            spend: Spend {
+                input_tokens: 700,
+                output_tokens: 500,
+                cost_usd: None,
+            },
+            budget: Budget::default(),
+            exhausted: None,
+            started: now,
+            ended: (!status.is_running()).then_some(now),
+        }
+    }
+
+    fn ids(rows: &[ListRow]) -> Vec<Option<&str>> {
+        rows.iter().map(|row| row.id.as_deref()).collect()
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn focused(rows: Vec<ListRow>) -> AgentList {
+        let mut list = AgentList::default();
+        list.set_rows(rows);
+        list.focus();
+        list
+    }
+
+    #[test]
+    fn nothing_is_listed_while_no_subagent_is() {
+        let now = Instant::now();
+        assert!(rows(&[], None, &HashSet::new(), now).is_empty());
+        let done = [agent("agent-1", "main", ChildStatus::Done, now)];
+        assert!(rows(&done, None, &HashSet::new(), now).is_empty());
+    }
+
+    #[test]
+    fn main_comes_first_and_a_child_sits_under_its_parent() {
+        let now = Instant::now();
+        let agents = [
+            agent("agent-1", "main", ChildStatus::Running, now),
+            agent("agent-2", "main", ChildStatus::Running, now),
+            agent("agent-3", "agent-1", ChildStatus::Running, now),
+        ];
+        let listed = rows(&agents, None, &HashSet::new(), now);
+        assert_eq!(
+            ids(&listed),
+            [None, Some("agent-1"), Some("agent-3"), Some("agent-2")]
+        );
+        assert_eq!(listed[2].depth, 2);
+        assert_eq!(listed[1].spend, "1200 tok");
+    }
+
+    #[test]
+    fn a_done_agent_leaves_at_once_and_a_failed_one_after_thirty_seconds() {
+        let started = Instant::now();
+        let agents = [
+            agent("agent-1", "main", ChildStatus::Done, started),
+            agent("agent-2", "main", ChildStatus::Failed, started),
+            agent("agent-3", "main", ChildStatus::Killed, started),
+            agent("agent-4", "main", ChildStatus::BudgetExhausted, started),
+            agent("agent-5", "main", ChildStatus::Running, started),
+        ];
+        let soon = started + Duration::from_secs(29);
+        assert_eq!(
+            ids(&rows(&agents, None, &HashSet::new(), soon)),
+            [
+                None,
+                Some("agent-2"),
+                Some("agent-3"),
+                Some("agent-4"),
+                Some("agent-5")
+            ]
+        );
+        let later = started + Duration::from_secs(30);
+        assert_eq!(
+            ids(&rows(&agents, None, &HashSet::new(), later)),
+            [None, Some("agent-5")]
+        );
+    }
+
+    #[test]
+    fn the_viewed_agent_stays_listed_and_a_dismissed_one_goes() {
+        let now = Instant::now();
+        let agents = [
+            agent("agent-1", "main", ChildStatus::Done, now),
+            agent("agent-2", "main", ChildStatus::Killed, now),
+            agent("agent-3", "main", ChildStatus::Running, now),
+        ];
+        let dismissed = HashSet::from(["agent-2".to_string()]);
+        assert_eq!(
+            ids(&rows(&agents, Some("agent-1"), &dismissed, now)),
+            [None, Some("agent-1"), Some("agent-3")]
+        );
+    }
+
+    #[test]
+    fn focusing_selects_main_and_up_from_the_first_row_gives_the_prompt_back() {
+        let now = Instant::now();
+        let agents = [agent("agent-1", "main", ChildStatus::Running, now)];
+        let mut list = focused(rows(&agents, None, &HashSet::new(), now));
+        assert!(list.focused);
+        assert_eq!(list.handle_key(key(KeyCode::Down), None), ListKey::None);
+        assert_eq!(list.handle_key(key(KeyCode::Up), None), ListKey::None);
+        assert_eq!(
+            list.handle_key(key(KeyCode::Up), None),
+            ListKey::Blur { typed: false }
+        );
+        assert!(!list.focused);
+        list.focus();
+        assert_eq!(
+            list.handle_key(key(KeyCode::Enter), None),
+            ListKey::View(None)
+        );
+        list.focus();
+        list.handle_key(key(KeyCode::Down), None);
+        assert_eq!(
+            list.handle_key(key(KeyCode::Enter), None),
+            ListKey::View(Some("agent-1".into()))
+        );
+    }
+
+    #[test]
+    fn x_stops_a_running_agent_and_dismisses_an_ended_one() {
+        let now = Instant::now();
+        let agents = [
+            agent("agent-1", "main", ChildStatus::Running, now),
+            agent("agent-2", "main", ChildStatus::Failed, now),
+        ];
+        let mut list = focused(rows(&agents, None, &HashSet::new(), now));
+        list.handle_key(key(KeyCode::Down), None);
+        assert_eq!(
+            list.handle_key(key(KeyCode::Char('x')), None),
+            ListKey::Kill("agent-1".into())
+        );
+        list.handle_key(key(KeyCode::Down), None);
+        assert_eq!(
+            list.handle_key(key(KeyCode::Char('x')), None),
+            ListKey::None
+        );
+        assert!(list.dismissed().contains("agent-2"));
+    }
+
+    #[test]
+    fn x_on_main_or_the_viewed_agent_is_typed_into_the_prompt() {
+        let now = Instant::now();
+        let agents = [agent("agent-1", "main", ChildStatus::Running, now)];
+        let listed = rows(&agents, Some("agent-1"), &HashSet::new(), now);
+        let mut list = focused(listed.clone());
+        assert_eq!(
+            list.handle_key(key(KeyCode::Char('x')), Some("agent-1")),
+            ListKey::Blur { typed: true }
+        );
+        let mut list = focused(listed);
+        list.handle_key(key(KeyCode::Down), Some("agent-1"));
+        assert_eq!(
+            list.handle_key(key(KeyCode::Char('x')), Some("agent-1")),
+            ListKey::Blur { typed: true }
+        );
+    }
+
+    #[test]
+    fn a_printable_key_and_escape_return_focus_and_only_the_key_is_typed() {
+        let now = Instant::now();
+        let agents = [agent("agent-1", "main", ChildStatus::Running, now)];
+        let listed = rows(&agents, None, &HashSet::new(), now);
+        let mut list = focused(listed.clone());
+        assert_eq!(
+            list.handle_key(key(KeyCode::Char('h')), None),
+            ListKey::Blur { typed: true }
+        );
+        assert!(!list.focused);
+        let mut list = focused(listed);
+        assert_eq!(
+            list.handle_key(key(KeyCode::Esc), None),
+            ListKey::Blur { typed: false }
+        );
+    }
+
+    #[test]
+    fn the_viewed_row_is_marked_and_the_focused_one_reversed() {
+        let now = Instant::now();
+        let agents = [agent("agent-1", "main", ChildStatus::Running, now)];
+        let mut list = focused(rows(&agents, Some("agent-1"), &HashSet::new(), now));
+        list.handle_key(key(KeyCode::Down), Some("agent-1"));
+        let lines = list.lines(Some("agent-1"), 80, 10);
+        let text: Vec<String> = lines.iter().map(ToString::to_string).collect();
+        assert_eq!(text[0], "↑/↓ select · Enter view · x stop · Esc back");
+        assert_eq!(text[1], "◯ main");
+        assert!(text[2].starts_with("● agent-1 worker running"), "{text:?}");
+        assert!(lines[2].style.add_modifier.contains(Modifier::REVERSED));
+        assert!(!lines[1].style.add_modifier.contains(Modifier::REVERSED));
+    }
+}

@@ -88,6 +88,8 @@ pub enum Refusal {
     Depth(usize),
     /// The session's agent budget is spent.
     SessionBudget(String),
+    /// A resume found the agent running, or not ended: another resume won.
+    AlreadyRunning,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -120,6 +122,7 @@ struct Node {
     report: Option<ChildReport>,
     exhausted: Option<Exhausted>,
     started: Instant,
+    ended: Option<Instant>,
 }
 
 impl Node {
@@ -173,6 +176,10 @@ pub struct AgentRow {
     pub spend: Spend,
     pub budget: Budget,
     pub exhausted: Option<Exhausted>,
+    /// When the latest run started.
+    pub started: Instant,
+    /// When the latest run ended; `None` while it runs.
+    pub ended: Option<Instant>,
 }
 
 type RootModeSource = Arc<dyn Fn() -> RootMode + Send + Sync>;
@@ -209,6 +216,7 @@ impl AgentTree {
             report: None,
             exhausted: None,
             started: Instant::now(),
+            ended: None,
         };
         AgentTree {
             limits,
@@ -393,6 +401,7 @@ impl AgentTree {
                 report: None,
                 exhausted: None,
                 started: Instant::now(),
+                ended: None,
             },
         );
         drop(inner);
@@ -485,6 +494,7 @@ impl AgentTree {
             for orphan in inner.running_descendants(id) {
                 if let Some(node) = inner.nodes.get_mut(&orphan) {
                     node.status = ChildStatus::Killed;
+                    node.ended = Some(Instant::now());
                     handles.extend(node.handle.clone());
                 }
             }
@@ -493,6 +503,7 @@ impl AgentTree {
             if node.status.is_running() {
                 node.status = report.status;
             }
+            node.ended = Some(Instant::now());
             node.report = Some(report);
         }
         drop(inner);
@@ -500,6 +511,62 @@ impl AgentTree {
             handle.kill();
         }
         self.changed.notify_waiters();
+    }
+
+    /// Why `id`, which has ended, cannot be resumed: a kill and a spent budget are final.
+    /// `None` when a resume may go ahead, and for an agent still running or unknown.
+    pub fn resume_blocker(&self, id: &str) -> Option<String> {
+        let inner = self.lock();
+        let node = inner.nodes.get(id)?;
+        if let Some(why) = node.exhausted {
+            return Some(format!("its budget is spent ({})", why.describe()));
+        }
+        match node.status {
+            ChildStatus::Killed => Some("it was killed".to_string()),
+            ChildStatus::BudgetExhausted => Some("its budget is spent".to_string()),
+            _ => None,
+        }
+    }
+
+    /// Where `id` stands now, a prompt wait included.
+    pub fn status_of(&self, id: &str) -> Option<ChildStatus> {
+        self.lock().nodes.get(id).map(Node::live_status)
+    }
+
+    /// The handle of a child, which keeps its conversation after the run ends.
+    pub fn handle_of(&self, id: &str) -> Option<Arc<dyn ChildHandle>> {
+        self.lock().nodes.get(id).and_then(|n| n.handle.clone())
+    }
+
+    /// Puts an ended child back to running for another run on the same conversation. The check
+    /// and the transition share one lock, so of two racing resumes exactly one succeeds; the
+    /// other gets [`Refusal::AlreadyRunning`]. Whether the child's end allows a resume at all
+    /// (killed, spent budget) is the caller's to decide.
+    pub fn resume(&self, id: &str) -> Result<(), Refusal> {
+        let mut inner = self.lock();
+        let Some(node) = inner.nodes.get(id).filter(|n| n.info.parent.is_some()) else {
+            return Err(Refusal::AlreadyRunning);
+        };
+        if node.status.is_running() {
+            return Err(Refusal::AlreadyRunning);
+        }
+        if let Some(why) = self.limits.session.exhausted(&inner.session_spend, true) {
+            return Err(Refusal::SessionBudget(why.describe()));
+        }
+        if Self::running_children(&inner) >= self.limits.max_parallel {
+            return Err(Refusal::Parallel(self.limits.max_parallel));
+        }
+        let node = inner
+            .nodes
+            .get_mut(id)
+            .expect("the node was found under this same lock");
+        node.status = ChildStatus::Running;
+        node.report = None;
+        node.ended = None;
+        node.started = Instant::now();
+        drop(inner);
+        self.changed.notify_waiters();
+        Ok(())
     }
 
     pub fn report_of(&self, id: &str) -> Option<ChildReport> {
@@ -522,6 +589,7 @@ impl AgentTree {
             for doomed_id in &doomed {
                 if let Some(node) = inner.nodes.get_mut(doomed_id) {
                     node.status = ChildStatus::Killed;
+                    node.ended = Some(Instant::now());
                     handles.extend(node.handle.clone());
                 }
             }
@@ -839,6 +907,8 @@ impl AgentTree {
                 spend: n.spend,
                 budget: n.budget,
                 exhausted: n.exhausted,
+                started: n.started,
+                ended: n.ended,
             })
             .collect()
     }
@@ -1289,5 +1359,106 @@ mod tests {
         tree.deliver(&a, MAIN, "hi".into()).unwrap();
         assert!(tree.has_message(ROOT_AGENT));
         assert!(!tree.has_message(&a));
+    }
+
+    fn report(status: ChildStatus) -> ChildReport {
+        ChildReport {
+            status,
+            text: "done".into(),
+            reason: None,
+        }
+    }
+
+    #[test]
+    fn an_ended_child_resumes_to_running_with_a_fresh_start_and_no_report() {
+        let tree = tree(2);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        assert!(tree.rows()[0].ended.is_none());
+        tree.finish(&a, report(ChildStatus::Done));
+        let ended = tree.rows()[0].clone();
+        assert!(ended.ended.is_some());
+        assert!(tree.report_of(&a).is_some());
+
+        tree.resume(&a).unwrap();
+        let row = tree.rows()[0].clone();
+        assert_eq!(row.status, ChildStatus::Running);
+        assert!(row.ended.is_none());
+        assert!(row.started >= ended.started);
+        assert!(tree.report_of(&a).is_none());
+        assert!(tree.is_running(&a));
+    }
+
+    #[test]
+    fn of_two_racing_resumes_exactly_one_wins() {
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.finish(&a, report(ChildStatus::Done));
+        assert_eq!(tree.resume(&a), Ok(()));
+        assert_eq!(tree.resume(&a), Err(Refusal::AlreadyRunning));
+        // A node that never ended is not resumable either.
+        let b = reserve(&tree, ROOT_AGENT).unwrap();
+        assert_eq!(tree.resume(&b), Err(Refusal::AlreadyRunning));
+    }
+
+    #[test]
+    fn a_resume_re_checks_the_parallel_cap_and_the_session_budget() {
+        let tree = tree(1);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.finish(&a, report(ChildStatus::Done));
+        let b = reserve(&tree, ROOT_AGENT).unwrap();
+        assert_eq!(tree.resume(&a), Err(Refusal::Parallel(1)));
+        tree.finish(&b, report(ChildStatus::Done));
+        assert_eq!(tree.resume(&a), Ok(()));
+
+        let capped = AgentTree::new(Limits {
+            session: Budget {
+                tokens: Some(10),
+                cost_usd: None,
+            },
+            ..Limits::default()
+        });
+        let c = reserve(&capped, ROOT_AGENT).unwrap();
+        capped.finish(&c, report(ChildStatus::Done));
+        capped.debit(
+            &c,
+            &Spend {
+                input_tokens: 20,
+                output_tokens: 0,
+                cost_usd: None,
+            },
+        );
+        assert!(matches!(capped.resume(&c), Err(Refusal::SessionBudget(_))));
+    }
+
+    #[test]
+    fn a_kill_and_a_spent_budget_are_final_for_a_resume() {
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        assert!(tree.resume_blocker(&a).is_none());
+        tree.kill(&a);
+        assert_eq!(tree.status_of(&a), Some(ChildStatus::Killed));
+        assert!(tree.resume_blocker(&a).unwrap().contains("killed"));
+        assert!(tree.rows()[0].ended.is_some());
+        assert!(tree.resume_blocker("agent-99").is_none());
+    }
+
+    #[test]
+    fn killing_an_agent_ends_its_running_children_too() {
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        let b = reserve(&tree, &a).unwrap();
+        tree.finish(&a, report(ChildStatus::Done));
+        let rows = tree.rows();
+        let child = rows.iter().find(|row| row.id == b).unwrap();
+        assert_eq!(child.status, ChildStatus::Killed);
+        assert!(child.ended.is_some());
+    }
+
+    #[test]
+    fn the_handle_of_an_unknown_or_unattached_agent_is_none() {
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        assert!(tree.handle_of(&a).is_none());
+        assert!(tree.handle_of("agent-99").is_none());
     }
 }

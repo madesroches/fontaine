@@ -12,15 +12,19 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::time::SystemTime;
 
-use crate::agents_panel::{AgentsPanel, Detail, JobRow, PanelRow};
+use crate::agent_list;
+use crate::agents_panel::{AgentsPanel, JobRow, PanelRow};
 use crate::config_panel::ConfigKey;
 use crate::denials::{DeniedList, UnavailablePrompt};
 use crate::resume_picker::ResumePicker;
 use crate::ui::schedule::IDLE_POLL;
+
+/// How often the agent list redraws while it lists anything.
+const LIST_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 use crate::ui::turn::{CommandOutcome, SkillRun, Submission};
 use crate::{Action, App, Command, Prompt, Ui, parse_command};
 use crate::{reports, statusbar};
-use fontaine_core::agent::AgentRuntime;
+use fontaine_core::agent::{AgentRuntime, Delivered};
 use fontaine_core::config::PermissionMode;
 use fontaine_core::goal::{GoalArg, first_turn_prompt, parse_goal_arg};
 use fontaine_core::instructions;
@@ -39,10 +43,18 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.prune_closed();
         let rows = runtime.state.agents().rows();
         self.app.running_agents = rows.iter().filter(|r| r.status.is_running()).count();
+        self.refresh_agent_list(&rows);
         if self.app.agents.is_some() {
             self.refresh_panel(runtime, &rows);
         }
+        self.show_delivered_to_agents(runtime);
         self.app.queued = runtime.steering.queued();
+        self.app.queued_agent = self
+            .app
+            .viewing
+            .as_deref()
+            .map(|id| runtime.steering.queued_for(id))
+            .unwrap_or_default();
         let scheduler = runtime.session.scheduler();
         let scheduling = runtime.config.schedule.enabled;
         self.app.scheduled = if scheduling { scheduler.count() } else { 0 };
@@ -54,7 +66,26 @@ impl<R: FnMut(&mut App)> Ui<R> {
         (self.render)(&mut self.app);
     }
 
-    /// Brings the agents panel up to date with the tree, the decisions and the queue.
+    /// The list below the status line, from the tree as it stands now.
+    fn refresh_agent_list(&mut self, rows: &[fontaine_agents::tree::AgentRow]) {
+        let list = &mut self.app.agent_list;
+        list.forget_running(rows);
+        let shown = agent_list::rows(
+            rows,
+            self.app.viewing.as_deref(),
+            self.app.agent_list.dismissed(),
+            std::time::Instant::now(),
+        );
+        self.app.agent_list.set_rows(shown);
+        // A call whose agent stopped never gets a result, and would hold the live area.
+        for row in rows.iter().filter(|row| !row.status.is_running()) {
+            if let Some(view) = self.app.agent_views.get_mut(&row.id) {
+                view.transcript.interrupt_pending();
+            }
+        }
+    }
+
+    /// Brings the agents panel up to date with the tree and the jobs.
     fn refresh_panel(&mut self, runtime: &AgentRuntime, rows: &[fontaine_agents::tree::AgentRow]) {
         let panel_rows: Vec<PanelRow> = rows
             .iter()
@@ -71,31 +102,6 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 stopped_because: row.exhausted.map(|why| why.describe()),
             })
             .collect();
-        let selected = self.app.agents.as_ref().and_then(AgentsPanel::selected_id);
-        let detail = match (&self.app.agents, selected) {
-            (Some(panel), Some(id)) if panel.is_inspecting() => Some(Detail {
-                pending: self.app.pending_for(&id),
-                decisions: runtime
-                    .state
-                    .decisions_of(&id)
-                    .iter()
-                    .map(|d| {
-                        format!(
-                            "{} {} ({}{})",
-                            d.tool,
-                            d.decision,
-                            d.tier,
-                            d.rule
-                                .as_deref()
-                                .map_or(String::new(), |r| format!(": {r}"))
-                        )
-                    })
-                    .collect(),
-                log: runtime.state.agent_log(&id),
-                id,
-            }),
-            _ => None,
-        };
         let job_rows: Vec<JobRow> = runtime
             .jobs()
             .snapshot()
@@ -112,7 +118,6 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if let Some(panel) = &mut self.app.agents {
             panel.set_rows(panel_rows);
             panel.set_jobs(job_rows);
-            panel.detail = detail;
         }
     }
 
@@ -229,6 +234,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
                 continue;
             }
+            // Elapsed times in the agent list, and the end of an ended row's 30 seconds there,
+            // are shown without anything else happening.
+            if self.app.agent_list.counts_time() {
+                tick =
+                    Some(tick.map_or(LIST_TICK, |wait: std::time::Duration| wait.min(LIST_TICK)));
+            }
             self.draw(runtime);
             let action = tokio::select! {
                 input = self.input.recv() => match input {
@@ -237,6 +248,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 },
                 Some(prompt) = self.prompts.recv() => {
                     self.on_prompt(Some(runtime), prompt);
+                    Action::None
+                }
+                Some(first) = self.agent_events.recv() => {
+                    self.on_agent_events(runtime, first);
                     Action::None
                 }
                 _ = &mut changed => Action::None,
@@ -282,6 +297,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         .await
                 }
                 Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                Action::MessageAgent { id, text } => self.message_agent(runtime, id, text),
                 Action::KillJob(id) => self.kill_job(runtime, &id),
                 Action::PickModel(purpose, reference) => {
                     self.apply_pick(runtime, purpose, &reference).await;
@@ -299,9 +315,26 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
+    /// The notice lands where the human is looking: an agent's view, or the main chat.
     fn kill_agent(&mut self, runtime: &AgentRuntime, id: &str) {
         if runtime.state.agents().kill(id) {
-            self.app.transcript.notice(format!("killed {id}"));
+            self.app.shown_mut().notice(format!("killed {id}"));
+        }
+    }
+
+    /// Delivers what the human typed in an agent's view. A running agent reads it with its next
+    /// tool result, which the view shows dimmed until then; an ended one starts another run.
+    pub(crate) fn message_agent(&mut self, runtime: &AgentRuntime, id: String, text: String) {
+        match runtime.message_agent(&id, text.clone()) {
+            Ok(Delivered::Queued) => self.remember(&text),
+            Ok(Delivered::Resumed) => {
+                self.remember(&text);
+                self.app.transcript.notice(format!("you resumed {id}"));
+            }
+            Err(refusal) => {
+                self.app.shown_mut().notice(refusal.notice(&id));
+                self.app.restore_to_input(&text);
+            }
         }
     }
 
@@ -359,6 +392,23 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// starting arms hand the turn back as a submission instead of running it, so no async
     /// recursion forms.
     pub(crate) async fn dispatch_command(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        launch_dir: &Path,
+        command: Command,
+        raw: &str,
+        has_pending: bool,
+    ) -> std::ops::ControlFlow<(), CommandOutcome> {
+        // In an agent's view the command's notices belong in the view the human is looking at.
+        let mark = self.app.notice_mark();
+        let outcome = self
+            .dispatch_inner(runtime, launch_dir, command, raw, has_pending)
+            .await;
+        self.app.move_notices_to_shown(mark);
+        outcome
+    }
+
+    async fn dispatch_inner(
         &mut self,
         runtime: &mut AgentRuntime,
         launch_dir: &Path,
@@ -454,6 +504,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     // guardian reads, and later goal turns are harness notes.
                     runtime.append(Record::UserMessage {
                         text: raw.to_string(),
+                        agent: None,
                     });
                     Continue(CommandOutcome::Turn(Submission::Expanded {
                         text: raw.to_string(),
@@ -480,6 +531,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 // Recorded before the turn so the guardian judging the write has this intent.
                 runtime.append(Record::UserMessage {
                     text: format!("/init: create or improve {}", target.display()),
+                    agent: None,
                 });
                 Continue(CommandOutcome::Turn(Submission::Expanded {
                     text: "/init".to_string(),
@@ -582,6 +634,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// synchronous handlers that touch only UI state, so both input loops can run them
     /// mid-turn exactly as `submit` would at an idle prompt.
     pub(crate) fn run_immediate(&mut self, runtime: &AgentRuntime, command: &Command) {
+        let mark = self.app.notice_mark();
+        self.run_immediate_inner(runtime, command);
+        self.app.move_notices_to_shown(mark);
+    }
+
+    fn run_immediate_inner(&mut self, runtime: &AgentRuntime, command: &Command) {
         match command {
             Command::Help => {
                 let (skills, _) = crate::commands::skill_menu(runtime.slash_skills());

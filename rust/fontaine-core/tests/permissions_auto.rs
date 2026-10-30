@@ -668,6 +668,7 @@ async fn the_request_is_built_from_the_ledger_and_never_from_a_compaction_summar
             .ledger
             .append(Record::UserMessage {
                 text: question.clone(),
+                agent: None,
             })
             .unwrap();
         conversation.extend([
@@ -945,7 +946,10 @@ async fn the_request_after_a_clear_carries_only_what_the_human_asked_since() {
     let say = |text: &str| {
         rig.session
             .ledger
-            .append(Record::UserMessage { text: text.into() })
+            .append(Record::UserMessage {
+                text: text.into(),
+                agent: None,
+            })
             .unwrap();
     };
     say("MESSAGE-BEFORE-THE-CLEAR");

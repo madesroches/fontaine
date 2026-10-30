@@ -16,7 +16,10 @@ the rows directly above the input box with empty space above it. Once the transc
 fits, the oldest entries move into the terminal's normal scrollback, and leaving the UI (or
 `/clear`) writes whatever was still held back there too, so the conversation stays in the
 terminal. Scroll back with the terminal or with tmux copy mode, and select text with the mouse as
-in any shell program.
+in any shell program. Showing a [subagent's transcript](#the-agent-list-and-the-agent-view) erases
+the terminal's scrollback and writes that transcript in its place, and going back to the main
+conversation does the same, so whatever the terminal held from before the session started, and the
+main chat's rows from before a `/clear`, are gone after the first switch.
 
 The input box title says what Enter does: it sends a message, or, when the input starts with `!`,
 runs it as a shell command. The transcript shows your messages (`>`), the streaming answer, and a
@@ -86,22 +89,29 @@ tools are checked like any `arbitrary` tool. A headless run does not ask and loa
 The bar shows the permission mode, the model, how many subagents are running, `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, `◎ goal 12m` while a [goal](#goals) is active (`◎ goal paused` when it waits for you), and a key hint. The mode labels are `manual`,
 `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on` and `dontAsk`.
 
+While a [subagent's transcript](#the-agent-list-and-the-agent-view) is on screen the bar's key hint
+is about that agent: `viewing agent-3 · working · ↓ then Enter on main to go back`, with the
+agent's own state (`working`, or how it ended) in place of the main turn's. When any subagent is
+running or recently ended, the [agent list](#the-agent-list-and-the-agent-view) sits on the rows
+below the bar.
+
 ## Keys
 
 | Key | Action |
 |---|---|
 | Enter | Submit. Alt+Enter, Shift+Enter or Ctrl+J insert a newline; a trailing `\` before Enter also continues the line. Which of these your terminal sends, and how to bind Shift+Enter, is in [Terminal setup](terminal.md#new-lines-in-the-message-box). While a turn runs, a message is queued (see [Messages during a turn](#messages-during-a-turn)). With a `@` list open, Enter completes instead; with the [slash-command menu](#slash-command-menu) open on a bare `/name`, it runs the selected command; after other text, it sends the message. |
-| Up, Down | With the `@` list or the slash-command menu open, move the selection. Otherwise, on the first or last line of the input, recall older or newer submitted inputs; elsewhere they move the cursor. With messages queued, Up takes them back into the input. |
+| Up, Down | With the `@` list or the slash-command menu open, move the selection. Otherwise, on the first or last line of the input, recall older or newer submitted inputs; elsewhere they move the cursor. With messages queued, Up takes them back into the input. Down on the last line, when the input is not walking the history and the [agent list](#the-agent-list-and-the-agent-view) shows, moves the keyboard into the list: Up and Down select a row, Up on the first row gives the keyboard back. |
+| Enter, x, Esc in the agent list | Enter shows the selected row's transcript (`main` or a subagent). `x` stops a running subagent, or hides an ended one; on `main` or the agent on screen it is typed into the input. Esc gives the keyboard back to the input, and any printable key does too and is typed there. |
 | Ctrl-R | Search the prompt history; see [History](#history). |
 | Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. In the menu it first extends the name to what all the listed commands share. |
 | Shift+Tab | Cycle the mode: manual, accept edits, plan, auto, and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` lists the broad allow rules it sets aside and says so when the guardian cannot be asked. |
-| Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. |
+| Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
-| Esc twice in quick succession when idle with an empty input | Opens the `/rewind` picker; see [Checkpoints and /rewind](checkpoints.md). Any other meaning of Esc above wins first. |
+| Esc twice in quick succession when idle with an empty input | Opens the `/rewind` picker; see [Checkpoints and /rewind](checkpoints.md). Any other meaning of Esc above wins first. Off while a subagent's transcript is on screen. |
 | Ctrl-C, or Ctrl-D on an empty input, when idle | Quit. |
 | PageUp, PageDown | Scroll the command or diff in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/U/K/W/B/F | Edit the input. |
-| Ctrl-T | Open or close the [agents panel](#the-agents-panel), even over an approval prompt. |
+| Ctrl-T | Open or close the [agents panel](#the-agents-panel), even over an approval prompt. Enter on an agent row there shows its transcript. |
 | Ctrl-O | Expand or collapse the [task list](#the-task-panel). Ignored while the agents panel is open. |
 | `/` at the start of the input or after a space | Opens the [slash-command menu](#slash-command-menu). |
 
@@ -319,7 +329,7 @@ since a transcript can hold secrets, and an existing file is an error: an export
 | Command | Action |
 |---|---|
 | `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Until then a file-tool *write* outside the roots is denied with a hint naming this command and the session's scratch directory, which is always a root; the read-only tools (`read`, `ls`, `glob`, `grep`) instead ask or go to the guardian like any unapproved call. Only between turns. |
-| `/agents`, `/tasks` | Opens the [agents panel](#the-agents-panel). |
+| `/agents`, `/tasks` | Opens the [agents panel](#the-agents-panel): every subagent, ended ones included, and the background jobs. |
 | `/branch [<name>]`, `/fork` | Copies the session under a new id and carries on in the copy; the original is left as it was. Only between turns, and refused while a subagent runs. See [Sessions](#sessions). |
 | `/clear`, `/reset`, `/new` | Starts over with an empty context. See [Context](#context). It takes no name for the old conversation; `/rename` names a session, and `/resume` returns to one later. |
 | `/compact [<focus>]` | Summarizes the conversation so far to free context; the optional focus tells the summary what to keep above all. See [Context](#context). |
@@ -578,7 +588,8 @@ box. Collapsed it is one line, `Tasks 3/7 · ▶ the item in progress`; expanded
 it lists every item, marked `[ ]` pending, `[~]` in progress or `[x]` completed. A list taller than
 the screen allows ends with a `+N more` line, and an approval prompt shrinks before the list does.
 The panel is hidden while the list is empty. The transcript still shows each `todo_write` call as a
-one-line entry with its counts.
+one-line entry with its counts. The [agent list](#the-agent-list-and-the-agent-view) takes its rows
+from the same room first, so an expanded task list gives way to it when the screen is short.
 
 The list is the main agent's; a subagent's list is not shown. It is kept with the session, so a
 resumed or forked session shows it again, and `/clear` empties it. In screen-reader mode there is
@@ -675,25 +686,77 @@ again. While background subagents run, the goal waits and is evaluated after the
 their reports. Headless runs accept `-p "/goal <condition>"`; see
 [Headless runs](headless.md#goals). The limits are under [Configuration](configuration.md#goal).
 
+## The agent list and the agent view
+
+While a [subagent](agents.md) runs, a list of agents shows below the status bar: `main` first, then
+one row per subagent with its id, type, status, how long this run has gone on and what it has used,
+for example `◯ agent-3 worker running 1m02s 1500 tok`. A nested agent is indented under its
+parent. The row on screen is marked `●` and the others `◯`. The list shows every running agent, the
+agent on screen, and an agent that failed, was killed or ran out of budget for 30 seconds after it
+ended or until you hide it with `x`. An agent that finished normally leaves at once. With nothing
+to list, the list is not drawn.
+
+Down on the last line of the input moves the keyboard into the list, on `main`. Up and Down select a
+row, Enter shows that row, `x` stops a running subagent (or hides an ended one), and Esc, Up on the
+first row, or any printable key gives the keyboard back to the input. A hint line above the rows
+lists these keys while the list has the keyboard.
+
+**Viewing an agent.** Enter on a subagent erases the screen and the terminal's scrollback and
+writes that agent's transcript: its task as the first message, then what it said and each tool
+call, drawn like the main chat and streaming as the agent works. The input box's border names the
+agent (`agent-3 · worker · running`) and the empty input reads `Message agent-3…`. The wheel and
+tmux copy mode scroll the transcript like any other. The agent's own denials show there, as the
+main chat's show, and not in the main chat; the tier and rule of what a subagent was allowed are in
+the audit log, as for the main conversation. Selecting `main` and pressing Enter erases the screen
+again and writes the whole main chat, including what happened while it was hidden, with none of the
+agent's lines in it. Approval prompts stay global: any agent's prompt opens over whichever
+transcript is on screen and names the agent.
+
+**Typing to an agent.** What you type in an agent's view goes to that agent, not to the main
+conversation:
+
+- A running agent reads it with its next tool result, as the main agent does with
+  [messages during a turn](#messages-during-a-turn). Until then it shows dimmed under the
+  transcript, and then as a `>` line of its own.
+- An agent that ended with `done` or `failed` is resumed with it: another run starts on the same
+  conversation, with the same tools, mode and budget, and the main conversation shows
+  `you resumed agent-3`. The new run's report reaches the agent that started it, or the main
+  conversation when that agent has ended, like any background report. A message that a run ended
+  without reading resumes the agent the same way once it ends.
+- An agent that was killed or whose budget is spent cannot be resumed; the view says so and the text
+  stays in the input. A resume that would exceed the parallel-agent limit or the session's agent
+  budget is refused the same way.
+
+Built-in commands that only show or set something run as usual against the main conversation, and
+their notices appear in the view. Commands that change the main conversation (`/clear`, `/compact`,
+`/rewind`, `/branch`, `/resume`, `/model`, `/goal`, `/loop`, `/init`, `/output-style` and `/plan`
+with an argument), skills and `!` lines are refused there with `switch back to main to run this`,
+and the text stays in the input. `/expand` and `/copy` act on the transcript on screen. Ctrl-C
+interrupts the main turn, which keeps running while you look at an agent; Esc does not.
+
+In [screen-reader mode](terminal.md#screen-reader-mode) there is no list, and the same switch
+prints a `viewing agent-3 (worker)` or `back to the main conversation` line and then only what was
+not printed yet.
+
 ## The agents panel
 
-`/agents` (or `/tasks`) or Ctrl-T opens a list with one row per [subagent](agents.md), and below it one row per [background job](tools.md#background-jobs) of the main conversation (its id, its state, its age and the start of its command): an agent row shows its id and type, its
+`/agents` (or `/tasks`) or Ctrl-T opens the full overview: one row per [subagent](agents.md), ended
+ones included, and below it one row per [background job](tools.md#background-jobs) of the main conversation (its id, its state, its age and the start of its command): an agent row shows its id and type, its
 model, its status (`running`, `waiting-on-permission`, `done`, `killed`, `budget-exhausted` or
 `failed`) and what it has used, such as `1500 tok · $0.0021`; each `/ <cap>` form
 (`1500 / 200000 tok`, `$0.0021 / $2.00`) appears only for a budget that is set, and `cost n/a`
 shows in place of the spend when a cost budget is set but no priced call has been counted yet,
-as for a model with no known price. Up and Down select a row; Enter looks inside it:
-
-- the calls it is **waiting for you** to decide, so an approval cannot hide behind the main
-  transcript;
-- its **gate decisions**, with the tier and rule of each (the same records as the audit log);
-- its **transcript**: what it said and which tools it called.
+as for a model with no known price. Up and Down select a row; Enter on an agent closes the panel
+and shows that agent's transcript, which is how you reach an agent that has left the
+[agent list](#the-agent-list-and-the-agent-view).
 
 `x` kills the selected subagent: its row shows `killed` and what it had spent, and its pending
 approval prompts are cancelled as denied. On a job row it stops the job and its process group,
 and the main conversation is told in a note that the job was killed by you; Enter does nothing on a
-job row. Esc goes back, and closes the panel. While the panel is
-open it has the keyboard, so a pending approval waits until you close it.
+job row. Esc closes the panel. While the panel is
+open it has the keyboard, so a pending approval waits until you close it. Closing a panel that
+was tall enough to push the transcript into scrollback writes the transcript again, so the last
+messages are on screen.
 
 When a background subagent finishes while nothing is running, the main conversation gets a turn of
 its own to read the report. A background job that ends, or a monitor that prints lines, does the

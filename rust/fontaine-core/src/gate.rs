@@ -26,17 +26,24 @@ use crate::permission_rules::{
 };
 use crate::permissions::Approver;
 use crate::preview::DiffPreview;
+use crate::turn::SessionEvent;
 
 const TARGET: &str = "fontaine::telemetry";
 
 /// Why a call from an agent the session's tree no longer holds is refused.
 pub const UNREGISTERED_AGENT: &str = "the calling agent is no longer registered";
 
-/// Decisions kept per agent for the panel.
-const DECISIONS_PER_AGENT: usize = 200;
+/// What a surface that shows a subagent's own transcript receives about it.
+#[derive(Clone, Debug)]
+pub enum AgentViewEvent {
+    /// The first message of the view: the task the agent was given, or the words the human typed
+    /// to resume it.
+    Prompt(String),
+    Event(SessionEvent),
+}
 
-/// Lines of activity kept per agent for the panel.
-const AGENT_LOG_LINES: usize = 500;
+/// Where every event of a subagent's run is sent, with the agent's id.
+pub type AgentEventSink = UnboundedSender<(String, AgentViewEvent)>;
 
 pub struct WaitGuard {
     state: Arc<SessionState>,
@@ -296,9 +303,8 @@ pub struct SessionState {
     agent_types: Arc<AgentTypes>,
     reveal_mcp_names: bool,
     pub auto_edits: AutoEdits,
-    decisions_by_agent: Mutex<HashMap<String, std::collections::VecDeque<DecisionRecord>>>,
     waiting: Mutex<HashMap<String, usize>>,
-    agent_logs: Mutex<HashMap<String, Vec<String>>>,
+    agent_sink: Mutex<Option<AgentEventSink>>,
     guardian: RwLock<Arc<Guardian>>,
     screen: RwLock<Option<ScreenStage>>,
     screen_warned: AtomicBool,
@@ -345,9 +351,8 @@ impl SessionState {
             agent_types: params.agent_types,
             reveal_mcp_names: params.reveal_mcp_names,
             auto_edits: params.auto_edits,
-            decisions_by_agent: Mutex::default(),
             waiting: Mutex::default(),
-            agent_logs: Mutex::default(),
+            agent_sink: Mutex::default(),
             inner: RwLock::new(Inner {
                 scope: params.scope,
                 deny: params.deny,
@@ -767,33 +772,61 @@ impl SessionState {
     }
 
     pub fn publish(&self, record: DecisionRecord) {
-        {
-            // Panel display copy; the audit log holds the record.
-            let mut by_agent = lock_recovering(&self.decisions_by_agent);
-            let list = by_agent.entry(record.agent_id.clone()).or_default();
-            if list.len() == DECISIONS_PER_AGENT {
-                list.pop_front();
-            }
-            list.push_back(record.clone());
+        if let Some(sink) = self.view_sink_for(&record.agent_id) {
+            // A surface that went away has no one to tell; the audit log holds the record.
+            let _ = sink.send((
+                record.agent_id.clone(),
+                AgentViewEvent::Event(SessionEvent::Decision(Box::new(record))),
+            ));
+            return;
         }
         // No consumer is not an error: the audit log already holds the record.
         let _ = self.decisions.send(record);
     }
 
-    /// Hands the diff an allowed `edit` or `write` call is about to make to whoever follows the
-    /// decision feed.
-    pub fn publish_preview(&self, tool_use_id: String, preview: DiffPreview) {
+    /// Hands the diff an allowed `edit` or `write` call of `agent` is about to make to whoever
+    /// follows the decision feed.
+    pub fn publish_preview(&self, agent: &str, tool_use_id: String, preview: DiffPreview) {
+        if let Some(sink) = self.view_sink_for(agent) {
+            // A surface that went away has no one to tell; the preview is display only.
+            let _ = sink.send((
+                agent.to_string(),
+                AgentViewEvent::Event(SessionEvent::ToolPreview {
+                    id: tool_use_id,
+                    preview: Box::new(preview),
+                }),
+            ));
+            return;
+        }
         // No consumer is not an error: the preview is display only.
         let _ = self.previews.send((tool_use_id, preview));
     }
 
-    /// The decisions made for `agent`, oldest first, for the agents panel.
-    pub fn decisions_of(&self, agent: &str) -> Vec<DecisionRecord> {
-        // Panel display copy; the audit log holds the record.
-        lock_recovering(&self.decisions_by_agent)
-            .get(agent)
-            .map(|list| list.iter().cloned().collect())
-            .unwrap_or_default()
+    /// Where the events of every subagent run go, so a surface can show each agent's own
+    /// transcript. With none installed, as in a headless run, they are dropped, and a subagent's
+    /// decisions stay on the root feed.
+    pub fn set_agent_event_sink(&self, sink: AgentEventSink) {
+        // The sender is replaced whole; a panic cannot leave it half-updated.
+        *lock_recovering(&self.agent_sink) = Some(sink);
+    }
+
+    /// Sends `event` of `agent` to the sink when one is installed.
+    pub fn emit_agent_event(&self, agent: &str, event: AgentViewEvent) {
+        // The sender is replaced whole; a panic cannot leave it half-updated.
+        let sink = lock_recovering(&self.agent_sink).clone();
+        if let Some(sink) = sink {
+            // A surface that went away has no one to tell.
+            let _ = sink.send((agent.to_string(), event));
+        }
+    }
+
+    /// The sink for a subagent's records, which keep off the root feed while one is installed.
+    fn view_sink_for(&self, agent: &str) -> Option<AgentEventSink> {
+        if agent == ROOT_AGENT {
+            return None;
+        }
+        // The sender is replaced whole; a panic cannot leave it half-updated.
+        lock_recovering(&self.agent_sink).clone()
     }
 
     /// `agent` is waiting on a human. The guard ends the wait however the call ends, a cancelled
@@ -807,25 +840,6 @@ impl SessionState {
             state: self.clone(),
             agent: agent.to_string(),
         }
-    }
-
-    /// Adds a line to what `agent` has been doing, for the agents panel.
-    pub fn log_agent_line(&self, agent: &str, line: String) {
-        // Panel display copy; the audit log holds the record.
-        let mut logs = lock_recovering(&self.agent_logs);
-        let list = logs.entry(agent.to_string()).or_default();
-        if list.len() == AGENT_LOG_LINES {
-            list.remove(0);
-        }
-        list.push(line);
-    }
-
-    pub fn agent_log(&self, agent: &str) -> Vec<String> {
-        // Panel display copy; the audit log holds the record.
-        lock_recovering(&self.agent_logs)
-            .get(agent)
-            .cloned()
-            .unwrap_or_default()
     }
 
     pub fn is_waiting(&self, agent: &str) -> bool {

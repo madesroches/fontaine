@@ -12,7 +12,10 @@ use ratatui::Viewport;
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, TestBackend, WindowSize};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::crossterm::Command;
-use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+use ratatui::crossterm::cursor::MoveTo;
+use ratatui::crossterm::terminal::{
+    BeginSynchronizedUpdate, Clear, ClearType as CrosstermClear, EndSynchronizedUpdate,
+};
 use ratatui::layout::{Position, Rect, Size};
 use ratatui::style::Modifier;
 use ratatui::widgets::{Paragraph, Widget};
@@ -154,6 +157,9 @@ pub trait Framed: Backend {
 
     /// Closes the synchronized update and writes everything collected since `begin_frame`.
     fn end_frame(&mut self) -> Result<(), Self::Error>;
+
+    /// Erases the screen and then the scrollback, and homes the cursor.
+    fn purge(&mut self) -> Result<(), Self::Error>;
 }
 
 impl<W: Write> Framed for CrosstermBackend<FrameWriter<W>> {
@@ -164,6 +170,16 @@ impl<W: Write> Framed for CrosstermBackend<FrameWriter<W>> {
     fn end_frame(&mut self) -> io::Result<()> {
         self.writer_mut().end()
     }
+
+    fn purge(&mut self) -> io::Result<()> {
+        let writer = self.writer_mut();
+        // The scrollback goes second: clearing the screen is what makes tmux move its rows into
+        // history, and clearing history first would leave those behind.
+        writer.queue(Clear(CrosstermClear::All));
+        writer.queue(Clear(CrosstermClear::Purge));
+        writer.queue(MoveTo(0, 0));
+        Ok(())
+    }
 }
 
 impl Framed for TestBackend {
@@ -171,6 +187,13 @@ impl Framed for TestBackend {
     fn begin_frame(&mut self) {}
 
     fn end_frame(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn purge(&mut self) -> Result<(), Self::Error> {
+        // The backend keeps its scrollback to itself, so a fresh one stands for the cleared one.
+        let size = self.size()?;
+        *self = TestBackend::new(size.width, size.height);
         Ok(())
     }
 }
@@ -185,11 +208,18 @@ pub trait Anchor: Backend {
     fn end_frame(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
+
+    /// Erases the screen and then the scrollback, and homes the cursor.
+    fn purge(&mut self) -> Result<(), Self::Error>;
 }
 
 impl Anchor for TestBackend {
     // A test backend answers from its own cursor.
     fn arm(&mut self, _at: Position) {}
+
+    fn purge(&mut self) -> Result<(), Self::Error> {
+        Framed::purge(self)
+    }
 }
 
 /// Wraps a backend so exactly one cursor-position query can be answered locally. On a real
@@ -220,6 +250,10 @@ impl<B: Framed> Anchor for Anchored<B> {
 
     fn end_frame(&mut self) -> Result<(), Self::Error> {
         self.inner.end_frame()
+    }
+
+    fn purge(&mut self) -> Result<(), Self::Error> {
+        self.inner.purge()
     }
 }
 
@@ -360,14 +394,25 @@ impl<B: Backend + Anchor> Screen<B> {
         let width = self.terminal.get_frame().area().width;
         let terminal_height = self.terminal.size()?.height;
         let columns = usize::from(width).max(1);
+        if mem::take(&mut app.reprint) {
+            app.shown_mut().recommit();
+            self.reprint()?;
+        }
         let lines = if all {
-            app.transcript.commit_all(columns, &app.theme)
+            let (shown, theme) = app.shown_with_theme();
+            shown.commit_all(columns, theme)
         } else {
-            let mut lines = app.transcript.take_retired(columns, &app.theme);
+            let (shown, theme) = app.shown_with_theme();
+            let mut lines = shown.take_retired(columns, theme);
             let chrome = view::chrome(app, width, terminal_height);
-            let held = app.transcript.live_lines(columns, &app.theme).len();
+            let held = app.shown().live_lines(columns, &app.theme).len();
             let over = (held + chrome).saturating_sub(usize::from(terminal_height));
-            lines.extend(app.transcript.commit_within(columns, &app.theme, over));
+            let (shown, theme) = app.shown_with_theme();
+            let released = shown.commit_within(columns, theme, over);
+            if !released.is_empty() && app.agents.is_some() {
+                app.committed_under_overlay = true;
+            }
+            lines.extend(released);
             lines
         };
         let content = view::height(app, width, terminal_height);
@@ -427,9 +472,22 @@ impl<B: Backend + Anchor> Screen<B> {
         self.terminal.swap_buffers();
     }
 
+    /// Erases the screen and the scrollback, and starts the live area over at the top row, as the
+    /// whole screen. The caller writes the transcript again from its first row.
+    pub fn reprint(&mut self) -> Result<(), B::Error> {
+        self.terminal.backend_mut().purge()?;
+        let height = self.terminal.size()?.height;
+        self.rebuild_at(0, height)
+    }
+
     /// ratatui cannot resize an inline viewport, so the terminal is rebuilt at the same top row.
     fn rebuild(&mut self, height: u16) -> Result<(), B::Error> {
-        let top = Position::new(0, self.terminal.get_frame().area().y);
+        let top = self.terminal.get_frame().area().y;
+        self.rebuild_at(top, height)
+    }
+
+    fn rebuild_at(&mut self, top: u16, height: u16) -> Result<(), B::Error> {
+        let top = Position::new(0, top);
         let backend = self.terminal.backend_mut();
         backend.set_cursor_position(top)?;
         let mut real = mem::replace(backend, (self.placeholder)());
@@ -1130,6 +1188,10 @@ mod tests {
             fn end_frame(&mut self) -> io::Result<()> {
                 self.inner.end_frame()
             }
+
+            fn purge(&mut self) -> io::Result<()> {
+                self.inner.purge()
+            }
         }
 
         impl Backend for Emu {
@@ -1698,6 +1760,143 @@ mod tests {
         backend.arm(Position::new(0, 7));
         assert_eq!(backend.get_cursor_position().unwrap(), Position::new(0, 7));
         assert_eq!(backend.get_cursor_position().unwrap(), Position::new(3, 4));
+    }
+
+    fn panel_row(n: usize) -> crate::agents_panel::PanelRow {
+        crate::agents_panel::PanelRow {
+            id: format!("agent-{n}"),
+            agent_type: "worker".into(),
+            model: "m/x".into(),
+            status: fontaine_agents::runner::ChildStatus::Done,
+            tokens: 10,
+            token_budget: None,
+            cost_usd: None,
+            cost_budget: None,
+            depth: 1,
+            stopped_because: None,
+        }
+    }
+
+    /// The reported blank chat: a tall agents panel pushes the transcript into scrollback, and
+    /// closing it used to leave the last messages above a padded viewport.
+    #[test]
+    fn issue_296_closing_a_tall_agents_panel_leaves_the_last_message_on_screen() {
+        let mut screen = screen(40, 14);
+        let mut app = app();
+        for i in 0..12 {
+            app.transcript.notice(format!("n{i}"));
+        }
+        screen.render(&mut app).unwrap();
+        let mut panel = crate::agents_panel::AgentsPanel::new();
+        panel.set_rows((1..=6).map(panel_row).collect());
+        app.agents = Some(panel);
+        screen.render(&mut app).unwrap();
+        assert!(app.committed_under_overlay);
+        assert!(
+            !nonblank(rows(screen.backend().scrollback())).is_empty(),
+            "the panel forced rows into scrollback"
+        );
+        app.handle_input(crate::Input::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        screen.render(&mut app).unwrap();
+        let visible = rows(screen.backend().buffer());
+        assert!(
+            visible.iter().any(|row| row.contains("n11")),
+            "the last message is on the visible rows: {visible:?}"
+        );
+        let all = nonblank(everything(&screen));
+        for i in 0..12 {
+            let text = format!("· n{i}");
+            let count = all.iter().filter(|row| **row == text).count();
+            assert_eq!(count, 1, "{text}: {all:?}");
+        }
+    }
+
+    #[test]
+    fn closing_a_panel_that_committed_nothing_keeps_the_screen() {
+        let mut screen = screen(40, 14);
+        let mut app = app();
+        app.transcript.notice("only");
+        screen.render(&mut app).unwrap();
+        app.agents = Some(crate::agents_panel::AgentsPanel::new());
+        screen.render(&mut app).unwrap();
+        app.handle_input(crate::Input::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        assert!(!app.reprint);
+    }
+
+    fn contains_in_order(haystack: &[u8], needles: &[&[u8]]) -> bool {
+        let mut from = 0;
+        for needle in needles {
+            match haystack[from..]
+                .windows(needle.len())
+                .position(|window| window == *needle)
+            {
+                Some(at) => from += at + needle.len(),
+                None => return false,
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn viewing_an_agent_erases_the_scrollback_and_writes_only_that_transcript() {
+        let mut harness = emulated::Harness::new(40, 12);
+        let mut app = app();
+        for i in 0..20 {
+            app.transcript.notice(format!("main {i}"));
+            harness.render(&mut app, "filling");
+        }
+        assert!(harness.scrollback().iter().any(|r| r.contains("main 0")));
+        app.view_of("agent-1".into())
+            .transcript
+            .user("the agent's task".into());
+        for i in 0..20 {
+            app.view_of("agent-1".into())
+                .transcript
+                .notice(format!("agent {i}"));
+        }
+        app.view(Some("agent-1".into()));
+        let writes = harness.writes_of(&mut app).concat();
+        assert!(
+            contains_in_order(&writes, &[b"\x1b[2J", b"\x1b[3J"]),
+            "the screen is erased, then the scrollback: {:?}",
+            String::from_utf8_lossy(&writes)
+        );
+        harness.render(&mut app, "after viewing an agent");
+        let mut seen = harness.scrollback();
+        seen.extend(harness.real());
+        assert!(
+            seen.iter().any(|r| r.contains("> the agent's task")),
+            "{seen:?}"
+        );
+        assert!(seen.iter().any(|r| r.contains("agent 19")), "{seen:?}");
+        assert!(!seen.iter().any(|r| r.contains("main ")), "{seen:?}");
+        let task = seen
+            .iter()
+            .filter(|r| r.contains("the agent's task"))
+            .count();
+        assert_eq!(task, 1, "{seen:?}");
+
+        // The main conversation moved on while hidden, and comes back whole.
+        app.transcript.notice("arrived while hidden");
+        app.view(None);
+        let writes = harness.writes_of(&mut app).concat();
+        assert!(contains_in_order(&writes, &[b"\x1b[2J", b"\x1b[3J"]));
+        harness.render(&mut app, "back on main");
+        let mut seen = harness.scrollback();
+        seen.extend(harness.real());
+        for i in 0..20 {
+            let text = format!("· main {i}");
+            let count = seen.iter().filter(|r| r.trim_end() == text).count();
+            assert_eq!(count, 1, "{text}: {seen:?}");
+        }
+        assert!(seen.iter().any(|r| r.contains("arrived while hidden")));
+        assert!(!seen.iter().any(|r| r.contains("agent ")), "{seen:?}");
     }
 
     #[test]

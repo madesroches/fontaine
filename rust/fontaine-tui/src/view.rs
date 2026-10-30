@@ -6,6 +6,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use crate::agent_list::ListRow;
+use crate::agents_panel::status_label;
 use crate::app::App;
 use crate::input::{InputBuffer, wrap};
 use crate::model_picker::PickerPurpose;
@@ -61,22 +63,32 @@ pub fn chrome(app: &App, width: u16, max_height: u16) -> usize {
     };
     let overlay_rows = overlay_rows + queued_lines(app, inner_width).len();
     let input_rows = input_view(&app.input, inner_width).rows.len() + 2;
+    let queued_rows = queued_lines(app, inner_width).len();
+    let list_rows = agent_list_lines(
+        app,
+        usize::from(width).max(1),
+        max_height,
+        input_rows,
+        queued_rows,
+    )
+    .len();
     let overlay_rows = overlay_rows
         + todo_lines(
             app,
             usize::from(width).max(1),
             max_height,
             input_rows,
-            queued_lines(app, inner_width).len(),
+            queued_rows,
+            list_rows,
         )
         .len();
-    overlay_rows + input_rows + 1
+    overlay_rows + input_rows + 1 + list_rows
 }
 
 /// The rows the live area needs for the next frame, at most `max_height`.
 pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
     let live = app
-        .transcript
+        .shown()
         .live_lines(usize::from(width).max(1), &app.theme)
         .len();
     let total = live + chrome(app, width, max_height);
@@ -96,12 +108,20 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let view = input_view(&app.input, inner_width);
     let input_height = view.rows.len() as u16 + 2;
     let queued = queued_lines(app, inner_width);
+    let list = agent_list_lines(
+        app,
+        usize::from(area.width).max(1),
+        area.height,
+        usize::from(input_height),
+        queued.len(),
+    );
     let todos = todo_lines(
         app,
         usize::from(area.width).max(1),
         area.height,
         usize::from(input_height),
         queued.len(),
+        list.len(),
     );
     let approval_height = if body.is_empty() {
         0
@@ -109,18 +129,26 @@ pub fn draw(frame: &mut Frame, app: &App) {
         ((shown_body_rows(body.len(), footer.len(), is_approval, area.height) + footer.len())
             as u16
             + 2)
-        .min(
-            area.height
-                .saturating_sub(input_height + queued.len() as u16 + todos.len() as u16 + 1),
-        )
+        .min(area.height.saturating_sub(
+            input_height + queued.len() as u16 + todos.len() as u16 + list.len() as u16 + 1,
+        ))
     };
-    let [transcript, approval, queued_area, todo_area, input, status] = Layout::vertical([
+    let [
+        transcript,
+        approval,
+        queued_area,
+        todo_area,
+        input,
+        status,
+        list_area,
+    ] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(approval_height),
         Constraint::Length(queued.len() as u16),
         Constraint::Length(todos.len() as u16),
         Constraint::Length(input_height),
         Constraint::Length(1),
+        Constraint::Length(list.len() as u16),
     ])
     .areas(area);
 
@@ -136,6 +164,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(todos), todo_area);
     draw_input(frame, input, app, &view);
     statusbar::render(frame, status, app);
+    frame.render_widget(Paragraph::new(list), list_area);
 }
 
 /// A long call under approval scrolls so the prompt takes at most half the screen, so the pending call it
@@ -148,14 +177,20 @@ fn shown_body_rows(rows: usize, footer: usize, approval: bool, height: u16) -> u
     }
 }
 
-/// The messages waiting for the agent's next tool result, one dimmed row each.
+/// The messages waiting for the agent's next tool result, one dimmed row each: the main
+/// conversation's, or the viewed agent's while its view is on screen.
 fn queued_lines(app: &App, width: usize) -> Vec<Line<'static>> {
-    if app.queued.is_empty() {
+    let viewing = app.viewing.is_some();
+    let waiting = if viewing {
+        &app.queued_agent
+    } else {
+        &app.queued
+    };
+    if waiting.is_empty() {
         return Vec::new();
     }
     let dim = Style::default().add_modifier(Modifier::DIM);
-    let mut lines: Vec<Line<'static>> = app
-        .queued
+    let mut lines: Vec<Line<'static>> = waiting
         .iter()
         .map(|message| {
             let first = message.lines().next().unwrap_or("");
@@ -163,8 +198,23 @@ fn queued_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             Line::styled(shown, dim)
         })
         .collect();
-    lines.push(Line::styled("  ↑ to edit", dim));
+    if !viewing {
+        lines.push(Line::styled("  ↑ to edit", dim));
+    }
     lines
+}
+
+/// The agent list below the status line, at most what the screen leaves after the message box
+/// and the queued messages, so the task list and the transcript give way to it first.
+fn agent_list_lines(
+    app: &App,
+    width: usize,
+    height: u16,
+    input_rows: usize,
+    queued_rows: usize,
+) -> Vec<Line<'static>> {
+    let cap = usize::from(height).saturating_sub(input_rows + queued_rows + 2);
+    app.agent_list.lines(app.viewing.as_deref(), width, cap)
 }
 
 /// The task list's rows. An expanded list gets what the screen leaves after the message box,
@@ -176,9 +226,10 @@ fn todo_lines(
     height: u16,
     input_rows: usize,
     queued_rows: usize,
+    list_rows: usize,
 ) -> Vec<Line<'static>> {
     let cap = usize::from(height)
-        .saturating_sub(input_rows + queued_rows + 1)
+        .saturating_sub(input_rows + queued_rows + list_rows + 1)
         .max(1);
     app.todos.lines(width, cap)
 }
@@ -187,9 +238,11 @@ fn todo_lines(
 fn body_rows(app: &App, width: usize, height: u16, footer_len: usize) -> usize {
     let input_rows = input_view(&app.input, width).rows.len() + 2;
     let queued_rows = queued_lines(app, width).len();
+    let list_rows = agent_list_lines(app, width + 2, height, input_rows, queued_rows).len();
     let reserved = input_rows
         + queued_rows
-        + todo_lines(app, width + 2, height, input_rows, queued_rows).len()
+        + list_rows
+        + todo_lines(app, width + 2, height, input_rows, queued_rows, list_rows).len()
         + 1
         + 2
         + footer_len
@@ -447,7 +500,7 @@ pub(crate) fn draw_overlay(
 
 fn draw_transcript(frame: &mut Frame, area: Rect, app: &App) {
     let lines = app
-        .transcript
+        .shown()
         .live_lines(usize::from(area.width).max(1), &app.theme);
     let start = lines.len().saturating_sub(usize::from(area.height));
     let shown = lines[start..].to_vec();
@@ -509,13 +562,33 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
     } else {
         (" message · Enter sends · Alt+Enter new line ", style)
     };
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .title(title)
         .border_style(style);
+    let viewed = app.viewing.as_deref();
+    if let Some(id) = viewed {
+        let header = match app.viewed_row() {
+            Some(ListRow {
+                agent_type,
+                status: Some(status),
+                ..
+            }) => format!(" {id} · {agent_type} · {} ", status_label(*status)),
+            _ => format!(" {id} "),
+        };
+        block = block.title_top(Line::from(header).right_aligned());
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let lines: Vec<Line> = view.rows.iter().map(|r| Line::raw(r.clone())).collect();
+    let lines: Vec<Line> = if viewed.is_some() && app.input.is_empty() && !covered {
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        vec![Line::styled(
+            format!("Message {}…", viewed.unwrap_or_default()),
+            dim,
+        )]
+    } else {
+        view.rows.iter().map(|r| Line::raw(r.clone())).collect()
+    };
     frame.render_widget(Paragraph::new(lines), inner);
     if !covered {
         frame.set_cursor_position(Position::new(
@@ -604,5 +677,122 @@ mod tests {
         assert!(!rows[0].contains("add-dir"), "{rows:?}");
         assert!(rows[MAX_MENU_ROWS - 1].starts_with("> "), "{rows:?}");
         assert_eq!(height(&app, 80, 60) as usize, rows.len() + 1 + 2 + 3 + 1);
+    }
+
+    fn list_row(id: Option<&str>) -> ListRow {
+        ListRow {
+            id: id.map(str::to_string),
+            depth: usize::from(id.is_some()),
+            agent_type: if id.is_some() { "worker" } else { "" }.into(),
+            status: id.map(|_| fontaine_agents::runner::ChildStatus::Running),
+            elapsed: std::time::Duration::from_secs(5),
+            spend: "12 tok".into(),
+        }
+    }
+
+    fn drawn(app: &App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        buffer
+            .content()
+            .chunks(usize::from(width))
+            .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+            .collect()
+    }
+
+    #[test]
+    fn the_agent_list_sits_below_the_status_line_and_counts_in_the_chrome() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        let bare = chrome(&app, 80, 30);
+        app.agent_list
+            .set_rows(vec![list_row(None), list_row(Some("agent-1"))]);
+        assert_eq!(chrome(&app, 80, 30), bare + 2);
+        let rows = drawn(&app, 80, 12);
+        let status = rows
+            .iter()
+            .position(|r| r.contains("manual"))
+            .expect("the status line");
+        assert!(rows[status + 1].starts_with("● main"), "{rows:?}");
+        assert!(
+            rows[status + 2].starts_with("◯ agent-1 worker running"),
+            "{rows:?}"
+        );
+        // The hint joins the rows while the list has the keyboard.
+        app.agent_list.focus();
+        assert_eq!(chrome(&app, 80, 30), bare + 3);
+        let rows = drawn(&app, 80, 12);
+        let status = rows.iter().position(|r| r.contains("manual")).unwrap();
+        assert!(rows[status + 1].contains("Enter view · x stop"), "{rows:?}");
+    }
+
+    #[test]
+    fn the_task_list_gives_way_to_the_agent_list() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.todos.set_items(
+            (0..8)
+                .map(|n| fontaine_tools::todo::TodoItem {
+                    content: format!("task {n}"),
+                    status: fontaine_tools::todo::TodoStatus::Pending,
+                })
+                .collect(),
+        );
+        app.todos.expanded = true;
+        app.agent_list
+            .set_rows(vec![list_row(None), list_row(Some("agent-1"))]);
+        let with_list = drawn(&app, 60, 9);
+        assert!(
+            with_list.iter().any(|r| r.starts_with("◯ agent-1")),
+            "{with_list:?}"
+        );
+        assert!(
+            with_list.iter().any(|r| r.contains("more")),
+            "{with_list:?}"
+        );
+    }
+
+    #[test]
+    fn an_agents_view_names_the_agent_on_the_input_border_and_in_the_placeholder() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.agent_list
+            .set_rows(vec![list_row(None), list_row(Some("agent-1"))]);
+        app.view(Some("agent-1".into()));
+        let rows = drawn(&app, 80, 12);
+        let border = rows.iter().find(|r| r.contains("message ·")).unwrap();
+        assert!(border.contains("agent-1 · worker · running"), "{border}");
+        assert!(
+            rows.iter().any(|r| r.contains("Message agent-1…")),
+            "{rows:?}"
+        );
+        let status = rows.iter().find(|r| r.contains("manual")).unwrap();
+        assert!(status.contains("viewing agent-1 · working"), "{status}");
+        // The viewed row is the marked one.
+        assert!(rows.iter().any(|r| r.starts_with("● agent-1")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.starts_with("◯ main")), "{rows:?}");
+        // Typing replaces the placeholder.
+        app.input.insert_str("hi");
+        assert!(
+            !drawn(&app, 80, 12)
+                .iter()
+                .any(|r| r.contains("Message agent-1…"))
+        );
+    }
+
+    #[test]
+    fn a_queued_message_for_the_viewed_agent_shows_dimmed_without_the_edit_hint() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.agent_list
+            .set_rows(vec![list_row(None), list_row(Some("agent-1"))]);
+        app.view(Some("agent-1".into()));
+        app.queued = vec!["for main".into()];
+        app.queued_agent = vec!["for the agent".into()];
+        let rows = drawn(&app, 80, 14);
+        assert!(
+            rows.iter().any(|r| r.contains("queued: for the agent")),
+            "{rows:?}"
+        );
+        assert!(!rows.iter().any(|r| r.contains("for main")), "{rows:?}");
+        assert!(!rows.iter().any(|r| r.contains("↑ to edit")), "{rows:?}");
     }
 }
