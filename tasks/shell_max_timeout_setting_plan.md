@@ -11,7 +11,7 @@ main conversation, `run_in_background`, `job_output` / `job_cancel` / `monitor`,
 through the result pipeline, and the guardian still judging the launch. One item is left, item 5:
 `ShellSettings::max_timeout_secs = 600` is hardcoded, so a user with a long build cannot raise the
 ceiling on how long a foreground call blocks (or how long a subagent's command may run). This plan
-adds a user-trust `[shell] max_timeout_secs` key, wired to every model-facing `shell` tool. No tool
+adds a `[shell] max_timeout_secs` key set only in the user file or `--settings`, wired to every model-facing `shell` tool. No tool
 argument can lift it.
 
 ## Current State
@@ -56,8 +56,8 @@ max_timeout_secs = 1800
   `Instant + Duration` far from overflow and is still a full day.
 - `config_scope.rs`: `Rule::user_or_cli("shell", SHELL)` with
   `SHELL = "how long a model's shell command may block or run is set only in the user file or --settings"`.
-  Like `[goal]`: a shared repository must not stretch how long commands run. Project-local stays
-  out too, which keeps the rule simple and matches the issue's "user-scope setting".
+  Like `[goal]`: a shared repository must not stretch how long commands run. Project-local is
+  excluded, as for `[goal]`.
 - `config_catalog.rs`: a `shell.max_timeout_secs` row, `Edit::PositiveInt`, `NextLaunch`. The value
   is read when the registry is built.
 
@@ -84,19 +84,20 @@ max_timeout_secs = 1800
    merge. Unit tests: parse, default, `0` and `86401` rejected, unknown key rejected.
 2. `rust/fontaine-core/src/config_scope.rs`: rule and reason const; add `("shell", "[shell]\nmax_timeout_secs = 900\n", None)`
    to the scope-table test list near `:520`.
-3. `rust/fontaine-core/src/config_catalog.rs`: the row.
+3. `rust/fontaine-core/src/config_catalog.rs`: the row, and add `"shell.max_timeout_secs"` to the
+   expected list of `editable_rows_are_exactly_the_preference_set` (`:690`) in `KEYS` order.
 4. `rust/fontaine-core/src/tools.rs`, `agent/build.rs`, `tests/choke_point.rs`, `tests/extensions.rs`:
    thread `shell_max_timeout_secs`.
 5. Tests (see Testing Strategy).
-6. Docs (see Documentation).
+6. Docs (see Documentation), including the Decisions line in the master plan.
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`, `tools.rs`,
   `agent/build.rs`
 - `rust/fontaine-core/tests/choke_point.rs`, `tests/extensions.rs`
-- `rust/fontaine-tools/src/builtins.rs`: tests only
-- `docs/tools.md`, `docs/configuration.md`, `research/research-claude-code-parity.md`, `CHANGELOG.md`
+- `rust/fontaine-core/tests/shell_settings.rs` (new)
+- `docs/tools.md`, `docs/configuration.md`, `docs/tui.md`, `tasks/fontaine_harness_plan.md`, `research/research-claude-code-parity.md`, `CHANGELOG.md`
 
 ## Trade-offs
 
@@ -105,8 +106,6 @@ max_timeout_secs = 1800
   120 s default harmless in the main conversation. A default key is easy to add later.
 - **A config key, not an environment variable.** Fontaine's settings live in TOML with per-key scope
   policy. An env var would bypass that policy.
-- **`user_or_cli`, not `user_trust`.** Raising the cap lengthens subagent commands that run
-  unattended, which matches `[goal]`'s reason. `--settings` has user trust.
 
 ## Documentation
 
@@ -114,6 +113,14 @@ max_timeout_secs = 1800
   (default 600 seconds), and no argument lifts that cap". Link to the configuration key.
 - `docs/configuration.md`: a `### [shell]` key-reference section with an example, and a per-key
   scope table row `[shell] max_timeout_secs | no | no | yes`.
+- `docs/tui.md` editable `/config` rows: add the table row
+  `shell.max_timeout_secs | Opens a field for a positive whole number; empty clears the key | From the next launch`.
+  The "Six rows can be changed" count is already stale (the catalog has seven editable rows, the
+  table omits `memory.auto`); set it to eight and add the missing `memory.auto` row
+  (`Cycles \`true\`, \`false\` | From the next launch`).
+- `tasks/fontaine_harness_plan.md` `## Decisions`: add "2026-10-30: The shell timeout cap is
+  `[shell] max_timeout_secs` (seconds, user file or `--settings` only), with no `BASH_MAX_TIMEOUT_MS`
+  variable, so the per-key scope rules apply (#267)."
 - `research/research-claude-code-parity.md`: note on the background Bash row that the cap is
   `[shell] max_timeout_secs` (Claude Code: `BASH_MAX_TIMEOUT_MS`).
 - `CHANGELOG.md` entry.
@@ -125,14 +132,14 @@ Unit tests (no live API):
 - Config: the parse, default, bounds and unknown-key tests from step 1. Project and project-local
   files setting `[shell]` are errors that name the key and the scope; `--settings` is accepted
   (scope-table test).
-- Wiring (`fontaine-core`): `registry` built with `shell_max_timeout_secs: 900` produces a `shell`
-  tool whose description says `at most 900`. This is the check that the value is not dropped at
-  `..ShellSettings::default()`, which is the bug today.
-- `builtins.rs` (cfg(unix), real `sh`): with `max_timeout_secs = 1`, a root call with
-  `timeout_secs: 30` on `sleep 3; echo done` is promoted after about 1 s, not 30 s. A subagent call
-  with the same arguments is stopped and its line names the 1 s cap. Both show that the model's
-  argument cannot lift the configured cap.
-- Catalog: `every_settings_leaf_has_a_row` stays green.
+- Wiring (`rust/fontaine-core/tests/shell_settings.rs`, new): one runtime test using the seam in
+  `tests/websearch_runtime.rs:76-88`. Write `[shell]\nmax_timeout_secs = 900\n` with `w.user_file(..)`,
+  `build(&w, ..)` from `tests/common/runtime.rs`, read the toolset, and assert the `shell` tool
+  description contains `at most 900`. This is the check that the value is not dropped at
+  `..ShellSettings::default()`, which is the bug today. `tests/choke_point.rs` in `fontaine-tools`
+  already covers the clamp and promotion.
+- Catalog: `every_settings_leaf_has_a_row` stays green; `editable_rows_are_exactly_the_preference_set`
+  gains `shell.max_timeout_secs`.
 
 ## Decisions
 
