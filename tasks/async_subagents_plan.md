@@ -232,6 +232,11 @@ loop {
   comes from the always-returning spawn, so the gate's in-order judgment needs no pre-pass (#326).
 - 2026-10-30: A subagent's join rounds are bounded only by its budget and the kill switch, like the
   headless root's `settle`; no separate round cap (#326).
+- 2026-10-30 AFK: Keep the dedicated "Concurrency (acceptance 1)" integration test rather than
+  folding it into `background_children_run_at_once_up_to_max_parallel_and_the_next_spawn_is_refused`;
+  reason: that test's children are single-request routes, so a "B's first request before A's last"
+  assertion would mean reworking its routes, and keeping the cap test and the order test separate
+  leaves the settled acceptance coverage unchanged (#326).
 
 ## Documentation
 
