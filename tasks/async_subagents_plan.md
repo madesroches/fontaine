@@ -171,11 +171,6 @@ loop {
    in `ui/mod.rs`, `app.rs`, `goal.rs`, `agent/goal.rs`, `agents_panel.rs`, `commands.rs:142`
    "the agents panel"). Also `fontaine-tools/src/ask_user.rs:204` and `fontaine-agents/src/tree.rs:50, 712`, which the
    regex misses. Shell background jobs keep their wording.
-7a. **Guardian prompt**: drop the "`background: true` is not a reason to deny" clause from
-   `fontaine-guardian/prompts/guardian_prompt.md:73` and update
-   `fontaine-guardian/src/snapshots/fontaine_guardian__prompt_builder__tests__the_defaults_marker_snapshot.snap`;
-   drop `"background": true` from the agent args of case overdeny-04 in
-   `evals/dataset/overdeny.jsonl`; run the live guardian eval after the prompt change.
 8. **Tests** (see Testing Strategy) and **docs** (see Documentation).
 9. **Plan Decisions** (`tasks/fontaine_harness_plan.md`, end of `### Agents`): the lines in
    `## Decisions` below that amend the master plan, dated 2026-10-30. Also amend line 374 (#321):
@@ -192,8 +187,6 @@ loop {
 - `rust/fontaine-core/tests/{common/runtime.rs, agent_pipeline.rs, extensions.rs, choke_point.rs, agent_resume.rs, guardian_off.rs,
   permissions_screen.rs}`
   (fake `ChildRunner` on `SpawnRequest`, `reserve` calls)
-- `rust/fontaine-guardian/prompts/guardian_prompt.md`, its `the_defaults_marker_snapshot.snap`,
-  `evals/dataset/overdeny.jsonl`
 - `rust/fontaine-tui/src/{ui/turn.rs, ui/mod.rs, app.rs, agents_panel.rs, commands.rs}`,
   `rust/fontaine-tui/tests/{agents.rs, tui.rs, sessions.rs, providers.rs}`
 - `docs/{agents.md, tools.md, headless.md, tui.md}` (and any other page `rg background docs` finds
@@ -237,6 +230,11 @@ loop {
   reason: that test's children are single-request routes, so a "B's first request before A's last"
   assertion would mean reworking its routes, and keeping the cap test and the order test separate
   leaves the settled acceptance coverage unchanged (#326).
+- 2026-10-30 AFK: The guardian prompt's "`background: true` is not a reason to deny" clause and
+  eval case overdeny-04's `background` arg stay as they are; reason: the required live guardian
+  eval could not run (the account's weekly usage limit returned 429), and the stale clause names an
+  argument the schema no longer offers, so it changes no verdict. Drop it in a follow-up with a
+  live eval.
 
 ## Documentation
 
