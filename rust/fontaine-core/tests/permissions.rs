@@ -1309,22 +1309,27 @@ async fn a_powershell_call_is_never_preclassified() {
 
 #[tokio::test]
 async fn powershell_deletes_of_critical_paths_prompt_in_every_mode() {
-    let rig = Rig::new(Manual);
-    let work = rig.work().to_path_buf();
-    let parent = work.parent().unwrap().to_path_buf();
+    // Each rig has its own workspace, so the paths are filled in from the rig under test.
     let commands = [
-        format!("Remove-Item -Recurse -Force '{}'", parent.display()),
-        format!("rm -r '{}'", work.display()),
-        "Remove-Item $env:USERPROFILE -Recurse".to_string(),
-        "Get-ChildItem | Remove-Item".to_string(),
-        "iex $payload".to_string(),
+        "Remove-Item -Recurse -Force '{parent}'",
+        "rm -r '{work}'",
+        "Remove-Item $env:USERPROFILE -Recurse",
+        "Get-ChildItem | Remove-Item",
+        "iex $payload",
     ];
+    let fill = |rig: &Rig, command: &str| {
+        let work = rig.work();
+        command
+            .replace("{work}", &work.display().to_string())
+            .replace("{parent}", &work.parent().unwrap().display().to_string())
+    };
     let allow_all = "[permissions]
 allow = [\"powershell\"]
 ";
-    for command in &commands {
+    for template in commands {
         for mode in [Manual, AcceptEdits, Plan] {
             let rig = Rig::with(Options::new(mode).settings(allow_all));
+            let command = &fill(&rig, template);
             assert_eq!(
                 first(&rig, "powershell", shell(command)).await,
                 (Decision::Prompt, Tier::CriticalPath),
@@ -1332,6 +1337,7 @@ allow = [\"powershell\"]
             );
         }
         let rig = Rig::with(Options::new(DontAsk).settings(allow_all));
+        let command = &fill(&rig, template);
         assert_eq!(
             first(&rig, "powershell", shell(command)).await,
             (Decision::Deny, Tier::CriticalPath),
