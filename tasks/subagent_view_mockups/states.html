@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Subagent view mockup</title>
+<style>
+  body { background: #1b1b1b; color: #ddd; font-family: ui-monospace, "DejaVu Sans Mono", Menlo, monospace; font-size: 13px; margin: 16px; }
+  h2 { font-family: system-ui, sans-serif; font-size: 14px; color: #aaa; margin: 18px 0 6px; }
+  .term { background: #000; border: 1px solid #333; width: 100ch; padding: 6px 8px; white-space: pre; line-height: 1.35; }
+  .dim { opacity: .55; }
+  .user { color: #9cdcfe; }
+  .tool { color: #c3a6ff; }
+  .ok { color: #7bd88f; }
+  .warn { color: #e5c07b; }
+  .rev { background: #ddd; color: #000; }
+  .head { color: #61afef; font-weight: bold; }
+  .note { font-family: system-ui, sans-serif; color: #888; font-size: 12px; margin: 4px 0 0; }
+</style>
+</head>
+<body>
+
+<h2>1. Main chat, agent list focused (after Down on the prompt)</h2>
+<div class="term"><span class="user">&gt; survey the lsp module and the screen renderer in parallel</span>
+● I'll start two background workers.
+<span class="tool">• agent</span> explore: lsp module survey <span class="ok">✓</span>
+<span class="tool">• agent</span> explore: screen renderer survey <span class="ok">✓</span>
+● Both are running; I'll summarize when they report.
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+ auto · glm-5.1 · 2 agents                                                            $0.0412
+<span class="dim"> ↑/↓ select · Enter view · x stop · Esc back</span>
+ ● main
+<span class="rev"> ◯ agent-1  explore   running    1m12s · 18400 tok · $0.0091                                    </span>
+ ◯ agent-2  explore   waiting-on-permission   48s · 9200 tok · $0.0040</div>
+<p class="note">The list shows only while the tree has children. Done agents drop off at once; failed/killed/budget rows stay 30 s.</p>
+
+<h2>2. Viewing agent-1 — whole screen reprinted, a message queued</h2>
+<div class="term"><span class="user">&gt; Survey rust/fontaine-tools/src/lsp for tech debt. Report file:line findings.</span>
+<span class="tool">• glob</span> rust/fontaine-tools/src/lsp/**/*.rs <span class="ok">✓</span>
+<span class="tool">• read</span> rust/fontaine-tools/src/lsp/manager.rs <span class="ok">✓</span>
+● manager.rs restarts a crashed server once; the backoff is not configurable.
+<span class="tool">• grep</span> "unwrap\(" rust/fontaine-tools/src/lsp <span class="ok">✓</span>
+<span class="dim">queued: also check the diagnostics drain</span>
+╭──────────────────────────────────────────────────────────────── agent-1 · explore · running ──╮
+│ <span class="dim">Message agent-1…</span>                                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+ auto · agent-1 running · 18400 tok                                                   $0.0412
+ ◯ main
+ ● agent-1  explore   running    1m20s · 19100 tok · $0.0094
+ ◯ agent-2  explore   waiting-on-permission   56s · 9200 tok · $0.0040</div>
+<p class="note">Scrollback holds only this agent's rows; the wheel and tmux copy mode scroll it. Approvals from any agent still open over this view.</p>
+
+<h2>3. A main-only command typed in the view</h2>
+<div class="term">● manager.rs restarts a crashed server once; the backoff is not configurable.
+<span class="warn">! switch back to main to run /compact (↓ then Enter on main)</span>
+╭──────────────────────────────────────────────────────────────── agent-1 · explore · running ──╮
+│ /compact                                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+ auto · agent-1 running · 19100 tok                                                   $0.0412</div>
+<p class="note">The text stays in the input. UI-only commands (/agents, /config, /help, /denied) still run from the view.</p>
+
+</body>
+</html>
