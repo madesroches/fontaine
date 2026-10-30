@@ -34,7 +34,12 @@ pub fn discover(probe: &Probe<'_>) -> Option<PowerShellSettings> {
         return (probe.is_file)(&path).then_some(PowerShellSettings { path });
     }
     let dirs: Vec<PathBuf> = (probe.env)("PATH")
-        .map(|path| std::env::split_paths(&path).collect())
+        // A relative or empty entry means the current directory, which a command could plant.
+        .map(|path| {
+            std::env::split_paths(&path)
+                .filter(|dir| dir.has_root())
+                .collect()
+        })
         .unwrap_or_default();
     let system = (probe.env)("SystemRoot").map(|root| {
         PathBuf::from(root)
@@ -89,7 +94,7 @@ fn split_usings(command: &str) -> (&str, &str) {
         end += line.len();
         if is_using {
             kept = end;
-        } else if !line.trim().is_empty() {
+        } else if !line.trim().is_empty() && !line.trim_start().starts_with('#') {
             break;
         }
     }
@@ -293,6 +298,35 @@ mod tests {
                 &[("PATH", path), (OVERRIDE_VAR, "/nowhere/pwsh.exe")]
             ),
             None
+        );
+    }
+
+    #[test]
+    fn relative_and_empty_path_entries_are_skipped() {
+        let a = PathBuf::from("/a");
+        let path = std::env::join_paths([Path::new("."), Path::new(""), Path::new("rel"), &a])
+            .expect("joinable");
+        let path = path.to_str().expect("utf-8");
+        let planted = [
+            Path::new(".").join("pwsh.exe"),
+            Path::new("rel").join("pwsh.exe"),
+            PathBuf::from("pwsh.exe"),
+        ];
+        let theirs = a.join("powershell.exe");
+        let mut files: Vec<&str> = planted.iter().map(|p| p.to_str().unwrap()).collect();
+        files.push(theirs.to_str().unwrap());
+        assert_eq!(found(&files, &[("PATH", path)]), Some(theirs));
+    }
+
+    #[test]
+    fn a_comment_before_the_using_block_does_not_hide_it() {
+        let script =
+            decoded_script("#requires -Version 5\n# note\nusing namespace System.IO\nGet-Date");
+        assert_eq!(
+            script,
+            format!(
+                "#requires -Version 5\n# note\nusing namespace System.IO\n{PREAMBLE}\nGet-Date"
+            )
         );
     }
 

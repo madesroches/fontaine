@@ -71,39 +71,8 @@ fn scan(command: &str, base: &Path, env: &CriticalEnv<'_>) -> Option<String> {
         return Some("a string is run as code this check cannot read".to_string());
     }
     let tokens = tokenize(command);
-    for (at, token) in tokens.iter().enumerate() {
-        if is_call_operator(&tokens, at) {
-            return Some("the command name cannot be resolved".to_string());
-        }
-        let Token::Word { text, quoted, .. } = token else {
-            continue;
-        };
-        let name = command_name(text);
-        if NESTED.contains(&name.as_str()) {
-            return Some(format!("`{text}` runs a command this check cannot read"));
-        }
-        if !quoted && text.starts_with('-') && NESTED_OPTIONS.contains(&option_name(text).as_str())
-        {
-            return Some(format!("`{text}` runs a command this check cannot read"));
-        }
-        if *quoted && mentions_deleter(text) {
-            return Some("a string mentions a deleter".to_string());
-        }
-        if !quoted && text.starts_with('-') && is_com_object_option(&option_name(text)) {
-            return Some("a COM object can delete files this check cannot see".to_string());
-        }
-        if matches!(
-            name.as_str(),
-            "invoke-cimmethod" | "icim" | "invoke-wmimethod" | "iwmi"
-        ) && names_delete_method(&tokens[at + 1..])
-        {
-            return Some("a CIM or WMI method call deletes".to_string());
-        }
-        if matches!(name.as_str(), "foreach-object" | "foreach" | "%")
-            && names_delete_member(&tokens[at + 1..])
-        {
-            return Some("a piped member call deletes".to_string());
-        }
+    if let Some(found) = scan_hidden_commands(&tokens) {
+        return Some(found);
     }
     if let Some(Token::Sep('&')) = tokens.last() {
         return Some("a trailing `&` runs the command in the background".to_string());
@@ -122,6 +91,49 @@ fn scan(command: &str, base: &Path, env: &CriticalEnv<'_>) -> Option<String> {
     }
     if mentions && command.contains(STRUCTURE) {
         return Some("a deleter inside a command that is not one simple command".to_string());
+    }
+    None
+}
+
+/// Why the tokens run something this scan cannot read. A double-quoted word is read again as
+/// code, since `"$(iex '...')"` runs its subexpression.
+fn scan_hidden_commands(tokens: &[Token]) -> Option<String> {
+    for (at, token) in tokens.iter().enumerate() {
+        if is_call_operator(tokens, at) {
+            return Some("the command name cannot be resolved".to_string());
+        }
+        let Token::Word { text, quoted, .. } = token else {
+            continue;
+        };
+        let name = command_name(text);
+        if NESTED.contains(&name.as_str()) {
+            return Some(format!("`{text}` runs a command this check cannot read"));
+        }
+        if !quoted && text.starts_with('-') && NESTED_OPTIONS.contains(&option_name(text).as_str())
+        {
+            return Some(format!("`{text}` runs a command this check cannot read"));
+        }
+        if *quoted && mentions_deleter(text) {
+            return Some("a string mentions a deleter".to_string());
+        }
+        if *quoted && let Some(found) = scan_hidden_commands(&tokenize(text)) {
+            return Some(found);
+        }
+        if !quoted && text.starts_with('-') && is_com_object_option(&option_name(text)) {
+            return Some("a COM object can delete files this check cannot see".to_string());
+        }
+        if matches!(
+            name.as_str(),
+            "invoke-cimmethod" | "icim" | "invoke-wmimethod" | "iwmi"
+        ) && names_delete_method(&tokens[at + 1..])
+        {
+            return Some("a CIM or WMI method call deletes".to_string());
+        }
+        if matches!(name.as_str(), "foreach-object" | "foreach" | "%")
+            && names_delete_member(&tokens[at + 1..])
+        {
+            return Some("a piped member call deletes".to_string());
+        }
     }
     None
 }
@@ -183,9 +195,13 @@ fn member_text(command: &str) -> String {
 /// Scanned in the raw text, whatever the quoting.
 fn calls_dotnet_delete(command: &str) -> bool {
     let lower = member_text(command);
-    lower
-        .match_indices("::")
-        .any(|(at, found)| lower[at + found.len()..].trim_start().starts_with("delete"))
+    let squeezed: String = lower.split_whitespace().collect();
+    // The provider API deletes without a `Delete` member name.
+    squeezed.contains("$executioncontext.invokeprovider.item.remove(")
+        || squeezed.contains("$executioncontext.sessionstate.invokeprovider.item.remove(")
+        || lower
+            .match_indices("::")
+            .any(|(at, found)| lower[at + found.len()..].trim_start().starts_with("delete"))
         || lower.match_indices(".delete").any(|(at, found)| {
             let rest = lower[at + found.len()..]
                 .trim_start_matches(|c: char| c.is_alphanumeric() || c == '_')
@@ -758,6 +774,39 @@ mod tests {
             "Get-Item x | % Delete",
             "Get-Item x | % -MemberName Delete -ArgumentList $true",
             "Get-Item x | foreach -Member:Delete",
+        ] {
+            assert!(critical(command), "{command}");
+        }
+    }
+
+    #[test]
+    fn code_inside_a_double_quoted_subexpression_is_critical() {
+        for command in [
+            r#"Write-Output "$(iex 'Remove-Item -Recurse C:\Windows')""#,
+            r#"Write-Output "$(pwsh -c 'rm -r C:\')""#,
+            r#"Write-Output "$(& ('Remove-'+'Item') -Recurse -Force C:\Users\me)""#,
+            r#"Write-Output "$(New-Object -ComObject Scripting.FileSystemObject)""#,
+        ] {
+            assert!(critical(command), "{command}");
+        }
+        for command in [
+            r#"Write-Output "$(Get-Date)""#,
+            r#"Write-Output "Tom & Jerry""#,
+            r#"Write-Output "build finished: $(Get-Date)""#,
+        ] {
+            assert!(!critical(command), "{command}");
+        }
+        assert!(critical(
+            r#"Write-Output "Remove-Item is mentioned in text""#
+        ));
+    }
+
+    #[test]
+    fn the_provider_api_delete_is_critical() {
+        for command in [
+            "$ExecutionContext.InvokeProvider.Item.Remove('C:\\x', $true, $true, $false)",
+            "$ExecutionContext.SessionState.InvokeProvider.Item.Remove('C:\\x', $true, $true, $false)",
+            "$ExecutionContext . SessionState . InvokeProvider . Item . 'Remove' ('x')",
         ] {
             assert!(critical(command), "{command}");
         }

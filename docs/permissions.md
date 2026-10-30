@@ -294,7 +294,8 @@ PowerShell command. Without an allow rule or hook, every call prompts in `manual
   - a deleter (`Remove-Item`, `ri`, `rm`, `rmdir`, `rd`, `del`, `erase`) whose target is a
     critical path, a variable, a subexpression or comes from a pipeline, a deleter inside a chain,
     block or `if`, or a deleter with an option the scan does not know;
-  - any `::Delete` or `.Delete…(` call, whatever its target, `ForEach-Object Delete`, and
+  - any `::Delete` or `.Delete…(` call, whatever its target, `$ExecutionContext…InvokeProvider.Item.Remove(`,
+    `ForEach-Object Delete`, and
     `Invoke-CimMethod` or `Invoke-WmiMethod` (`icim`, `iwmi`) with a `Delete…` method name;
   - code the scan cannot read: a nested interpreter (`pwsh`, `powershell`, `cmd`), `iex`,
     `Invoke-Expression`, `Invoke-Command` (`icm`), `-c`, `-Command`, `-enc`, `-ec` or
