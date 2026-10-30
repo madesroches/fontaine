@@ -168,6 +168,14 @@ pub static TOOLS: &[ToolDescriptor] = &[
         &["Grep"],
     ),
     row(
+        "lsp",
+        RiskClass::ReadOnly,
+        false,
+        Destructive::Never,
+        Specifier::Path,
+        &["LSP"],
+    ),
+    row(
         "webfetch",
         RiskClass::Arbitrary,
         false,
@@ -350,7 +358,7 @@ mod tests {
         use RiskClass as R;
         use Specifier as S;
         type Pinned = (&'static str, R, bool, D, S, &'static [&'static str]);
-        let expected: [Pinned; 22] = [
+        let expected: [Pinned; 23] = [
             ("shell", R::Arbitrary, false, D::Shell, S::Shell, &["Bash"]),
             (
                 "job_output",
@@ -410,6 +418,7 @@ mod tests {
             ("ls", R::ReadOnly, false, D::Never, S::Path, &["LS"]),
             ("glob", R::ReadOnly, false, D::Never, S::Path, &["Glob"]),
             ("grep", R::ReadOnly, false, D::Never, S::Path, &["Grep"]),
+            ("lsp", R::ReadOnly, false, D::Never, S::Path, &["LSP"]),
             (
                 "webfetch",
                 R::Arbitrary,

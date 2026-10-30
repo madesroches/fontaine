@@ -165,7 +165,7 @@ impl AgentTypes {
             description: "Reads and searches the workspace; cannot change anything.".to_string(),
             prompt: None,
             tools: Some(
-                ["ls", "read", "glob", "grep", "send_message"]
+                ["ls", "read", "glob", "grep", "lsp", "send_message"]
                     .map(String::from)
                     .to_vec(),
             ),
@@ -185,6 +185,7 @@ impl AgentTypes {
                     "read",
                     "glob",
                     "grep",
+                    "lsp",
                     "edit",
                     "write",
                     "notebook_edit",

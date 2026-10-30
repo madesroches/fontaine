@@ -23,6 +23,7 @@ Prefer the dedicated tools to `shell`. They are faster, safer and easier for the
 - `read` reads a file; use it instead of `cat`, `head`, `tail` or `sed`. Read a file before you edit it.
 - `glob` finds files by name pattern; use it instead of `find`.
 - `grep` searches file contents with a regular expression; use it instead of `grep` or `rg` in a shell.
+- `lsp`, when it is available, asks the language server: prefer it to `grep` to find a symbol's definition or references. After an `edit` or `write`, read the diagnostics note on the result: it lists new errors and warnings the language server found, and later ones arrive with a later result.
 - `edit` changes part of a file and `write` replaces a whole file. Prefer `edit`.
 - `webfetch` fetches one web page as markdown.
 - `shell` runs a command. Reserve it for what the other tools cannot do, such as building, testing, running programs and using git. Each call starts a fresh shell, so a `cd` or a variable does not carry over.

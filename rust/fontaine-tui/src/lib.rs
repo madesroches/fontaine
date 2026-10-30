@@ -329,6 +329,7 @@ pub async fn drive(
     // Whatever is still running is stopped with the session.
     runtime.state.agents().kill_all();
     runtime.jobs().terminate_all().await;
+    runtime.lsp().shutdown_all().await;
     ui.app.flush = true;
     (ui.render)(&mut ui.app);
     Ok(ui

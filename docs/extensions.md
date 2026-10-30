@@ -65,6 +65,7 @@ The body is the subagent's instructions.
 | `BashOutput`, `BashOutputTool`, `TaskOutput`, `AgentOutput`, `AgentOutputTool` | `job_output` |
 | `KillShell`, `KillBash`, `TaskStop` | `job_cancel` |
 | `Monitor` | `monitor` |
+| `LSP` | `lsp` |
 | `WebFetch` | `webfetch` |
 | `WebSearch` | `websearch` |
 | `Task`, `Agent` | `agent` |

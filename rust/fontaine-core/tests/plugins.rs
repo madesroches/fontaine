@@ -175,6 +175,7 @@ fn a_plugin_manifest_may_only_add_deny_side_permissions() {
     let contributions = plugins::PluginContributions {
         dirs: Vec::new(),
         hooks: Default::default(),
+        lsp_servers: Vec::new(),
         servers: Default::default(),
         deny: build.deny,
         ask: build.ask,
@@ -375,6 +376,7 @@ fn apply_plugins_refuses_a_composed_name_that_shadows_a_configured_server() {
     let contributions = plugins::PluginContributions {
         dirs: Vec::new(),
         hooks: Default::default(),
+        lsp_servers: Vec::new(),
         servers: [(
             "s".to_string(),
             fontaine_core::config::McpServer {
@@ -513,6 +515,7 @@ fn an_identical_plugin_hook_merges_by_attribution_only() {
             permission_denied: Vec::new(),
         },
         servers: Default::default(),
+        lsp_servers: Vec::new(),
         deny: Vec::new(),
         ask: Vec::new(),
         hard_deny: Vec::new(),
@@ -545,6 +548,7 @@ fn apply_plugins_is_idempotent_for_a_session_switch() {
     let contributions = plugins::PluginContributions {
         dirs: Vec::new(),
         hooks: Default::default(),
+        lsp_servers: Vec::new(),
         servers: [(
             "plugin_p_s".to_string(),
             fontaine_core::config::McpServer {
@@ -708,6 +712,7 @@ fn apply_plugins_replaces_the_previous_plugins_contributions() {
     let mut config = w.load().unwrap();
     let contributions = plugins::PluginContributions {
         dirs: Vec::new(),
+        lsp_servers: Vec::new(),
         hooks: plugins::PluginHooks {
             pre_tool_use: vec![Hook {
                 matcher: None,

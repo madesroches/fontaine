@@ -556,6 +556,83 @@ pub struct McpSection {
     pub servers: Option<BTreeMap<String, McpServer>>,
 }
 
+/// A language server: a program that runs on the user's machine, so only the user file,
+/// `--settings` and installed plugins define one.
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LspServer {
+    pub command: String,
+    pub args: Option<Vec<String>>,
+    /// File extension, with its dot, to the language id sent in `didOpen`.
+    pub extension_to_language: BTreeMap<String, String>,
+    /// Parent variables passed through to the server, on top of the base set.
+    pub env_vars: Option<Vec<String>>,
+    /// Literal variables set on the server after the scrub.
+    pub env: Option<BTreeMap<String, String>>,
+    /// Sent in `initialize`.
+    pub initialization_options: Option<serde_json::Value>,
+    /// Sent by `workspace/didChangeConfiguration` and answered to `workspace/configuration`.
+    pub settings: Option<serde_json::Value>,
+    pub startup_timeout_ms: Option<u64>,
+    pub shutdown_timeout_ms: Option<u64>,
+    pub request_timeout_ms: Option<u64>,
+    pub restart_on_crash: Option<bool>,
+    pub max_restarts: Option<u32>,
+    pub diagnostics: Option<bool>,
+}
+
+pub const LSP_STARTUP_TIMEOUT_MS: u64 = 30_000;
+pub const LSP_SHUTDOWN_TIMEOUT_MS: u64 = 2_000;
+pub const LSP_REQUEST_TIMEOUT_MS: u64 = 60_000;
+pub const LSP_MAX_RESTARTS: u32 = 3;
+
+impl LspServer {
+    /// Why this definition cannot be used, if it cannot.
+    pub fn problem(&self) -> Option<String> {
+        if self.command.is_empty() {
+            return Some("`command` must not be empty".into());
+        }
+        if self.extension_to_language.is_empty() {
+            return Some("`extension_to_language` must name at least one extension".into());
+        }
+        if let Some(ext) = self
+            .extension_to_language
+            .keys()
+            .find(|ext| ext.len() < 2 || !ext.starts_with('.'))
+        {
+            return Some(format!(
+                "`extension_to_language` key `{ext}` must start with `.` and name an extension"
+            ));
+        }
+        for (key, value) in [
+            ("startup_timeout_ms", self.startup_timeout_ms),
+            ("shutdown_timeout_ms", self.shutdown_timeout_ms),
+            ("request_timeout_ms", self.request_timeout_ms),
+        ] {
+            if value == Some(0) {
+                return Some(format!("`{key}` must be greater than zero"));
+            }
+        }
+        None
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LspSection {
+    pub servers: Option<BTreeMap<String, LspServer>>,
+}
+
+/// The language servers a session has, and which one handles each extension.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LspTable {
+    /// User-defined servers in name order, then plugin servers in install order.
+    pub servers: Vec<(String, LspServer)>,
+    /// Lower-cased extension to the name of the server that handles it.
+    pub claims: BTreeMap<String, String>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AutoModeSection {
@@ -807,6 +884,7 @@ pub struct Settings {
     pub permissions: Option<PermissionsSection>,
     pub hooks: Option<HooksSection>,
     pub mcp: Option<McpSection>,
+    pub lsp: Option<LspSection>,
     pub auto_mode: Option<AutoModeSection>,
     pub agents: Option<AgentsSection>,
     pub context: Option<ContextSection>,
@@ -1151,6 +1229,25 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
                 &key,
                 "server names are non-empty, contain no `__`, neither start nor end with `_`, and use only letters, digits, `_` and `-`",
             );
+        }
+    }
+    for (name, server) in s.lsp.iter().flat_map(|l| l.servers.iter().flatten()) {
+        let key = format!("lsp.servers.{name}");
+        if name.is_empty()
+            || name.contains("__")
+            || name.starts_with('_')
+            || name.ends_with('_')
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return bad(
+                &key,
+                "server names are non-empty, contain no `__`, neither start nor end with `_`, and use only letters, digits, `_` and `-`",
+            );
+        }
+        if let Some(problem) = server.problem() {
+            return bad(&key, &problem);
         }
     }
     if let Some(c) = &s.context
@@ -1565,6 +1662,10 @@ pub struct Config {
     pub mcp_servers: BTreeMap<String, McpServer>,
     /// Where each server in `mcp_servers` was defined.
     pub mcp_origins: BTreeMap<String, Origin>,
+    /// The language servers of the user file and `--settings`.
+    pub lsp_servers: BTreeMap<String, LspServer>,
+    /// The language servers installed plugins define, in install order, under composed names.
+    pub plugin_lsp_servers: Vec<(String, LspServer)>,
     pub auto_mode: AutoMode,
     /// Deny-side guardian prose a plugin contributes, spliced into the guardian's rule lists.
     /// Kept apart from `auto_mode` so re-applying plugins replaces these rather than
@@ -1584,6 +1685,40 @@ pub struct Config {
     pub tui: Tui,
     /// `[env]`: variables set on every tool and extension subprocess.
     pub env: BTreeMap<String, EnvValue>,
+}
+
+impl Config {
+    /// The language servers of this session and which one handles each extension. The first
+    /// server to name an extension keeps it (the user's, in name order, then plugins' in
+    /// install order); a later claimant is reported.
+    pub fn lsp_table(&self) -> LspTable {
+        let mut table = LspTable::default();
+        let all = self
+            .lsp_servers
+            .iter()
+            .map(|(name, server)| (name.clone(), server.clone()))
+            .chain(self.plugin_lsp_servers.iter().cloned());
+        for (name, server) in all {
+            for extension in server.extension_to_language.keys() {
+                let key = extension.to_ascii_lowercase();
+                match table.claims.entry(key) {
+                    std::collections::btree_map::Entry::Vacant(slot) => {
+                        slot.insert(name.clone());
+                    }
+                    std::collections::btree_map::Entry::Occupied(claimed) => {
+                        if *claimed.get() == name {
+                            continue;
+                        }
+                        table.warnings.push(format!(
+                            "LSP server \"{name}\" is not used for {extension} files"
+                        ));
+                    }
+                }
+            }
+            table.servers.push((name, server));
+        }
+        table
+    }
 }
 
 impl Config {
@@ -1640,6 +1775,8 @@ impl Config {
             hooks: Hooks::default(),
             mcp_servers: BTreeMap::new(),
             mcp_origins: BTreeMap::new(),
+            lsp_servers: BTreeMap::new(),
+            plugin_lsp_servers: Vec::new(),
             auto_mode: AutoMode::default(),
             plugin_hard_deny: Vec::new(),
             plugin_soft_deny: Vec::new(),
@@ -1831,6 +1968,9 @@ impl Config {
         for (name, server) in s.mcp.iter().flat_map(|m| m.servers.iter().flatten()) {
             self.mcp_servers.insert(name.clone(), server.clone());
             self.mcp_origins.insert(name.clone(), origin);
+        }
+        for (name, server) in s.lsp.iter().flat_map(|l| l.servers.iter().flatten()) {
+            self.lsp_servers.insert(name.clone(), server.clone());
         }
         if let Some(a) = &s.auto_mode {
             let t = &mut self.auto_mode;

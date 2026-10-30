@@ -9,6 +9,7 @@ use fontaine_agents::spawn::{AgentTool, SendMessageTool};
 use fontaine_tools::ask_user::AskUserTool;
 use fontaine_tools::builtins::Seen;
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
+use fontaine_tools::lsp::LspTool;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::schedule::{
     CronCreateTool, CronDeleteTool, CronJobsTool, ScheduleStore, ScheduleWakeupTool,
@@ -227,6 +228,12 @@ fn extension_tools(
             }),
         }),
     ];
+    if p.setup.lsp.is_active() {
+        tools.push(ExtensionTool::new(LspTool {
+            servers: p.setup.lsp.clone(),
+            workspace: super::lsp::workspace(p.state),
+        }));
+    }
     if scheduling(p) {
         let store: Arc<dyn ScheduleStore> = Arc::new(ReportedSchedule {
             scheduler: p.session.scheduler().clone(),

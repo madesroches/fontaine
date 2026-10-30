@@ -1914,12 +1914,23 @@ fn names_no_path(tool: &str) -> bool {
     fontaine_tools::descriptor::find(tool).is_some_and(|d| d.path_free)
 }
 
+fn text_number(args: &Value, key: &str) -> Option<u64> {
+    args.get(key).and_then(Value::as_u64)
+}
+
 /// The call as the human is shown it: the whole command, path or URL, never cut short.
 pub fn summarize(tool: &str, args: &Value) -> String {
     let text = |key: &str| args.get(key).and_then(Value::as_str);
     let line = match tool {
         tool if is_shell_class(tool) => text("command").map(str::to_string),
         "read" | "write" | "edit" | "notebook_edit" => text("path").map(str::to_string),
+        "lsp" => text("path").map(|path| {
+            let position = match (text_number(args, "line"), text_number(args, "character")) {
+                (Some(line), Some(character)) => format!(":{line}:{character}"),
+                _ => String::new(),
+            };
+            format!("{} {path}{position}", text("operation").unwrap_or("lsp"))
+        }),
         "webfetch" => text("url").map(str::to_string),
         "websearch" => text("query").map(str::to_string),
         "glob" => text("pattern").map(|pattern| match text("path") {

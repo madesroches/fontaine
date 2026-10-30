@@ -54,8 +54,8 @@ Three types are built in:
 
 | Type | Model | Tools |
 |---|---|---|
-| `explore` | `$main` | `ls`, `read`, `glob`, `grep`, `send_message` |
-| `worker` | `$main` | `ls`, `read`, `glob`, `grep`, `edit`, `write`, `notebook_edit`, `shell`, `send_message` |
+| `explore` | `$main` | `ls`, `read`, `glob`, `grep`, `lsp`, `send_message` |
+| `worker` | `$main` | `ls`, `read`, `glob`, `grep`, `lsp`, `edit`, `write`, `notebook_edit`, `shell`, `send_message` |
 | `fork` | the session model | every tool the main conversation has, except `ask_user_question` |
 
 `$main` is the session model. `$guardian_default` is the top-ranked validated guardian model your

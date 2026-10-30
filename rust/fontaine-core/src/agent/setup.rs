@@ -12,6 +12,7 @@ use fontaine_guardian::{
 };
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::jobs::{JobNote, JobSink};
+use fontaine_tools::lsp::DiagnosticsStage;
 use fontaine_tools::result_pipeline::{ResultPipeline, StageKind};
 use fontaine_tools::scope::Scope;
 use rig_agent::tool::server::{ToolServer, ToolServerHandle};
@@ -325,7 +326,7 @@ pub(super) fn gates(
 ) -> Result<Gates, RuntimeError> {
     super::warn_if_no_search(setup);
     let (pipeline, post_hooks) = permission_pipeline(setup, state);
-    let retained = retained(setup)?;
+    let retained = retained(setup, state)?;
     retained
         .jobs
         .set_sink(Arc::new(TreeJobs { tree: tree.clone() }));
@@ -337,6 +338,10 @@ pub(super) fn gates(
         state,
         post_hooks,
         &instruction_stage,
+        retained.lsp.is_active().then(|| DiagnosticsStage {
+            servers: retained.lsp.clone(),
+            workspace: super::lsp::workspace(state),
+        }),
     );
     Ok(Gates {
         pipeline,
@@ -410,6 +415,7 @@ pub(super) fn result_pipeline(
     state: &Arc<SessionState>,
     post_hooks: Vec<CommandHook>,
     instructions: &Arc<InstructionStage>,
+    diagnostics: Option<DiagnosticsStage>,
 ) -> (Arc<ResultPipeline>, Option<Arc<RwLock<Backend>>>) {
     let mut results = ResultPipeline::new()
         .with_stage(
@@ -417,6 +423,9 @@ pub(super) fn result_pipeline(
             Arc::new(NotificationStage { tree: tree.clone() }),
         )
         .with_stage(StageKind::Instructions, instructions.clone());
+    if let Some(stage) = diagnostics {
+        results = results.with_stage(StageKind::Diagnostics, Arc::new(stage));
+    }
     let mut llm_scanner = None;
     if let Some(backend) = backend {
         let stage = ScannerStage::new(backend);
@@ -435,7 +444,10 @@ pub(super) fn result_pipeline(
 }
 
 /// The parts of the setup a rebuild needs again.
-pub(super) fn retained(setup: &AgentSetup) -> Result<Setup, RuntimeError> {
+pub(super) fn retained(
+    setup: &AgentSetup,
+    state: &Arc<SessionState>,
+) -> Result<Setup, RuntimeError> {
     let network = setup
         .config
         .loaded_network(None)
@@ -462,6 +474,7 @@ pub(super) fn retained(setup: &AgentSetup) -> Result<Setup, RuntimeError> {
         env: setup.env.clone(),
         searxng: Arc::default(),
         jobs: Arc::default(),
+        lsp: super::lsp::build(&setup.config, state, setup.env.clone()),
     })
 }
 

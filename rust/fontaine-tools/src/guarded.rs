@@ -281,6 +281,7 @@ where
         agent: &agent,
         annotations,
         requires_user_interaction,
+        synthetic: false,
     };
     let mut scan = None;
     let outcome = match guard.gate.check(view).instrument(span.clone()).await {
@@ -295,6 +296,7 @@ where
                 agent: &agent,
                 annotations,
                 requires_user_interaction,
+                synthetic: false,
             };
             let (outcome, record) = guard
                 .results

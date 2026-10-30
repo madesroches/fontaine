@@ -171,8 +171,15 @@ plugin.
   env/URL, so a plugin can move an environment variable (including a credential) into its own
   server. Install and update name every referenced variable in the summary they print before
   you approve; a reference to a variable that is not set stays literal and warns.
-- LSP server components are unsupported (Fontaine has no LSP integration) and are ignored with a
-  warning. Claude Code components with no Fontaine equivalent (`bin/`, plugin `settings.json`,
+- `.lsp.json` at the plugin root and the manifest `lspServers` key (an inline map, a path, or a
+  list of either; a later name replaces an earlier one, and `.lsp.json` comes first) load as
+  [language servers](tools.md#language-servers) under the name `plugin:<plugin>:<server>`. Claude
+  Code's fields map onto [`[lsp.servers.<name>]`](configuration.md#lspserversname); `transport =
+  "socket"` runs over stdio, and `workspaceFolder` is ignored with a warning because every server
+  is rooted at the workspace. A file with an unknown key is skipped whole, with a warning. Install
+  names each server's command in the summary it prints, since the server runs on every edit. There
+  is no `lspServers/` directory component.
+- Claude Code components with no Fontaine equivalent (`bin/`, plugin `settings.json`,
   `themes/`, `monitors/`, `workflows/`, `channels`, `dependencies`, `userConfig`) warn at install
   and startup instead of silently degrading.
 

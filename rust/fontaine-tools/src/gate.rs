@@ -33,6 +33,9 @@ pub struct CallView<'a> {
     /// The MCP server marked this tool as needing a person's approval on every call. It can
     /// only add a prompt; it never allows.
     pub requires_user_interaction: bool,
+    /// No model call made this: it is text screened for a new user-role turn (a notification
+    /// prompt), so a stage that keeps per-agent state for the model's tool results skips it.
+    pub synthetic: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

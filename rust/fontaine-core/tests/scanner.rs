@@ -71,6 +71,7 @@ async fn through(pipeline: &ResultPipeline, outcome: ToolOutcome) -> (String, Op
         agent: ROOT_AGENT,
         annotations: None,
         requires_user_interaction: false,
+        synthetic: false,
     };
     let (outcome, record) = pipeline.run(view, outcome).await;
     let text = match outcome {

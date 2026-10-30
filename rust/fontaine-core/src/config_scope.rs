@@ -110,6 +110,7 @@ const USER_FILE: &str =
 const NETWORK: &str =
     "proxy and trust-root configuration comes only from the user file or --settings";
 const WEBSEARCH: &str = "the search backend, its key and the command that starts it come only from the user file or --settings";
+const LSP: &str = "a language server is a program Fontaine starts on every edit, so only the user file or --settings defines one";
 const TUI: &str = "terminal preferences come only from the user file or --settings";
 const ENV: &str = "environment overrides come only from user-trust scopes";
 const SCANNER: &str = "scanner settings come only from the user file";
@@ -148,6 +149,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::user_or_cli("accounts", USER_FILE),
     Rule::user_or_cli("network", NETWORK),
     Rule::user_or_cli("websearch", WEBSEARCH),
+    Rule::user_or_cli("lsp", LSP),
     Rule::user_trust("model", TIGHTEN),
     Rule::user_trust("guardian.model", TIGHTEN),
     Rule::user_trust("guardian.profile", TIGHTEN),
@@ -383,6 +385,11 @@ mod tests {
         ("accounts", "[accounts.x]\nkind = \"ollama\"\n", None),
         ("network", "[network]\nhttps_proxy = \"http://p:1\"\n", None),
         ("websearch", "[websearch]\nnative = \"off\"\n", None),
+        (
+            "lsp",
+            "[lsp.servers.x]\ncommand = \"x\"\nextension_to_language = { \".x\" = \"x\" }\n",
+            None,
+        ),
         ("model", "[model]\nmodel = \"a/b\"\n", None),
         ("guardian.model", "[guardian]\nmodel = \"a/b\"\n", None),
         (

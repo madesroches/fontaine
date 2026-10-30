@@ -330,8 +330,8 @@ scorecard run (see `## Remaining work`).
   permission rules, even though install is a user action (stricter than Claude Code).
 - 2026-10-28: Installs, updates and marketplace changes are CLI commands only; the TUI gets a
   read-only `/plugins`. No interactive marketplace browser in v1.
-- 2026-10-28: LSP server components are unsupported (ignored with a warning); Fontaine has no
-  LSP integration. Mods stay skipped (parity doc).
+- 2026-10-28: LSP server components were unsupported (ignored with a warning); superseded
+  2026-10-30 below. Mods stay skipped (parity doc).
 - 2026-10-28: Plugins may add `deny`/`ask` rules and `hard_deny`/`soft_deny` guardian entries via
   Fontaine-only manifest keys, and nothing else that touches permissions or the guardian.
 - 2026-10-28: No project or local scope can add a marketplace or install/enable a plugin;
@@ -668,6 +668,30 @@ scorecard run (see `## Remaining work`).
 - 2026-10-30: The shell timeout cap is `[shell] max_timeout_secs` (seconds, user file or `--settings`
   only), with no `BASH_MAX_TIMEOUT_MS` variable, so the per-key scope rules apply (#267).
 - 2026-10-30: The three shipped soft-deny rules that had no label are reported under existing labels: persistence and self-modification as `Safety Bypass`, untrusted code integration as `Download+Execute`, third-party and real-world effects as `Data Exfiltration`. The label set is closed and adding labels ripples into the audit log, headless schema and scorecards; a malformed verdict is also retried with a harness-written reason (never the model's text).
+- 2026-10-30: Plugin LSP servers are now supported (reverses the 2026-10-28 "unsupported" line):
+  plugins are user-installed and pinned, so they satisfy the user-scope-only rule for language
+  servers (`[lsp.servers.<name>]` is user file or `--settings` only).
+- 2026-10-30: `lsp` uses `path` (Fontaine's name for a file argument), not Claude Code's
+  `filePath`, and does not require a position for `documentSymbol`/`workspaceSymbol`.
+- 2026-10-30: Late LSP diagnostics never start a turn; they ride the next tool result (deviation
+  from omp; Claude Code's delivery format was not observable — the probe's server failed to start).
+- 2026-10-30: `rust-analyzer` joins the toolchain components (maintainer request in the design
+  session) so a server matches the pinned 1.99.1 compiler and the live test has a real server; CI
+  downloads it although no CI step uses it.
+- 2026-10-30: Plugin LSP `workspaceFolder` is accepted and ignored with a startup warning, like
+  `transport` — a valid Claude Code plugin keeps its servers, and Fontaine roots every server at
+  the workspace.
+- 2026-10-30: The 500 ms diagnostics wait counts a publish whose `version` is at least the synced
+  version, or with no version the first after the sync; the "new" diff identity is (severity, code,
+  message) as a multiset, ignoring range — an in-flight set for older content is not taken as
+  current, and line shifts do not re-report.
+- 2026-10-30: On Windows only the direct language-server child is killed (websearch's fallback);
+  the orphan risk from a wrapper is accepted — no new Job-object code.
+- 2026-10-30: The diagnostics stage lives in `fontaine-tools/src/lsp/diagnostics.rs` and resolves
+  `args["path"]` with `Scope::find`/`Scope::resolved` instead of core's `touched_paths` —
+  fontaine-tools cannot depend on fontaine-core.
+- 2026-10-30: Late diagnostics drain only on real tool calls; the synthetic screening calls set
+  `CallView.synthetic` and are skipped — their text becomes a user-role turn prompt.
 
 ## Open Questions
 

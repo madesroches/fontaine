@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::config::{Hook, McpServer, Origin, Slot};
+use crate::config::{Hook, LspServer, McpServer, Origin, Slot};
 use crate::permission_rules::{RuleSource, SourcedRule, parse_rule};
 
 pub const REGISTRY_FILE: &str = "plugins.toml";
@@ -27,6 +27,7 @@ pub const MANIFEST_FILE: &str = ".claude-plugin/plugin.json";
 pub const MARKETPLACE_FILE: &str = ".claude-plugin/marketplace.json";
 pub const HOOKS_FILE: &str = "hooks/hooks.json";
 pub const MCP_FILE: &str = ".mcp.json";
+pub const LSP_FILE: &str = ".lsp.json";
 
 /// A plugin directory ready for the extension loader, with its components resolved to files.
 #[derive(Clone, Debug, Default)]
@@ -137,6 +138,8 @@ pub struct PluginBuild {
     /// server or hook, so the approval should name the variables.
     pub env_vars: BTreeSet<String>,
     pub servers: BTreeMap<String, McpServer>,
+    /// Language servers under their composed `plugin:<plugin>:<server>` names.
+    pub lsp_servers: Vec<(String, LspServer)>,
     pub deny: Vec<SourcedRule>,
     pub ask: Vec<SourcedRule>,
     pub hard_deny: Vec<String>,
@@ -153,6 +156,7 @@ pub struct PluginSummary {
     pub styles: usize,
     pub hooks: usize,
     pub servers: usize,
+    pub lsp_servers: usize,
     pub deny: usize,
     pub ask: usize,
     pub hard_deny: usize,
@@ -165,6 +169,8 @@ pub struct PluginContributions {
     pub dirs: Vec<PluginDir>,
     pub hooks: PluginHooks,
     pub servers: BTreeMap<String, McpServer>,
+    /// Language servers in install order.
+    pub lsp_servers: Vec<(String, LspServer)>,
     pub deny: Vec<SourcedRule>,
     pub ask: Vec<SourcedRule>,
     pub hard_deny: Vec<String>,
@@ -442,6 +448,7 @@ pub fn load_installed(
             .permission_denied
             .extend(build.hooks.permission_denied);
         out.servers.extend(build.servers);
+        out.lsp_servers.extend(build.lsp_servers);
         out.deny.extend(build.deny);
         out.ask.extend(build.ask);
         out.hard_deny.extend(build.hard_deny);
@@ -488,7 +495,7 @@ pub fn build_plugin(
     })?;
 
     let mut warnings = Vec::new();
-    for key in ["lspServers", "dependencies", "userConfig", "settings"] {
+    for key in ["dependencies", "userConfig", "settings"] {
         if object.contains_key(key) {
             warn_once(
                 &mut warnings,
@@ -586,6 +593,20 @@ pub fn build_plugin(
     }
     build.servers = mcp.servers;
     build.summary.servers = build.servers.len();
+
+    build.lsp_servers = parse_lsp(
+        &LspSources {
+            root,
+            canonical_root: &canonical_root,
+            plugin: registry_name,
+            manifest: object,
+            manifest_path: &manifest_path,
+        },
+        ctx,
+        &mut warnings,
+        &mut env_vars,
+    )?;
+    build.summary.lsp_servers = build.lsp_servers.len();
 
     build.hooks = parse_hooks(
         root,
@@ -1084,6 +1105,255 @@ impl McpLoad {
             self.servers.insert(composed, server);
         }
     }
+}
+
+struct LspSources<'a> {
+    root: &'a Path,
+    canonical_root: &'a Path,
+    plugin: &'a str,
+    manifest: &'a serde_json::Map<String, Value>,
+    manifest_path: &'a Path,
+}
+
+/// The plugin's language servers: the default `.lsp.json` first, then the manifest `lspServers`
+/// key (an inline map, a path, or a list of either), a later name replacing an earlier one.
+/// A source that cannot be used is skipped whole with a warning, as Claude Code skips the file.
+fn parse_lsp(
+    sources: &LspSources<'_>,
+    ctx: &PluginContext<'_>,
+    warnings: &mut Vec<String>,
+    env_vars: &mut BTreeSet<String>,
+) -> Result<Vec<(String, LspServer)>, PluginError> {
+    let LspSources {
+        root,
+        canonical_root,
+        plugin,
+        manifest,
+        manifest_path,
+    } = sources;
+    let mut found: Vec<(String, Value)> = Vec::new();
+    let mut read_file = |path: &Path, label: &str, found: &mut Vec<(String, Value)>| {
+        match std::fs::read_to_string(path) {
+            Ok(text) => match serde_json::from_str::<Value>(&text) {
+                Ok(value) => found.push((label.to_string(), value)),
+                Err(e) => warn_once(
+                    warnings,
+                    format!(
+                        "plugin `{plugin}`: `{label}` is not JSON ({e}); its LSP servers are skipped"
+                    ),
+                ),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => warn_once(
+                warnings,
+                format!(
+                    "plugin `{plugin}`: cannot read `{label}` ({}); its LSP servers are skipped",
+                    fontaine_tools::error_chain::chain(&e)
+                ),
+            ),
+        }
+    };
+    read_file(&root.join(LSP_FILE), LSP_FILE, &mut found);
+    match manifest.get("lspServers") {
+        None => {}
+        Some(Value::Object(_)) => found.push((
+            "the manifest `lspServers`".to_string(),
+            manifest["lspServers"].clone(),
+        )),
+        Some(value) => {
+            let entries: Vec<&Value> = match value {
+                Value::Array(items) => items.iter().collect(),
+                single => vec![single],
+            };
+            for entry in entries {
+                match entry {
+                    Value::String(rel) => {
+                        let path = inside(canonical_root, &root.join(rel), plugin)?;
+                        read_file(&path, rel, &mut found);
+                    }
+                    Value::Object(_) => {
+                        found.push(("the manifest `lspServers`".to_string(), entry.clone()))
+                    }
+                    _ => {
+                        return Err(PluginError::in_plugin(
+                            plugin,
+                            manifest_path.to_path_buf(),
+                            "an `lspServers` entry is neither a path nor an object",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let mut out: Vec<(String, LspServer)> = Vec::new();
+    for (label, value) in found {
+        match parse_lsp_map(&value, plugin, root, ctx, warnings, env_vars) {
+            Ok(servers) => {
+                for (name, server) in servers {
+                    let composed = format!("plugin:{plugin}:{name}");
+                    match out.iter_mut().find(|(existing, _)| *existing == composed) {
+                        Some(slot) => slot.1 = server,
+                        None => out.push((composed, server)),
+                    }
+                }
+            }
+            Err(reason) => warn_once(
+                warnings,
+                format!("plugin `{plugin}`: {label} is skipped: {reason}"),
+            ),
+        }
+    }
+    Ok(out)
+}
+
+const LSP_KEYS: &[&str] = &[
+    "command",
+    "args",
+    "transport",
+    "env",
+    "initializationOptions",
+    "settings",
+    "workspaceFolder",
+    "startupTimeout",
+    "shutdownTimeout",
+    "requestTimeout",
+    "restartOnCrash",
+    "maxRestarts",
+    "extensionToLanguage",
+    "diagnostics",
+];
+
+/// One `.lsp.json`-format map, name to server. Any problem rejects the whole map.
+fn parse_lsp_map(
+    value: &Value,
+    plugin: &str,
+    root: &Path,
+    ctx: &PluginContext<'_>,
+    warnings: &mut Vec<String>,
+    env_vars: &mut BTreeSet<String>,
+) -> Result<Vec<(String, LspServer)>, String> {
+    let map = value
+        .as_object()
+        .ok_or_else(|| "it is not a JSON object of servers".to_string())?;
+    let mut out = Vec::new();
+    for (name, spec) in map {
+        let object = spec
+            .as_object()
+            .ok_or_else(|| format!("the entry `{name}` is not an object"))?;
+        if let Some(key) = object.keys().find(|key| !LSP_KEYS.contains(&key.as_str())) {
+            return Err(format!("the entry `{name}` has an unknown key `{key}`"));
+        }
+        if object.contains_key("workspaceFolder") {
+            warn_once(
+                warnings,
+                format!(
+                    "plugin `{plugin}`: LSP server `{name}` sets `workspaceFolder`, which Fontaine ignores; the workspace root is used"
+                ),
+            );
+        }
+        match object.get("transport").and_then(Value::as_str) {
+            None | Some("stdio") | Some("socket") => {}
+            Some(other) => {
+                return Err(format!(
+                    "the entry `{name}` has an unsupported `transport` `{other}`"
+                ));
+            }
+        }
+        let mut expand = |text: &str| expand_vars(text, plugin, root, ctx, warnings, env_vars);
+        let command = object
+            .get("command")
+            .and_then(Value::as_str)
+            .map(&mut expand)
+            .ok_or_else(|| format!("the entry `{name}` has no string `command`"))?;
+        let args = match object.get("args") {
+            None => None,
+            Some(value) => {
+                let items = value.as_array().ok_or_else(|| {
+                    format!("the entry `{name}` has an `args` that is not a list")
+                })?;
+                let mut args = Vec::new();
+                for item in items {
+                    let text = item
+                        .as_str()
+                        .ok_or_else(|| format!("an `args` entry of `{name}` is not a string"))?;
+                    args.push(expand(text));
+                }
+                Some(args)
+            }
+        };
+        let extension_to_language = object
+            .get("extensionToLanguage")
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("the entry `{name}` has no `extensionToLanguage` object"))?
+            .iter()
+            .map(|(ext, language)| {
+                language
+                    .as_str()
+                    .map(|language| (ext.clone(), language.to_string()))
+                    .ok_or_else(|| {
+                        format!("the entry `{name}` has a non-string language for `{ext}`")
+                    })
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let env = match object.get("env") {
+            None => None,
+            Some(value) => {
+                let vars = value.as_object().ok_or_else(|| {
+                    format!("the entry `{name}` has an `env` that is not an object")
+                })?;
+                let mut env = BTreeMap::new();
+                for (var, value) in vars {
+                    let text = value.as_str().ok_or_else(|| {
+                        format!("the entry `{name}` has a non-string `env` value for `{var}`")
+                    })?;
+                    env.insert(var.clone(), expand(text));
+                }
+                Some(env)
+            }
+        };
+        let millis = |key: &str| -> Result<Option<u64>, String> {
+            match object.get(key) {
+                None => Ok(None),
+                Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+                    format!("the entry `{name}` has a `{key}` that is not a whole number")
+                }),
+            }
+        };
+        let flag = |key: &str| -> Result<Option<bool>, String> {
+            match object.get(key) {
+                None => Ok(None),
+                Some(value) => value.as_bool().map(Some).ok_or_else(|| {
+                    format!("the entry `{name}` has a `{key}` that is not true or false")
+                }),
+            }
+        };
+        let max_restarts = match millis("maxRestarts")? {
+            None => None,
+            Some(n) => Some(u32::try_from(n).map_err(|_| {
+                format!("the entry `{name}` has a `maxRestarts` that is too large")
+            })?),
+        };
+        let server = LspServer {
+            command,
+            args,
+            extension_to_language,
+            env_vars: None,
+            env,
+            initialization_options: object.get("initializationOptions").cloned(),
+            settings: object.get("settings").cloned(),
+            startup_timeout_ms: millis("startupTimeout")?,
+            shutdown_timeout_ms: millis("shutdownTimeout")?,
+            request_timeout_ms: millis("requestTimeout")?,
+            restart_on_crash: flag("restartOnCrash")?,
+            max_restarts,
+            diagnostics: flag("diagnostics")?,
+        };
+        if let Some(problem) = server.problem() {
+            return Err(format!("the entry `{name}`: {problem}"));
+        }
+        out.push((name.clone(), server));
+    }
+    Ok(out)
 }
 
 fn parse_hooks(
@@ -1710,6 +1980,7 @@ impl crate::config::Config {
             .retain(|name, _| !plugin_servers.contains(name.as_str()));
         self.mcp_origins
             .retain(|_, origin| origin.slot != Slot::Plugin);
+        self.plugin_lsp_servers = plugins.lsp_servers.clone();
         self.permissions
             .deny
             .retain(|entry| entry.source != RuleSource::Plugin);

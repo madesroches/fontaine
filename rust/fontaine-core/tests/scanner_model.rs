@@ -86,6 +86,7 @@ async fn through_stage(backend: Backend) -> String {
         agent: ROOT_AGENT,
         annotations: None,
         requires_user_interaction: false,
+        synthetic: false,
     };
     pipeline
         .run(view, Ok(ToolOutput::text("file body")))

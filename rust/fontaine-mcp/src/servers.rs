@@ -4,7 +4,6 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Stdio;
 
-use fontaine_tools::child_env::BASE_ENV;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::guarded::Guard;
 use fontaine_tools::tls::{LoadedNetwork, build_client};
@@ -211,18 +210,9 @@ where
         } => {
             let mut process = tokio::process::Command::new(command);
             process.args(args).current_dir(cwd).env_clear();
-            for name in BASE_ENV
-                .iter()
-                .copied()
-                .chain(env_vars.iter().map(String::as_str))
-            {
-                if let Some(value) = env(name) {
-                    process.env(name, value);
-                }
-            }
-            for (name, value) in set_env {
-                process.env(name, value);
-            }
+            process.envs(fontaine_tools::child_env::server_env(
+                env, env_vars, set_env,
+            ));
             let (transport, stderr) = TokioChildProcess::builder(process)
                 .stderr(Stdio::piped())
                 .spawn()

@@ -8,6 +8,13 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- An `lsp` tool asks a language server for a symbol's definition, implementations, references,
+  hover text, a file's or the workspace's symbols and the call hierarchy, and a note on each
+  `edit` or `write` result lists the errors and warnings the server found in the new content;
+  ones that arrive later ride the next tool result and never start a turn. Servers are defined
+  under `[lsp.servers.<name>]` in the user file or `--settings` only, or by an installed
+  plugin's `.lsp.json` / `lspServers`; the tool exists only while one is configured (#27).
+
 - `[shell] max_timeout_secs` (1 to 86400, default 600; user file or `--settings` only) sets the
   ceiling on a model's `shell` timeout: how long a main-conversation call blocks before it moves
   to a background job, and how long a subagent's or skill injection's command runs. No tool

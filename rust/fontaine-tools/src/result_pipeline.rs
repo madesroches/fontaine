@@ -1,8 +1,9 @@
 //! The post-call step every tool result passes through before the agent sees it. Stages run in
 //! a fixed order whatever order they were attached in: the notifications queued for the agent,
-//! the instruction files a read brings into scope, the tool-result scanner, then the
-//! `post_tool_use` hooks. Notifications and instructions come first so that what another agent
-//! said, and instruction text that arrives in a result, is scanned like any other result. With
+//! the language-server diagnostics, the instruction files a read brings into scope, the
+//! tool-result scanner, then the `post_tool_use` hooks. Notifications, diagnostics and
+//! instructions come first so that what another agent said, what a language server reported, and
+//! instruction text that arrives in a result, is scanned like any other result. With
 //! no stage attached it changes nothing.
 
 use std::sync::Arc;
@@ -19,6 +20,7 @@ pub type ToolOutcome = Result<ToolOutput, ToolExecutionError>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StageKind {
     Notifications,
+    Diagnostics,
     Instructions,
     Scanner,
     PostToolUse,

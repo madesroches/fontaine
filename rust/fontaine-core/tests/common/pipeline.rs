@@ -319,6 +319,7 @@ impl Rig {
                 agent,
                 annotations: None,
                 requires_user_interaction,
+                synthetic: false,
             })
             .await
     }
