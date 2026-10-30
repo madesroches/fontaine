@@ -286,6 +286,8 @@ All notable changes are recorded here. The format follows
 - An append-only audit log per session, `tool_decision` events, `fontaine.permission` spans, the
   `fontaine.tool_decision.count` metric, headless `gate_decision` events and `result.denials`,
   and `--allowed-tools` and `--disallowed-tools`.
+- Workspace roots from the primary directory, the repeatable `--add-dir` flag, `/add-dir` and
+  `[permissions] additional_directories`, with one confined tool instance per root.
 
 #### Providers
 
@@ -356,6 +358,11 @@ All notable changes are recorded here. The format follows
   copies the live session and carries on in the copy, and `/export [path]` writes the
   conversation as an owner-only Markdown file. Switching sessions drops grants and returns to
   the default mode, like any resume (#10).
+- Context commands: `/compact [focus]` summarizes the conversation on request, `/clear`
+  (`/reset`, `/new`) empties the model's context while the session, its permissions and its
+  mode carry on, and `/context [all]` shows estimated token use by source. `[context]
+  autocompact_window` sets how many tokens of messages trigger automatic compaction, in the
+  terminal UI and headless runs (#11).
 
 #### Tools
 
@@ -403,8 +410,6 @@ All notable changes are recorded here. The format follows
 - The built-in tools `read`, `ls`, `glob`, `grep`, `write`, `edit`, `shell` and `webfetch`. Every
   tool has a risk class and sits behind one gate, and each call emits a `fontaine.tool` span and
   a `tool_result` telemetry event.
-- Workspace roots from the primary directory, the repeatable `--add-dir` flag, `/add-dir` and
-  `[permissions] additional_directories`, with one confined tool instance per root.
 - `shell` child processes do not inherit telemetry credentials, configured accounts' API key
   variables or the scanner token variable. On Windows the shell runs through Git Bash, found on
   `PATH`, in the standard install locations or through `FONTAINE_GIT_BASH_PATH`, and commands
@@ -463,11 +468,6 @@ All notable changes are recorded here. The format follows
   `/copy [n]` copies a reply to the clipboard over OSC 52; `/tasks` opens the agents panel. One
   command table drives both parsing and the `/` menu, and a built-in hides a skill of the same
   name, with a startup notice (#47).
-- Context commands: `/compact [focus]` summarizes the conversation on request, `/clear`
-  (`/reset`, `/new`) empties the model's context while the session, its permissions and its
-  mode carry on, and `/context [all]` shows estimated token use by source. `[context]
-  autocompact_window` sets how many tokens of messages trigger automatic compaction, in the
-  terminal UI and headless runs (#11).
 - The `/` menu is interactive: Up/Down select, Tab completes the name, Enter runs the selection
   (or completes a command that needs an argument) and Esc closes it. Matching covers names and
   aliases, prefix matches first and then substrings, and the list shows at most eight rows

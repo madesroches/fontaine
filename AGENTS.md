@@ -5,10 +5,11 @@ This file provides guidance to AI coding agents when working with code in this r
 The master tracking plan is the source of truth: `tasks/fontaine_harness_plan.md` — it holds the
 Phase Tracker, workspace layout, and the `## Decisions` section, which records every deliberate
 deviation from Claude Code, grouped into one subsection per subject. The cross-cutting design
-(permission pipeline, config, sessions, observability, platforms, testing strategy) lives in topic docs under `tasks/design/`, indexed
-from the master's `## Design docs`; `research/` holds the companion analysis docs the plan is grounded in, including
-`research-claude-code-parity.md` (Claude Code feature matrix). Backlog features not in the plan
-are GitHub issues (`gh issue list`); a `phase-N` label means "can be taken after phase N", not
+(permission pipeline, config, sessions, observability, platforms, testing strategy) lives in topic
+docs under `tasks/design/`, indexed from the master's `## Design docs`; `research/` holds the
+companion analysis docs the plan is grounded in, including `research-claude-code-parity.md`
+(Claude Code feature matrix). Backlog features not in the plan are GitHub issues
+(`gh issue list`); a `phase-N` label means "can be taken after phase N", not
 part of that phase's definition of done, and the plan's Decisions win over issue text. All phases (0–6)
 are done; their plans (`phase0_scaffold.md` … `phase6_hardening.md`) are archived under
 `tasks/completed/phases/` as the record of each phase's design excerpt, steps, tests and
