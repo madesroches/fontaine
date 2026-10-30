@@ -93,8 +93,9 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
 
 ### 1. Every child event reaches the TUI (core)
 
-- Add `SessionState::set_agent_event_sink(UnboundedSender<(String, SessionEvent)>)` and a
-  private `emit_agent_event(id, event)`. With no sink installed (headless, evals), events are
+- Add `SessionState::set_agent_event_sink(UnboundedSender<(String, AgentViewEvent)>)` and a
+  private `emit_agent_event(id, event)`. `AgentViewEvent` is `Prompt(String)` (the task prompt)
+  or `Event(SessionEvent)`; the name `AgentEvent` is taken. With no sink installed (headless, evals), events are
   dropped. The TUI installs the sink in `drive` (`fontaine-tui/src/lib.rs`), right after `AgentRuntime::new`, so it is reinstalled when `/resume` or `/branch` rebuild the runtime.
 - `run_child`'s `on_event` sends the events it sees to the sink, deltas included, so the view
   streams. It keeps its last-text and budget logic.
@@ -102,7 +103,8 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
   records with `agent_id != ROOT_AGENT` to `emit_agent_event` as `Decision` events and keeps them
   off the root feed. `publish_preview` (`gate.rs:785`) gains an `agent` argument (in scope at
   `permissions.rs:1884`) and routes the same way. When no sink is installed (headless), child
-  records stay on the root feed as today.
+  records stay on the root feed as today. A child's decisions and denial notices now show only in
+  that agent's view, not the main chat.
 - Delete `log_agent_line`, `agent_log`, `agent_logs`, `AGENT_LOG_LINES`, `decisions_by_agent` and
   `decisions_of`, `DECISIONS_PER_AGENT`. The transcript shows decisions as verdict lines, so nothing reads them any more.
   Port the `agent_pipeline.rs:207` assertion to the sink: each child's `Decision` events arrive
@@ -116,20 +118,25 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
   `view::height`, `view::draw` (via `draw_transcript`) and `linear.rs` read the transcript through
   these instead of `app.transcript`. Only the shown transcript commits rows. A hidden transcript
   keeps its entries and its commit cursor.
-- The sink receiver is polled by a new arm in the idle loop's `select!` (`ui/mod.rs`) and in the
-  turn loop's `select!` (`ui/turn.rs`). The driver feeds each event into that agent's transcript. Factor
-  `Ui::on_event`'s guardian-denial and todo handling into
-  `fn apply_event(&mut Transcript, runtime, event)` so both paths share it. The task-list refresh
-  stays root-only.
+- The sink receiver is polled by a new arm in every input-serving `select!` loop: the idle loop
+  (`ui/mod.rs`), the turn loop (`ui/turn.rs`), `serve_while` (`ui/turn.rs:287`), `serve_modal`
+  (`ui/turn.rs:511`) and the providers sign-in loop (`ui/providers.rs:212`). The driver feeds each
+  event into that agent's transcript. Factor
+  `Ui::on_event`'s guardian-denial handling into
+  `fn apply_event(&mut Transcript, runtime, event)` so both paths share it; the todo refresh stays
+  in the root path. The task-list refresh stays root-only.
 - The view's first entry is the agent's task prompt as a `User` entry, as in Claude Code. `run_child`
-  sends the task prompt to the sink itself, as the first message of the view (a dedicated sink
-  message, not a `SessionEvent`), before calling `drive`. `drive`, `SessionEvent` and the root
+  sends the task prompt to the sink itself as `AgentViewEvent::Prompt`, the first message of the
+  view, before calling `drive`. `drive`, `SessionEvent` and the root
   paths are unchanged.
 
 ### 3. Switching the screen
 
 - `Transcript::recommit()` sets `committed = 0`, `committed_chars = 0` and drops `retired`, so the
-  next render writes the whole transcript into scrollback again.
+  next render writes the whole transcript into scrollback again. `settle` (`transcript.rs:240-251`)
+  updates a committed Pending tool in place and also pushes a cloned follow-up entry; it marks that
+  follow-up so `recommit` skips follow-ups whose original settled in place, and a reprint does not
+  duplicate them.
 - `Screen::reprint()` erases the visible screen and the scrollback (`CSI 2J`, `CSI 3J`, cursor
   home), then rebuilds the inline viewport at full height with `repaint = true`. Erase in this
   order: `CSI 3J` after `CSI 2J` drops whatever tmux moved into history when the screen was cleared
@@ -198,12 +205,15 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
   names the agent (`approval.rs:225`). Nothing can hide behind a view.
 - **Scrolling.** The view lives in terminal scrollback like the main chat, so the wheel and tmux
   copy mode scroll it (#299).
+- **Ctrl-C** keeps today's behavior in every view: it interrupts the running main turn, and quits
+  when idle (as in Claude Code).
 - **Esc** closes palettes as usual. It never interrupts the main turn while an agent is viewed,
   because the human cannot see that turn, and the double-Esc rewind is off.
 - **Input routing** (`App::enter` when `viewing.is_some()`):
   - plain text → `Action::MessageAgent { id, text }`;
   - a built-in command runs as today, against the main conversation, unless it is in the refused
-    list below; `/expand` and `/copy` act on the shown transcript, while `/export` stays the main
+    list below; its notices go to the shown transcript (`shown_mut()`), not the hidden main one,
+    while its effect still applies to the main session; `/expand` and `/copy` act on the shown transcript, while `/export` stays the main
     session export;
   - commands that change the main conversation (`/clear`, `/compact`, `/rewind`, `/branch`,
     `/resume`, `/model`, `/goal`, `/loop`, `/init`, and `/plan` with an argument), skills and `!` lines are refused with a notice in the
@@ -261,12 +271,20 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
   `posture` is computed per call against its parent. The resumed run inherits nothing from
   `/guardian-disable`, since that state is root-only and unchanged.
 - **A message that misses its run.** When a run ends with that agent's queue still holding human
-  messages (it answered without another tool call), `run_child`'s caller takes them and resumes
-  the agent with them joined. This is Claude Code's "reads your message once that finishes". It
-  runs only after the old run's conclude/`finish` has completed, in the shared `watch_report`
-  path, so a late `finish` cannot mark the new run ended, kill its children or overwrite its
-  report, and `resume`'s `max_parallel` check does not count the old run. `report()` for a
-  foreground parent resolves with the first run's report.
+  messages (it answered without another tool call), the agent is resumed with them joined. This is
+  Claude Code's "reads your message once that finishes". `ChildHandle` gains
+  `fn take_missed(&self) -> Vec<String>` (default empty body, so the seam test fake compiles),
+  which core's `ChildRun` implements over `Steering::take_pending_for(id)`. `spawn.rs` calls it
+  after `conclude` on both paths: the foreground path in `AgentTool::call` and the background
+  `watch_report` path. If it returns messages, it calls `tree.resume`, `handle.resume` with the
+  messages joined, and `watch_report`, using the handle already in hand. Because it runs after
+  `conclude`/`finish` has completed, a late `finish` cannot mark the new run ended, kill its
+  children or overwrite its report, and `resume`'s `max_parallel` check does not count the old
+  run. `report()` for a foreground parent resolves with the first run's report.
+  If that automatic resume is refused (`max_parallel`, session budget, spent budget), `spawn.rs`
+  passes the refusal and the undelivered text to `ChildHandle::report_undelivered(&self, refusal:
+  &str, text: &str)` (default no-op), which core implements through `Approver::warn`. The messages
+  were already taken from the queue, so the TUI's dimmed queued entries for that agent disappear.
   The `is_running` check (tree mutex) and `queue_for` (Steering mutex) are separate locks, so the
   run can end between them, after the end-of-run leftover drain has already run. After
   `queue_for`, `message_agent` re-checks `is_running`. If the agent has ended, it takes its own
@@ -302,12 +320,15 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
    - `fontaine-agents`: `ChildHandle::resume`, `AgentTree::resume`, `ended` on rows, and
      `watch_report` factored out of `spawn.rs`.
    - `root_ledger`: `AgentEvent::Resumed`.
+   - `fontaine-agents`: `ChildHandle::take_missed` and `report_undelivered`, called from `spawn.rs`
+     after `conclude` on the foreground and background paths.
    - `fontaine-core`: `ChildContext` gains a `steering` field set in `agent/setup.rs`, with `Steering` created before `subagent_support`; `ChildRun` keeps its agent and run generation, `CoreChildRunner` resume, and
-     the missed-message resume.
+     `ChildRun`'s `take_missed` / `report_undelivered`.
    - Add `AgentRuntime::message_agent` with `Delivered` / `MessageRefusal`.
 4. **TUI transcripts.**
    - Add `AgentView`, `agent_views`, `viewing`, `shown()`/`shown_mut()` and `apply_event`.
-   - Drain the sink in `ui/mod.rs` and `ui/turn.rs`.
+   - Drain the sink in every input-serving `select!` loop: `ui/mod.rs` idle loop, `ui/turn.rs` turn
+     loop, `serve_while`, `serve_modal` and `ui/providers.rs`.
    - Point `screen.rs`, `view.rs` and `linear.rs` at `shown()`.
 5. **Reprint.** Add `Transcript::recommit`, `Screen::reprint`, `App::view` + the `reprint` flag,
    and the linear header lines. Add `committed_under_overlay` for the #296 path.
@@ -315,7 +336,7 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
    `view.rs`, and `screen.rs`'s chrome.
 7. **Agent view.** Add the header and placeholder in `draw_input`, the status line, the input
    routing and refusal notices in `App::enter`, and the Esc rules. Add `Action::MessageAgent`,
-   handled in both driver loops, which shows `Delivered` / `MessageRefusal` notices.
+   handled in every input-serving loop (the same five), which shows `Delivered` / `MessageRefusal` notices.
 8. **Agents panel.** Enter → `PanelKey::View(id)`. Delete the `Detail` path, then remove
    `agent_logs` / `decisions_by_agent` / `decisions_of` / `DECISIONS_PER_AGENT` / `log_agent_line` and their accessors,
    which `refresh_panel` used until now.
@@ -324,14 +345,15 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
 ## Files to Modify
 
 - `rust/fontaine-core/src/gate.rs` — event sink; remove agent logs and per-agent decisions
-- `rust/fontaine-core/src/child_runner.rs` — sink, steering hook on children, `ChildContext.steering`, `CoreWake`, `LedgerWindow` arm for `Resumed`, resume, missed-message resume
+- `rust/fontaine-core/src/child_runner.rs` — sink, steering hook on children, `ChildContext.steering`, `CoreWake`, `LedgerWindow` arm for `Resumed`, resume, `take_missed` / `report_undelivered`
 - `rust/fontaine-core/src/agent/setup.rs` — set `ChildContext.steering`
 - `rust/fontaine-core/src/steering.rs` — per-agent queues
 - `rust/fontaine-core/src/agent.rs` (or `agent/` module owning `AgentRuntime`) — `message_agent`
 - `rust/fontaine-core/tests/agent_pipeline.rs` — sink assertion, resume and steering tests
-- `rust/fontaine-agents/src/runner.rs` — `ChildHandle::resume`
+- `rust/fontaine-agents/src/runner.rs` — `ChildHandle::resume`, `take_missed`, `report_undelivered`
 - `rust/fontaine-agents/src/tree.rs` — `resume`, `ended`
-- `rust/fontaine-agents/src/spawn.rs` — `watch_report`
+- `rust/fontaine-agents/src/spawn.rs` — `watch_report`, missed-message resume after `conclude`
+- `rust/fontaine-agents/tests/seam.rs` — fake handle keeps compiling via the default methods
 - `rust/fontaine-agents/src/root_ledger.rs` — `AgentEvent::Resumed`
 - `rust/fontaine-tui/src/agent_list.rs` (new), `lib.rs` — module, sink install
 - `rust/fontaine-tui/src/app.rs` — views, list focus, routing, `Action::MessageAgent`
@@ -341,7 +363,7 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
 - `rust/fontaine-tui/src/linear.rs` — shown transcript, view headers
 - `rust/fontaine-tui/src/statusbar.rs` — viewed agent's state
 - `rust/fontaine-tui/src/agents_panel.rs` — Enter views; detail removed
-- `rust/fontaine-tui/src/ui/mod.rs`, `ui/turn.rs` — sink drain, `apply_event`, `MessageAgent`
+- `rust/fontaine-tui/src/ui/mod.rs`, `ui/turn.rs`, `ui/providers.rs` — sink drain, `apply_event`, `MessageAgent`
 - `docs/tui.md`, `docs/terminal.md`, `docs/agents.md`, `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
 
 ## Trade-offs
@@ -379,8 +401,12 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
 - `docs/tui.md`:
   - rewrite "The agents panel" around the agent list and the agent view: selecting, viewing,
     messaging, resuming, switching back, what a reprint drops, and refused commands;
-  - update the Keys table rows for Down (`tui.md:94`), Enter, x, Esc and Ctrl-T, and the
-    `/agents` row in the Commands table (`tui.md:322`).
+  - update the Keys table rows for Down (`tui.md:94`), Enter, x, Esc and Ctrl-T, the
+    Esc/Ctrl-C-while-a-turn-runs row (~`:96`) and the double-Esc rewind row (~`:98`), and the
+    `/agents` row in the Commands table (`tui.md:322`);
+  - update "## The task panel" (~`:574`): the agent list takes rows from the task list's cap;
+  - state that a child's decisions and denial notices show only in that agent's view, not the main
+    chat.
 - `docs/terminal.md`: in "## Screen-reader mode", describe the `viewing …` / `back to …` lines.
 - `docs/agents.md`: rewrite "Watching and stopping subagents" (~`:192-195`) around the agent list
   and view; messaging a subagent from its view, resume rules (which statuses, budgets
@@ -397,12 +423,15 @@ Unit (TUI, `TestBackend` and the `screen.rs` fake terminal with scrollback):
   - done rows drop at once, while failed/killed/budget rows stay 30 s (inject `now`);
   - x on a running row vs on `main` or the viewed row;
   - Down focuses only on the prompt's last line when not navigating history;
-  - printable keys return focus.
+  - printable keys return focus;
+  - focusing the list selects row 0 (`main`).
 - `App::enter` routing in a view: plain text → `MessageAgent`; the refused commands (including
   `/init` and `/plan <text>`), skills and `!`
   lines leave the text in the input and push the notice; UI commands still run. Esc in a view
   does not return `Interrupt`.
-- `Transcript::recommit` re-emits every entry, and a hidden transcript commits nothing.
+- `Transcript::recommit` re-emits every entry, a hidden transcript commits nothing, and a
+  committed Pending tool that settled in place is not duplicated by its follow-up entry.
+- A built-in run in a view writes its notice to the shown transcript, not the main one.
 - **Regression for #296 (pins the reported bug):** in the `screen.rs` fake terminal,
   1. fill the main transcript;
   2. open the agents panel with a body tall enough to force commits;
@@ -418,7 +447,7 @@ Unit (TUI, `TestBackend` and the `screen.rs` fake terminal with scrollback):
 
 Unit / integration (core, `rig_core::test_utils` deterministic models, no live APIs):
 
-- Sink: a child's task prompt, `ToolCall`, `Decision` and `Assistant` events arrive under its id
+- Sink: a child's task prompt (`AgentViewEvent::Prompt`), `ToolCall`, `Decision` and `Assistant` events arrive under its id
   (run a real child, or call `publish` with a child agent id; not `decisions_of`). With no sink
   installed, nothing blocks or grows and child records stay on the root feed.
 - Per-agent steering:
@@ -438,7 +467,9 @@ Unit / integration (core, `rig_core::test_utils` deterministic models, no live A
   - a resume at `max_parallel` is refused with `MessageRefusal::Limit`.
 - A message queued for a child parked in a long wait wakes it (`CoreWake::pending`).
 - A message queued for a child that answers without another tool call resumes it with that
-  message.
+  message, for a foreground and a background child.
+- A refused automatic resume (`max_parallel`) reports the refusal and the undelivered text through
+  `Approver::warn`, and the agent's queued entries are gone.
 - A message queued after the run ends (before or after the end-of-run drain): `message_agent`
   re-checks `is_running`, takes the message back and resumes, and it is delivered exactly once.
 - Mode invariant: a resumed child's posture is never looser than its parent's. Reuse the
