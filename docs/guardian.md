@@ -110,9 +110,10 @@ confidence   0 to 1, the guardian's own estimate
 the list or a confidence outside 0 to 1 is malformed. The labels are `Download+Execute`, `Data
 Exfiltration`, `Production Deploy`, `Git Destructive`, `Destroy Pre-existing Files`, `IAM Grant`,
 `Secret Exposure`, `Tunnel/Reverse Shell`, `Unguarded Agent Loop`, `Safety Bypass` (disabling safety
-flags or security-guarding tests), `Remote Redirect`, `Unreviewed Merge` and `Container Escape`
-(minimal profile only). A deny reaches the agent as `Denied by guardian: [Rule] explanation`, and
-your terminal shows the label and the explanation.
+flags or security-guarding tests, adding persistence, or editing the agent's own settings), `Remote
+Redirect`, `Unreviewed Merge` and `Container Escape` (minimal profile only). A deny reaches the
+agent as `Denied by guardian: [Rule] explanation`, and your terminal shows the label and the
+explanation. Every shipped deny rule starts with the label it is reported under.
 
 ### Rule precedence
 
@@ -168,13 +169,17 @@ Fontaine's code, not the model, decides what happens when there is no usable ver
 | An allow on a **destructive** call with confidence below `confidence_threshold` (default 0.7) | deny, rule `LowConfidence` | `low_confidence` |
 
 The retry budget is two retries, shared between malformed answers and provider errors, and the last
-failure names the denial. A deny verdict is never softened. The destructive class is derived from
-the call by Fontaine, structurally, never from the label the guardian chose: a call is destructive
-when it removes or overwrites (`rm`, `mv`, `cp`, `dd`, `sed -i`, `find -delete`, `git reset
---hard`, a redirect to a file, a write over a path that existed), writes outside every workspace
-root, reaches the network (`curl`, `git push`, a package install, `webfetch`, `websearch`), schedules a prompt to run later (`cron_create`), runs a command as a `monitor` (judged like `shell`), starts a code runner
-(`sh`, `python` in any version, `pwsh`, `cmd`, `awk`, `make`, `cargo run`, `sudo`, ...; a launcher such as `timeout` is judged by the program it wraps), is an MCP call, or uses any construct the shell
-parser cannot classify. A plain `cargo test 2>&1 | tail` is not destructive.
+failure names the denial. A malformed verdict is retried with a note saying why it was rejected,
+written by Fontaine and never quoting the model's own text; if it still fails it is denied as
+`unparseable`. A deny verdict is never softened. The destructive class is derived from the call by
+Fontaine, structurally, never from the label the guardian chose: a call is destructive when it
+removes or overwrites (`rm`, `mv`, `cp`, `dd`, `sed -i`, `find -delete`, `git reset --hard`, a
+redirect to a file, a write over a path that existed), writes outside every workspace root, reaches
+the network (`curl`, `git push`, a package install, `webfetch`, `websearch`), schedules a prompt to
+run later (`cron_create`), runs a command as a `monitor` (judged like `shell`), starts a code runner
+(`sh`, `python` in any version, `pwsh`, `cmd`, `awk`, `make`, `cargo run`, `sudo`, ...; a launcher
+such as `timeout` is judged by the program it wraps), is an MCP call, or uses any construct the
+shell parser cannot classify. A plain `cargo test 2>&1 | tail` is not destructive.
 
 ### Denial limits
 

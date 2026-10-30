@@ -667,6 +667,7 @@ scorecard run (see `## Remaining work`).
 - 2026-10-30: Guardian policy, not a deterministic bypass — the shipped `allow` list gains a `Source inspection` entry treating source, header, build-file, installed-dependency and installed-skill-definition reads (including `SKILL.md`) outside the roots as routine in `auto`/`plan`; the floor, user boundaries and hard denies keep their precedence, and the minimal profile prompt is unchanged (#284).
 - 2026-10-30: The shell timeout cap is `[shell] max_timeout_secs` (seconds, user file or `--settings`
   only), with no `BASH_MAX_TIMEOUT_MS` variable, so the per-key scope rules apply (#267).
+- 2026-10-30: The three shipped soft-deny rules that had no label are reported under existing labels: persistence and self-modification as `Safety Bypass`, untrusted code integration as `Download+Execute`, third-party and real-world effects as `Data Exfiltration`. The label set is closed and adding labels ripples into the audit log, headless schema and scorecards; a malformed verdict is also retried with a harness-written reason (never the model's text).
 
 ## Open Questions
 

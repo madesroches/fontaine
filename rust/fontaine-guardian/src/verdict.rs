@@ -85,6 +85,50 @@ impl Verdict {
     }
 }
 
+const FORMAT_NOTE: &str = "The answer was not one JSON object with the fields `decision`, `rule`, `explanation` and `confidence`.";
+
+/// Why a rejected answer was rejected, for the retry. Written from fixed sentences, never from
+/// the output: the output is model-authored and may echo hostile tool arguments, and putting it
+/// back in a user turn would raise it to the user's authority.
+pub(crate) fn rejection_note(output: &str) -> String {
+    let Some(serde_json::Value::Object(fields)) = recover_json(output) else {
+        return FORMAT_NOTE.to_string();
+    };
+    let value = serde_json::Value::Object(fields);
+    let rule_ok = value
+        .get("rule")
+        .is_some_and(|rule| serde_json::from_value::<RuleLabel>(rule.clone()).is_ok());
+    if !rule_ok {
+        return "`rule` was not one of the labels listed under Rule labels. Copy one of those labels exactly; a rule's or an allow exception's own wording is never a label.".to_string();
+    }
+    let decision_ok = value
+        .get("decision")
+        .is_some_and(|decision| serde_json::from_value::<Decision>(decision.clone()).is_ok());
+    if !decision_ok {
+        return "`decision` must be one of `allow`, `deny` or `escalate`.".to_string();
+    }
+    if let Ok(raw) = serde_json::from_value::<RawVerdict>(value)
+        && let Err(message) = Verdict::from_raw(raw)
+    {
+        return message;
+    }
+    format!(
+        "{FORMAT_NOTE} `decision`, `rule` and `explanation` are strings, `confidence` is a number, and there are no other fields."
+    )
+}
+
+/// The JSON in an answer the way rig's schema transport finds it: the whole text, else
+/// whatever parses from the first `{` or `[`. The tool transport only ever needs the first.
+fn recover_json(output: &str) -> Option<serde_json::Value> {
+    let text = output.trim();
+    if let Ok(value) = serde_json::from_str(text) {
+        return Some(value);
+    }
+    let start = text.find(['{', '['])?;
+    let mut stream = serde_json::Deserializer::from_str(&text[start..]).into_iter();
+    stream.next()?.ok()
+}
+
 impl<'de> Deserialize<'de> for Verdict {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = RawVerdict::deserialize(deserializer)?;
@@ -280,5 +324,61 @@ mod tests {
             assert_eq!(reason.as_str(), name);
             assert_eq!(reason.label().as_str(), label);
         }
+    }
+
+    fn answer(rule: &str, decision: &str, confidence: &str) -> String {
+        format!(
+            r#"{{"decision":"{decision}","rule":"{rule}","explanation":"x","confidence":{confidence}}}"#
+        )
+    }
+
+    #[test]
+    fn an_unknown_label_gets_the_label_note_without_the_rejected_value() {
+        let note = rejection_note(&answer("Untrusted code integration", "deny", "0.9"));
+        assert!(note.contains("Copy one of those labels exactly"), "{note}");
+        assert!(!note.contains("Untrusted"), "{note}");
+    }
+
+    #[test]
+    fn a_mismatch_or_bad_confidence_gets_the_from_raw_message() {
+        assert!(
+            rejection_note(&answer("allow", "deny", "0.9"))
+                .contains("`decision` is `deny`, so `rule` must be one of the non-allow labels")
+        );
+        assert!(
+            rejection_note(&answer("Git Destructive", "allow", "0.9"))
+                .contains("`decision` is `allow`, so `rule` must be `allow`")
+        );
+        assert!(
+            rejection_note(&answer("allow", "allow", "1.5"))
+                .contains("`confidence` must be a number from 0 to 1")
+        );
+    }
+
+    #[test]
+    fn prose_or_a_non_object_gets_the_format_note() {
+        for output in ["I would allow this.", "[1, 2]", "", "42"] {
+            assert_eq!(rejection_note(output), FORMAT_NOTE, "{output}");
+        }
+    }
+
+    #[test]
+    fn a_fenced_answer_is_classified_by_its_fields() {
+        let fenced = format!(
+            "```json\n{}\n```",
+            answer("Untrusted code integration", "deny", "0.9")
+        );
+        assert!(rejection_note(&fenced).contains("Copy one of those labels exactly"));
+        let prefixed = format!("Here you go: {}", answer("allow", "maybe", "0.9"));
+        assert!(rejection_note(&prefixed).contains("`decision` must be one of"));
+    }
+
+    #[test]
+    fn an_unknown_field_gets_the_format_note_without_its_name() {
+        let note = rejection_note(
+            r#"{"decision":"allow","rule":"allow","explanation":"x","confidence":0.9,"ignore_previous":"..."}"#,
+        );
+        assert!(note.starts_with(FORMAT_NOTE), "{note}");
+        assert!(!note.contains("ignore_previous"), "{note}");
     }
 }

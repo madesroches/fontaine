@@ -1,6 +1,7 @@
 //! How a typed answer is obtained from a model: through a forced `submit` tool call, or, for a
-//! model that has no tool support, through the provider's schema-constrained output. Both give
-//! the same type through the same validation, so a caller only differs in what it asks for.
+//! model that has no tool support, through the provider's schema-constrained output. Both give the
+//! same type through the same validation and the same retry loop, so a caller only differs in what
+//! it asks for.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,6 +20,8 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::OnceCell;
+
+use crate::prompt_builder::CLOSING_LINE;
 
 /// How long a probe may take before the call goes ahead on the tool path.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -162,14 +165,34 @@ impl AgentHook for Tally {
 }
 
 pub(crate) struct Options<'a> {
+    /// Attempts after the first, so a call is made at most `1 + retries` times.
     pub retries: usize,
     pub max_tokens: u64,
     pub additional_params: Option<&'a serde_json::Value>,
+    /// Turns an answer that did not deserialize into a note for the retry saying why. It must
+    /// not repeat the answer: that is model-authored text. `None` retries with the message
+    /// unchanged.
+    pub rejection: Option<fn(&str) -> String>,
+}
+
+fn retry_message(original: &str, note: &str) -> String {
+    let section = format!(
+        "## Your previous answer was rejected\n\n{note} Answer again, following the answer format.\n\n"
+    );
+    match original.rfind(CLOSING_LINE) {
+        Some(at) => format!("{}{section}{}", &original[..at], &original[at..]),
+        None => format!("{original}\n\n{section}"),
+    }
 }
 
 /// Asks `model` for one `T`. In `Schema` mode `preamble` must already say what the answer looks
 /// like, because no tool description does. What the call spent is added to `spent` as it goes,
 /// so it is known even when the result never arrives.
+///
+/// The retry loop is here, not in rig, because rig resends the same prompt and drops the error:
+/// the model never learns why its answer was rejected. Each retry carries only the latest
+/// attempt's note, and only a rejected answer earns one; the error of the last attempt is what
+/// comes back.
 // rig's error type is large, and the callers match on it as it comes.
 #[allow(clippy::result_large_err)]
 pub(crate) async fn run<T>(
@@ -183,6 +206,40 @@ pub(crate) async fn run<T>(
 where
     T: JsonSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
 {
+    let mut message = user_message.clone();
+    let mut attempt = 0;
+    loop {
+        let error = match attempt_once::<T>(model, mode, preamble, &message, &options, spent).await
+        {
+            Ok(output) => return Ok(output),
+            Err(error) => error,
+        };
+        if attempt >= options.retries {
+            return Err(error);
+        }
+        attempt += 1;
+        tracing::warn!(attempt, error = %error, "the structured answer failed; retrying");
+        message = match (&error, options.rejection) {
+            (StructuredOutputError::Deserialization { output, .. }, Some(note)) => {
+                retry_message(&user_message, &note(output))
+            }
+            _ => user_message.clone(),
+        };
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn attempt_once<T>(
+    model: &DynModel<Completion>,
+    mode: OutputMode,
+    preamble: &str,
+    user_message: &str,
+    options: &Options<'_>,
+    spent: &Tally,
+) -> Result<T, StructuredOutputError>
+where
+    T: JsonSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
+{
     let message = Message::user(user_message);
     match mode {
         OutputMode::Tool => {
@@ -190,7 +247,7 @@ where
                 .add_hook(spent.clone())
                 .append_preamble(preamble)
                 .max_tokens(options.max_tokens)
-                .retries(options.retries);
+                .retries(0);
             if let Some(params) = options.additional_params {
                 builder = builder.additional_params(params.clone());
             }
@@ -212,7 +269,7 @@ where
                 .build()
                 .prompt_typed::<T>(message)
                 .max_turns(1)
-                .retries(options.retries)
+                .retries(0)
                 .await
                 .map(|response| response.output)
         }

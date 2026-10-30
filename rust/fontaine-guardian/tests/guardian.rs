@@ -80,6 +80,79 @@ async fn a_malformed_answer_followed_by_a_good_one_is_a_verdict() {
     );
 }
 
+fn user_message(sent: &Value) -> String {
+    let messages = sent["messages"].as_array().unwrap();
+    let last = messages.last().unwrap();
+    assert_eq!(last["role"], "user");
+    match &last["content"] {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+const REJECTION_HEADING: &str = "## Your previous answer was rejected";
+
+#[tokio::test]
+async fn a_soft_deny_rule_name_in_rule_is_retried_with_the_reason() {
+    let endpoint = Endpoint::start(vec![
+        Reply::Verdict(verdict("allow", "Untrusted code integration", 0.9)),
+        Reply::Verdict(allow(0.9)),
+    ])
+    .await;
+    let result = endpoint
+        .guardian(settings())
+        .adjudicate(&request("npm install --save-dev prettier", false))
+        .await;
+    assert_eq!(names(&result), (Decision::Allow, "allow"));
+    let sent = endpoint.requests().await;
+    assert_eq!(sent.len(), 2);
+    let (first, second) = (user_message(&sent[0]), user_message(&sent[1]));
+    assert!(!first.contains(REJECTION_HEADING));
+    assert!(second.contains(REJECTION_HEADING), "{second}");
+    assert!(
+        second.contains("Copy one of those labels exactly"),
+        "{second}"
+    );
+    assert!(second.trim_end().ends_with("Submit your verdict now."));
+    assert!(second.starts_with(first.trim_end_matches("Submit your verdict now.")));
+    for request in &sent {
+        assert!(!request.to_string().contains("Untrusted code integration"));
+    }
+}
+
+#[tokio::test]
+async fn a_decision_label_mismatch_is_retried_with_the_mismatch_message() {
+    let endpoint = Endpoint::start(vec![
+        Reply::Verdict(verdict("deny", "allow", 0.9)),
+        Reply::Verdict(allow(0.9)),
+    ])
+    .await;
+    let result = endpoint
+        .guardian(settings())
+        .adjudicate(&request("ls", false))
+        .await;
+    assert_eq!(names(&result), (Decision::Allow, "allow"));
+    let second = user_message(&endpoint.requests().await[1]);
+    assert!(second.contains(REJECTION_HEADING));
+    assert!(
+        second.contains("`decision` is `deny`, so `rule` must be one of the non-allow labels"),
+        "{second}"
+    );
+}
+
+#[tokio::test]
+async fn a_provider_error_is_retried_without_a_rejection_note() {
+    let endpoint = Endpoint::start(vec![Reply::Fail(500), Reply::Verdict(allow(0.9))]).await;
+    let result = endpoint
+        .guardian(settings())
+        .adjudicate(&request("ls", false))
+        .await;
+    assert_eq!(names(&result), (Decision::Allow, "allow"));
+    let sent = endpoint.requests().await;
+    assert_eq!(sent.len(), 2);
+    assert!(!user_message(&sent[1]).contains(REJECTION_HEADING));
+}
+
 #[tokio::test]
 async fn an_answer_in_prose_is_unparseable() {
     let endpoint = Endpoint::start(vec![Reply::Prose]).await;

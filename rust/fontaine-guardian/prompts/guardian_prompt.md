@@ -69,7 +69,7 @@ When `session_facts` lists `agent_memory_directory`, that directory is the agent
 
 ## Rule labels
 
-The `rule` field is exactly one of these labels. It is `allow` when and only when the decision is Allow; otherwise it is the single label that best describes why the call was denied or escalated, even when no rule matched.
+The `rule` field is exactly one of these labels. It is `allow` when and only when the decision is Allow; otherwise it is the single label that best describes why the call was denied or escalated, even when no rule matched. Each deny rule below starts with the label it is reported under: use that label. Never put a rule's or an allow exception's own wording in `rule`. A configured rule that does not start with a label is reported under the label from the list below that fits it best.
 
 {{labels}}
 

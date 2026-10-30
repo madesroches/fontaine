@@ -21,7 +21,9 @@ use crate::verdict::{AuditLabel, Decision, FailClosed, Verdict};
 
 const TARGET: &str = "fontaine::telemetry";
 
-/// Retries after a malformed answer or a provider error, per adjudication.
+/// Retries after a malformed answer or a provider error, per adjudication. A malformed answer's
+/// retry carries the reason it was rejected; a provider error's is plain. Other users of rig's
+/// `ExtractorBuilder::retries` (`goal.rs`) get plain retries.
 pub const EXTRACTOR_RETRIES: usize = 2;
 /// Also the cap of the critique reply.
 pub(crate) const MAX_TOKENS: u64 = 1_024;
@@ -275,6 +277,7 @@ impl Guardian {
             retries: EXTRACTOR_RETRIES,
             max_tokens: MAX_TOKENS,
             additional_params: self.additional_params.as_ref(),
+            rejection: Some(crate::verdict::rejection_note),
         };
         let extraction = tokio::time::timeout(
             self.settings.timeout,
