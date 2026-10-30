@@ -110,10 +110,13 @@ pub async fn discover(
         crate::trust::work_tree_root(primary_root).unwrap_or_else(|| primary_root.to_path_buf());
     let mut found = Found::default();
     let mut remotes = Vec::new();
-    for (position, url) in git_remotes.iter().enumerate() {
+    let primary = primary_remote(primary_root, git_remotes);
+    for url in git_remotes {
         let slug = github_slug(url);
         let facts = match &slug {
-            Some(slug) => github_remote(gh, url, slug, position == 0, &mut found).await,
+            Some(slug) => {
+                github_remote(gh, url, slug, primary == Some(url.as_str()), &mut found).await
+            }
             None => {
                 found.fallback(format!(
                     "{url}: not a github.com remote, so visibility and branch protection are unknown"
@@ -149,6 +152,18 @@ pub async fn discover(
         repo_root,
         fallbacks: found.fallbacks,
     }
+}
+
+/// The remote whose repository settings the scan may cite: the primary root's `origin`, else the
+/// first github.com remote. The list is sorted by URL, so position says nothing about which
+/// remote is the project's own.
+fn primary_remote<'a>(primary_root: &Path, git_remotes: &'a [String]) -> Option<&'a str> {
+    let origin = crate::ledger::git_origin(primary_root);
+    origin
+        .as_deref()
+        .and_then(|origin| git_remotes.iter().find(|url| *url == origin))
+        .or_else(|| git_remotes.iter().find(|url| github_slug(url).is_some()))
+        .map(String::as_str)
 }
 
 fn distinct(dirs: [&Path; 2]) -> Vec<&Path> {
@@ -197,7 +212,9 @@ pub fn github_slug(url: &str) -> Option<String> {
         let host = authority
             .rsplit_once('@')
             .map_or(authority, |(_, host)| host);
-        host.eq_ignore_ascii_case("github.com").then_some(path)?
+        let host = host.rsplit_once(':').map_or(host, |(host, _port)| host);
+        (host.eq_ignore_ascii_case("github.com") || host.eq_ignore_ascii_case("ssh.github.com"))
+            .then_some(path)?
     } else {
         let (authority, path) = url.split_once(':')?;
         let host = authority

@@ -522,23 +522,39 @@ impl FileIndex {
 /// `include` or `includeIf`. None when there is no repository or gix cannot read it; Fontaine
 /// never spawns `git`.
 pub fn git_remotes(root: &Path) -> Vec<String> {
+    let mut urls: Vec<String> = named_remotes(root)
+        .into_iter()
+        .map(|(_, url)| url)
+        .collect();
+    urls.sort();
+    urls.dedup();
+    urls
+}
+
+/// The fetch URL of the repository's `origin` remote, read as `git_remotes` reads.
+pub fn git_origin(root: &Path) -> Option<String> {
+    named_remotes(root)
+        .into_iter()
+        .find_map(|(name, url)| (name == "origin").then_some(url))
+}
+
+fn named_remotes(root: &Path) -> Vec<(String, String)> {
     let options = gix::open::Options::isolated().strict_config(true);
     let Ok(repo) = gix::discover_opts(root, gix::discover::upwards::Options::default(), options)
     else {
         return Vec::new();
     };
-    let mut urls: Vec<String> = repo
-        .remote_names()
+    repo.remote_names()
         .iter()
-        .filter_map(|name| repo.try_find_remote(name.as_bstr())?.ok())
-        .filter_map(|remote| {
+        .filter_map(|name| {
+            let remote = repo.try_find_remote(name.as_bstr())?.ok()?;
             let url = remote.url(gix::remote::Direction::Fetch)?;
-            Some(without_credentials(&url.to_bstring().to_string()))
+            Some((
+                name.to_string(),
+                without_credentials(&url.to_bstring().to_string()),
+            ))
         })
-        .collect();
-    urls.sort();
-    urls.dedup();
-    urls
+        .collect()
 }
 
 /// The remotes of every root, sorted and deduplicated: what a session records at start.

@@ -221,6 +221,8 @@ fn github_slugs_come_from_every_url_form_and_nothing_else() {
         "git@github.com:acme/proj.git",
         "ssh://git@github.com/acme/proj.git",
         "https://GitHub.com/acme/proj/",
+        "ssh://git@github.com:22/acme/proj.git",
+        "ssh://git@ssh.github.com:443/acme/proj",
     ] {
         assert_eq!(github_slug(url).as_deref(), Some("acme/proj"), "{url}");
     }

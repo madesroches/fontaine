@@ -6,6 +6,7 @@ use std::io::Read;
 use std::path::Path;
 
 use fontaine_guardian::env_scan::{Evidence, Finding, Reply};
+use fontaine_tools::display::escape_controls;
 use gix::bstr::ByteSlice;
 
 use super::ScanFacts;
@@ -288,6 +289,12 @@ fn check(list: &str, finding: &Finding, sample: &Sample) -> Result<(), &'static 
     if value.chars().any(char::is_control) {
         return Err("not a single plain line");
     }
+    let cited = match &finding.evidence {
+        Evidence::File(text) | Evidence::Setting(text) => text,
+    };
+    if cited.chars().any(char::is_control) {
+        return Err("cites evidence that is not a single plain line");
+    }
     match &finding.evidence {
         Evidence::File(path) if !sample.listing.contains(path) => {
             return Err("cites a file that is not in the tracked-path listing");
@@ -410,8 +417,8 @@ pub fn review_text(scan: &ScanFacts) -> String {
         out.push_str(&format!("{heading}\n"));
         for finding in findings {
             let evidence = match &finding.evidence {
-                Evidence::File(path) => format!("file {path}"),
-                Evidence::Setting(key) => format!("setting {key}"),
+                Evidence::File(path) => format!("file {}", escape_controls(path)),
+                Evidence::Setting(key) => format!("setting {}", escape_controls(key)),
             };
             out.push_str(&format!("  - {}  (evidence: {evidence})\n", finding.value));
         }
