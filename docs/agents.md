@@ -76,7 +76,9 @@ mode = "inherit"
 
 `tools` names built-in or `mcp__` tools; leave it out to give the type every tool its parent has.
 The toolset a subagent really gets is that list **cut down to what its parent has**: a type can
-never reach a tool its parent lacks. A type whose `tools` names `agent` also gets `job_output` (when its parent has it), which it needs to wait for the background subagents it starts; `disallowed` can still remove it. `agent` is withheld from a subagent at the nesting limit.
+never reach a tool its parent lacks. A type whose `tools` names `agent` also gets `job_output` (when its parent has it), which it
+needs to wait for the background subagents it starts; `disallowed` can still remove it. `agent` is
+withheld from a subagent at the nesting limit.
 A subagent with `todo_write` keeps its own list, which is not shown in the UI and not saved with the session.
 
 ## Forking the conversation
