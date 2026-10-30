@@ -260,11 +260,14 @@ overrides the search; a path that is not a file means there is no interpreter. F
 an error: the tool is simply not offered to the model, and on Linux and macOS it never is.
 
 - **Same call, same limits.** It takes `shell`'s arguments and follows its confinement, timeout
-  cap, output cut, [background jobs](#background-jobs) and environment rules. Cancelling or timing
+  cap, output cut, [background jobs](#background-jobs) and environment rules; only the output
+  that kills a command in a subagent is larger (64 MB, not 10 MB). Cancelling or timing
   out a call stops only the interpreter process, not any program it started.
 - **The command runs as written.** The interpreter starts with `-NoProfile -NonInteractive`, the
   command passed in encoded form so the Windows command line cannot re-parse it, and a short
-  fixed preamble that silences progress output and makes the console print UTF-8. What the
+  fixed preamble that silences progress output and makes the console print UTF-8; leading
+  `using namespace`, `using module` and `using assembly` lines are moved ahead of it, since
+  PowerShell requires them first. What the
   [guardian](guardian.md) judges and the approval prompt shows is the plain command.
 - **Exit codes.** A literal `exit N` sets the exit code. A failing native command does not, and
   `Write-Error` alone exits 0: this is how PowerShell treats an encoded command. Check

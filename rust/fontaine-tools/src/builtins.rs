@@ -583,10 +583,19 @@ impl Tool for PowerShellTool {
 
     fn description(&self) -> String {
         let max = self.shell.max_timeout.max(1);
+        let kept = match self.shell.cut {
+            Some(cut) => format!(
+                "; past {} lines or {} KB, its first and last lines and the lines with errors \
+                 or failures from between",
+                cut.lines,
+                cut.bytes / 1024
+            ),
+            None => String::new(),
+        };
         format!(
             "Run a PowerShell command in the current directory, or in cwd, with {}. Write \
                 PowerShell syntax, not POSIX `sh`: use `shell` for that. stdin is empty. Returns \
-                the exit code and stdout and stderr interleaved line by line. Only a literal \
+                the exit code and stdout and stderr interleaved line by line{kept}. Only a literal \
                 `exit N` sets the exit code; a failing native command does not. A command still \
                 running at timeout_secs (default {}, at most {max}), or, with the default, once it \
                 printed nothing for {}s, keeps running as a background job and you are told when \
@@ -1018,6 +1027,27 @@ mod tests {
         assert_eq!(quiet_for(None, two_minutes), Some(QUIET_LIMIT));
         assert_eq!(quiet_for(Some(120), two_minutes), None);
         assert_eq!(quiet_for(None, Duration::from_secs(30)), None);
+    }
+
+    #[test]
+    fn the_powershell_description_says_what_the_output_cut_keeps() {
+        let tool = PowerShellTool {
+            shell: Shell {
+                cut: Some(OutputLimit::default()),
+                ..Shell::default()
+            },
+            interpreter: PathBuf::from("pwsh.exe"),
+            jobs: None,
+        };
+        assert!(tool.description().contains("the lines with errors"));
+        let uncut = PowerShellTool {
+            shell: Shell {
+                cut: None,
+                ..Shell::default()
+            },
+            ..tool
+        };
+        assert!(!uncut.description().contains("the lines with errors"));
     }
 
     #[test]

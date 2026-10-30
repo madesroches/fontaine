@@ -53,7 +53,13 @@ pub fn discover(probe: &Probe<'_>) -> Option<PowerShellSettings> {
 /// The arguments that run `command` under the preamble. The script travels as UTF-16LE base64
 /// so the Windows command line cannot re-parse it.
 pub fn launch_args(command: &str) -> Vec<OsString> {
-    let script = format!("{PREAMBLE}\n{command}");
+    let (usings, rest) = split_usings(command);
+    let break_after = if usings.is_empty() || usings.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let script = format!("{usings}{break_after}{PREAMBLE}\n{rest}");
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     [
         "-NoProfile",
@@ -66,6 +72,28 @@ pub fn launch_args(command: &str) -> Vec<OsString> {
     .map(OsString::from)
     .chain([OsString::from(base64(&bytes))])
     .collect()
+}
+
+/// The leading `using` statements of `command` (with the blank lines before them) and the rest.
+/// PowerShell rejects a `using` that follows any other statement, so they must precede the preamble.
+fn split_usings(command: &str) -> (&str, &str) {
+    let mut end = 0;
+    let mut kept = 0;
+    for line in command.split_inclusive('\n') {
+        let trimmed = line.trim_start().to_ascii_lowercase();
+        let is_using = ["namespace", "module", "assembly"].iter().any(|kind| {
+            trimmed.strip_prefix("using").is_some_and(|after| {
+                after.starts_with(char::is_whitespace) && after.trim_start().starts_with(kind)
+            })
+        });
+        end += line.len();
+        if is_using {
+            kept = end;
+        } else if !line.trim().is_empty() {
+            break;
+        }
+    }
+    command.split_at(kept)
 }
 
 fn base64(bytes: &[u8]) -> String {
@@ -165,6 +193,28 @@ mod tests {
             let script = decoded_script(command);
             assert_eq!(script, format!("{PREAMBLE}\n{command}"));
             assert!(script.ends_with(command));
+        }
+    }
+
+    #[test]
+    fn leading_using_statements_move_ahead_of_the_preamble() {
+        let script =
+            decoded_script("using namespace System.IO\n\nUSING module Foo\r\n[File]::Exists('x')");
+        assert_eq!(
+            script,
+            format!(
+                "using namespace System.IO\n\nUSING module Foo\r\n{PREAMBLE}\n[File]::Exists('x')"
+            )
+        );
+        let script = decoded_script("using namespace System.IO");
+        assert_eq!(script, format!("using namespace System.IO\n{PREAMBLE}\n"));
+        // Only a leading statement is moved; text that merely mentions `using` stays put.
+        for command in [
+            "Write-Host 1\nusing namespace System.IO",
+            "Write-Host using namespace",
+            "usingnamespace x",
+        ] {
+            assert_eq!(decoded_script(command), format!("{PREAMBLE}\n{command}"));
         }
     }
 

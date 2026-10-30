@@ -67,6 +67,20 @@ async fn the_command_runs_in_the_working_directory() {
 }
 
 #[tokio::test]
+async fn a_leading_using_statement_runs() {
+    let d = Dirs::new();
+    let out = call(
+        &tools(&d),
+        "powershell",
+        json!({"command": "using namespace System.IO\n[Path]::GetFileName('a\\b.txt')"}),
+    )
+    .await
+    .unwrap();
+    assert!(text(&out).contains("b.txt"), "{}", text(&out));
+    assert!(!text(&out).contains("ParserError"), "{}", text(&out));
+}
+
+#[tokio::test]
 async fn a_literal_exit_code_is_kept() {
     let d = Dirs::new();
     let out = call(&tools(&d), "powershell", json!({"command": "exit 7"}))

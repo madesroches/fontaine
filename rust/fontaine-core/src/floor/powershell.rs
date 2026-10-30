@@ -92,6 +92,13 @@ fn scan(command: &str, base: &Path, env: &CriticalEnv<'_>) -> Option<String> {
         if !quoted && text.starts_with('-') && is_com_object_option(&option_name(text)) {
             return Some("a COM object can delete files this check cannot see".to_string());
         }
+        if matches!(
+            name.as_str(),
+            "invoke-cimmethod" | "icim" | "invoke-wmimethod" | "iwmi"
+        ) && names_delete_method(&tokens[at + 1..])
+        {
+            return Some("a CIM or WMI method call deletes".to_string());
+        }
         if matches!(name.as_str(), "foreach-object" | "foreach" | "%")
             && names_delete_member(&tokens[at + 1..])
         {
@@ -99,7 +106,7 @@ fn scan(command: &str, base: &Path, env: &CriticalEnv<'_>) -> Option<String> {
         }
     }
     if let Some(Token::Sep('&')) = tokens.last() {
-        return Some("the command name cannot be resolved".to_string());
+        return Some("a trailing `&` runs the command in the background".to_string());
     }
     let mut mentions = false;
     for (at, token) in tokens.iter().enumerate() {
@@ -203,7 +210,31 @@ fn calls_string_eval(command: &str) -> bool {
 /// `-ComObject` or an abbreviation of it: `Scripting.FileSystemObject` deletes through methods
 /// this scan does not follow.
 fn is_com_object_option(name: &str) -> bool {
-    name.len() >= 3 && "comobject".starts_with(name)
+    name.len() >= 2 && "comobject".starts_with(name)
+}
+
+/// Whether `-MethodName` (or `-Name`) of a CIM or WMI method call names a `Delete…` method.
+fn names_delete_method(rest: &[Token]) -> bool {
+    rest.iter().enumerate().any(|(at, token)| {
+        let Token::Word { text, .. } = token else {
+            return false;
+        };
+        if !text.starts_with('-') {
+            return false;
+        }
+        let option = option_name(text);
+        if option != "name" && !(option.len() >= 2 && "methodname".starts_with(option.as_str())) {
+            return false;
+        }
+        let value = match text.split_once(':') {
+            Some((_, inline)) if !inline.is_empty() => Some(inline),
+            _ => match rest.get(at + 1) {
+                Some(Token::Word { text, .. }) => Some(text.as_str()),
+                _ => None,
+            },
+        };
+        value.is_some_and(|v| v.to_ascii_lowercase().starts_with("delete"))
+    })
 }
 
 /// Whether the words after `ForEach-Object` name a `Delete…` member to call on each piped
@@ -303,11 +334,14 @@ fn tokenize(text: &str) -> Vec<Token> {
                 }
             }
         } else if c == '`' {
-            word.started = true;
             match chars.next() {
-                // A backtick before a line break continues the line.
-                Some('\n' | '\r') | None => {}
-                Some(escaped) => word.text.push(escaped),
+                // A backtick before a line break continues the line; it must not leave an empty
+                // word behind, which would hide a non-literal word after a call operator.
+                Some('\n' | '\r') | None => word.flush(&mut tokens),
+                Some(escaped) => {
+                    word.started = true;
+                    word.text.push(escaped);
+                }
             }
         } else if c.is_whitespace() {
             word.flush(&mut tokens);
@@ -714,6 +748,12 @@ mod tests {
             "$o.'Delete'()",
             "(New-Object -ComObject Scripting.FileSystemObject).DeleteFolder('x')",
             "New-Object -Com Scripting.FileSystemObject",
+            "New-Object -Co Scripting.FileSystemObject",
+            "Invoke-CimMethod -InputObject $d -MethodName Delete",
+            "Invoke-CimMethod -MethodName:'DeleteTree' -InputObject $d",
+            "icim -Name Delete -InputObject $d",
+            "Invoke-WmiMethod -Path $p -Name Delete",
+            "iwmi -Name:delete -Path $p",
             "Get-Item $HOME | ForEach-Object Delete",
             "Get-Item x | % Delete",
             "Get-Item x | % -MemberName Delete -ArgumentList $true",
@@ -726,6 +766,8 @@ mod tests {
     #[test]
     fn a_non_literal_command_name_is_critical() {
         for command in [
+            "$t='Remove-Item'; &`\n    $t -Recurse -Force C:\\Users\\me",
+            "$t='Remove-Item'; &`\r\n    $t -Recurse -Force C:\\Users\\me",
             "& $tool C:\\",
             "& (Get-Command rm) x",
             ". $script",
