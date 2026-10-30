@@ -96,6 +96,35 @@ async fn schema_answers_that_are_not_a_valid_verdict_are_retried_then_unparseabl
 }
 
 #[tokio::test]
+async fn a_schema_answer_with_an_unknown_label_is_retried_with_the_reason() {
+    let endpoint = Endpoint::start(vec![
+        text(verdict("allow", "Untrusted code integration", 0.9)),
+        text(allow(0.9)),
+    ])
+    .await;
+    let result = schema_guardian(&endpoint)
+        .adjudicate(&request("ls", false))
+        .await;
+    assert_eq!(result.decision, Decision::Allow);
+    let sent = endpoint.requests().await;
+    assert_eq!(sent.len(), 2);
+    let second = sent[1]["messages"].as_array().unwrap().last().unwrap()["content"].to_string();
+    assert!(
+        second.contains("Your previous answer was rejected"),
+        "{second}"
+    );
+    assert!(
+        second.contains("Copy one of those labels exactly"),
+        "{second}"
+    );
+    assert!(
+        !sent[0]["messages"]
+            .to_string()
+            .contains("previous answer was rejected")
+    );
+}
+
+#[tokio::test]
 async fn a_schema_verdict_whose_decision_and_label_disagree_is_rejected() {
     let endpoint = Endpoint::start(vec![text(verdict("allow", "Git Destructive", 0.99))]).await;
     let result = schema_guardian(&endpoint)

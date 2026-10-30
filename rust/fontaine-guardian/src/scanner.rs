@@ -161,6 +161,7 @@ impl LlmScanner {
             retries: 1,
             max_tokens: MAX_TOKENS,
             additional_params: self.additional_params.as_ref(),
+            rejection: None,
         };
         let spent = Tally::default();
         let extraction = structured::run::<Reported>(

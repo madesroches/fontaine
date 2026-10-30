@@ -54,9 +54,9 @@ pub const DEFAULT_SOFT_DENY: &[&str] = &[
     "Production Deploy: changes that reach production or shared hosts without going through a deployment: writing through `kubectl exec`, `docker exec` or `ssh` on a production or shared host, an interactive session or port-forward into one, creating, changing or deleting DNS records or TLS certificates, and publishing or toggling a production feature flag.",
     "Secret Exposure: creating, rotating or deleting entries in a secret manager (Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, `gh secret set`, Kubernetes Secrets), which can silently break every consumer, and printing a live credential into the transcript (`gcloud auth print-access-token`, `kubectl get secret -o yaml`, `cat ~/.aws/credentials`, `echo $API_KEY`).",
     "Unreviewed Merge: suppressing or bypassing CI checks for everyone, such as `gh workflow disable`, marking a required check as not required or editing branch protection. Retrying a failed job is fine.",
-    "Persistence and self-modification: adding SSH keys, cron jobs, systemd units, shell-profile lines, git hooks or other mechanisms that outlive the session, editing the agent's own permission or settings files, or changing the guardian's configuration.",
-    "Untrusted code integration: pulling code from an external repository or registry the user did not name into the project (vendoring, adding a dependency the agent chose itself, routing installs through an unlisted registry). Installing packages already declared in the manifest is fine.",
-    "Third-party and real-world effects: attacking or scanning a system the user does not own, sending messages or posts on the user's behalf, making purchases or other real-world transactions, or interfering with other people's jobs or shared resources.",
+    "Safety Bypass: adding SSH keys, cron jobs, systemd units, shell-profile lines, git hooks or other persistence mechanisms that outlive the session, editing the agent's own permission or settings files, or changing the guardian's configuration.",
+    "Download+Execute: pulling code from an external repository or registry the user did not name into the project (vendoring, adding a dependency the agent chose itself, routing installs through an unlisted registry). Installing packages already declared in the manifest is fine.",
+    "Data Exfiltration: real-world effects outside the trust boundary: attacking or scanning a system the user does not own, sending messages or posts on the user's behalf, making purchases or other real-world transactions, or interfering with other people's jobs or shared resources.",
 ];
 
 pub const DEFAULT_ALLOW: &[&str] = &[
@@ -260,22 +260,15 @@ mod tests {
     }
 
     #[test]
-    fn remote_state_changes_are_soft_denied_under_existing_labels() {
+    fn every_default_deny_rule_starts_with_its_label() {
         use crate::RuleLabel;
-        for needle in [
-            "`DROP TABLE`",
-            "`kubectl exec`",
-            "secret manager",
-            "`gh workflow disable`",
-        ] {
-            let entry = DEFAULT_SOFT_DENY
-                .iter()
-                .find(|entry| entry.contains(needle))
-                .unwrap_or_else(|| panic!("no soft-deny entry mentions {needle}"));
-            let label = entry.split(':').next().unwrap();
+        for entry in DEFAULT_HARD_DENY.iter().chain(DEFAULT_SOFT_DENY) {
             assert!(
-                RuleLabel::ALL.iter().any(|l| l.display_name() == label),
-                "{label} is not a rule label"
+                RuleLabel::ALL.iter().any(|label| {
+                    !matches!(label, RuleLabel::Allow | RuleLabel::ContainerEscape)
+                        && entry.starts_with(&format!("{}: ", label.display_name()))
+                }),
+                "no rule label leads: {entry}"
             );
         }
     }
