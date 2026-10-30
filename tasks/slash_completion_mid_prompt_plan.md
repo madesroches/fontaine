@@ -107,15 +107,15 @@ adds no space, the menu stays open, and the selection resets to row 0 because th
 changed. Otherwise Tab accepts the selected row. The otherwise case covers a single match, a
 prefix that does not narrow (a second Tab), and matches found through an alias or a contains match,
 whose names do not start with the typed text. So `/zork-al` + Tab gives `/zork-alpha` (both
-`zork-alpha*` still listed), and a second Tab accepts the selected `zork-alpha`. Claude Code skips
-the prefix step; this deviation is recorded below.
+`zork-alpha*` still listed), and a second Tab accepts the selected `zork-alpha`.
 
 **Accepting.** `complete_slash(name, space)` becomes `accept_slash(&menu, entry)`:
 - Bare: the current behavior. The whole input becomes `/name`, with a space only when the entry
   has a hint.
 - Inline: `replace_range(token.start, token.end, "/name")`, followed by a space unless the char
   after `token.end` is already whitespace. This mirrors `@` acceptance and Claude Code's inline
-  space, without doubling an existing one. Text before and after the token is untouched.
+  space, without doubling an existing one. Text before and after the token is untouched. When no space is added, the cursor sits right
+after the name, so the menu stays open on the exact match, as in the bare case.
 
 Both reset history navigation as today.
 
@@ -178,7 +178,6 @@ leave the cursor at the end, so this only shows after the cursor has been moved 
 - Enter with an inline menu open submits the message as typed (Claude Code's behavior); only a bare
   `/name` runs on Enter, because running a built-in from mid-prompt would discard the surrounding
   text.
-- The bare menu now needs the cursor inside the token, as `@` does (see Design).
 
 ## Documentation
 
@@ -190,6 +189,8 @@ leave the cursor at the end, so this only shows after the cursor has been moved 
   `/name`, and inline it sends the message. Replace "The menu only opens while the input is a bare
   `/name`" with the cursor-in-token rule, keeping the existing guard list (panels, history search,
   `@` list, recalled history).
+- Line 110 ("Typing `/` as the first character lists the commands and skills…"): rewrite to say
+  `/` at the start of the input or after a space.
 - Main key table, Enter row (`docs/tui.md:93`): with the slash menu open, Enter runs the selected
   command only for a bare `/name`; inline it sends the message.
 
@@ -208,13 +209,13 @@ All of this is reachable with unit tests in `app.rs` (existing `type_text`/`pres
     `hello /mod x` with the cursor at the end does not.
   - Inline Tab on a single match: `please run /add` + Tab gives `please run /add-dir ` and the
     menu closes. With text after the token (`run /cle now`, cursor after `cle`), the text after it
-    is kept and no double space appears.
+    is kept, no double space appears, and `slash_menu().is_some()` (the exact match).
   - Common prefix: a menu with entries `zork-alpha`, `zork-alphabet` and `zork-beta`. `/zork-al`
     + Tab gives `/zork-alpha` with the menu still open. A second Tab accepts `zork-alpha`, keeping
     the bare space rule. `/zork-` + Tab accepts the selected row, because the prefix does not
     narrow.
   - An alias or contains match: `/reset` + Tab still gives `/clear`, and `/mod` + Tab still gives
-    `/model` (contains-match `guardian-model` blocks the prefix step).
+    `/model ` with the trailing space, since `model` has a hint (contains-match `guardian-model` blocks the prefix step).
   - Inline Enter returns `Action::Submit` with the text as typed. Bare Enter keeps its existing
     tests.
   - Selection keyed on the token: moving the selection, then editing another `/token` with the
