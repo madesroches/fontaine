@@ -17,8 +17,9 @@
 # workspace lives in `rust/`, so every command runs there and the artifact paths that GitHub's
 # actions resolve from the repository root are prefixed with `rust/`. The `plan` and `host` jobs
 # also copy the root `CHANGELOG.md` into `rust/`, where dist looks for release notes, and `plan`
-# fails a tag with no changelog section. `plan` retries the installer download, since one transient
-# error from GitHub Releases would otherwise turn a PR red.
+# fails a tag with no changelog section. `plan` retries the whole dist install (the installer
+# script and the archive it fetches), since one transient error from GitHub Releases would
+# otherwise turn a PR red.
 name: Release
 permissions:
   "contents": "write"
@@ -78,7 +79,14 @@ jobs:
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
         shell: bash
-        run: "curl --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh"
+        run: |
+          for attempt in 1 2 3; do
+            if curl --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
       - name: Cache dist
         uses: actions/upload-artifact@v7
         with:
