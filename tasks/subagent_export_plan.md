@@ -263,26 +263,26 @@ fact of their work. This is documented, not worked around.
 - 2026-11-21 (authoring, user call): persistence is folded into this plan — subagent
   conversations persist as per-agent logs in the session store — instead of shipping export-time
   reads first and persisting later.
-- Agent ids stay `agent-<n>` and become stable across `--resume` via a counter derived from the
+- 2026-11-21: Agent ids stay `agent-<n>` and become stable across `--resume` via a counter derived from the
   ledger's `spawned` records; no `agents.json`, no UUIDs (user proposed UUIDs; the counter was
   chosen for display/addressing ergonomics with the same guarantee).
-- The per-agent log's name is the agent id; logs live in the session store's `logs/` beside
+- 2026-11-21: The per-agent log's name is the agent id; logs live in the session store's `logs/` beside
   `main.jsonl`.
-- Root rewind and `/clear` do not touch agent logs; the export lists every agent recorded in
+- 2026-11-21: Root rewind and `/clear` do not touch agent logs; the export lists every agent recorded in
   the ledger, and a transcript stands as per-agent evidence of work the root conversation no
   longer shows.
-- A running subagent is exported rather than refused; its file holds completed runs only (rig
+- 2026-11-21: A running subagent is exported rather than refused; its file holds completed runs only (rig
   saves at run end), and the index row says so.
-- The export is a folder (`fontaine-<id8>/` with `main.md` and one `<agent-id>.md` per
+- 2026-11-21: The export is a folder (`fontaine-<id8>/` with `main.md` and one `<agent-id>.md` per
   subagent) whenever any subagent is recorded; a single file exactly as today otherwise. Zip and
   single-file layouts were offered and rejected.
-- `/export` remains view-independent (running it from a subagent view exports the whole
+- 2026-11-21: `/export` remains view-independent (running it from a subagent view exports the whole
   session), continuing the subagent-view plan's routing decision.
-- The index lists id, parent, agent type and status per subagent; `background` and `depth` are
-  omitted.
-- Agent logs accumulate for the session's life and are pruned only when the session is deleted;
-  extending `/clear` epoch semantics to them is a follow-up if session dirs grow uncomfortably.
-  Accepted for v1.
+- 2026-11-21: The index lists id, parent, agent type and status per subagent; `background`
+  and `depth` are omitted.
+- 2026-11-21: Agent logs accumulate for the session's life and are pruned only when the
+  session is deleted; extending `/clear` epoch semantics to them is a follow-up if session dirs
+  grow uncomfortably. Accepted for v1.
 
 ## Documentation
 
