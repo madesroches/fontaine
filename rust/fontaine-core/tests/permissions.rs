@@ -1,12 +1,16 @@
 mod common;
 
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::sync::Arc;
 
 use common::pipeline::{Options, Rig, allow_verdict, allowed, denied_message, fake_guardian};
 use fontaine_core::audit::Decision;
 use fontaine_core::config::PermissionMode::{self, AcceptEdits, DontAsk, Manual, Plan};
-use fontaine_core::permissions::{Answer, ApprovalRequest};
+use fontaine_core::permissions::Answer;
+#[cfg(unix)]
+use fontaine_core::permissions::ApprovalRequest;
 use fontaine_core::tier::Tier;
 use serde_json::{Value, json};
 
@@ -301,8 +305,8 @@ async fn external_reads_follow_the_mode_matrix_and_never_take_a_fast_path() {
     assert_eq!(rig.audit()[0].tier, Mode);
 }
 
-#[tokio::test]
-async fn external_reads_keep_the_floor_and_their_preapproved_tiers() {
+#[cfg(unix)]
+async fn symlinked_external_reads_keep_the_floor() {
     // A workspace symlink pointing outside every root, and a home directory the rules
     // anchor at without knowing either temp world's layout. The TempDir guard outlives
     // the rig: dropping it deletes the home the symlink points at.
@@ -315,7 +319,6 @@ async fn external_reads_keep_the_floor_and_their_preapproved_tiers() {
         options.home = Some(home.clone());
         options.settings = format!("[permissions]\n{rule_list} = [\"{rule}\"]\n");
         let rig = Rig::with(options);
-        #[cfg(unix)]
         std::os::unix::fs::symlink(&home, rig.work().join("linked")).unwrap();
         (rig, home, tmp)
     }
@@ -330,7 +333,6 @@ async fn external_reads_keep_the_floor_and_their_preapproved_tiers() {
         options.home = Some(home.clone());
         options.settings = "[permissions]\ndeny = [\"read(~/outside/secret.txt)\"]\n".into();
         let rig = Rig::with(options);
-        #[cfg(unix)]
         {
             std::os::unix::fs::symlink(&home, rig.work().join("linked")).unwrap();
             let d = rig
@@ -352,37 +354,37 @@ async fn external_reads_keep_the_floor_and_their_preapproved_tiers() {
     options.guardian = Some(fake.guardian.clone());
     options.settings = "[permissions]\nask = [\"read(~/outside/secret.txt)\"]\n".into();
     let rig = Rig::with(options);
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(&home, rig.work().join("linked")).unwrap();
-        rig.approver.answer(Answer::AllowOnce);
-        assert!(allowed(
-            &rig.check("read", json!({"path": "linked/outside/secret.txt"}))
-                .await
-        ));
-        assert_eq!(rig.approver.asked(), 1);
-        assert_eq!(fake.calls(), 0);
-    }
+    std::os::unix::fs::symlink(&home, rig.work().join("linked")).unwrap();
+    rig.approver.answer(Answer::AllowOnce);
+    assert!(allowed(
+        &rig.check("read", json!({"path": "linked/outside/secret.txt"}))
+            .await
+    ));
+    assert_eq!(rig.approver.asked(), 1);
+    assert_eq!(fake.calls(), 0);
 
     // A home-anchored allow rule runs the call at the allow_rule tier, and the allowed
     // arguments are the resolved target, never the alias the call was written with.
     let (rig, home, _tmp) = rig_with("allow", "read(~/outside/secret.txt)");
-    #[cfg(unix)]
-    {
-        let decision = rig
-            .check("read", json!({"path": "linked/outside/secret.txt"}))
-            .await;
-        match decision {
-            fontaine_tools::gate::GateDecision::Allow { args } => {
-                assert_eq!(
-                    args,
-                    json!({"path": home.join("outside/secret.txt").to_str().unwrap()})
-                );
-            }
-            other => panic!("{other:?}"),
+    let decision = rig
+        .check("read", json!({"path": "linked/outside/secret.txt"}))
+        .await;
+    match decision {
+        fontaine_tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(
+                args,
+                json!({"path": home.join("outside/secret.txt").to_str().unwrap()})
+            );
         }
-        assert_eq!(rig.audit()[0].tier, Tier::AllowRule);
+        other => panic!("{other:?}"),
     }
+    assert_eq!(rig.audit()[0].tier, Tier::AllowRule);
+}
+
+#[tokio::test]
+async fn external_reads_keep_the_floor_and_their_preapproved_tiers() {
+    #[cfg(unix)]
+    symlinked_external_reads_keep_the_floor().await;
 
     // dontAsk denies an external read no rule covers.
     let rig = Rig::new(DontAsk);
@@ -458,12 +460,14 @@ async fn an_external_read_prompt_shows_the_resolved_grep_and_glob_target() {
 
 /// An approver that retargets the symlink after the pipeline has resolved the call, so an
 /// approval granted mid-decision cannot redirect the call to the new target.
+#[cfg(unix)]
 struct Retargeting {
     link: std::sync::Mutex<Option<std::path::PathBuf>>,
     new_target: std::sync::Mutex<Option<std::path::PathBuf>>,
     requests: std::sync::Mutex<Vec<ApprovalRequest>>,
 }
 
+#[cfg(unix)]
 impl Retargeting {
     fn aim(&self, link: std::path::PathBuf, new_target: std::path::PathBuf) {
         *self.link.lock().unwrap() = Some(link);
@@ -471,20 +475,18 @@ impl Retargeting {
     }
 }
 
+#[cfg(unix)]
 impl fontaine_core::permissions::Approver for Retargeting {
     fn approve<'a>(&'a self, request: ApprovalRequest) -> futures::future::BoxFuture<'a, Answer> {
         Box::pin(async move {
             self.requests.lock().unwrap().push(request);
-            #[cfg(unix)]
-            {
-                let (link, new_target) = (
-                    self.link.lock().unwrap().clone(),
-                    self.new_target.lock().unwrap().clone(),
-                );
-                if let (Some(link), Some(new_target)) = (link, new_target) {
-                    std::fs::remove_file(&link).unwrap();
-                    std::os::unix::fs::symlink(&new_target, &link).unwrap();
-                }
+            let (link, new_target) = (
+                self.link.lock().unwrap().clone(),
+                self.new_target.lock().unwrap().clone(),
+            );
+            if let (Some(link), Some(new_target)) = (link, new_target) {
+                std::fs::remove_file(&link).unwrap();
+                std::os::unix::fs::symlink(&new_target, &link).unwrap();
             }
             Answer::AllowOnce
         })
