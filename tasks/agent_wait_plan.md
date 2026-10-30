@@ -127,8 +127,9 @@ removes it.
     reveals nothing more than `send_message` does.
 - Waiting is strictly narrower than `deliver`'s reachability: only the spawning parent may wait,
   and it is the only agent its child's report reaches.
-- **Everything else** (no id, `job-*` ids) keeps `root_only`. A subagent gets the existing
-  refusal, reworded to "a subagent can use `job_output` only with the id of a subagent it started".
+- **Everything else** (no id, `job-*` ids) keeps `root_only`. `root_only` and the `job_cancel` and `monitor` refusal wording are unchanged;
+  `job_output` gets its own subagent refusal, "a subagent can use `job_output` only with the id of
+  a subagent it started".
 - Ids are routed by prefix (`agent-` vs anything else). Agent ids come from
   `format!("agent-{n}")` (`tree.rs:354`), and job ids never start with `agent-`.
 - **`job_cancel`** keeps refusing agent ids, because the model gets no kill. `UnknownJob`'s Display
@@ -216,7 +217,10 @@ must mean **no deadline**. It must no longer mean "expired":
      `from == id`), the node's `Killed` status and `info.background`. If the deadline has passed,
      return `Running`. Otherwise `select!` on the notification and `sleep_until(deadline)`, or on
      the notification alone when there is no deadline.
-  3. Because `notify_report` runs before `finish`, an `Ended` with no queued report that is not
+  3. A `Report` from the id queued in the caller's inbox wins over `Killed`: a kill can land
+     between `notify_report` and `finish`, and the report is still delivered, so the outcome is
+     *report queued* ("report follows as a notification"). Because `notify_report` runs before
+     `finish`, an `Ended` with no queued report that is not
      `Killed` means the report was already drained. The one exception is a drain by a parallel
      result in the same batch, which delivered it anyway.
 - `has_message(agent) -> bool`: whether the agent's inbox holds a `Message` note.
@@ -234,8 +238,9 @@ must mean **no deadline**. It must no longer mean "expired":
 
 ### Toolsets (`rust/fontaine-agents/src/registry.rs`, `spawn.rs`)
 
-`AgentType::toolset`: a type whose `tools` list names `agent` also gets `job_output` when the
-parent has it, and a `disallowed` entry removing `agent` does not touch `job_output`. Without this,
+`AgentType::toolset`: a type whose `tools` list names `agent` also gets `job_output` in its wanted
+set when the parent has it. `disallowed` is still applied after `tools`, so an entry naming
+`job_output` removes it, and an entry removing `agent` does not touch `job_output`. Without this,
 a user type with `tools = ["read", "agent"]` could start background children it can never wait for.
 The depth cap leaves `job_output` in place, because a child at the cap can hold no `agent-*` ids
 and is refused on every other id. The cut-down-to-parent rule is unchanged, and the root always
@@ -258,13 +263,15 @@ arrives later as a notification, or call `job_output` with the id to wait for it
 2. **`Jobs::output` deadline fix** (`jobs.rs`) and its unit tests.
 3. **`JobOutputTool`** (`jobs/tools.rs`): routing, per-id access, defaults, wake race, agent
    rendering, the new description and schema, and removal of `MAX_WAIT_SECS`. Add the `env`
-   plumbing in `builtins.rs`. Give `UnknownJob`'s Display the agent hint.
+   plumbing in `builtins.rs`; the `BuiltinEnv` struct literal in
+   `rust/fontaine-tools/tests/common/mod.rs` fills the new fields with `None`. Give `UnknownJob`'s Display the agent hint.
 4. **Tree** (`tree.rs`): `started`, `live_status`, `has_message`, and `impl AgentWaits`, with
    tests.
 5. **Toolsets and spawn** (`registry.rs`, `spawn.rs`): pair `job_output` with `agent`, and update
    `AgentTool::description`.
 6. **Core** (`tools.rs` `RegistryParams`, `agent/build.rs`, `child_runner.rs` `CoreWake`, and
-   `steering.rs` `has_deliverable_message`).
+   `steering.rs` `has_deliverable_message`). The `RegistryParams` literals in
+   `fontaine-core/tests/choke_point.rs` and `extensions.rs` fill the new fields with `None`.
 7. **Descriptor aliases** (`descriptor.rs` and its test).
 8. **Integration tests** (`fontaine-tools/tests/jobs.rs`, `fontaine-agents/tests/seam.rs` and
    `fontaine/tests/parallel_agents.rs`).
@@ -274,11 +281,13 @@ arrives later as a notification, or call `job_output` with the id to wait for it
 
 - `rust/fontaine-tools/src/jobs.rs`, `rust/fontaine-tools/src/jobs/tools.rs`,
   `rust/fontaine-tools/src/jobs/tests.rs`, `rust/fontaine-tools/src/builtins.rs`,
-  `rust/fontaine-tools/src/descriptor.rs`, `rust/fontaine-tools/tests/jobs.rs`
+  `rust/fontaine-tools/src/descriptor.rs`, `rust/fontaine-tools/tests/jobs.rs`,
+  `rust/fontaine-tools/tests/common/mod.rs`
 - `rust/fontaine-agents/src/tree.rs`, `rust/fontaine-agents/src/spawn.rs`,
   `rust/fontaine-agents/src/registry.rs`, `rust/fontaine-agents/tests/seam.rs`
 - `rust/fontaine-core/src/tools.rs`, `rust/fontaine-core/src/agent/build.rs`,
-  `rust/fontaine-core/src/child_runner.rs`, `rust/fontaine-core/src/steering.rs`
+  `rust/fontaine-core/src/child_runner.rs`, `rust/fontaine-core/src/steering.rs`,
+  `rust/fontaine-core/tests/choke_point.rs`, `rust/fontaine-core/tests/extensions.rs`
 - `rust/fontaine/tests/parallel_agents.rs`
 - `docs/agents.md`, `docs/tools.md`, `docs/extensions.md`
 - `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (`## Decisions`)
@@ -331,7 +340,6 @@ arrives later as a notification, or call `job_output` with the id to wait for it
   omitted value means "until it ends" for a subagent and "now" for a job. Any wait returns early on
   a message or a user interjection. Claude Code's removed `TaskOutput` capped waits at 600 s (#301).
   This line goes into the master plan's `## Decisions`.
-- The maintainer chose to unify on `job_output`, remove the caps, and leave out agent listing.
 - A subagent may call `job_output` only with the id of a subagent it started; jobs and the list
   stay root-only.
 
@@ -348,7 +356,10 @@ arrives later as a notification, or call `job_output` with the id to wait for it
     the per-id access and defaults;
   - the read-only paragraph (line 71) gains the agent-wait status case;
   - the jobs (line 187) and monitor (line 231) bullets drop the 60 s limit and mention the wakes;
-  - line 206, listing what a subagent cannot use, notes the agent-id exception.
+  - line 206, listing what a subagent cannot use, notes the agent-id exception;
+  - line 234 ("Like the other job tools it is for the main conversation only") is reworded
+    because `job_output` is no longer main-conversation only: a subagent may use it with the id of
+    a subagent it started.
 - `docs/extensions.md:65`: the `job_output` row gains `BashOutputTool`, `AgentOutput` and
   `AgentOutputTool`.
 - `CHANGELOG.md`: an `Added` entry (waiting on background subagents through `job_output`) and a
@@ -367,11 +378,14 @@ Unit tests, tree (`tree.rs`):
   holds exactly one report. This pins the race criterion: the wait takes nothing.
 - **Timeout, then a later wait.** A 100 ms wait returns `Running`. After `notify_report` and
   `finish`, a second wait returns `Ended { Queued }`.
-- **No deadline.** A `None` wait parks until `finish` and then returns, with no polling in between
-  (assert the elapsed time tracks the finish time).
+- **No deadline.** Under `#[tokio::test(start_paused = true)]`, spawn
+  the `None` wait, advance time by hours and assert it is still pending, then `finish` and assert
+  it resolves.
 - **Already delivered.** After `take_notifications` it returns `AlreadyDelivered`, and with
   `foreground: true` for a `background: false` child.
 - **Killed.** `kill` during a wait returns `Ended { Killed }`, with nothing queued.
+- **Report queued, then killed.** `notify_report` followed by a `Killed` status returns
+  `Ended { Queued }`.
 - **Refusals.** An unknown id returns `Unknown`. A sibling's child, a parent's id, the caller's own
   id and `ROOT_AGENT` each return `NotYours`.
 - **`has_message`.** It is true for a `deliver`ed note, and false for `Report` and `Job` notes.
@@ -394,7 +408,7 @@ and `WaitWake`):
 Unit tests, `registry.rs` and `steering.rs`:
 
 - A type with `tools = ["read", "agent"]` gets `job_output` when the parent has it; a parent
-  without it never grants it.
+  without it never grants it. `disallowed = ["job_output"]` still removes the pairing.
 - `has_deliverable_message` is true for a leading `Message`, and false when held, when empty, or
   when a `Skill` or `Command` leads.
 
@@ -419,15 +433,21 @@ in the real tool server, and the per-id access through the real gate.
   `job_output {id: "agent-1"}` → `Turn::text("B said: treasure")`, and the child route is
   `.slow(300ms)`. Assert:
   - the `job_output` tool result holds both the ended status and "B found the treasure";
+  - `requests_with(&endpoint, "B found the treasure")` shows exactly one request body, the main
+    conversation's request after its `job_output` call, holding the claim;
   - the main conversation made exactly three requests, with no separate notification turn;
   - there is one `result`.
 - **Nested.** `[agents.types.lead]` has `tools` omitted. The lead route is
   `agent(explore, background)` → `job_output {id}` → text "lead done: …", and the grandchild route
   is slow. Assert the root's `agent` result includes the grandchild's text, and that the
-  grandchild's ledger `finished` status is `done`, not `killed`.
+  grandchild's ledger `finished` status is `done`, not `killed`. Also assert, with
+  `requests_with(&endpoint, "<grandchild text>")`, that exactly one body, the lead's request after
+  its `job_output` call, holds both the ended-status line and "Background agent agent-2".
 
 Existing job and monitor tests that assert the 60 s clamp or the old description are updated to
-the uncapped behavior.
+the uncapped behavior. The refusal loop at `rust/fontaine-tools/tests/jobs.rs:183-192` asserts the
+old wording for `job_output`, `job_cancel` and `monitor`; it is updated so `job_output` expects the
+new message and the other two keep theirs.
 
 ## Open Questions
 
