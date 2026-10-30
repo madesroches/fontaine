@@ -330,7 +330,7 @@ mod tests {
         tools.sort();
         assert_eq!(
             tools,
-            names(&["glob", "grep", "ls", "read", "send_message"])
+            names(&["glob", "grep", "ls", "lsp", "read", "send_message"])
         );
         assert!(!explore.changes_state);
         assert!(spawn(&types, &all, "worker").unwrap().changes_state);

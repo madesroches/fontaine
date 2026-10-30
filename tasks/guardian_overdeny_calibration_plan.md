@@ -458,7 +458,7 @@ Unit tests:
   `..` is not marked, nor is a sibling-prefix path (`<scratch>-x/...`) or a symlink inside scratch
   pointing outside.
   `scratch_dir` is set only when the session has a scratch root.
-- `adjudication.rs` `spawn_facts`: `explore` gives `changes_state = false` with its five tools.
+- `adjudication.rs` `spawn_facts`: `explore` gives `changes_state = false` with its read-only tools (including `lsp`).
   `worker` gives true. A type whose set includes `agent` or an MCP tool gives true. The toolset
   is cut to the parent's, matching `AgentTool`. An unknown type gives `None`. An unknown parent
   toolset gives true; a known, empty resolved toolset gives false.
