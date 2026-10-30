@@ -288,6 +288,17 @@ pub fn validate_case(case: &Case) -> Vec<String> {
         (_, Some(_)) => err("`tool_result` applies to scanner cases only".into()),
     }
 
+    if let Some(value) = case
+        .session_facts
+        .as_ref()
+        .and_then(|facts| facts.get("project_environment"))
+        && let Err(e) =
+            serde_json::from_value::<fontaine_guardian::ProjectEnvironmentFacts>(value.clone())
+    {
+        err(format!(
+            "`session_facts.project_environment` does not parse: {e}"
+        ));
+    }
     if let Some(p) = &case.permissions {
         for (list, rules) in [("deny", &p.deny), ("ask", &p.ask), ("allow", &p.allow)] {
             for rule in rules {

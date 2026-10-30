@@ -30,6 +30,7 @@ Files in these directories:
 | `<config dir>/plugins.toml` | The [plugin and marketplace](plugins.md) registry, written by the `fontaine plugin` CLI. It is not a settings file. |
 | `<data dir>/trust.toml` | Workspace trust record (see [Workspace trust](#workspace-trust)). |
 | `<data dir>/credentials.toml` | Stored API keys (see [Credentials](#credentials)). |
+| `<data dir>/auto_mode/<project>/environment.json` | The project facts `fontaine auto-mode setup` collected for the [guardian](guardian.md#project-environment). Readable by the current user only; the agent's file tools cannot write it unprompted. |
 | `<config dir>/config.lock`, `<config dir>/plugins.lock`, `<data dir>/trust.lock`, `<data dir>/credentials.lock` | Empty lock files beside the files they guard. Sessions hold one while they edit that file, so concurrent edits do not overwrite each other, and briefly while they read the settings or trust file, so a read waits for an edit in progress; safe to delete when no session is running. |
 | `<data dir>/history.jsonl` | What you submitted in the terminal UI, for Up and Ctrl-R recall (see [History](tui.md#history)). Readable by the current user only. |
 | `<data dir>/recent_models.json` | The models you last switched to with `/model` and `/guardian-model`, for the picker's Recent group (see [Choosing a model](tui.md#choosing-a-model)). Readable by the current user only. |
@@ -105,7 +106,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[permissions] allow` | no | yes | yes |
 | `[permissions] additional_directories` | no | yes | yes |
 | `[permissions] auto_tracked_edits`, `auto_scratch_writes` | `false` only | `false` only | yes |
-| `[auto_mode] environment`, `allow` | no | yes | yes |
+| `[auto_mode] environment`, `allow`, `setup_reminder` | no | yes | yes |
 | `[auto_mode] soft_deny`, `hard_deny` | add only | add only | add only |
 | `[agents]` keys and `[agents.types]` | no | yes | yes |
 | `[context] autocompact_window` | no | yes | yes |
@@ -707,7 +708,13 @@ defaults in where it stands.
 `environment` and `allow` loosen, so they come from user-trust scopes only; `soft_deny` and
 `hard_deny` can be added to from any scope. Under the `minimal` profile only `environment` is used.
 
-`fontaine auto-mode config` prints the lists a session would use and which scopes set them; see
+| Key | Meaning | Default |
+|---|---|---|
+| `setup_reminder` | Whether an `auto` session whose project has no stored [environment facts](guardian.md#project-environment) warns to run `fontaine auto-mode setup`. User-trust scopes only: a shared project file cannot set it. | `true` |
+
+`fontaine auto-mode config` prints the lists a session would use and which scopes set them, and
+the project's stored environment record, or `none — run fontaine auto-mode setup`;
+`fontaine auto-mode setup` collects that record. See
 [Inspecting the rules](guardian.md#inspecting-the-rules).
 
 ```toml

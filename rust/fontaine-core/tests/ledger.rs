@@ -683,6 +683,7 @@ fn session_start_round_trips_with_and_without_env_keys() {
         workspace_trust: "trusted".into(),
         git_remotes: Vec::new(),
         env_keys,
+        project_environment: None,
     };
     for keys in [vec![], vec!["HTTPS_PROXY".to_string(), "PATH".to_string()]] {
         let text = serde_json::to_string(&record(keys.clone())).unwrap();

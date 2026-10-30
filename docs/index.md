@@ -32,7 +32,7 @@ describe what the current build does; each page covers one topic.
 - [Plugins and marketplaces](plugins.md): Claude Code's plugin bundles installed from
   git-hosted catalogs, the tighten-only rules they load under, and the `fontaine plugin` CLI.
 - [The terminal UI](tui.md): keys, the status bar, approval prompts, the guardian's denials,
-  `/denied`, `/login`, `/model`, `/guardian-model`, `/guardian-disable`, `/guardian-enable`, `/add-dir`, `/output-style`, `/help`,
+  `/denied`, `/login`, `/model`, `/guardian-model`, `/guardian-disable`, `/guardian-enable`, `/auto-mode-setup`, `/add-dir`, `/output-style`, `/help`,
   `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plugins`, `/plan`, `/copy`, `/expand`, `/memory`, `/init`,
   `/clear`, `/compact`,
   `/context`, `/config`, `/theme`, `/loop` and scheduled prompts, `/goal`, `/resume`, `/branch`,

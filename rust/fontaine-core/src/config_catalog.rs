@@ -406,6 +406,10 @@ pub const KEYS: &[KeyRow] = &[
     row!("auto_mode.hard_deny", List, |c, _| entries(
         c.auto_mode.hard_deny.len()
     )),
+    row!("auto_mode.setup_reminder", Scalar, |c, _| c
+        .auto_mode
+        .setup_reminder
+        .to_string()),
     row!("agents.max_parallel", Scalar, |c, _| c
         .agents
         .max_parallel

@@ -1,4 +1,5 @@
 mod appearance;
+mod auto_mode_setup;
 mod config;
 mod context;
 mod guardian;

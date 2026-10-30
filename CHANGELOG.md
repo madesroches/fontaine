@@ -206,6 +206,18 @@ All notable changes are recorded here. The format follows
   `HF_TOKEN`, always removed from `shell` and hook environments), with the Llama 4 Community
   License notice shown on every startup in every mode. `llm` uses the guardian's model;
   `command` runs your own program (stdin `{tool, content}`, stdout `{verdict, reason}`).
+- `fontaine auto-mode setup` (and `/auto-mode-setup` in the terminal UI) collects a project's
+  environment once and stores it in the data directory: repo visibility, default branch
+  protection and deploy environments from the authenticated GitHub API through `gh`, tag-release
+  workflows, workflow environments, package-registry hosts and `.env*` files from repository
+  files, and, in a trusted workspace, sensitive locations, deploy targets, protected targets and
+  trusted destinations proposed by a model scan on the guardian's model. The user reviews the
+  scan's proposals before anything is saved. Sessions load the record without a network call and
+  give the guardian its facts: a `public` remote relaxes data-exfiltration only for tracked
+  content, an accepted trusted destination counts as a trust-slot entry, and a `public` fact
+  expires after 30 days. An `auto` session without facts warns once to run the command, and
+  `[auto_mode] setup_reminder = false` (user scopes) silences it. `/auto-mode-setup` applies
+  to the running session at once. `fontaine auto-mode config` shows the stored record (#316).
 
 #### Headless
 

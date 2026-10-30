@@ -1,13 +1,19 @@
 //! `fontaine auto-mode`: shows the rules the guardian judges against. Nothing here starts a
 //! session, runs a project executable or changes a setting.
 
+use std::io::{BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 use fontaine_core::config::{Config, Slot};
 use fontaine_core::containment;
 use fontaine_core::dirs::Dirs;
 use fontaine_core::models::{self, GuardianModel, ResolveParams};
+use fontaine_core::project_env::discover::{self, SystemGh};
+use fontaine_core::project_env::sample;
+use fontaine_core::project_env::{self, ProjectEnvironment, ScanStatus};
+use fontaine_core::{audit, ledger, trust};
 use fontaine_guardian::critique::{self, CritiqueError};
+use fontaine_guardian::env_scan;
 use fontaine_guardian::rules::{DEFAULTS_MARKER, has_custom, lists};
 use fontaine_guardian::{EnvironmentConfig, List, Profile, RuleConfig};
 use fontaine_tools::display::escape_controls;
@@ -15,7 +21,7 @@ use fontaine_tools::error_chain::chain;
 use rig_core::completion::Usage;
 use serde_json::{Value, json};
 
-use crate::cli::{AutoModeAction, AutoModeArgs, Cli, ReportFormat};
+use crate::cli::{AutoModeAction, AutoModeArgs, Cli, ReportFormat, SetupArgs};
 use crate::{EXIT_CONFIG, Host, print_warnings};
 
 const NOTHING_TO_CRITIQUE: &str = "nothing to critique: no custom entries";
@@ -27,9 +33,15 @@ pub fn run(cli: &Cli, args: &AutoModeArgs, config: &Config, dirs: &Dirs, host: &
         AutoModeAction::Config(f) => {
             let (profile, warnings) = profile(cli, config);
             print_warnings(&warnings);
-            emit(&config_report(config, profile, f.format))
+            let stored = project_env::load(&dirs.data, &config.workspace);
+            if let Some(warning) = &stored.warning {
+                eprintln!("fontaine: warning: {warning}");
+            }
+            let shown = stored.record.map(project_env::expire_now);
+            emit(&config_report(config, profile, f.format, shown.as_ref()))
         }
         AutoModeAction::Critique(f) => critique_run(cli, config, dirs, host, f.format),
+        AutoModeAction::Setup(args) => setup_run(cli, args, config, dirs, host),
     }
 }
 
@@ -95,8 +107,16 @@ fn semantics(list: List) -> String {
     }
 }
 
-/// The effective lists with where each came from.
-pub fn config_report(config: &Config, profile: Profile, format: ReportFormat) -> String {
+const NO_ENVIRONMENT: &str = "none — run fontaine auto-mode setup";
+
+/// The effective lists with where each came from, and the project's stored environment facts
+/// as a session would use them.
+pub fn config_report(
+    config: &Config,
+    profile: Profile,
+    format: ReportFormat,
+    stored: Option<&ProjectEnvironment>,
+) -> String {
     let (environment, rules) = config.effective_auto_mode();
     let minimal = profile == Profile::Minimal;
     match format {
@@ -119,6 +139,12 @@ pub fn config_report(config: &Config, profile: Profile, format: ReportFormat) ->
                     json!({"scopes": scopes_of(config, list), "entries": entries}),
                 );
             }
+            map.insert(
+                "project_environment".into(),
+                stored.map_or(Value::Null, |record| {
+                    serde_json::to_value(record).expect("a record serializes")
+                }),
+            );
             json_text(&Value::Object(map))
         }
         ReportFormat::Text => {
@@ -144,6 +170,18 @@ pub fn config_report(config: &Config, profile: Profile, format: ReportFormat) ->
                     out.push_str(&format!("  [{origin}] {}\n", escape_controls(entry)));
                 }
                 out.push('\n');
+            }
+            match stored {
+                None => out.push_str(&format!("project_environment: {NO_ENVIRONMENT}")),
+                Some(record) => {
+                    out.push_str(&format!(
+                        "project_environment  (collected {})\n",
+                        record.discovered_at
+                    ));
+                    for line in project_env::report(record, &[]) {
+                        out.push_str(&format!("  {}\n", escape_controls(&line)));
+                    }
+                }
             }
             out.trim_end().to_string()
         }
@@ -286,6 +324,194 @@ async fn critique_models(
     }
 }
 
+/// What the scan step produced for the record and the report.
+struct ScanStep {
+    status: ScanStatus,
+    accepted: Option<project_env::ScanFacts>,
+    dropped: Vec<String>,
+    usage: Option<String>,
+}
+
+impl ScanStep {
+    fn without(status: ScanStatus) -> ScanStep {
+        ScanStep {
+            status,
+            accepted: None,
+            dropped: Vec::new(),
+            usage: None,
+        }
+    }
+}
+
+fn confirm(question: &str) -> bool {
+    eprint!("{question} [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer).is_ok()
+        && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+async fn scan_step(
+    cli: &Cli,
+    args: &SetupArgs,
+    (config, dirs, host): (&Config, &Dirs, &Host),
+    found: &discover::Discovery,
+) -> ScanStep {
+    let gate = project_env::scan_gate(
+        args.no_model,
+        std::io::stdin().is_terminal(),
+        trust::is_trusted(&dirs.data, &config.workspace),
+    );
+    if let Err(why) = gate {
+        return ScanStep::without(ScanStatus::Skipped(why));
+    }
+    let resolved = models::resolve(&ResolveParams {
+        config,
+        data_dir: &dirs.data,
+        env: &*host.env,
+        model_override: cli.model.as_deref(),
+        session_id: None,
+    })
+    .await;
+    let models = match resolved {
+        Ok(models) => models,
+        Err(e) => return ScanStep::without(ScanStatus::Failed(chain(&e))),
+    };
+    print_warnings(&models.notices);
+    let handle = match models.guardian {
+        Some(GuardianModel::Ready(handle)) => handle,
+        Some(GuardianModel::Unavailable { reference, reason }) => {
+            return ScanStep::without(ScanStatus::Failed(format!(
+                "the guardian model {reference} is unavailable: {reason}"
+            )));
+        }
+        None => {
+            return ScanStep::without(ScanStatus::Failed(
+                "no guardian model is configured".to_string(),
+            ));
+        }
+    };
+    let label = handle.reference.to_string();
+    let sample = sample::gather(&found.repo_root, &found.settings);
+    eprintln!(
+        "fontaine: sending a sample of this repository to {label} to propose sensitive locations, deploy targets and trusted destinations (the account's provider receives it)"
+    );
+    let settings = env_scan::Settings {
+        timeout: std::time::Duration::from_secs(config.guardian.timeout_secs),
+        additional_params: handle.thinking_off.clone(),
+    };
+    let proposals = match project_env::propose(&handle.completion, &label, &settings, &sample).await
+    {
+        Ok(proposals) => proposals,
+        Err(e) => return ScanStep::without(ScanStatus::Failed(chain(&e))),
+    };
+    let usage = Some(format!(
+        "{label}: {}",
+        usage_line(&proposals.usage, handle.catalog_billed())
+    ));
+    let count = proposals.scan.count();
+    let mut step = ScanStep {
+        dropped: proposals.dropped,
+        usage,
+        ..ScanStep::without(ScanStatus::Skipped(
+            "the model proposed nothing".to_string(),
+        ))
+    };
+    if count == 0 {
+        return step;
+    }
+    eprintln!("\n{}\n", sample::review_text(&proposals.scan));
+    if confirm(&format!("Save these {count} proposals?")) {
+        step.status = ScanStatus::Accepted(count);
+        step.accepted = Some(proposals.scan);
+    } else {
+        step.status = ScanStatus::Declined(count);
+    }
+    step
+}
+
+/// The report of a setup run.
+pub fn setup_report(
+    record: &ProjectEnvironment,
+    saved: &std::path::Path,
+    fallbacks: &[String],
+    step: &ScanStepReport<'_>,
+    format: ReportFormat,
+) -> String {
+    match format {
+        ReportFormat::Text => {
+            let mut out = String::new();
+            for line in project_env::report(record, fallbacks) {
+                out.push_str(&escape_controls(&line));
+                out.push('\n');
+            }
+            out.push_str(&format!("{}\n", step.status.line()));
+            for dropped in step.dropped {
+                out.push_str(&format!("  dropped: {}\n", escape_controls(dropped)));
+            }
+            if let Some(usage) = step.usage {
+                out.push_str(&format!("scan usage: {usage}\n"));
+            }
+            out.push_str(&format!("saved to {}", saved.display()));
+            out
+        }
+        ReportFormat::Json => json_text(&json!({
+            "saved_to": saved.display().to_string(),
+            "record": record,
+            "fallbacks": fallbacks,
+            "scan": {
+                "status": step.status.line(),
+                "dropped": step.dropped,
+                "usage": step.usage,
+            },
+        })),
+    }
+}
+
+pub struct ScanStepReport<'a> {
+    pub status: &'a ScanStatus,
+    pub dropped: &'a [String],
+    pub usage: Option<&'a str>,
+}
+
+fn setup_run(cli: &Cli, args: &SetupArgs, config: &Config, dirs: &Dirs, host: &Host) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(e) => return fail(format!("cannot start the async runtime: {e}"), 1),
+    };
+    runtime.block_on(async {
+        let root = &config.workspace;
+        let remotes = ledger::git_remotes(root);
+        let found = discover::discover(&SystemGh, root, &remotes, audit::now_rfc3339()).await;
+        let step = scan_step(cli, args, (config, dirs, host), &found).await;
+        let mut record = found.record;
+        record.scan = step.accepted.clone();
+        let saved = match project_env::store(&dirs.data, root, &record) {
+            Ok(saved) => saved,
+            Err(e) => {
+                return fail(
+                    format!("cannot save the project environment: {}", chain(&e)),
+                    1,
+                );
+            }
+        };
+        emit(&setup_report(
+            &record,
+            &saved,
+            &found.fallbacks,
+            &ScanStepReport {
+                status: &step.status,
+                dropped: &step.dropped,
+                usage: step.usage.as_deref(),
+            },
+            args.format,
+        ))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,7 +579,7 @@ mod tests {
                 vec![Slot::User, Slot::ProjectLocal],
             );
         });
-        let text = config_report(&config, Profile::Full, ReportFormat::Text);
+        let text = config_report(&config, Profile::Full, ReportFormat::Text, None);
         assert!(
             text.contains("auto_mode.soft_deny  (user, project-local)"),
             "{text}"
@@ -375,7 +601,12 @@ mod tests {
 
     #[test]
     fn config_text_notes_the_minimal_profile() {
-        let text = config_report(&config_with(|_| {}), Profile::Minimal, ReportFormat::Text);
+        let text = config_report(
+            &config_with(|_| {}),
+            Profile::Minimal,
+            ReportFormat::Text,
+            None,
+        );
         assert!(text.starts_with("note: the minimal profile"), "{text}");
     }
 
@@ -386,9 +617,13 @@ mod tests {
             c.sources
                 .insert("auto_mode.allow".into(), vec![Slot::Project]);
         });
-        let value: Value =
-            serde_json::from_str(&config_report(&config, Profile::Full, ReportFormat::Json))
-                .unwrap();
+        let value: Value = serde_json::from_str(&config_report(
+            &config,
+            Profile::Full,
+            ReportFormat::Json,
+            None,
+        ))
+        .unwrap();
         assert_eq!(value["profile"], "full");
         assert_eq!(value["rules_sent"], true);
         assert_eq!(value["allow"]["scopes"], json!(["project"]));
@@ -402,6 +637,7 @@ mod tests {
             &config,
             Profile::Minimal,
             ReportFormat::Json,
+            None,
         ))
         .unwrap();
         assert_eq!(minimal["rules_sent"], false);
@@ -439,5 +675,75 @@ mod tests {
         let value: Value =
             serde_json::from_str(&skipped_report(MINIMAL_NOTE, ReportFormat::Json)).unwrap();
         assert_eq!(value["critique"], Value::Null);
+    }
+
+    #[test]
+    fn config_text_and_json_show_the_stored_project_environment() {
+        let record: ProjectEnvironment = serde_json::from_value(json!({
+            "version": 1,
+            "discovered_at": "2026-10-30T00:00:00.000Z",
+            "remotes": [{
+                "url": "https://github.com/acme/proj.git", "slug": "acme/proj",
+                "visibility": "public", "default_branch": "main",
+                "default_branch_protection": "protected",
+                "branch_rules": ["pull_request"], "deploy_environments": [],
+            }],
+            "tag_release_workflows": [".github/workflows/release.yml"],
+            "workflow_environments": [], "package_registries": [],
+            "env_files": [], "stack": ["rust"], "scan": null,
+        }))
+        .unwrap();
+        let config = config_with(|_| {});
+        let text = config_report(&config, Profile::Full, ReportFormat::Text, Some(&record));
+        assert!(
+            text.contains("project_environment  (collected 2026-10-30"),
+            "{text}"
+        );
+        assert!(text.contains("visibility public (GitHub API)"), "{text}");
+        assert!(text.contains("tag-push release workflows: .github/workflows/release.yml"));
+        let none = config_report(&config, Profile::Full, ReportFormat::Text, None);
+        assert!(none.ends_with("project_environment: none — run fontaine auto-mode setup"));
+        let value: Value = serde_json::from_str(&config_report(
+            &config,
+            Profile::Full,
+            ReportFormat::Json,
+            Some(&record),
+        ))
+        .unwrap();
+        assert_eq!(
+            value["project_environment"]["remotes"][0]["visibility"],
+            "public"
+        );
+    }
+
+    #[test]
+    fn the_setup_report_names_the_scan_outcome_and_where_it_saved() {
+        let record: ProjectEnvironment = serde_json::from_value(json!({
+            "version": 1, "discovered_at": "2026-10-30T00:00:00.000Z", "remotes": [],
+            "tag_release_workflows": [], "workflow_environments": [],
+            "package_registries": [], "env_files": [], "stack": [], "scan": null,
+        }))
+        .unwrap();
+        let status = ScanStatus::Skipped("--no-model".into());
+        let step = ScanStepReport {
+            status: &status,
+            dropped: &["deploy_targets \"x\": empty".to_string()],
+            usage: None,
+        };
+        let fallbacks = ["acme/proj: visibility `gh` is not installed".to_string()];
+        let text = setup_report(
+            &record,
+            std::path::Path::new("/d/environment.json"),
+            &fallbacks,
+            &step,
+            ReportFormat::Text,
+        );
+        assert!(
+            text.contains("fell back to unknown: acme/proj: visibility"),
+            "{text}"
+        );
+        assert!(text.contains("model scan: skipped (--no-model)"));
+        assert!(text.contains("dropped: deploy_targets"));
+        assert!(text.ends_with("saved to /d/environment.json"));
     }
 }

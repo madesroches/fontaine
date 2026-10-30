@@ -106,6 +106,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
         workspace_trust: "trusted".to_string(),
         git_remotes: Vec::new(),
         env_keys: Vec::new(),
+        project_environment: None,
     })?;
     let mut said = case.recent_user_messages.clone().unwrap_or_default();
     if said.last() != Some(&case.task_intent) {

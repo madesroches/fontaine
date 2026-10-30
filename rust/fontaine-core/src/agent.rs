@@ -43,6 +43,7 @@ use crate::models::{AccountListing, Models, SharedSwitcher, Switcher};
 use crate::native_search;
 use crate::notice::Notice;
 use crate::permissions::{Approver, PermissionPipeline};
+use crate::project_env::{self, ProjectEnvironment};
 use crate::prompt;
 use crate::runtime_error::RuntimeError;
 use crate::scanner_stage::{Backend, ScannerStart};
@@ -730,16 +731,21 @@ impl AgentRuntime {
         let continued = matches!(self.origin, SessionOrigin::Continued { .. });
         let roots = self.roots();
         let scanned = self.indexed_roots();
-        let (index, git_remotes) = tokio::task::spawn_blocking(move || {
+        let (data_dir, primary) = (self.setup.data_dir.clone(), self.primary_root());
+        let (index, git_remotes, stored) = tokio::task::spawn_blocking(move || {
             let index = FileIndex::build(&scanned, FILE_INDEX_CAP);
             let mut remotes: Vec<String> =
                 scanned.iter().flat_map(|root| git_remotes(root)).collect();
             remotes.sort();
             remotes.dedup();
-            (index, remotes)
+            // File I/O only: setup is an explicit command, never a step of session start.
+            let stored = project_env::load(&data_dir, &primary);
+            (index, remotes, stored)
         })
         .await
         .unwrap_or_default();
+        let (project_environment, setup_notice) =
+            self.project_environment_at_start(stored, &git_remotes);
         self.set_files(index.paths.clone());
         if let Some(message) = trust::unreadable(&self.setup.data_dir) {
             self.approver.warn(&message);
@@ -758,7 +764,12 @@ impl AgentRuntime {
                 .into_iter()
                 .map(|(name, _)| name.to_string_lossy().into_owned())
                 .collect(),
+            project_environment,
         });
+        if let Some(notice) = setup_notice {
+            self.approver.warn(&notice.to_string());
+            self.state.mark_setup_warning_shown();
+        }
         if let SessionOrigin::Continued {
             source,
             how,
@@ -776,6 +787,63 @@ impl AgentRuntime {
                 truncated: index.truncated,
             });
         }
+    }
+
+    /// The stored project facts as this session uses them, and the warning to raise when they
+    /// are missing or stale in an `auto` session.
+    fn project_environment_at_start(
+        &self,
+        stored: project_env::Loaded,
+        git_remotes: &[String],
+    ) -> (Option<ProjectEnvironment>, Option<Notice>) {
+        if let Some(warning) = &stored.warning {
+            self.approver.warn(warning);
+        }
+        let now = chrono::Utc::now();
+        let record = stored
+            .record
+            .map(|record| project_env::filter_to_remotes(record, git_remotes));
+        let notice = project_env::setup_notice(
+            record.as_ref(),
+            git_remotes,
+            self.state.mode(),
+            &self.config.auto_mode,
+            now,
+        );
+        (
+            record.map(|record| project_env::expire(record, now)),
+            notice,
+        )
+    }
+
+    /// The warning for the first switch into `auto` of a session that did not start there, or
+    /// None when the human has been told already, the guardian is off, or nothing is missing.
+    pub fn setup_notice_on_auto(&self) -> Option<Notice> {
+        if self.state.setup_warning_shown() || self.state.guardian_off() {
+            return None;
+        }
+        let remotes = self.state.ledger.view().git_remotes.clone();
+        let stored = project_env::load(&self.setup.data_dir, &self.primary_root());
+        let record = stored
+            .record
+            .map(|record| project_env::filter_to_remotes(record, &remotes));
+        let notice = project_env::setup_notice(
+            record.as_ref(),
+            &remotes,
+            self.state.mode(),
+            &self.config.auto_mode,
+            chrono::Utc::now(),
+        )?;
+        self.state.mark_setup_warning_shown();
+        Some(notice)
+    }
+
+    /// Stores the record `/auto-mode-setup` produced exactly as the command line does, then
+    /// applies it to this session from the next guardian call on.
+    pub fn apply_project_environment(&self, record: ProjectEnvironment) -> std::io::Result<()> {
+        project_env::store(&self.setup.data_dir, &self.primary_root(), &record)?;
+        self.state.apply_project_environment(record);
+        Ok(())
     }
 
     fn set_files(&self, paths: Vec<String>) {

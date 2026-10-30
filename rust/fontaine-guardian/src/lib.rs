@@ -6,6 +6,7 @@ mod breaker;
 mod cache;
 pub mod cascade;
 pub mod critique;
+pub mod env_scan;
 mod guardian;
 pub mod models;
 mod profile;
@@ -24,9 +25,10 @@ pub use cascade::{Composed, Decided, ScreenInput};
 pub use guardian::{Adjudication, EXTRACTOR_RETRIES, Guardian, Settings, WireIds};
 pub use profile::{FULL_PROMPT, MINIMAL_PROMPT, Profile};
 pub use request::{
-    ACTIONS_TAKEN, ActionTaken, AdjudicationRequest, DenialRecord, PreExistence,
-    RECENT_USER_MESSAGES, SessionFacts, SpawnFacts, TASK_INTENT_CHARS, ToolCallSummary,
-    TouchedPath, task_intent, trailing_chars,
+    ACTIONS_TAKEN, ActionTaken, AdjudicationRequest, DenialRecord, EnvFileFacts, PreExistence,
+    ProjectEnvironmentFacts, Protection, RECENT_USER_MESSAGES, RemoteEnvironment, ScanFindings,
+    SessionFacts, SpawnFacts, TASK_INTENT_CHARS, ToolCallSummary, TouchedPath, Visibility,
+    task_intent, trailing_chars,
 };
 pub use rule_label::RuleLabel;
 pub use rules::{EnvironmentConfig, List, RuleConfig};

@@ -33,6 +33,7 @@ pub mod permission_rules;
 pub mod permissions;
 pub mod plugins;
 pub mod preview;
+pub mod project_env;
 pub mod prompt;
 pub mod providers;
 pub mod questions;

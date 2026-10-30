@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::checkpoint::RewindWhat;
 use crate::owner_only;
+use crate::project_env::ProjectEnvironment;
 use fontaine_tools::lock::lock;
 
 pub const LEDGER_DIR: &str = "ledger";
@@ -35,6 +36,14 @@ pub enum Record {
         /// Names of the `[env]` overrides every subprocess gets; never their values.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         env_keys: Vec<String>,
+        /// What `fontaine auto-mode setup` stored for the project, as this session loaded it:
+        /// filtered to the current remotes, with an expired `public` already downgraded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_environment: Option<ProjectEnvironment>,
+    },
+    /// The human ran `/auto-mode-setup` and accepted its result. The latest value wins.
+    ProjectEnvironment {
+        project_environment: ProjectEnvironment,
     },
     FileIndex {
         paths: Vec<String>,
@@ -207,6 +216,7 @@ pub struct LedgerView {
     pub workspace_trust: String,
     pub git_remotes: Vec<String>,
     pub env_keys: Vec<String>,
+    pub project_environment: Option<ProjectEnvironment>,
     index: HashSet<String>,
     pub index_truncated: bool,
     /// Every human message typed to the main conversation, verbatim, oldest first.
@@ -291,13 +301,19 @@ impl LedgerView {
                 workspace_trust,
                 git_remotes,
                 env_keys,
+                project_environment,
                 ..
             } => {
                 self.workspace_roots = workspace_roots.clone();
                 self.workspace_trust = workspace_trust.clone();
                 self.git_remotes = git_remotes.clone();
                 self.env_keys = env_keys.clone();
+                // Assigned even when absent, so a resume after the file is gone clears it.
+                self.project_environment = project_environment.clone();
             }
+            Record::ProjectEnvironment {
+                project_environment,
+            } => self.project_environment = Some(project_environment.clone()),
             Record::FileIndex { paths, truncated } => {
                 self.index = paths.iter().map(|p| path_key(p)).collect();
                 self.index_truncated = *truncated;

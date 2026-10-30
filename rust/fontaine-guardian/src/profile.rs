@@ -71,6 +71,7 @@ impl Profile {
                         memory_dir: request.session_facts.memory_dir.clone(),
                         scratch_dir: None,
                         spawn: None,
+                        project_environment: request.session_facts.project_environment.clone(),
                     },
                     hook_context: Vec::new(),
                     prior_denials: Vec::new(),

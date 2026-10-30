@@ -85,6 +85,7 @@ ignore = "=0.4.33"
 globset = "=0.4.20"
 brush-parser = "=0.4.0"
 toml_edit = "=0.25.17"
+yaml-rust2 = "=0.13.0"
 sha2 = "=0.11.1"
 serde_jcs = "=0.2.0"
 async-lsp = { version = "=0.2.4", default-features = false, features = ["omni-trait", "tracing"] }

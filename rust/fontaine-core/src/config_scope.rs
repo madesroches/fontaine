@@ -182,6 +182,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::user_trust("auto_mode.allow", TIGHTEN),
     Rule::any("auto_mode.soft_deny"),
     Rule::any("auto_mode.hard_deny"),
+    Rule::user_trust("auto_mode.setup_reminder", TIGHTEN),
     Rule::user_trust("agents", TIGHTEN),
     Rule::user_trust("context", TIGHTEN),
     Rule::user_trust("shell_preclassifier", TIGHTEN),
@@ -524,6 +525,11 @@ mod tests {
         (
             "auto_mode.hard_deny",
             "[auto_mode]\nhard_deny = [\"x\"]\n",
+            None,
+        ),
+        (
+            "auto_mode.setup_reminder",
+            "[auto_mode]\nsetup_reminder = false\n",
             None,
         ),
         ("agents", "[agents]\nmax_parallel = 2\n", None),

@@ -158,6 +158,10 @@ fn facts(
         memory_dir: memory_dir.map(|dir| dir.display().to_string()),
         scratch_dir: scratch.map(|dir| dir.display().to_string()),
         spawn: None,
+        project_environment: view
+            .project_environment
+            .as_ref()
+            .map(crate::project_env::to_facts),
     }
 }
 

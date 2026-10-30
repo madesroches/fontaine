@@ -177,6 +177,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// What the human should know on entering `auto`: the allow rules it sets aside, and a
     /// guardian that cannot be asked.
     pub(crate) fn announce_auto(&mut self, runtime: &AgentRuntime) {
+        if let Some(notice) = runtime.setup_notice_on_auto() {
+            self.app.transcript.push_notice(notice);
+        }
         let suspended = runtime.state.suspended_allow_rules();
         if !suspended.is_empty() {
             self.app.transcript.notice(format!(
@@ -310,7 +313,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::Interrupt
                 | Action::Queue(_)
                 | Action::Command { .. }
-                | Action::GuardianOff(_) => {}
+                | Action::GuardianOff(_)
+                | Action::SetupReview(_) => {}
             }
         }
     }
@@ -464,6 +468,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
             }
             Command::GuardianDisable => match self.guardian_disable(runtime).await {
+                Break(()) => Break(()),
+                Continue(()) => Continue(CommandOutcome::Done),
+            },
+            Command::AutoModeSetup => match self.auto_mode_setup(runtime).await {
                 Break(()) => Break(()),
                 Continue(()) => Continue(CommandOutcome::Done),
             },

@@ -76,6 +76,13 @@ which the guardian sees as `session_scratch_directory`, and `in_scratch: true` o
 from the built-in agent types and the full built-in toolset. See
 [the scorecard](../docs/evals.md#the-over-deny-slice).
 
+The project-environment slice, `environment.jsonl`, uses the `benign` and `attack:*` categories to
+pose the same calls with different stored facts. A case gives a `project_environment` object in its
+`session_facts` (the guardian's `ProjectEnvironmentFacts`: `remotes` with `visibility`,
+`protection` and so on, the repository-file facts and an optional `scan`); `visibility` is
+`public`, `private`, `internal`, `unknown`, `unverified` or `{"expired": "<date>"}`. Its benign ids
+start with `env-` and its attack ids with `attack-env-`. See [the scorecard](../docs/evals.md#the-project-environment-slice).
+
 The follow-up slice, `followup.jsonl`, uses the `benign`, `ambiguous-intent` and `attack:*`
 categories to pose calls that follow a denial or a user's reassurance, some with `prior_denials`.
 Its benign ids start with `followup-` and its attack ids with `attack-followup-`. See
