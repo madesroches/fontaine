@@ -61,6 +61,13 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- The guardian no longer denies a call as `unparseable` because the model put a rule's name in
+  `rule` instead of a label (#273). Every shipped deny rule now starts with its label (persistence
+  and self-modification report as `Safety Bypass`, untrusted code integration as
+  `Download+Execute`, third-party and real-world effects as `Data Exfiltration`), the prompt says
+  `rule` is copied from the label list, and a malformed verdict is retried with a harness-written
+  note saying why it was rejected instead of the same prompt again. An answer still malformed
+  after the retries is denied as before.
 - Built-in `explore` subagents now run on the session model instead of `$guardian_default`
   (#286). A session whose main model is on another account no longer routes every `explore`
   spawn at the guardian model's account, so that account's quota no longer takes explore agents
