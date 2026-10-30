@@ -112,6 +112,14 @@ pub static TOOLS: &[ToolDescriptor] = &[
         &["Monitor"],
     ),
     row(
+        "powershell",
+        RiskClass::Arbitrary,
+        false,
+        Destructive::Always,
+        Specifier::None,
+        &["PowerShell"],
+    ),
+    row(
         "read",
         RiskClass::ReadOnly,
         false,
@@ -350,6 +358,12 @@ mod tests {
         assert!(!is_shell_class("no_such_tool"));
         assert_eq!(find_claude("Monitor").map(|d| d.name), Some("monitor"));
         assert_eq!(find_claude("Bash").map(|d| d.name), Some("shell"));
+        // PowerShell text never meets the POSIX analyses.
+        assert!(!is_shell_class("powershell"));
+        assert_eq!(
+            find_claude("PowerShell").map(|d| d.name),
+            Some("powershell")
+        );
     }
 
     #[test]
@@ -358,7 +372,7 @@ mod tests {
         use RiskClass as R;
         use Specifier as S;
         type Pinned = (&'static str, R, bool, D, S, &'static [&'static str]);
-        let expected: [Pinned; 23] = [
+        let expected: [Pinned; 24] = [
             ("shell", R::Arbitrary, false, D::Shell, S::Shell, &["Bash"]),
             (
                 "job_output",
@@ -389,6 +403,14 @@ mod tests {
                 D::Shell,
                 S::Shell,
                 &["Monitor"],
+            ),
+            (
+                "powershell",
+                R::Arbitrary,
+                false,
+                D::Always,
+                S::None,
+                &["PowerShell"],
             ),
             ("read", R::ReadOnly, false, D::Never, S::Path, &["Read"]),
             (

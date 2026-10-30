@@ -12,8 +12,12 @@ check apply unchanged. Discovery: locate `git.exe` on PATH (then the standard Gi
 locations), derive `<Git>\usr\bin` and `<Git>\bin`, and prepend both to the shell launcher's PATH
 (rig-tools `Launcher::with_env`) so rig's `sh` resolves; `FONTAINE_GIT_BASH_PATH` overrides discovery
 (Claude Code's `CLAUDE_CODE_GIT_BASH_PATH`); not found ⇒ startup error on Windows (exit 2, message
-naming Git for Windows and the override). Hook commands use the same discovery. The command text reaches Git Bash's `sh` in the `FONTAINE_SH_COMMAND` environment variable, which `sh -c` evaluates, rather than on the Windows command line, where the MSYS runtime re-parses it and halves every `\\`; the command that was judged is then the one that runs. A PowerShell tool is backlog (GitHub issue #28); it would never
-pre-classify. Path handling (scope validator, protected paths, critical-path) accepts drive
+naming Git for Windows and the override). Hook commands use the same discovery. The command text reaches Git Bash's `sh` in the `FONTAINE_SH_COMMAND` environment variable, which `sh -c` evaluates, rather than on the Windows command line, where the MSYS runtime re-parses it and halves every `\\`; the command that was judged is then the one that runs. A separate Windows-only `powershell` tool (Claude name `PowerShell`) runs
+commands in `pwsh.exe` (else `powershell.exe`, else System32's Windows PowerShell; `FONTAINE_POWERSHELL_PATH` overrides), started with
+`-NoProfile -NonInteractive -OutputFormat Text -EncodedCommand`, so PowerShell parses exactly the judged text. It is registered only when an
+interpreter is found (absence is not a startup error), never pre-classifies (`Specifier::None`, outside the shell class), and
+`floor::critical_powershell` extends the critical-path floor to `Remove-Item` and its aliases with a token-level scan whose unreadable
+cases are critical. Hooks and `!` lines stay on Git Bash. Path handling (scope validator, protected paths, critical-path) accepts drive
 letters, UNC paths, MSYS-style `/c/...` argv paths (translated to drive paths before validation; an
 untranslatable one is out of scope), compares case-insensitively, and resolves junctions and
 symlinks. Critical paths on Windows include drive roots and `%USERPROFILE%`. The containment probe

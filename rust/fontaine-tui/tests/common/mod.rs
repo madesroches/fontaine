@@ -368,6 +368,7 @@ impl World {
             mode: self.mode,
             scrub_env: vec![],
             git_bash: git_bash(),
+            powershell: None,
             system_prompt: None,
             append_system_prompt: None,
             json_schema: None,

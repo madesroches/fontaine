@@ -407,7 +407,7 @@ fn tool_matches(rule_tool: &str, name: &str, posture: Posture) -> bool {
     if rule_tool == name {
         return true;
     }
-    if posture.lenient() && rule_tool == "shell" && is_shell_class(name) {
+    if posture.lenient() && rule_tool == "shell" && (is_shell_class(name) || name == "powershell") {
         return true;
     }
     if !is_mcp(rule_tool) || !is_mcp(name) {
@@ -669,6 +669,7 @@ fn wildcard_is_broad(words: &[String]) -> bool {
 pub fn is_broad_code_execution(rule: &Rule) -> bool {
     match (rule.tool.as_str(), rule.specifier.as_deref()) {
         ("agent", None) => true,
+        ("powershell", None) => true,
         (tool, None) if is_shell_class(tool) => true,
         (tool, Some(spec)) if is_shell_class(tool) => {
             let Ok(spec) = shell_spec(spec) else {

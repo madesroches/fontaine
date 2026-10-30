@@ -17,6 +17,7 @@ result passes one post-call step before the model sees it.
 | `edit` | workspace write | Replaces text in a file. The file must have been read first. The file's earlier contents are saved first for [`/rewind`](checkpoints.md). |
 | `notebook_edit` | workspace write | Saves the notebook for [`/rewind`](checkpoints.md) first. Edits one cell of a Jupyter notebook (`.ipynb`): `replace` a cell's source (default), `insert` a new cell after `cell_id` (at the start when none) or `delete` a cell. Arguments: `path`, `cell_id`, `cell_type` (`code` or `markdown`; required to insert), `edit_mode`, `new_source`. Name a cell by its id, or `cell-N` (0-based) when it has none. Replacing a code cell clears its outputs. The notebook must have been read first, and is refused if it changed since. The rest of the notebook and its key order are kept; indentation other than spaces is normalized to nbformat's 1-space form, and number formatting outside the edited cell may be normalized (`1e-05` becomes `0.00001`). A `.ipynb` that does not parse as a notebook (invalid JSON, nbformat 3) is read as plain text. `edit` and `write` still work on a notebook but their descriptions point the model here. |
 | `shell` | arbitrary | Runs a shell command. A command still running at its timeout keeps running as a [background job](#background-jobs). Arguments: `command`, `timeout_secs`, `cwd`, `run_in_background`. |
+| `powershell` | arbitrary | Windows only: runs a [PowerShell](#powershell) command. A command still running at its timeout keeps running as a [background job](#background-jobs). Arguments: `command`, `timeout_secs`, `cwd`, `run_in_background`. Registered only when a PowerShell interpreter is found. |
 | `job_output` | read-only | Lists the [background jobs](#background-jobs) you started, or reads what one printed since it was last read; on a [monitor](#monitor) it waits and reports status instead; on a background subagent's id it [waits for it to end](agents.md#waiting-for-a-background-subagent). Arguments: `id`, `wait_secs` (no ceiling; default 0 for a job, until it ends for a subagent). Jobs and the list: main conversation only; a subagent may use it only with the id of a subagent it started. |
 | `job_cancel` | arbitrary | Stops a background job or monitor with its whole process group. Argument: `id`. Main conversation only. |
 | `monitor` | arbitrary | Runs a command in the background and delivers each line it prints as a [notification](#monitor). Arguments: `command`, `description`, `timeout_secs`. Main conversation only. |
@@ -248,6 +249,34 @@ are resolved.
   overrides the search. When Git for Windows cannot be found, Fontaine exits with code 2 and a
   message naming Git for Windows and the variable. The command reaches Git Bash as written,
   including every `\\`; a syntax error names `eval` rather than `-c`.
+
+## PowerShell
+
+On Windows `powershell` runs a command in PowerShell, beside `shell`, which keeps running POSIX
+commands through Git Bash. It exists only on Windows and only when an interpreter is found:
+`pwsh.exe` (PowerShell 7) on `PATH`, then `powershell.exe` on `PATH`, then Windows PowerShell in
+`%SystemRoot%\System32\WindowsPowerShell\v1.0`. `FONTAINE_POWERSHELL_PATH` names an executable and
+overrides the search; a path that is not a file means there is no interpreter. Finding none is not
+an error: the tool is simply not offered to the model, and on Linux and macOS it never is.
+
+- **Same call, same limits.** It takes `shell`'s arguments and follows its confinement, timeout
+  cap, output cut, [background jobs](#background-jobs) and environment rules; only the output
+  that kills a command in a subagent is larger (64 MB, not 10 MB). Cancelling or timing
+  out a call stops only the interpreter process, not any program it started.
+- **The command runs as written.** The interpreter starts with `-NoProfile -NonInteractive`, the
+  command passed in encoded form so the Windows command line cannot re-parse it, and a short
+  fixed preamble that silences progress output and makes the console print UTF-8; leading
+  `using namespace`, `using module` and `using assembly` lines are moved ahead of it, since
+  PowerShell requires them first. What the
+  [guardian](guardian.md) judges and the approval prompt shows is the plain command.
+- **Exit codes.** A literal `exit N` sets the exit code. A failing last statement exits 1, not the
+  native program's own code, and a failure earlier in the command does not change the exit code:
+  this is how PowerShell treats an encoded command. End the command with `exit $LASTEXITCODE` to
+  keep a native program's code.
+- **Each call is a fresh process.** A variable or a `Set-Location` does not carry over.
+- **No command analysis.** Nothing reads a PowerShell command as safe in advance, so every call
+  is [judged](permissions.md#powershell). Hooks, `!` commands and skill `!` lines keep running
+  through Git Bash.
 
 ## Background jobs
 

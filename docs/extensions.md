@@ -66,6 +66,7 @@ The body is the subagent's instructions.
 | `KillShell`, `KillBash`, `TaskStop` | `job_cancel` |
 | `Monitor` | `monitor` |
 | `LSP` | `lsp` |
+| `PowerShell` | `powershell` |
 | `WebFetch` | `webfetch` |
 | `WebSearch` | `websearch` |
 | `Task`, `Agent` | `agent` |

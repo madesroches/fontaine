@@ -489,7 +489,17 @@ scorecard run (see `## Remaining work`).
 - 2026-10-21: Directories come from the `dirs` crate, overridable by `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR`; credentials at `<data dir>/credentials.toml`, owner-only (`design/platforms.md`).
 - 2026-10-21: The eval dataset gains `mode` and `workspace` fields so `pipeline` cases are reproducible.
 - 2026-10-21: The default guardian list is the data file `rust/fontaine-guardian/data/guardian_models.toml` (entry keys `kind`, `model`, `catch_rate`, `false_deny_rate`, `p95_ms`, `scored_on`, `dataset_version`); it and the prompt assets (`guardian_prompt.md`, `guardian_minimal.md`, `scanner_llm.md`) are compiled into `fontaine-guardian` via `include_str!`; it ships empty (fallback to the main model) and the Phase 4 scorecard run fills it, so a scorecard update ships with a release.
-- 2026-10-21: v1 supports Linux, macOS and Windows; every CI step runs on all three OSes. Windows runs `shell` through Git Bash (Claude Code parity; PowerShell tool is backlog issue #28); details in `design/platforms.md`.
+- 2026-10-21: v1 supports Linux, macOS and Windows; every CI step runs on all three OSes. Windows runs `shell` through Git Bash (Claude Code parity); details in `design/platforms.md`.
+- 2026-10-30: A separate Windows-only `powershell` tool (issue #28; `Arbitrary`, `Destructive::Always`, `Specifier::None`, Claude name `PowerShell`) runs commands through the interpreter's `-EncodedCommand`; details in `design/platforms.md`.
+- 2026-10-30: No `powershell(...)` specifiers (`Specifier::None`); bare-name rules only.
+- 2026-10-30: Bare `shell` deny/ask rules also cover `powershell`; specifier'd `shell(...)` rules do not.
+- 2026-10-30: Every `powershell` call goes to the guardian; no Tier 0.5.
+- 2026-10-30: The worker agent does not get `powershell`.
+- 2026-10-30: The `powershell` tool is absent when no interpreter is found; not a startup error.
+- 2026-10-30: The critical-path check for `powershell` is a token-level scan (`floor::critical_powershell`); non-FileSystem providers are left to the guardian.
+- 2026-10-30: `-EncodedCommand` runs a fixed preamble (silent progress, UTF-8 console output) plus `-OutputFormat Text`, without appending `exit $LASTEXITCODE`; only literal `exit N` is preserved and native exit codes collapse (documented), and the guardian still sees the plain command.
+- 2026-10-30: In the `Remove-Item` critical scan, `-Include`/`-Exclude`/`-Filter` values are ignored as patterns, parameter names match as unambiguous prefixes, and any unknown or ambiguous option makes the call critical.
+- 2026-10-30: Cancel/timeout of a `powershell` call kills only the direct child process on Windows, same as `shell`; no process-tree kill is added.
 - 2026-10-21: Deviation — provider and telemetry credential variables are scrubbed from the `shell` and hook child environment (list: Phase 2 step 1); reason: a model-run command must not read provider keys.
 - 2026-10-21: AgentDojo-comparable (ASR × utility) reporting is dropped; the scorecard reports per-class catch rate and false-deny rate.
 - 2026-10-21: Workspace trust (Claude Code parity: folder trust covers the whole folder — bounded at the enclosing git work-tree root, as in Claude Code; unbounded outside a repo) — in the TUI, project and project-local executables (hooks, MCP servers, skill `!cmd`) load only after the trust prompt; headless loads them without one; they can tighten but never loosen a permission decision (`design/config.md` §Config, Workspace trust).

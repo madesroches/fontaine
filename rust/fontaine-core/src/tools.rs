@@ -9,6 +9,7 @@ use fontaine_tools::gate::ToolGate;
 use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::guarded::{Guard, GuardedTool};
 use fontaine_tools::jobs::{AgentWaits, Jobs, WaitWake};
+use fontaine_tools::powershell::PowerShellSettings;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::{RiskClass, ToolSource, registered_risk};
 use fontaine_tools::scope::Scope;
@@ -86,6 +87,8 @@ pub struct RegistryParams {
     /// The ceiling on a model-requested `shell` timeout, in seconds.
     pub shell_max_timeout_secs: u64,
     pub git_bash: Option<GitBash>,
+    /// The interpreter of the `powershell` tool; with none, there is no such tool.
+    pub powershell: Option<PowerShellSettings>,
     /// The post-call stages every result passes.
     pub results: Arc<ResultPipeline>,
     /// Telemetry names MCP tools `third-party`.
@@ -138,6 +141,7 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
             set_env: params.set_env,
             git_bash: params.git_bash,
             max_timeout_secs: params.shell_max_timeout_secs,
+            powershell: params.powershell,
         },
         webfetch: WebfetchConfig::default(),
         websearch: params.websearch,

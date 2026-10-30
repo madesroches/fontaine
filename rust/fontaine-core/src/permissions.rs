@@ -731,7 +731,7 @@ impl PermissionPipeline {
                 },
             );
         }
-        if is_shell_class(tool)
+        if (is_shell_class(tool) || tool == "powershell")
             && let Some(command) = args.get("command").and_then(Value::as_str)
         {
             let env = CriticalEnv {
@@ -739,7 +739,12 @@ impl PermissionPipeline {
                 home,
             };
             let cwd = args.get("cwd").and_then(Value::as_str);
-            if let Some(found) = floor::critical_shell(command, cwd, &env) {
+            let critical = if tool == "powershell" {
+                floor::critical_powershell(command, cwd, &env)
+            } else {
+                floor::critical_shell(command, cwd, &env)
+            };
+            if let Some(found) = critical {
                 return self.would_prompt(
                     mode,
                     Prompt {
@@ -1923,6 +1928,7 @@ pub fn summarize(tool: &str, args: &Value) -> String {
     let text = |key: &str| args.get(key).and_then(Value::as_str);
     let line = match tool {
         tool if is_shell_class(tool) => text("command").map(str::to_string),
+        "powershell" => text("command").map(str::to_string),
         "read" | "write" | "edit" | "notebook_edit" => text("path").map(str::to_string),
         "lsp" => text("path").map(|path| {
             let position = match (text_number(args, "line"), text_number(args, "character")) {

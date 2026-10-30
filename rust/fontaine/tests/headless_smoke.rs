@@ -27,6 +27,8 @@ async fn the_registered_tools_are_advertised_to_the_model() {
     let mut s = Sandbox::compatible(&endpoint.url());
     // A container runtime on the test host would add the default `websearch` tool.
     s.set_env("PATH", "/nonexistent");
+    // Windows PowerShell is found in System32 without PATH, and would add the `powershell` tool.
+    s.set_env("FONTAINE_POWERSHELL_PATH", "/nonexistent/pwsh.exe");
     let out = s.headless(&["--output-format", "stream-json", "hi"]).await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let names = [

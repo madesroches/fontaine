@@ -1286,3 +1286,88 @@ async fn every_path_naming_write_tool_is_handled_by_each_path_site() {
         assert_eq!(rig.audit()[0].tier, Tier::ProtectedPath, "{}", d.name);
     }
 }
+
+#[tokio::test]
+async fn a_powershell_call_is_never_preclassified() {
+    // `ls` is a read-only shell command that skips every later tier; in PowerShell no command
+    // is read as safe.
+    let rig = Rig::new(Manual);
+    for command in ["ls", "Get-ChildItem", "Get-Date", "git status"] {
+        assert_eq!(
+            first(&rig, "powershell", shell(command)).await,
+            (Decision::Prompt, Tier::Mode),
+            "{command}"
+        );
+    }
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(Options::new(Manual).guardian(fake.guardian.clone()));
+    assert_eq!(
+        first(&rig, "shell", shell("ls")).await,
+        (Decision::Allow, Tier::Tier05)
+    );
+}
+
+#[tokio::test]
+async fn powershell_deletes_of_critical_paths_prompt_in_every_mode() {
+    // Each rig has its own workspace, so the paths are filled in from the rig under test.
+    let commands = [
+        "Remove-Item -Recurse -Force '{parent}'",
+        "rm -r '{work}'",
+        "Remove-Item $env:USERPROFILE -Recurse",
+        "Get-ChildItem | Remove-Item",
+        "iex $payload",
+    ];
+    let fill = |rig: &Rig, command: &str| {
+        let work = rig.work();
+        command
+            .replace("{work}", &work.display().to_string())
+            .replace("{parent}", &work.parent().unwrap().display().to_string())
+    };
+    let allow_all = "[permissions]
+allow = [\"powershell\"]
+";
+    for template in commands {
+        for mode in [Manual, AcceptEdits, Plan] {
+            let rig = Rig::with(Options::new(mode).settings(allow_all));
+            let command = &fill(&rig, template);
+            assert_eq!(
+                first(&rig, "powershell", shell(command)).await,
+                (Decision::Prompt, Tier::CriticalPath),
+                "{command} {mode:?}"
+            );
+        }
+        let rig = Rig::with(Options::new(DontAsk).settings(allow_all));
+        let command = &fill(&rig, template);
+        assert_eq!(
+            first(&rig, "powershell", shell(command)).await,
+            (Decision::Deny, Tier::CriticalPath),
+            "{command}"
+        );
+    }
+    // An ordinary removal inside the workspace is not critical.
+    let rig = Rig::new(Manual);
+    assert_eq!(
+        first(&rig, "powershell", shell("Remove-Item build/out.o")).await,
+        (Decision::Prompt, Tier::Mode)
+    );
+}
+
+#[tokio::test]
+async fn a_shell_deny_rule_stops_powershell_and_a_specifier_rule_does_not() {
+    let settings = "[permissions]
+deny = [\"shell\"]
+";
+    let rig = Rig::with(Options::new(Manual).settings(settings));
+    assert_eq!(
+        first(&rig, "powershell", shell("Get-Date")).await,
+        (Decision::Deny, Tier::DenyRule)
+    );
+    let settings = "[permissions]
+deny = [\"shell(git push)\"]
+";
+    let rig = Rig::with(Options::new(Manual).settings(settings));
+    assert_eq!(
+        first(&rig, "powershell", shell("git push")).await,
+        (Decision::Prompt, Tier::Mode)
+    );
+}

@@ -456,3 +456,15 @@ fn a_monitor_is_judged_by_the_same_command_analysis_as_the_shell() {
     ));
     assert!(!derive("job_output", &json!({}), &facts));
 }
+
+#[test]
+fn a_powershell_call_is_always_destructive_and_touches_no_path() {
+    let (_dir, scope, view) = world();
+    let args = json!({ "command": "Get-ChildItem" });
+    let facts = Facts {
+        scope: &scope,
+        view: &view,
+    };
+    assert!(derive("powershell", &args, &facts));
+    assert!(touched_paths("powershell", &args, &scope).is_empty());
+}

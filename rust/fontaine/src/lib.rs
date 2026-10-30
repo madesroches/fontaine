@@ -27,6 +27,7 @@ use fontaine_core::tools;
 use fontaine_core::trust;
 use fontaine_core::workspace::{self, RootSource};
 use fontaine_tools::git_bash::GitBash;
+use fontaine_tools::powershell::PowerShellSettings;
 use fontaine_tui::accessibility;
 use fontaine_tui::theme::Theme;
 use rig_core::schemars::Schema;
@@ -524,6 +525,7 @@ pub struct SessionPrep {
     pub mode: PermissionMode,
     pub scrub_env: Vec<OsString>,
     pub git_bash: Option<GitBash>,
+    pub powershell: Option<PowerShellSettings>,
     pub home: Option<PathBuf>,
     pub extensions: Extensions,
     pub origin: SessionOrigin,
@@ -628,6 +630,7 @@ fn prepare_session(
     record_resume: bool,
 ) -> Result<(SessionPrep, Option<Scratch>), u8> {
     let git_bash = git_bash(host)?;
+    let powershell = powershell(host);
 
     let added = cli
         .add_dir
@@ -763,6 +766,7 @@ fn prepare_session(
         mode,
         scrub_env: tools::scrubbed_env(config, (host.env_names)()),
         git_bash,
+        powershell,
         home,
         extensions,
         origin,
@@ -788,6 +792,20 @@ fn git_bash(host: &Host) -> Result<Option<GitBash>, u8> {
 #[cfg(not(windows))]
 fn git_bash(_host: &Host) -> Result<Option<GitBash>, u8> {
     Ok(None)
+}
+
+/// The `powershell` tool exists on Windows when an interpreter is found; elsewhere never.
+#[cfg(windows)]
+fn powershell(host: &Host) -> Option<PowerShellSettings> {
+    fontaine_tools::powershell::discover(&fontaine_tools::powershell::Probe {
+        env: &*host.env,
+        is_file: &|path| path.is_file(),
+    })
+}
+
+#[cfg(not(windows))]
+fn powershell(_host: &Host) -> Option<PowerShellSettings> {
+    None
 }
 
 async fn resolve_models(
@@ -893,6 +911,7 @@ fn agent_setup(
         mode: prep.mode,
         scrub_env: prep.scrub_env,
         git_bash: prep.git_bash,
+        powershell: prep.powershell,
         system_prompt: cli.system_prompt.clone(),
         append_system_prompt: cli.append_system_prompt.clone(),
         json_schema,

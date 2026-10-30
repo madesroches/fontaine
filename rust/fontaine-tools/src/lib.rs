@@ -13,6 +13,7 @@ pub mod lock;
 pub mod lsp;
 pub mod names;
 pub mod notebook;
+pub mod powershell;
 pub mod preclassify;
 pub mod procgroup;
 pub mod result_pipeline;

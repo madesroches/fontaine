@@ -189,6 +189,7 @@ pub fn build_with_env(
         mode,
         scrub_env: Vec::new(),
         git_bash: None,
+        powershell: None,
         system_prompt: None,
         append_system_prompt: None,
         json_schema: None,
