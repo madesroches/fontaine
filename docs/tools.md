@@ -61,8 +61,26 @@ inside a workspace root after symlinks are resolved. The label alone earns nothi
 `~/.ssh/id_rsa`, a cloud credential file or a browser cookie store is a classic reconnaissance
 step, and it is read-only too. A call whose path arguments cannot be read, or that names a path
 outside every root, is outside the fast path.
-File-tool calls on such a path are denied with a hint to use the session's scratch directory or to
-add the directory with `/add-dir` or `--add-dir`; they are never offered for approval.
+
+That is not a denial for the four read-only tools. An out-of-root `read`, `ls`, `glob` or `grep`
+call goes through the [ordinary permission pipeline](permissions.md#the-pipeline): it asks in the
+interactive modes, the guardian decides in `auto` and `plan`, and it is denied in `dontAsk` and in
+headless runs unless an allow rule or hook already covers it. After the hooks, the target is
+resolved once to its absolute path — symlinks followed — and the approval prompt, the guardian
+and the execution all use that resolved form. Once the gate allows the call, it runs on one
+unconfined, read-only fallback instance per tool, based at the primary root: the gate has already
+adjudicated the exact target, so nothing re-checks containment, and retargeting a symlink while a
+decision is pending cannot redirect the call. `grep` and `glob` approval prompts show the search
+path or base as well as the pattern. Only `read`, `ls`, `glob` and `grep` have a fallback;
+`write`, `edit`, `notebook_edit` and `shell` stay confined, and a write outside the roots is
+denied with a hint to use the session's scratch directory or to add the directory with `/add-dir`
+or `--add-dir`; it is never offered for approval.
+
+External reads are adjudicated broadly, not automatically allowed: the default guardian policy
+treats inspecting source code, headers, build files, installed dependency source and installed
+skill definitions as routine, while credential stores and scouting around a denied action remain
+denied (see [Guardian](guardian.md)). An external path never becomes a workspace root: it grants
+no write reach, no fast path and no instruction-file discovery.
 
 The `skill`, `ask_user_question`, `todo_write`, `cron_jobs`, `cron_delete`, `schedule_wakeup` and `job_output` tools are the read-only tools that name no path. `skill` takes
 only a skill name, resolved against the skills loaded at startup, so all it can do is put that
@@ -87,7 +105,10 @@ directories refer to it. More roots come from the repeatable `--add-dir <path>` 
 - Each root has its own confined instance of every file tool and of `shell`, and a call is served
   by the instance of the root that holds its path. For `shell` that is the root that holds its
   `cwd`. The tool's own confinement and Fontaine's check use the same rule, so they cannot
-  disagree.
+  disagree. Beside these, the four read-only file tools carry one unconfined, read-only fallback
+  instance based at the primary root; it serves only a call whose target lies outside every
+  root, only after the gate has allowed the call, and it consumes the resolved target the
+  pipeline normalized — it never re-resolves the path and never serves a write or a shell call.
 - A relative `--add-dir` or configuration entry is resolved against the project directory (the launch directory, or `--cd`). An entry
   that does not exist, is not a directory or cannot be resolved is left out, with a warning that
   names the path and where it came from (in the conversation in the terminal UI, on stderr in a

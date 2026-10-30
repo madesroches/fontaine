@@ -15,7 +15,7 @@ run (`fontaine -p`) starts in `manual`, as Claude Code's `-p` starts in `default
 |---|---|
 | `manual` | The human is asked. |
 | `acceptEdits` | `write`, `edit` and `notebook_edit` inside the workspace roots run; everything else asks. |
-| `plan` | No edit ever runs: `write`, `edit` and `notebook_edit` are blocked outright. Other consequential calls (write-capable or unparsed `shell`, `webfetch`, `websearch`, every MCP call, shell reads outside the roots) go to the guardian, as in `auto`. |
+| `plan` | No edit ever runs: `write`, `edit` and `notebook_edit` are blocked outright. Other consequential calls (write-capable or unparsed `shell`, `webfetch`, `websearch`, every MCP call, reads outside the roots) go to the guardian, as in `auto`. |
 | `dontAsk` | Denied. Only calls that are pre-approved run. |
 | `auto` | The [guardian](guardian.md) decides: allow, deny with a reason, or ask you. Edits to tracked, new and session-created files and file-tool writes into scratch skip it (step 6 below). |
 
@@ -65,19 +65,34 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    rule, a server's approval marker and a critical path still ask you: no verdict approves them.
 3. **Read-only fast path.** A read-only tool (`read`, `ls`, `glob`, `grep`) whose paths all
    resolve inside a workspace root runs. Symlinks are resolved first. The label alone earns
-   nothing: a path outside the roots does not qualify. `skill`, `ask_user_question`, `todo_write` and the read-only scheduling tools name
+   nothing: a path outside the roots does not qualify, and an external read never takes this
+   step. `skill`, `ask_user_question`, `todo_write` and the read-only scheduling tools name
    no path and take this step too. `ask_user_question` only shows you text and collects your choice,
    and no mode, `auto` included, ever answers it: the answer comes from you or, in a headless run,
    from nobody (the model is told to use its best judgment). Your typed "Other" answers count as
    intent for the guardian; the options you pick do not.
-   A file-tool call (`read`, `ls`, `glob`, `grep`, `write`, `edit`, `notebook_edit`) that names a path outside
-   every root is denied, with a hint naming the session's scratch directory and `/add-dir`: the
-   file tools are confined to the roots, so an approval could never make the call run. The scratch
+   A file-tool *write* (`write`, `edit`, `notebook_edit`) that names a path outside every root
+   is denied, with a hint naming the session's scratch directory and `/add-dir`: the write tools
+   are confined to the roots, so an approval could never make the call run. The scratch
    directory is an ordinary root (see [Tools](tools.md#the-scratch-directory)): this step and the
    floor treat a path in it like one in the workspace, and `shell` treats it like any root:
    read-only commands whose operands are inside it take the pre-classifier fast path, and other
    commands go through the guardian as usual. Claude Code prompts for a write outside the workspace; Fontaine denies
    it and offers the scratch directory instead.
+
+   An out-of-root **read** by `read`, `ls`, `glob` or `grep` is not denied here: it falls through
+   to the same steps as any other call nobody pre-approved. After the hooks, the target is
+   resolved once — symlinks followed — and that resolved absolute path is what the approval
+   prompt, the guardian and the execution all use, so retargeting a symlink mid-decision cannot
+   redirect an approved call, and deny and ask rules still match the path as written. In
+   `manual` and `acceptEdits` it asks; in `auto` and `plan` the guardian decides; in `dontAsk`
+   and in headless runs it is denied. An allow rule or a hook written for the resolved path runs
+   it at the `allow_rule` or `hook` tier; it is never audited as `read_only_fast_path` or
+   `tier05`. Malformed arguments (a missing or non-string path) are an immediate argument
+   error after the floor: never a prompt, never the guardian. Execution uses one unconfined,
+   read-only fallback instance per tool, reached only after the gate allows the call; writes
+   and `shell` have no such route (see [Tools](tools.md#workspace-roots)). An external path does
+   not become a root: it grants no write reach, no fast path and no instruction-file discovery.
 4. **Shell pre-classifier**, below.
 5. **Allow rules**, below.
 6. **Edits that skip the guardian (`auto` only).** After the floor and the hooks, a `write`,

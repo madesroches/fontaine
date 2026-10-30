@@ -54,6 +54,49 @@ fn fields_of(tool: &str) -> Option<PathFields> {
     }
 }
 
+/// The read-only file tools whose out-of-root calls the gate may approve into the unconfined
+/// fallback instance. Writes and `shell` never take this route.
+pub fn is_external_read(tool: &str) -> bool {
+    matches!(tool, "read" | "ls" | "glob" | "grep")
+}
+
+/// Whether `args` hold the shape the pipeline's normalizer produces for an out-of-root read:
+/// an absolute target string, the literal base and pattern both present for `glob`. This
+/// checks no file system state: the fallback instance consumes exactly what the pipeline
+/// already resolved and never re-resolves the path a second time.
+pub fn external_shape(tool: &str, args: &Value) -> Result<(), ScopeError> {
+    if !is_external_read(tool) {
+        return Err(unreadable(&format!("`{tool}` has no external read route")));
+    }
+    let absolute = |path: &str| {
+        if Path::new(path).is_absolute() {
+            Ok(())
+        } else {
+            Err(unreadable("the path is not an absolute resolved path"))
+        }
+    };
+    match tool {
+        "glob" => {
+            args.get("pattern")
+                .and_then(Value::as_str)
+                .ok_or_else(|| unreadable("`pattern` is missing or not a string"))?;
+            let path = args
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| unreadable("`path` is missing or not a string"))?;
+            absolute(path)?;
+        }
+        _ => {
+            let path = args
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| unreadable("`path` is missing or not a string"))?;
+            absolute(path)?;
+        }
+    }
+    Ok(())
+}
+
 /// The ordered, canonicalized roots of a session. The first is the primary root, which relative
 /// paths and defaults refer to. Nothing a tool does can add a root.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,6 +205,78 @@ impl Scope {
                 })
             }
         }
+    }
+
+    /// The resolved absolute form of a path outside every root. A path with no meaning on
+    /// this platform, or whose resolution is not an absolute path, is an argument error:
+    /// it must never fall back to the raw string for another interpreter to read.
+    fn external_resolve(&self, path: &str) -> Result<PathBuf, ScopeError> {
+        let translated = translate(path, cfg!(windows))
+            .ok_or_else(|| unreadable("the path has no meaning on this platform"))?;
+        let resolved = resolve(Some(self.primary()), &translated);
+        if !resolved.is_absolute() {
+            return Err(unreadable("the path does not resolve to an absolute path"));
+        }
+        Ok(resolved)
+    }
+
+    /// `args` with the target rewritten to its resolved absolute form, for a read-only tool
+    /// whose target lies outside every root. Unlike `locate`, never refuses for containment:
+    /// the gate has already decided. Malformed arguments stay `Unreadable`; every non-path
+    /// argument is preserved, and a `glob` call is rewritten to the resolved literal base
+    /// and the remaining pattern separately, as strict `locate` does.
+    pub fn external_read(&self, tool: &str, args: &Value) -> Result<Value, ScopeError> {
+        if !is_external_read(tool) {
+            return Err(unreadable(&format!("`{tool}` has no external read route")));
+        }
+        let empty = Map::new();
+        let map = match args {
+            Value::Object(map) => map,
+            Value::Null => &empty,
+            _ => return Err(unreadable("the arguments are not an object")),
+        };
+        match fields_of(tool) {
+            Some(PathFields::Required(key)) => {
+                let path = string_field(map, key)?
+                    .ok_or_else(|| unreadable(&format!("`{key}` is missing")))?;
+                let resolved = self.external_resolve(&path)?;
+                Ok(Self::replaced(args, key, &resolved))
+            }
+            Some(PathFields::Optional(key)) => match string_field(map, key)? {
+                None => Ok(args.clone()),
+                Some(path) => {
+                    let resolved = self.external_resolve(&path)?;
+                    Ok(Self::replaced(args, key, &resolved))
+                }
+            },
+            Some(PathFields::Glob) => {
+                let pattern = string_field(map, "pattern")?
+                    .ok_or_else(|| unreadable("`pattern` is missing"))?;
+                let path = string_field(map, "path")?;
+                let (base, tail) = glob_target(path.as_deref(), &pattern);
+                let resolved = self.external_resolve(&base)?;
+                Ok(serde_json::json!({
+                    "pattern": tail,
+                    "path": resolved.to_string_lossy(),
+                }))
+            }
+            None => Err(unreadable(&format!(
+                "`{tool}` names no path this check can read"
+            ))),
+        }
+    }
+
+    /// The arguments with one path field replaced by its resolved absolute form.
+    fn replaced(args: &Value, key: &str, resolved: &Path) -> Value {
+        let mut map = match args {
+            Value::Object(map) => map.clone(),
+            _ => Map::new(),
+        };
+        map.insert(
+            key.to_string(),
+            Value::String(resolved.to_string_lossy().into()),
+        );
+        Value::Object(map)
     }
 
     fn locate_path(&self, args: &Value, key: &str, path: &str) -> Result<Located, ScopeError> {

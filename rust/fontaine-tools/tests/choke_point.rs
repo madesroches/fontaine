@@ -111,6 +111,28 @@ fn file_tools_are_confined_to_their_root() {
     );
 }
 
+#[test]
+fn the_external_read_fallbacks_are_unconfined_but_based_at_the_primary_root() {
+    let d = Dirs::new();
+    let root = d.dir("work");
+    let seen = Seen::default();
+    // The fallback an approved out-of-root read executes on: unconfined, because the gate
+    // already adjudicated the resolved target, and read-only like the instances it backs.
+    let read = builtins::read_external(&root, &seen);
+    assert!(!read.confine);
+    assert_eq!(read.base.as_deref(), Some(root.as_path()));
+    let list = builtins::list_external(&root);
+    assert!(!list.confine);
+    assert_eq!(list.base.as_deref(), Some(root.as_path()));
+    let search = builtins::search_external(&root);
+    assert!(!search.confine);
+    assert_eq!(search.base.as_deref(), Some(root.as_path()));
+    // Writes never have a fallback: every write factory stays confined.
+    assert!(builtins::write_for(&root, &seen).confine);
+    assert!(builtins::edit_for(&root, &seen).confine);
+    assert!(builtins::notebook_edit_for(&root, &seen).confine);
+}
+
 #[tokio::test]
 async fn rig_itself_refuses_a_path_outside_the_root() {
     let d = Dirs::new();

@@ -63,6 +63,8 @@ fn the_base_steers_toward_the_dedicated_tools_and_explains_denials_and_secrets()
         "Do not retry a denied call",
         "Never print, quote or repeat secrets",
         "only the user can add a root",
+        "may also inspect files outside the roots",
+        "never answer a denied `read`, `ls`, `glob` or `grep` by using `shell`",
         "{{workspace_roots}}",
     ] {
         assert!(BASE_PROMPT.contains(needle), "the base lacks `{needle}`");

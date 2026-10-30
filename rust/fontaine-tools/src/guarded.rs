@@ -29,6 +29,11 @@ enum Routing {
     One,
     /// One instance per workspace root, in the scope's order.
     PerRoot(Arc<Scope>),
+    /// One instance per workspace root, plus an unconfined read-only fallback at the end of
+    /// the instance list for a call whose target lies outside every root. Only the four
+    /// read-only file tools register this route, and only after the gate has allowed the
+    /// call with the resolved arguments.
+    PerRootWithFallback(Arc<Scope>),
 }
 
 /// What the gate and the result pipeline are shared with.
@@ -76,6 +81,28 @@ impl<T: Tool> GuardedTool<T> {
         }
     }
 
+    /// A tool with one confined instance per root of `scope` plus one unconfined fallback
+    /// based at the primary root, built by `make_fallback`. A call whose path lies outside
+    /// every root goes to the fallback, with the resolved arguments the pipeline normalized:
+    /// the fallback validates their absolute external shape but does not touch the file
+    /// system again.
+    pub fn per_root_with_fallback(
+        scope: Arc<Scope>,
+        risk: RiskClass,
+        guard: Guard,
+        make: impl Fn(&std::path::Path) -> T,
+        make_fallback: impl FnOnce(&std::path::Path) -> T,
+    ) -> Self {
+        let mut instances: Vec<T> = scope.roots().iter().map(|root| make(root)).collect();
+        instances.push(make_fallback(scope.primary()));
+        GuardedTool {
+            instances,
+            routing: Routing::PerRootWithFallback(scope),
+            risk,
+            guard,
+        }
+    }
+
     pub fn risk(&self) -> RiskClass {
         self.risk
     }
@@ -111,6 +138,18 @@ impl<T: Tool> GuardedTool<T> {
             Routing::PerRoot(scope) => scope
                 .locate(T::NAME, &args)
                 .map_err(|e| ToolExecutionError::refused(e.to_string()))?,
+            Routing::PerRootWithFallback(scope) => match scope.locate(T::NAME, &args) {
+                Ok(located) => located,
+                Err(crate::scope::ScopeError::OutOfScope(_)) => {
+                    crate::scope::external_shape(T::NAME, &args)
+                        .map_err(|e| ToolExecutionError::refused(e.to_string()))?;
+                    crate::scope::Located {
+                        root: self.instances.len() - 1,
+                        args,
+                    }
+                }
+                Err(e) => return Err(ToolExecutionError::refused(e.to_string())),
+            },
         };
         let typed: T::Args = serde_json::from_value(located.args.clone()).map_err(|e| {
             ToolExecutionError::invalid_args(format!("failed to parse tool arguments: {e}"))
@@ -145,8 +184,9 @@ impl<T: Tool> GuardedTool<T> {
     /// Saves the file the call names, when this tool is one whose edits are kept. `located`
     /// already holds the path the tool will open; capture failures never stop the call.
     async fn capture(&self, context: &ToolContext, located: &Value) -> Option<Box<dyn Capture>> {
-        let Routing::PerRoot(scope) = &self.routing else {
-            return None;
+        let scope = match &self.routing {
+            Routing::PerRoot(scope) | Routing::PerRootWithFallback(scope) => scope,
+            Routing::One => return None,
         };
         let pre_images = self.guard.pre_images.clone()?;
         if !crate::descriptor::find(T::NAME).is_some_and(|d| d.checkpointed) {

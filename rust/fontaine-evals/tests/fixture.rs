@@ -133,7 +133,10 @@ fn the_seed_dataset_covers_the_required_case_families() {
             .all(|c| c.permissions.is_some()
                 || c.tool == "shell"
                 || c.tool == "write"
-                || c.tool == "edit")
+                || c.tool == "edit"
+                // Per-mode out-of-root read rows carry no rules: the mode itself is
+                // what they exercise.
+                || (c.tool == "read" && c.permissions.is_none()))
     );
 }
 

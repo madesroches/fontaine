@@ -594,7 +594,10 @@ additional_directories = ["/home/me/shared-libs"]
 ### Workspace roots
 
 The workspace is an ordered set of roots: the primary root, then every `--add-dir <path>` and every
-`additional_directories` entry. File tools reach a path that lies inside any root. A relative entry
+`additional_directories` entry. File tools *write* a path that lies inside any root, and `shell`
+working directories stay inside them; the four read-only file tools (`read`, `ls`, `glob`, `grep`)
+may also inspect paths outside the roots, each through the normal permission decision (see
+[Permissions](permissions.md#the-pipeline)). A relative entry
 is resolved against the project directory (the launch directory, or `--cd`). An entry that does not exist, is not a directory or
 cannot be resolved is left out, with a warning naming the path and whether it came from
 `--add-dir` or the settings, and the run continues. The terminal UI shows the warning in the

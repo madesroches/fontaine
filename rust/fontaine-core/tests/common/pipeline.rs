@@ -135,6 +135,8 @@ pub struct Options {
     pub denied_hooks: Vec<Arc<dyn PermissionDeniedHook>>,
     pub always_allow_file: bool,
     pub guardian: Option<Arc<Guardian>>,
+    /// Replaces the scripted approver the pipeline and session state are built with.
+    pub approver: Option<Arc<dyn Approver>>,
     /// Gives the rig a session scratch root beside the launch directory.
     pub scratch: bool,
     /// Gives the rig an auto-memory root under the data directory, as a session with
@@ -154,6 +156,7 @@ impl Options {
             denied_hooks: Vec::new(),
             always_allow_file: true,
             guardian: None,
+            approver: None,
             scratch: false,
             memory: false,
         }
@@ -223,7 +226,9 @@ impl Rig {
             scratch.iter().chain(&memory).cloned(),
         ));
         let agents = Arc::new(AgentTree::new(Limits::default()));
-        let approver = Arc::new(Scripted::default());
+        let scripted = Arc::new(Scripted::default());
+        let gate_approver: Arc<dyn Approver> =
+            options.approver.clone().unwrap_or_else(|| scripted.clone());
         let state = Arc::new(SessionState::new(StateParams {
             session_id: session.id.clone(),
             mode: options.mode,
@@ -233,7 +238,7 @@ impl Rig {
             allow: config.permissions.allow.clone(),
             ledger: session.ledger.clone(),
             audit: session.audit.clone(),
-            approver: approver.clone(),
+            approver: gate_approver.clone(),
             home: options.home.clone(),
             protected_dirs: vec![world.config.clone(), world.data.clone()],
             scratch: scratch.clone(),
@@ -253,7 +258,7 @@ impl Rig {
         let user_config = world.config.join("config.toml");
         let pipeline = Arc::new(PermissionPipeline::new(PipelineParams {
             state: state.clone(),
-            approver: approver.clone(),
+            approver: gate_approver,
             headless: options.headless,
             hooks: options.hooks,
             denied_hooks: options.denied_hooks,
@@ -265,7 +270,7 @@ impl Rig {
             agents,
             state,
             pipeline,
-            approver,
+            approver: scripted,
             session,
             user_config,
             scratch,
