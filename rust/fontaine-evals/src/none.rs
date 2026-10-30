@@ -59,6 +59,19 @@ pub fn auto_context(case: &Case) -> AutoContext {
 /// The first decision record is the one scored: a prompt scores `prompt` even though the
 /// approver then answers deny. `guardian` is the live guardian of a `live:` run, if any.
 pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outcome, String> {
+    // A POSIX-rooted path is not absolute on Windows, so the case would score a different
+    // question than the one it asks.
+    if cfg!(windows)
+        && case
+            .args
+            .get("path")
+            .and_then(|p| p.as_str())
+            .is_some_and(|p| p.starts_with('/'))
+    {
+        return Ok(Outcome::Skipped(
+            "the case uses a POSIX absolute path, which does not exist on Windows".into(),
+        ));
+    }
     let scratch = tempfile::tempdir().map_err(|e| format!("scratch directory: {e}"))?;
     let base = scratch
         .path()
