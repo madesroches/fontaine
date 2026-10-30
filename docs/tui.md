@@ -90,10 +90,10 @@ The bar shows the permission mode, the model, how many subagents are running, `â
 
 | Key | Action |
 |---|---|
-| Enter | Submit. Alt+Enter, Shift+Enter or Ctrl+J insert a newline; a trailing `\` before Enter also continues the line. Which of these your terminal sends, and how to bind Shift+Enter, is in [Terminal setup](terminal.md#new-lines-in-the-message-box). While a turn runs, a message is queued (see [Messages during a turn](#messages-during-a-turn)). With a `@` list open, Enter completes instead; with the [slash-command menu](#slash-command-menu) open, it runs the selected command. |
+| Enter | Submit. Alt+Enter, Shift+Enter or Ctrl+J insert a newline; a trailing `\` before Enter also continues the line. Which of these your terminal sends, and how to bind Shift+Enter, is in [Terminal setup](terminal.md#new-lines-in-the-message-box). While a turn runs, a message is queued (see [Messages during a turn](#messages-during-a-turn)). With a `@` list open, Enter completes instead; with the [slash-command menu](#slash-command-menu) open on a bare `/name`, it runs the selected command; after other text, it sends the message. |
 | Up, Down | With the `@` list or the slash-command menu open, move the selection. Otherwise, on the first or last line of the input, recall older or newer submitted inputs; elsewhere they move the cursor. With messages queued, Up takes them back into the input. |
 | Ctrl-R | Search the prompt history; see [History](#history). |
-| Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. |
+| Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. In the menu it first extends the name to what all the listed commands share. |
 | Shift+Tab | Cycle the mode: manual, accept edits, plan, auto, and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` lists the broad allow rules it sets aside and says so when the guardian cannot be asked. |
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
@@ -103,24 +103,25 @@ The bar shows the permission mode, the model, how many subagents are running, `â
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/U/K/W/B/F | Edit the input. |
 | Ctrl-T | Open or close the [agents panel](#the-agents-panel), even over an approval prompt. |
 | Ctrl-O | Expand or collapse the [task list](#the-task-panel). Ignored while the agents panel is open. |
-| `/` as the first character | Opens the [slash-command menu](#slash-command-menu). |
+| `/` at the start of the input or after a space | Opens the [slash-command menu](#slash-command-menu). |
 
 ## Slash-command menu
 
-Typing `/` as the first character lists the commands and skills, and narrows the list as you type
-the name. Names and aliases that start with what you typed come first, then those that merely
+Typing `/` at the start of the input or after a space lists the commands and skills, and narrows
+the list as you type the name. Names and aliases that start with what you typed come first, then those that merely
 contain it; the match ignores case. A row found through an alias shows it in parentheses, as in
 `/clear (reset)`. Up to eight rows are shown, scrolling to keep the selection visible.
 
 | Key | Action |
 |---|---|
 | Up, Down | Move the selection. |
-| Tab | Complete the selected name, with a trailing space when the command takes an argument. An alias becomes the command's own name. |
-| Enter | Run the selected command. A command with a required argument, shown as `<arg>` in its hint, is completed instead, since it cannot run without one. |
+| Tab | When several commands match and they share a longer name than you typed, extend to that shared prefix. Otherwise complete the selected name. A bare `/name` gets a trailing space when the command takes an argument; after other text only that `/name` is replaced and a space follows it unless one is already there. An alias becomes the command's own name. |
+| Enter | On a bare `/name`, run the selected command. A command with a required argument, shown as `<arg>` in its hint, is completed instead, since it cannot run without one. After other text, Enter is not a menu key: the message is sent as typed. |
 | Esc, Ctrl-C | Close the menu until the text changes. |
 
-The menu only opens while the input is a bare `/name`: it closes once you type a space, and it
-never opens over a panel or prompt, during a history search or beside a `@` list. A recalled
+The menu opens while the cursor is inside a `/name` that starts the input or follows a space, so
+`hello /mod` opens it and `src/main` does not. It closes once you type a space, and it
+never opens in a `!` shell command, over a panel or prompt, during a history search or beside a `@` list. A recalled
 history entry that starts with `/` does not open it, so Up keeps walking the history.
 
 ## Shell commands

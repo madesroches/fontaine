@@ -1,40 +1,46 @@
-//! `@` file mentions: finding the token being typed and ranking the workspace files that could
-//! complete it. Completion only edits the input; the message is sent as typed.
+//! `@` file mentions and `/` commands: finding the token being typed, and ranking the workspace
+//! files that could complete a mention. Completion only edits the input; the message is sent as
+//! typed.
 
 use std::path::Path;
 
 /// The most candidates the list offers.
 pub const MAX_MATCHES: usize = 8;
 
-/// A `@` token in the input, as char offsets (`end` exclusive) and the text after the `@`.
+/// A sigil token in the input, as char offsets (`end` exclusive) and the text after the sigil.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Mention {
+pub struct Token {
     pub start: usize,
     pub end: usize,
     pub query: String,
 }
 
-/// The `@` token the cursor is inside or at the end of: one that starts the input or follows
-/// whitespace, with the cursor after its `@`.
-pub fn mention_at(text: &str, cursor: usize) -> Option<Mention> {
+/// The `sigil` token the cursor is inside or at the end of: one that starts the input or
+/// follows whitespace, with the cursor after its sigil.
+pub fn token_at(text: &str, sigil: char, cursor: usize) -> Option<Token> {
     let chars: Vec<char> = text.chars().collect();
     let cursor = cursor.min(chars.len());
     let mut start = cursor;
     while start > 0 && !chars[start - 1].is_whitespace() {
         start -= 1;
     }
-    if chars.get(start) != Some(&'@') || cursor == start {
+    if chars.get(start) != Some(&sigil) || cursor == start {
         return None;
     }
     let mut end = cursor;
     while end < chars.len() && !chars[end].is_whitespace() {
         end += 1;
     }
-    Some(Mention {
+    Some(Token {
         start,
         end,
         query: chars[start + 1..end].iter().collect(),
     })
+}
+
+/// The `@` token the cursor is in.
+pub fn mention_at(text: &str, cursor: usize) -> Option<Token> {
+    token_at(text, '@', cursor)
 }
 
 /// A path as the list shows it: relative to the primary root when it is under it.
@@ -88,6 +94,18 @@ mod tests {
         assert_eq!(mention("look at @src/m", 14), Some((8, "src/m".into())));
         assert_eq!(mention("a\n@x", 4), Some((2, "x".into())));
         assert_eq!(mention("@", 1), Some((0, String::new())));
+    }
+
+    #[test]
+    fn a_slash_token_follows_the_same_rules_as_a_mention() {
+        let slash = |text: &str, cursor| token_at(text, '/', cursor).map(|t| (t.start, t.query));
+        assert_eq!(slash("/mod", 4), Some((0, "mod".into())));
+        assert_eq!(slash("run /mod", 8), Some((4, "mod".into())));
+        assert_eq!(slash("a\n/mod", 6), Some((2, "mod".into())));
+        assert_eq!(slash("a/b", 3), None);
+        assert_eq!(slash("see src/main", 12), None);
+        assert_eq!(slash("/mod", 0), None);
+        assert_eq!(slash("/mod x", 6), None);
     }
 
     #[test]

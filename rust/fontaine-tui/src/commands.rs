@@ -463,6 +463,23 @@ pub fn match_menu<'a>(menu: &'a [MenuEntry], typed: &str) -> Vec<&'a MenuEntry> 
     exact
 }
 
+/// The longest prefix every name shares, ignoring case and spelled as in the first name.
+pub fn common_prefix(names: &[&str]) -> String {
+    let Some((first, rest)) = names.split_first() else {
+        return String::new();
+    };
+    let mut len = first.chars().count();
+    for name in rest {
+        let shared = first
+            .chars()
+            .zip(name.chars())
+            .take_while(|(a, b)| a.to_lowercase().eq(b.to_lowercase()))
+            .count();
+        len = len.min(shared);
+    }
+    first.chars().take(len).collect()
+}
+
 /// What `/loop` was asked to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoopRequest {
@@ -982,6 +999,23 @@ mod tests {
             description: "d".into(),
             aliases: aliases.iter().map(|a| a.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn common_prefix_is_the_longest_shared_one() {
+        assert_eq!(common_prefix(&[]), "");
+        assert_eq!(common_prefix(&["model"]), "model");
+        assert_eq!(
+            common_prefix(&["zork-alpha", "zork-alphabet", "zork-beta"]),
+            "zork-"
+        );
+        assert_eq!(
+            common_prefix(&["zork-alpha", "zork-alphabet"]),
+            "zork-alpha"
+        );
+        assert_eq!(common_prefix(&["model", "guardian-model"]), "");
+        assert_eq!(common_prefix(&["Zork-A", "zork-b"]), "Zork-");
+        assert_eq!(common_prefix(&["héllo", "hélp"]), "hél");
     }
 
     fn names<'a>(found: &[&'a MenuEntry]) -> Vec<&'a str> {
