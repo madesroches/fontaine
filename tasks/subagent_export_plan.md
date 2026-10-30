@@ -120,11 +120,15 @@ the per-agent logs, inside the already owner-only session directory. No store fi
 
 `export_session(session: &Session, tree: &AgentTree, path: &Path)`:
 
-**Agent list.** Merge two sources, deduplicated by id, live rows first: (a) the live tree's
+**Agent list.** Merge two sources, deduplicated by id: (a) the live tree's
 `rows()` (for agents of this process: live status, parent, type); (b) `session.ledger.view().agents`
 (for agents of earlier processes of this session: parent and type from the `spawned` record,
-status from `ended`, or "ended" when there is no `finished` record). Both sources are already
-ordered oldest-first; the merge preserves that.
+status from `ended`, or "ended" when there is no `finished` record). The ledger's `agents` list
+is the spine — every live agent has a `spawned` record, and ledger order is oldest-first. Iterate
+it oldest-first, and for ids the live tree also contains, take status, parent and type from the
+live row instead. The merged list is therefore oldest-first in all cases, including after
+`--resume`, when the ledger holds earlier processes' agents and the live tree only this
+process's.
 
 **Reading transcripts.** Each agent's transcript is `load_async(&session.store(), &id)` — a
 missing log yields an empty conversation, never an error. A running agent's log holds its
@@ -290,7 +294,11 @@ fact of their work. This is documented, not worked around.
   files, and "Subagents in the ledger" (`:233-245`) notes the ledger now both records the
   lifecycle and anchors id continuity across resume.
 - `docs/agents.md` (`:205-217`): a subagent's conversation is persisted for the session's life
-  and is what `/export` renders; resume still starts a fresh run on it.
+  and is what `/export` renders; resume still starts a fresh run on it. Also fix the "Messaging
+  a subagent" resume bullet in that range, which still says a resumed run starts "on the same
+  conversation and the same `MemoryStore`": after this change the conversation is the persisted
+  per-agent log in the session store, so rewrite the phrase to name that log instead of
+  `MemoryStore`.
 - `tasks/fontaine_harness_plan.md` Decisions, `### Sessions`: lines per Implementation Steps.
 
 ## Testing Strategy
