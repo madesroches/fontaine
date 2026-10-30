@@ -84,7 +84,9 @@ jobs:
             if curl --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh; then
               exit 0
             fi
-            sleep 5
+            if [ "$attempt" -lt 3 ]; then
+              sleep 5
+            fi
           done
           exit 1
       - name: Cache dist
