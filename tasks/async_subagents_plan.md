@@ -10,9 +10,7 @@ A parent that wants a result now waits for it explicitly with `job_output`. The 
 join happens when a parent is ending: a subagent that gives its final answer while its own
 children still run keeps its run open until they report, takes a further turn on what they said,
 and only then ends; the main conversation does the same in a headless run (it already does). This
-removes the blocking spawn that serialized "spawn 2 agents to verify these" in #326, and does so
-without touching the turn's one-call-at-a-time execution, so the permission pipeline's ordering
-guarantees are unchanged.
+removes the blocking spawn that serialized "spawn 2 agents to verify these" in #326.
 
 The user's direction for this work: "agents need to be fully async and execute concurrently with
 one another. There should be no implicit join unless the parent agent is terminating. There are of
@@ -81,9 +79,7 @@ course sync tools available to allow parents to wait on their children."
 - `AgentDelivery::AlreadyDelivered { foreground }` becomes a unit variant `AlreadyDelivered`, and
   `render_agent_wait` keeps only the "already delivered to you" line.
 
-No change to `turn.rs`: the calls of a turn still run one at a time, so the floor, hooks and
-guardian judge each `agent` call before the next, in call order, and a denied call starts nothing.
-Concurrency comes from the children, not from the tool loop.
+No change to `turn.rs`; concurrency comes from the children, not from the tool loop.
 
 ### 2. Implicit join when a subagent ends
 
@@ -100,11 +96,14 @@ loop {
 }
 ```
 
-- `join_wait` waits on `tree.changed()` (register-then-check, as `AgentTree::wait` does) until
-  either the child's inbox holds a note (a report or a `send_message`), the human typed to it
-  (`steering.has_deliverable_message_for(id)`), or `tree.running_below(id)` is false and the inbox
-  is empty. A report is queued before its child is marked finished (`watch_report`), so the last
-  check cannot miss one.
+- `join_wait` loops, registering on `tree.changed()` before each check (as `AgentTree::wait` does),
+  and each pass checks in the order headless `wait_for_news` does: the child's inbox (a report or a
+  `send_message`) and `steering.has_deliverable_message_for(id)`; then `tree.running_below(id)`; and
+  when nothing runs, the inbox once more before returning `Joined::Done`. A report is queued before
+  its child is marked finished (`watch_report`), so the last check cannot miss one. The human's
+  typing never notifies the tree (`Steering::queue_for`, `message_agent`), so the wait races
+  `tree.changed()` against a short sleep (the same poll interval as `job_output`'s wake,
+  `WAKE_POLL`) and re-checks `has_deliverable_message_for` on each wake.
 - The prompt for an inbox wake is the same text the root builds today. `notification_prompt` and
   `screened_notes` move out of `AgentRuntime` into a free function
   `notification_prompt(state, results, agent) -> Option<String>` (in `child_runner.rs`, beside
@@ -122,8 +121,7 @@ loop {
   with the usual report, and `AgentTree::finish` still kills the running descendants of a child
   that was killed, failed or ran out of budget — the abnormal end, where no join is possible.
   Normally none remain; a descendant resumed between the join's last check and `finish` is stopped.
-- `ChildHandle::kill` is unchanged; a kill during the join wait yields a `Killed` report whose text
-  is the last answer.
+- `ChildHandle::kill` is unchanged.
 
 ### 3. Root behavior
 
@@ -180,8 +178,9 @@ loop {
 - `rust/fontaine-tools/src/{jobs.rs, jobs/tools.rs}`, `rust/fontaine-tools/src/jobs/tests.rs`, `rust/fontaine-tools/tests/jobs.rs`
 - `rust/fontaine-core/src/{child_runner.rs, agent.rs, agent/setup.rs, goal.rs, agent/goal.rs}`
 - `rust/fontaine/src/headless.rs`
-- `rust/fontaine/tests/{parallel_agents.rs, fork_agent.rs, telemetry_otlp.rs}`
-- `rust/fontaine-core/tests/{agent_pipeline.rs, extensions.rs, choke_point.rs, agent_resume.rs}`
+- `rust/fontaine/tests/{parallel_agents.rs, fork_agent.rs, telemetry_otlp.rs, common/mod.rs}`
+- `rust/fontaine-core/tests/{agent_pipeline.rs, extensions.rs, choke_point.rs, agent_resume.rs, guardian_off.rs,
+  permissions_screen.rs}`
   (fake `ChildRunner` on `SpawnRequest`, `reserve` calls)
 - `rust/fontaine-guardian/prompts/guardian_prompt.md`, its `the_defaults_marker_snapshot.snap`,
   `evals/dataset/overdeny.jsonl`
@@ -199,16 +198,10 @@ loop {
   run between spawns and reports; it needs a gate pre-pass rig's `buffer_unordered` loop does not
   offer, and it reopens the ordering questions (mixed batches, `CurrentCall`, out-of-order cards)
   that an always-returning call avoids entirely.
-- **Keep `background` as an ignored field** for models that still send it. Rejected: the schema
-  no longer offers it, and an `invalid_args` result that names the field is self-correcting; a
-  silently ignored flag would hide that the semantics changed.
 - **Join by prompting the model to call `job_output`** (a harness note "your subagents are still
   running") instead of waiting in the runner. Rejected: it spends model calls on waiting and relies
   on the model complying; the runner wait is deterministic and reuses the root's screened
   notification prompt.
-- **Keep killing a finishing parent's children** (today's `finish`). Rejected by the user's
-  direction: ending is the one point where an implicit join belongs, and killing turns a model's
-  early answer into lost work.
 
 ## Decisions
 
@@ -288,17 +281,31 @@ Integration (`fontaine -p` with the routed scripted endpoint, `fontaine/tests/pa
   `a_foreground_child_is_stopped_when_the_headless_cap_is_passed`,
   `a_blocking_report_and_a_background_notification_pass_through_the_result_pipeline`, the spawns in
   `fork_agent.rs` and `fontaine-tui/tests/agents.rs`) to the async flow: spawn, then the report as a
-  notification or `job_output` result. `with_one_child` in `fontaine-core/tests/agent_resume.rs`
+  notification or `job_output` result. Also in `parallel_agents.rs`:
+  `a_childs_token_budget_stops_it_and_its_report_is_partial`,
+  `a_cost_cap_on_an_unpriced_model_is_inactive_with_one_notice_and_the_token_cap_still_binds` and
+  `the_per_call_model_overrides_the_types_and_bad_values_are_error_results` read the report from the
+  notification or `job_output`, and the `spawn_args(.., background)` helper (:37) loses its
+  parameter. In `fontaine-agents/tests/seam.rs`,
+  `a_refused_automatic_resume_hands_the_refusal_and_the_text_to_the_child`,
+  `a_killed_child_that_missed_a_message_is_not_resumed` and
+  `of_two_racing_resumes_of_an_ended_child_one_starts_a_run` get an `until(..)` wait on the
+  resume/undelivered state. `telemetry_otlp.rs`
+  `subagents_have_spans_under_their_spawning_call_and_decisions_keyed_by_agent`: the subagent span
+  still nests under the spawning `agent` call's span; `docs/telemetry.md:102` stays consistent.
+  Both tests in `fork_agent.rs` use one ordered queue `[fork_call(), "fork done", "root done"]` and
+  index `requests[1]`/`requests[2]`; with async spawn the root's follow-up races the fork's first
+  request for that queue, and the routed endpoint cannot tell them apart because a fork shares the
+  root's first user message. They move to the routed endpoint with a new `Route::on_last_user(marker)`
+  matcher in `tests/common/mod.rs` (matches the last user message, which for the fork is its task and
+  for the root is still the turn's prompt), the fork's route listed before the root's; the fork's
+  request is found by content (its last user message), not by index. `with_one_child` in `fontaine-core/tests/agent_resume.rs`
   (:54-70) is reworked to spawn first and then get the report as a notification, using a routed,
   keyed mock instead of one ordered queue `[spawn, "child answer", "root done"]`, which assumed a
   blocking child.
 - **TUI**: `parallel_subagents_one_killed_the_others_finish_and_every_call_is_audited_by_agent`
   (`fontaine-tui/tests/agents.rs:83-130`) is extended with an assertion that the agent ids appear
   on the root's tool cards before any child ends.
-
-These are concurrency and lifecycle behaviors whose failure is silent (a lost report, a child
-killed early, serialized runs), so they are automated end to end through the scripted endpoint
-rather than checked by hand.
 
 ## Open Questions
 
