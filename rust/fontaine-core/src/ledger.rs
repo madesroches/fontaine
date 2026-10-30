@@ -845,6 +845,7 @@ mod tests {
         said(&ledger, "old", None);
         let text = std::fs::read_to_string(ledger.path()).unwrap();
         assert!(!text.contains("\"agent\""), "{text}");
+        drop(ledger);
         let reopened = Ledger::open(dir.path()).unwrap();
         assert_eq!(reopened.view().user_messages, ["old"]);
         assert!(reopened.view().agent_messages.is_empty());
