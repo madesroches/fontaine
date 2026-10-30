@@ -138,7 +138,7 @@ removes it.
 ### Cancellation and interruption
 
 No wait of any kind takes the report, so a dropped agent wait needs no cleanup. A wait is dropped
-by Esc, a headless cap, a wake race, or the waiting agent itself being killed. The child keeps
+by Esc, a run ended by a headless cap (which kills the waiter), a wake race, or the waiting agent itself being killed. The child keeps
 running, and its report reaches the parent's inbox later: on the next tool result, or for an idle
 root as a notification turn. A killed waiter is the exception: its descendants are killed by `kill`
 as today, and `push` drops reports to a non-running parent, which is the current documented
@@ -207,7 +207,7 @@ must mean **no deadline**. It must no longer mean "expired":
 
 ### Tree changes (`rust/fontaine-agents/src/tree.rs`)
 
-- `Node` gains `started: Instant`, set in `reserve`, which gives the age.
+- `Node` gains `started: Instant`, set in `reserve` and in `AgentTree::new` (`Instant::now()` for the root), which gives the age.
 - A `live_status(&Node)` helper, shared with `rows()`, is the handle's status while running and
   the node's status after.
 - `impl AgentWaits for AgentTree` (the trait is foreign, but `AgentTree` is local):
@@ -252,7 +252,9 @@ The `job_output` row's aliases become
 `["BashOutput", "TaskOutput", "BashOutputTool", "AgentOutput", "AgentOutputTool"]`, Claude Code's
 legacy names for both halves of what `TaskOutput` once was. Risk class and path policy are
 unchanged: an agent wait reads only the caller's own child's status, which exposes nothing the
-notification would not. The new aliases also go in the test's expected table.
+notification would not. The new aliases also go in the test's expected table and in the fixed
+`["BashOutput", "TaskOutput"]` list of `the_job_tools_map_from_their_claude_code_names`
+(`rust/fontaine-core/src/extensions.rs:643`).
 
 `AgentTool::description`'s background sentence becomes "…returns an `agent_id` at once; the report
 arrives later as a notification, or call `job_output` with the id to wait for it."
@@ -287,8 +289,10 @@ arrives later as a notification, or call `job_output` with the id to wait for it
   `rust/fontaine-agents/src/registry.rs`, `rust/fontaine-agents/tests/seam.rs`
 - `rust/fontaine-core/src/tools.rs`, `rust/fontaine-core/src/agent/build.rs`,
   `rust/fontaine-core/src/child_runner.rs`, `rust/fontaine-core/src/steering.rs`,
-  `rust/fontaine-core/tests/choke_point.rs`, `rust/fontaine-core/tests/extensions.rs`
-- `rust/fontaine/tests/parallel_agents.rs`
+  `rust/fontaine-core/src/extensions.rs`, `rust/fontaine-core/tests/choke_point.rs`,
+  `rust/fontaine-core/tests/extensions.rs`
+- `rust/fontaine/tests/parallel_agents.rs`, `rust/fontaine/tests/headless_tools.rs`,
+  `rust/fontaine/tests/common/mod.rs`
 - `docs/agents.md`, `docs/tools.md`, `docs/extensions.md`
 - `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (`## Decisions`)
 
@@ -341,7 +345,9 @@ arrives later as a notification, or call `job_output` with the id to wait for it
   a message or a user interjection. Claude Code's removed `TaskOutput` capped waits at 600 s (#301).
   This line goes into the master plan's `## Decisions`.
 - A subagent may call `job_output` only with the id of a subagent it started; jobs and the list
-  stay root-only.
+  stay root-only. This amends the 2026-10-27 decision (`tasks/fontaine_harness_plan.md:384`) that
+  background shell jobs and `monitor` are root-only: `job_output` also accepts the id of a subagent
+  the caller started. This line goes into the master plan's `## Decisions`.
 
 ## Documentation
 
@@ -356,7 +362,9 @@ arrives later as a notification, or call `job_output` with the id to wait for it
     the per-id access and defaults;
   - the read-only paragraph (line 71) gains the agent-wait status case;
   - the jobs (line 187) and monitor (line 231) bullets drop the 60 s limit and mention the wakes;
-  - line 206, listing what a subagent cannot use, notes the agent-id exception;
+  - lines 205-207, the "Who can use them" bullet, whose opener "Only the main conversation." is
+    reworded and whose list of refused subagent calls notes the agent-id exception;
+  - the `agent` row (line 24) notes that the background id can be waited on with `job_output`;
   - line 234 ("Like the other job tools it is for the main conversation only") is reworded
     because `job_output` is no longer main-conversation only: a subagent may use it with the id of
     a subagent it started.
@@ -440,12 +448,12 @@ in the real tool server, and the per-id access through the real gate.
 - **Nested.** `[agents.types.lead]` has `tools` omitted. The lead route is
   `agent(explore, background)` → `job_output {id}` → text "lead done: …", and the grandchild route
   is slow. Assert the root's `agent` result includes the grandchild's text, and that the
-  grandchild's ledger `finished` status is `done`, not `killed`. Also assert, with
+  grandchild's ledger `finished` status is `done`, not `killed`; the test reuses the `ledger(s, session)`
+  helper from `rust/fontaine/tests/headless_tools.rs:19-30`, moved into `tests/common`. Also assert, with
   `requests_with(&endpoint, "<grandchild text>")`, that exactly one body, the lead's request after
   its `job_output` call, holds both the ended-status line and "Background agent agent-2".
 
-Existing job and monitor tests that assert the 60 s clamp or the old description are updated to
-the uncapped behavior. The refusal loop at `rust/fontaine-tools/tests/jobs.rs:183-192` asserts the
+The refusal loop at `rust/fontaine-tools/tests/jobs.rs:183-192` asserts the
 old wording for `job_output`, `job_cancel` and `monitor`; it is updated so `job_output` expects the
 new message and the other two keep theirs.
 
