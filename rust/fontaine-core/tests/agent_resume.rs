@@ -6,7 +6,7 @@ mod common;
 use std::time::Duration;
 
 use common::World;
-use common::runtime::{Built, build};
+use common::runtime::{Built, build, build_keyed};
 use fontaine_agents::mode::Ladder;
 use fontaine_agents::runner::ChildStatus;
 use fontaine_core::agent::{Delivered, MessageRefusal};
@@ -51,8 +51,16 @@ fn world(extra: &str) -> World {
     w
 }
 
-/// Runs the root turn that starts a blocking child, which answers "child answer".
-async fn with_one_child(w: &World, later: Vec<Vec<MockStreamEvent>>) -> Built {
+/// What the tests with a child get: the runtime with its main conversation, and the model the
+/// child talks to.
+struct OneChild {
+    built: Built,
+    child: rig_core::test_utils::MockCompletionModel,
+}
+
+/// Runs the root turn that starts a child, then waits for the child to answer "child answer".
+/// The child's report waits in the root's inbox.
+async fn with_one_child(w: &World, later: Vec<Vec<MockStreamEvent>>) -> OneChild {
     with_one_child_seen(w, later, None).await
 }
 
@@ -61,10 +69,16 @@ async fn with_one_child_seen(
     w: &World,
     later: Vec<Vec<MockStreamEvent>>,
     sink: Option<AgentEventSink>,
-) -> Built {
-    let mut turns = vec![spawn_call(), text("child answer"), text("root done")];
-    turns.extend(later);
-    let built = build(w, Manual, turns, false);
+) -> OneChild {
+    let mut child_turns = vec![text("child answer")];
+    child_turns.extend(later);
+    let (built, child) = build_keyed(
+        w,
+        Manual,
+        "dig into it",
+        vec![spawn_call(), text("root done")],
+        child_turns,
+    );
     if let Some(sink) = sink {
         built.runtime.state.set_agent_event_sink(sink);
     }
@@ -84,7 +98,8 @@ async fn with_one_child_seen(
     )
     .await;
     assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
-    built
+    until_ended(&built, "agent-1").await;
+    OneChild { built, child }
 }
 
 async fn until_ended(built: &Built, id: &str) {
@@ -101,13 +116,15 @@ async fn until_ended(built: &Built, id: &str) {
 #[tokio::test]
 async fn a_done_child_resumed_with_text_continues_its_conversation_and_reports_to_the_root() {
     let w = world("");
-    let built = with_one_child(&w, vec![text("resumed answer")]).await;
+    let OneChild { built, child } = with_one_child(&w, vec![text("resumed answer")]).await;
     let tree = built.runtime.state.agents().clone();
     assert_eq!(tree.status_of("agent-1"), Some(ChildStatus::Done));
     let spent = tree.spend_of("agent-1").tokens();
     assert!(spent > 0);
-    // The first run's report was the blocking call's result, so none waits for the root.
-    assert!(!tree.has_notifications(ROOT_AGENT));
+    // The first run's report waits for the root.
+    let first = tree.take_notifications(ROOT_AGENT);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(first[0].text.contains("child answer"), "{first:?}");
 
     let delivered = built
         .runtime
@@ -118,7 +135,7 @@ async fn a_done_child_resumed_with_text_continues_its_conversation_and_reports_t
     until_ended(&built, "agent-1").await;
 
     // The scripted model saw the earlier turns of that conversation with the new words.
-    let last = format!("{:?}", built.main.requests().last().unwrap());
+    let last = format!("{:?}", child.requests().last().unwrap());
     assert!(last.contains("dig into it"), "{last}");
     assert!(last.contains("child answer"), "{last}");
     assert!(last.contains("and the words"), "{last}");
@@ -164,7 +181,7 @@ async fn a_killed_or_budget_spent_child_cannot_be_resumed() {
     let tree = built.runtime.state.agents().clone();
 
     let killed = tree
-        .reserve(ROOT_AGENT, "worker", "m", vec![], Ladder::Manual, true)
+        .reserve(ROOT_AGENT, "worker", "m", vec![], Ladder::Manual)
         .unwrap();
     assert!(tree.kill(&killed));
     assert_eq!(
@@ -173,7 +190,7 @@ async fn a_killed_or_budget_spent_child_cannot_be_resumed() {
     );
 
     let spent = tree
-        .reserve(ROOT_AGENT, "worker", "m", vec![], Ladder::Manual, true)
+        .reserve(ROOT_AGENT, "worker", "m", vec![], Ladder::Manual)
         .unwrap();
     tree.finish(
         &spent,
@@ -210,10 +227,10 @@ async fn a_killed_or_budget_spent_child_cannot_be_resumed() {
 #[tokio::test]
 async fn a_resume_at_the_parallel_limit_is_refused_with_a_human_notice() {
     let w = world("\n[agents]\nmax_parallel = 1\n");
-    let built = with_one_child(&w, vec![]).await;
+    let OneChild { built, .. } = with_one_child(&w, vec![]).await;
     let tree = built.runtime.state.agents().clone();
     // Another agent holds the only place.
-    tree.reserve(ROOT_AGENT, "worker", "m", vec![], Ladder::Manual, true)
+    tree.reserve(ROOT_AGENT, "worker", "m", vec![], Ladder::Manual)
         .unwrap();
     let refusal = built
         .runtime
@@ -230,7 +247,7 @@ async fn a_message_for_a_running_child_is_queued_not_resumed() {
     let built = build(&w, Manual, vec![], false);
     let tree = built.runtime.state.agents().clone();
     let running = tree
-        .reserve(ROOT_AGENT, "worker", "m", vec![], Ladder::Manual, true)
+        .reserve(ROOT_AGENT, "worker", "m", vec![], Ladder::Manual)
         .unwrap();
     assert_eq!(
         built.runtime.message_agent(&running, "heads up".into()),
@@ -253,7 +270,8 @@ async fn a_message_for_a_running_child_is_queued_not_resumed() {
 async fn a_childs_prompt_and_events_reach_the_sink_under_its_id() {
     let w = world("");
     let (sink, mut seen) = tokio::sync::mpsc::unbounded_channel();
-    let built = with_one_child_seen(&w, vec![text("resumed answer")], Some(sink)).await;
+    let OneChild { built, .. } =
+        with_one_child_seen(&w, vec![text("resumed answer")], Some(sink)).await;
     let mut events = Vec::new();
     while let Ok(item) = seen.try_recv() {
         events.push(item);

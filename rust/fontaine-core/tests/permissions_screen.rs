@@ -325,7 +325,7 @@ async fn a_subagent_call_meets_the_same_screen() {
     let rig = rig(slow.guardian.clone(), true, stage(&server, false));
     let child = rig
         .agents
-        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Auto, false)
+        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Auto)
         .unwrap();
     let decision = rig.check_as(&child, "shell", shell("python a.py")).await;
     assert!(!allowed(&decision));
@@ -538,7 +538,7 @@ async fn a_subagent_inherits_the_allow_path() {
     let rig = rig(slow.guardian.clone(), true, allowing_stage(&server, false));
     let child = rig
         .agents
-        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Auto, false)
+        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Auto)
         .unwrap();
     assert!(allowed(
         &rig.check_as(&child, "shell", shell("python a.py")).await

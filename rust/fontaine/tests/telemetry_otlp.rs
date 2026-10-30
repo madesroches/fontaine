@@ -621,7 +621,7 @@ fn agent_routes() -> Vec<Route> {
                 Turn::tool(
                     "c1",
                     "agent",
-                    json!({"agent_type": "explore", "prompt": "child-T: look", "background": false}),
+                    json!({"agent_type": "explore", "prompt": "child-T: look"}),
                 ),
                 Turn::text("done"),
             ],

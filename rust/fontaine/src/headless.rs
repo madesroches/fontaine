@@ -577,7 +577,7 @@ enum News {
     Done,
 }
 
-/// Waits until a background subagent has news for the main conversation, the budget is spent, or
+/// Waits until a subagent has news for the main conversation, the budget is spent, or
 /// no subagent is left running.
 async fn wait_for_news(runtime: &AgentRuntime, over_cap: &dyn Fn() -> bool) -> News {
     let tree = runtime.state.agents().clone();
@@ -588,7 +588,7 @@ async fn wait_for_news(runtime: &AgentRuntime, over_cap: &dyn Fn() -> bool) -> N
         if let Some(prompt) = runtime.notification_prompt().await {
             return News::Prompt(prompt);
         }
-        if !tree.background_running() {
+        if !tree.any_running() {
             // A report is queued before its child is marked finished, so nothing is missed
             // between the check above and this one.
             return match runtime.notification_prompt().await {
@@ -667,7 +667,7 @@ async fn guarded_turn(
     outcome
 }
 
-/// Background subagents still running when the answer comes are waited for: their reports
+/// Subagents still running when the answer comes are waited for: their reports
 /// reach the main conversation as notifications, each a turn of its own, until none is running.
 /// A run stopped by a limit kills them and drops their reports.
 async fn settle(

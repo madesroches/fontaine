@@ -163,7 +163,7 @@ pub struct App {
     /// Approvals waiting behind the open one: several agents can ask at once.
     pub queued_approvals: VecDeque<Approval>,
     /// The model's questions for the human, the one being answered first. They wait behind an
-    /// open approval, which can come from a background agent while the root asks.
+    /// open approval, which can come from a subagent while the root asks.
     pub questions: VecDeque<QuestionPanel>,
     /// The `/agents` panel while it is open.
     pub agents: Option<AgentsPanel>,
@@ -581,7 +581,7 @@ impl App {
     }
 
     /// Answers the open prompts of the main conversation with a denial, as when its turn is
-    /// interrupted. A background agent's prompts stay: its run goes on.
+    /// interrupted. A subagent's prompts stay: its run goes on.
     pub fn deny_pending(&mut self) {
         let root = |approval: &Approval| {
             approval.request.agent.is_empty()

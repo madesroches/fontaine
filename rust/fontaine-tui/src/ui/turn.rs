@@ -205,7 +205,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         Some(TurnEnd::Finished(TurnOutcome::Failed(message)))
     }
 
-    /// A turn on what the background agents reported. It is not the user speaking, so it is not
+    /// A turn on what the subagents reported. It is not the user speaking, so it is not
     /// recorded as a user message.
     pub(crate) async fn notification_turn(
         &mut self,
@@ -223,7 +223,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.transcript.notice(if jobs {
             "a background job reported back"
         } else {
-            "a background agent reported back"
+            "an agent reported back"
         });
         let end = self.turn(runtime, prompt, None).await;
         self.harness_turn_tail(runtime, launch_dir, end).await
@@ -258,7 +258,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
-    /// A turn on a scheduled task that came due. Like a background agent's report it is not
+    /// A turn on a scheduled task that came due. Like a subagent's report it is not
     /// the user speaking, so it is not recorded as a user message; unlike one, what the human
     /// queued while it ran is sent as the next turn or handed back to the input.
     pub(crate) async fn scheduled_turn(

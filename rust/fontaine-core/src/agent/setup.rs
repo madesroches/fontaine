@@ -487,6 +487,7 @@ pub(super) fn retained(
 
 /// The main model slot and the tool server the root agent and its subagents share, the runner
 /// that starts the subagents, and the tree wired to both.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn subagent_support(
     retained: &Setup,
     tree: &AgentTree,
@@ -495,6 +496,7 @@ pub(super) fn subagent_support(
     config: &Config,
     approver: &Arc<dyn Approver>,
     steering: &Steering,
+    results: &Arc<ResultPipeline>,
 ) -> (
     Arc<RwLock<MainModel>>,
     ToolServerHandle,
@@ -513,12 +515,14 @@ pub(super) fn subagent_support(
         approver,
         config.telemetry.records_content(),
         steering,
+        results,
     );
     wire_root_tree(tree, models, &tool_server);
     (main, tool_server, runner)
 }
 
 /// The runner that starts subagents on the session's tools and models.
+#[allow(clippy::too_many_arguments)]
 fn child_runner(
     retained: &Setup,
     state: &Arc<SessionState>,
@@ -527,6 +531,7 @@ fn child_runner(
     approver: &Arc<dyn Approver>,
     record_content: bool,
     steering: &Steering,
+    results: &Arc<ResultPipeline>,
 ) -> Arc<CoreChildRunner> {
     let preamble_state = state.clone();
     let preamble_config_dir = retained.config_dir.clone();
@@ -568,6 +573,7 @@ fn child_runner(
             record_content,
             parent_context: ParentContext::default(),
             steering: steering.clone(),
+            results: results.clone(),
         }),
     })
 }

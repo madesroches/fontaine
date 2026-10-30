@@ -3,7 +3,7 @@
 The `agent` tool starts a subagent: a separate conversation with its own model, its own context and
 a subset of the main conversation's tools. Subagents let the model split a task, explore in
 parallel and keep long output out of its own context. They follow Claude Code's model of subagents
-and background tasks, with stricter permission rules.
+and asynchronous tasks, with stricter permission rules.
 
 ## The `agent` tool
 
@@ -12,21 +12,26 @@ and background tasks, with stricter permission rules.
 | `agent_type` | One of the [agent types](#agent-types). Required. |
 | `prompt` | The task. A subagent cannot see the conversation, so it needs everything in `prompt`; a [`fork`](#forking-the-conversation) already has the conversation and needs only a short task. Required. |
 | `model` | Optional: `$main`, `$guardian_default` or `<account>/<model>`. |
-| `background` | Optional, default `false`. |
 
-By default the call waits and its result is the subagent's final message. With `background: true`
-it returns `{"agent_id": "agent-1"}` at once and the subagent runs alongside; when it ends, its
-report is delivered to the conversation that started it as a notification, in the next tool result
-that conversation reads or, if it is idle, as the prompt of a turn of its own. The report passes
-through the same result pipeline as any tool result. A killed background subagent delivers
-nothing. When a subagent ends, any background subagents it started are stopped too, and their
-reports are not delivered.
+The call returns `{"agent_id": "agent-1"}` at once and the subagent runs alongside its parent and
+its siblings; spawn several in a row and they all run concurrently, up to `max_parallel`. When one
+ends, its report is delivered to the conversation that started it as a notification, in the next
+tool result that conversation reads or, if it is idle, as the prompt of a turn of its own. The
+report passes through the same result pipeline as any tool result. A killed subagent delivers
+nothing. A conversation that wants a result before going on waits for it with
+[`job_output`](#waiting-for-a-subagent).
+
+A subagent that gives its final answer while its own subagents still run does not end yet: it
+waits for their reports (or for a message, or for words you type to it) and takes a further turn
+on each batch, as a headless run's main conversation does, and only then ends. Its report is the
+answer of its last turn. A subagent that is killed, fails or runs out of budget cannot do this:
+the subagents it started are stopped with it, and their reports are not delivered.
 
 The model used is the call's `model`, else the agent type's `model`, else the session model. An
 invalid value is an error result, and so is a `model` on a type defined by a project file (see
 [agent files](#agent-files)).
 
-### Waiting for a background subagent
+### Waiting for a subagent
 
 `job_output` with the `agent_id` blocks until that subagent ends, or for `wait_secs` if given.
 It reports only status; the report itself is delivered as a notification attached to that same
@@ -37,13 +42,13 @@ result, and never a second time.
 - **Still running.** A timeout (or `wait_secs` of 0) answers with the subagent's age, or that
   it waits on a permission prompt. A later wait or the notification still gets the report.
 - **Only the parent.** Only the agent that started a subagent may wait on it; any other id is
-  refused. A subagent that nests should wait for its own children rather than finish, because
-  finishing stops them.
+  refused.
 - **Early return.** A wait of any kind also returns when a message from another agent reaches
   the waiter or, in the main conversation, when you type one. The message is delivered with
   that result.
-- **Interrupted.** Interrupting a wait (Esc) leaves the subagent running; its report arrives
-  later as usual.
+- **Interrupted.** Interrupting a wait or a turn (Esc) leaves every subagent running; their
+  reports arrive later as usual. Stop one from the agents panel. `/clear`, `/rewind` and
+  `/branch` are refused while any subagent runs, so they wait until it ends or you stop it.
 
 The model still gets no tool to list or kill agents: those are controls for you, in the
 [agent list and the agents panel](tui.md#the-agent-list-and-the-agent-view).
@@ -77,7 +82,7 @@ mode = "inherit"
 `tools` names built-in or `mcp__` tools; leave it out to give the type every tool its parent has.
 The toolset a subagent really gets is that list **cut down to what its parent has**: a type can
 never reach a tool its parent lacks. A type whose `tools` names `agent` also gets `job_output` (when its parent has it), which it
-needs to wait for the background subagents it starts; `disallowed` can still remove it. `agent` is
+needs to wait for the subagents it starts; `disallowed` can still remove it. `agent` is
 withheld from a subagent at the nesting limit.
 A subagent with `todo_write` keeps its own list, which is not shown in the UI and not saved with the session.
 
@@ -118,7 +123,7 @@ there.
 
 The mode is not fixed when the subagent starts. On every call it is the tighter of the subagent's
 own mode and its parent's mode *at that moment*, so if you cycle the session from `auto` to
-`manual` while a background subagent works, its next call asks you.
+`manual` while a subagent works, its next call asks you.
 
 `plan` is not on the ladder. While the parent is in `plan`, **every edit by any subagent is
 blocked**, and the rest of its calls are judged as `manual` at most: an `auto` or `acceptEdits`
@@ -153,7 +158,7 @@ the same way.
 
 Only the main conversation can use `ask_user_question`. The built-in types do not have it, and a
 type that names it (or that names no tools, and so inherits every tool of its parent) is accepted
-but refused when called, with the "unavailable" result, so a background agent can never put a
+but refused when called, with the "unavailable" result, so a subagent can never put a
 dialog in front of you.
 
 ## Limits and budgets
@@ -167,7 +172,7 @@ dialog in front of you.
 | `[agents] session_cost_budget_usd` | The same in dollars, when set. | unset |
 
 - A spawn past `max_parallel` is not queued. It returns an error result saying the limit was reached
-  and not to retry, and starts nothing, whether it was blocking or background.
+  and not to retry, and starts nothing.
 - Subagents nest up to **three layers** below the main conversation; at the limit the `agent` tool is
   withheld.
 - A subagent's spend includes the guardian calls made for it, counted per agent. When it passes a
@@ -196,7 +201,7 @@ In the terminal UI, a list below the status bar shows `main` and every running s
 what you type there goes to that agent: see [the agent list and the agent
 view](tui.md#the-agent-list-and-the-agent-view). `Ctrl+T` (or `/agents`, or `/tasks`) opens the
 [agents panel](tui.md#the-agents-panel), the full overview with one row per subagent, ended ones
-included, its status, spend against budget and a key to kill it. A background subagent's approval
+included, its status, spend against budget and a key to kill it. A subagent's approval
 prompts appear like any other, labelled with its id, whichever transcript is on screen, so none
 hides behind another.
 
@@ -224,7 +229,7 @@ agent handles what you type mid-turn:
 `send_message` from another agent keeps its rule: it reaches only a running agent, and the
 recipient reads it as untrusted data, not as you.
 
-A headless run has no panel. If background subagents are still running when the main conversation
+A headless run has no panel. If subagents are still running when the main conversation
 gives its final answer, the run waits for them and gives the main conversation a further turn for
 each batch of reports, then emits `result`. `--max-turns` and `--max-budget-usd` count those turns
 and the subagents' spend; a run stopped by either kills the running subagents and drops their

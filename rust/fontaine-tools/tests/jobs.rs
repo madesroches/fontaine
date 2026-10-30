@@ -372,6 +372,8 @@ type Asked = Arc<Mutex<Vec<(String, String, Option<Duration>)>>>;
 struct FakeAgents {
     asked: Asked,
     answer: Option<AgentWaitError>,
+    /// When set, the subagent has already ended with this delivery.
+    ended: Option<AgentDelivery>,
 }
 
 impl AgentWaits for FakeAgents {
@@ -388,6 +390,12 @@ impl AgentWaits for FakeAgents {
         Box::pin(async move {
             if let Some(error) = self.answer {
                 return Err(error);
+            }
+            if let Some(delivery) = self.ended {
+                return Ok(AgentState::Ended {
+                    status: "done".into(),
+                    delivery,
+                });
             }
             if wait == Some(Duration::ZERO) {
                 return Ok(AgentState::Running {
@@ -419,12 +427,21 @@ fn waiting_session(
     answer: Option<AgentWaitError>,
     wake_after: Duration,
 ) -> (Dirs, Vec<Registered>, Asked) {
+    waiting_session_with(answer, None, wake_after)
+}
+
+fn waiting_session_with(
+    answer: Option<AgentWaitError>,
+    ended: Option<AgentDelivery>,
+    wake_after: Duration,
+) -> (Dirs, Vec<Registered>, Asked) {
     let d = Dirs::new();
     let mut env = env_with(scope(&d.dir("work"), &[]), Arc::new(AllowAll::default()));
     let asked = Asked::default();
     env.agent_waits = Some(Arc::new(FakeAgents {
         asked: asked.clone(),
         answer,
+        ended,
     }));
     env.wait_wake = Some(Arc::new(FakeWake {
         after: wake_after,
@@ -455,6 +472,30 @@ async fn an_agent_id_reaches_the_agent_seam_from_a_subagent_and_other_ids_do_not
             refused.contains("only with the id of a subagent it started"),
             "{refused}"
         );
+    }
+}
+
+#[tokio::test]
+async fn an_ended_subagent_is_described_by_how_its_report_was_delivered() {
+    for (delivery, tail) in [
+        (
+            AgentDelivery::Queued,
+            "Its report follows as a notification.",
+        ),
+        (
+            AgentDelivery::Killed,
+            "It was killed and delivers no report.",
+        ),
+        (
+            AgentDelivery::AlreadyDelivered,
+            "Its report was already delivered to you.",
+        ),
+    ] {
+        let (_d, tools, _asked) = waiting_session_with(None, Some(delivery), Duration::ZERO);
+        let out = run_as_child(&tools, "job_output", json!({"id": "agent-1"}))
+            .await
+            .unwrap();
+        assert_eq!(out, format!("[agent-1 ended: done]\n{tail}"));
     }
 }
 

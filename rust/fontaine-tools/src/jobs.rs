@@ -5,6 +5,7 @@
 
 pub mod cut;
 pub mod tools;
+pub use tools::WAKE_POLL;
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -120,8 +121,8 @@ pub enum AgentDelivery {
     Queued,
     /// The subagent was killed and delivers no report.
     Killed,
-    /// Already handed over: as the result of a foreground `agent` call, or as a notification.
-    AlreadyDelivered { foreground: bool },
+    /// Already handed over as a notification.
+    AlreadyDelivered,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

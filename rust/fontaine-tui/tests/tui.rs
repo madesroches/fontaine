@@ -1243,7 +1243,7 @@ async fn a_pick_made_during_a_notification_turn_applies_when_the_turn_ends() {
                 Turn::tool(
                     "c1",
                     "agent",
-                    json!({"agent_type": "worker", "prompt": "child-A: finish", "background": true}),
+                    json!({"agent_type": "worker", "prompt": "child-A: finish"}),
                 ),
                 Turn::text("launched"),
                 Turn::text("noted the report"),
@@ -1269,7 +1269,7 @@ async fn a_pick_made_during_a_notification_turn_applies_when_the_turn_ends() {
         idle(&ui).await;
         ui.send("/model");
         picker_open(&ui).await;
-        ui.wait_for("a background agent reported back").await;
+        ui.wait_for("an agent reported back").await;
         ui.type_text("third");
         ui.press(KeyCode::Enter);
         // A message queued during the notification turn replays once it ends.
@@ -1626,7 +1626,7 @@ async fn clear_is_refused_while_a_subagent_runs_and_works_after() {
                 Turn::tool(
                     "c1",
                     "agent",
-                    json!({"agent_type": "worker", "prompt": "child-A: finish", "background": true}),
+                    json!({"agent_type": "worker", "prompt": "child-A: finish"}),
                 ),
                 Turn::text("launched"),
                 Turn::text("noted the report"),

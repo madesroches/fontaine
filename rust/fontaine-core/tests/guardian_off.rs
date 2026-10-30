@@ -18,7 +18,7 @@ fn write_outside() -> serde_json::Value {
 
 fn child(rig: &Rig, own: Ladder) -> String {
     rig.agents
-        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), own, false)
+        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), own)
         .unwrap()
 }
 

@@ -390,7 +390,6 @@ async fn a_subagent_without_a_shell_cannot_run_a_skills_commands() {
             "m",
             vec!["read".into(), "skill".into()],
             fontaine_agents::mode::Ladder::Manual,
-            false,
         )
         .unwrap();
     let text = s.runtime.expand("status", "", &child, false).await.unwrap();
@@ -506,7 +505,6 @@ async fn a_skills_allowed_tools_last_to_the_end_of_the_turn_for_the_invoking_age
             "m",
             vec!["shell".into()],
             fontaine_agents::mode::Ladder::Manual,
-            false,
         )
         .unwrap();
     rig.check_as(&child, "shell", json!({"command": "cargo test"}))

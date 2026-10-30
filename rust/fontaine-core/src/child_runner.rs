@@ -8,17 +8,20 @@ use fontaine_agents::budget::Spend;
 use fontaine_agents::registry::{AgentType, ModelSpec, entry_has_specifier};
 use fontaine_agents::root_ledger::{AgentEvent, RootLedger};
 use fontaine_agents::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, SpawnRequest};
-use fontaine_agents::tree::AgentTree;
+use fontaine_agents::tree::{AgentTree, Notification, NotificationKind};
 use fontaine_guardian::WireIds;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::CallView;
-use fontaine_tools::jobs::WaitWake;
+use fontaine_tools::jobs::{WAKE_POLL, WaitWake};
 use fontaine_tools::lock::{lock, lock_recovering, read};
-use fontaine_tools::result_pipeline::{ResultStage, ToolOutcome, append_note};
+use fontaine_tools::result_pipeline::{ResultPipeline, ResultStage, ToolOutcome, append_note};
+use fontaine_tools::risk::RiskClass;
 use futures::future::BoxFuture;
 use rig_agent::prelude::*;
 use rig_agent::tool::server::{ToolServer, ToolServerHandle};
+use rig_core::tool::ToolOutput;
 use rig_memory::MemoryStore;
+use serde_json::json;
 use tokio::sync::watch;
 use tracing::Instrument;
 
@@ -67,6 +70,71 @@ impl ResultStage for NotificationStage {
                 .join("\n\n");
             append_note(outcome, &text)
         })
+    }
+}
+
+/// The reports, messages and job notes queued for `agent`, as a prompt for a turn of its own.
+/// They pass through the result pipeline like any tool result: agent notes as `agent` results,
+/// job output as `job_output` results.
+pub async fn notification_prompt(
+    state: &SessionState,
+    results: &ResultPipeline,
+    agent: &str,
+) -> Option<String> {
+    let notes = state.agents().take_notifications(agent);
+    if notes.is_empty() {
+        return None;
+    }
+    // No model call produced these results, so hooks get no tool_use_id for them.
+    state.clear_current_call(agent);
+    let (jobs, agents): (Vec<_>, Vec<_>) = notes
+        .iter()
+        .partition(|note| note.kind == NotificationKind::Job);
+    let mut screened = Vec::new();
+    if !agents.is_empty() {
+        screened.push(screened_notes(results, agent, "agent", RiskClass::Arbitrary, &agents).await);
+    }
+    if !jobs.is_empty() {
+        screened
+            .push(screened_notes(results, agent, "job_output", RiskClass::ReadOnly, &jobs).await);
+    }
+    let news = if jobs.is_empty() {
+        "agents you started or that wrote to you have news"
+    } else {
+        "agents or background jobs you started have news"
+    };
+    Some(format!(
+        "[Harness note, not the user's words: {news}.]\n\n{}",
+        screened.join("\n\n")
+    ))
+}
+
+async fn screened_notes(
+    results: &ResultPipeline,
+    agent: &str,
+    tool: &str,
+    risk: RiskClass,
+    notes: &[&Notification],
+) -> String {
+    let text = notes
+        .iter()
+        .map(|note| note.render())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let args = json!({});
+    let view = CallView {
+        tool,
+        risk,
+        args: &args,
+        agent,
+        annotations: None,
+        requires_user_interaction: false,
+        synthetic: true,
+    };
+    let (screened, _) = results.run(view, Ok(ToolOutput::text(text))).await;
+    match screened {
+        Ok(output) => output.render(),
+        Err(error) => error.model_output().render(),
     }
 }
 
@@ -141,6 +209,8 @@ pub struct ChildContext {
     pub parent_context: ParentContext,
     /// What the human types in a subagent's view, which the child reads with its tool results.
     pub steering: Steering,
+    /// Screens the notes a joining child reads, as the main conversation's are.
+    pub results: Arc<ResultPipeline>,
 }
 
 pub struct CoreChildRunner {
@@ -225,6 +295,7 @@ struct RunShared {
     id: String,
     state: Arc<SessionState>,
     steering: Steering,
+    results: Arc<ResultPipeline>,
     approver: Arc<dyn Approver>,
     agent: Agent,
     model: ChildModel,
@@ -233,6 +304,17 @@ struct RunShared {
     status: Mutex<ChildStatus>,
     /// The ordinal of the latest run, and its report once it has ended.
     reports: watch::Sender<(u64, Option<ChildReport>)>,
+}
+
+/// Records what the human said to a child and shows it in the child's view.
+fn record_human_prompt(shared: &RunShared, text: &str) {
+    shared.state.append(Record::UserMessage {
+        text: text.to_string(),
+        agent: Some(shared.id.clone()),
+    });
+    shared
+        .state
+        .emit_agent_event(&shared.id, AgentViewEvent::Prompt(text.to_string()));
 }
 
 /// A running child: its status, its kill switch and its report.
@@ -246,15 +328,7 @@ fn launch(shared: Arc<RunShared>, prompt: String, span: tracing::Span) {
     let kill = shared.kill.subscribe();
     tokio::spawn(
         async move {
-            let report = run_child(
-                &shared.state,
-                &shared.agent,
-                &shared.id,
-                prompt,
-                shared.model.clone(),
-                kill,
-            )
-            .await;
+            let report = run_child(&shared, prompt, kill).await;
             *lock(&shared.status, "child status") = report.status;
             shared
                 .reports
@@ -309,13 +383,7 @@ impl ChildHandle for ChildRun {
         let shared = &self.shared;
         // `Node::live_status` reads this while the node runs; `launch` writes it only at run end.
         *lock(&shared.status, "child status") = ChildStatus::Running;
-        shared.state.append(Record::UserMessage {
-            text: prompt.clone(),
-            agent: Some(shared.id.clone()),
-        });
-        shared
-            .state
-            .emit_agent_event(&shared.id, AgentViewEvent::Prompt(prompt.clone()));
+        record_human_prompt(shared, &prompt);
         shared.reports.send_modify(|(run, latest)| {
             *run += 1;
             *latest = None;
@@ -410,6 +478,7 @@ impl ChildRunner for CoreChildRunner {
                 id: request.id.clone(),
                 state: state.clone(),
                 steering: context.steering.clone(),
+                results: context.results.clone(),
                 approver: context.approver.clone(),
                 agent,
                 model: ChildModel {
@@ -447,56 +516,124 @@ struct ChildModel {
     provider: String,
 }
 
-/// Runs one child to its end: an answer, a spent budget, a kill or a failure.
+/// How a child's wait for its own subagents ended.
+enum Joined {
+    /// None runs and nothing is waiting for the child.
+    Done,
+    /// News or the human's words for a further turn.
+    Prompt(String),
+}
+
+/// Waits until the child has something to act on or none of its subagents runs, checking in the
+/// order a headless root does. The human's typing never notifies the tree, so the wait polls.
+async fn join_wait(shared: &RunShared) -> Joined {
+    let tree = shared.state.agents().clone();
+    let id = shared.id.as_str();
+    loop {
+        let changed = tree.changed().notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        if let Some(joined) = join_news(shared).await {
+            return joined;
+        }
+        if !tree.running_below(id) {
+            // A report is queued before its child is marked finished, so nothing is missed
+            // between the check above and this one.
+            return join_news(shared).await.unwrap_or(Joined::Done);
+        }
+        tokio::select! {
+            _ = &mut changed => {}
+            _ = tokio::time::sleep(WAKE_POLL) => {}
+        }
+    }
+}
+
+async fn join_news(shared: &RunShared) -> Option<Joined> {
+    let id = shared.id.as_str();
+    if shared.state.agents().has_notifications(id)
+        && let Some(prompt) = notification_prompt(&shared.state, &shared.results, id).await
+    {
+        shared
+            .state
+            .emit_agent_event(id, AgentViewEvent::Prompt(prompt.clone()));
+        return Some(Joined::Prompt(prompt));
+    }
+    if shared.steering.has_deliverable_message_for(id) {
+        let typed = shared.steering.take_pending_for(id);
+        if !typed.is_empty() {
+            let prompt = typed.join("\n\n");
+            record_human_prompt(shared, &prompt);
+            return Some(Joined::Prompt(prompt));
+        }
+    }
+    None
+}
+
+/// Runs one child to its end: an answer once its own subagents have reported, a spent budget, a
+/// kill or a failure.
 async fn run_child(
-    state: &Arc<SessionState>,
-    agent: &Agent,
-    id: &str,
+    shared: &RunShared,
     prompt: String,
-    model: ChildModel,
     mut kill: watch::Receiver<bool>,
 ) -> ChildReport {
+    let state = &shared.state;
+    let id = shared.id.as_str();
     let tree = state.agents().clone();
     let last_text = Arc::new(Mutex::new(String::new()));
-    let seen = last_text.clone();
-    let view_state = state.clone();
-    let view_id = id.to_string();
-    let budget_tree = tree.clone();
-    let budget_id = id.to_string();
-    let mut on_event = move |event: SessionEvent| -> Flow {
-        if let SessionEvent::Assistant(text) = &event {
-            // Partial text only labels an interrupted child's report; a stale value is harmless.
-            *lock_recovering(&seen) = text.clone();
+    let mut prompt = prompt;
+    let outcome = loop {
+        let seen = last_text.clone();
+        let view_state = state.clone();
+        let view_id = id.to_string();
+        let budget_tree = tree.clone();
+        let mut on_event = move |event: SessionEvent| -> Flow {
+            if let SessionEvent::Assistant(text) = &event {
+                // Partial text only labels an interrupted child's report; a stale value is harmless.
+                *lock_recovering(&seen) = text.clone();
+            }
+            view_state.emit_agent_event(&view_id, AgentViewEvent::Event(event));
+            // A spent budget ends the run at the next event: the guardian's calls for this child
+            // count against it too.
+            if budget_tree.exhausted_of(&view_id).is_some() {
+                Flow::Stop
+            } else {
+                Flow::Continue
+            }
+        };
+        let run = drive(
+            Drive {
+                agent: &shared.agent,
+                state,
+                agent_id: id,
+                prompt,
+                max_turns: DEFAULT_MAX_TURNS,
+                priced: shared.model.priced,
+                model: shared.model.model.clone(),
+                provider: shared.model.provider.clone(),
+                native_search: false,
+                span: tracing::Span::current(),
+            },
+            None,
+            &mut on_event,
+        );
+        let outcome = tokio::select! {
+            biased;
+            _ = kill.wait_for(|killed| *killed) => break None,
+            outcome = run => outcome,
+        };
+        let TurnOutcome::Answer(_) = outcome else {
+            break Some(outcome);
+        };
+        // Finishing would kill the child's running subagents, so it ends only once they report.
+        let joined = tokio::select! {
+            biased;
+            _ = kill.wait_for(|killed| *killed) => break None,
+            joined = join_wait(shared) => joined,
+        };
+        match joined {
+            Joined::Done => break Some(outcome),
+            Joined::Prompt(next) => prompt = next,
         }
-        view_state.emit_agent_event(&view_id, AgentViewEvent::Event(event));
-        // A spent budget ends the run at the next event: the guardian's calls for this child
-        // count against it too.
-        if budget_tree.exhausted_of(&budget_id).is_some() {
-            Flow::Stop
-        } else {
-            Flow::Continue
-        }
-    };
-    let run = drive(
-        Drive {
-            agent,
-            state,
-            agent_id: id,
-            prompt,
-            max_turns: DEFAULT_MAX_TURNS,
-            priced: model.priced,
-            model: model.model,
-            provider: model.provider,
-            native_search: false,
-            span: tracing::Span::current(),
-        },
-        None,
-        &mut on_event,
-    );
-    let outcome = tokio::select! {
-        biased;
-        _ = kill.wait_for(|killed| *killed) => None,
-        outcome = run => Some(outcome),
     };
     // Partial text only labels an interrupted child's report; a stale value is harmless.
     let partial = lock_recovering(&last_text).clone();

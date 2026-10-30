@@ -22,7 +22,7 @@ fn ctrl_t(ui: &Ui) {
 }
 
 fn spawn(agent_type: &str, prompt: &str) -> serde_json::Value {
-    json!({"agent_type": agent_type, "prompt": prompt, "background": true})
+    json!({"agent_type": agent_type, "prompt": prompt})
 }
 
 /// The allow rule that lets the main conversation start subagents without asking.

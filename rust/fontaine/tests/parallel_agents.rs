@@ -34,8 +34,8 @@ fn of_type<'a>(lines: &'a [Value], kind: &str) -> Vec<&'a Value> {
     lines.iter().filter(|l| l["type"] == kind).collect()
 }
 
-fn spawn_args(agent_type: &str, prompt: &str, background: bool) -> Value {
-    json!({"agent_type": agent_type, "prompt": prompt, "background": background})
+fn spawn_args(agent_type: &str, prompt: &str) -> Value {
+    json!({"agent_type": agent_type, "prompt": prompt})
 }
 
 fn audit(s: &Sandbox, lines: &[Value]) -> Vec<Value> {
@@ -55,6 +55,16 @@ fn agent_result(lines: &[Value], at: usize) -> &Value {
         .expect("an agent result")
 }
 
+/// Every tool result's text. A report rides the next tool result the parent reads, whichever
+/// tool that is, so a test that must not depend on timing looks at all of them.
+fn results_text(lines: &[Value]) -> String {
+    of_type(lines, "tool_result")
+        .into_iter()
+        .filter_map(|r| r["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Request bodies that mention `needle`, as text.
 async fn requests_with(endpoint: &Endpoint, needle: &str) -> Vec<String> {
     endpoint
@@ -67,18 +77,15 @@ async fn requests_with(endpoint: &Endpoint, needle: &str) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_blocking_agent_call_returns_the_childs_report_as_its_tool_result() {
+async fn an_agent_call_returns_its_id_and_the_childs_report_is_read_with_job_output() {
     let endpoint = Endpoint::start_routed(
         Wire::Chat,
         vec![
             Route::new(
                 "root task",
                 vec![
-                    Turn::tool(
-                        "c1",
-                        "agent",
-                        spawn_args("explore", "child-A: look around", false),
-                    ),
+                    Turn::tool("c1", "agent", spawn_args("explore", "child-A: look around")),
+                    Turn::tool("c2", "job_output", json!({"id": "agent-1"})),
                     Turn::text("root finished"),
                 ],
             ),
@@ -99,7 +106,18 @@ async fn a_blocking_agent_call_returns_the_childs_report_as_its_tool_result() {
 
     let result = agent_result(&lines, 0);
     assert_eq!(result["success"], json!(true), "{result}");
-    assert_eq!(result["text"], "child A found a.txt");
+    assert_eq!(result["text"], r#"{"agent_id":"agent-1"}"#);
+    let waited = of_type(&lines, "tool_result")
+        .into_iter()
+        .find(|r| r["tool"] == "job_output")
+        .expect("a job_output result");
+    assert!(
+        waited["text"]
+            .as_str()
+            .unwrap()
+            .contains("child A found a.txt"),
+        "{waited}"
+    );
     let done = of_type(&lines, "result")[0];
     assert_eq!(done["result"], "root finished");
     // The child's own model spend is reported apart from the main one.
@@ -129,7 +147,7 @@ async fn a_background_child_returns_an_id_and_its_report_comes_back_as_a_notific
             Route::new(
                 "root task",
                 vec![
-                    Turn::tool("c1", "agent", spawn_args("explore", "child-B: dig", true)),
+                    Turn::tool("c1", "agent", spawn_args("explore", "child-B: dig")),
                     Turn::text("launched B"),
                     Turn::text("B reported: all good"),
                 ],
@@ -155,7 +173,7 @@ async fn a_background_child_returns_an_id_and_its_report_comes_back_as_a_notific
     let notified = requests_with(&endpoint, "B found the treasure").await;
     assert_eq!(notified.len(), 1, "{notified:?}");
     assert!(notified[0].contains("root task"));
-    assert!(notified[0].contains("Background agent agent-1"));
+    assert!(notified[0].contains("Agent agent-1"));
     assert!(notified[0].contains("not the user"));
 }
 
@@ -167,7 +185,7 @@ async fn job_output_waits_for_a_background_child_and_its_report_rides_the_wait_r
             Route::new(
                 "root task",
                 vec![
-                    Turn::tool("c1", "agent", spawn_args("explore", "child-B: dig", true)),
+                    Turn::tool("c1", "agent", spawn_args("explore", "child-B: dig")),
                     Turn::tool("c2", "job_output", json!({"id": "agent-1"})),
                     Turn::text("B said: treasure"),
                 ],
@@ -202,27 +220,24 @@ async fn job_output_waits_for_a_background_child_and_its_report_rides_the_wait_r
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_nested_parent_waits_for_its_own_background_child_instead_of_ending_early() {
+async fn a_nested_parent_that_answers_while_its_child_runs_joins_it_instead_of_ending() {
     let endpoint = Endpoint::start_routed(
         Wire::Chat,
         vec![
             Route::new(
                 "root task",
                 vec![
-                    Turn::tool(
-                        "c1",
-                        "agent",
-                        spawn_args("lead", "lead-L: coordinate", false),
-                    ),
+                    Turn::tool("c1", "agent", spawn_args("lead", "lead-L: coordinate")),
+                    Turn::tool("c2", "job_output", json!({"id": "agent-1"})),
                     Turn::text("root finished"),
                 ],
             ),
             Route::new(
                 "lead-L",
                 vec![
-                    Turn::tool("l1", "agent", spawn_args("explore", "gc-G: dig", true)),
-                    Turn::tool("l2", "job_output", json!({"id": "agent-2"})),
-                    Turn::text("lead done"),
+                    Turn::tool("l1", "agent", spawn_args("explore", "gc-G: dig")),
+                    Turn::text("lead answered early"),
+                    Turn::text("lead saw the relic"),
                 ],
             ),
             Route::new("gc-G", vec![Turn::text("gc found the relic")])
@@ -234,7 +249,16 @@ async fn a_nested_parent_waits_for_its_own_background_child_instead_of_ending_ea
     let out = run(&s, &["--allowed-tools", "agent"], "root task").await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let lines = out.lines();
-    assert_eq!(agent_result(&lines, 0)["text"], "lead done");
+    assert_eq!(agent_result(&lines, 0)["text"], r#"{"agent_id":"agent-1"}"#);
+
+    // The root's wait ends with the lead's answer to the further turn, not its first answer.
+    let waited = of_type(&lines, "tool_result")
+        .into_iter()
+        .find(|r| r["tool"] == "job_output")
+        .expect("a job_output result");
+    let text = waited["text"].as_str().unwrap();
+    assert!(text.contains("lead saw the relic"), "{text}");
+    assert!(!text.contains("lead answered early"), "{text}");
 
     let session = lines[0]["session_id"].as_str().unwrap().to_string();
     let finished = ledger(&s, &session)
@@ -243,15 +267,282 @@ async fn a_nested_parent_waits_for_its_own_background_child_instead_of_ending_ea
         .expect("the grandchild finished");
     assert_eq!(finished["detail"], "done");
 
+    // The further turn is a lead request that carries the grandchild's report.
     let bodies = requests_with(&endpoint, "gc found the relic").await;
     assert_eq!(bodies.len(), 1, "{bodies:?}");
     assert!(bodies[0].contains("lead-L"));
-    assert!(bodies[0].contains("[agent-2 ended: done]"));
-    assert!(bodies[0].contains("Background agent agent-2"));
+    assert!(bodies[0].contains("Agent agent-2"));
+    assert!(bodies[0].contains("not the user"));
+}
+
+/// The position of each request of the conversation whose first user message contains `marker`.
+async fn conversation_positions(endpoint: &Endpoint, marker: &str) -> Vec<usize> {
+    endpoint
+        .requests()
+        .await
+        .iter()
+        .enumerate()
+        .filter(|(_, body)| {
+            body["messages"]
+                .as_array()
+                .and_then(|m| m.iter().find(|m| m["role"] == "user"))
+                .is_some_and(|m| m["content"].to_string().contains(marker))
+        })
+        .map(|(at, _)| at)
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn background_children_run_at_once_up_to_max_parallel_and_the_next_spawn_is_refused() {
+async fn two_children_spawned_in_a_row_run_concurrently() {
+    let child = |marker: &str| {
+        Route::new(
+            marker,
+            vec![
+                Turn::tool("k1", "read", json!({"path": "a.txt"})),
+                Turn::text(&format!("{marker} done")),
+            ],
+        )
+        .slow(Duration::from_millis(300))
+    };
+    let endpoint = Endpoint::start_routed(
+        Wire::Chat,
+        vec![
+            Route::new(
+                "root task",
+                vec![
+                    Turn::tool("c1", "agent", spawn_args("explore", "child-A: look")),
+                    Turn::tool("c2", "agent", spawn_args("explore", "child-B: look")),
+                    Turn::tool("c3", "job_output", json!({"id": "agent-1"})),
+                    Turn::tool("c4", "job_output", json!({"id": "agent-2"})),
+                    Turn::text("root finished"),
+                ],
+            ),
+            child("child-A"),
+            child("child-B"),
+        ],
+    )
+    .await;
+    let s = sandbox(&endpoint, "");
+    let out = run(&s, &["--allowed-tools", "agent"], "root task").await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+
+    // Run one after the other, B would first ask after A's second request.
+    let a = conversation_positions(&endpoint, "child-A").await;
+    let b = conversation_positions(&endpoint, "child-B").await;
+    assert_eq!((a.len(), b.len()), (2, 2), "{a:?} {b:?}");
+    assert!(b[0] < a[1], "B started only after A ended: {a:?} {b:?}");
+
+    let results = results_text(&out.lines());
+    assert!(results.contains("child-A done"), "{results}");
+    assert!(results.contains("child-B done"), "{results}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawns_are_judged_in_call_order_and_a_denied_one_starts_nothing() {
+    let endpoint = Endpoint::start_routed(
+        Wire::Chat,
+        vec![
+            Route::new(
+                "root task",
+                vec![
+                    Turn::tool("c1", "agent", spawn_args("explore", "child-A: look")),
+                    Turn::tool("c2", "agent", spawn_args("worker", "child-B: edit")),
+                    Turn::tool("c3", "agent", spawn_args("explore", "child-C: look")),
+                    Turn::text("root finished"),
+                ],
+            ),
+            Route::new("child-A", vec![Turn::text("A done")]),
+            Route::new("child-B", vec![Turn::text("B done")]),
+            Route::new("child-C", vec![Turn::text("C done")]),
+        ],
+    )
+    .await;
+    let s = sandbox(&endpoint, "");
+    let out = run(
+        &s,
+        &[
+            "--allowed-tools",
+            "agent",
+            "--disallowed-tools",
+            "agent(worker)",
+        ],
+        "root task",
+    )
+    .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+
+    let tiers: Vec<String> = audit(&s, &lines)
+        .iter()
+        .filter(|r| r["tool"] == "agent" && r["agent_id"] == "root")
+        .map(|r| r["tier"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        tiers,
+        ["read_only_fast_path", "deny_rule", "read_only_fast_path"]
+    );
+    assert_eq!(agent_result(&lines, 0)["success"], json!(true));
+    assert_eq!(agent_result(&lines, 1)["success"], json!(false));
+    assert_eq!(agent_result(&lines, 2)["success"], json!(true));
+    // A and C started and got the next ids; B never did.
+    // A report may already ride on the result, so only its start is fixed.
+    let c = agent_result(&lines, 2)["text"].as_str().unwrap();
+    assert!(c.starts_with(r#"{"agent_id":"agent-2"}"#), "{c}");
+    assert!(requests_with(&endpoint, "B done").await.is_empty());
+    let session = lines[0]["session_id"].as_str().unwrap().to_string();
+    let spawned = ledger(&s, &session)
+        .into_iter()
+        .filter(|r| r["kind"] == "agent" && r["event"] == "spawned")
+        .count();
+    assert_eq!(spawned, 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_joining_parent_takes_a_turn_on_a_message_before_its_childs_report() {
+    let endpoint = Endpoint::start_routed(
+        Wire::Chat,
+        vec![
+            Route::new(
+                "root task",
+                vec![
+                    Turn::tool("c1", "agent", spawn_args("lead", "lead-L: coordinate")),
+                    Turn::tool("c2", "job_output", json!({"id": "agent-1"})),
+                    Turn::text("root finished"),
+                ],
+            ),
+            Route::new(
+                "lead-L",
+                vec![
+                    Turn::tool("l1", "agent", spawn_args("explore", "gc-G: dig")),
+                    Turn::text("lead answered early"),
+                    Turn::text("lead read the note"),
+                    Turn::text("lead read the report"),
+                ],
+            ),
+            Route::new(
+                "gc-G",
+                vec![
+                    Turn::tool(
+                        "g1",
+                        "send_message",
+                        json!({"to": "agent-1", "message": "halfway-note"}),
+                    ),
+                    Turn::text("gc-final-report"),
+                ],
+            )
+            .slow(Duration::from_millis(300)),
+        ],
+    )
+    .await;
+    let s = sandbox(&endpoint, "[agents.types.lead]\nmodel = \"$main\"\n");
+    let out = run(
+        &s,
+        &[
+            "--allowed-tools",
+            "agent",
+            "--allowed-tools",
+            "send_message",
+        ],
+        "root task",
+    )
+    .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+
+    let lead = conversation_positions(&endpoint, "lead-L").await;
+    let requests = endpoint.requests().await;
+    let at = |needle: &str| {
+        lead.iter()
+            .copied()
+            .find(|i| requests[*i].to_string().contains(needle))
+            .unwrap_or_else(|| panic!("no lead request carries {needle}"))
+    };
+    let note = at("halfway-note");
+    let report = at("gc-final-report");
+    assert!(note < report, "{note} {report}");
+    assert!(
+        !requests[note].to_string().contains("gc-final-report"),
+        "the message turn came before the report"
+    );
+    assert!(results_text(&out.lines()).contains("lead read the report"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_spent_headless_cap_kills_a_parent_that_is_joining_and_its_child() {
+    // The lead runs on a free model, so only the root's and the grandchild's paid calls count
+    // against the cap: the lead finishes its own calls under it and is then joining when the
+    // root's second call crosses it.
+    let paid = Endpoint::start_routed(
+        Wire::Responses,
+        vec![
+            Route::new(
+                "root task",
+                vec![
+                    Turn::tool("c1", "agent", spawn_args("lead", "lead-L: coordinate")),
+                    Turn::text("launched the lead"),
+                ],
+            )
+            .slow(Duration::from_millis(400)),
+            Route::new("gc-G", vec![Turn::text("G done")]).slow(Duration::from_secs(30)),
+        ],
+    )
+    .await;
+    let free = Endpoint::start_routed(
+        Wire::Chat,
+        vec![Route::new(
+            "lead-L",
+            vec![
+                Turn::tool("l1", "agent", spawn_args("explore", "gc-G: dig")),
+                Turn::text("lead answered"),
+            ],
+        )],
+    )
+    .await;
+    let mut s = Sandbox::new();
+    s.user_config(&format!(
+        "[accounts.paid]\nkind = \"openai\"\nbase_url = \"{}\"\napi_key_env = \"PAID_KEY\"\nmodels = [\"gpt-4o-mini\"]\n\n[accounts.free]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"scripted\"]\n\n[model]\nmodel = \"paid/gpt-4o-mini\"\n\n[agents.types.lead]\nmodel = \"free/scripted\"\n",
+        paid.url(),
+        free.url()
+    ));
+    s.set_env("PAID_KEY", "sk-test-not-a-real-key");
+    let started = std::time::Instant::now();
+    let out = s
+        .run(&[
+            "-p",
+            "--permission-mode",
+            "manual",
+            "--output-format",
+            "stream-json",
+            "--allowed-tools",
+            "agent",
+            "--max-budget-usd",
+            "0.0006",
+            "root task",
+        ])
+        .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "it did not wait out the grandchild"
+    );
+    assert_eq!(out.code, Some(1), "{}", out.stderr);
+    let lines = out.lines();
+    assert_eq!(
+        of_type(&lines, "result")[0]["subtype"],
+        "error_max_budget_usd"
+    );
+    let session = lines[0]["session_id"].as_str().unwrap().to_string();
+    let finished = |agent: &str| {
+        ledger(&s, &session)
+            .into_iter()
+            .find(|r| r["kind"] == "agent" && r["event"] == "finished" && r["agent"] == agent)
+            .map(|r| r["detail"].clone())
+    };
+    assert_eq!(finished("agent-1"), Some(json!("killed")));
+    assert_eq!(finished("agent-2"), Some(json!("killed")));
+    assert!(requests_with(&paid, "G done").await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn children_run_at_once_up_to_max_parallel_and_the_next_spawn_is_refused() {
     let child = |marker: &str| {
         Route::new(marker, vec![Turn::text(&format!("{marker} done"))])
             .slow(Duration::from_millis(600))
@@ -262,12 +553,12 @@ async fn background_children_run_at_once_up_to_max_parallel_and_the_next_spawn_i
             Route::new(
                 "root task",
                 vec![
-                    Turn::tool("c1", "agent", spawn_args("explore", "child-1: a", true)),
-                    Turn::tool("c2", "agent", spawn_args("explore", "child-2: b", true)),
-                    Turn::tool("c3", "agent", spawn_args("explore", "child-3: c", true)),
-                    // Past the cap: nothing starts, whether blocking or background.
-                    Turn::tool("c4", "agent", spawn_args("explore", "child-4: d", true)),
-                    Turn::tool("c5", "agent", spawn_args("explore", "child-5: e", false)),
+                    Turn::tool("c1", "agent", spawn_args("explore", "child-1: a")),
+                    Turn::tool("c2", "agent", spawn_args("explore", "child-2: b")),
+                    Turn::tool("c3", "agent", spawn_args("explore", "child-3: c")),
+                    // Past the cap: nothing starts.
+                    Turn::tool("c4", "agent", spawn_args("explore", "child-4: d")),
+                    Turn::tool("c5", "agent", spawn_args("explore", "child-5: e")),
                     Turn::text("all launched"),
                     Turn::text("wrapped up"),
                 ],
@@ -332,8 +623,9 @@ async fn a_childs_token_budget_stops_it_and_its_report_is_partial() {
                     Turn::tool(
                         "c1",
                         "agent",
-                        spawn_args("explore", "child-C: read forever", false),
+                        spawn_args("explore", "child-C: read forever"),
                     ),
+                    Turn::tool("c2", "job_output", json!({"id": "agent-1"})),
                     Turn::text("root finished"),
                 ],
             ),
@@ -349,16 +641,14 @@ async fn a_childs_token_budget_stops_it_and_its_report_is_partial() {
     let out = run(&s, &["--allowed-tools", "agent"], "root task").await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let lines = out.lines();
-    let result = agent_result(&lines, 0);
-    assert_eq!(result["success"], json!(true));
-    let text = result["text"].as_str().unwrap();
-    assert!(text.contains("Partial result"), "{text}");
-    assert!(text.contains("token budget"), "{text}");
+    let waited = results_text(&lines);
+    assert!(waited.contains("Partial result"), "{waited}");
+    assert!(waited.contains("token budget"), "{waited}");
     // It stopped before the call it had asked for: the child asked the model once.
     assert_eq!(
         requests_with(&endpoint, "child-C").await.len(),
-        1 + 1,
-        "the child's one call and the root's follow-up"
+        1 + 2,
+        "the child's one call and the root's two follow-ups"
     );
 }
 
@@ -371,8 +661,10 @@ async fn a_cost_cap_on_an_unpriced_model_is_inactive_with_one_notice_and_the_tok
             Route::new(
                 "root task",
                 vec![
-                    Turn::tool("c1", "agent", spawn_args("explore", "child-D: one", false)),
-                    Turn::tool("c2", "agent", spawn_args("explore", "child-E: two", false)),
+                    Turn::tool("c1", "agent", spawn_args("explore", "child-D: one")),
+                    Turn::tool("c2", "agent", spawn_args("explore", "child-E: two")),
+                    Turn::tool("c3", "job_output", json!({"id": "agent-1"})),
+                    Turn::tool("c4", "job_output", json!({"id": "agent-2"})),
                     Turn::text("root finished"),
                 ],
             ),
@@ -399,13 +691,9 @@ async fn a_cost_cap_on_an_unpriced_model_is_inactive_with_one_notice_and_the_tok
         .count();
     assert_eq!(notices, 1, "{}", out.stderr);
     let lines = out.lines();
-    for at in 0..2 {
-        let text = agent_result(&lines, at)["text"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        assert!(text.contains("token budget"), "{text}");
-    }
+    let text = results_text(&lines);
+    assert_eq!(text.matches("Partial result").count(), 2, "{text}");
+    assert_eq!(text.matches("token budget").count(), 2, "{text}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -436,6 +724,7 @@ async fn the_per_call_model_overrides_the_types_and_bad_values_are_error_results
                         "agent",
                         json!({"agent_type": "explore", "prompt": "child-I: no", "model": "sonnet"}),
                     ),
+                    Turn::tool("c5", "job_output", json!({"id": "agent-1"})),
                     Turn::text("root finished"),
                 ],
             ),
@@ -451,7 +740,8 @@ async fn the_per_call_model_overrides_the_types_and_bad_values_are_error_results
     let out = run(&s, &["--allowed-tools", "agent"], "root task").await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let lines = out.lines();
-    assert_eq!(agent_result(&lines, 0)["text"], "F done");
+    assert_eq!(agent_result(&lines, 0)["text"], r#"{"agent_id":"agent-1"}"#);
+    assert!(results_text(&lines).contains("F done"));
     // The model the call named is the one the child ran on.
     let child_bodies = requests_with(&endpoint, "child-F").await;
     assert!(
@@ -480,11 +770,7 @@ async fn send_message_reaches_main_marked_with_the_senders_id_and_the_sender_is_
             Route::new(
                 "root task",
                 vec![
-                    Turn::tool(
-                        "c1",
-                        "agent",
-                        spawn_args("explore", "child-J: report", true),
-                    ),
+                    Turn::tool("c1", "agent", spawn_args("explore", "child-J: report")),
                     Turn::text("launched J"),
                     Turn::text("J's message arrived"),
                 ],
@@ -551,7 +837,7 @@ async fn a_spawn_nobody_pre_approved_is_a_denied_pipeline_request_and_starts_not
             Route::new(
                 "root task",
                 vec![
-                    Turn::tool("c1", "agent", spawn_args("worker", "child-K: do it", false)),
+                    Turn::tool("c1", "agent", spawn_args("worker", "child-K: do it")),
                     Turn::text("root finished"),
                 ],
             ),
@@ -604,7 +890,7 @@ async fn a_spawn_prompt_claiming_authorization_is_never_the_guardians_intent() {
                     Turn::tool(
                         "c1",
                         "agent",
-                        spawn_args("worker", &format!("child-L: {injected}"), false),
+                        spawn_args("worker", &format!("child-L: {injected}")),
                     ),
                     Turn::text("root finished"),
                 ],
@@ -667,7 +953,7 @@ async fn a_spent_budget_with_a_background_child_running_stops_the_run_and_kills_
             Route::new(
                 "root task",
                 vec![
-                    Turn::tool("c1", "agent", spawn_args("explore", "child-M: slow", true)),
+                    Turn::tool("c1", "agent", spawn_args("explore", "child-M: slow")),
                     Turn::text("launched M"),
                 ],
             ),
@@ -711,14 +997,15 @@ async fn a_spent_budget_with_a_background_child_running_stops_the_run_and_kills_
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_foreground_child_is_stopped_when_the_headless_cap_is_passed() {
+async fn a_child_is_stopped_when_the_headless_cap_is_passed() {
     let endpoint = Endpoint::start_routed(
         Wire::Responses,
         vec![
             Route::new(
                 "root task",
                 vec![
-                    Turn::tool("c1", "agent", spawn_args("explore", "child-F: dig", false)),
+                    Turn::tool("c1", "agent", spawn_args("explore", "child-F: dig")),
+                    Turn::tool("c2", "job_output", json!({"id": "agent-1"})),
                     Turn::text("root finished"),
                 ],
             ),
@@ -769,18 +1056,14 @@ async fn a_child_cannot_spawn_past_the_toolset_its_type_allows() {
             Route::new(
                 "root task",
                 vec![
-                    Turn::tool("c1", "agent", spawn_args("worker", "child-N: nest", false)),
+                    Turn::tool("c1", "agent", spawn_args("worker", "child-N: nest")),
                     Turn::text("root finished"),
                 ],
             ),
             Route::new(
                 "child-N",
                 vec![
-                    Turn::tool(
-                        "k1",
-                        "agent",
-                        spawn_args("worker", "child-O: deeper", false),
-                    ),
+                    Turn::tool("k1", "agent", spawn_args("worker", "child-O: deeper")),
                     Turn::text("N done"),
                 ],
             ),
@@ -837,20 +1120,18 @@ fn with_result_hook(s: &Sandbox, url: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_blocking_report_and_a_background_notification_pass_through_the_result_pipeline() {
+async fn a_spawn_result_and_the_notification_for_its_report_pass_through_the_result_pipeline() {
     let endpoint = Endpoint::start_routed(
         Wire::Chat,
         vec![
             Route::new(
                 "root task",
                 vec![
-                    Turn::tool("c1", "agent", spawn_args("explore", "child-P: now", false)),
-                    Turn::tool("c2", "agent", spawn_args("explore", "child-Q: later", true)),
+                    Turn::tool("c1", "agent", spawn_args("explore", "child-Q: later")),
                     Turn::text("launched Q"),
                     Turn::text("Q reported"),
                 ],
             ),
-            Route::new("child-P", vec![Turn::text("P is done")]),
             Route::new("child-Q", vec![Turn::text("Q is done")]).slow(Duration::from_millis(200)),
         ],
     )
@@ -860,17 +1141,17 @@ async fn a_blocking_report_and_a_background_notification_pass_through_the_result
     let out = run(&s, &["--allowed-tools", "agent"], "root task").await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let lines = out.lines();
-    // The blocking report is a tool result like any other: the hook's note follows it.
+    // The spawn result is a tool result like any other: the hook's note follows it.
     assert_eq!(
         agent_result(&lines, 0)["text"],
-        "P is done\n\nseen by the result pipeline"
+        "{\"agent_id\":\"agent-1\"}\nseen by the result pipeline"
     );
-    // So is the notification the main conversation reads for the background one: the request
-    // for that turn carries Q's report and a note, besides the note on the spawn's own result.
+    // So is the notification the main conversation reads for the report: the request for that
+    // turn carries Q's report and a note, besides the note on the spawn's own result.
     let bodies = requests_with(&endpoint, "Q is done").await;
     assert_eq!(bodies.len(), 1, "{bodies:?}");
     assert!(
-        bodies[0].matches("seen by the result pipeline").count() >= 3,
+        bodies[0].matches("seen by the result pipeline").count() >= 2,
         "{}",
         bodies[0]
     );

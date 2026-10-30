@@ -7,8 +7,7 @@ conversation, or both back to the start of any earlier prompt of this conversati
 ## What is tracked
 
 - **Tracked:** every file `write`, `edit` and `notebook_edit` change, in any workspace root, including a file they
-  create. A foreground subagent's edits belong to the prompt that started it; a background
-  subagent's late edits belong to whatever prompt is current when they land.
+  create. A subagent's edits belong to whatever prompt is current when they land, so a subagent that outlives the prompt that started it makes its late edits under a later one.
 - **Not tracked:** changes made through the `shell` tool, your own `!` commands, MCP tools, and any
   other process. A rewind leaves them as they are, and says so before it restores anything.
 - **Not tracked, by design:** the [auto memory](memory.md) directory. It holds notes that outlive

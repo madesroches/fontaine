@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{Endpoint, Sandbox, Turn, Wire};
+use common::{Endpoint, Route, Sandbox, Turn, Wire, last_user};
 use serde_json::{Value, json};
 
 fn sandbox(endpoint: &Endpoint) -> Sandbox {
@@ -21,8 +21,21 @@ fn fork_call() -> Turn {
     Turn::tool(
         "c2",
         "agent",
-        json!({"agent_type": "fork", "prompt": "fork-task: report", "background": false}),
+        json!({"agent_type": "fork", "prompt": "fork-task: report"}),
     )
+}
+
+/// The fork shares the root's first user message, so it is told apart by its last: its task.
+fn fork_route() -> Route {
+    Route::on_last_user("fork-task", vec![Turn::text("fork done")])
+}
+
+/// The request the fork made: the one whose last user message is its task.
+fn fork_request(requests: &[Value]) -> &Value {
+    requests
+        .iter()
+        .find(|r| last_user(r).contains("fork-task"))
+        .expect("the fork made a request")
 }
 
 fn roles(request: &Value) -> Vec<&str> {
@@ -36,12 +49,11 @@ fn roles(request: &Value) -> Vec<&str> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fork_starts_with_the_turns_user_message_and_then_its_task() {
-    let endpoint = Endpoint::start(
+    let endpoint = Endpoint::start_routed(
         Wire::Chat,
         vec![
-            fork_call(),
-            Turn::text("fork done"),
-            Turn::text("root done"),
+            fork_route(),
+            Route::new("root-task", vec![fork_call(), Turn::text("root done")]),
         ],
     )
     .await;
@@ -52,8 +64,9 @@ async fn a_fork_starts_with_the_turns_user_message_and_then_its_task() {
     assert_eq!(out.code, Some(0), "{}", out.stderr);
 
     let requests = endpoint.requests().await;
-    assert_eq!(requests.len(), 3);
-    let fork = &requests[1];
+    // The root's two requests, the fork's, and the root's turn on the fork's report.
+    assert_eq!(requests.len(), 4);
+    let fork = fork_request(&requests);
     let text = fork.to_string();
     assert!(text.contains("root-task: fork yourself"), "{text}");
     assert!(text.contains("forked subagent"), "{text}");
@@ -70,13 +83,18 @@ async fn a_fork_starts_with_the_turns_user_message_and_then_its_task() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fork_also_sees_what_the_turn_did_before_forking() {
-    let endpoint = Endpoint::start(
+    let endpoint = Endpoint::start_routed(
         Wire::Chat,
         vec![
-            Turn::tool("c1", "read", json!({"path": "a.txt"})),
-            fork_call(),
-            Turn::text("fork done"),
-            Turn::text("root done"),
+            fork_route(),
+            Route::new(
+                "root-task",
+                vec![
+                    Turn::tool("c1", "read", json!({"path": "a.txt"})),
+                    fork_call(),
+                    Turn::text("root done"),
+                ],
+            ),
         ],
     )
     .await;
@@ -93,8 +111,8 @@ async fn a_fork_also_sees_what_the_turn_did_before_forking() {
     assert_eq!(out.code, Some(0), "{}", out.stderr);
 
     let requests = endpoint.requests().await;
-    assert_eq!(requests.len(), 4);
-    let fork = &requests[2];
+    assert_eq!(requests.len(), 5);
+    let fork = fork_request(&requests);
     let text = fork.to_string();
     assert!(text.contains("root-task: read then fork"), "{text}");
     assert!(text.contains("a.txt"), "{text}");

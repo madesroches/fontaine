@@ -141,7 +141,7 @@ pub const BUILTINS: &[Builtin] = &[
         name: "agents",
         aliases: &["tasks"],
         hint: None,
-        description: "the background agents panel",
+        description: "the agents panel",
         command: |_| Command::Agents,
     },
     Builtin {

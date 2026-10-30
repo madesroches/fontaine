@@ -109,7 +109,7 @@ the project directory; `--resume` by id takes a session of any directory.
 
 ## Subagents
 
-When the main conversation has given its final answer but background
+When the main conversation has given its final answer but
 [subagents](agents.md#watching-and-stopping-subagents) are still running, the run waits for them.
 Their reports reach the main conversation as notifications, each batch in a further turn, until
 none is running; then the `result` is emitted. `--max-turns` and `--max-budget-usd` count those
