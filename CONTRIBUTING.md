@@ -29,7 +29,23 @@ live model APIs.
 - Do not add AI-generated credits or co-author tags to commit messages.
 - Do not push or open pull requests on someone else's behalf without being asked.
 - Update the documentation under `docs/` in the same change as the behavior it describes, and add
-  an entry under `## [Unreleased]` in `CHANGELOG.md`.
+  an entry under `## [Unreleased]` in `CHANGELOG.md` (see below).
+
+## Changelog entries
+
+Under `## [Unreleased]`, each Keep a Changelog type (`### Added`, `### Changed`, `### Fixed`, …) is
+split into `####` subject sections named after the `area:` labels: `Agents`, `Config`, `Core`,
+`Extensibility`, `Guardian`, `Headless`, `Integrations`, `MCP`, `Observability`, `Permissions`,
+`Providers`, `Sessions`, `Tools` and `TUI`, plus `Build and release` (CI, toolchain, packaging),
+`Evals` and `Research`. The subject sections are in alphabetical order, and one exists only while
+it has entries.
+
+- Pick the subject from the change's `area:` label; with several labels, take the one the user
+  would look under first.
+- Add the entry at the **end** of its subject section, not the top. Changes on different subjects
+  then edit different parts of the file, so their branches rebase without a conflict.
+- Create a missing subject section in its alphabetical place.
+- Released sections keep the layout they shipped with.
 
 ## Adding a tool
 
