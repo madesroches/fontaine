@@ -121,6 +121,8 @@ const CHECKPOINTS: &str =
     "checkpoint storage is a recovery aid the user sizes, so only the user file sets it";
 const GOAL: &str =
     "goal turns run unattended, so only the user file or --settings sets how long they may run";
+const SHELL: &str =
+    "how long a model's shell command may block or run is set only in the user file or --settings";
 const AUTO_EDITS: &str = "only `false` may be set here: a repository cannot widen what `auto` lets through without a guardian verdict";
 const TELEMETRY: &str = "only `enabled = false` may be set here";
 
@@ -141,6 +143,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::user_or_cli("schedule.enabled", SCHEDULE),
     Rule::user_or_cli("memory", MEMORY),
     Rule::user_or_cli("goal", GOAL),
+    Rule::user_or_cli("shell", SHELL),
     Rule::user_only("checkpoints", CHECKPOINTS),
     Rule::user_or_cli("accounts", USER_FILE),
     Rule::user_or_cli("network", NETWORK),
@@ -520,6 +523,7 @@ mod tests {
         ("schedule.enabled", "[schedule]\nenabled = false\n", None),
         ("memory", "[memory]\nauto = true\n", None),
         ("goal", "[goal]\nmax_turns = 10\n", None),
+        ("shell", "[shell]\nmax_timeout_secs = 900\n", None),
         (
             "checkpoints",
             "[checkpoints]\nmax_file_bytes = 1000\n",

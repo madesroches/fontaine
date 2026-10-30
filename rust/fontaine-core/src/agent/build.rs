@@ -173,6 +173,7 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
         seen: p.seen.clone(),
         scrub_env: p.setup.scrub_env.clone(),
         set_env: tools::subprocess_env(p.config),
+        shell_max_timeout_secs: p.config.shell.max_timeout_secs,
         git_bash: p.setup.git_bash.clone(),
         results: p.results.clone(),
         hide_mcp_names: !(p.config.telemetry.enabled && p.config.telemetry.log_tool_details),

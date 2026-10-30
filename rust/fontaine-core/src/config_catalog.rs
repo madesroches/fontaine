@@ -253,6 +253,12 @@ pub const KEYS: &[KeyRow] = &[
         NextLaunch
     ),
     row!(
+        "shell.max_timeout_secs",
+        |c, _| c.shell.max_timeout_secs.to_string(),
+        Edit::PositiveInt,
+        NextLaunch
+    ),
+    row!(
         "model.model",
         |_, r| r.main_model.to_string(),
         Edit::Picker(ModelSlot::Main),
@@ -702,6 +708,7 @@ mod tests {
                 "context.autocompact_window",
                 "schedule.enabled",
                 "memory.auto",
+                "shell.max_timeout_secs",
                 "model.model",
                 "guardian.model",
             ]

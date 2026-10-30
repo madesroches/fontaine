@@ -8,6 +8,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `[shell] max_timeout_secs` (1 to 86400, default 600; user file or `--settings` only) sets the
+  ceiling on a model's `shell` timeout: how long a main-conversation call blocks before it moves
+  to a background job, and how long a subagent's or skill injection's command runs. No tool
+  argument lifts it, and `/config` can edit it (#267).
+
 - `job_output` waits on a background subagent: given an `agent-*` id it blocks until that
   subagent ends, or `wait_secs` passes, and reports only its status. The report still arrives
   as the notification attached to that result, exactly once, so a parent no longer polls with
@@ -109,7 +114,7 @@ All notable changes are recorded here. The format follows
   tool-result scanner like any result; the guardian still judges the command when `shell` or
   `monitor` is called, a `shell` deny or ask rule and hook matcher also cover `monitor`, and the
   limits (8 running jobs, 1 MiB buffer, 64 MB output, no way for the model to lift the 600 s
-  timeout) are the harness's. Subagents keep kill-at-timeout; jobs end with the session, and the
+  timeout (default; `[shell] max_timeout_secs` sets it)) are the harness's. Subagents keep kill-at-timeout; jobs end with the session, and the
   agents panel lists and kills them. `BashOutput`, `TaskOutput`, `KillShell`, `KillBash`,
   `TaskStop` and `Monitor` map to the new tools.
 - A built-in `fork` agent type starts a subagent from a copy of the main conversation, including

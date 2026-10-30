@@ -83,6 +83,8 @@ pub struct RegistryParams {
     pub seen: Seen,
     pub scrub_env: Vec<OsString>,
     pub set_env: Vec<(OsString, OsString)>,
+    /// The ceiling on a model-requested `shell` timeout, in seconds.
+    pub shell_max_timeout_secs: u64,
     pub git_bash: Option<GitBash>,
     /// The post-call stages every result passes.
     pub results: Arc<ResultPipeline>,
@@ -135,7 +137,7 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
             scrub_env: params.scrub_env,
             set_env: params.set_env,
             git_bash: params.git_bash,
-            ..ShellSettings::default()
+            max_timeout_secs: params.shell_max_timeout_secs,
         },
         webfetch: WebfetchConfig::default(),
         websearch: params.websearch,

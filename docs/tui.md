@@ -453,7 +453,7 @@ environment variable (`--model`, screen-reader mode) is not labelled as such.
 
 Typing filters the rows by key, space included. Up and Down select and wrap around, and Esc closes.
 
-Six rows can be changed, marked `✎`. The rest are read-only: guardian, permission, account,
+Eight rows can be changed, marked `✎`. The rest are read-only: guardian, permission, account,
 network, telemetry, `env`, hook and MCP keys change what the guardian and the permission pipeline
 allow or send data off the machine, so they take a deliberate edit of the settings file. Rule
 editing stays in the files too; see [Permissions](permissions.md).
@@ -464,6 +464,8 @@ editing stays in the files too; see [Permissions](permissions.md).
 | `tui.screen_reader` | Cycles `true`, `false`, unset | From the next launch |
 | `context.autocompact_window` | Opens a field for a positive whole number; empty clears the key | From the next launch |
 | `schedule.enabled` | Cycles `true`, `false` | From the next launch |
+| `memory.auto` | Cycles `true`, `false` | From the next launch |
+| `shell.max_timeout_secs` | Opens a field for a positive whole number; empty clears the key | From the next launch |
 | `model.model` | Closes the panel and opens the [model picker](#choosing-a-model) | At once, as `/model` |
 | `guardian.model` | Closes the panel and opens the guardian picker | At once, as `/guardian-model` |
 

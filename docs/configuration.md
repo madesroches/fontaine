@@ -112,6 +112,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[schedule] enabled` | no | no | yes |
 | `[memory] auto` | no | no | yes |
 | `[goal]` keys | no | no | yes |
+| `[shell] max_timeout_secs` | no | no | yes |
 | `[checkpoints]` keys | no | no | no |
 | `[shell_preclassifier] allow_extra` | no | yes | yes |
 | Agent files `agents/*.md` | narrowing only | n/a | n/a |
@@ -764,6 +765,20 @@ no-progress cap (8 verdicts in a row after turns that called no tool) is fixed.
 [goal]
 max_turns = 50
 max_cost_usd = 5.0
+```
+
+### `[shell]`
+
+| Key | Meaning | Default |
+|---|---|---|
+| `max_timeout_secs` | The longest `timeout_secs` a model's [`shell`](tools.md#shell) call may ask for, 1 to 86400. In the main conversation it is how long a call blocks before the command is moved to a background job; for a subagent or a skill's shell injection it is how long the command runs before it is stopped. | `600` |
+
+A repository must not stretch how long commands run, so only the user file and `--settings` can
+set it. No tool argument lifts it. The `!` mode keeps its own 120 second default.
+
+```toml
+[shell]
+max_timeout_secs = 1800
 ```
 
 ### `[checkpoints]`
