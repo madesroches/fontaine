@@ -13,7 +13,7 @@ on the notification path, delivered exactly once.
 ## Current State
 
 - `Jobs::output` (`rust/fontaine-tools/src/jobs.rs:898`) returns `Err(JobError::Monitor)` before
-  any wait when the job has a `monitor` (`jobs.rs:903`); the wording is in `JobError`'s Display
+  any wait when the job has a `monitor` (`jobs.rs:909`); the wording is in `JobError`'s Display
   (`jobs.rs:89`). The behavior is locked in by
   `a_monitor_is_refused_by_job_output_but_listed` (`jobs/tests.rs:386`) and by the integration
   test `a_monitor_delivers_its_lines_as_notifications` (`rust/fontaine-tools/tests/jobs.rs:227`).
@@ -25,14 +25,14 @@ on the notification path, delivered exactly once.
 - `Shared::finish` (`jobs.rs:511`) flushes the buffer into `monitor.pending` and, for a background
   job or monitor with no waiter, posts the end note and marks the job `reported` with the cursor
   at the buffer end. With waiters present it instead sets `job.held = true`
-  (`jobs.rs:544`); `WaitGuard::drop` (`jobs.rs:1066`) decrements `waiters` and, when the last
+  (`jobs.rs:544`); `WaitGuard::drop` (`jobs.rs:1071`) decrements `waiters` and, when the last
   waiter leaves without taking the news, posts the held end note exactly once. This is the
   exactly-once machinery the wait will reuse.
 - Job notes reach the model through core's `TreeJobs` sink (`fontaine-core/src/agent/setup.rs:356`),
   which queues them in the `AgentTree`; `NotificationStage`
   (`fontaine-core/src/child_runner.rs:50`) appends queued notes to the next tool result the agent
   reads — possibly the wait call's own result.
-- The `job_output` tool (`rust/fontaine-tools/src/jobs/tools.rs:104`) describes itself as the
+- The `job_output` tool (`rust/fontaine-tools/src/jobs/tools.rs:119`) describes itself as the
   bounded-wait mechanism ("never poll with `sleep`") but exempts monitors; `docs/tools.md`
   documents the refusal in the `## Monitor` section ("`job_output` on a monitor is refused",
   `docs/tools.md:229`) and the `job_output` bullet in `## Background shell jobs`
@@ -92,9 +92,11 @@ very spin this plan removes. Batching delays are bounded (~0.5–1 s), well insi
   no monitor waiter could exist): when the killed job is a monitor with a parked waiter
   (`waiters > 0`), it sets `held = true` instead of posting the short user-kill note, so the
   leaving `WaitGuard` posts the standard end note — which says "killed by the user" through
-  `EndInfo::describe` and carries the tail — exactly once. With no waiter it behaves as today:
-  the short note posts and `reported` stays `false`, leaving the tail readable through
-  `job_cancel`.
+  `EndInfo::describe` and carries the tail — exactly once. With no waiter, a monitor instead
+  posts that same standard end note and is marked `reported = true` with the cursor at the
+  buffer end: the short variant exists so the tail stays readable through the read path, which
+  monitors no longer have — `job_cancel` still returns the tail through `read`. Plain
+  background jobs keep today's short note, `reported = false` and all.
 - `MonitorWait::already_reported` is `ended.is_some() && reported` — without the read path's
   `user_killed` exclusion, because a wait never carries the tail: once the end note went out,
   the model has been told all it will get.
@@ -116,18 +118,13 @@ very spin this plan removes. Batching delays are bounded (~0.5–1 s), well insi
 - Risk class, `root_only` gate and `MAX_WAIT_SECS` are unchanged — the tool stays read-only and
   main-agent-only.
 
-Exactly-once argument: the wait consumes nothing (no cursor move, no `reported` flip); the
-notification path produces each byte once (batch posts advance the cursor; the end note is posted
-once — at `finish` when no waiter is parked, at `WaitGuard::drop` when one is). The two paths only
-ever observe counters, so wait/output/end races cannot duplicate or lose a line, including the
-final batch and end note.
-
 ## Implementation Steps
 
 1. **`jobs.rs` — return type and removal.** Add `JobOutput` (or the chosen sum type); delete
    `JobError::Monitor` and its Display arm; change `Jobs::output` to route monitor jobs to the
    wait-only loop and plain jobs to the existing read loop; arm a `WaitGuard` in the monitor loop;
-   return `MonitorWait` results from it.
+   return `MonitorWait` results from it; update the doc comment on `Jobs::output`
+   (`jobs.rs:895`), which today describes only the read path.
 2. **`jobs.rs` — wake on post.** Call `Shared::wake()` at the end of `Shared::monitor_tick` when
    a note was posted.
 3. **`tools.rs` — render and describe.** Match `JobOutput` in `JobOutputTool::call`; render the
@@ -170,6 +167,9 @@ final batch and end note.
 
 - A zero-wait `job_output` on a monitor returns status instead of an error (settled during
   authoring; removes the spin even for models that call it without `wait_secs`).
+- A user-killed monitor with no waiter parked posts the standard end note (carrying the tail)
+  instead of the short user-kill variant and is marked reported: monitors lose their read path,
+  and a wait-only result must never promise a notification that never arrives.
 
 ## Documentation
 
@@ -207,6 +207,9 @@ Unit tests (`jobs/tests.rs`, fake `JobSink`, real `sh` commands as the existing 
 - **User kill while waiting**: `kill_by_user` during a parked wait posts exactly one end note
   carrying the tail (via the `Kill::User` hold above), and the wait reports ended with
   `already_reported` false; a second wait then reports ended + already-reported.
+- **User kill with no waiter, then a wait**: `kill_by_user` on a printing monitor with nothing
+  parked posts one standard end note carrying the tail and marks the job reported; a later
+  zero-wait reports ended + already-reported and promises nothing further.
 
 Integration tests (`tests/jobs.rs`, through the tool registry): the existing monitor notification
 test's refusal assertion becomes "a wait returns status and the lines still arrive as
