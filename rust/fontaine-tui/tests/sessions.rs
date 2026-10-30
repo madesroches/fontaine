@@ -6,7 +6,7 @@ mod common;
 use std::path::Path;
 
 use common::routed::{Route, Turn, start};
-use common::{Ui, World, text_turn};
+use common::{Ui, World, text_turn, tool_turn};
 use fontaine_core::ledger::Record;
 use fontaine_core::session::Session;
 use fontaine_tui::{DriveOutcome, SessionTarget};
@@ -280,6 +280,132 @@ async fn the_resume_picker_reads_out_plainly_in_screen_reader_mode() {
         })
         .await;
     assert!(matches!(outcome, DriveOutcome::Switch(t) if t.source == OLD));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_branch_with_later_input_is_refused_and_replay_carries_on() {
+    let w = World::new(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("answer"),
+        text_turn("msg reply"),
+    ])
+    .with_config("[permissions]\nallow = [\"shell(sleep *)\"]\n");
+    let outcome = w
+        .run(|ui| async move {
+            idle(&ui).await;
+            ui.send("start");
+            ui.wait_for("• shell sleep 1").await;
+            ui.send("/branch");
+            ui.wait_for("queued: /branch").await;
+            ui.send("keep me");
+            ui.wait_for("queued: keep me").await;
+            ui.wait_for("answer").await;
+            // The switch is refused while input waits; the message runs in this session.
+            ui.wait_for("/branch is refused while queued input still waits")
+                .await;
+            ui.wait_for("msg reply").await;
+            idle(&ui).await;
+        })
+        .await;
+    assert_eq!(outcome, DriveOutcome::Exit);
+    assert_eq!(
+        std::fs::read_dir(w.data.join("sessions")).unwrap().count(),
+        1,
+        "no branch was created"
+    );
+    assert!(w.ledger_text().contains("keep me"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_picker_choice_with_later_input_is_refused_and_replay_carries_on() {
+    let w = World::new(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("answer"),
+        text_turn("msg reply"),
+    ])
+    .with_config("[permissions]\nallow = [\"shell(sleep *)\"]\n");
+    earlier(&w, OLD, Some("Demo"), "earlier work");
+    let outcome = w
+        .run(|ui| async move {
+            idle(&ui).await;
+            ui.send("start");
+            ui.wait_for("• shell sleep 1").await;
+            ui.send("/resume");
+            ui.wait_for("queued: /resume").await;
+            ui.send("keep me");
+            ui.wait_for("queued: keep me").await;
+            ui.wait_for("answer").await;
+            // The queued /resume opens the picker; choosing a session is refused.
+            ui.wait_for("sessions started in this directory").await;
+            ui.press(KeyCode::Enter);
+            ui.wait_for("/resume is refused while queued input still waits")
+                .await;
+            ui.wait_for("msg reply").await;
+            idle(&ui).await;
+        })
+        .await;
+    assert_eq!(outcome, DriveOutcome::Exit, "no session switch happened");
+    assert!(
+        w.ledger_text().contains("keep me"),
+        "the message is ledgered in the original session"
+    );
+    assert!(
+        !ledger_of(&w, OLD).contains("keep me"),
+        "the other session was never entered"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_pick_deferred_from_a_notification_preserves_queued_input() {
+    let server = start(vec![
+        Route::new(
+            "root task",
+            vec![
+                Turn::tool(
+                    "c1",
+                    "agent",
+                    json!({"agent_type": "worker", "prompt": "child-A: finish", "background": true}),
+                ),
+                Turn::text("launched"),
+                Turn::text("noted the report"),
+                Turn::text("queued reply"),
+            ],
+        )
+        .delay(2, 3000),
+        Route::new("child-A", vec![Turn::text("child done")]).delay(0, 1500),
+    ])
+    .await;
+    let w = World::routed(&server.uri(), "\n[permissions]\nallow = [\"agent\"]\n");
+    earlier(&w, OLD, Some("Demo"), "earlier work");
+    let outcome = w
+        .run(|ui| async move {
+            idle(&ui).await;
+            ui.send("root task");
+            ui.wait_for("launched").await;
+            idle(&ui).await;
+            ui.send("/resume");
+            ui.wait_for("sessions started in this directory").await;
+            ui.wait_for("a background agent reported back").await;
+            ui.press(KeyCode::Enter);
+            ui.send("keep me through the deferred pick");
+            ui.wait_for("queued: keep me through the deferred pick")
+                .await;
+            ui.wait_for("/resume is refused while queued input still waits")
+                .await;
+            ui.wait_for("queued reply").await;
+            idle(&ui).await;
+        })
+        .await;
+    assert_eq!(outcome, DriveOutcome::Exit, "no session switch happened");
+    assert!(
+        w.ledger_text()
+            .contains("keep me through the deferred pick"),
+        "the queued message ran in the original session"
+    );
+    assert!(
+        !ledger_of(&w, OLD).contains("keep me through the deferred pick"),
+        "the other session was never entered"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

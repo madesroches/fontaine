@@ -658,6 +658,7 @@ scorecard run (see `## Remaining work`).
 - AFK: The `tracked_edit` exclusion of instruction files and `.github/` is a `floor.rs` helper (resolved path relative to the root, case-folded like the protected list: basenames `FONTAINE.md`, `FONTAINE.local.md`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` at any depth, anything under `rules/`, any `.github` component); excluded paths fall through to the guardian with no new `soft_deny` rule, and `@import` targets are not excluded because the loader keeps no durable path list (#256).
 - 2026-10-28: No default per-subagent token cap at all — not a raised one; `subagent_token_budget` is opt-in only, for Claude Code parity (#285).
 - 2026-10-28: `subagent_cost_budget_usd` is likewise opt-in only — no default `$2.0`; no per-subagent budget binds unless the user sets one (#285).
+- 2026-10-29: Built-in commands except `/loop`, plus `!` shell commands, typed mid-turn queue and run after the turn, per Claude Code's documented behavior (#292); `/loop` stays refused until #298 so generic replay need not carry self-paced first-iteration completion state. The run-immediately set is Fontaine's synchronous UI/report commands rather than Claude Code's carve-out list, and `/add-dir` queues instead of getting Claude Code's mid-turn confirm. Esc with input queued keeps Fontaine's restore-to-input rule, where Claude Code runs the queued prompt anyway.
 
 ## Open Questions
 

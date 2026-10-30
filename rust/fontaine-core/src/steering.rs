@@ -14,6 +14,38 @@ use rig_core::tool::ToolOutput;
 use crate::gate::SessionState;
 use crate::ledger::Record;
 
+/// One queued input: a plain message, a skill invocation as typed, or a built-in command
+/// or `!` shell line as typed. Only plain messages can be steered into a running turn;
+/// the others wait for it to end and keep everything behind them in line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Queued {
+    Message(String),
+    Skill {
+        raw: String,
+        name: String,
+        argument: String,
+    },
+    /// A built-in command exactly as typed (`/compact fix tests`); re-parsed and dispatched
+    /// when it executes.
+    Command(String),
+    /// A `!` shell command as typed, prefix included (`!cargo test`); executed as a shell
+    /// command when the turn ends.
+    Shell(String),
+}
+
+impl Queued {
+    /// The text as typed: the message, the slash command line or the `!` line. Used for the
+    /// queue display, the input restore and the history.
+    pub fn raw(&self) -> &str {
+        match self {
+            Queued::Message(text) => text,
+            Queued::Skill { raw, .. } => raw,
+            Queued::Command(raw) => raw,
+            Queued::Shell(raw) => raw,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Steering {
     inner: Arc<Mutex<SteeringState>>,
@@ -21,8 +53,11 @@ pub struct Steering {
 
 #[derive(Default)]
 struct SteeringState {
-    queued: Vec<String>,
+    queued: Vec<Queued>,
     delivered: Vec<String>,
+    /// While held, nothing is delivered: replay keeps typed order across queued entries
+    /// that already left the queue.
+    hold: bool,
 }
 
 impl Steering {
@@ -31,18 +66,28 @@ impl Steering {
         lock_recovering(&self.inner)
     }
 
-    pub fn queue(&self, text: String) {
-        self.state().queued.push(text);
+    pub fn queue(&self, entry: Queued) {
+        self.state().queued.push(entry);
     }
 
-    /// The messages that have not reached the model yet, oldest first.
+    /// The entries that have not reached the model yet, as typed, oldest first.
     pub fn queued(&self) -> Vec<String> {
-        self.state().queued.clone()
+        self.state()
+            .queued
+            .iter()
+            .map(|entry| entry.raw().to_string())
+            .collect()
     }
 
-    /// Takes everything not yet delivered.
-    pub fn retract(&self) -> Vec<String> {
+    /// Takes everything not yet delivered, as typed.
+    pub fn retract(&self) -> Vec<Queued> {
         std::mem::take(&mut self.state().queued)
+    }
+
+    /// Holds or releases replay delivery: while held, the hook leaves the whole queue
+    /// untouched and appends no ledger records. Display and retract behave as usual.
+    pub fn set_delivery_hold(&self, held: bool) {
+        self.state().hold = held;
     }
 
     /// The messages delivered since the last call, oldest first.
@@ -71,10 +116,28 @@ impl SteeringHook {
         }
         // One lock from take to delivered, so a retract cannot split the two.
         let mut state = self.steering.state();
-        if state.queued.is_empty() {
+        if state.queued.is_empty() || state.hold {
             return OutcomeAction::Proceed;
         }
-        let messages = std::mem::take(&mut state.queued);
+        // Only the leading run of plain messages can ride a tool result; a skill, command or
+        // shell line needs the turn to end, and nothing queued behind one may overtake it.
+        let leading = state
+            .queued
+            .iter()
+            .take_while(|entry| matches!(entry, Queued::Message(_)))
+            .count();
+        if leading == 0 {
+            return OutcomeAction::Proceed;
+        }
+        let messages: Vec<String> = state
+            .queued
+            .drain(..leading)
+            .map(|entry| match entry {
+                Queued::Message(text) => text,
+                // The take above counts message entries only.
+                _ => unreachable!("only message entries are drained"),
+            })
+            .collect();
         let mut text = result.output().render();
         for message in &messages {
             self.state.append(Record::UserMessage {
@@ -158,11 +221,24 @@ mod tests {
         }
     }
 
+    fn skill(raw: &str) -> Queued {
+        let name = raw
+            .trim_start_matches('/')
+            .split_whitespace()
+            .next()
+            .unwrap();
+        Queued::Skill {
+            raw: raw.into(),
+            name: name.into(),
+            argument: raw.trim_start_matches('/')[name.len()..].trim().into(),
+        }
+    }
+
     #[test]
     fn queued_messages_ride_the_next_root_result_and_enter_the_ledger_in_order() {
         let (hook, steering, ledger, _dir) = hook();
-        steering.queue("first".into());
-        steering.queue("second".into());
+        steering.queue(Queued::Message("first".into()));
+        steering.queue(Queued::Message("second".into()));
         let outcome = answered(ToolResult::success(ToolOutput::text("done")));
         let action = hook.steer(ROOT_AGENT, &outcome);
         let result = rewritten(&action).expect("a rewritten result");
@@ -182,14 +258,14 @@ mod tests {
     #[test]
     fn a_refused_or_failed_result_carries_the_messages_and_keeps_its_status() {
         let (hook, steering, _ledger, _dir) = hook();
-        steering.queue("also this".into());
+        steering.queue(Queued::Message("also this".into()));
         let refused = answered(ToolResult::failed(ToolExecutionError::refused("denied")));
         let action = hook.steer(ROOT_AGENT, &refused);
         let result = rewritten(&action).expect("a rewritten result");
         assert!(result.is_refused());
         assert!(result.output().render().contains("also this"));
 
-        steering.queue("and this".into());
+        steering.queue(Queued::Message("and this".into()));
         let failed = answered(ToolResult::failed(ToolExecutionError::other("boom")));
         let action = hook.steer(ROOT_AGENT, &failed);
         let result = rewritten(&action).expect("a rewritten result");
@@ -206,7 +282,7 @@ mod tests {
             OutcomeAction::Proceed
         ));
 
-        steering.queue("pending".into());
+        steering.queue(Queued::Message("pending".into()));
         let error: Result<Answered, ErrorReport> =
             Err(ErrorReport::new(rig_core::ErrorKind::Other, "model failed"));
         assert!(matches!(
@@ -221,12 +297,91 @@ mod tests {
     #[test]
     fn retract_returns_only_what_was_not_delivered() {
         let (hook, steering, _ledger, _dir) = hook();
-        steering.queue("delivered".into());
+        steering.queue(Queued::Message("delivered".into()));
         let ok = answered(ToolResult::success(ToolOutput::text("done")));
         hook.steer(ROOT_AGENT, &ok);
-        steering.queue("waiting".into());
-        assert_eq!(steering.retract(), vec!["waiting"]);
+        steering.queue(Queued::Message("waiting".into()));
+        assert_eq!(steering.retract(), vec![Queued::Message("waiting".into())]);
         assert!(steering.retract().is_empty());
         assert_eq!(steering.take_delivered(), vec!["delivered"]);
+    }
+
+    #[test]
+    fn a_skill_or_command_entry_blocks_delivery_of_itself_and_everything_behind_it() {
+        let (hook1, steering, ledger, _dir) = hook();
+        steering.queue(Queued::Message("before".into()));
+        steering.queue(skill("/review 42"));
+        steering.queue(Queued::Message("behind".into()));
+        steering.queue(Queued::Command("/rename later".into()));
+        let ok = answered(ToolResult::success(ToolOutput::text("done")));
+        let action = hook1.steer(ROOT_AGENT, &ok);
+        let result = rewritten(&action).expect("a rewritten result");
+        let text = result.output().render();
+        assert!(text.contains("before"), "{text}");
+        assert!(!text.contains("/review 42"), "{text}");
+        assert!(!text.contains("behind"), "{text}");
+        assert_eq!(ledger.view().user_messages, vec!["before"]);
+        // The barrier and everything behind it stay queued, typed and in order.
+        assert_eq!(
+            steering.retract(),
+            vec![
+                skill("/review 42"),
+                Queued::Message("behind".into()),
+                Queued::Command("/rename later".into()),
+            ]
+        );
+
+        // A queue that starts with a barrier delivers nothing at all.
+        let (hook2, steering, ledger, _dir) = hook();
+        steering.queue(Queued::Shell("!echo hi".into()));
+        steering.queue(Queued::Message("behind".into()));
+        let action = hook2.steer(ROOT_AGENT, &ok);
+        assert!(matches!(action, OutcomeAction::Proceed));
+        assert!(ledger.view().user_messages.is_empty());
+        assert_eq!(
+            steering.retract(),
+            vec![
+                Queued::Shell("!echo hi".into()),
+                Queued::Message("behind".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_delivery_hold_leaves_the_queue_and_the_ledger_untouched_until_released() {
+        let (hook, steering, ledger, _dir) = hook();
+        steering.queue(Queued::Message("held".into()));
+        steering.set_delivery_hold(true);
+        let ok = answered(ToolResult::success(ToolOutput::text("done")));
+        assert!(matches!(
+            hook.steer(ROOT_AGENT, &ok),
+            OutcomeAction::Proceed
+        ));
+        assert!(ledger.view().user_messages.is_empty());
+        assert_eq!(steering.queued(), vec!["held"]);
+        // Releasing the hold restores ordinary delivery.
+        steering.set_delivery_hold(false);
+        let action = hook.steer(ROOT_AGENT, &ok);
+        let result = rewritten(&action).expect("a rewritten result");
+        assert!(result.output().render().contains("held"));
+        assert_eq!(ledger.view().user_messages, vec!["held"]);
+        assert!(steering.queued().is_empty());
+    }
+
+    #[test]
+    fn queued_returns_raws_and_retract_returns_typed_entries() {
+        let (_hook, steering, _ledger, _dir) = hook();
+        steering.queue(Queued::Message("plain".into()));
+        steering.queue(skill("/review 42"));
+        steering.queue(Queued::Command("/rename later".into()));
+        steering.queue(Queued::Shell("!echo hi".into()));
+        assert_eq!(
+            steering.queued(),
+            vec!["plain", "/review 42", "/rename later", "!echo hi"]
+        );
+        let retracted = steering.retract();
+        assert_eq!(retracted[1], skill("/review 42"));
+        assert_eq!(retracted[3], Queued::Shell("!echo hi".into()));
+        assert!(steering.retract().is_empty());
     }
 }

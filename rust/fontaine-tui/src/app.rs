@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use fontaine_core::config::PermissionMode;
 use fontaine_core::permissions::{Answer, ApprovalRequest, UnavailableChoice};
+use fontaine_core::steering::Queued;
 use fontaine_core::turn::SessionEvent;
 use fontaine_tools::ask_user::{Question, QuestionReply};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -48,8 +49,15 @@ pub enum Input {
 pub enum Action {
     None,
     Submit(String),
-    /// A message typed while the agent works: it waits for the agent's next tool result.
-    Queue(String),
+    /// Input typed while the agent works: a plain message, a skill invocation, a built-in
+    /// command or a `!` line, queued as typed until the turn ends.
+    Queue(Queued),
+    /// A command that acts on the UI alone, run immediately even mid-turn; `raw` is the
+    /// trimmed line for the history.
+    Command {
+        command: Command,
+        raw: String,
+    },
     /// Take the queued messages back into the input.
     EditQueued,
     /// A `!` command, without the `!`.
@@ -994,29 +1002,59 @@ impl App {
             return Action::None;
         }
         if let Some(rest) = text.strip_prefix('!') {
-            if self.running {
-                self.transcript
-                    .notice("a turn is running; run shell commands between turns");
-                return Action::None;
-            }
-            let command = rest.trim().to_string();
+            let command = rest.trim();
             if command.is_empty() {
                 return Action::None;
             }
             self.input.take();
-            return Action::Shell(command);
+            if self.running {
+                return Action::Queue(Queued::Shell(text.trim().to_string()));
+            }
+            return Action::Shell(command.to_string());
         }
         if self.running {
-            if parse_command(&text).is_some() {
-                self.transcript
-                    .notice("a turn is running; wait for it or press Esc to interrupt");
-                return Action::None;
-            }
-            self.input.take();
-            return Action::Queue(text.trim().to_string());
+            return self.queue_during_turn(text.trim());
         }
         let text = self.input.take();
         Action::Submit(text.trim().to_string())
+    }
+
+    /// What Enter does on input typed while a turn runs: a known skill or any built-in but
+    /// `/loop` queues as typed; the synchronous UI commands run at once; unknown slash names
+    /// and every `/loop` form keep the existing refusal.
+    fn queue_during_turn(&mut self, text: &str) -> Action {
+        match parse_command(text) {
+            Some(command) if command.runs_mid_turn() => {
+                self.input.take();
+                Action::Command {
+                    command,
+                    raw: text.to_string(),
+                }
+            }
+            Some(Command::Other { name, argument })
+                if self.menu.iter().any(|entry| entry.name == name) =>
+            {
+                self.input.take();
+                Action::Queue(Queued::Skill {
+                    raw: text.to_string(),
+                    name,
+                    argument,
+                })
+            }
+            Some(Command::Loop(_)) | Some(Command::Other { .. }) => {
+                self.transcript
+                    .notice("a turn is running; wait for it or press Esc to interrupt");
+                Action::None
+            }
+            Some(_) => {
+                self.input.take();
+                Action::Queue(Queued::Command(text.to_string()))
+            }
+            None => {
+                self.input.take();
+                Action::Queue(Queued::Message(text.to_string()))
+            }
+        }
     }
 }
 
@@ -1273,32 +1311,75 @@ mod tests {
     }
 
     #[test]
-    fn a_message_during_a_turn_is_queued_and_a_command_is_refused() {
+    fn a_message_during_a_turn_is_queued_and_an_unknown_command_is_refused() {
         let mut app = app();
         app.running = true;
+        app.menu.push(MenuEntry {
+            name: "review".into(),
+            hint: Some("[pr-number]".into()),
+            description: "Review a pull request".into(),
+            aliases: Vec::new(),
+        });
+
         type_text(&mut app, "also this");
         assert_eq!(
             press(&mut app, KeyCode::Enter),
-            Action::Queue("also this".into())
+            Action::Queue(Queued::Message("also this".into()))
         );
         assert!(app.input.is_empty());
 
-        type_text(&mut app, "/denied");
-        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        type_text(&mut app, "/review 42");
         assert_eq!(
-            last_notice(&app),
-            Some("a turn is running; wait for it or press Esc to interrupt")
+            press(&mut app, KeyCode::Enter),
+            Action::Queue(Queued::Skill {
+                raw: "/review 42".into(),
+                name: "review".into(),
+                argument: "42".into(),
+            })
         );
-        assert_eq!(app.input.text(), "/denied");
+        assert!(app.input.is_empty());
+
+        type_text(&mut app, "/rename later");
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            Action::Queue(Queued::Command("/rename later".into()))
+        );
+        assert!(app.input.is_empty());
+
+        type_text(&mut app, "!echo hi");
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            Action::Queue(Queued::Shell("!echo hi".into()))
+        );
+        assert!(app.input.is_empty());
+
+        // A bare `!` is ignored either way.
+        type_text(&mut app, "!");
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        assert_eq!(app.input.text(), "!");
         app.input.take();
 
-        type_text(&mut app, "!ls");
-        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        // The immediate UI set runs at once.
+        type_text(&mut app, "/todos");
         assert_eq!(
-            last_notice(&app),
-            Some("a turn is running; run shell commands between turns")
+            press(&mut app, KeyCode::Enter),
+            Action::Command {
+                command: Command::Todos,
+                raw: "/todos".into(),
+            }
         );
-        assert_eq!(app.input.text(), "!ls");
+        assert!(app.input.is_empty());
+
+        for refused in ["/nope with args", "/loop watch CI"] {
+            type_text(&mut app, refused);
+            assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+            assert_eq!(
+                last_notice(&app),
+                Some("a turn is running; wait for it or press Esc to interrupt")
+            );
+            assert_eq!(app.input.text(), refused);
+            app.input.take();
+        }
     }
 
     #[test]
@@ -1624,15 +1705,6 @@ mod tests {
         type_text(&mut app, "/add");
         assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
         assert_eq!(app.input.text(), "/add-dir ");
-    }
-
-    #[test]
-    fn enter_on_a_command_while_a_turn_runs_is_refused_as_before() {
-        let mut app = app();
-        app.running = true;
-        type_text(&mut app, "/clear");
-        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
-        assert!(last_notice(&app).is_some_and(|n| n.contains("a turn is running")));
     }
 
     #[test]

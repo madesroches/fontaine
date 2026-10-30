@@ -8,19 +8,26 @@ mod schedule;
 mod tests;
 mod turn;
 
+use std::collections::VecDeque;
 use std::path::Path;
+use std::time::SystemTime;
 
 use crate::agents_panel::{AgentsPanel, Detail, JobRow, PanelRow};
 use crate::config_panel::ConfigKey;
 use crate::denials::{DeniedList, UnavailablePrompt};
+use crate::resume_picker::ResumePicker;
 use crate::ui::schedule::IDLE_POLL;
-use crate::ui::turn::TurnEnd;
+use crate::ui::turn::{CommandOutcome, SkillRun, Submission};
 use crate::{Action, App, Command, Prompt, Ui, parse_command};
 use crate::{reports, statusbar};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::config::PermissionMode;
+use fontaine_core::goal::{GoalArg, first_turn_prompt, parse_goal_arg};
+use fontaine_core::instructions;
 use fontaine_core::ledger::Record;
 use fontaine_core::notice::Notice;
+use fontaine_core::prompt;
+use fontaine_core::session;
 use fontaine_tools::gate::ROOT_AGENT;
 use fontaine_tools::lock::read_recovering;
 
@@ -188,30 +195,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let changed = tree.changed().notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            if let Some((purpose, reference)) = self.pending_pick.take() {
-                self.apply_pick(runtime, purpose, &reference).await;
-            }
-            if let Some(id) = self.pending_resume.take()
-                && self.switch_to(runtime, &id).is_break()
-            {
+            if self.drain_deferred(runtime).await.is_break() {
                 return;
-            }
-            while let Some(change) = self.pending_config.pop_front() {
-                match change {
-                    ConfigKey::OpenPicker(slot) => self.open_config_picker(runtime, slot).await,
-                    change => self.config_change(runtime, change),
-                }
-            }
-            while let Some(request) = self.pending_provider.pop_front() {
-                self.provider_request(runtime, request).await;
             }
             // A background agent that finished while nothing was running has news for the
             // main conversation, which gets a turn of its own to read it.
             if tree.has_notifications(ROOT_AGENT) {
-                if matches!(
-                    self.notification_turn(runtime).await,
-                    Some(TurnEnd::InputClosed)
-                ) {
+                if self.notification_turn(runtime, launch_dir).await.is_break() {
                     return;
                 }
                 continue;
@@ -221,7 +211,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 let scheduler = runtime.session.scheduler().clone();
                 if let Some(fired) = scheduler.due() {
                     self.show_scheduler_warning(runtime);
-                    if self.scheduled_turn(runtime, fired).await.is_break() {
+                    if self
+                        .scheduled_turn(runtime, launch_dir, fired)
+                        .await
+                        .is_break()
+                    {
                         return;
                     }
                     continue;
@@ -229,7 +223,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.show_scheduler_warning(runtime);
                 tick = scheduler.until_next_wake().map(|wait| wait.min(IDLE_POLL));
             }
-            if let Some(flow) = self.goal_step(runtime).await {
+            if let Some(flow) = self.goal_step(runtime, launch_dir).await {
                 if flow.is_break() {
                     return;
                 }
@@ -299,6 +293,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::None
                 | Action::Interrupt
                 | Action::Queue(_)
+                | Action::Command { .. }
                 | Action::GuardianOff(_) => {}
             }
         }
@@ -325,71 +320,235 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
         match parse_command(&text) {
-            Some(Command::Exit) => return Break(()),
-            Some(Command::AddDir(path)) => self.add_dir(runtime, launch_dir, &path),
-            Some(Command::Denied) => {
-                self.app.denied = Some(DeniedList::new(runtime.state.denied_calls()));
-            }
-            Some(Command::Config) => self.open_config(runtime),
-            Some(Command::Agents) => self.app.agents = Some(AgentsPanel::new()),
-            Some(Command::Todos) => self.app.todos.toggle(),
-            Some(Command::OutputStyle(name)) => self.output_style(runtime, &name),
-            Some(Command::Model(reference)) => self.model(runtime, &reference).await,
-            Some(Command::GuardianModel(reference)) => {
-                self.guardian_model(runtime, &reference).await
-            }
-            Some(Command::GuardianDisable) => return self.guardian_disable(runtime).await,
-            Some(Command::GuardianEnable) => self.guardian_enable(runtime),
-            Some(Command::Login(account)) => self.login(runtime, &account).await,
-            Some(Command::Help) => {
-                let (skills, _) = crate::commands::skill_menu(runtime.slash_skills());
-                self.app.transcript.notice(reports::help(&skills));
-            }
-            Some(Command::Status) => self.status(runtime),
-            Some(Command::Theme(name)) => self.theme(&name),
-            Some(Command::Permissions) => self.permissions(runtime),
-            Some(Command::Mcp(argument)) => self.mcp(runtime, &argument),
-            Some(Command::Hooks) => {
-                let hooks = &runtime.config.hooks;
-                self.app.transcript.notice(reports::hooks(
-                    &hooks.pre_tool_use,
-                    &hooks.post_tool_use,
-                    &hooks.permission_denied,
-                    runtime.project_executables(),
-                ));
-            }
-            Some(Command::Skills) => {
-                self.app
-                    .transcript
-                    .notice(reports::skills(&runtime.extensions().skills));
-            }
-            Some(Command::Plugins) => self.plugins(runtime),
+            // /loop is never dispatched here or queued: it needs the loop's own
+            // first-iteration bookkeeping.
             Some(Command::Loop(argument)) => {
-                return self.loop_command(runtime, &text, &argument).await;
+                return self
+                    .loop_command(runtime, launch_dir, &text, &argument)
+                    .await;
             }
-            Some(Command::Goal(argument)) => {
-                return self.goal_command(runtime, &text, &argument).await;
-            }
-            Some(Command::Plan(description)) => {
-                runtime.state.set_mode(PermissionMode::Plan);
-                self.app.transcript.notice("plan mode on");
-                if !description.is_empty() {
-                    return self.converse(runtime, description, None).await;
+            Some(command) => {
+                match self
+                    .dispatch_command(runtime, launch_dir, command, &text, false)
+                    .await
+                {
+                    Break(()) => Break(()),
+                    // A picker or dialog the command opened is served by the idle loop.
+                    Continue(CommandOutcome::Done | CommandOutcome::AwaitingModal) => Continue(()),
+                    Continue(CommandOutcome::Turn(submission)) => {
+                        self.converse(runtime, launch_dir, VecDeque::from([submission]))
+                            .await
+                    }
                 }
             }
-            Some(Command::Copy(argument)) => self.copy(&argument),
-            Some(Command::Expand(argument)) => self.expand(&argument),
-            Some(Command::Memory(argument)) => self.memory(runtime, &argument),
-            Some(Command::Init(argument)) => return self.init(runtime, &argument).await,
-            Some(Command::Resume(argument)) => return self.resume(runtime, &argument),
-            Some(Command::Rewind(argument)) => return self.rewind(runtime, &argument),
-            Some(Command::Branch(name)) => return self.branch(runtime, &name),
-            Some(Command::Rename(name)) => self.rename(runtime, &name),
-            Some(Command::Export(path)) => self.export(runtime, launch_dir, &path).await,
-            Some(Command::Clear(name)) => self.clear(runtime, &name).await,
-            Some(Command::Compact(focus)) => return self.compact(runtime, focus).await,
-            Some(Command::Context(argument)) => self.context(runtime, &argument).await,
-            Some(Command::Other { name, argument }) => {
+            None => {
+                self.converse(
+                    runtime,
+                    launch_dir,
+                    VecDeque::from([Submission::Message(text)]),
+                )
+                .await
+            }
+        }
+    }
+
+    /// Dispatches one parsed command exactly as the idle prompt would, so a queued command
+    /// that executes after a turn does what it would have done had it been typed then.
+    /// `raw` is the line as typed, recorded for skills, `/goal` and `/init`. `has_pending` is
+    /// whether older queued submissions still wait, which refuses session switches. Turn-
+    /// starting arms hand the turn back as a submission instead of running it, so no async
+    /// recursion forms.
+    pub(crate) async fn dispatch_command(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        launch_dir: &Path,
+        command: Command,
+        raw: &str,
+        has_pending: bool,
+    ) -> std::ops::ControlFlow<(), CommandOutcome> {
+        use std::ops::ControlFlow::{Break, Continue};
+        if command.runs_mid_turn() {
+            self.run_immediate(runtime, &command);
+            return Continue(CommandOutcome::Done);
+        }
+        match command {
+            Command::Exit => Break(()),
+            // /loop never reaches here: the idle path keeps its direct arm, and mid-turn it
+            // is refused, not queued.
+            Command::Loop(_) => Continue(CommandOutcome::Done),
+            Command::AddDir(path) => {
+                self.add_dir(runtime, launch_dir, &path);
+                Continue(CommandOutcome::Done)
+            }
+            Command::OutputStyle(name) => {
+                self.output_style(runtime, &name);
+                Continue(CommandOutcome::Done)
+            }
+            Command::Model(reference) => {
+                if reference.is_empty() {
+                    self.open_model_picker(runtime, None).await;
+                    Continue(CommandOutcome::AwaitingModal)
+                } else {
+                    self.model(runtime, &reference).await;
+                    Continue(CommandOutcome::Done)
+                }
+            }
+            Command::GuardianModel(reference) => {
+                if reference.is_empty() {
+                    self.open_guardian_picker(runtime).await;
+                    Continue(CommandOutcome::AwaitingModal)
+                } else {
+                    self.guardian_model(runtime, &reference).await;
+                    Continue(CommandOutcome::Done)
+                }
+            }
+            Command::GuardianDisable => match self.guardian_disable(runtime).await {
+                Break(()) => Break(()),
+                Continue(()) => Continue(CommandOutcome::Done),
+            },
+            Command::GuardianEnable => {
+                self.guardian_enable(runtime);
+                Continue(CommandOutcome::Done)
+            }
+            Command::Login(account) => {
+                self.login(runtime, &account).await;
+                // The dialog stays open after the log-in it started; replay waits for it.
+                Continue(CommandOutcome::AwaitingModal)
+            }
+            Command::Plan(description) => {
+                runtime.state.set_mode(PermissionMode::Plan);
+                self.app.transcript.notice("plan mode on");
+                if description.is_empty() {
+                    Continue(CommandOutcome::Done)
+                } else {
+                    Continue(CommandOutcome::Turn(Submission::Message(description)))
+                }
+            }
+            Command::Goal(argument) => match parse_goal_arg(&argument) {
+                GoalArg::Status => {
+                    let status = runtime.session.goal().status(runtime.tree_spend());
+                    self.app.transcript.notice(status.describe());
+                    Continue(CommandOutcome::Done)
+                }
+                GoalArg::Clear => {
+                    match runtime.clear_goal() {
+                        Some(cleared) => self
+                            .app
+                            .transcript
+                            .notice(format!("Goal cleared: {}", cleared.condition)),
+                        None => self.app.transcript.notice("No goal set"),
+                    }
+                    Continue(CommandOutcome::Done)
+                }
+                GoalArg::Set(condition) => {
+                    if let Err(e) = runtime.set_goal(&condition) {
+                        self.app
+                            .transcript
+                            .error(fontaine_tools::error_chain::chain(&e));
+                        return Continue(CommandOutcome::Done);
+                    }
+                    self.app
+                        .transcript
+                        .notice(format!("Goal set: {}", condition.trim()));
+                    // The first turn is the user's: the line they typed is the intent the
+                    // guardian reads, and later goal turns are harness notes.
+                    runtime.append(Record::UserMessage {
+                        text: raw.to_string(),
+                    });
+                    Continue(CommandOutcome::Turn(Submission::Expanded {
+                        text: raw.to_string(),
+                        prompt: first_turn_prompt(&condition),
+                    }))
+                }
+            },
+            Command::Copy(argument) => {
+                self.copy(&argument);
+                Continue(CommandOutcome::Done)
+            }
+            Command::Memory(argument) => {
+                self.memory(runtime, &argument);
+                Continue(CommandOutcome::Done)
+            }
+            Command::Init(argument) => {
+                if !argument.is_empty() {
+                    self.app
+                        .transcript
+                        .error(format!("/init takes no argument, not `{argument}`"));
+                    return Continue(CommandOutcome::Done);
+                }
+                let (target, existing) = instructions::init_target(&runtime.primary_root());
+                // Recorded before the turn so the guardian judging the write has this intent.
+                runtime.append(Record::UserMessage {
+                    text: format!("/init: create or improve {}", target.display()),
+                });
+                Continue(CommandOutcome::Turn(Submission::Expanded {
+                    text: "/init".to_string(),
+                    prompt: prompt::init_prompt(&target, existing),
+                }))
+            }
+            Command::Resume(argument) => {
+                if argument.is_empty() {
+                    let others = session::list(&self.data_dir, Some(&self.app.primary_root))
+                        .into_iter()
+                        .filter(|info| info.id != runtime.session.id)
+                        // Every launch writes a start, so a session nothing was said in is only noise.
+                        .filter(|info| info.name.is_some() || info.first_prompt.is_some())
+                        .collect();
+                    self.app.resume = Some(ResumePicker::new(others, SystemTime::now()));
+                    Continue(CommandOutcome::AwaitingModal)
+                } else if has_pending {
+                    self.refuse_switch("/resume");
+                    Continue(CommandOutcome::Done)
+                } else {
+                    match self.switch_to(runtime, &argument) {
+                        Break(()) => Break(()),
+                        Continue(()) => Continue(CommandOutcome::Done),
+                    }
+                }
+            }
+            Command::Rewind(argument) => {
+                if !argument.is_empty() {
+                    self.app.transcript.error(format!(
+                        "/rewind takes no argument, not `{argument}`; it opens a list of your prompts"
+                    ));
+                    Continue(CommandOutcome::Done)
+                } else {
+                    self.open_rewind(runtime);
+                    Continue(CommandOutcome::AwaitingModal)
+                }
+            }
+            Command::Branch(name) => {
+                if has_pending {
+                    self.refuse_switch("/branch");
+                    Continue(CommandOutcome::Done)
+                } else {
+                    match self.branch(runtime, &name) {
+                        Break(()) => Break(()),
+                        Continue(()) => Continue(CommandOutcome::Done),
+                    }
+                }
+            }
+            Command::Rename(name) => {
+                self.rename(runtime, &name);
+                Continue(CommandOutcome::Done)
+            }
+            Command::Export(path) => {
+                self.export(runtime, launch_dir, &path).await;
+                Continue(CommandOutcome::Done)
+            }
+            Command::Clear(name) => {
+                self.clear(runtime, &name).await;
+                Continue(CommandOutcome::Done)
+            }
+            Command::Compact(focus) => match self.compact(runtime, focus).await {
+                Break(()) => Break(()),
+                Continue(()) => Continue(CommandOutcome::Done),
+            },
+            Command::Context(argument) => {
+                self.context(runtime, &argument).await;
+                Continue(CommandOutcome::Done)
+            }
+            Command::Other { name, argument } => {
                 let known = runtime
                     .slash_skills()
                     .iter()
@@ -398,31 +557,93 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.app.transcript.error(format!(
                         "unknown command /{name}; type / to see the commands and skills"
                     ));
-                    return Continue(());
+                    return Continue(CommandOutcome::Done);
                 }
-                // Recorded before the skill's commands run so the guardian judging them has
-                // this turn's intent in the ledger.
-                runtime.append(Record::UserMessage { text: text.clone() });
-                let prompt = match self.expand_serving(runtime, &name, &argument).await {
-                    Ok(Ok(prompt)) => prompt,
-                    Ok(Err(e)) => {
-                        self.app.transcript.error(format!(
-                            "/{name}: {}",
-                            fontaine_tools::error_chain::chain(&e)
-                        ));
-                        return Continue(());
+                match self
+                    .expand_skill_command(runtime, raw, &name, &argument)
+                    .await
+                {
+                    Break(()) => Break(()),
+                    Continue(SkillRun::Prompt(prompt)) => {
+                        Continue(CommandOutcome::Turn(Submission::Expanded {
+                            text: raw.to_string(),
+                            prompt,
+                        }))
                     }
-                    Err(TurnEnd::InputClosed) => return Break(()),
-                    Err(_) => {
-                        self.app.transcript.notice("interrupted");
-                        return Continue(());
-                    }
-                };
-                return self.converse(runtime, text, Some(prompt)).await;
+                    Continue(SkillRun::Spent) => Continue(CommandOutcome::Done),
+                }
             }
-            None => return self.converse(runtime, text, None).await,
+            // The immediate UI set, already handled above by `runs_mid_turn`.
+            _ => Continue(CommandOutcome::Done),
         }
-        Continue(())
+    }
+
+    /// Runs one of the immediate UI commands, the set [`Command::runs_mid_turn`] marks:
+    /// synchronous handlers that touch only UI state, so both input loops can run them
+    /// mid-turn exactly as `submit` would at an idle prompt.
+    pub(crate) fn run_immediate(&mut self, runtime: &AgentRuntime, command: &Command) {
+        match command {
+            Command::Help => {
+                let (skills, _) = crate::commands::skill_menu(runtime.slash_skills());
+                self.app.transcript.notice(reports::help(&skills));
+            }
+            Command::Status => self.status(runtime),
+            Command::Theme(name) => self.theme(name),
+            Command::Todos => self.app.todos.toggle(),
+            Command::Agents => self.app.agents = Some(AgentsPanel::new()),
+            Command::Denied => {
+                self.app.denied = Some(DeniedList::new(runtime.state.denied_calls()));
+            }
+            Command::Permissions => self.permissions(runtime),
+            Command::Hooks => {
+                let hooks = &runtime.config.hooks;
+                self.app.transcript.notice(reports::hooks(
+                    &hooks.pre_tool_use,
+                    &hooks.post_tool_use,
+                    &hooks.permission_denied,
+                    runtime.project_executables(),
+                ));
+            }
+            Command::Skills => {
+                self.app
+                    .transcript
+                    .notice(reports::skills(&runtime.extensions().skills));
+            }
+            Command::Plugins => self.plugins(runtime),
+            Command::Mcp(argument) => self.mcp(runtime, argument),
+            Command::Expand(argument) => self.expand(argument),
+            Command::Config => self.open_config(runtime),
+            _ => {}
+        }
+    }
+
+    /// Carries out what queued up while a turn ran and only the idle loop may do: a picked
+    /// model, a session switch, settings changes and provider requests.
+    pub(crate) async fn drain_deferred(
+        &mut self,
+        runtime: &mut AgentRuntime,
+    ) -> std::ops::ControlFlow<()> {
+        if let Some((purpose, reference)) = self.pending_pick.take() {
+            self.apply_pick(runtime, purpose, &reference).await;
+        }
+        if let Some(id) = self.pending_resume.take() {
+            // Switching now would strand undelivered input in this session's steering queue.
+            if !runtime.steering.queued().is_empty() {
+                self.refuse_switch("/resume");
+            } else if self.switch_to(runtime, &id).is_break() {
+                return std::ops::ControlFlow::Break(());
+            }
+        }
+        while let Some(change) = self.pending_config.pop_front() {
+            match change {
+                ConfigKey::OpenPicker(slot) => self.open_config_picker(runtime, slot).await,
+                change => self.config_change(runtime, change),
+            }
+        }
+        while let Some(request) = self.pending_provider.pop_front() {
+            self.provider_request(runtime, request).await;
+        }
+        std::ops::ControlFlow::Continue(())
     }
 
     /// Adds a submitted input to the prompt history; a history file that cannot be written is
@@ -435,13 +656,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     /// Up with messages queued: they come back into the input to be edited.
     fn edit_queued(&mut self, runtime: &AgentRuntime) {
-        let messages = runtime.steering.retract();
-        if messages.is_empty() {
+        let entries = runtime.steering.retract();
+        if entries.is_empty() {
             // The hook delivered them since the last draw, so the display is stale.
             self.app.queued.clear();
             self.app.recall_older();
         } else {
-            self.app.restore_to_input(&messages.join("\n\n"));
+            let raws: Vec<&str> = entries.iter().map(|entry| entry.raw()).collect();
+            self.app.restore_to_input(&raws.join("\n\n"));
         }
     }
 }

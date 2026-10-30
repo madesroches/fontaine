@@ -133,7 +133,8 @@ coloured; Enter runs the command instead of sending a message, and the `!` is no
 - It runs with the same environment (scrubbed, plus [`[env]`](configuration.md#env)) and the same
   output cut as the agent's `shell` tool, because the output goes to the agent. It is killed after 120 seconds, or after 60 seconds without
   output, and has no standard input.
-- It runs only between turns. While a turn runs, Enter on a `!` input says so and keeps the text.
+- A `!` input typed while a turn runs queues like a message and runs after the turn, in the order
+  typed with everything else queued.
   While a command runs nothing else can be sent or queued; Esc or Ctrl-C interrupts it and kills
   its process group.
 - The output is shown in the transcript and handed to the agent with your next message, marked as
@@ -182,7 +183,18 @@ as yours for the [guardian](guardian.md).
 - If the turn is interrupted, fails or hits its turn limit, undelivered messages return to the
   input, in front of whatever is there, and nothing is sent. Messages already delivered in that turn
   are discarded with it, like its prompt, and must be sent again.
-- `/` commands are not queued; Enter on one says a turn is running.
+- A built-in command other than `/loop`, or a known skill invocation, queues like a message and
+  runs when the turn ends, in the order typed: a skill runs as its expanded prompt, a built-in
+  command does exactly what it would have done had it been submitted at that moment. Neither is
+  steered into the running turn, and a message queued behind one waits with it rather than
+  overtaking it. Unknown slash names keep their refusal, and `/loop` keeps its own until #298.
+- A `!` shell command queues the same way and executes after the turn, one at a time and in the
+  order typed; while one executes, nothing else can be sent or queued.
+- The commands that act on the UI alone (`/status`, `/theme`, the panels, `/help`, …) run
+  immediately, turn or no turn.
+- A queued command that opens a picker or dialog (`/model`, bare `/resume`, `/rewind`, `/login`)
+  holds the later queued entries until it closes. `/resume <name>` and `/branch` are refused while
+  later entries remain, so a session switch cannot silently discard them.
 
 ## Approval prompts
 

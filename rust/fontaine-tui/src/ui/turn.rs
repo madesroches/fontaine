@@ -1,11 +1,15 @@
+use std::collections::VecDeque;
+use std::path::Path;
+
 use crate::config_panel::ConfigKey;
-use crate::{Action, App, Ui};
+use crate::{Action, App, Ui, parse_command};
 use fontaine_core::RuntimeError;
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::Decision;
 use fontaine_core::goal::Continue;
 use fontaine_core::ledger::Record;
 use fontaine_core::schedule::{Fired, Kind};
+use fontaine_core::steering::Queued;
 use fontaine_core::tier::Tier;
 use fontaine_core::turn::{
     DEFAULT_MAX_TURNS, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
@@ -30,26 +34,130 @@ pub(crate) enum Serve {
     Queueing,
 }
 
-/// What becomes of messages typed during a turn that the agent never received.
+/// What becomes of input typed during a turn that the agent never received.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum EndOfTurn {
-    /// The agent answered without another tool result: send them as the next turn.
-    Submit(String),
-    /// The turn did not complete: give them back so nothing the human typed is sent unseen.
+    /// The agent answered without another tool result: run what was queued, in order.
+    Submit(Vec<Submission>),
+    /// The turn did not complete: give it all back so nothing the human typed is sent unseen.
     RestoreToInput(String),
     Nothing,
 }
 
-pub(crate) fn end_of_turn(end: &TurnEnd, retracted: Vec<String>) -> EndOfTurn {
+/// One unit of queued replay: what a retracted entry becomes once the turn ends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Submission {
+    /// Consecutive queued messages joined with a blank line, as a plain message reads today.
+    Message(String),
+    Skill {
+        raw: String,
+        name: String,
+        argument: String,
+    },
+    /// A built-in command as typed; re-parsed and executed through the idle dispatch.
+    Command(String),
+    /// A `!` shell command as typed, prefix included; run through the idle `!` path.
+    Shell(String),
+    /// A turn ready to run: the text the idle path displays and checkpoints (not necessarily
+    /// the raw command), plus its expanded prompt. Its user-message record has already been
+    /// appended, as at idle. It never waits behind another submission: a dispatcher hands it
+    /// back to the loop, which front-pushes it.
+    Expanded { text: String, prompt: String },
+}
+
+impl Submission {
+    /// The text as typed, used for the queue display's restore and the history.
+    pub(crate) fn raw(&self) -> &str {
+        match self {
+            Submission::Message(text) => text,
+            Submission::Skill { raw, .. } => raw,
+            Submission::Command(raw) => raw,
+            Submission::Shell(raw) => raw,
+            Submission::Expanded { text, .. } => text,
+        }
+    }
+}
+
+/// What dispatching one queued command came to.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CommandOutcome {
+    /// The command did its work; the next submission runs.
+    Done,
+    /// The command opened a picker or dialog; replay suspends until it closes.
+    AwaitingModal,
+    /// The command prepared a turn, which front-pushes and runs next.
+    Turn(Submission),
+}
+
+/// What expanding a skill invocation came to.
+pub(crate) enum SkillRun {
+    /// The expansion to run as the invocation's turn.
+    Prompt(String),
+    /// An error or an interrupt: the notices are shown and the raw is spent.
+    Spent,
+}
+
+/// A dispatcher hand-off runs next, ahead of everything already pending, so nothing executes
+/// between a command's preparation and its turn.
+pub(crate) fn front_push(pending: &mut VecDeque<Submission>, submission: Submission) {
+    pending.push_front(submission);
+}
+
+/// The text a replay interruption restores to the input: the older pending submissions' raws
+/// front-to-back, then the newly retracted raws. Restoring prepends the unsubmitted draft, so
+/// it stays last.
+pub(crate) fn restore_block(pending: &VecDeque<Submission>, retracted: &str) -> String {
+    let mut raws: Vec<&str> = pending.iter().map(Submission::raw).collect();
+    if !retracted.is_empty() {
+        raws.push(retracted);
+    }
+    raws.join("\n\n")
+}
+
+pub(crate) fn end_of_turn(end: &TurnEnd, retracted: Vec<Queued>) -> EndOfTurn {
     if retracted.is_empty() {
         return EndOfTurn::Nothing;
     }
-    let text = retracted.join("\n\n");
     match end {
-        TurnEnd::Finished(TurnOutcome::Answer(_)) => EndOfTurn::Submit(text),
-        TurnEnd::Finished(_) | TurnEnd::Interrupted => EndOfTurn::RestoreToInput(text),
+        TurnEnd::Finished(TurnOutcome::Answer(_)) => EndOfTurn::Submit(group(retracted)),
+        TurnEnd::Finished(_) | TurnEnd::Interrupted => EndOfTurn::RestoreToInput(
+            retracted
+                .iter()
+                .map(|entry| entry.raw())
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        ),
         TurnEnd::InputClosed => EndOfTurn::Nothing,
     }
+}
+
+/// Groups retracted entries into submissions: consecutive messages join into one, and each
+/// skill, command or shell line is a submission of its own, keeping the typed order.
+fn group(entries: Vec<Queued>) -> Vec<Submission> {
+    let mut submissions: Vec<Submission> = Vec::new();
+    for entry in entries {
+        match entry {
+            Queued::Message(text) => match submissions.last_mut() {
+                Some(Submission::Message(joined)) => {
+                    joined.push_str("\n\n");
+                    joined.push_str(&text);
+                }
+                _ => submissions.push(Submission::Message(text)),
+            },
+            Queued::Skill {
+                raw,
+                name,
+                argument,
+            } => submissions.push(Submission::Skill {
+                raw,
+                name,
+                argument,
+            }),
+            Queued::Command(raw) => submissions.push(Submission::Command(raw)),
+            Queued::Shell(raw) => submissions.push(Submission::Shell(raw)),
+        }
+    }
+    submissions
 }
 
 impl<R: FnMut(&mut App)> Ui<R> {
@@ -73,19 +181,52 @@ impl<R: FnMut(&mut App)> Ui<R> {
     pub(crate) async fn notification_turn(
         &mut self,
         runtime: &mut AgentRuntime,
-    ) -> Option<TurnEnd> {
+        launch_dir: &Path,
+    ) -> std::ops::ControlFlow<()> {
         let jobs = runtime.state.agents().has_job_notifications()
             && !runtime.state.agents().has_agent_notifications();
-        let prompt = runtime.notification_prompt().await?;
+        let Some(prompt) = runtime.notification_prompt().await else {
+            return std::ops::ControlFlow::Continue(());
+        };
         if let Some(end) = self.refresh_native_search(runtime) {
-            return Some(end);
+            return self.harness_turn_tail(runtime, launch_dir, end).await;
         }
         self.app.transcript.notice(if jobs {
             "a background job reported back"
         } else {
             "a background agent reported back"
         });
-        Some(self.turn(runtime, prompt, None).await)
+        let end = self.turn(runtime, prompt, None).await;
+        self.harness_turn_tail(runtime, launch_dir, end).await
+    }
+
+    /// What follows a turn the harness started (a notification, a scheduled task or a goal
+    /// continuation): a picker or provider action taken during it applies first, then what the
+    /// human queued while it ran executes in order, or returns to the input.
+    async fn harness_turn_tail(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        launch_dir: &Path,
+        end: TurnEnd,
+    ) -> std::ops::ControlFlow<()> {
+        use std::ops::ControlFlow::{Break, Continue};
+        if matches!(end, TurnEnd::InputClosed) {
+            return Break(());
+        }
+        if self.drain_deferred(runtime).await.is_break() {
+            return Break(());
+        }
+        match end_of_turn(&end, runtime.steering.retract()) {
+            EndOfTurn::Submit(submissions) => {
+                self.converse(runtime, launch_dir, VecDeque::from(submissions))
+                    .await
+            }
+            EndOfTurn::RestoreToInput(back) => {
+                self.app.restore_to_input(&back);
+                Continue(())
+            }
+            EndOfTurn::Nothing => Continue(()),
+        }
     }
 
     /// A turn on a scheduled task that came due. Like a background agent's report it is not
@@ -94,9 +235,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
     pub(crate) async fn scheduled_turn(
         &mut self,
         runtime: &mut AgentRuntime,
+        launch_dir: &Path,
         fired: Fired,
     ) -> std::ops::ControlFlow<()> {
-        use std::ops::ControlFlow::{Break, Continue};
         let prompt = runtime.scheduled_prompt(&fired).await;
         self.app
             .transcript
@@ -106,19 +247,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
             None => self.turn(runtime, prompt, None).await,
         };
         if matches!(end, TurnEnd::InputClosed) {
-            return Break(());
+            return std::ops::ControlFlow::Break(());
         }
         if matches!(fired.job.kind, Kind::Wakeup { .. }) {
             self.end_of_iteration(runtime);
         }
-        match end_of_turn(&end, runtime.steering.retract()) {
-            EndOfTurn::Submit(next) => self.converse(runtime, next, None).await,
-            EndOfTurn::RestoreToInput(back) => {
-                self.app.restore_to_input(&back);
-                Continue(())
-            }
-            EndOfTurn::Nothing => Continue(()),
-        }
+        self.harness_turn_tail(runtime, launch_dir, end).await
     }
 
     /// A turn on a goal the evaluator found not met yet. A harness note, never the user
@@ -126,25 +260,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
     pub(crate) async fn goal_turn(
         &mut self,
         runtime: &mut AgentRuntime,
+        launch_dir: &Path,
         next: Continue,
     ) -> std::ops::ControlFlow<()> {
-        use std::ops::ControlFlow::{Break, Continue as Go};
         let prompt = runtime.goal_prompt(&next).await;
         let end = match self.refresh_native_search(runtime) {
             Some(end) => end,
             None => self.turn(runtime, prompt, None).await,
         };
-        if matches!(end, TurnEnd::InputClosed) {
-            return Break(());
-        }
-        match end_of_turn(&end, runtime.steering.retract()) {
-            EndOfTurn::Submit(next) => self.converse(runtime, next, None).await,
-            EndOfTurn::RestoreToInput(back) => {
-                self.app.restore_to_input(&back);
-                Go(())
-            }
-            EndOfTurn::Nothing => Go(()),
-        }
+        self.harness_turn_tail(runtime, launch_dir, end).await
     }
 
     /// Drives `fut` to completion while serving keys and prompts. `serve` says which of the
@@ -181,11 +305,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::OpenPicker(slot) => {
                             self.pending_config.push_back(ConfigKey::OpenPicker(slot));
                         }
-                        Action::Queue(text) if queueing => {
-                            self.remember(&text);
-                            runtime.steering.queue(text);
+                        Action::Queue(entry) if queueing => {
+                            self.remember(entry.raw());
+                            runtime.steering.queue(entry);
                         }
                         Action::EditQueued if queueing => self.edit_queued(runtime),
+                        Action::Command { command, raw } => {
+                            self.remember(&raw);
+                            self.run_immediate(runtime, &command);
+                        }
                         _ => {}
                     },
                 },
@@ -217,44 +345,229 @@ impl<R: FnMut(&mut App)> Ui<R> {
         Err(end)
     }
 
-    /// Runs `text` as a turn, then whatever the human queued during it that the agent did not
-    /// receive: sent as the next turn after an answer, handed back to the input otherwise.
-    /// `expanded` is the prompt a skill expanded `text` into, already recorded as the user's
-    /// message.
+    /// Expands a skill invocation exactly as the idle path does: the raw line is recorded as
+    /// the user's message before the skill's commands run, the expansion serves approvals, and
+    /// an error or interrupt shows the idle notices and spends the raw. `Err` is the user
+    /// leaving.
+    pub(crate) async fn expand_skill_command(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        raw: &str,
+        name: &str,
+        argument: &str,
+    ) -> std::ops::ControlFlow<(), SkillRun> {
+        use std::ops::ControlFlow::{Break, Continue};
+        // Esc during the expansion interrupts it, at idle and queued alike.
+        self.app.running = true;
+        // Recorded before the skill's commands run so the guardian judging them has
+        // this turn's intent in the ledger.
+        runtime.append(Record::UserMessage {
+            text: raw.to_string(),
+        });
+        let result = self.expand_serving(runtime, name, argument).await;
+        self.app.running = false;
+        match result {
+            Ok(Ok(prompt)) => Continue(SkillRun::Prompt(prompt)),
+            Ok(Err(e)) => {
+                self.app.deny_pending();
+                self.drain_prompts();
+                self.app.transcript.error(format!(
+                    "/{name}: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                ));
+                Continue(SkillRun::Spent)
+            }
+            Err(TurnEnd::InputClosed) => Break(()),
+            Err(_) => {
+                self.app.transcript.notice("interrupted");
+                Continue(SkillRun::Spent)
+            }
+        }
+    }
+
+    /// Runs the submissions in `pending`, one at a time, in order. A turn submission runs the
+    /// way the idle path runs it; a skill is expanded against live state as it pops; a command
+    /// dispatches through the idle handlers, and one that opens a picker or dialog suspends
+    /// replay until it closes; a `!` line runs as a shell run. While older submissions wait,
+    /// steering delivery is held, so nothing newly typed overtakes the backlog: it retracts and
+    /// back-extends in typed order instead.
     pub(crate) async fn converse(
         &mut self,
         runtime: &mut AgentRuntime,
-        mut text: String,
-        mut expanded: Option<String>,
+        launch_dir: &Path,
+        mut pending: VecDeque<Submission>,
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
-        loop {
-            self.app.transcript.user(text.clone());
-            // A prompt from the user resumes a paused goal.
-            runtime.goal_user_prompt();
-            let end = match self.refresh_native_search(runtime) {
-                Some(end) => end,
-                None => {
-                    // A prompt with an expansion was recorded as the human's message before this point.
-                    runtime.begin_turn(&text, expanded.is_some());
-                    match expanded.take() {
-                        Some(prompt) => self.turn(runtime, prompt, None).await,
-                        None => self.turn(runtime, text.clone(), Some(&text)).await,
+        while let Some(submission) = pending.pop_front() {
+            runtime.steering.set_delivery_hold(!pending.is_empty());
+            let end = match submission {
+                Submission::Message(text) => {
+                    self.app.transcript.user(text.clone());
+                    // A prompt from the user resumes a paused goal.
+                    runtime.goal_user_prompt();
+                    match self.refresh_native_search(runtime) {
+                        Some(end) => end,
+                        None => {
+                            runtime.begin_turn(&text, false);
+                            self.turn(runtime, text.clone(), Some(&text)).await
+                        }
                     }
+                }
+                Submission::Expanded { text, prompt } => {
+                    self.app.transcript.user(text.clone());
+                    // A prompt from the user resumes a paused goal.
+                    runtime.goal_user_prompt();
+                    match self.refresh_native_search(runtime) {
+                        Some(end) => end,
+                        None => {
+                            // Recorded as the human's message before this point.
+                            runtime.begin_turn(&text, true);
+                            self.turn(runtime, prompt, None).await
+                        }
+                    }
+                }
+                Submission::Skill {
+                    raw,
+                    name,
+                    argument,
+                } => {
+                    match self
+                        .expand_skill_command(runtime, &raw, &name, &argument)
+                        .await
+                    {
+                        Break(()) => {
+                            runtime.steering.set_delivery_hold(false);
+                            return Break(());
+                        }
+                        Continue(SkillRun::Prompt(prompt)) => {
+                            front_push(&mut pending, Submission::Expanded { text: raw, prompt });
+                        }
+                        Continue(SkillRun::Spent) => {}
+                    }
+                    continue;
+                }
+                Submission::Command(raw) => {
+                    let Some(command) = parse_command(&raw) else {
+                        continue;
+                    };
+                    match self
+                        .dispatch_command(runtime, launch_dir, command, &raw, !pending.is_empty())
+                        .await
+                    {
+                        Break(()) => {
+                            runtime.steering.set_delivery_hold(false);
+                            return Break(());
+                        }
+                        Continue(CommandOutcome::Done) => {}
+                        Continue(CommandOutcome::AwaitingModal) => {
+                            if self.serve_modal(runtime, &pending).await.is_break() {
+                                runtime.steering.set_delivery_hold(false);
+                                return Break(());
+                            }
+                        }
+                        Continue(CommandOutcome::Turn(sub)) => front_push(&mut pending, sub),
+                    }
+                    continue;
+                }
+                Submission::Shell(raw) => {
+                    let command = raw.strip_prefix('!').map(str::trim).unwrap_or_default();
+                    if self.shell(runtime, command.to_string()).await.is_break() {
+                        runtime.steering.set_delivery_hold(false);
+                        return Break(());
+                    }
+                    continue;
                 }
             };
             if matches!(end, TurnEnd::InputClosed) {
+                runtime.steering.set_delivery_hold(false);
                 return Break(());
             }
             match end_of_turn(&end, runtime.steering.retract()) {
-                EndOfTurn::Submit(next) => text = next,
+                EndOfTurn::Submit(submissions) => pending.extend(submissions),
                 EndOfTurn::RestoreToInput(back) => {
-                    self.app.restore_to_input(&back);
+                    runtime.steering.set_delivery_hold(false);
+                    let block = restore_block(&pending, &back);
+                    self.app.restore_to_input(&block);
                     return Continue(());
                 }
-                EndOfTurn::Nothing => return Continue(()),
+                EndOfTurn::Nothing => {}
             }
         }
+        runtime.steering.set_delivery_hold(false);
+        Continue(())
+    }
+
+    /// Serves a picker or dialog a queued command opened, with the same handlers the idle loop
+    /// gives it, applying choices directly; replay stays suspended until it closes. A session
+    /// switch is refused while older submissions wait, so typed input is never lost to it.
+    async fn serve_modal(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        pending: &VecDeque<Submission>,
+    ) -> std::ops::ControlFlow<()> {
+        use std::ops::ControlFlow::{Break, Continue};
+        while self.app.covered() {
+            self.draw(runtime);
+            let action = tokio::select! {
+                input = self.input.recv() => match input {
+                    None => return Break(()),
+                    Some(input) => self.app.handle_input(input),
+                },
+                Some(prompt) = self.prompts.recv() => {
+                    self.on_prompt(Some(runtime), prompt);
+                    Action::None
+                }
+            };
+            match action {
+                Action::PickModel(purpose, reference) => {
+                    self.apply_pick(runtime, purpose, &reference).await
+                }
+                Action::ResumeSession(id) => {
+                    if !pending.is_empty() {
+                        self.refuse_switch("/resume");
+                        return Continue(());
+                    }
+                    return self.switch_to(runtime, &id);
+                }
+                Action::Providers(request) => self.provider_request(runtime, request).await,
+                Action::Config(change) => self.config_change(runtime, change),
+                Action::OpenPicker(slot) => self.open_config_picker(runtime, slot).await,
+                Action::SelectRewind(turn) => self.offer_rewind(runtime, turn),
+                Action::Rewind {
+                    plan,
+                    what,
+                    overwrite_changed,
+                } => {
+                    self.run_rewind(runtime, plan, what, overwrite_changed)
+                        .await
+                }
+                Action::OpenRewind => self.open_rewind(runtime),
+                Action::Interrupt | Action::Quit => return Break(()),
+                Action::CycleMode => self.cycle_mode(runtime),
+                Action::RetryDenied(index) => self.retry_denied(runtime, index),
+                Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
+                Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                Action::KillJob(id) => self.kill_job(runtime, &id),
+                Action::None
+                | Action::Submit(_)
+                | Action::Queue(_)
+                | Action::Command { .. }
+                | Action::Shell(_)
+                | Action::EditQueued
+                | Action::Server(_)
+                | Action::GuardianOff(_)
+                | Action::CancelWakeup => {}
+            }
+        }
+        Continue(())
+    }
+
+    /// The notice a queued `/resume` or `/branch` gets while older submissions wait: the
+    /// switch is refused, and replay carries on in this session.
+    pub(crate) fn refuse_switch(&mut self, command: &str) {
+        self.app.transcript.error(format!(
+            "{command} is refused while queued input still waits to run; switching sessions would lose it"
+        ));
     }
 
     /// Runs one user message while still serving keys and prompts.
@@ -335,11 +648,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::OpenPicker(slot) => {
                             self.pending_config.push_back(ConfigKey::OpenPicker(slot));
                         }
-                        Action::Queue(text) => {
-                            self.remember(&text);
-                            runtime.steering.queue(text);
+                        Action::Queue(entry) => {
+                            self.remember(entry.raw());
+                            runtime.steering.queue(entry);
                         }
                         Action::EditQueued => self.edit_queued(runtime),
+                        Action::Command { command, raw } => {
+                            self.remember(&raw);
+                            self.run_immediate(runtime, &command);
+                        }
                         // A turn or a sign-in is under way, so a rewind cannot start: the picker closes.
                         Action::SelectRewind(_) => self.app.rewind = None,
                         Action::OpenRewind | Action::Rewind { .. } => {}

@@ -2,14 +2,26 @@
 
 mod common;
 
-use common::{Ui, World, text_turn};
+use common::{Ui, World, text_turn, tool_turn};
 use ratatui::crossterm::event::KeyCode;
+use rig_core::test_utils::MockStreamEvent;
+use serde_json::json;
+
+const ALLOW_SLEEP: &str = "[permissions]\nallow = [\"shell(sleep *)\"]\n";
 
 async fn idle(ui: &Ui) {
     ui.wait_until("an idle prompt", |s| {
         s.contains("shift+tab mode · /add-dir")
     })
     .await;
+}
+
+/// A world with the user-invocable `review` skill and a script of `turns`.
+fn skill_world(turns: Vec<Vec<MockStreamEvent>>) -> World {
+    World::new(turns).with_user_file(
+        "skills/review/SKILL.md",
+        "---\ndescription: Review a pull request\nargument-hint: [pr-number]\n---\nReview pull request $0 and report.\n",
+    )
 }
 
 fn world() -> World {
@@ -211,6 +223,376 @@ async fn help_and_skills_list_the_loaded_skills() {
             .await;
     })
     .await;
+}
+
+// ---------------------------------------------------------------------------------------
+// queued input: skills, commands and `!` lines typed during a turn
+// ---------------------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_skill_typed_during_a_turn_runs_expanded_once_it_ends() {
+    let w = skill_world(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("current answer"),
+        text_turn("skill answer"),
+    ])
+    .with_config(ALLOW_SLEEP);
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("/review 42");
+        ui.wait_for("queued: /review 42").await;
+        ui.wait_for("current answer").await;
+        ui.wait_for("skill answer").await;
+        idle(&ui).await;
+    })
+    .await;
+    let requests = w.requests();
+    assert_eq!(requests.len(), 3, "{requests:?}");
+    // The skill rode out the turn: its raw and its expansion never reached the tool result.
+    assert!(!requests[1].contains("/review 42"), "{}", requests[1]);
+    assert!(
+        !requests[1].contains("Review pull request 42"),
+        "{}",
+        requests[1]
+    );
+    // The third request is the skill's turn: the expanded body, never the literal slash line.
+    assert!(
+        requests[2].contains("Review pull request 42 and report."),
+        "{}",
+        requests[2]
+    );
+    assert!(!requests[2].contains("/review 42"), "{}", requests[2]);
+    let ledger = w.ledger_text();
+    assert_eq!(
+        ledger.matches("\"text\":\"/review 42\"").count(),
+        1,
+        "{ledger}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_queued_after_a_skill_waits_with_it_and_runs_after_it() {
+    let w = skill_world(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("current answer"),
+        text_turn("skill answer"),
+        text_turn("message answer"),
+    ])
+    .with_config(ALLOW_SLEEP);
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("/review 42");
+        ui.wait_for("queued: /review 42").await;
+        ui.send("please also check");
+        ui.wait_for("queued: please also check").await;
+        ui.wait_for("current answer").await;
+        ui.wait_for("skill answer").await;
+        ui.wait_for("message answer").await;
+        idle(&ui).await;
+    })
+    .await;
+    let requests = w.requests();
+    assert_eq!(requests.len(), 4, "{requests:?}");
+    // The running turn's tool result carried neither the skill nor the message behind it.
+    assert!(!requests[1].contains("/review 42"), "{}", requests[1]);
+    assert!(
+        !requests[1].contains("please also check"),
+        "{}",
+        requests[1]
+    );
+    assert!(
+        requests[2].contains("Review pull request 42 and report."),
+        "{}",
+        requests[2]
+    );
+    // The message ran as a turn of its own, not steered into the skill's turn.
+    assert!(requests[3].contains("please also check"), "{}", requests[3]);
+    assert!(
+        !requests[3].contains("The user sent this message while you were working"),
+        "{}",
+        requests[3]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn typed_order_spans_replay_and_newer_input_cannot_overtake_it() {
+    let w = skill_world(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("first answer"),
+        tool_turn("c2", "shell", json!({"command": "sleep 1"})),
+        text_turn("skill answer"),
+        text_turn("M answer"),
+        tool_turn("c3", "shell", json!({"command": "sleep 1"})),
+        text_turn("N answer"),
+    ])
+    .with_config(ALLOW_SLEEP);
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("/review 42");
+        ui.wait_for("queued: /review 42").await;
+        ui.send("M message text");
+        ui.wait_for("queued: M message text").await;
+        // The skill and the message replay once the turn answers.
+        ui.wait_for("first answer").await;
+        ui.wait_until("the skill turn's tool call", |s| {
+            s.matches("• shell sleep 1").count() >= 2
+        })
+        .await;
+        // Typed while the skill's turn runs, with the message still pending: held, not steered.
+        ui.send("N message text");
+        ui.wait_for("queued: N message text").await;
+        ui.wait_for("skill answer").await;
+        ui.wait_for("M answer").await;
+        ui.wait_until("the message turn's tool call", |s| {
+            s.matches("• shell sleep 1").count() >= 3
+        })
+        .await;
+        // The last submission runs with delivery released: this one steers normally.
+        ui.send("O message text");
+        ui.wait_for("queued: O message text").await;
+        ui.wait_for("N answer").await;
+        idle(&ui).await;
+    })
+    .await;
+    let requests = w.requests();
+    assert_eq!(requests.len(), 7, "{requests:?}");
+    assert!(!requests[1].contains("/review 42"), "{}", requests[1]);
+    assert!(!requests[1].contains("M message text"), "{}", requests[1]);
+    assert!(
+        requests[2].contains("Review pull request 42 and report."),
+        "{}",
+        requests[2]
+    );
+    // N was held out of the skill turn's tool result while M waited behind it.
+    assert!(!requests[3].contains("N message text"), "{}", requests[3]);
+    assert!(
+        !requests[3].contains("The user sent this message while you were working"),
+        "{}",
+        requests[3]
+    );
+    // M ran as its own turn; N after it; O, typed last of all, steered into N's turn.
+    assert!(requests[4].contains("M message text"), "{}", requests[4]);
+    assert!(!requests[4].contains("N message text"), "{}", requests[4]);
+    assert!(requests[5].contains("N message text"), "{}", requests[5]);
+    assert!(!requests[5].contains("O message text"), "{}", requests[5]);
+    assert!(requests[6].contains("O message text"), "{}", requests[6]);
+    assert!(
+        requests[6].contains("The user sent this message while you were working"),
+        "{}",
+        requests[6]
+    );
+    let ledger = w.ledger_text();
+    for raw in [
+        "/review 42",
+        "M message text",
+        "N message text",
+        "O message text",
+    ] {
+        assert_eq!(
+            ledger.matches(&format!("\"text\":\"{raw}\"")).count(),
+            1,
+            "{ledger}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interrupting_the_turn_puts_a_queued_skill_back_in_the_input() {
+    let w = skill_world(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("never"),
+    ])
+    .with_config(ALLOW_SLEEP);
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("/review 42");
+        ui.wait_for("queued: /review 42").await;
+        ui.press(KeyCode::Esc);
+        ui.wait_for("interrupted").await;
+        idle(&ui).await;
+        // Nothing was sent unseen: the invocation waits in the input, unexpanded.
+        let live = ui.live();
+        assert!(live.contains("/review 42"), "{live}");
+        assert!(!live.contains("queued:"), "{live}");
+    })
+    .await;
+    assert_eq!(w.requests().len(), 1);
+    assert!(!w.ledger_text().contains("/review 42"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_builtin_queued_mid_turn_runs_after_the_turn_in_typed_order() {
+    let w = skill_world(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("answer"),
+        text_turn("skill answer"),
+        text_turn("message answer"),
+    ])
+    .with_config(ALLOW_SLEEP);
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("/review 42");
+        ui.wait_for("queued: /review 42").await;
+        ui.send("queued message");
+        ui.wait_for("queued: queued message").await;
+        ui.send("/rename later");
+        ui.wait_for("queued: /rename later").await;
+        ui.wait_for("answer").await;
+        ui.wait_for("skill answer").await;
+        ui.wait_for("message answer").await;
+        ui.wait_for("session renamed to later").await;
+        idle(&ui).await;
+        let screen = ui.screen();
+        let skill_turn = screen.find("> /review 42").expect("the skill's turn");
+        let message_turn = screen.find("> queued message").expect("the message's turn");
+        let rename = screen
+            .find("session renamed to later")
+            .expect("the rename notice");
+        assert!(skill_turn < message_turn, "typed order:\n{screen}");
+        assert!(message_turn < rename, "the rename runs last:\n{screen}");
+    })
+    .await;
+    let ledger = w.ledger_text();
+    assert!(ledger.contains("\"name\":\"later\""), "{ledger}");
+    assert_eq!(
+        ledger.matches("\"text\":\"/review 42\"").count(),
+        1,
+        "{ledger}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_immediate_command_runs_mid_turn_and_never_queues() {
+    let w = World::new(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("answer"),
+    ])
+    .with_config(ALLOW_SLEEP);
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("/status");
+        // The report lands while the tool call still runs, before the answer.
+        ui.wait_for("MCP servers: 0 of 0 connected").await;
+        assert!(!ui.screen().contains("queued:"), "{}", ui.screen());
+        ui.wait_for("answer").await;
+        idle(&ui).await;
+    })
+    .await;
+    let requests = w.requests();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(!requests[1].contains("/status"), "{}", requests[1]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plan_command_queued_mid_turn_enters_plan_mode_and_sends_its_description() {
+    let w = World::new(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("answer"),
+        text_turn("planned reply"),
+    ])
+    .with_config(ALLOW_SLEEP);
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("/plan do x");
+        ui.wait_for("queued: /plan do x").await;
+        ui.wait_for("answer").await;
+        // Plan mode turns on as the command executes, after the turn.
+        ui.wait_for("plan mode on").await;
+        ui.wait_for("planned reply").await;
+        idle(&ui).await;
+    })
+    .await;
+    let requests = w.requests();
+    assert_eq!(requests.len(), 3, "{requests:?}");
+    assert!(requests[2].contains("do x"), "{}", requests[2]);
+    assert!(!requests[2].contains("/plan do x"), "{}", requests[2]);
+    let ledger = w.ledger_text();
+    assert_eq!(ledger.matches("\"text\":\"do x\"").count(), 1, "{ledger}");
+    assert!(!ledger.contains("/plan do x"), "{ledger}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bang_command_typed_mid_turn_runs_after_it_and_reaches_the_next_message() {
+    let w = World::new(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("answer"),
+        text_turn("message reply"),
+    ])
+    .with_config(ALLOW_SLEEP);
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("!echo hi-from-queue");
+        ui.wait_for("queued: !echo hi-from-queue").await;
+        ui.send("queued message");
+        ui.wait_for("queued: queued message").await;
+        ui.wait_for("answer").await;
+        // The shell run executes after the turn, before the queued message.
+        ui.wait_for("! echo hi-from-queue").await;
+        ui.wait_for("message reply").await;
+        idle(&ui).await;
+    })
+    .await;
+    let requests = w.requests();
+    assert_eq!(requests.len(), 3, "{requests:?}");
+    assert!(!requests[1].contains("hi-from-queue"), "{}", requests[1]);
+    assert!(
+        requests[2].contains("$ echo hi-from-queue"),
+        "{}",
+        requests[2]
+    );
+    assert!(requests[2].contains("queued message"), "{}", requests[2]);
+    let ledger = w.ledger_text();
+    assert!(ledger.contains("\"kind\":\"user_shell\""), "{ledger}");
+    assert!(!ledger.contains("!echo hi-from-queue"), "{ledger}");
+    assert_eq!(
+        ledger.matches("\"kind\":\"user_message\"").count(),
+        2,
+        "{ledger}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn esc_during_a_queued_skill_expansion_aborts_only_that_expansion() {
+    let w = World::new(vec![
+        tool_turn("c1", "shell", json!({"command": "sleep 1"})),
+        text_turn("answer"),
+        text_turn("next reply"),
+    ])
+    .with_config(ALLOW_SLEEP)
+    .with_user_file(
+        "skills/slow/SKILL.md",
+        "---\ndescription: Slow\n---\nRun: !`sleep 30`\nMarker expanded-done.\n",
+    );
+    w.run(|ui| async move {
+        ui.send("start");
+        ui.wait_for("• shell sleep 1").await;
+        ui.send("/slow");
+        ui.wait_for("queued: /slow").await;
+        ui.send("after skill");
+        ui.wait_for("queued: after skill").await;
+        ui.wait_for("answer").await;
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        ui.press(KeyCode::Esc);
+        ui.wait_for("interrupted").await;
+        // The expansion's raw is spent; the next submission still runs.
+        ui.wait_for("next reply").await;
+        idle(&ui).await;
+    })
+    .await;
+    let requests = w.requests();
+    assert_eq!(requests.len(), 3, "{requests:?}");
+    assert!(requests[2].contains("after skill"), "{}", requests[2]);
+    assert!(!requests[2].contains("expanded-done"), "{}", requests[2]);
+    let ledger = w.ledger_text();
+    assert_eq!(ledger.matches("\"text\":\"/slow\"").count(), 1, "{ledger}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

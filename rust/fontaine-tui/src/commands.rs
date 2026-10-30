@@ -77,6 +77,31 @@ pub struct Builtin {
     pub command: fn(String) -> Command,
 }
 
+impl Command {
+    /// Whether the command runs immediately, even while a turn works: its handler is
+    /// synchronous and touches only UI state — never the turn, the conversation, the ledger
+    /// or a blocking wait. Every other built-in queues like a message and executes once the
+    /// turn ends; `/loop` and unknown names stay refused mid-turn.
+    pub fn runs_mid_turn(&self) -> bool {
+        matches!(
+            self,
+            Command::Help
+                | Command::Status
+                | Command::Theme(_)
+                | Command::Todos
+                | Command::Agents
+                | Command::Denied
+                | Command::Permissions
+                | Command::Hooks
+                | Command::Skills
+                | Command::Plugins
+                | Command::Mcp(_)
+                | Command::Expand(_)
+                | Command::Config
+        )
+    }
+}
+
 impl Builtin {
     fn answers_to(&self, name: &str) -> bool {
         self.name == name || self.aliases.contains(&name)
@@ -786,6 +811,61 @@ mod tests {
         assert_eq!(
             parse_command("/context all"),
             Some(Command::Context("all".into()))
+        );
+    }
+
+    #[test]
+    fn runs_mid_turn_marks_the_immediate_ui_set_and_nothing_else() {
+        for immediate in [
+            "/help",
+            "/status",
+            "/theme dark",
+            "/todos",
+            "/agents",
+            "/denied",
+            "/permissions",
+            "/hooks",
+            "/skills",
+            "/plugins",
+            "/mcp",
+            "/expand 2",
+            "/config",
+        ] {
+            let command = parse_command(immediate).expect("a command");
+            assert!(command.runs_mid_turn(), "{immediate}");
+        }
+        for queued in [
+            "/compact",
+            "/model",
+            "/model a/b",
+            "/copy",
+            "/loop 5m check",
+            "/clear",
+            "/resume",
+            "/branch",
+            "/rename x",
+            "/plan do x",
+            "/goal win",
+            "/init",
+            "/add-dir /tmp",
+            "/export notes.md",
+            "/context",
+            "/memory",
+            "/login",
+            "/rewind",
+            "/guardian-disable",
+            "/output-style terse",
+            "/nope with args",
+        ] {
+            let command = parse_command(queued).expect("a command");
+            assert!(!command.runs_mid_turn(), "{queued}");
+        }
+        assert!(
+            !Command::Other {
+                name: "review".into(),
+                argument: String::new(),
+            }
+            .runs_mid_turn()
         );
     }
 

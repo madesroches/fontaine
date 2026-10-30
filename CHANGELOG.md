@@ -6,6 +6,19 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Input typed while a turn runs now queues and executes once the turn ends, per Claude Code's
+  documented behavior (#292). A skill invocation (`/review 42`) queues as typed and runs as its
+  expanded prompt; a built-in command queues and executes through the same dispatch it would get
+  at an idle prompt, in the order typed, and a `!` shell command queues and runs after the turn,
+  one at a time. Neither a queued skill nor a queued command or shell line is ever steered into
+  the running turn — a message queued behind one waits with it. The synchronous UI commands
+  (`/status`, `/theme`, the panels, `/help`, …) still run immediately mid-turn, a queued command
+  that opens a picker or dialog holds the later queued entries until it closes, and `/resume` and
+  `/branch` are refused while later entries remain so a session switch cannot discard them.
+  `/loop` and unknown slash names keep their existing mid-turn refusal.
+
 ### Fixed
 
 - Built-in `explore` subagents now run on the session model instead of `$guardian_default`

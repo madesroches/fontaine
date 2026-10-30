@@ -1,5 +1,3 @@
-use std::ops::ControlFlow::{self, Continue};
-
 use crate::rewind::RewindPicker;
 use crate::{App, Ui};
 use fontaine_core::agent::AgentRuntime;
@@ -8,17 +6,6 @@ use fontaine_tools::error_chain::chain;
 
 impl<R: FnMut(&mut App)> Ui<R> {
     /// `/rewind` and Esc Esc: opens the picker over the prompts of this conversation.
-    pub(crate) fn rewind(&mut self, runtime: &AgentRuntime, argument: &str) -> ControlFlow<()> {
-        if !argument.is_empty() {
-            self.app.transcript.error(format!(
-                "/rewind takes no argument, not `{argument}`; it opens a list of your prompts"
-            ));
-            return Continue(());
-        }
-        self.open_rewind(runtime);
-        Continue(())
-    }
-
     pub(crate) fn open_rewind(&mut self, runtime: &AgentRuntime) {
         let picker = RewindPicker::new(runtime.rewind_turns());
         if picker.is_empty() {
