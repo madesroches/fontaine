@@ -142,7 +142,6 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
             git_bash: params.git_bash,
             max_timeout_secs: params.shell_max_timeout_secs,
             powershell: params.powershell,
-            ..ShellSettings::default()
         },
         webfetch: WebfetchConfig::default(),
         websearch: params.websearch,
