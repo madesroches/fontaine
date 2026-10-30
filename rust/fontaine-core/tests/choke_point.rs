@@ -177,11 +177,11 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         "duplicate registrations: {names:?}"
     );
 
-    // `websearch` exists only when a backend is configured.
+    // `websearch` exists only when a backend is configured, `lsp` only when a language server is.
     let expected: BTreeSet<&str> = TOOLS
         .iter()
         .map(|d| d.name)
-        .filter(|name| *name != "websearch")
+        .filter(|name| !matches!(*name, "websearch" | "lsp"))
         .collect();
     assert_eq!(unique, expected);
     // The ones beyond the built-ins are exactly these.
@@ -253,11 +253,72 @@ fn a_configured_backend_adds_exactly_websearch_with_its_descriptor_class() {
     assert_eq!(tool.risk, fontaine_tools::risk::RiskClass::Arbitrary);
 }
 
+struct RigWorkspace(Arc<fontaine_tools::scope::Scope>);
+
+impl fontaine_tools::lsp::LspWorkspace for RigWorkspace {
+    fn scope(&self) -> Arc<fontaine_tools::scope::Scope> {
+        self.0.clone()
+    }
+
+    fn folders(&self) -> Vec<std::path::PathBuf> {
+        self.0.roots().to_vec()
+    }
+}
+
+fn lsp_tool(rig: &Rig) -> fontaine_tools::lsp::LspTool {
+    use fontaine_tools::lsp::{LspServerSpec, LspServers, LspTool};
+    let workspace: Arc<dyn fontaine_tools::lsp::LspWorkspace> =
+        Arc::new(RigWorkspace(rig.state.scope()));
+    let spec = LspServerSpec {
+        name: "fake".to_string(),
+        command: "no-such-server".to_string(),
+        args: Vec::new(),
+        env_vars: Vec::new(),
+        set_env: Vec::new(),
+        extension_to_language: [(".rs".to_string(), "rust".to_string())].into(),
+        initialization_options: None,
+        settings: None,
+        startup_timeout: Duration::from_secs(1),
+        shutdown_timeout: Duration::from_secs(1),
+        request_timeout: Duration::from_secs(1),
+        restart_on_crash: false,
+        max_restarts: 0,
+        diagnostics: true,
+    };
+    let claims = [(".rs".to_string(), "fake".to_string())].into();
+    let servers = LspServers::new(vec![spec], &claims, workspace.clone(), Arc::new(|_| None));
+    LspTool { servers, workspace }
+}
+
+#[test]
+fn a_configured_language_server_adds_exactly_lsp_with_its_descriptor_class() {
+    let rig = Rig::new(Manual);
+    let plain: BTreeSet<&str> = registry(params(&rig))
+        .unwrap()
+        .iter()
+        .map(|t| t.name)
+        .collect();
+    assert!(!plain.contains("lsp"));
+    let mut p = params(&rig);
+    let mut extension = extension();
+    extension.0.push(ExtensionTool::new(lsp_tool(&rig)));
+    p.extension = Some(extension);
+    let tools = registry(p).unwrap();
+    let configured: BTreeSet<&str> = tools.iter().map(|t| t.name).collect();
+    assert_eq!(&configured - &plain, BTreeSet::from(["lsp"]));
+    let tool = tools.iter().find(|t| t.name == "lsp").unwrap();
+    assert_eq!(Some(tool.risk), registered_risk("lsp"));
+    assert_eq!(tool.risk, RiskClass::ReadOnly);
+}
+
 #[test]
 fn every_registered_tool_has_a_descriptor_row_and_its_class() {
     let rig = Rig::new(Manual);
     let mut p = params(&rig);
     p.websearch = Some(searxng());
+    let mut extension = extension();
+    extension.0.push(ExtensionTool::new(lsp_tool(&rig)));
+    p.extension = Some(extension);
     for tool in registry(p).unwrap() {
         let row = find(tool.name);
         assert!(row.is_some(), "{} has no descriptor row", tool.name);

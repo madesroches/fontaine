@@ -55,7 +55,7 @@ fn server_digest(name: &str, server: &McpServer) -> String {
 
 /// The transport's literal env map: `[env]` entries with the server's own `.mcp.json` `env`
 /// laid over them.
-fn merged_server_env(
+pub(crate) fn merged_server_env(
     base: Vec<(OsString, OsString)>,
     extra: &Option<BTreeMap<String, String>>,
 ) -> Vec<(OsString, OsString)> {

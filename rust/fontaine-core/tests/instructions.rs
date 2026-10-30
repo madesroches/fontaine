@@ -558,6 +558,7 @@ async fn call(
         agent,
         annotations: None,
         requires_user_interaction: false,
+        synthetic: false,
     };
     match stage.process(view, outcome).await {
         Ok(output) => output.render(),
@@ -817,6 +818,7 @@ async fn the_instruction_stage_runs_before_the_scanner_and_after_notifications()
         agent: ROOT_AGENT,
         annotations: None,
         requires_user_interaction: false,
+        synthetic: false,
     };
     let _ = pipeline.run(view, ok("x")).await;
     assert_eq!(

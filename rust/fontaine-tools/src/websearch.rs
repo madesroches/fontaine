@@ -17,6 +17,7 @@ use url::Url;
 
 use crate::error_chain::chain;
 use crate::lock::lock_recovering;
+use crate::procgroup::{detached_settle, stop, terminate};
 
 pub const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
 
@@ -165,7 +166,6 @@ pub struct WebsearchArgs {
 /// How long a stopped SearXNG command has to exit after SIGTERM before it is killed. A
 /// `docker run` needs the time to stop its container, which `--rm` then removes.
 const STOP_GRACE: Duration = Duration::from_secs(10);
-const STOP_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Debug)]
 struct Running {
@@ -199,7 +199,7 @@ impl Drop for Running {
     /// SIGTERM goes out now; waiting out the grace and the SIGKILL run detached, because the
     /// task dropping this (the TUI's, on Esc) must not block.
     fn drop(&mut self) {
-        let Some(mut child) = self.child.take() else {
+        let Some(child) = self.child.take() else {
             return;
         };
         let (pid, grace) = (self.pid, self.grace);
@@ -207,25 +207,7 @@ impl Drop for Running {
         if let Some((argv, env)) = self.cleanup.take() {
             spawn_detached(&argv, &env);
         }
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                settle(&mut child, pid, grace).await;
-            });
-        } else {
-            std::thread::spawn(move || {
-                let deadline = Instant::now() + grace;
-                while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
-                    std::thread::sleep(STOP_POLL);
-                }
-                force_kill(&mut child, pid);
-                for _ in 0..20 {
-                    if !matches!(child.try_wait(), Ok(None)) {
-                        break;
-                    }
-                    std::thread::sleep(STOP_POLL);
-                }
-            });
-        }
+        detached_settle(child, pid, grace);
     }
 }
 
@@ -274,54 +256,6 @@ fn spawn_detached(argv: &[String], env: &[(OsString, OsString)]) {
             let _ = child.wait();
         });
     }
-}
-
-/// SIGTERM to the process group: a `docker run` CLI forwards it to the container, which SIGKILL
-/// to the CLI alone could not.
-fn terminate(pid: Option<u32>) {
-    #[cfg(unix)]
-    signal_group(pid, "TERM");
-    #[cfg(not(unix))]
-    let _ = pid;
-}
-
-/// Kills the group, even when the leader already exited (a wrapper may have left the server
-/// running), and the child itself where there is no group to signal.
-fn force_kill(child: &mut Child, pid: Option<u32>) {
-    #[cfg(unix)]
-    signal_group(pid, "KILL");
-    #[cfg(not(unix))]
-    let _ = pid;
-    if !matches!(child.try_wait(), Ok(Some(_))) {
-        let _ = child.start_kill();
-    }
-}
-
-#[cfg(unix)]
-fn signal_group(pid: Option<u32>, signal: &str) {
-    let Some(pid) = pid else { return };
-    // Best effort: the group may already be gone.
-    let _ = std::process::Command::new("kill")
-        .args(["-s", signal, "--", &format!("-{pid}")])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
-async fn stop(child: &mut Child, pid: Option<u32>, grace: Duration) {
-    terminate(pid);
-    settle(child, pid, grace).await;
-}
-
-/// Waits for the exit that a SIGTERM already asked for, then kills what is left.
-async fn settle(child: &mut Child, pid: Option<u32>, grace: Duration) {
-    let deadline = Instant::now() + grace;
-    while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
-        tokio::time::sleep(STOP_POLL).await;
-    }
-    force_kill(child, pid);
-    let _ = child.wait().await;
 }
 
 /// The SearXNG instance Fontaine started, shared by every `Websearch` a session builds so a

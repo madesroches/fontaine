@@ -593,6 +593,32 @@ async fn a_deny_rule_holds_in_every_mode() {
 }
 
 #[tokio::test]
+async fn lsp_takes_the_read_only_fast_path_inside_the_roots_and_path_rules_reach_it() {
+    let hover = |path: &str| json!({"operation": "hover", "path": path, "line": 1, "character": 1});
+    for mode in MODES {
+        let rig = Rig::new(mode);
+        assert_eq!(
+            first(&rig, "lsp", hover("src/a.rs")).await,
+            (Decision::Allow, Tier::ReadOnlyFastPath),
+            "in {mode:?}"
+        );
+    }
+    // A path rule matches it like it matches `read`, in any mode, and an allow rule for the
+    // tool does not outrank the deny.
+    let settings = "[permissions]\ndeny = [\"lsp(secrets/**)\"]\nallow = [\"lsp\"]\n";
+    for mode in MODES {
+        let rig = Rig::with(Options::new(mode).settings(settings));
+        let d = rig.check("lsp", hover("secrets/key.rs")).await;
+        assert!(!allowed(&d), "{mode:?}");
+        assert_eq!(rig.audit()[0].tier, Tier::DenyRule, "{mode:?}");
+        assert!(
+            allowed(&rig.check("lsp", hover("src/a.rs")).await),
+            "{mode:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_deny_rule_on_the_task_list_beats_its_fast_path() {
     let rig = Rig::with(Options::new(Manual).settings("[permissions]\ndeny = [\"todo_write\"]\n"));
     let args = json!({"todos": []});

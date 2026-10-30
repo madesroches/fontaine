@@ -63,10 +63,11 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
 
    A floor outcome that asks is a denial in `dontAsk` and in headless runs. In `auto` an `ask`
    rule, a server's approval marker and a critical path still ask you: no verdict approves them.
-3. **Read-only fast path.** A read-only tool (`read`, `ls`, `glob`, `grep`) whose paths all
+3. **Read-only fast path.** A read-only tool (`read`, `ls`, `glob`, `grep`, `lsp`) whose paths all
    resolve inside a workspace root runs. Symlinks are resolved first. The label alone earns
    nothing: a path outside the roots does not qualify, and an external read never takes this
-   step. `skill`, `ask_user_question`, `todo_write` and the read-only scheduling tools name
+   step. `lsp` has no external route at all: a path outside every root is denied, with the
+   `/add-dir` hint. `skill`, `ask_user_question`, `todo_write` and the read-only scheduling tools name
    no path and take this step too. `ask_user_question` only shows you text and collects your choice,
    and no mode, `auto` included, ever answers it: the answer comes from you or, in a headless run,
    from nobody (the model is told to use its best judgment). Your typed "Other" answers count as
@@ -202,7 +203,7 @@ grammar: `Tool` or `Tool(specifier)`. A bare tool name matches every call of the
 | Tool | Specifier | Matches |
 |---|---|---|
 | `shell` | words, optionally ending in ` *`: `shell(git push)`, `shell(npm run test *)` | the parsed command line; quoting keeps a word whole; no wildcard inside a word |
-| `read`, `edit`, `write`, `notebook_edit`, `ls`, `glob`, `grep` | a gitignore-style path pattern: `src/**`, `~/.aws/**`, `//etc/hosts` | the resolved path; relative patterns anchor at each workspace root, `~/` at your home (a deny or ask rule with `~/` matches everything when no home directory can be found; an allow rule matches nothing), `//` at the file system root |
+| `read`, `edit`, `write`, `notebook_edit`, `ls`, `glob`, `grep`, `lsp` | a gitignore-style path pattern: `src/**`, `~/.aws/**`, `//etc/hosts` | the resolved path; relative patterns anchor at each workspace root, `~/` at your home (a deny or ask rule with `~/` matches everything when no home directory can be found; an allow rule matches nothing), `//` at the file system root |
 | `webfetch` | `domain:example.com` or `domain:*.example.com` | the URL's host; `*.` matches subdomains only |
 | `websearch` | none | the tool name; the destination is the configured backend, not a host the model picks, so `domain:` does not apply |
 | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | none | the registered tool name |

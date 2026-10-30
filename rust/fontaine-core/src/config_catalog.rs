@@ -391,6 +391,9 @@ pub const KEYS: &[KeyRow] = &[
         c.hooks.permission_denied.len()
     )),
     row!("mcp.servers", Map, |c, _| names(c.mcp_servers.keys())),
+    row!("lsp.servers", Map, |c, _| names(
+        c.lsp_table().servers.iter().map(|(name, _)| name)
+    )),
     row!("auto_mode.environment", List, |c, _| entries(
         c.auto_mode.environment.len()
     )),

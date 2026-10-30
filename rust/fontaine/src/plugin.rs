@@ -652,6 +652,10 @@ fn print_summary(entry: &CatalogPlugin, build: &plugins::PluginBuild) {
     for name in build.dir.mcp_names.values() {
         println!("  MCP server {name}");
     }
+    // A language server is a program that runs on every edit, so the approval names each.
+    for (name, server) in &build.lsp_servers {
+        println!("  LSP server {name}: {}", server.command);
+    }
     if !build.env_vars.is_empty() {
         // Name the variables, never their values: a reference moves the variable's value into
         // a hook command or a server env/URL, and the install approves that.

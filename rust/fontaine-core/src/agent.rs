@@ -18,6 +18,7 @@ use fontaine_tools::gate::{CallView, ROOT_AGENT};
 use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::jobs::Jobs;
 use fontaine_tools::lock::write_recovering;
+use fontaine_tools::lsp::LspServers;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::RiskClass;
 use fontaine_tools::websearch::SearxngChild;
@@ -54,6 +55,7 @@ use crate::workspace::{self, RootSource};
 
 mod build;
 mod goal;
+mod lsp;
 mod mcp;
 mod models;
 mod rewind;
@@ -209,6 +211,9 @@ pub(crate) struct Setup {
     /// The session's background jobs, created once so a registry rebuild keeps the running
     /// ones. Dropping the runtime terminates them.
     pub(crate) jobs: Arc<Jobs>,
+    /// The language servers, created once so a registry rebuild keeps the running ones. They
+    /// end with `/clear`, `/rewind` and the runtime.
+    pub(crate) lsp: Arc<LspServers>,
 }
 
 /// One line when the main model has no way to search: no provider search for its account, no
@@ -556,6 +561,7 @@ impl AgentRuntime {
             agent: ROOT_AGENT,
             annotations: None,
             requires_user_interaction: false,
+            synthetic: true,
         };
         let (screened, _) = self.results.run(view, Ok(ToolOutput::text(text))).await;
         match screened {
@@ -605,6 +611,7 @@ impl AgentRuntime {
             agent: ROOT_AGENT,
             annotations: None,
             requires_user_interaction: false,
+            synthetic: true,
         };
         let (screened, _) = self
             .results
@@ -704,6 +711,7 @@ impl AgentRuntime {
             self.state.set_scope(previous_scope);
             return Err(e);
         }
+        self.setup.lsp.root_added(root.clone());
         self.state.append(Record::AddDir {
             root: root.display().to_string(),
         });
@@ -825,12 +833,18 @@ impl AgentRuntime {
     /// the conversation that is about to be emptied.
     pub(crate) async fn end_jobs(&self) {
         self.setup.jobs.terminate_all().await;
+        self.setup.lsp.shutdown_all().await;
         self.state.agents().discard_job_notifications();
     }
 
     /// The session's background jobs, for the surface that lists and kills them.
     pub fn jobs(&self) -> &Arc<Jobs> {
         &self.setup.jobs
+    }
+
+    /// The session's language servers, for the surface that stops them at exit.
+    pub fn lsp(&self) -> &Arc<LspServers> {
+        &self.setup.lsp
     }
 
     /// `/context`: what fills the window now, estimated.

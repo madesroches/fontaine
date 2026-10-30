@@ -118,6 +118,7 @@ without one is refused from project and project-local files. For those scopes:
 | Agent files `agents/*.md` | narrowing only | n/a | n/a |
 | `[[hooks.*]]` | yes, after workspace trust; `allow` ignored | yes, after workspace trust | yes |
 | `[mcp.servers.*]` | yes, after workspace trust and your approval of each server | yes, after workspace trust | yes |
+| `[lsp.servers.*]` | no | no | yes |
 | `[telemetry]` | `enabled = false` only | `enabled = false` only | yes |
 | `[tui]` | no | no | yes |
 | `[env]` | no | yes | yes |
@@ -564,7 +565,7 @@ file, and the notice names the scope that wins from the next launch.
 Rule strings use the `Tool` or `Tool(specifier)` form described in
 [Permissions](permissions.md#rules). At load, Fontaine checks the outer shape, that the tool is one
 of `shell`, `read`, `edit`, `write`, `notebook_edit`, `ls`, `glob`, `grep`, `webfetch`, `websearch`, `agent`, `skill`,
-`monitor`, `job_output`, `job_cancel`, `send_message`, `ask_user_question`, `todo_write`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup` or an `mcp__<server>[__<tool>|__*]` name, and that the specifier is valid for the
+`monitor`, `lsp`, `job_output`, `job_cancel`, `send_message`, `ask_user_question`, `todo_write`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup` or an `mcp__<server>[__<tool>|__*]` name, and that the specifier is valid for the
 tool (a `shell` specifier is literal command words, a path specifier a gitignore-style pattern, a
 `webfetch` specifier `domain:<host>` or `domain:*.<host>`). A bad rule is a configuration error.
 `deny` and `ask` rules apply in every mode; `allow` rules act after the floor.
@@ -653,6 +654,41 @@ env_vars = ["GITHUB_TOKEN"]
 
 [mcp.servers.docs]
 url = "https://mcp.example.com/docs"
+```
+
+### `[lsp.servers.<name>]`
+
+A [language server](tools.md#language-servers) for the `lsp` tool and the diagnostics note on
+edits. User file or `--settings` only: a server runs on your machine on every edit, so no
+repository, project-local file or trust prompt can add one. Names use the MCP server alphabet.
+An invalid entry is a configuration error that names it.
+
+| Key | Meaning | Default |
+|---|---|---|
+| `command` | The program to start; required. | – |
+| `args` | Its arguments. | `[]` |
+| `extension_to_language` | Extension, with its dot, to the language id sent in `didOpen`; required, at least one entry. | – |
+| `env_vars` | Parent variable names to pass through. | `[]` |
+| `env` | Literal variables set on the server. | `{}` |
+| `initialization_options` | Sent in `initialize`. | unset |
+| `settings` | Sent by `workspace/didChangeConfiguration` and answered to `workspace/configuration`. | unset |
+| `startup_timeout_ms` | How long the handshake may take. | `30000` |
+| `shutdown_timeout_ms` | How long `shutdown` and `exit` may take before the server is killed. | `2000` |
+| `request_timeout_ms` | How long one request may take. | `60000` |
+| `restart_on_crash` | Restart a server that crashed after it was running. | `true` |
+| `max_restarts` | Restarts allowed for the session. | `3` |
+| `diagnostics` | Add the diagnostics note to edits of the files it handles. | `true` |
+
+The server starts with the same environment as an MCP stdio server: a small base set of
+variables, the ones `env_vars` names, the `[env]` table and its own `env`; its working directory
+is the primary root, and it gets the workspace roots as workspace folders. `/add-dir` tells a
+running server that supports it.
+
+```toml
+[lsp.servers.rust-analyzer]
+command = "rust-analyzer"
+extension_to_language = { ".rs" = "rust" }
+env_vars = ["RUSTUP_HOME", "CARGO_HOME"]
 ```
 
 ### `[auto_mode]`

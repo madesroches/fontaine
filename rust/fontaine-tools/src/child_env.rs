@@ -40,6 +40,28 @@ pub fn base_env(
         .collect()
 }
 
+/// The environment a long-lived server child (an MCP or LSP server) starts with, in the order
+/// it is applied: the [`BASE_ENV`] variables, then the parent variables the server's config names
+/// in `env_vars`, then the literal `set_env` entries, which win.
+pub fn server_env(
+    lookup: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    env_vars: &[String],
+    set_env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let mut out = Vec::new();
+    for name in BASE_ENV
+        .iter()
+        .copied()
+        .chain(env_vars.iter().map(String::as_str))
+    {
+        if let Some(value) = lookup(name) {
+            out.push((name.into(), value));
+        }
+    }
+    out.extend(set_env.iter().cloned());
+    out
+}
+
 /// What a container runtime CLI needs, beyond [`BASE_ENV`], to reach its daemon or rootless
 /// socket. Only the managed SearXNG launch passes these.
 pub const CONTAINER_RUNTIME_ENV: &[&str] = &[
@@ -65,6 +87,20 @@ pub fn container_runtime_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_server_gets_the_base_variables_then_the_named_ones_then_the_literals() {
+        let lookup = |name: &str| {
+            ["PATH", "TOKEN", "AWS_SECRET_ACCESS_KEY"]
+                .contains(&name)
+                .then(|| std::ffi::OsString::from("v"))
+        };
+        let set_env = [("TOKEN".into(), "literal".into())];
+        let env = server_env(&lookup, &["TOKEN".to_string()], &set_env);
+        let names: Vec<_> = env.iter().map(|(k, _)| k.to_string_lossy()).collect();
+        assert_eq!(names, ["PATH", "TOKEN", "TOKEN"]);
+        assert_eq!(env.last().unwrap().1, "literal");
+    }
 
     #[test]
     fn the_container_runtime_variables_are_added_only_when_set() {
