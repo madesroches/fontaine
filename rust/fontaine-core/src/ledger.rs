@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::checkpoint::RewindWhat;
 use crate::owner_only;
+use crate::project_env::ProjectEnvironment;
 use fontaine_tools::lock::lock;
 
 pub const LEDGER_DIR: &str = "ledger";
@@ -35,6 +36,14 @@ pub enum Record {
         /// Names of the `[env]` overrides every subprocess gets; never their values.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         env_keys: Vec<String>,
+        /// What `fontaine auto-mode setup` stored for the project, as this session loaded it:
+        /// filtered to the current remotes, with an expired `public` already downgraded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_environment: Option<ProjectEnvironment>,
+    },
+    /// The human ran `/auto-mode-setup` and accepted its result. The latest value wins.
+    ProjectEnvironment {
+        project_environment: ProjectEnvironment,
     },
     FileIndex {
         paths: Vec<String>,
@@ -207,6 +216,7 @@ pub struct LedgerView {
     pub workspace_trust: String,
     pub git_remotes: Vec<String>,
     pub env_keys: Vec<String>,
+    pub project_environment: Option<ProjectEnvironment>,
     index: HashSet<String>,
     pub index_truncated: bool,
     /// Every human message typed to the main conversation, verbatim, oldest first.
@@ -291,13 +301,19 @@ impl LedgerView {
                 workspace_trust,
                 git_remotes,
                 env_keys,
+                project_environment,
                 ..
             } => {
                 self.workspace_roots = workspace_roots.clone();
                 self.workspace_trust = workspace_trust.clone();
                 self.git_remotes = git_remotes.clone();
                 self.env_keys = env_keys.clone();
+                // Assigned even when absent, so a resume after the file is gone clears it.
+                self.project_environment = project_environment.clone();
             }
+            Record::ProjectEnvironment {
+                project_environment,
+            } => self.project_environment = Some(project_environment.clone()),
             Record::FileIndex { paths, truncated } => {
                 self.index = paths.iter().map(|p| path_key(p)).collect();
                 self.index_truncated = *truncated;
@@ -506,23 +522,47 @@ impl FileIndex {
 /// `include` or `includeIf`. None when there is no repository or gix cannot read it; Fontaine
 /// never spawns `git`.
 pub fn git_remotes(root: &Path) -> Vec<String> {
+    let mut urls: Vec<String> = named_remotes(root)
+        .into_iter()
+        .map(|(_, url)| url)
+        .collect();
+    urls.sort();
+    urls.dedup();
+    urls
+}
+
+/// The fetch URL of the repository's `origin` remote, read as `git_remotes` reads.
+pub fn git_origin(root: &Path) -> Option<String> {
+    named_remotes(root)
+        .into_iter()
+        .find_map(|(name, url)| (name == "origin").then_some(url))
+}
+
+fn named_remotes(root: &Path) -> Vec<(String, String)> {
     let options = gix::open::Options::isolated().strict_config(true);
     let Ok(repo) = gix::discover_opts(root, gix::discover::upwards::Options::default(), options)
     else {
         return Vec::new();
     };
-    let mut urls: Vec<String> = repo
-        .remote_names()
+    repo.remote_names()
         .iter()
-        .filter_map(|name| repo.try_find_remote(name.as_bstr())?.ok())
-        .filter_map(|remote| {
+        .filter_map(|name| {
+            let remote = repo.try_find_remote(name.as_bstr())?.ok()?;
             let url = remote.url(gix::remote::Direction::Fetch)?;
-            Some(without_credentials(&url.to_bstring().to_string()))
+            Some((
+                name.to_string(),
+                without_credentials(&url.to_bstring().to_string()),
+            ))
         })
-        .collect();
-    urls.sort();
-    urls.dedup();
-    urls
+        .collect()
+}
+
+/// The remotes of every root, sorted and deduplicated: what a session records at start.
+pub fn git_remotes_of(roots: &[PathBuf]) -> Vec<String> {
+    let mut remotes: Vec<String> = roots.iter().flat_map(|root| git_remotes(root)).collect();
+    remotes.sort();
+    remotes.dedup();
+    remotes
 }
 
 /// `https://user:token@host/x` without its `user:token@`; an scp-style `git@host:x` keeps its

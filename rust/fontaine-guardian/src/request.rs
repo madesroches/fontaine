@@ -2,7 +2,7 @@
 //! never from the model context, so nothing a compaction summary or a tool result says can
 //! reach the guardian as the user's intent.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::rules::{EnvironmentConfig, RuleConfig};
@@ -85,6 +85,81 @@ pub struct SessionFacts {
     pub scratch_dir: Option<String>,
     /// What the agent a call would start can do. Set only for an `agent` call.
     pub spawn: Option<SpawnFacts>,
+    /// What `fontaine auto-mode setup` stored for this project. Only the guardian sees it.
+    pub project_environment: Option<ProjectEnvironmentFacts>,
+}
+
+/// The facts of a project's setup record that the guardian reads. The core builds it from its
+/// own record, so this crate needs no discovery code.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectEnvironmentFacts {
+    /// The day the facts were collected, `YYYY-MM-DD`.
+    pub collected_on: String,
+    #[serde(default)]
+    pub remotes: Vec<RemoteEnvironment>,
+    #[serde(default)]
+    pub tag_release_workflows: Vec<String>,
+    #[serde(default)]
+    pub workflow_environments: Vec<String>,
+    #[serde(default)]
+    pub package_registries: Vec<String>,
+    #[serde(default)]
+    pub env_files: Vec<EnvFileFacts>,
+    #[serde(default)]
+    pub stack: Vec<String>,
+    /// Entries a repository scan proposed and the user accepted.
+    pub scan: Option<ScanFindings>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteEnvironment {
+    pub url: String,
+    pub visibility: Visibility,
+    pub default_branch: Option<String>,
+    pub protection: Protection,
+    #[serde(default)]
+    pub branch_rules: Vec<String>,
+    #[serde(default)]
+    pub deploy_environments: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Visibility {
+    Public,
+    Private,
+    Internal,
+    Unknown,
+    /// An org policy barred the check: counts as possibly public.
+    Unverified,
+    /// Public when last checked, on the day given, but too long ago to rely on.
+    Expired(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Protection {
+    Protected,
+    Unprotected,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvFileFacts {
+    pub name: String,
+    pub gitignored: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanFindings {
+    #[serde(default)]
+    pub sensitive_locations: Vec<String>,
+    #[serde(default)]
+    pub deploy_targets: Vec<String>,
+    #[serde(default)]
+    pub protected_targets: Vec<String>,
+    #[serde(default)]
+    pub trusted_destinations: Vec<String>,
 }
 
 /// The toolset of the agent an `agent` call starts, computed by the harness.

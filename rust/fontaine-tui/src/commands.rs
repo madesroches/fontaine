@@ -24,6 +24,8 @@ pub enum Command {
     GuardianDisable,
     /// `/guardian-enable`: turn the guardian and the permission floor back on.
     GuardianEnable,
+    /// `/auto-mode-setup`: collect this project's environment facts for the guardian.
+    AutoModeSetup,
     /// `/login [account]`.
     Login(String),
     Help,
@@ -141,6 +143,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: None,
         description: "the background agents panel",
         command: |_| Command::Agents,
+    },
+    Builtin {
+        name: "auto-mode-setup",
+        aliases: &[],
+        hint: None,
+        description: "teach auto mode about this project's environment",
+        command: |_| Command::AutoModeSetup,
     },
     Builtin {
         name: "branch",
@@ -782,6 +791,10 @@ mod tests {
             Some(Command::GuardianEnable)
         );
         assert_eq!(
+            parse_command("/auto-mode-setup"),
+            Some(Command::AutoModeSetup)
+        );
+        assert_eq!(
             parse_command("/login go"),
             Some(Command::Login("go".into()))
         );
@@ -889,6 +902,7 @@ mod tests {
             "/login",
             "/rewind",
             "/guardian-disable",
+            "/auto-mode-setup",
             "/output-style terse",
             "/nope with args",
         ] {

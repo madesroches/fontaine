@@ -63,7 +63,7 @@ The request is built from the ledger and the call itself:
 | `project_instructions` | The instruction files the agent had at launch (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and their imports), as they stood when the session started: the primary root's level first, then each directory above it, then yours, cut at 16,000 characters. Files loaded later on demand never reach it. See [Instruction files](instructions.md#what-the-guardian-reads). |
 | `environment`, `rules` | The `[auto_mode]` prose lists, with the shipped defaults spliced in. |
 | `tool_call` | The tool, its full arguments, a digest of them, and `destructive`, derived by Fontaine from the call itself (below). Every `powershell` call is judged, none is read as safe beforehand, and the request says the command was not parsed. |
-| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session`, `unindexed` or `session_scratch`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets and path-like arguments, and the last 20 actions of the session. When [auto memory](memory.md) is on it also has an `agent_memory_directory` line naming the memory store, set by Fontaine and never from a tool argument. It also has a `session_scratch_directory` line naming the session scratch directory, whose paths carry the `session_scratch` status, and for an `agent` call a `spawned_agent` line with the type, its tools and whether it can write, run commands or reach the network. Fontaine sets all of these from the session, never from a tool argument; the [minimal profile](#the-minimal-profile) and the [screen stage](#the-screen-stage) get neither the scratch nor the spawn line (they do get the memory line). |
+| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session`, `unindexed` or `session_scratch`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets and path-like arguments, the [project environment](#project-environment) when you ran the setup command, and the last 20 actions of the session. When [auto memory](memory.md) is on it also has an `agent_memory_directory` line naming the memory store, set by Fontaine and never from a tool argument. It also has a `session_scratch_directory` line naming the session scratch directory, whose paths carry the `session_scratch` status, and for an `agent` call a `spawned_agent` line with the type, its tools and whether it can write, run commands or reach the network. Fontaine sets all of these from the session, never from a tool argument; the [minimal profile](#the-minimal-profile) and the [screen stage](#the-screen-stage) get neither the scratch nor the spawn line (they do get the memory line). The screen stage does not get the project environment, which only the guardian view renders; the minimal profile does. |
 | `hook_context` | Notes from `pre_tool_use` hooks, in an untrusted block. |
 | `prior_denials` | Reason-coded denials earlier in the session, for loop detection. They are context, not evidence about the current call (see [How history and your words are weighed](#how-history-and-your-words-are-weighed)). |
 
@@ -503,13 +503,85 @@ the repository defines and changes no setting. `--cd` and `--settings` apply. Ea
   `[guardian] profile = "minimal"` it prints a note and makes no request, because the rule lists
   are not sent.
 
+- `fontaine auto-mode setup [--no-model] [--format text|json]` collects the project's
+  [environment](#project-environment) and stores it. It starts no session and exits 0 even when
+  steps fall back to unknown; it exits 1 only when the record cannot be written.
+
 A prompt that is exactly `auto-mode` runs the subcommand, with or without `-p`; write
 `fontaine -p -- auto-mode` to give the agent that word as a task.
+
+## Project environment
+
+Without help, the guardian does not know whether your repository is public, which branch is
+protected, whether a tag push triggers a release or which `.env` files are ignored, so it guesses.
+`fontaine auto-mode setup` (or `/auto-mode-setup` in the [terminal UI](tui.md#commands))
+collects those facts once per project, in two layers.
+
+**Facts read directly**, with no model:
+
+| Fact | Source |
+|---|---|
+| Visibility, default branch, branch protection (the `protected` flag or any ruleset rule), deploy environments, homepage, Pages site | The GitHub API through the `gh` you are logged in with, for `github.com` remotes. No `gh`, no login or another host leaves the fact `unknown`; an org policy that bars the check (`403`, SAML) leaves it `unverified`. |
+| Workflows triggered by a tag push or a release, workflow `environment` names | `.github/workflows/*.yml` at the git work-tree root. |
+| Package registries | `.npmrc`, `.yarnrc.yml`, `pip.conf`, `pyproject.toml` and `.cargo/config.toml`. The host only is kept, never userinfo, a token or a path. |
+| `.env*` files and whether git ignores them | A directory listing; their contents are never read. |
+| Stack | The manifests at the project root. |
+
+Each `gh` call is a fixed command with a 10 second limit. The report names every step that fell
+back and why.
+
+**A model scan**, in a [trusted workspace](configuration.md#workspace-trust) and from a terminal.
+The guardian's model reads a bounded sample of the repository (the tracked-path listing, the GitHub
+settings above, non-GitHub CI files, build and task files, infrastructure file heads, the README
+and CONTRIBUTING; `.env`-like files by name only) and proposes sensitive locations, deploy targets
+outside GitHub Actions, protected targets and trusted destinations. The sample goes to the
+guardian's provider, and the command says so first. Every proposal must cite a tracked file from
+the listing or a project setting, a sensitive location must match a tracked path, and a trusted
+destination must be a host, a bucket URL or a registry URL with no wildcard broader than one
+organization prefix; the rest are dropped and counted. You review what is left, with the entries
+that relax the guardian (trusted destinations) listed first, and nothing is saved until you accept.
+`--no-model`, a run without a terminal and an untrusted workspace skip the scan, and a missing
+model, a timeout or an unparseable reply never fails the setup.
+
+The record is `<data dir>/auto_mode/<project>/environment.json`, owner-only and a
+[protected path](permissions.md), keyed like [auto memory](memory.md) so every worktree of a
+repository shares it. `fontaine auto-mode config` shows it.
+
+**What the guardian reads.** A session loads the record at start with no network call and keeps
+only the remotes it still has. The guardian sees it as data in the `session_facts` block, and its
+prompt gives the fields fixed meanings:
+
+- `public` is authoritative and cuts both ways. The repository's tracked content as published at
+  that remote is public data, so sharing it anywhere is not data exfiltration, and opening issues
+  or pull requests about the project there is routine. Untracked, ignored or sensitive files,
+  local changes the remote does not have, and secrets get no relief, and pushing new material
+  there is publication, so confidential material is not cleared by it.
+- `private`, `internal` and `unknown` relax nothing. `unverified` counts as possibly public.
+- A protected default branch, or a workflow that runs on tag push, marks a push there as a
+  shared-branch change or a release.
+- Facts read from repository files describe the project and never add trust.
+- Trusted destinations you accepted count as your own trust-slot entries.
+- A location, target or destination missing from the lists says nothing about its safety.
+
+**Expiry.** A `public` fact older than 30 days is shown as `unknown (last seen public on <date>)`,
+because a repository made private since would keep a relaxation it no longer earns. Facts that
+only tighten, and entries you accepted, do not expire.
+
+**The startup warning.** An `auto` session whose project has no record, or whose record lacks a
+current remote or holds an expired `public`, warns once: run `fontaine auto-mode setup`. In the
+terminal UI a session that starts in another mode warns the first time it switches into `auto`.
+`/guardian-disable` silences it while the guardian is off. Set
+[`[auto_mode] setup_reminder = false`](configuration.md#auto_mode) in the user file to silence
+it, for example on CI with fresh checkouts. Having `[auto_mode] environment` entries does not:
+those are global, the record is per project.
+
+`/auto-mode-setup` applies its result to the running session at once; a command-line run from
+another terminal applies at the next start or resume.
 
 ## Prompt versioning
 
 The prompts are versioned assets in `rust/fontaine-guardian/prompts/` (`guardian_prompt.md`,
-`guardian_minimal.md`, `scanner_llm.md`, `critique.md`) compiled into the binary, so a prompt change ships with a release and is
+`guardian_minimal.md`, `scanner_llm.md`, `critique.md`, `env_scan.md`) compiled into the binary, so a prompt change ships with a release and is
 re-scored on the golden dataset before the list of validated models is regenerated. A change to a
 prompt or to the shipped rule lists changes the cache key, and an entry in the model list is only
 valid for the dataset it was scored on.

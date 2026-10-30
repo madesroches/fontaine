@@ -26,6 +26,7 @@ use crate::permission_rules::{
 };
 use crate::permissions::Approver;
 use crate::preview::DiffPreview;
+use crate::project_env::{self, ProjectEnvironment};
 use crate::turn::SessionEvent;
 
 const TARGET: &str = "fontaine::telemetry";
@@ -299,6 +300,7 @@ pub struct SessionState {
     inner: RwLock<Inner>,
     mode: Arc<RwLock<PermissionMode>>,
     guardian_off: RwLock<bool>,
+    setup_warned: AtomicBool,
     agents: Arc<AgentTree>,
     agent_types: Arc<AgentTypes>,
     reveal_mcp_names: bool,
@@ -347,6 +349,7 @@ impl SessionState {
             memory_root: params.memory_root,
             mode,
             guardian_off: RwLock::new(false),
+            setup_warned: AtomicBool::new(false),
             agents: params.agents,
             agent_types: params.agent_types,
             reveal_mcp_names: params.reveal_mcp_names,
@@ -427,6 +430,29 @@ impl SessionState {
     /// guardian. The interactive TUI is the only place that sets this.
     pub fn guardian_off(&self) -> bool {
         *read(&self.guardian_off, "guardian off")
+    }
+
+    /// Whether the session has already told the human to run `fontaine auto-mode setup`, or has
+    /// just applied its result: either way the warning is not raised again.
+    pub fn setup_warning_shown(&self) -> bool {
+        self.setup_warned.load(Ordering::Relaxed)
+    }
+
+    pub fn mark_setup_warning_shown(&self) {
+        self.setup_warned.store(true, Ordering::Relaxed);
+    }
+
+    /// Makes `record` the project's facts for the next guardian call. The value is filtered to
+    /// the remotes recorded when the session started, as session start filters it, and appended
+    /// to the ledger; the latest record wins in the ledger view. Returns what was applied.
+    pub fn apply_project_environment(&self, record: ProjectEnvironment) -> ProjectEnvironment {
+        let remotes = self.ledger.view().git_remotes.clone();
+        let record = project_env::filter_to_remotes(record, &remotes);
+        self.append(Record::ProjectEnvironment {
+            project_environment: record.clone(),
+        });
+        self.mark_setup_warning_shown();
+        record
     }
 
     /// Turns the escape hatch on or off for the rest of the session. The toggle is recorded in

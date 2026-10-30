@@ -21,7 +21,7 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 |---|---|
 | `fontaine` | Starts the terminal UI; see [The terminal UI](tui.md). |
 | `fontaine -p "task"` | Runs the task headless and prints the result on stdout. |
-| `fontaine auto-mode defaults\|config\|critique [--format text\|json]` | Shows the rules the guardian judges against; starts no session. See [Inspecting the rules](guardian.md#inspecting-the-rules). A prompt that is exactly `auto-mode` runs this subcommand; write `fontaine -p -- auto-mode` for a literal prompt. |
+| `fontaine auto-mode defaults\|config\|critique\|setup [--format text\|json]` | Shows the rules the guardian judges against, or (`setup [--no-model]`) collects the project's environment facts for it; starts no session. See [Inspecting the rules](guardian.md#inspecting-the-rules). A prompt that is exactly `auto-mode` runs this subcommand; write `fontaine -p -- auto-mode` for a literal prompt. |
 | `--permission-mode <manual\|acceptEdits\|plan\|auto\|dontAsk>` | Session mode, overriding `[permissions] default_mode`. There is no bypass mode. A headless run starts in `manual` unless one of the two says otherwise; `auto` sends calls nothing pre-approved to the [guardian](guardian.md). |
 | `--in-container` | States that the process runs inside a container; with `[guardian] profile = "minimal"` it lets the minimal guardian load when a runtime probe agrees. See [The guardian](guardian.md#the-minimal-profile). |
 | `--model <account>/<model>` | Overrides `[model] model`. See [Configuration](configuration.md#accountsname). |
@@ -155,6 +155,12 @@ Warnings about the configuration that do not stop the run, such as an additional
 was skipped, go to stderr as `fontaine: warning: ...` before the model is resolved, so a run that
 then exits early (a usage error, for instance) still shows them. In `auto` and `plan` a guardian
 running on the main model prints its notice as one line, headline and advice joined by a dash.
+
+A headless `auto` run whose project has no stored [environment facts](guardian.md#project-environment)
+prints one warning on stderr telling you to run `fontaine auto-mode setup`; the run goes on
+unchanged. A run in another mode, or with the facts stored, prints nothing. Fresh checkouts on CI
+can silence it with `[auto_mode] setup_reminder = false` in the user file or `--settings`; a shared
+project file cannot set it.
 
 Every adjudicated call emits a `gate_decision` event, and the `result` event's `denials` lists each
 denied call as `{tool, tier, rule, explanation}`, where `rule` names the rule and the scope it came

@@ -208,6 +208,17 @@ pub enum AutoModeAction {
     Config(FormatArgs),
     /// Ask the guardian's model to review your custom entries
     Critique(FormatArgs),
+    /// Collect this project's environment facts once, for auto mode's guardian
+    Setup(SetupArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct SetupArgs {
+    /// Skip the model scan of the repository
+    #[arg(long)]
+    pub no_model: bool,
+    #[arg(long, value_enum, default_value_t = ReportFormat::Text, value_name = "FORMAT")]
+    pub format: ReportFormat,
 }
 
 #[derive(Args, Debug, Clone)]

@@ -229,6 +229,14 @@ fn facts_from(case: &Case, root: &str) -> SessionFacts {
             .get("scratch_dir")
             .and_then(Value::as_str)
             .map(str::to_string),
+        project_environment: given.get("project_environment").map(|value| {
+            serde_json::from_value(value.clone()).unwrap_or_else(|e| {
+                panic!(
+                    "case {}: `project_environment` does not parse: {e}",
+                    case.id
+                )
+            })
+        }),
         ..SessionFacts::default()
     };
     let roots = string_list(&given, "workspace_roots");

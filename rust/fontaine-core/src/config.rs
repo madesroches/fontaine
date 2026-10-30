@@ -640,6 +640,7 @@ pub struct AutoModeSection {
     pub allow: Option<Vec<String>>,
     pub soft_deny: Option<Vec<String>>,
     pub hard_deny: Option<Vec<String>>,
+    pub setup_reminder: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
@@ -1454,12 +1455,26 @@ pub struct Hooks {
     pub permission_denied: Vec<Hook>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AutoMode {
     pub environment: Vec<String>,
     pub allow: Vec<String>,
     pub soft_deny: Vec<String>,
     pub hard_deny: Vec<String>,
+    /// Whether an `auto` session without stored project facts warns to run the setup command.
+    pub setup_reminder: bool,
+}
+
+impl Default for AutoMode {
+    fn default() -> Self {
+        AutoMode {
+            environment: Vec::new(),
+            allow: Vec::new(),
+            soft_deny: Vec::new(),
+            hard_deny: Vec::new(),
+            setup_reminder: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1978,6 +1993,9 @@ impl Config {
             union(&mut t.allow, a.allow.as_deref());
             union(&mut t.soft_deny, a.soft_deny.as_deref());
             union(&mut t.hard_deny, a.hard_deny.as_deref());
+            if let Some(v) = a.setup_reminder {
+                t.setup_reminder = v;
+            }
         }
         if let Some(a) = &s.agents {
             let t = &mut self.agents;
@@ -2723,6 +2741,7 @@ mod tests {
             allow: s(&["only mine"]),
             soft_deny: Vec::new(),
             hard_deny: s(&["extra"]),
+            setup_reminder: true,
         })
         .effective_auto_mode();
         assert_eq!(environment.entries.len(), DEFAULT_ENVIRONMENT.len() + 1);

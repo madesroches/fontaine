@@ -2015,3 +2015,58 @@ async fn init_improves_an_existing_instruction_file_instead_of_creating_one() {
     );
     assert!(!w.work.join("FONTAINE.md").exists());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_mode_setup_stores_the_facts_and_applies_them_to_the_session() {
+    // The workspace is not in `trust.toml`, so the model scan is skipped and no model is asked.
+    let w = World::new(vec![]);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/auto-mode-setup");
+        // The report line carries the stored path, so a long temp dir wraps the phrase across rows.
+        let unwrapped = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        ui.wait_until("`applied to this session`", |s| {
+            unwrapped(s).contains("applied to this session")
+        })
+        .await;
+        let screen = ui.screen();
+        assert!(screen.contains("model scan: skipped"), "{screen}");
+        assert!(screen.contains("stack:"), "{screen}");
+    })
+    .await;
+    assert!(w.ledger_text().contains(r#""kind":"project_environment""#));
+    let stored = std::fs::read_dir(w.data.join("auto_mode")).unwrap().count();
+    assert_eq!(stored, 1, "one project directory");
+    assert_eq!(w.guardian_calls(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_setup_warning_shows_on_an_auto_start_and_on_the_first_switch_into_auto() {
+    let w = World::new(vec![]).in_mode(PermissionMode::Auto);
+    w.run(|ui| async move {
+        ui.wait_for("doesn't know this project's environment").await;
+        let screen = ui.screen();
+        assert_eq!(
+            screen
+                .matches("doesn't know this project's environment")
+                .count(),
+            1,
+            "{screen}"
+        );
+    })
+    .await;
+
+    let w = World::new(vec![]);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        assert!(
+            !ui.screen()
+                .contains("doesn't know this project's environment")
+        );
+        for _ in 0..3 {
+            ui.press(KeyCode::BackTab);
+        }
+        ui.wait_for("doesn't know this project's environment").await;
+    })
+    .await;
+}

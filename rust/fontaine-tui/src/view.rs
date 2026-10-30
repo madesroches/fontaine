@@ -308,6 +308,16 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
             ..Overlay::new("guardian", prompt.body(width, theme), prompt.footer())
         };
     }
+    if let Some(prompt) = &app.setup_review {
+        return Overlay {
+            instance: Some(prompt.id),
+            ..Overlay::new(
+                "auto-mode setup",
+                prompt.body(width, theme),
+                prompt.footer(),
+            )
+        };
+    }
     if let Some(picker) = &app.models {
         let title = match picker.purpose() {
             PickerPurpose::Main => "model",
@@ -636,7 +646,7 @@ mod tests {
 
     #[test]
     fn the_selected_row_is_marked_and_the_footer_lists_the_keys() {
-        let mut app = typed("/mod");
+        let mut app = typed("/model");
         down(&mut app, 1);
         let rows = body(&app);
         assert!(rows[0].starts_with("  /model"), "{rows:?}");

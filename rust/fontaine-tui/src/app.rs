@@ -30,6 +30,7 @@ use crate::question::QuestionPanel;
 use crate::resume_picker::{ResumeKey, ResumePicker};
 use crate::rewind::{RewindKey, RewindPicker};
 use crate::server_prompt::ServerPrompt;
+use crate::setup_prompt::SetupReviewPrompt;
 use crate::theme::Theme;
 use crate::todo_panel::TodoPanel;
 use crate::transcript::Transcript;
@@ -106,6 +107,8 @@ pub enum Action {
     OpenPicker(ModelSlot),
     /// The human answered the `/guardian-disable` confirmation.
     GuardianOff(bool),
+    /// The human answered the `/auto-mode-setup` review of the scan's proposals.
+    SetupReview(bool),
 }
 
 /// Ctrl-R: the query typed so far and the history entry it found.
@@ -170,6 +173,8 @@ pub struct App {
     pub server: Option<ServerPrompt>,
     /// The `/guardian-disable` confirmation while it is open.
     pub guardian_off_prompt: Option<GuardianOffPrompt>,
+    /// The `/auto-mode-setup` review of the repository scan's proposals while it is open.
+    pub setup_review: Option<SetupReviewPrompt>,
     /// The escape hatch is on; the status bar says so for as long as it stays on.
     pub guardian_off: bool,
     /// The `/model` or `/guardian-model` picker while it is open.
@@ -224,6 +229,7 @@ pub struct App {
     approvals_opened: u64,
     servers_opened: u64,
     guardian_off_opened: u64,
+    setup_review_opened: u64,
     questions_opened: u64,
 }
 
@@ -267,6 +273,7 @@ impl App {
             todos: TodoPanel::default(),
             server: None,
             guardian_off_prompt: None,
+            setup_review: None,
             guardian_off: false,
             models: None,
             resume: None,
@@ -297,6 +304,7 @@ impl App {
             approvals_opened: 0,
             servers_opened: 0,
             guardian_off_opened: 0,
+            setup_review_opened: 0,
             questions_opened: 0,
         }
     }
@@ -562,6 +570,12 @@ impl App {
         self.guardian_off_prompt = Some(prompt);
     }
 
+    pub fn begin_setup_review(&mut self, mut prompt: SetupReviewPrompt) {
+        self.setup_review_opened += 1;
+        prompt.id = self.setup_review_opened;
+        self.setup_review = Some(prompt);
+    }
+
     pub fn begin_unavailable(&mut self, prompt: UnavailablePrompt) {
         self.unavailable = Some(prompt);
     }
@@ -627,6 +641,7 @@ impl App {
                     || self.unavailable.is_some()
                     || self.server.is_some()
                     || self.guardian_off_prompt.is_some()
+                    || self.setup_review.is_some()
                     || self.models.is_some()
                     || self.resume.is_some()
                     || self.rewind.is_some()
@@ -658,6 +673,7 @@ impl App {
             || self.unavailable.is_some()
             || self.server.is_some()
             || self.guardian_off_prompt.is_some()
+            || self.setup_review.is_some()
             || self.models.is_some()
             || self.resume.is_some()
             || self.rewind.is_some()
@@ -718,6 +734,15 @@ impl App {
                 Some(answer) => {
                     self.guardian_off_prompt = None;
                     Action::GuardianOff(answer)
+                }
+                None => Action::None,
+            };
+        }
+        if let Some(prompt) = &mut self.setup_review {
+            return match prompt.handle_key(key) {
+                Some(answer) => {
+                    self.setup_review = None;
+                    Action::SetupReview(answer)
                 }
                 None => Action::None,
             };
@@ -2172,7 +2197,7 @@ mod tests {
         assert!(app.slash_menu().is_none());
         type_text(&mut app, "/");
         assert!(app.slash_menu().is_some());
-        type_text(&mut app, "mod");
+        type_text(&mut app, "model");
         assert_eq!(menu_names(&app), ["model", "guardian-model"]);
         type_text(&mut app, " x");
         assert!(app.slash_menu().is_none());
@@ -2194,12 +2219,12 @@ mod tests {
     #[test]
     fn the_menu_opens_for_a_slash_token_after_whitespace() {
         let mut app = app();
-        type_text(&mut app, "hello /mod");
+        type_text(&mut app, "hello /model");
         assert_eq!(menu_names(&app), ["model", "guardian-model"]);
         assert!(!app.slash_menu().unwrap().bare);
-        app.input.set_text("a/mod");
+        app.input.set_text("a/model");
         assert!(app.slash_menu().is_none());
-        app.input.set_text("hello /mod x");
+        app.input.set_text("hello /model x");
         assert!(app.slash_menu().is_none());
         app.input.set_text("a\n/add");
         assert!(app.slash_menu().is_some());
@@ -2273,10 +2298,10 @@ mod tests {
     #[test]
     fn the_selection_is_keyed_on_the_token() {
         let mut app = app();
-        type_text(&mut app, "/mod /mod");
+        type_text(&mut app, "/model /model");
         press(&mut app, KeyCode::Down);
         assert_eq!(selected_name(&app), "guardian-model");
-        for _ in 0..5 {
+        for _ in 0..7 {
             press(&mut app, KeyCode::Left);
         }
         assert_eq!(selected_name(&app), "model");
@@ -2295,7 +2320,7 @@ mod tests {
     #[test]
     fn up_and_down_move_the_selection_and_clamp() {
         let mut app = app();
-        type_text(&mut app, "/mod");
+        type_text(&mut app, "/model");
         assert_eq!(selected_name(&app), "model");
         press(&mut app, KeyCode::Up);
         assert_eq!(selected_name(&app), "model");

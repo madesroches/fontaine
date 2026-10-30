@@ -104,6 +104,7 @@ environment = ["$defaults",        #   user trust scopes only; project files may
 allow       = ["$defaults", "Deploying to staging namespace is allowed: resets nightly"]
 soft_deny   = ["$defaults"]
 hard_deny   = ["$defaults", "Never send repo contents to third-party code-review APIs"]
+setup_reminder = true             # warn in an `auto` session whose project has no `fontaine auto-mode setup` facts; user trust scopes only
 
 [agents]
 max_parallel = 4                  # concurrent subagents (v1 requirement, Claude Code-style)
@@ -183,7 +184,7 @@ Per-key scope (the user file may set every key; a key a scope may not set is rej
 | `[permissions]` `allow` | no | yes | yes (`--allowed-tools`) |
 | `[permissions]` `additional_directories` | no | yes | yes (`--add-dir`) |
 | `[permissions]` `auto_tracked_edits`, `auto_scratch_writes` | `false` only | `false` only | yes |
-| `[auto_mode]` `environment`, `allow` | no | yes | `--settings` |
+| `[auto_mode]` `environment`, `allow`, `setup_reminder` | no | yes | `--settings` |
 | `[auto_mode]` `soft_deny`, `hard_deny` | add only | add only | add only |
 | `[agents]` `max_parallel`, budgets; `[agents.types]` | no | yes | `--settings` |
 | agent files `agents/*.md` | narrowing only (see above) | — | — |

@@ -27,6 +27,7 @@ pub mod rewind;
 pub mod screen;
 pub mod server_prompt;
 pub mod setup;
+pub mod setup_prompt;
 pub mod statusbar;
 pub mod theme;
 pub mod todo_panel;
