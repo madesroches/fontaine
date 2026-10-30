@@ -2023,7 +2023,12 @@ async fn auto_mode_setup_stores_the_facts_and_applies_them_to_the_session() {
     w.run(|ui| async move {
         idle(&ui).await;
         ui.send("/auto-mode-setup");
-        ui.wait_for("applied to this session").await;
+        // The report line carries the stored path, so a long temp dir wraps the phrase across rows.
+        let unwrapped = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        ui.wait_until("`applied to this session`", |s| {
+            unwrapped(s).contains("applied to this session")
+        })
+        .await;
         let screen = ui.screen();
         assert!(screen.contains("model scan: skipped"), "{screen}");
         assert!(screen.contains("stack:"), "{screen}");
