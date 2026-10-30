@@ -326,6 +326,8 @@ fn skills(w_setup: impl FnOnce(&World)) -> Skills {
         websearch: None,
         searxng: Default::default(),
         jobs: Default::default(),
+        agent_waits: None,
+        wait_wake: None,
         network: Default::default(),
         extension: None,
         pre_images: None,

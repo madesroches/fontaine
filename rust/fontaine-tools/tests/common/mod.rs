@@ -78,6 +78,8 @@ pub fn env_with(scope: Arc<Scope>, gate: Arc<dyn ToolGate>) -> BuiltinEnv {
         searxng: Default::default(),
         network: Default::default(),
         jobs: Default::default(),
+        agent_waits: None,
+        wait_wake: None,
     }
 }
 

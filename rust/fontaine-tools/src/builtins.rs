@@ -23,7 +23,8 @@ use crate::git_bash::{GitBash, sh_command};
 use crate::guarded::{Guard, GuardedTool};
 use crate::jobs::tools::{JobCancelTool, JobOutputTool, MonitorTool, job_error};
 use crate::jobs::{
-    End, JobError, Jobs, Kill, MAX_RUNNING, NoPromote, OUTPUT_CAP, QUIET_LIMIT, Start, cut,
+    AgentWaits, End, JobError, Jobs, Kill, MAX_RUNNING, NoPromote, OUTPUT_CAP, QUIET_LIMIT, Start,
+    WaitWake, cut,
 };
 use crate::notebook::{NOTEBOOK_STEER, NotebookEdit, NotebookRead};
 use crate::risk::{RiskClass, ToolSource, registered_risk};
@@ -647,6 +648,10 @@ pub struct BuiltinEnv {
     /// The session's jobs. Passing the same one again when the registry is rebuilt keeps the
     /// running ones.
     pub jobs: Arc<Jobs>,
+    /// How `job_output` waits on a subagent; with none, agent ids are refused.
+    pub agent_waits: Option<Arc<dyn AgentWaits>>,
+    /// What ends a `job_output` wait early.
+    pub wait_wake: Option<Arc<dyn WaitWake>>,
 }
 
 pub struct Registered {
@@ -745,6 +750,8 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             JobOutputTool {
                 jobs: env.jobs.clone(),
                 limit: OutputLimit::default(),
+                agents: env.agent_waits.clone(),
+                wake: env.wait_wake.clone(),
             },
             risk_of(JobOutputTool::NAME),
             guard.clone(),

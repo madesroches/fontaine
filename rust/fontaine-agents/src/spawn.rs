@@ -137,9 +137,10 @@ impl Tool for AgentTool {
             "Start a subagent: a separate conversation with its own context that works on one \
              task and returns a report. Give it everything it needs in `prompt`: a subagent \
              cannot see this conversation, except a `fork`, which starts from a copy of it and \
-             needs only a short task. By default the call waits for the report and returns it; with \
-             `background` set it returns an `agent_id` at once and the report arrives later as \
-             a notification. A subagent has a subset of your tools and never more authority than \
+             needs only a short task. By default the call waits for the report and returns it; \
+             with `background` set it returns an `agent_id` at once and the report arrives later \
+             as a notification, or call `job_output` with the id to wait for it. A subagent has a \
+             subset of your tools and never more authority than \
              you, and every call it makes passes the same permission checks. Agent types:\n{}",
             self.types.describe()
         )

@@ -114,10 +114,14 @@ impl AgentType {
     /// (every parent tool when it names none), cut down to the parent's, minus the ones it
     /// disallows outright. Never a tool the parent lacks.
     pub fn toolset(&self, parent: &[String]) -> Vec<String> {
-        let wanted: Option<Vec<&str>> = self
-            .tools
-            .as_ref()
-            .map(|tools| tools.iter().map(|t| entry_tool(t)).collect());
+        let wanted: Option<Vec<&str>> = self.tools.as_ref().map(|tools| {
+            let mut wanted: Vec<&str> = tools.iter().map(|t| entry_tool(t)).collect();
+            // A child that can start background children needs the tool that waits for them.
+            if wanted.contains(&"agent") {
+                wanted.push("job_output");
+            }
+            wanted
+        });
         let removed: Vec<&str> = self
             .disallowed
             .iter()
@@ -285,6 +289,37 @@ mod tests {
         assert_eq!(
             ty.toolset(&names(&["read", "todo_write"])),
             names(&["read", "todo_write"])
+        );
+    }
+
+    #[test]
+    fn naming_agent_also_grants_job_output_unless_disallowed() {
+        let mut ty = AgentTypes::builtin().get("worker").unwrap().clone();
+        ty.tools = Some(names(&["read", "agent"]));
+        assert_eq!(
+            ty.toolset(&names(&["read", "agent", "job_output", "shell"])),
+            names(&["read", "agent", "job_output"])
+        );
+        assert_eq!(
+            ty.toolset(&names(&["read", "agent", "shell"])),
+            names(&["read", "agent"]),
+            "a parent without it never grants it"
+        );
+        ty.disallowed = names(&["job_output"]);
+        assert_eq!(
+            ty.toolset(&names(&["read", "agent", "job_output"])),
+            names(&["read", "agent"])
+        );
+        ty.disallowed = names(&["agent"]);
+        assert_eq!(
+            ty.toolset(&names(&["read", "agent", "job_output"])),
+            names(&["read", "job_output"])
+        );
+        ty.disallowed = Vec::new();
+        ty.tools = Some(names(&["read"]));
+        assert_eq!(
+            ty.toolset(&names(&["read", "agent", "job_output"])),
+            names(&["read"])
         );
     }
 

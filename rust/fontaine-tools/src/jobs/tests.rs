@@ -827,3 +827,33 @@ async fn a_dropped_call_leaves_no_record_whichever_stop_came_first() {
     assert!(call.is_err() || call.is_ok());
     until("the record to go", || jobs.snapshot().is_empty()).await;
 }
+
+#[tokio::test]
+async fn a_wait_too_long_to_represent_has_no_deadline_instead_of_expiring() {
+    let (jobs, _) = jobs();
+    let id = start(&jobs, "sleep 1; echo hi", true);
+    let started = Instant::now();
+    let JobOutput::Read(read) = jobs
+        .output(&id, Duration::from_secs(u64::MAX))
+        .await
+        .unwrap()
+    else {
+        panic!("a plain job reads");
+    };
+    assert!(
+        started.elapsed() >= Duration::from_millis(900),
+        "it waited for the output instead of expiring"
+    );
+    assert_eq!(lines(&read.chunk), "hi\n");
+    jobs.terminate_all().await;
+}
+
+#[test]
+fn an_agent_id_is_not_a_job_and_the_error_says_who_can_stop_it() {
+    let text = JobError::UnknownJob("agent-5".to_owned()).to_string();
+    assert!(text.contains("only the user can stop a subagent"), "{text}");
+    assert_eq!(
+        JobError::UnknownJob("job-1".to_owned()).to_string(),
+        "there is no job job-1"
+    );
+}

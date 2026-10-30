@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use futures::future::BoxFuture;
 use rig_core::tool::ContextValue;
 use rig_tools::clip;
 use rig_tools::process::{OutputLine, Process, STOP_GRACE};
@@ -76,6 +77,10 @@ pub enum JobError {
 impl fmt::Display for JobError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            JobError::UnknownJob(id) if id.starts_with("agent-") => write!(
+                f,
+                "{id} is a subagent, not a job; only the user can stop a subagent"
+            ),
             JobError::UnknownJob(id) => write!(f, "there is no job {id}"),
             JobError::TooMany => write!(
                 f,
@@ -106,6 +111,57 @@ pub struct JobNote {
 pub trait JobSink: Send + Sync {
     /// A background job ended, or a monitor has lines.
     fn post(&self, note: JobNote);
+}
+
+/// How the report of an ended subagent stands with the agent that started it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentDelivery {
+    /// Queued in the caller's inbox; it reaches the model as a notification.
+    Queued,
+    /// The subagent was killed and delivers no report.
+    Killed,
+    /// Already handed over: as the result of a foreground `agent` call, or as a notification.
+    AlreadyDelivered { foreground: bool },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentState {
+    Running {
+        age: Duration,
+        on_permission: bool,
+    },
+    /// `status` is the subagent's final status word.
+    Ended {
+        status: String,
+        delivery: AgentDelivery,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentWaitError {
+    /// No such subagent.
+    Unknown,
+    /// A subagent, but not one the caller started.
+    NotYours,
+}
+
+/// The seam through which `job_output` waits on subagents, which live in a crate that depends
+/// on this one.
+pub trait AgentWaits: Send + Sync {
+    /// Waits until `id`, a child of `caller`, ends or `wait` passes (`None`: no limit). It
+    /// never takes the child's report out of the caller's inbox, so a dropped wait loses nothing.
+    fn wait<'a>(
+        &'a self,
+        caller: &'a str,
+        id: &'a str,
+        wait: Option<Duration>,
+    ) -> BoxFuture<'a, Result<AgentState, AgentWaitError>>;
+}
+
+/// Lets a parked wait notice news that should end it early.
+pub trait WaitWake: Send + Sync {
+    /// Whether something the caller should read now is waiting for it.
+    fn pending(&self, agent: &str) -> bool;
 }
 
 /// Why a job was told to stop. The first request wins.
@@ -940,7 +996,7 @@ impl Jobs {
                         .monitor
                         .as_ref()
                         .is_some_and(|monitor| monitor.posted > watermark);
-                    let expired = deadline.is_none_or(|at| Instant::now() >= at);
+                    let expired = deadline.is_some_and(|at| Instant::now() >= at);
                     if job.ended.is_some() || note_posted || expired {
                         Some(JobOutput::MonitorWait {
                             id: id.to_owned(),
@@ -954,7 +1010,7 @@ impl Jobs {
                     }
                 } else {
                     let fresh = job.buffer.next > job.cursor;
-                    let expired = deadline.is_none_or(|at| Instant::now() >= at);
+                    let expired = deadline.is_some_and(|at| Instant::now() >= at);
                     if job.ended.is_some() || fresh || expired || wait.is_zero() {
                         Some(JobOutput::Read(read(job, false)))
                     } else {
@@ -974,8 +1030,16 @@ impl Jobs {
                 drop(waiting);
                 return Ok(done);
             }
-            let left = deadline.map_or(wait, |at| at.saturating_duration_since(Instant::now()));
-            let _ = tokio::time::timeout(left, changes.changed()).await;
+            match deadline {
+                Some(at) => {
+                    let left = at.saturating_duration_since(Instant::now());
+                    let _ = tokio::time::timeout(left, changes.changed()).await;
+                }
+                // The wait is too long to represent, so it has no end of its own.
+                None => {
+                    let _ = changes.changed().await;
+                }
+            }
         }
     }
 

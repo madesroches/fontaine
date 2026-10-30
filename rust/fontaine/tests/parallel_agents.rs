@@ -6,7 +6,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{Endpoint, Route, Sandbox, Turn, Wire};
+use common::{Endpoint, Route, Sandbox, Turn, Wire, ledger};
 use serde_json::{Value, json};
 
 fn config(url: &str, extra: &str) -> String {
@@ -157,6 +157,97 @@ async fn a_background_child_returns_an_id_and_its_report_comes_back_as_a_notific
     assert!(notified[0].contains("root task"));
     assert!(notified[0].contains("Background agent agent-1"));
     assert!(notified[0].contains("not the user"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn job_output_waits_for_a_background_child_and_its_report_rides_the_wait_result() {
+    let endpoint = Endpoint::start_routed(
+        Wire::Chat,
+        vec![
+            Route::new(
+                "root task",
+                vec![
+                    Turn::tool("c1", "agent", spawn_args("explore", "child-B: dig", true)),
+                    Turn::tool("c2", "job_output", json!({"id": "agent-1"})),
+                    Turn::text("B said: treasure"),
+                ],
+            ),
+            Route::new("child-B", vec![Turn::text("B found the treasure")])
+                .slow(Duration::from_millis(300)),
+        ],
+    )
+    .await;
+    let s = sandbox(&endpoint, "");
+    let out = run(&s, &["--allowed-tools", "agent"], "root task").await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+
+    let waited = of_type(&lines, "tool_result")
+        .into_iter()
+        .find(|r| r["tool"] == "job_output")
+        .expect("a job_output result");
+    assert_eq!(waited["success"], json!(true), "{waited}");
+    let text = waited["text"].as_str().unwrap();
+    assert!(text.contains("[agent-1 ended: done]"), "{text}");
+    assert!(text.contains("B found the treasure"), "{text}");
+
+    let claims = requests_with(&endpoint, "B found the treasure").await;
+    assert_eq!(claims.len(), 1, "{claims:?}");
+    assert!(claims[0].contains("root task"));
+    let main_requests = requests_with(&endpoint, "root task").await;
+    assert_eq!(main_requests.len(), 3, "no separate notification turn");
+    let results = of_type(&lines, "result");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["result"], "B said: treasure");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_nested_parent_waits_for_its_own_background_child_instead_of_ending_early() {
+    let endpoint = Endpoint::start_routed(
+        Wire::Chat,
+        vec![
+            Route::new(
+                "root task",
+                vec![
+                    Turn::tool(
+                        "c1",
+                        "agent",
+                        spawn_args("lead", "lead-L: coordinate", false),
+                    ),
+                    Turn::text("root finished"),
+                ],
+            ),
+            Route::new(
+                "lead-L",
+                vec![
+                    Turn::tool("l1", "agent", spawn_args("explore", "gc-G: dig", true)),
+                    Turn::tool("l2", "job_output", json!({"id": "agent-2"})),
+                    Turn::text("lead done"),
+                ],
+            ),
+            Route::new("gc-G", vec![Turn::text("gc found the relic")])
+                .slow(Duration::from_millis(300)),
+        ],
+    )
+    .await;
+    let s = sandbox(&endpoint, "[agents.types.lead]\nmodel = \"$main\"\n");
+    let out = run(&s, &["--allowed-tools", "agent"], "root task").await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    assert_eq!(agent_result(&lines, 0)["text"], "lead done");
+
+    let session = lines[0]["session_id"].as_str().unwrap().to_string();
+    let finished = ledger(&s, &session)
+        .into_iter()
+        .find(|r| r["kind"] == "agent" && r["event"] == "finished" && r["agent"] == "agent-2")
+        .expect("the grandchild finished");
+    assert_eq!(finished["detail"], "done");
+
+    let bodies = requests_with(&endpoint, "gc found the relic").await;
+    assert_eq!(bodies.len(), 1, "{bodies:?}");
+    assert!(bodies[0].contains("lead-L"));
+    assert!(bodies[0].contains("[agent-2 ended: done]"));
+    assert!(bodies[0].contains("Background agent agent-2"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

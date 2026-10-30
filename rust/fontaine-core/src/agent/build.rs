@@ -21,7 +21,7 @@ use rig_agent::tool::server::ToolServerHandle;
 
 use super::Setup;
 use crate::checkpoint::StoreCapture;
-use crate::child_runner::{CoreChildRunner, LedgerWindow};
+use crate::child_runner::{CoreChildRunner, CoreWake, LedgerWindow};
 use crate::config::Config;
 use crate::fork_context::ParentContextHook;
 use crate::gate::SessionState;
@@ -180,6 +180,11 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
         websearch,
         searxng: p.setup.searxng.clone(),
         jobs: p.setup.jobs.clone(),
+        agent_waits: Some(p.state.agents().clone()),
+        wait_wake: Some(Arc::new(CoreWake {
+            tree: p.state.agents().clone(),
+            steering: p.steering.clone(),
+        })),
         extension: Some(ExtensionTools(extension_tools(p, ledger_window))),
         pre_images: Some(Arc::new(StoreCapture(p.session.checkpoints().clone()))),
     })

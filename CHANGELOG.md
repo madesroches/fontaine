@@ -8,6 +8,14 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `job_output` waits on a background subagent: given an `agent-*` id it blocks until that
+  subagent ends, or `wait_secs` passes, and reports only its status. The report still arrives
+  as the notification attached to that result, exactly once, so a parent no longer polls with
+  wrong-tool errors and a nested parent has a way to wait instead of ending its turn (which
+  would kill its children). Only the agent that started a subagent may wait on it, and a
+  subagent whose type names `agent` also gets `job_output`. `BashOutputTool`, `AgentOutput`
+  and `AgentOutputTool` are accepted as Claude Code names for `job_output` (#301).
+
 - `job_output` on a monitor id is no longer refused: it waits up to `wait_secs` (a zero wait
   asks for the status at once) and reports whether a notification was posted, the monitor
   ended, or it still runs — never carrying output bytes, since a monitor's lines and its final
@@ -23,6 +31,13 @@ All notable changes are recorded here. The format follows
   that opens a picker or dialog holds the later queued entries until it closes, and `/resume` and
   `/branch` are refused while later entries remain so a session switch cannot discard them.
   `/loop` and unknown slash names keep their existing mid-turn refusal.
+
+### Changed
+
+- `job_output`'s `wait_secs` no longer has a 60-second ceiling: the model chooses the timeout.
+  An omitted value still reads a job now and waits for a subagent to end. Any wait returns
+  early when a message from another agent arrives or, in the main conversation, when the user
+  types one (#301).
 
 ### Fixed
 

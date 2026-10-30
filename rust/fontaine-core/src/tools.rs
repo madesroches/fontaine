@@ -8,7 +8,7 @@ use fontaine_tools::checkpoint::PreImages;
 use fontaine_tools::gate::ToolGate;
 use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::guarded::{Guard, GuardedTool};
-use fontaine_tools::jobs::Jobs;
+use fontaine_tools::jobs::{AgentWaits, Jobs, WaitWake};
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::{RiskClass, ToolSource, registered_risk};
 use fontaine_tools::scope::Scope;
@@ -96,6 +96,10 @@ pub struct RegistryParams {
     pub searxng: Arc<SearxngChild>,
     /// The session's jobs, owned by the runtime so a rebuild keeps the running ones.
     pub jobs: Arc<Jobs>,
+    /// How `job_output` waits on a subagent; `None` refuses agent ids.
+    pub agent_waits: Option<Arc<dyn AgentWaits>>,
+    /// What ends a `job_output` wait early.
+    pub wait_wake: Option<Arc<dyn WaitWake>>,
     pub extension: Option<ExtensionTools>,
     /// Saves a file before `write` or `edit` changes it; `None` saves nothing.
     pub pre_images: Option<Arc<dyn PreImages>>,
@@ -138,6 +142,8 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
         searxng: params.searxng,
         network: params.network,
         jobs: params.jobs,
+        agent_waits: params.agent_waits,
+        wait_wake: params.wait_wake,
     })
     .map_err(|e| fontaine_tools::error_chain::chain(&e))?;
     if let Some(extension) = params.extension {

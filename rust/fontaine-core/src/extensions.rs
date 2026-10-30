@@ -640,7 +640,13 @@ mod tests {
             map_tool_entry("Monitor(tail *)").unwrap(),
             "monitor(tail *)"
         );
-        for name in ["BashOutput", "TaskOutput"] {
+        for name in [
+            "BashOutput",
+            "TaskOutput",
+            "BashOutputTool",
+            "AgentOutput",
+            "AgentOutputTool",
+        ] {
             assert_eq!(map_tool_entry(name).unwrap(), "job_output");
         }
         for name in ["KillShell", "KillBash", "TaskStop"] {

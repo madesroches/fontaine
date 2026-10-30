@@ -5,9 +5,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use fontaine_tools::gate::ROOT_AGENT;
+use fontaine_tools::jobs::{AgentDelivery, AgentState, AgentWaitError, AgentWaits};
 use fontaine_tools::lock::{lock, read, write};
+use futures::future::BoxFuture;
 use tokio::sync::Notify;
 
 use crate::budget::{Budget, Exhausted, Spend};
@@ -116,6 +119,18 @@ struct Node {
     inbox: VecDeque<Notification>,
     report: Option<ChildReport>,
     exhausted: Option<Exhausted>,
+    started: Instant,
+}
+
+impl Node {
+    /// The handle's status while the agent runs, which tells a permission prompt from work, and
+    /// the recorded one after.
+    fn live_status(&self) -> ChildStatus {
+        match (&self.handle, self.status) {
+            (Some(handle), status) if status.is_running() => handle.status(),
+            (_, status) => status,
+        }
+    }
 }
 
 struct Inner {
@@ -193,6 +208,7 @@ impl AgentTree {
             inbox: VecDeque::new(),
             report: None,
             exhausted: None,
+            started: Instant::now(),
         };
         AgentTree {
             limits,
@@ -373,6 +389,7 @@ impl AgentTree {
                 inbox: VecDeque::new(),
                 report: None,
                 exhausted: None,
+                started: Instant::now(),
             },
         );
         drop(inner);
@@ -701,6 +718,51 @@ impl AgentTree {
         })
     }
 
+    /// Whether `agent`'s inbox holds a note another agent sent with `send_message`.
+    pub fn has_message(&self, agent: &str) -> bool {
+        self.lock().nodes.get(agent).is_some_and(|n| {
+            n.inbox
+                .iter()
+                .any(|note| note.kind == NotificationKind::Message)
+        })
+    }
+
+    /// Where `id` stands for `caller`, who must have started it.
+    fn agent_state(&self, caller: &str, id: &str) -> Result<AgentState, AgentWaitError> {
+        let inner = self.lock();
+        let node = inner.nodes.get(id).ok_or(AgentWaitError::Unknown)?;
+        if node.info.parent.as_deref() != Some(caller) {
+            return Err(AgentWaitError::NotYours);
+        }
+        if node.status.is_running() {
+            return Ok(AgentState::Running {
+                age: node.started.elapsed(),
+                on_permission: node.live_status() == ChildStatus::WaitingOnPermission,
+            });
+        }
+        // The report is queued before the node leaves the running state, and a kill can land
+        // between the two, so a queued report decides over a killed status.
+        let queued = inner.nodes.get(caller).is_some_and(|parent| {
+            parent
+                .inbox
+                .iter()
+                .any(|note| note.kind == NotificationKind::Report && note.from == id)
+        });
+        let delivery = if queued {
+            AgentDelivery::Queued
+        } else if node.status == ChildStatus::Killed {
+            AgentDelivery::Killed
+        } else {
+            AgentDelivery::AlreadyDelivered {
+                foreground: !node.info.background,
+            }
+        };
+        Ok(AgentState::Ended {
+            status: node.status.as_str().to_owned(),
+            delivery,
+        })
+    }
+
     /// Empties `agent`'s inbox.
     pub fn take_notifications(&self, agent: &str) -> Vec<Notification> {
         self.lock()
@@ -769,16 +831,49 @@ impl AgentTree {
                 parent: n.info.parent.clone(),
                 agent_type: n.info.agent_type.clone(),
                 model: n.info.model.clone(),
-                status: match (&n.handle, n.status) {
-                    (Some(handle), status) if status.is_running() => handle.status(),
-                    (_, status) => status,
-                },
+                status: n.live_status(),
                 depth: n.info.depth,
                 spend: n.spend,
                 budget: n.budget,
                 exhausted: n.exhausted,
             })
             .collect()
+    }
+}
+
+impl AgentWaits for AgentTree {
+    fn wait<'a>(
+        &'a self,
+        caller: &'a str,
+        id: &'a str,
+        wait: Option<Duration>,
+    ) -> BoxFuture<'a, Result<AgentState, AgentWaitError>> {
+        Box::pin(async move {
+            // A wait too long to represent has no deadline either.
+            let deadline = wait.and_then(|wait| tokio::time::Instant::now().checked_add(wait));
+            loop {
+                // Register before looking, or a change in between is missed.
+                let changed = self.changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                let state = self.agent_state(caller, id)?;
+                if matches!(state, AgentState::Ended { .. }) {
+                    return Ok(state);
+                }
+                match (wait, deadline) {
+                    (Some(_), Some(at)) if tokio::time::Instant::now() >= at => {
+                        return Ok(state);
+                    }
+                    (Some(_), Some(at)) => {
+                        tokio::select! {
+                            () = &mut changed => {}
+                            () = tokio::time::sleep_until(at) => {}
+                        }
+                    }
+                    _ => changed.await,
+                }
+            }
+        })
     }
 }
 
@@ -1008,5 +1103,188 @@ mod tests {
         let tree = tree(1);
         assert!(tree.first_unpriced_cap());
         assert!(!tree.first_unpriced_cap());
+    }
+
+    fn bg(tree: &AgentTree, parent: &str, background: bool) -> String {
+        tree.reserve(parent, "worker", "m", vec![], Ladder::Manual, background)
+            .unwrap()
+    }
+
+    fn done(text: &str) -> ChildReport {
+        ChildReport {
+            status: ChildStatus::Done,
+            text: text.into(),
+            reason: None,
+        }
+    }
+
+    fn reports_in(tree: &AgentTree, agent: &str) -> usize {
+        tree.lock().nodes[agent]
+            .inbox
+            .iter()
+            .filter(|n| n.kind == NotificationKind::Report)
+            .count()
+    }
+
+    fn ended(status: &str, delivery: AgentDelivery) -> AgentState {
+        AgentState::Ended {
+            status: status.into(),
+            delivery,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_wait_sees_the_child_end_and_leaves_its_report_queued() {
+        let tree = Arc::new(tree(4));
+        let a = bg(&tree, ROOT_AGENT, true);
+        let finisher = {
+            let (tree, a) = (tree.clone(), a.clone());
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                tree.notify_report(ROOT_AGENT, &a, "found".into());
+                tree.finish(&a, done("found"));
+            })
+        };
+        let state = tree.wait(ROOT_AGENT, &a, None).await.unwrap();
+        finisher.await.unwrap();
+        assert_eq!(state, ended("done", AgentDelivery::Queued));
+        assert_eq!(reports_in(&tree, ROOT_AGENT), 1);
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_wait_can_be_followed_by_another() {
+        let tree = tree(4);
+        let a = bg(&tree, ROOT_AGENT, true);
+        let state = tree
+            .wait(ROOT_AGENT, &a, Some(Duration::from_millis(100)))
+            .await
+            .unwrap();
+        assert!(matches!(
+            state,
+            AgentState::Running {
+                on_permission: false,
+                ..
+            }
+        ));
+        tree.notify_report(ROOT_AGENT, &a, "late".into());
+        tree.finish(&a, done("late"));
+        let state = tree
+            .wait(ROOT_AGENT, &a, Some(Duration::from_millis(100)))
+            .await
+            .unwrap();
+        assert_eq!(state, ended("done", AgentDelivery::Queued));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wait_with_no_deadline_outlasts_hours() {
+        let tree = Arc::new(tree(4));
+        let a = bg(&tree, ROOT_AGENT, true);
+        let waiter = {
+            let (tree, a) = (tree.clone(), a.clone());
+            tokio::spawn(async move { tree.wait(ROOT_AGENT, &a, None).await })
+        };
+        tokio::time::advance(Duration::from_secs(6 * 3600)).await;
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        tree.finish(&a, done("x"));
+        let state = waiter.await.unwrap().unwrap();
+        assert!(matches!(state, AgentState::Ended { .. }));
+    }
+
+    #[tokio::test]
+    async fn an_ended_child_reports_how_its_report_was_delivered() {
+        let tree = tree(4);
+        let a = bg(&tree, ROOT_AGENT, true);
+        let f = bg(&tree, ROOT_AGENT, false);
+        tree.notify_report(ROOT_AGENT, &a, "r".into());
+        tree.finish(&a, done("r"));
+        tree.finish(&f, done("r"));
+        tree.take_notifications(ROOT_AGENT);
+        assert_eq!(
+            tree.wait(ROOT_AGENT, &a, Some(Duration::ZERO)).await,
+            Ok(ended(
+                "done",
+                AgentDelivery::AlreadyDelivered { foreground: false }
+            ))
+        );
+        assert_eq!(
+            tree.wait(ROOT_AGENT, &f, Some(Duration::ZERO)).await,
+            Ok(ended(
+                "done",
+                AgentDelivery::AlreadyDelivered { foreground: true }
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_kill_during_a_wait_ends_it_with_no_report() {
+        let tree = Arc::new(tree(4));
+        let a = bg(&tree, ROOT_AGENT, true);
+        let killer = {
+            let (tree, a) = (tree.clone(), a.clone());
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                tree.kill(&a);
+            })
+        };
+        let state = tree.wait(ROOT_AGENT, &a, None).await.unwrap();
+        killer.await.unwrap();
+        assert_eq!(state, ended("killed", AgentDelivery::Killed));
+        assert_eq!(reports_in(&tree, ROOT_AGENT), 0);
+    }
+
+    #[tokio::test]
+    async fn a_queued_report_wins_over_a_kill_that_landed_before_finish() {
+        let tree = tree(4);
+        let a = bg(&tree, ROOT_AGENT, true);
+        tree.notify_report(ROOT_AGENT, &a, "r".into());
+        tree.kill(&a);
+        assert_eq!(
+            tree.wait(ROOT_AGENT, &a, None).await,
+            Ok(ended("killed", AgentDelivery::Queued))
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_spawning_parent_may_wait() {
+        let tree = tree(8);
+        let a = bg(&tree, ROOT_AGENT, true);
+        let b = bg(&tree, ROOT_AGENT, true);
+        let b1 = bg(&tree, &b, true);
+        let zero = Some(Duration::ZERO);
+        assert_eq!(
+            tree.wait(ROOT_AGENT, "agent-99", zero).await,
+            Err(AgentWaitError::Unknown)
+        );
+        assert_eq!(
+            tree.wait(&a, &b1, zero).await,
+            Err(AgentWaitError::NotYours)
+        );
+        assert_eq!(
+            tree.wait(&b1, &b, zero).await,
+            Err(AgentWaitError::NotYours)
+        );
+        assert_eq!(tree.wait(&a, &a, zero).await, Err(AgentWaitError::NotYours));
+        assert_eq!(
+            tree.wait(&a, ROOT_AGENT, zero).await,
+            Err(AgentWaitError::NotYours)
+        );
+        assert_eq!(
+            tree.wait(ROOT_AGENT, &b1, zero).await,
+            Err(AgentWaitError::NotYours)
+        );
+        assert!(tree.wait(&b, &b1, zero).await.is_ok());
+    }
+
+    #[test]
+    fn only_a_sent_message_counts_for_has_message() {
+        let tree = tree(4);
+        let a = bg(&tree, ROOT_AGENT, true);
+        tree.notify_report(ROOT_AGENT, &a, "r".into());
+        tree.post_to_root("job-1", NotificationKind::Job, "j".into());
+        assert!(!tree.has_message(ROOT_AGENT));
+        tree.deliver(&a, MAIN, "hi".into()).unwrap();
+        assert!(tree.has_message(ROOT_AGENT));
+        assert!(!tree.has_message(&a));
     }
 }
