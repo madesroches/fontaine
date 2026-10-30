@@ -275,6 +275,32 @@ resolved absolute path for a file tool, the host for `webfetch`. Prompts that th
 `shell` calls that are not one literal simple command, offer only allow once and deny, because no
 allow rule can act there.
 
+## PowerShell
+
+On Windows the `powershell` tool is an `arbitrary` tool whose commands are never read in advance:
+the [shell pre-classifier](#the-shell-pre-classifier) below handles POSIX only, so no PowerShell
+command is allowed without a prompt in `manual`, and every one reaches the [guardian](guardian.md)
+in `auto`.
+
+- **Rules name the tool whole.** `powershell` is a rule by itself; `powershell(Get-ChildItem *)` is
+  a configuration error. A bare `shell` deny or ask rule also covers `powershell`, so a blanket
+  prohibition cannot be stepped around by switching language; a `shell(git push)` rule does not
+  match a `powershell` call, and an allow rule covers only the tool it names. In `auto` a bare
+  `powershell` allow is set aside, as a bare `shell` allow is.
+- **The critical-path floor reads `Remove-Item`.** A `powershell` call that deletes a critical
+  path (a drive root, a top-level directory, your home directory, a workspace root or a parent of
+  one) is stopped for a human in every mode, as for `shell`. The check is a token scan, not a
+  PowerShell parser, and it errs toward prompting: a deleter (`Remove-Item`, `ri`, `rm`, `rmdir`,
+  `rd`, `del`, `erase`, or a .NET `Delete` call) whose target is a variable, a subexpression or
+  comes from a pipeline, a deleter inside a chain, block or `if`, an option it does not know, and
+  any nested interpreter (`pwsh`, `powershell`, `cmd`), `-Command`, `-EncodedCommand`, `iex` or
+  `Invoke-Expression` is critical. A deleter with a plain, literal target inside the workspace is
+  not. Targets on other providers (`HKLM:`, `Env:`, `Cert:`) are not file deletes and are left to
+  the guardian.
+- **Skills and restrictions.** A skill's `!` lines run through `shell` only, so a subagent whose
+  tools are only `powershell` has nothing to run them with. A restriction that names `shell`, such
+  as `shell(git *)`, does not constrain `powershell`; name `powershell` to allow or forbid it.
+
 ## The shell pre-classifier
 
 A small set of read-only commands runs without a prompt when the call is one simple command made of

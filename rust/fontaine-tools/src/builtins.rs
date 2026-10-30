@@ -2,7 +2,7 @@
 //! configured rather than forked: one confined instance per workspace root.
 
 use std::ffi::{OsStr, OsString};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,6 +27,7 @@ use crate::jobs::{
     WaitWake, cut,
 };
 use crate::notebook::{NOTEBOOK_STEER, NotebookEdit, NotebookRead};
+use crate::powershell::{self, PowerShellSettings};
 use crate::risk::{RiskClass, ToolSource, registered_risk};
 use crate::scope::{Scope, glob_target};
 use crate::tls::LoadedNetwork;
@@ -314,131 +315,159 @@ impl ShellTool {
     /// stderr in pipes of their own.
     pub(crate) fn launch(&self, args: ShellArgs) -> Result<Process, ToolExecutionError> {
         let (shell, args) = self.prepared(args);
-        let base = shell.launcher.cwd.as_deref();
-        let dir = match &args.cwd {
-            Some(dir) => {
-                if shell.confine {
-                    shell.workspace.place(base, true, dir)?;
-                }
-                Some(
-                    shell
-                        .workspace
-                        .join(base.unwrap_or(Path::new("")), Path::new(dir)),
-                )
-            }
-            None => base.map(Path::to_path_buf),
-        };
-        let how = Spawn {
-            stdin: None,
-            merge_stderr: false,
-        };
         let line = [OsString::from("-c"), OsString::from(&args.command)];
-        shell
-            .workspace
-            .spawn(
-                &shell.launcher,
-                dir.as_deref(),
-                OsStr::new("sh"),
-                &line,
-                how,
-            )
-            .map_err(|source| ToolExecutionError::other(chain(&JobError::Spawn { source })))
+        launch_in(&shell, &args, OsStr::new("sh"), &line)
     }
+}
 
-    async fn call_job(
-        &self,
-        context: &mut ToolContext,
-        jobs: &Jobs,
-        call: ShellCall,
-    ) -> Result<String, ToolExecutionError> {
-        let max = self.shell.max_timeout.max(1);
-        let timeout = Duration::from_secs(
-            call.timeout_secs
-                .unwrap_or(DEFAULT_TIMEOUT.min(self.shell.max_timeout))
-                .clamp(1, max),
-        );
-        let quiet = quiet_for(call.timeout_secs, timeout);
-        let background = call.run_in_background.unwrap_or(false);
-        if background && !jobs.has_room() {
-            return Err(job_error(&JobError::TooMany));
+/// Starts `program` with `argv` for the call `args` names, in the shell's workspace and
+/// directory, its stdout and stderr in pipes of their own.
+fn launch_in(
+    shell: &Shell,
+    args: &ShellArgs,
+    program: &OsStr,
+    argv: &[OsString],
+) -> Result<Process, ToolExecutionError> {
+    let base = shell.launcher.cwd.as_deref();
+    let dir = match &args.cwd {
+        Some(dir) => {
+            if shell.confine {
+                shell.workspace.place(base, true, dir)?;
+            }
+            Some(
+                shell
+                    .workspace
+                    .join(base.unwrap_or(Path::new("")), Path::new(dir)),
+            )
         }
-        let no_promote = context
+        None => base.map(Path::to_path_buf),
+    };
+    let how = Spawn {
+        stdin: None,
+        merge_stderr: false,
+    };
+    shell
+        .workspace
+        .spawn(&shell.launcher, dir.as_deref(), program, argv, how)
+        .map_err(|source| ToolExecutionError::other(chain(&JobError::Spawn { source })))
+}
+
+/// Runs `call` as a job in `jobs` and waits for it, as `shell` and `powershell` both do: one
+/// that outlives its timeout moves to the background when `promotable`, and is stopped
+/// otherwise.
+async fn run_job(
+    shell: &Shell,
+    jobs: &Jobs,
+    context: &mut ToolContext,
+    call: ShellCall,
+    promotable: bool,
+    launch: impl FnOnce(ShellArgs) -> Result<Process, ToolExecutionError>,
+) -> Result<String, ToolExecutionError> {
+    let max = shell.max_timeout.max(1);
+    let timeout = Duration::from_secs(
+        call.timeout_secs
+            .unwrap_or(DEFAULT_TIMEOUT.min(shell.max_timeout))
+            .clamp(1, max),
+    );
+    let quiet = quiet_for(call.timeout_secs, timeout);
+    let background = call.run_in_background.unwrap_or(false);
+    if background && !jobs.has_room() {
+        return Err(job_error(&JobError::TooMany));
+    }
+    let no_promote = !promotable
+        || context
             .get::<NoPromote>()
             .ok()
             .flatten()
             .is_some_and(|flag| flag.0);
-        let process = self.launch(call.shell_args())?;
-        let id = jobs
-            .start(
-                Start {
-                    command: call.command,
-                    background,
-                    monitor: None,
-                },
-                process,
-            )
-            .map_err(|e| job_error(&e))?;
-        if background {
-            return Ok(format!(
-                "[started in the background as {id}. You are told when it ends; use job_output to read its output, job_cancel to stop it.]"
-            ));
-        }
-        let ran = jobs.foreground(&id, timeout, quiet, !no_promote).await;
-        let limit = self.shell.cut.unwrap_or_default();
-        let (mut text, fact) = cut::cut(&ran.chunk.lines, ran.chunk.missed, limit);
-        let silent = ran.chunk.lines.is_empty();
-        let status = match &ran.end {
-            None => {
-                let why = match (ran.quiet, quiet) {
-                    (true, Some(quiet)) => format!("printed nothing for {}s", quiet.as_secs()),
-                    _ => format!("still running after {}s", timeout.as_secs()),
-                };
-                text.push_str(&format!(
-                    "[{why}; moved to background job {id}. Its output so far is above. Use \
-                     job_output to read more or wait for it, job_cancel to stop it. You are \
-                     told when it ends.]"
-                ));
-                None
-            }
-            Some(info) => {
-                let stopped = cut::stopped(info.forced, info.remote.as_deref());
-                let (line, status) = match info.end {
-                    End::Exited(status) => cut::exit_line(status),
-                    End::Killed(Kill::Timeout) => {
-                        cut::timed_out_line(timeout.as_secs(), max, &stopped, silent)
-                    }
-                    End::Killed(Kill::Quiet) => {
-                        cut::quiet_line(quiet.unwrap_or_default().as_secs(), &stopped, silent)
-                    }
-                    End::Killed(Kill::Cap) => (
-                        format!(
-                            "[stopped: {MAX_RUNNING} jobs are already running, so it could not \
-                             move to the background; {stopped}. Stop one with job_cancel and \
-                             run it again]"
-                        ),
-                        ExitStatus::Killed,
-                    ),
-                    End::Runaway => cut::runaway_line(OUTPUT_CAP / 1024 / 1024, &stopped),
-                    End::Killed(_) => (
-                        format!("[terminated before it ended: {stopped}]"),
-                        ExitStatus::Killed,
-                    ),
-                    End::Lost => {
-                        return Err(ToolExecutionError::other("waiting for the command failed"));
-                    }
-                };
-                text.push_str(&line);
-                Some(status)
-            }
-        };
-        if let Some(status) = status {
-            context.insert_result(status)?;
-        }
-        if let Some(fact) = fact {
-            context.insert_result(fact)?;
-        }
-        Ok(text)
+    let process = launch(call.shell_args())?;
+    let id = jobs
+        .start(
+            Start {
+                command: call.command,
+                background,
+                monitor: None,
+            },
+            process,
+        )
+        .map_err(|e| job_error(&e))?;
+    if background {
+        return Ok(format!(
+            "[started in the background as {id}. You are told when it ends; use job_output to read its output, job_cancel to stop it.]"
+        ));
     }
+    let ran = jobs.foreground(&id, timeout, quiet, !no_promote).await;
+    let limit = shell.cut.unwrap_or_default();
+    let (mut text, fact) = cut::cut(&ran.chunk.lines, ran.chunk.missed, limit);
+    let silent = ran.chunk.lines.is_empty();
+    let status = match &ran.end {
+        None => {
+            let why = match (ran.quiet, quiet) {
+                (true, Some(quiet)) => format!("printed nothing for {}s", quiet.as_secs()),
+                _ => format!("still running after {}s", timeout.as_secs()),
+            };
+            text.push_str(&format!(
+                "[{why}; moved to background job {id}. Its output so far is above. Use \
+                 job_output to read more or wait for it, job_cancel to stop it. You are \
+                 told when it ends.]"
+            ));
+            None
+        }
+        Some(info) => {
+            let stopped = cut::stopped(info.forced, info.remote.as_deref());
+            let (line, status) = match info.end {
+                End::Exited(status) => cut::exit_line(status),
+                End::Killed(Kill::Timeout) => {
+                    cut::timed_out_line(timeout.as_secs(), max, &stopped, silent)
+                }
+                End::Killed(Kill::Quiet) => {
+                    cut::quiet_line(quiet.unwrap_or_default().as_secs(), &stopped, silent)
+                }
+                End::Killed(Kill::Cap) => (
+                    format!(
+                        "[stopped: {MAX_RUNNING} jobs are already running, so it could not \
+                         move to the background; {stopped}. Stop one with job_cancel and \
+                         run it again]"
+                    ),
+                    ExitStatus::Killed,
+                ),
+                End::Runaway => cut::runaway_line(OUTPUT_CAP / 1024 / 1024, &stopped),
+                End::Killed(_) => (
+                    format!("[terminated before it ended: {stopped}]"),
+                    ExitStatus::Killed,
+                ),
+                End::Lost => {
+                    return Err(ToolExecutionError::other("waiting for the command failed"));
+                }
+            };
+            text.push_str(&line);
+            Some(status)
+        }
+    };
+    if let Some(status) = status {
+        context.insert_result(status)?;
+    }
+    if let Some(fact) = fact {
+        context.insert_result(fact)?;
+    }
+    Ok(text)
+}
+
+/// `schema` with the `run_in_background` property added to the arguments rig's `shell` takes.
+fn with_background(mut schema: serde_json::Value) -> serde_json::Value {
+    if let Some(properties) = schema
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        properties.insert(
+            "run_in_background".to_owned(),
+            json!({
+                "type": ["boolean", "null"],
+                "description": "Main agent only. Start the command as a background job and                                 return at once; you are told when it ends.",
+            }),
+        );
+    }
+    schema
 }
 
 /// The output a subagent's shell call may print before rig kills it.
@@ -484,21 +513,7 @@ impl Tool for ShellTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        let mut schema = self.shell.parameters();
-        if let Some(properties) = schema
-            .get_mut("properties")
-            .and_then(serde_json::Value::as_object_mut)
-        {
-            properties.insert(
-                "run_in_background".to_owned(),
-                json!({
-                    "type": ["boolean", "null"],
-                    "description": "Main agent only. Start the command as a background job and \
-                                    return at once; you are told when it ends.",
-                }),
-            );
-        }
-        schema
+        with_background(self.shell.parameters())
     }
 
     fn annotations(&self) -> ToolAnnotations {
@@ -518,7 +533,7 @@ impl Tool for ShellTool {
         match (&self.jobs, agent == ROOT_AGENT) {
             (Some(jobs), true) => {
                 let jobs = jobs.clone();
-                self.call_job(context, &jobs, args).await
+                run_job(&self.shell, &jobs, context, args, true, |a| self.launch(a)).await
             }
             _ => {
                 if args.run_in_background == Some(true) {
@@ -526,6 +541,88 @@ impl Tool for ShellTool {
                 }
                 let (shell, shell_args) = self.prepared(args.shell_args());
                 shell.call(context, shell_args).await
+            }
+        }
+    }
+}
+
+/// Runs a command in PowerShell on Windows. The interpreter is started with the command encoded
+/// into its arguments, so PowerShell parses exactly the text the guardian judged; nothing about
+/// the text is ever analysed as POSIX shell.
+#[derive(Clone, Debug)]
+pub struct PowerShellTool {
+    /// Carries the launcher, confinement, timeout cap and output cut, as for `shell`.
+    pub shell: Shell,
+    pub interpreter: PathBuf,
+    /// Where the main agent's calls run as jobs; a subagent's call waits in a registry of its own.
+    pub jobs: Option<Arc<Jobs>>,
+}
+
+impl PowerShellTool {
+    fn launch(&self, args: ShellArgs) -> Result<Process, ToolExecutionError> {
+        let argv = powershell::launch_args(&args.command);
+        launch_in(&self.shell, &args, self.interpreter.as_os_str(), &argv)
+    }
+
+    fn edition(&self) -> &'static str {
+        let name = self.interpreter.file_stem().map(|n| n.to_ascii_lowercase());
+        if name.as_deref() == Some(OsStr::new("pwsh")) {
+            "PowerShell 7"
+        } else {
+            "Windows PowerShell 5.1, which has no `&&`, `||` or ternary operator"
+        }
+    }
+}
+
+impl Tool for PowerShellTool {
+    const NAME: &'static str = "powershell";
+    type Args = ShellCall;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        let max = self.shell.max_timeout.max(1);
+        format!(
+            "Run a PowerShell command in the current directory, or in cwd, with {}. Write              PowerShell syntax, not POSIX `sh`: use `shell` for that. stdin is empty. Returns              the exit code and stdout and stderr interleaved line by line. Only a literal              `exit N` sets the exit code; a failing native command does not. A command still              running at timeout_secs (default {}, at most {max}), or, with the default, once it              printed nothing for {}s, keeps running as a background job and you are told when              it ends; pass run_in_background for a server or a long build you do not need to              wait for. Do not poll with `Start-Sleep`: use job_output with wait_secs. Background              jobs are for the main agent only: a subagent's command is stopped at its timeout              and run_in_background is refused. A command that prints more than {} MB is killed.              Each call starts a fresh process: a `cd` or a variable does not carry over to the              next call. Do not start programs that wait for input. Use the dedicated file              tools to read, search and edit files, not `Get-Content` or `Select-String`.",
+            self.edition(),
+            DEFAULT_TIMEOUT.min(self.shell.max_timeout).max(1),
+            QUIET_LIMIT.as_secs(),
+            OUTPUT_CAP / 1024 / 1024,
+        )
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        with_background(self.shell.parameters())
+    }
+
+    fn annotations(&self) -> ToolAnnotations {
+        ToolAnnotations::default().with_title("PowerShell")
+    }
+
+    async fn call(
+        &self,
+        context: &mut ToolContext,
+        args: ShellCall,
+    ) -> Result<String, ToolExecutionError> {
+        let agent = context
+            .get::<AgentId>()
+            .ok()
+            .flatten()
+            .map_or_else(|| ROOT_AGENT.to_string(), |id| id.0);
+        match (&self.jobs, agent == ROOT_AGENT) {
+            (Some(jobs), true) => {
+                let jobs = jobs.clone();
+                run_job(&self.shell, &jobs, context, args, true, |a| self.launch(a)).await
+            }
+            _ => {
+                if args.run_in_background == Some(true) {
+                    return Err(job_error(&JobError::NotRoot));
+                }
+                let local = Jobs::new();
+                run_job(&self.shell, &local, context, args, false, |a| {
+                    self.launch(a)
+                })
+                .await
             }
         }
     }
@@ -540,6 +637,8 @@ pub struct ShellSettings {
     /// Variables set after the scrub, from the user's `[env]`.
     pub set_env: Vec<(OsString, OsString)>,
     pub git_bash: Option<GitBash>,
+    /// The interpreter of the `powershell` tool; with none, the tool does not exist.
+    pub powershell: Option<PowerShellSettings>,
 }
 
 impl Default for ShellSettings {
@@ -549,6 +648,7 @@ impl Default for ShellSettings {
             scrub_env: Vec::new(),
             set_env: Vec::new(),
             git_bash: None,
+            powershell: None,
         }
     }
 }
@@ -656,6 +756,31 @@ pub fn shell_for(root: &Path, settings: &ShellSettings) -> ShellTool {
             ..Shell::default()
         },
         through_env: settings.git_bash.is_some(),
+        jobs: None,
+    }
+}
+
+/// The `powershell` tool for one root. It does not inherit Git Bash's PATH: it runs outside it.
+pub fn powershell_for(
+    root: &Path,
+    settings: &ShellSettings,
+    interpreter: &PowerShellSettings,
+) -> PowerShellTool {
+    let mut launcher = Launcher::default()
+        .in_dir(root)
+        .without_env(settings.scrub_env.iter().cloned());
+    for (name, value) in &settings.set_env {
+        launcher = launcher.with_env(name, value);
+    }
+    PowerShellTool {
+        shell: Shell {
+            launcher,
+            confine: true,
+            max_timeout: settings.max_timeout_secs,
+            cut: Some(OutputLimit::default()),
+            ..Shell::default()
+        },
+        interpreter: interpreter.path.clone(),
         jobs: None,
     }
 }
@@ -824,6 +949,17 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             guard.clone(),
         )),
     ];
+    if let Some(interpreter) = &env.shell.powershell {
+        tools.push(register(GuardedTool::per_root(
+            scope.clone(),
+            risk_of(PowerShellTool::NAME),
+            guard.clone(),
+            |root| PowerShellTool {
+                jobs: Some(env.jobs.clone()),
+                ..powershell_for(root, &env.shell, interpreter)
+            },
+        )));
+    }
     if let Some(config) = &env.websearch {
         let tool = Websearch::new(config.clone(), &env.network, env.searxng.clone()).map_err(
             |source| BuildError {

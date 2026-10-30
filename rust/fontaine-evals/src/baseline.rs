@@ -36,8 +36,9 @@ pub struct Denial {
     pub tool_input: Value,
 }
 
-const TOOL_NAMES: [(&str, &str); 10] = [
+const TOOL_NAMES: [(&str, &str); 11] = [
     ("shell", "Bash"),
+    ("powershell", "PowerShell"),
     ("read", "Read"),
     ("write", "Write"),
     ("edit", "Edit"),

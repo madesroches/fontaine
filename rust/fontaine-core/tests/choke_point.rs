@@ -152,6 +152,7 @@ fn params(rig: &Rig) -> RegistryParams {
         set_env: Vec::new(),
         shell_max_timeout_secs: 600,
         git_bash: None,
+        powershell: None,
         results: Arc::new(ResultPipeline::new()),
         hide_mcp_names: false,
         websearch: None,
@@ -177,11 +178,12 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         "duplicate registrations: {names:?}"
     );
 
-    // `websearch` exists only when a backend is configured, `lsp` only when a language server is.
+    // `websearch` exists only when a backend is configured, `lsp` only when a language server is,
+    // `powershell` only when an interpreter was found.
     let expected: BTreeSet<&str> = TOOLS
         .iter()
         .map(|d| d.name)
-        .filter(|name| !matches!(*name, "websearch" | "lsp"))
+        .filter(|name| !matches!(*name, "websearch" | "lsp" | "powershell"))
         .collect();
     assert_eq!(unique, expected);
     // The ones beyond the built-ins are exactly these.
@@ -309,6 +311,29 @@ fn a_configured_language_server_adds_exactly_lsp_with_its_descriptor_class() {
     let tool = tools.iter().find(|t| t.name == "lsp").unwrap();
     assert_eq!(Some(tool.risk), registered_risk("lsp"));
     assert_eq!(tool.risk, RiskClass::ReadOnly);
+}
+
+#[test]
+fn a_found_interpreter_adds_exactly_powershell_with_its_descriptor_class() {
+    use fontaine_tools::powershell::PowerShellSettings;
+
+    let rig = Rig::new(Manual);
+    let plain: BTreeSet<&str> = registry(params(&rig))
+        .unwrap()
+        .iter()
+        .map(|t| t.name)
+        .collect();
+    let mut p = params(&rig);
+    p.powershell = Some(PowerShellSettings {
+        path: "pwsh.exe".into(),
+    });
+    let tools = registry(p).unwrap();
+    let found: BTreeSet<&str> = tools.iter().map(|t| t.name).collect();
+    assert_eq!(&found - &plain, BTreeSet::from(["powershell"]));
+    assert!(plain.is_subset(&found));
+    let tool = tools.iter().find(|t| t.name == "powershell").unwrap();
+    assert_eq!(Some(tool.risk), registered_risk("powershell"));
+    assert_eq!(tool.risk, fontaine_tools::risk::RiskClass::Arbitrary);
 }
 
 #[test]

@@ -19,6 +19,7 @@ use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::jobs::Jobs;
 use fontaine_tools::lock::write_recovering;
 use fontaine_tools::lsp::LspServers;
+use fontaine_tools::powershell::PowerShellSettings;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::RiskClass;
 use fontaine_tools::websearch::SearxngChild;
@@ -102,6 +103,8 @@ pub struct AgentSetup {
     /// Variables the shell tool's child processes do not inherit.
     pub scrub_env: Vec<OsString>,
     pub git_bash: Option<GitBash>,
+    /// The `powershell` tool's interpreter, found on Windows; `None` leaves the tool out.
+    pub powershell: Option<PowerShellSettings>,
     pub system_prompt: Option<String>,
     pub append_system_prompt: Option<String>,
     /// A schema the final answer must follow.
@@ -196,6 +199,7 @@ pub(crate) struct Setup {
     data_dir: PathBuf,
     pub(crate) scrub_env: Vec<OsString>,
     pub(crate) git_bash: Option<GitBash>,
+    pub(crate) powershell: Option<PowerShellSettings>,
     system_prompt: Option<String>,
     append_system_prompt: Option<String>,
     json_schema: Option<Schema>,

@@ -10,6 +10,10 @@ use fontaine_tools::preclassify::{
 use fontaine_tools::scope::{Scope, fold, translate};
 use serde_json::Value;
 
+mod powershell;
+
+pub use powershell::critical_powershell;
+
 /// Directories whose contents `edit` and `write` never touch without a prompt.
 pub const PROTECTED_DIRS: [&str; 6] =
     [".git", ".vscode", ".idea", ".husky", ".fontaine", ".claude"];
@@ -258,8 +262,11 @@ fn native_operand(target: &str, windows: bool) -> String {
 }
 
 fn is_critical_target(target: &str, base: &Path, env: &CriticalEnv<'_>) -> bool {
-    let target = native_operand(target, cfg!(windows));
-    let target = target.as_str();
+    is_critical_text(&native_operand(target, cfg!(windows)), base, env)
+}
+
+/// Whether `target`, a path as the file system reads it, is a critical place.
+fn is_critical_text(target: &str, base: &Path, env: &CriticalEnv<'_>) -> bool {
     let absolute = Path::new(target).is_absolute() || target.starts_with(['/', '\\']);
     let joined = if absolute {
         PathBuf::from(target)

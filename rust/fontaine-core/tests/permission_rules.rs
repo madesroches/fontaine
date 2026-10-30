@@ -72,6 +72,7 @@ fn the_grammar_is_checked_per_tool_kind() {
         "send_message",
         "ask_user_question",
         "todo_write",
+        "powershell",
     ] {
         parse_rule(good).unwrap_or_else(|e| panic!("{good}: {e}"));
     }
@@ -92,6 +93,8 @@ fn the_grammar_is_checked_per_tool_kind() {
         "todo_write(x)",
         "mcp__github(x)",
         "agent(a b)",
+        "powershell(Get-ChildItem *)",
+        "PowerShell",
         "unknown_tool",
         "bash",
     ] {
@@ -795,6 +798,29 @@ fn a_shell_deny_or_ask_rule_also_covers_monitor_but_an_allow_rule_does_not() {
         fontaine_tools::descriptor::find_claude("Monitor").map(|d| d.name),
         Some("monitor")
     );
+}
+
+#[test]
+fn a_bare_shell_deny_or_ask_rule_covers_powershell_but_nothing_else_does() {
+    let f = Fixture::new();
+    for posture in [Posture::Deny, Posture::Ask] {
+        assert!(f.hit("shell", "powershell", shell("Get-Date"), posture));
+        assert!(f.hit("powershell", "powershell", shell("Get-Date"), posture));
+        assert!(!f.hit("shell(git push)", "powershell", shell("git push"), posture));
+        assert!(!f.hit("powershell", "shell", shell("git push"), posture));
+    }
+    assert!(f.hit(
+        "powershell",
+        "powershell",
+        shell("Get-Date"),
+        Posture::Allow
+    ));
+    assert!(!f.hit("shell", "powershell", shell("Get-Date"), Posture::Allow));
+}
+
+#[test]
+fn a_blanket_powershell_allow_is_broad_code_execution() {
+    assert!(is_broad_code_execution(&rule("powershell")));
 }
 
 #[test]

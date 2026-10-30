@@ -1065,3 +1065,18 @@ async fn the_guardian_is_told_the_memory_directory_only_when_auto_memory_is_on()
     let request = fontaine_core::adjudication::build(&off.state, "write", &args, Vec::new(), None);
     assert_eq!(request.session_facts.memory_dir, None);
 }
+
+#[tokio::test]
+async fn every_powershell_call_goes_to_the_guardian_in_auto() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig(&fake, "");
+    for command in ["ls", "Get-ChildItem", "Get-Date"] {
+        let before = fake.calls();
+        assert!(
+            allowed(&rig.check("powershell", shell(command)).await),
+            "{command}"
+        );
+        assert_eq!(fake.calls(), before + 1, "{command}");
+        assert_eq!(last(&rig).tier, Tier::Guardian, "{command}");
+    }
+}

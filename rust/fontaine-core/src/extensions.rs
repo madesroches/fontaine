@@ -634,6 +634,12 @@ mod tests {
     }
 
     #[test]
+    fn powershell_maps_from_its_claude_code_name() {
+        assert_eq!(map_tool_entry("PowerShell").unwrap(), "powershell");
+        assert_eq!(map_tool_entry("powershell").unwrap(), "powershell");
+    }
+
+    #[test]
     fn the_job_tools_map_from_their_claude_code_names() {
         assert_eq!(map_tool_entry("Monitor").unwrap(), "monitor");
         assert_eq!(

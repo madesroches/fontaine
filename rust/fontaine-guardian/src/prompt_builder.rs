@@ -230,6 +230,12 @@ pub(crate) fn blocks(
     } else {
         String::new()
     };
+    // No parser reads PowerShell here, so nothing about the command is pre-digested.
+    let note = if call.tool == "powershell" {
+        "note: PowerShell text the harness did not parse; read the command itself\n"
+    } else {
+        ""
+    };
     let declared = call.annotations.as_deref().map_or(String::new(), |text| {
         format!(
             "server_declared_annotations (the server's own claim, not a fact): {}\n",
@@ -240,7 +246,7 @@ pub(crate) fn blocks(
         "tool_call",
         None,
         &format!(
-            "tool: {}\ndestructive: {}\n{digest}{declared}args:\n{}",
+            "tool: {}\ndestructive: {}\n{note}{digest}{declared}args:\n{}",
             call.tool,
             call.destructive,
             args_text(&call.args)
@@ -390,6 +396,18 @@ mod tests {
     #[test]
     fn the_full_user_message() {
         insta::assert_snapshot!(user_message(&request()));
+    }
+
+    #[test]
+    fn a_powershell_call_renders_its_command_and_says_it_was_not_parsed() {
+        let mut powershell = request();
+        powershell.tool_call.tool = "powershell".into();
+        powershell.tool_call.args = json!({"command": "Get-ChildItem -Recurse"});
+        let text = user_message(&powershell);
+        assert!(text.contains("tool: powershell\n"), "{text}");
+        assert!(text.contains("did not parse"), "{text}");
+        assert!(text.contains("Get-ChildItem -Recurse"), "{text}");
+        assert!(!user_message(&request()).contains("did not parse"));
     }
 
     #[test]

@@ -9,6 +9,7 @@ use fontaine_tools::builtins::{self, ShellSettings};
 use fontaine_tools::descriptor::{TOOLS, find};
 use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::names::is_builtin;
+use fontaine_tools::powershell::PowerShellSettings;
 use fontaine_tools::risk::RiskClass;
 use rig_core::tool::{Tool, ToolContext};
 use rig_tools::{OutputLimit, Seen, WriteArgs};
@@ -52,6 +53,29 @@ fn the_registered_set_is_exactly_the_documented_one() {
             "{removed} must not be registered"
         );
     }
+}
+
+#[test]
+fn powershell_exists_only_when_an_interpreter_was_found() {
+    let d = Dirs::new();
+    let mut env = env_with(scope(&d.dir("work"), &[]), Arc::new(AllowAll::default()));
+    let without: BTreeSet<&str> = registry(&env).iter().map(|t| t.name).collect();
+    assert_eq!(without.len(), EXPECTED.len());
+    assert!(!without.contains("powershell"));
+
+    env.shell.powershell = Some(PowerShellSettings {
+        path: d.base.join("pwsh.exe"),
+    });
+    let tools = registry(&env);
+    let with: BTreeSet<&str> = tools.iter().map(|t| t.name).collect();
+    assert_eq!(with.len(), EXPECTED.len() + 1);
+    assert!(with.contains("powershell"));
+    let tool = tools.iter().find(|t| t.name == "powershell").unwrap();
+    assert_eq!(tool.risk, RiskClass::Arbitrary);
+    assert_eq!(find("powershell").map(|d| d.risk), Some(tool.risk));
+    let definition = tool.tool.definition();
+    assert!(definition.description.contains("PowerShell"));
+    assert!(definition.parameters["properties"]["run_in_background"].is_object());
 }
 
 #[test]
@@ -157,6 +181,7 @@ fn the_shell_is_confined_clamped_and_cut() {
         scrub_env: vec![OsString::from("SECRET_ONE"), OsString::from("SECRET_TWO")],
         set_env: Vec::new(),
         git_bash: None,
+        powershell: None,
     };
     let tool = builtins::shell_for(&root, &settings);
     assert!(!tool.through_env);

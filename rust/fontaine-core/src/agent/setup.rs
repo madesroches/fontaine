@@ -460,6 +460,7 @@ pub(super) fn retained(
         data_dir: setup.data_dir.clone(),
         scrub_env: setup.scrub_env.clone(),
         git_bash: setup.git_bash.clone(),
+        powershell: setup.powershell.clone(),
         system_prompt: setup.system_prompt.clone(),
         append_system_prompt: setup.append_system_prompt.clone(),
         json_schema: setup.json_schema.clone(),
