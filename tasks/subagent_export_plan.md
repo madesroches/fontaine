@@ -55,8 +55,9 @@ The owner-only and never-overwrite guarantees extend to every file and to the fo
   (`session.rs:613-650`); separate logs are untouched. The ledger is never rewound.
 - Prior art: `owner_only::create_dir` creates a 0700 / inheriting-DACL directory with
   `AlreadyExists` on an existing entry (`owner_only.rs`). Master plan decisions at
-  `tasks/fontaine_harness_plan.md:668` (export guarantees, #10) and `:680` (subagent state
-  in-memory; notes ids are not stable across resume — this plan changes that, see Decisions).
+  `tasks/fontaine_harness_plan.md:668` (export guarantees, #10); the id-instability note this
+  plan supersedes is `tasks/completed/task_list_tool_plan.md:169` (agent ids are not stable
+  across resume — this plan changes that, see Decisions).
   The subagent-view plan decided `/export` stays view-independent
   (`tasks/completed/subagent_view_plan.md` §5), which this feature keeps.
 - Integration coverage: `export_writes_the_conversation_once_and_never_overwrites`
@@ -75,10 +76,13 @@ The owner-only and never-overwrite guarantees extend to every file and to the fo
 ### Part 1 — persist subagent conversations
 
 **One log per agent, in the session store.** `ChildContext`
-(`child_runner.rs:132-144`) gains a `store: DirStore` (cloned from
-`setup.session.store()` in `agent/setup.rs`). `CoreChildRunner::spawn` stops creating
+(`child_runner.rs:132-144`) gains a `store: DirStore`. The retained `Setup` that
+`child_runner()` receives carries no `Session`, so the store is cloned from
+`setup.session.store()` at the `subagent_support` call site in `agent.rs:263` (where the full
+`AgentSetup` is still available) and threaded through `subagent_support` → `child_runner` as a
+new parameter. `CoreChildRunner::spawn` stops creating
 `MemoryStore`s: the child's log name is its agent id (`agent-<n>` — a valid rig log name, so the
-file lands at `<session>/logs/agent-<n>.log` beside `main.log`), and the builder gets
+file lands at `<session>/logs/agent-<n>.jsonl` beside `main.jsonl`), and the builder gets
 `.memory(store.clone()).conversation(request.id)` plus `RecoveryHook::new(store, request.id, …)`
 (the hook's log field widens from `&'static str` to `String`). rig-agent then saves the child's
 conversation to disk when each run ends, reloads it at the start of a resumed run
@@ -104,8 +108,10 @@ the copy.
 
 **What this deliberately does not change.** The live tree stays per-process and in-memory;
 `--resume` does not rebuild it (live status, handles and resumability remain session-scoped).
-The TUI's streamed agent views are unchanged. The only new durable artefacts are the per-agent
-logs, inside the already owner-only session directory.
+The TUI's streamed agent views are unchanged — re-opening persisted logs so views survive
+`--resume` is a later candidate; only the export reads them. The only new durable artefacts are
+the per-agent logs, inside the already owner-only session directory. No store field in
+`RunShared`.
 
 ### Part 2 — the export
 
@@ -164,14 +170,6 @@ lists every agent recorded in the session ledger, including agents whose spawn t
 rewound away; their transcripts stand as per-agent evidence, the same way the ledger keeps the
 fact of their work. This is documented, not worked around.
 
-### The seam that is no longer needed
-
-The earlier draft of this plan threaded `ChildHandle::conversation()` through
-`fontaine-agents` so export could reach in-memory stores. With persistence, export reads the
-session store directly and the ledger supplies the agent list — **no `ChildHandle` change, no
-`fontaine-agents` dependency change, no store field in `RunShared`**. The trait, its two impls
-(`child_runner.rs:267`, `tests/seam.rs:91`) and the crate manifest are untouched.
-
 ## Implementation Steps
 
 1. **`rust/fontaine-core/src/ledger.rs`** — fold `Record::Agent` in `LedgerView::apply`: add
@@ -185,8 +183,10 @@ session store directly and the ledger supplies the agent list — **no `ChildHan
    `tests/agent_pipeline.rs:371`, tree's own tests, `tests/seam.rs:218`) passing 1.
 3. **`rust/fontaine-core/src/child_runner.rs`** — add `store: DirStore` to `ChildContext`;
    in `spawn`, drop the `MemoryStore`, use log name `request.id` for the builder memory and the
-   `RecoveryHook` (widen its log field to `String` in `turn_recovery.rs`); pass the store
-   through from `agent/setup.rs` (`child_runner()`, `setup.rs:522-536`).
+   `RecoveryHook` (widen its log field to `String` in `turn_recovery.rs`, so the root call site
+   in `agent/build.rs:270` passes `CONVERSATION_LOG.to_owned()`); pass the store through from
+   the `subagent_support` call site in `agent.rs` (`setup.session.store()` is available there —
+   thread it through `subagent_support` → `child_runner`, `setup.rs:522-536`).
 4. **`rust/fontaine-core/src/fork_context.rs`** — `ParentContext::seed` saves the seeded
    conversation into the child's log of the session store (caller passes store + log name).
 5. **`rust/fontaine-core/src/export.rs`** — split `render` into the existing wrapper plus a
@@ -204,14 +204,15 @@ session store directly and the ledger supplies the agent list — **no `ChildHan
    life).
 10. **`tasks/fontaine_harness_plan.md`** — dated Decisions lines at the end of `### Sessions`:
     per-agent persisted logs and ledger-derived stable ids (noting it supersedes the id-
-    instability note behind the :680 line), the folder export layout, completed-runs-only
+    instability note at `tasks/completed/task_list_tool_plan.md:169`), the folder export
+    layout, completed-runs-only
     semantics for running subagents, and rewind/clear leaving agent logs untouched.
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/ledger.rs`
 - `rust/fontaine-agents/src/tree.rs` (+ its tests)
-- `rust/fontaine-core/src/agent.rs`, `src/agent/setup.rs`
+- `rust/fontaine-core/src/agent.rs`, `src/agent/setup.rs`, `src/agent/build.rs`
 - `rust/fontaine-core/src/child_runner.rs`, `src/turn_recovery.rs`, `src/fork_context.rs`
 - `rust/fontaine-core/src/export.rs`
 - `rust/fontaine-tui/src/ui/commands/session.rs`, `src/commands.rs`
@@ -257,7 +258,7 @@ session store directly and the ledger supplies the agent list — **no `ChildHan
   ledger's `spawned` records; no `agents.json`, no UUIDs (user proposed UUIDs; the counter was
   chosen for display/addressing ergonomics with the same guarantee).
 - The per-agent log's name is the agent id; logs live in the session store's `logs/` beside
-  `main.log`.
+  `main.jsonl`.
 - Root rewind and `/clear` do not touch agent logs; the export lists every agent recorded in
   the ledger, and a transcript stands as per-agent evidence of work the root conversation no
   longer shows.
@@ -270,6 +271,9 @@ session store directly and the ledger supplies the agent list — **no `ChildHan
   session), continuing the subagent-view plan's routing decision.
 - The index lists id, parent, agent type and status per subagent; `background` and `depth` are
   omitted.
+- Agent logs accumulate for the session's life and are pruned only when the session is deleted;
+  extending `/clear` epoch semantics to them is a follow-up if session dirs grow uncomfortably.
+  Accepted for v1.
 
 ## Documentation
 
@@ -277,7 +281,7 @@ session store directly and the ledger supplies the agent list — **no `ChildHan
   subagents exist (live or from before a resume), the index and per-agent files, the
   completed-runs-only note for running subagents, and the unchanged owner-only /
   never-overwrite guarantees. Update the command-table row at `:344`.
-- `docs/architecture.md`: the session layout (`:176-212`) gains the per-agent `logs/agent-<n>.log`
+- `docs/architecture.md`: the session layout (`:176-212`) gains the per-agent `logs/agent-<n>.jsonl`
   files, and "Subagents in the ledger" (`:233-245`) notes the ledger now both records the
   lifecycle and anchors id continuity across resume.
 - `docs/agents.md` (`:205-217`): a subagent's conversation is persisted for the session's life
@@ -324,10 +328,3 @@ Integration (TUI harness, wiremock-routed scripted provider — no live API):
 None. The rendered Markdown shape is fully covered by the unit tests above and the integration
 test reads the files back; nothing here needs a human eyeball that a test cannot assert.
 
-## Open Questions
-
-- Log retention: agent logs accumulate for the session's life and are pruned only when the
-  session is deleted (or `/clear`'d epoch semantics are extended to them later). Acceptable for
-  v1; pruning is a follow-up if session dirs grow uncomfortably.
-- The TUI's live agent views could later re-open persisted logs so views survive `--resume`;
-  out of scope here, where only the export reads them.
