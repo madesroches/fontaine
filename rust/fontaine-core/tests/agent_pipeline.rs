@@ -385,3 +385,175 @@ async fn child_restriction_refuses_an_unregistered_caller_only() {
     assert!(rig.state.child_restriction(ROOT_AGENT, &call).is_none());
     assert!(rig.state.child_restriction(&live, &call).is_none());
 }
+
+fn spawn_of(agent_type: &str) -> Value {
+    json!({"agent_type": agent_type, "prompt": "look around"})
+}
+
+fn types_with(name: &str, tools: &[&str]) -> fontaine_agents::registry::AgentTypes {
+    use fontaine_agents::mode::ModeSetting;
+    use fontaine_agents::registry::{AgentType, AgentTypes, ModelSpec, TypeOrigin};
+    let mut types = AgentTypes::builtin();
+    types.insert(AgentType {
+        name: name.to_string(),
+        description: String::new(),
+        prompt: None,
+        tools: Some(tools.iter().map(|t| t.to_string()).collect()),
+        disallowed: Vec::new(),
+        model: Some(ModelSpec::Main),
+        mode: ModeSetting::Inherit,
+        origin: TypeOrigin::Config,
+        inherits_context: false,
+    });
+    types
+}
+
+#[tokio::test]
+async fn a_read_only_spawn_takes_the_fast_path_in_every_mode_without_the_guardian() {
+    for mode in [
+        Manual,
+        Plan,
+        Auto,
+        PermissionMode::DontAsk,
+        PermissionMode::AcceptEdits,
+    ] {
+        let fake = fake_guardian(allow_verdict());
+        let rig = auto_rig(&fake, mode);
+        assert!(
+            allowed(&rig.check("agent", spawn_of("explore")).await),
+            "{mode:?}"
+        );
+        let record = rig.audit().last().unwrap().clone();
+        assert_eq!(record.tier, Tier::ReadOnlyFastPath, "{mode:?}");
+        assert_eq!(record.tool, "agent");
+        assert_eq!(fake.calls(), 0, "{mode:?}");
+        assert_eq!(rig.approver.asked(), 0, "{mode:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_project_type_with_only_read_tools_takes_the_fast_path() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(
+        Options::new(Auto)
+            .guardian(fake.guardian.clone())
+            .agent_types(types_with("reader", &["read", "grep"])),
+    );
+    assert!(allowed(&rig.check("agent", spawn_of("reader")).await));
+    assert_eq!(rig.audit().last().unwrap().tier, Tier::ReadOnlyFastPath);
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
+async fn a_spawn_that_can_change_state_still_reaches_the_guardian() {
+    let mut types = types_with("nests", &["read", "agent"]);
+    for (name, tools) in [
+        ("shelly", vec!["read", "shell"]),
+        ("fetchy", vec!["read", "webfetch"]),
+        ("mcpish", vec!["read", "mcp__srv__lookup"]),
+    ] {
+        let more = types_with(name, &tools);
+        types.insert(more.get(name).unwrap().clone());
+    }
+    for name in ["worker", "fork", "nests", "shelly", "fetchy", "mcpish"] {
+        let fake = fake_guardian(allow_verdict());
+        let rig = Rig::with(
+            Options::new(Auto)
+                .guardian(fake.guardian.clone())
+                .agent_types(types.clone()),
+        );
+        rig.agents.set_root_tools(|| {
+            let mut tools: Vec<String> = fontaine_tools::descriptor::names()
+                .map(String::from)
+                .collect();
+            tools.push("mcp__srv__lookup".to_string());
+            tools
+        });
+        rig.check("agent", spawn_of(name)).await;
+        assert_eq!(fake.calls(), 1, "{name}");
+        assert_ne!(rig.audit().last().unwrap().tier, Tier::ReadOnlyFastPath);
+    }
+}
+
+#[tokio::test]
+async fn deny_ask_and_hook_decisions_come_before_the_spawn_fast_path() {
+    use fontaine_core::permissions::{
+        HookDecision, HookError, HookPermission, PreToolUseEvent, PreToolUseHook,
+    };
+    use futures::future::BoxFuture;
+    use std::sync::Arc;
+
+    let denied =
+        Rig::with(Options::new(Manual).settings("[permissions]\ndeny = [\"agent(explore)\"]\n"));
+    assert!(!allowed(&denied.check("agent", spawn_of("explore")).await));
+    assert_eq!(denied.audit().last().unwrap().tier, Tier::DenyRule);
+
+    let asking =
+        Rig::with(Options::new(Manual).settings("[permissions]\nask = [\"agent(explore)\"]\n"));
+    asking.check("agent", spawn_of("explore")).await;
+    assert_eq!(asking.approver.asked(), 1);
+
+    struct AskHook;
+    impl PreToolUseHook for AskHook {
+        fn id(&self) -> String {
+            "ask".to_string()
+        }
+        fn timeout(&self) -> std::time::Duration {
+            std::time::Duration::from_millis(100)
+        }
+        fn run<'a>(
+            &'a self,
+            _event: PreToolUseEvent<'a>,
+        ) -> BoxFuture<'a, Result<HookDecision, HookError>> {
+            Box::pin(async {
+                Ok(HookDecision {
+                    permission: Some(HookPermission::Ask),
+                    ..HookDecision::default()
+                })
+            })
+        }
+    }
+    let mut options = Options::new(Manual);
+    options.hooks = vec![Arc::new(AskHook)];
+    let hooked = Rig::with(options);
+    hooked.check("agent", spawn_of("explore")).await;
+    assert_eq!(hooked.approver.asked(), 1);
+}
+
+#[tokio::test]
+async fn a_nested_child_whose_type_lists_agent_does_not_qualify() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(
+        Options::new(Auto)
+            .guardian(fake.guardian.clone())
+            .agent_types(types_with("nests", &["read", "agent"])),
+    );
+    let id = rig
+        .agents
+        .reserve(
+            ROOT_AGENT,
+            "worker",
+            "m",
+            vec!["read".into(), "agent".into()],
+            Ladder::Auto,
+            false,
+        )
+        .unwrap();
+    rig.check_as(&id, "agent", spawn_of("nests")).await;
+    assert_eq!(fake.calls(), 1);
+}
+
+#[tokio::test]
+async fn a_spawn_from_a_child_with_no_tools_can_change_nothing() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig(&fake, Auto);
+    let id = rig
+        .agents
+        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Auto, false)
+        .unwrap();
+    assert!(allowed(
+        &rig.check_as(&id, "agent", spawn_of("worker")).await
+    ));
+    assert_eq!(rig.audit().last().unwrap().tier, Tier::ReadOnlyFastPath);
+    assert_eq!(fake.calls(), 0);
+}

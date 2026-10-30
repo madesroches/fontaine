@@ -110,7 +110,7 @@ async fn a_blocking_agent_call_returns_the_childs_report_as_its_tool_result() {
     let records = audit(&s, &lines);
     let spawn = records.iter().find(|r| r["tool"] == "agent").unwrap();
     assert_eq!(spawn["agent_id"], "root");
-    assert_eq!(spawn["tier"], "allow_rule");
+    assert_eq!(spawn["tier"], "read_only_fast_path");
     let read = records.iter().find(|r| r["tool"] == "read").unwrap();
     assert_eq!(read["agent_id"], "agent-1");
     assert_eq!(read["tier"], "read_only_fast_path");

@@ -268,6 +268,7 @@ async fn the_guardian_request_after_a_rewind_omits_the_retracted_prompt_but_keep
         .unwrap();
     let request = fontaine_core::adjudication::build(
         &built.runtime.state,
+        fontaine_tools::gate::ROOT_AGENT,
         "shell",
         &json!({"command": "ls"}),
         Vec::new(),

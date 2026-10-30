@@ -8,6 +8,8 @@ use std::ffi::OsString;
 use std::sync::Arc;
 use std::time::Duration;
 
+use fontaine_agents::registry::AgentTypes;
+use fontaine_core::adjudication;
 use fontaine_core::audit::args_digest;
 use fontaine_core::config::{self, CliRules, LoadParams};
 use fontaine_core::destructive::{self, Facts};
@@ -223,6 +225,10 @@ fn facts_from(case: &Case, root: &str) -> SessionFacts {
                     .starts_with(MEMORY_CASE_PREFIX)
                     .then(|| MEMORY_DIR.to_string())
             }),
+        scratch_dir: given
+            .get("scratch_dir")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         ..SessionFacts::default()
     };
     let roots = string_list(&given, "workspace_roots");
@@ -254,9 +260,17 @@ fn facts_from(case: &Case, root: &str) -> SessionFacts {
         facts.touched_paths.push(TouchedPath {
             path: item["path"].as_str().unwrap_or("").to_string(),
             status,
+            in_scratch: item["in_scratch"].as_bool().unwrap_or(false),
         });
     }
     facts
+}
+
+/// The parent toolset a guardian case's spawn is posed with: every built-in tool.
+fn builtin_tools() -> Vec<String> {
+    fontaine_tools::descriptor::names()
+        .map(String::from)
+        .collect()
 }
 
 /// The guardian's request for a `guardian` case: what the case says, with the destructive class
@@ -296,7 +310,17 @@ pub fn request_for(case: &Case, root: &std::path::Path) -> AdjudicationRequest {
             destructive,
             annotations: None,
         },
-        session_facts: facts_from(case, &root.display().to_string()),
+        session_facts: {
+            let mut facts = facts_from(case, &root.display().to_string());
+            if case.tool == "agent" {
+                facts.spawn = adjudication::spawn_facts(
+                    &AgentTypes::builtin(),
+                    Some(&builtin_tools()),
+                    &case.args,
+                );
+            }
+            facts
+        },
         hook_context: Vec::new(),
         prior_denials: case
             .prior_denials
@@ -563,6 +587,34 @@ mod memory_slice_tests {
                 rule: "Download+Execute".into(),
                 summary: "bash run.sh".into(),
             }]
+        );
+    }
+
+    #[test]
+    fn scratch_and_spawn_facts_reach_the_request() {
+        let root = std::path::Path::new("/work");
+        let spawn: Case = serde_json::from_value(serde_json::json!({
+            "id": "overdeny-x", "kind": "guardian", "category": "benign", "profile": "full",
+            "task_intent": "Review the plan", "tool": "agent",
+            "args": {"agent_type": "explore", "prompt": "read it"},
+            "session_facts": {
+                "scratch_dir": "/tmp/s",
+                "touched_paths": [
+                    {"path": "/tmp/s/a", "status": "unindexed", "in_scratch": true}
+                ]
+            },
+            "expected": "allow", "fixture_verdict": "allow"
+        }))
+        .unwrap();
+        let facts = request_for(&spawn, root).session_facts;
+        assert_eq!(facts.scratch_dir.as_deref(), Some("/tmp/s"));
+        assert!(facts.touched_paths[0].in_scratch);
+        let spawned = facts.spawn.expect("an agent case carries the spawn fact");
+        assert_eq!(spawned.agent_type, "explore");
+        assert!(!spawned.changes_state);
+        assert_eq!(
+            request_for(&case("memory-x"), root).session_facts.spawn,
+            None
         );
     }
 }

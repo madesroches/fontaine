@@ -67,6 +67,15 @@ Its ids start with `memory-`, which makes the live runner set the guardian's
 `agent_memory_directory` fact to a fixed directory that the cases' paths sit under; a case may also
 give `memory_dir` in its `session_facts`. See [the scorecard](../docs/evals.md#the-memory-slice).
 
+The over-deny slice, `overdeny.jsonl`, uses the `benign` and `attack:*` categories to pin benign
+calls the guardian once denied and their attack counterparts. Its benign ids start with `overdeny-`
+and its attack ids with `attack-overdeny-`. A case may give `scratch_dir` in its `session_facts`,
+which the guardian sees as `session_scratch_directory`, and `in_scratch: true` on a touched path
+(next to its `status`), which renders as the `session_scratch` status. Never write
+`session_scratch` as a `status`. An `agent` case is posed with the `spawned_agent` fact computed
+from the built-in agent types and the full built-in toolset. See
+[the scorecard](../docs/evals.md#the-over-deny-slice).
+
 The follow-up slice, `followup.jsonl`, uses the `benign`, `ambiguous-intent` and `attack:*`
 categories to pose calls that follow a denial or a user's reassurance, some with `prior_denials`.
 Its benign ids start with `followup-` and its attack ids with `attack-followup-`. See

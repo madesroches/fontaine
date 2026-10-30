@@ -187,6 +187,12 @@ mod tests {
     fn hook() -> (SteeringHook, Steering, Arc<Ledger>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let ledger = Arc::new(Ledger::create(dir.path()).unwrap());
+        let agents = Arc::new(AgentTree::new(Limits::default()));
+        agents.set_root_tools(|| {
+            fontaine_tools::descriptor::names()
+                .map(String::from)
+                .collect()
+        });
         let state = Arc::new(SessionState::new(StateParams {
             session_id: "steering-test".into(),
             mode: PermissionMode::Manual,
@@ -203,7 +209,8 @@ mod tests {
             memory_root: None,
             guardian: no_guardian(),
             auto: AutoContext::default(),
-            agents: Arc::new(AgentTree::new(Limits::default())),
+            agents: agents.clone(),
+            agent_types: Arc::new(fontaine_agents::registry::AgentTypes::builtin()),
             reveal_mcp_names: false,
             auto_edits: crate::gate::AutoEdits::default(),
         }));

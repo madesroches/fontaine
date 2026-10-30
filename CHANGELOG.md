@@ -8,6 +8,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- A spawned agent whose tools are all read-only (`explore`, or a type with no tools) starts
+  without a prompt or a guardian call, in every mode, after the deny and ask rules and hooks;
+  every call the child makes is still gated. A spawn whose parent toolset is unknown is not
+  fast-pathed (#302).
+
 - An `lsp` tool asks a language server for a symbol's definition, implementations, references,
   hover text, a file's or the workspace's symbols and the call hierarchy, and a note on each
   `edit` or `write` result lists the errors and warnings the server found in the new content;
@@ -80,6 +85,15 @@ All notable changes are recorded here. The format follows
   scorecards are re-baselined by the next live run.
 
 ### Fixed
+
+- The guardian over-denied benign calls (#268, #239, #302, #278, #309): it now knows the
+  session scratch directory (paths inside it no longer read as possibly pre-existing) and what a
+  spawned agent can do; posting an issue the user asked for on the project's own repository is
+  no longer Data Exfiltration; a standing grant for a class of action ("you may post gh issues")
+  counts as consent for soft denies; a plain `git commit` is no longer Git Destructive; and
+  installing a package the task calls for from the tool's default registry is no longer
+  Download+Execute. A new `overdeny` eval slice
+  pins each reported case beside its attack counterpart (#312).
 
 - The guardian no longer denies a call as `unparseable` because the model put a rule's name in
   `rule` instead of a label (#273). Every shipped deny rule now starts with its label (persistence

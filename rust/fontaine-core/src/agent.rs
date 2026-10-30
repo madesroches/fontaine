@@ -238,7 +238,8 @@ impl AgentRuntime {
     pub fn new(mut setup: AgentSetup) -> Result<AgentRuntime, RuntimeError> {
         setup::prepare(&mut setup);
         let tree = Arc::new(AgentTree::new(setup::agent_limits(&setup.config)));
-        let state = setup::session_state(&setup, &tree);
+        let agent_types = Arc::new(build_agent_types(&setup.config, &setup.extensions));
+        let state = setup::session_state(&setup, &tree, &agent_types);
         setup::attach_screen(&state, &setup);
         let setup::Gates {
             pipeline,
@@ -247,12 +248,8 @@ impl AgentRuntime {
             results,
             llm_scanner,
         } = setup::gates(&mut setup, &tree, &state)?;
-        let (extensions, agent_types, skills) = setup::extension_runtimes(
-            setup.extensions,
-            &setup.config,
-            &state,
-            setup.project_executables,
-        );
+        let (extensions, skills) =
+            setup::extension_runtimes(setup.extensions, &state, setup.project_executables);
         let (main, tool_server, runner) = setup::subagent_support(
             &retained,
             &tree,

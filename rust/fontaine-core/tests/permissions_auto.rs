@@ -1056,13 +1056,27 @@ async fn the_guardian_is_told_the_memory_directory_only_when_auto_memory_is_on()
     let fake = fake_guardian(allow_verdict());
     let on = Rig::with(Options::new(Auto).memory().guardian(fake.guardian.clone()));
     let args = write_args("a.txt");
-    let request = fontaine_core::adjudication::build(&on.state, "write", &args, Vec::new(), None);
+    let request = fontaine_core::adjudication::build(
+        &on.state,
+        fontaine_tools::gate::ROOT_AGENT,
+        "write",
+        &args,
+        Vec::new(),
+        None,
+    );
     assert_eq!(
         request.session_facts.memory_dir.as_deref(),
         Some(on.memory.as_ref().unwrap().to_str().unwrap())
     );
     let off = auto_rig(&fake, "");
-    let request = fontaine_core::adjudication::build(&off.state, "write", &args, Vec::new(), None);
+    let request = fontaine_core::adjudication::build(
+        &off.state,
+        fontaine_tools::gate::ROOT_AGENT,
+        "write",
+        &args,
+        Vec::new(),
+        None,
+    );
     assert_eq!(request.session_facts.memory_dir, None);
 }
 

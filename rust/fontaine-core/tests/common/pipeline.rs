@@ -142,6 +142,8 @@ pub struct Options {
     /// Gives the rig an auto-memory root under the data directory, as a session with
     /// `[memory] auto` on has.
     pub memory: bool,
+    /// Replaces the built-in agent types the session can spawn.
+    pub agent_types: Option<fontaine_agents::registry::AgentTypes>,
 }
 
 impl Options {
@@ -159,7 +161,13 @@ impl Options {
             approver: None,
             scratch: false,
             memory: false,
+            agent_types: None,
         }
+    }
+
+    pub fn agent_types(mut self, types: fontaine_agents::registry::AgentTypes) -> Options {
+        self.agent_types = Some(types);
+        self
     }
 
     pub fn scratch(mut self) -> Options {
@@ -226,6 +234,11 @@ impl Rig {
             scratch.iter().chain(&memory).cloned(),
         ));
         let agents = Arc::new(AgentTree::new(Limits::default()));
+        agents.set_root_tools(|| {
+            fontaine_tools::descriptor::names()
+                .map(String::from)
+                .collect()
+        });
         let scripted = Arc::new(Scripted::default());
         let gate_approver: Arc<dyn Approver> =
             options.approver.clone().unwrap_or_else(|| scripted.clone());
@@ -249,6 +262,12 @@ impl Rig {
                 .unwrap_or_else(fontaine_core::gate::no_guardian),
             auto: AutoContext::default(),
             agents: agents.clone(),
+            agent_types: Arc::new(
+                options
+                    .agent_types
+                    .clone()
+                    .unwrap_or_else(fontaine_agents::registry::AgentTypes::builtin),
+            ),
             reveal_mcp_names: false,
             auto_edits: fontaine_core::gate::AutoEdits {
                 tracked: config.permissions.auto_tracked_edits,

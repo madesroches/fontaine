@@ -116,6 +116,14 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
     }
     let audit = AuditLog::create(&data, &session_id).map_err(|e| format!("audit log: {e}"))?;
     let approver = Arc::new(DenyAll);
+    let agents = Arc::new(fontaine_agents::tree::AgentTree::new(
+        fontaine_agents::tree::Limits::default(),
+    ));
+    agents.set_root_tools(|| {
+        fontaine_tools::descriptor::names()
+            .map(String::from)
+            .collect()
+    });
     let state = Arc::new(SessionState::new(StateParams {
         session_id,
         mode: case.mode.unwrap_or(PermissionMode::Manual),
@@ -132,9 +140,8 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
         memory_root: None,
         guardian: guardian.unwrap_or_else(no_guardian),
         auto: auto_context(case),
-        agents: Arc::new(fontaine_agents::tree::AgentTree::new(
-            fontaine_agents::tree::Limits::default(),
-        )),
+        agents,
+        agent_types: Arc::new(fontaine_agents::registry::AgentTypes::builtin()),
         reveal_mcp_names: false,
         auto_edits: fontaine_core::gate::AutoEdits::default(),
     }));

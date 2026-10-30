@@ -705,6 +705,9 @@ scorecard run (see `## Remaining work`).
 - 2026-10-30: In the TUI `/` menu, Tab first extends the typed name to the longest common prefix of
   the matches and only then accepts the selected row; Claude Code accepts the selected row on the
   first Tab. (#294)
+- 2026-10-30: The AGENTS.md fast-path invariant gains a third exception: an `agent` spawn whose Fontaine-computed toolset holds only read-only, non-destructive tools (plus `send_message`) takes the read-only fast path in every mode, after the floor and hooks. MCP tools never count as read-only for this, and an unknown (never-set) parent toolset fails closed, while a known, empty one takes the fast path (#312).
+- 2026-10-30: Deviation from Claude Code (maintainer's choice) — in `auto`, a read-only spawn skips the guardian, whereas Claude Code's auto-mode classifier judges every Agent call. The child's own calls are still judged individually (#312).
+- 2026-10-30: The screen stage's input stays byte-identical: the scratch-directory and spawned-agent facts and the `session_scratch` status render only in the guardian view, following the 2026-10-27 `source="user"` decision (#312).
 
 ## Open Questions
 

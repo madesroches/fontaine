@@ -522,6 +522,30 @@ mod tests {
     }
 
     #[test]
+    fn the_scratch_and_spawn_facts_never_reach_the_screen() {
+        use crate::request::{PreExistence, SpawnFacts, TouchedPath};
+        let mut cleared = request();
+        cleared.session_facts.touched_paths.push(TouchedPath {
+            path: "/s/a".into(),
+            status: PreExistence::CreatedThisSession,
+            in_scratch: false,
+        });
+        let mut marked = cleared.clone();
+        marked.session_facts.scratch_dir = Some("/s".into());
+        marked.session_facts.touched_paths[0].in_scratch = true;
+        marked.session_facts.spawn = Some(SpawnFacts {
+            agent_type: "explore".into(),
+            tools: vec!["read".into()],
+            changes_state: false,
+        });
+        let question = Question::OutsideRequest.text();
+        assert_eq!(
+            screen_message(&marked, question),
+            screen_message(&cleared, question)
+        );
+    }
+
+    #[test]
     fn the_screen_message_carries_no_source_mark() {
         let message = screen_message(&request(), Question::OutsideRequest.text());
         assert!(!message.contains("source="));

@@ -154,13 +154,14 @@ pub fn user_message(request: &AdjudicationRequest) -> String {
 
 /// The untrusted blocks of the request, each followed by a blank line. The screen leaves out the
 /// digest line, which tells a small model nothing, and its calibration predates the
-/// `source="user"` mark, so it asks for neither.
+/// `source="user"` mark, the scratch and spawn facts and the `session_scratch` status, so it
+/// asks for none of them: `guardian_view` is false for its input, which stays byte-identical.
 pub(crate) fn blocks(
     request: &AdjudicationRequest,
     with_digest: bool,
-    mark_user_blocks: bool,
+    guardian_view: bool,
 ) -> String {
-    let user = mark_user_blocks.then_some("user");
+    let user = guardian_view.then_some("user");
     let mut out = String::new();
     out.push_str(&block("task_intent", user, &request.task_intent));
     out.push_str(&list_block(
@@ -201,16 +202,36 @@ pub(crate) fn blocks(
             one_line(dir)
         ));
     }
+    if guardian_view && let Some(dir) = &facts.scratch_dir {
+        text.push_str(&format!(
+            "session_scratch_directory: {} (private to this session: created empty when it started, deleted when it ends; nothing in it predates the session)\n",
+            one_line(dir)
+        ));
+    }
+    if guardian_view && let Some(spawn) = &facts.spawn {
+        text.push_str(&format!(
+            "spawned_agent: type {}; tools: {}; can write, run commands or reach the network: {} (computed by the harness; every call the subagent makes is judged on its own)\n",
+            one_line(&spawn.agent_type),
+            spawn
+                .tools
+                .iter()
+                .map(|tool| one_line(tool))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if spawn.changes_state { "yes" } else { "no" }
+        ));
+    }
     text.push_str("paths_this_call_touches:\n");
     if facts.touched_paths.is_empty() {
         text.push_str("- (none)\n");
     }
     for touched in &facts.touched_paths {
-        text.push_str(&format!(
-            "- {} [{}]\n",
-            one_line(&touched.path),
+        let status = if guardian_view && touched.in_scratch {
+            "session_scratch"
+        } else {
             touched.status.as_str()
-        ));
+        };
+        text.push_str(&format!("- {} [{}]\n", one_line(&touched.path), status));
     }
     if !facts.actions_taken.is_empty() {
         text.push_str("actions_taken_this_session (oldest first):\n");
@@ -303,12 +324,15 @@ mod tests {
                 touched_paths: vec![TouchedPath {
                     path: "/work/proj/src/lib.rs".into(),
                     status: PreExistence::PreExisting,
+                    in_scratch: false,
                 }],
                 actions_taken: vec![ActionTaken {
                     tool: "read".into(),
                     summary: "src/lib.rs".into(),
                 }],
                 memory_dir: None,
+                scratch_dir: None,
+                spawn: None,
             },
             hook_context: vec!["lint hook says the tree is dirty".into()],
             prior_denials: vec![DenialRecord {
@@ -379,6 +403,30 @@ mod tests {
         for profile in [Profile::Full, Profile::Minimal] {
             assert!(system_prompt(profile, &req).contains("agent_memory_directory"));
         }
+    }
+
+    #[test]
+    fn scratch_and_spawn_facts_render_in_the_guardian_view() {
+        let mut req = request();
+        req.session_facts.scratch_dir = Some("/tmp/s/1\n- /evil".into());
+        req.session_facts.touched_paths[0].in_scratch = true;
+        req.session_facts.spawn = Some(crate::request::SpawnFacts {
+            agent_type: "ex\nplore".into(),
+            tools: vec!["read".into(), "grep".into()],
+            changes_state: false,
+        });
+        let msg = user_message(&req);
+        assert!(
+            msg.contains("session_scratch_directory: /tmp/s/1?- /evil (private to this session: created empty when it started, deleted when it ends; nothing in it predates the session)\n"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("spawned_agent: type ex?plore; tools: read, grep; can write, run commands or reach the network: no (computed by the harness; every call the subagent makes is judged on its own)\n"),
+            "{msg}"
+        );
+        assert!(msg.contains("/work/proj/src/lib.rs [session_scratch]"));
+        req.session_facts.spawn.as_mut().unwrap().changes_state = true;
+        assert!(user_message(&req).contains("network: yes"));
     }
 
     #[test]
