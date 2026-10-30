@@ -882,6 +882,11 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             .filter(|_| handled.goal_ran && !failed);
         if failed {
             runtime.state.agents().kill_all();
+            runtime
+                .state
+                .agents()
+                .settled(std::time::Duration::from_secs(5))
+                .await;
             runtime.jobs().terminate_all().await;
             runtime.lsp().shutdown_all().await;
         }
@@ -901,6 +906,11 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
         }
     }
     runtime.state.agents().kill_all();
+    runtime
+        .state
+        .agents()
+        .settled(std::time::Duration::from_secs(5))
+        .await;
     // Jobs still running when the run ends are not waited for; they end with it.
     runtime.jobs().terminate_all().await;
     runtime.lsp().shutdown_all().await;

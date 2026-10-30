@@ -545,6 +545,27 @@ async fn n_children_run_at_once() {
 }
 
 #[tokio::test]
+async fn settling_after_kill_all_waits_for_every_finished_record() {
+    let rig = rig();
+    for n in 0..3 {
+        spawn(&rig, args("explore", &format!("task {n}")))
+            .await
+            .unwrap();
+    }
+    rig.tree.kill_all();
+    rig.tree.settled(std::time::Duration::from_secs(5)).await;
+    let finished = rig
+        .ledger
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Finished { status, .. } if status == "killed"))
+        .count();
+    assert_eq!(finished, 3);
+}
+
+#[tokio::test]
 async fn a_killed_childs_partial_report_is_not_delivered() {
     let rig = rig();
     spawn(&rig, args("explore", "dig")).await.unwrap();

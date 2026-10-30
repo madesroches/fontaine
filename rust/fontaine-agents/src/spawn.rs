@@ -78,11 +78,12 @@ fn conclude(
     agent_type: &str,
     report: &ChildReport,
 ) {
-    tree.finish(id, report.clone());
+    // The ledger first: `AgentTree::settled` treats a report in the tree as the end being on record.
     ledger.append_event(AgentEvent::Finished {
         agent: id.to_string(),
         status: report.status.as_str().to_string(),
     });
+    tree.finish(id, report.clone());
     let event = match report.status {
         ChildStatus::Killed => "killed",
         ChildStatus::BudgetExhausted => "budget_exhausted",

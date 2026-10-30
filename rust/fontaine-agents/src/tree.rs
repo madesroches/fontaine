@@ -620,6 +620,28 @@ impl AgentTree {
         }
     }
 
+    /// Waits, for at most `limit`, until every killed child has concluded, which is when its
+    /// `finished` record is in the ledger. Killing only flags the child; its end is recorded when
+    /// its report arrives, so a run that exits straight after `kill_all` would lose the record.
+    pub async fn settled(&self, limit: Duration) {
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let pending = self.lock().nodes.values().any(|n| {
+                n.info.parent.is_some() && n.status == ChildStatus::Killed && n.report.is_none()
+            });
+            if !pending {
+                return;
+            }
+            tokio::select! {
+                () = &mut changed => {}
+                () = tokio::time::sleep_until(deadline) => return,
+            }
+        }
+    }
+
     /// Counts a model call or a guardian call against `agent` and the session. Returns why the
     /// agent must stop, if this call spent its budget.
     pub fn debit(&self, agent: &str, spend: &Spend) -> Option<Exhausted> {
