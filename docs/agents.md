@@ -26,7 +26,26 @@ The model used is the call's `model`, else the agent type's `model`, else the se
 invalid value is an error result, and so is a `model` on a type defined by a project file (see
 [agent files](#agent-files)).
 
-The model gets no tool to list, inspect or kill agents: those are controls for you, in the
+### Waiting for a background subagent
+
+`job_output` with the `agent_id` blocks until that subagent ends, or for `wait_secs` if given.
+It reports only status; the report itself is delivered as a notification attached to that same
+result, and never a second time.
+
+- **Ended.** The result names how it ended and says its report follows, that it was killed and
+  delivers no report, or that the report was already delivered to the model.
+- **Still running.** A timeout (or `wait_secs` of 0) answers with the subagent's age, or that
+  it waits on a permission prompt. A later wait or the notification still gets the report.
+- **Only the parent.** Only the agent that started a subagent may wait on it; any other id is
+  refused. A subagent that nests should wait for its own children rather than finish, because
+  finishing stops them.
+- **Early return.** A wait of any kind also returns when a message from another agent reaches
+  the waiter or, in the main conversation, when you type one. The message is delivered with
+  that result.
+- **Interrupted.** Interrupting a wait (Esc) leaves the subagent running; its report arrives
+  later as usual.
+
+The model still gets no tool to list or kill agents: those are controls for you, in the
 [agents panel](tui.md#the-agents-panel).
 
 ## Agent types
@@ -57,7 +76,7 @@ mode = "inherit"
 
 `tools` names built-in or `mcp__` tools; leave it out to give the type every tool its parent has.
 The toolset a subagent really gets is that list **cut down to what its parent has**: a type can
-never reach a tool its parent lacks. `agent` is withheld from a subagent at the nesting limit.
+never reach a tool its parent lacks. A type whose `tools` names `agent` also gets `job_output` (when its parent has it), which it needs to wait for the background subagents it starts; `disallowed` can still remove it. `agent` is withheld from a subagent at the nesting limit.
 A subagent with `todo_write` keeps its own list, which is not shown in the UI and not saved with the session.
 
 ## Forking the conversation

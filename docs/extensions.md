@@ -62,7 +62,7 @@ The body is the subagent's instructions.
 | `NotebookEdit` | `notebook_edit` |
 | `Glob`, `Grep`, `LS` | `glob`, `grep`, `ls` |
 | `Bash` | `shell` |
-| `BashOutput`, `TaskOutput` | `job_output` |
+| `BashOutput`, `BashOutputTool`, `TaskOutput`, `AgentOutput`, `AgentOutputTool` | `job_output` |
 | `KillShell`, `KillBash`, `TaskStop` | `job_cancel` |
 | `Monitor` | `monitor` |
 | `WebFetch` | `webfetch` |

@@ -87,7 +87,13 @@ pub static TOOLS: &[ToolDescriptor] = &[
         true,
         Destructive::Never,
         Specifier::None,
-        &["BashOutput", "TaskOutput"],
+        &[
+            "BashOutput",
+            "TaskOutput",
+            "BashOutputTool",
+            "AgentOutput",
+            "AgentOutputTool",
+        ],
     ),
     row(
         "job_cancel",
@@ -352,7 +358,13 @@ mod tests {
                 true,
                 D::Never,
                 S::None,
-                &["BashOutput", "TaskOutput"],
+                &[
+                    "BashOutput",
+                    "TaskOutput",
+                    "BashOutputTool",
+                    "AgentOutput",
+                    "AgentOutputTool",
+                ],
             ),
             (
                 "job_cancel",

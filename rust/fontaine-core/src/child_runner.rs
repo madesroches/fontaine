@@ -11,7 +11,8 @@ use fontaine_agents::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus
 use fontaine_agents::tree::AgentTree;
 use fontaine_guardian::WireIds;
 use fontaine_tools::error_chain::chain;
-use fontaine_tools::gate::CallView;
+use fontaine_tools::gate::{CallView, ROOT_AGENT};
+use fontaine_tools::jobs::WaitWake;
 use fontaine_tools::lock::{lock, lock_recovering, read};
 use fontaine_tools::result_pipeline::{ResultStage, ToolOutcome, append_note};
 use futures::future::BoxFuture;
@@ -28,6 +29,7 @@ use crate::ledger::Record;
 use crate::models::{ModelHandle, SharedSwitcher};
 use crate::permission_rules::parse_rule;
 use crate::permissions::Approver;
+use crate::steering::Steering;
 use crate::turn::{DEFAULT_MAX_TURNS, Drive, Flow, SessionEvent, TurnOutcome, drive};
 use crate::turn_recovery::RecoveryHook;
 
@@ -65,6 +67,20 @@ impl ResultStage for NotificationStage {
                 .join("\n\n");
             append_note(outcome, &text)
         })
+    }
+}
+
+/// What ends a parked `job_output` wait early: a message from another agent, and for the main
+/// agent a message the user typed meanwhile.
+pub struct CoreWake {
+    pub tree: Arc<AgentTree>,
+    pub steering: Steering,
+}
+
+impl WaitWake for CoreWake {
+    fn pending(&self, agent: &str) -> bool {
+        self.tree.has_message(agent)
+            || (agent == ROOT_AGENT && self.steering.has_deliverable_message())
     }
 }
 

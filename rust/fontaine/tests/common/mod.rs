@@ -658,3 +658,18 @@ pub fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();
 }
+
+/// The session's ledger records, oldest first.
+pub fn ledger(s: &Sandbox, session: &str) -> Vec<Value> {
+    let path = s
+        .data
+        .join("sessions")
+        .join(session)
+        .join("ledger")
+        .join("ledger.jsonl");
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}

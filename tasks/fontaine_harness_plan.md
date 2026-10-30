@@ -659,6 +659,10 @@ scorecard run (see `## Remaining work`).
 - 2026-10-28: No default per-subagent token cap at all — not a raised one; `subagent_token_budget` is opt-in only, for Claude Code parity (#285).
 - 2026-10-28: `subagent_cost_budget_usd` is likewise opt-in only — no default `$2.0`; no per-subagent budget binds unless the user sets one (#285).
 - 2026-10-29: Built-in commands except `/loop`, plus `!` shell commands, typed mid-turn queue and run after the turn, per Claude Code's documented behavior (#292); `/loop` stays refused until #298 so generic replay need not carry self-paced first-iteration completion state. The run-immediately set is Fontaine's synchronous UI/report commands rather than Claude Code's carve-out list, and `/add-dir` queues instead of getting Claude Code's mid-turn confirm. Esc with input queued keeps Fontaine's restore-to-input rule, where Claude Code runs the queued prompt anyway.
+- 2026-10-30: Deviation from Claude Code: Fontaine gives the model a blocking wait on background subagents, where Claude Code 2.1.314 delivers their results only as notifications, because a Fontaine subagent can have background children and cannot end its turn to wait (finishing kills its descendants), while Claude Code's subagents cannot nest (#301).
+- 2026-10-30: The wait is `job_output`, extended to `agent-*` ids, rather than a new tool, mirroring the unified `TaskOutput` Claude Code had before removing it; `job_output` takes the legacy aliases `BashOutputTool`, `AgentOutput` and `AgentOutputTool` (#301).
+- 2026-10-30: `job_output`'s `wait_secs` has no ceiling, because the model chooses the timeout; an omitted value means "until it ends" for a subagent and "now" for a job, and any wait returns early on a message or a user interjection. Claude Code's removed `TaskOutput` capped waits at 600 s (#301).
+- 2026-10-30: A subagent may call `job_output` only with the id of a subagent it started; jobs and the list stay root-only. This amends the 2026-10-27 decision that background shell jobs and `monitor` are root-only (#301).
 
 ## Open Questions
 

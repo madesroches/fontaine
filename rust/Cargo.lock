@@ -1625,6 +1625,7 @@ dependencies = [
  "fontaine-tools",
  "futures",
  "rig-core",
+ "rig-tools",
  "serde",
  "serde_json",
  "tokio",

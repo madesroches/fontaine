@@ -9,7 +9,10 @@ use std::time::{Duration, Instant};
 use common::{AllowAll, Dirs, call, env_with, registry, scope, text, tool};
 use fontaine_tools::builtins::Registered;
 use fontaine_tools::gate::AgentId;
-use fontaine_tools::jobs::{JobNote, JobSink, Jobs};
+use fontaine_tools::jobs::{
+    AgentDelivery, AgentState, AgentWaitError, AgentWaits, JobNote, JobSink, Jobs, WaitWake,
+};
+use futures::future::BoxFuture;
 use rig_core::tool::ToolContext;
 use serde_json::json;
 
@@ -179,8 +182,14 @@ async fn a_subagent_gets_no_jobs_and_keeps_kill_at_timeout() {
     assert!(out.contains("timed out after 1s and stopped"), "{out}");
     assert!(jobs.snapshot().is_empty(), "a subagent's call is no job");
 
+    let refused = run_as_child(&tools, "job_output", json!({}))
+        .await
+        .unwrap_err();
+    assert!(
+        refused.contains("only with the id of a subagent it started"),
+        "{refused}"
+    );
     for (name, args) in [
-        ("job_output", json!({})),
         ("job_cancel", json!({"id": "job-0000"})),
         ("monitor", json!({"command": "true", "description": "x"})),
     ] {
@@ -355,4 +364,213 @@ fn the_shell_definition_offers_jobs_and_no_longer_forbids_servers() {
         json!(["boolean", "null"])
     );
     assert!(schema["properties"]["command"].is_object());
+}
+
+type Asked = Arc<Mutex<Vec<(String, String, Option<Duration>)>>>;
+
+/// A subagent that is still running on a zero wait, and ends after a long one.
+struct FakeAgents {
+    asked: Asked,
+    answer: Option<AgentWaitError>,
+}
+
+impl AgentWaits for FakeAgents {
+    fn wait<'a>(
+        &'a self,
+        caller: &'a str,
+        id: &'a str,
+        wait: Option<Duration>,
+    ) -> BoxFuture<'a, Result<AgentState, AgentWaitError>> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push((caller.to_string(), id.to_string(), wait));
+        Box::pin(async move {
+            if let Some(error) = self.answer {
+                return Err(error);
+            }
+            if wait == Some(Duration::ZERO) {
+                return Ok(AgentState::Running {
+                    age: Duration::from_secs(180),
+                    on_permission: false,
+                });
+            }
+            tokio::time::sleep(Duration::from_secs(600)).await;
+            Ok(AgentState::Ended {
+                status: "done".into(),
+                delivery: AgentDelivery::Queued,
+            })
+        })
+    }
+}
+
+struct FakeWake {
+    after: Duration,
+    since: Instant,
+}
+
+impl WaitWake for FakeWake {
+    fn pending(&self, _agent: &str) -> bool {
+        self.since.elapsed() >= self.after
+    }
+}
+
+fn waiting_session(
+    answer: Option<AgentWaitError>,
+    wake_after: Duration,
+) -> (Dirs, Vec<Registered>, Asked) {
+    let d = Dirs::new();
+    let mut env = env_with(scope(&d.dir("work"), &[]), Arc::new(AllowAll::default()));
+    let asked = Asked::default();
+    env.agent_waits = Some(Arc::new(FakeAgents {
+        asked: asked.clone(),
+        answer,
+    }));
+    env.wait_wake = Some(Arc::new(FakeWake {
+        after: wake_after,
+        since: Instant::now(),
+    }));
+    let tools = registry(&env);
+    (d, tools, asked)
+}
+
+#[tokio::test]
+async fn an_agent_id_reaches_the_agent_seam_from_a_subagent_and_other_ids_do_not() {
+    let (_d, tools, asked) = waiting_session(None, Duration::ZERO);
+    let out = run_as_child(
+        &tools,
+        "job_output",
+        json!({"id": "agent-2", "wait_secs": 0}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out, "[agent-2 is running, 3m00s old]");
+    assert_eq!(
+        asked.lock().unwrap().clone(),
+        vec![("child-1".into(), "agent-2".into(), Some(Duration::ZERO))]
+    );
+    for args in [json!({"id": "job-0000"}), json!({})] {
+        let refused = run_as_child(&tools, "job_output", args).await.unwrap_err();
+        assert!(
+            refused.contains("only with the id of a subagent it started"),
+            "{refused}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn without_an_agent_seam_an_agent_id_is_refused() {
+    let (_d, tools, _, _) = session();
+    let err = call(&tools, "job_output", json!({"id": "agent-1"}))
+        .await
+        .unwrap_err()
+        .model_output()
+        .render();
+    assert!(err.contains("no subagents"), "{err}");
+}
+
+#[tokio::test]
+async fn the_seams_refusals_read_the_same_whatever_the_relation() {
+    let (_d, tools, _) = waiting_session(Some(AgentWaitError::Unknown), Duration::MAX);
+    let err = call(&tools, "job_output", json!({"id": "agent-9"}))
+        .await
+        .unwrap_err()
+        .model_output()
+        .render();
+    assert!(err.contains("no subagent `agent-9`"), "{err}");
+    let (_d, tools, _) = waiting_session(Some(AgentWaitError::NotYours), Duration::MAX);
+    let err = call(&tools, "job_output", json!({"id": "agent-3"}))
+        .await
+        .unwrap_err()
+        .model_output()
+        .render();
+    assert!(
+        err.contains("`agent-3` is not a subagent you started"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn an_omitted_wait_means_until_it_ends_for_a_subagent_and_now_for_a_job() {
+    let (_d, tools, asked) = waiting_session(None, Duration::from_millis(300));
+    let started = Instant::now();
+    call(&tools, "job_output", json!({"id": "agent-1"}))
+        .await
+        .unwrap();
+    call(
+        &tools,
+        "job_output",
+        json!({"id": "agent-1", "wait_secs": 7}),
+    )
+    .await
+    .unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let waits: Vec<_> = asked.lock().unwrap().iter().map(|a| a.2).collect();
+    assert_eq!(
+        waits,
+        vec![
+            None,
+            Some(Duration::ZERO),
+            Some(Duration::from_secs(7)),
+            Some(Duration::ZERO)
+        ],
+        "each wake re-asks with a zero wait"
+    );
+
+    let started = Instant::now();
+    let out = call(
+        &tools,
+        "shell",
+        json!({"command": "sleep 30", "run_in_background": true}),
+    )
+    .await
+    .unwrap();
+    let id = job_id(&text(&out));
+    let out = call(&tools, "job_output", json!({"id": id})).await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5), "now, not later");
+    assert!(text(&out).contains("is running"), "{}", text(&out));
+}
+
+#[tokio::test]
+async fn a_message_ends_any_wait_early_with_the_zero_wait_answer() {
+    let (_d, tools, _) = waiting_session(None, Duration::from_millis(300));
+    let started = Instant::now();
+    let out = text(
+        &call(&tools, "job_output", json!({"id": "agent-1"}))
+            .await
+            .unwrap(),
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        out,
+        "[agent-1 is running, 3m00s old]\n[Stopped waiting: a message arrived.]"
+    );
+
+    let shown = text(
+        &call(
+            &tools,
+            "shell",
+            json!({"command": "sleep 30", "run_in_background": true}),
+        )
+        .await
+        .unwrap(),
+    );
+    let id = job_id(&shown);
+    // The wake is already pending by now: the call returns at once.
+    let started = Instant::now();
+    let out = text(
+        &call(&tools, "job_output", json!({"id": id, "wait_secs": 600}))
+            .await
+            .unwrap(),
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(
+        out.starts_with("(no new output)\n[job-")
+            && out.ends_with("[Stopped waiting: a message arrived.]"),
+        "{out}"
+    );
 }

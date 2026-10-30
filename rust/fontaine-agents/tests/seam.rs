@@ -13,8 +13,11 @@ use fontaine_agents::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus
 use fontaine_agents::spawn::{AgentArgs, AgentTool, SendMessageArgs, SendMessageTool};
 use fontaine_agents::tree::{AgentTree, Limits};
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
+use fontaine_tools::jobs::tools::{JobOutputArgs, JobOutputTool};
+use fontaine_tools::jobs::{AgentWaits, Jobs};
 use futures::future::BoxFuture;
 use rig_core::tool::{Tool, ToolContext};
+use rig_tools::OutputLimit;
 use tokio::sync::watch;
 
 /// What the fake saw of one spawn.
@@ -801,4 +804,135 @@ async fn a_configured_type_named_fork_replaces_the_built_in_and_loses_the_capabi
     *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
     spawn(&rig, args("fork", "x")).await.unwrap();
     assert!(!rig.runner.spawned()[0].inherits_context);
+}
+
+fn waiter(rig: &Rig) -> JobOutputTool {
+    JobOutputTool {
+        jobs: Arc::new(Jobs::new()),
+        limit: OutputLimit::default(),
+        agents: Some(rig.tree.clone() as Arc<dyn AgentWaits>),
+        wake: None,
+    }
+}
+
+async fn wait_as(
+    tool: &JobOutputTool,
+    caller: &str,
+    id: &str,
+    wait_secs: Option<u64>,
+) -> Result<String, String> {
+    tool.call(
+        &mut as_agent(caller),
+        JobOutputArgs {
+            id: Some(id.to_string()),
+            wait_secs,
+        },
+    )
+    .await
+    .map_err(|e| e.model_output().render())
+}
+
+fn background(prompt: &str) -> AgentArgs {
+    let mut a = args("explore", prompt);
+    a.background = Some(true);
+    a
+}
+
+fn reports_for(rig: &Rig, agent: &str) -> usize {
+    let notes = rig.tree.take_notifications(agent);
+    let reports = notes
+        .iter()
+        .filter(|n| n.kind == fontaine_agents::tree::NotificationKind::Report)
+        .count();
+    assert_eq!(reports, notes.len());
+    reports
+}
+
+#[tokio::test]
+async fn waiting_on_a_background_child_returns_its_status_and_leaves_one_report() {
+    let rig = rig();
+    spawn(&rig, background("dig")).await.unwrap();
+    let child = rig.runner.child(0);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        child.finish(ChildStatus::Done, "buried treasure");
+    });
+    let started = std::time::Instant::now();
+    let out = wait_as(&waiter(&rig), ROOT_AGENT, "agent-1", None)
+        .await
+        .unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(150));
+    assert_eq!(
+        out,
+        "[agent-1 ended: done]\nIts report follows as a notification."
+    );
+    assert!(!out.contains("buried treasure"));
+    assert_eq!(reports_for(&rig, ROOT_AGENT), 1);
+}
+
+#[tokio::test]
+async fn a_nested_parent_waits_for_its_own_child_and_stays_alive() {
+    let mut types = AgentTypes::builtin();
+    let mut lead = types.get("worker").unwrap().clone();
+    lead.name = "lead".into();
+    lead.tools = None;
+    types.insert(lead);
+    let rig = rig_with(
+        Limits {
+            max_parallel: 4,
+            ..Limits::default()
+        },
+        types,
+        RootMode::Ladder(Ladder::Auto),
+    );
+    spawn(&rig, {
+        let mut a = args("lead", "coordinate");
+        a.background = Some(true);
+        a
+    })
+    .await
+    .unwrap();
+    rig.agent
+        .call(&mut as_agent("agent-1"), background("dig"))
+        .await
+        .unwrap();
+    let grandchild = rig.runner.child(1);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        grandchild.finish(ChildStatus::Done, "deep treasure");
+    });
+    let out = wait_as(&waiter(&rig), "agent-1", "agent-2", None)
+        .await
+        .unwrap();
+    assert!(out.starts_with("[agent-2 ended: done]"), "{out}");
+    assert!(rig.tree.is_running("agent-1"));
+    assert!(!rig.tree.was_killed("agent-2"));
+    assert_eq!(reports_for(&rig, "agent-1"), 1);
+
+    let err = wait_as(&waiter(&rig), ROOT_AGENT, "agent-2", Some(0))
+        .await
+        .unwrap_err();
+    assert!(err.contains("not a subagent you started"), "{err}");
+}
+
+#[tokio::test]
+async fn an_abandoned_wait_leaves_the_child_running_and_its_report_queued() {
+    let rig = rig();
+    spawn(&rig, background("dig")).await.unwrap();
+    let tool = waiter(&rig);
+    let parked = tokio::spawn(async move { wait_as(&tool, ROOT_AGENT, "agent-1", None).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    parked.abort();
+    let _ = parked.await;
+    assert!(rig.tree.is_running("agent-1"));
+    rig.runner.child(0).finish(ChildStatus::Done, "late news");
+    for _ in 0..100 {
+        if rig.tree.has_notifications(ROOT_AGENT) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(!rig.tree.was_killed("agent-1"));
+    assert!(!*rig.runner.child(0).killed.lock().unwrap());
+    assert_eq!(reports_for(&rig, ROOT_AGENT), 1);
 }

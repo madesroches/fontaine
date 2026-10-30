@@ -90,6 +90,13 @@ impl Steering {
         self.state().hold = held;
     }
 
+    /// Whether `steer` would deliver now: a plain message leads the queue and delivery is not
+    /// held.
+    pub fn has_deliverable_message(&self) -> bool {
+        let state = self.state();
+        !state.hold && matches!(state.queued.first(), Some(Queued::Message(_)))
+    }
+
     /// The messages delivered since the last call, oldest first.
     pub fn take_delivered(&self) -> Vec<String> {
         std::mem::take(&mut self.state().delivered)
@@ -232,6 +239,23 @@ mod tests {
             name: name.into(),
             argument: raw.trim_start_matches('/')[name.len()..].trim().into(),
         }
+    }
+
+    #[test]
+    fn only_a_leading_unheld_message_is_deliverable() {
+        let steering = Steering::default();
+        assert!(!steering.has_deliverable_message());
+        steering.queue(skill("/review"));
+        steering.queue(Queued::Message("later".into()));
+        assert!(!steering.has_deliverable_message());
+        steering.retract();
+        steering.queue(Queued::Command("/compact".into()));
+        assert!(!steering.has_deliverable_message());
+        steering.retract();
+        steering.queue(Queued::Message("now".into()));
+        assert!(steering.has_deliverable_message());
+        steering.set_delivery_hold(true);
+        assert!(!steering.has_deliverable_message());
     }
 
     #[test]

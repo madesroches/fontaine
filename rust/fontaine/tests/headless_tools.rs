@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{Endpoint, Sandbox, Turn, Wire};
+use common::{Endpoint, Sandbox, Turn, Wire, ledger};
 use serde_json::{Value, json};
 
 fn tool_results(lines: &[Value]) -> Vec<&Value> {
@@ -14,20 +14,6 @@ fn tool_results(lines: &[Value]) -> Vec<&Value> {
 
 fn result_of(lines: &[Value]) -> &Value {
     lines.iter().rev().find(|l| l["type"] == "result").unwrap()
-}
-
-fn ledger(s: &Sandbox, session: &str) -> Vec<Value> {
-    let path = s
-        .data
-        .join("sessions")
-        .join(session)
-        .join("ledger")
-        .join("ledger.jsonl");
-    std::fs::read_to_string(path)
-        .unwrap()
-        .lines()
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread")]
