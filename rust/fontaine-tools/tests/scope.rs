@@ -807,7 +807,8 @@ mod windows {
         let other = d.dir("other");
         std::fs::write(other.join("a.txt"), "a").unwrap();
         let s = scope(&root, &[]);
-        let (drive, rest) = plain(&other).split_once(':').unwrap();
+        let other_plain = plain(&other);
+        let (drive, rest) = other_plain.split_once(':').unwrap();
         let msys = format!(
             "/{}{}/a.txt",
             drive.to_ascii_lowercase(),
