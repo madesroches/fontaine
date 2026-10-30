@@ -44,9 +44,10 @@ judged). The launch helper is extracted from `ShellTool` taking program and argv
 shares timeout clamp, output cut and `Jobs::start` handling. `call_job`'s timeout/cut/quiet logic
 (`builtins.rs:~348-441`) is parameterized by program+argv; `ShellTool::prepared` (the
 `sh_command`/`through_env` rewrite) is bypassed; a foreground wait/collect path is added for the
-non-job case. The timeout cap comes from `[shell] max_timeout_secs` (`ShellSettings.max_timeout_secs`),
-the same setting as `shell`; PR #308 adds it (`RegistryParams.shell_max_timeout_secs`) and is
-expected to merge first, so this work rebases onto it. The plain command is what `Jobs` and
+non-job case. The timeout cap comes from `ShellSettings.max_timeout_secs` (already present on this
+branch, default 600), the same setting as `shell`; PR #308 adds only the `[shell] max_timeout_secs`
+config key and the `RegistryParams.shell_max_timeout_secs` plumbing, so this work has no dependency
+on it beyond that. The plain command is what `Jobs` and
 the foreground display show; the encoded form is never shown to the guardian or user.
 Hooks and `!` lines stay on Git Bash (non-goal, as in Claude Code); `agent/build.rs:193` and
 `skills.rs:183` `!` execution stay keyed on `"shell"`.
@@ -87,11 +88,21 @@ it cannot positively read as safe while a deleter is mentioned is critical.
   `cmd /c rd|rmdir|del`. A cmdlet or alias counts as a deleter when it appears as a whole token
   anywhere in the text (not only at command position, so `if ($x) { rm C:\ }` and `& { rm C:\ }`
   are caught); `Write-Host`, `Format-Table` and `Get-Process` never match. Substring scanning of the
-  raw text is used only for the `[IO.File]::Delete` / `[IO.Directory]::Delete` forms and
-  `cmd /c rd|rmdir|del`. `iex`/`Invoke-Expression` and a non-literal command position (`&`, `.` or
-  `$`-led) stay critical. The only non-critical shape is a single simple command with a literal,
-  resolvable target.
-- Tokenizer: splits on whitespace honoring single and double quotes and backtick escapes. Each token
+  raw text is used only for the .NET delete forms: `::\s*Delete` and `\.Delete\s*\(` anywhere,
+  case-insensitive (covers `[IO.Directory]:: Delete(`, `[Directory]::Delete`, `$obj.Delete()`).
+  Any `cmd`/`cmd.exe` invocation (`cmd /c`, `cmd /d /c`, `cmd.exe /c "rd /s /q C:\"`) is critical
+  without extracting its target. Nested interpreters and string-eval entry points are critical
+  unconditionally, independent of finding a deleter token: `pwsh`, `powershell`, `-Command`, `-c`,
+  `-EncodedCommand`, `-enc`, `iex`, `Invoke-Expression` (the quoted or encoded command string hides
+  the deleter). A non-literal command position (`&`, `.` or `$`-led) also stays critical. The only
+  non-critical shape is a single simple command with a literal, resolvable target. Tokens such as
+  `Write-Host rm`, `Get-Help rm` or `git rm x` are over-flagged (zero operands -> critical); that is
+  accepted, as in the POSIX scan. MSYS-style path translation and PSDrive aliases of the filesystem
+  are left to the guardian.
+- Tokenizer: first splits on `; | & ( ) { } ,` in addition to whitespace (so `echo hi;rm -r C:\`,
+  `(rm C:\)`, `$(rm C:\)`, `a|rm x` and `{rm C:\}` expose `rm` as its own token), honoring single and
+  double quotes and backtick escapes. A `Module\` prefix (e.g.
+  `Microsoft.PowerShell.Management\Remove-Item`) is stripped before deleter matching. Each token
   is one of: literal; wildcard (contains `*` or `?` but nothing below); or non-literal (contains
   `$`, `(`, `)`, `@`, `{`, `}` or `%`, so the target cannot be resolved).
 - Wildcards: judge the literal prefix; critical if the pattern is bare `*` or the prefix is critical.
@@ -100,11 +111,14 @@ it cannot positively read as safe while a deleter is mentioned is critical.
   (`-Recurse`, `-Force`, `-WhatIf`) are skipped. A comma list (`a,b`) is split. Zero resolved
   operands is critical. `$env:USERPROFILE`, `$HOME` and `~` resolve to the home directory; `%` is
   always unresolved (PowerShell does not expand `%VAR%`) except `%USERPROFILE%`, mapped to home
-  conservatively. Any other variable, subexpression or pipeline-supplied target
+  conservatively. Home-variable resolution runs before non-literal classification (so
+  `$env:USERPROFILE` and `$HOME` are judged as home despite containing `$`). A provider-qualified
+  operand (2+ letters before `:`, e.g. `HKLM:`, `Env:`, `Cert:`) counts as resolved and non-critical.
+  Any other variable, subexpression or pipeline-supplied target
   (`Get-ChildItem | Remove-Item`, `... | % { Remove-Item $_ }`) is critical ("target cannot be
   resolved").
-- Chains: when a deleter token is found anywhere and the text contains `;`, `|`, `&&`, `||`, `&`, a newline or
-  `-Command`/`Invoke-Expression`/`iex`, it is critical ("deleter inside a command that is not one
+- Chains: when a deleter token is found anywhere and the text contains `;`, `|`, `&&`, `||`, `&` or a
+  newline (the interpreter and `iex` forms are already unconditionally critical above), it is critical ("deleter inside a command that is not one
   simple command") — the same conservatism as the POSIX path.
 - Targets are judged by `is_critical_target`: drive roots, top-level directories, `%USERPROFILE%`,
   a workspace root or its parent, and symlink/junction resolution, all case-insensitive on Windows
@@ -113,9 +127,10 @@ it cannot positively read as safe while a deleter is mentioned is critical.
 - Non-FileSystem providers (`HKLM:\`, `Env:`, `Cert:`) are not file deletes; `Remove-Item` on them
   is left to the guardian rather than the critical-path tier.
 
-At `permissions.rs:~734` the `is_shell_class` branch (`shell`, `monitor` → `critical_shell`) is kept
-and a `powershell` → `critical_powershell` branch is added; the `Tier::CriticalPath` prompt/deny
-semantics are unchanged.
+`permissions.rs:~734` is a single `if is_shell_class(tool) && ...`; the condition is widened to also
+admit `powershell`, and inside or beside that `if` the check picks `critical_shell` (`shell`,
+`monitor`) or `critical_powershell` (`powershell`) by tool name, sharing the one `Tier::CriticalPath`
+body; its prompt/deny semantics are unchanged.
 
 **Jobs and subagents.** The job registry, `job_output`, `job_cancel` and background semantics are
 shared with `shell` through `Jobs::start` and `Process`, so cancel and timeout kill only the direct
@@ -221,6 +236,11 @@ Unit tests (no live APIs, runnable on every OS since the scan and encoder are pu
   target` inside the workspace, a registry-provider path, a command with no deleter, `Write-Host`/`Format-Table`/`Get-Process` in
   a pipeline (deleter names inside other tokens do not match).
   Add deleters inside `{ }` blocks, `& { }` and `if` bodies, and wildcard-vs-unresolvable targets.
+  Critical, unglued/nested forms: `echo hi;rm -r C:\`, `(rm C:\)`, `$(rm C:\)`, `a|rm x`, `{rm C:\}`;
+  `powershell -Command "rm -r C:\"`, `pwsh -c '...'`, `iex "rm C:\"`, `-EncodedCommand <b64>`;
+  `cmd /c "rd /s /q C:\"`, `cmd.exe /c`, `cmd /d /c`, `[IO.Directory]:: Delete(`,
+  `[Directory]::Delete`, `$obj.Delete()`, `Microsoft.PowerShell.Management\Remove-Item C:\`;
+  `Remove-Item $env:USERPROFILE` is critical as home; `Remove-Item HKLM:\Software\X` is not.
 - Encoder round-trip; discovery order with a fake PATH.
 - Descriptor table and choke-point tests: `powershell` has a row and risk class; the registered
   set equals the documented one with and without a PowerShell interpreter.
