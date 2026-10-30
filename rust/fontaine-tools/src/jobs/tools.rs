@@ -99,7 +99,9 @@ fn render_monitor_wait(
         Some(info) => {
             let mut text = state_line(id, age, Some(info));
             if already_reported {
-                text.push_str("\nIts final output was already delivered to you as a notification.");
+                // Not "as a notification": a model-side job_cancel carries the tail in its
+                // own result and also lands here.
+                text.push_str("\nIts final output was already delivered to you.");
             } else {
                 text.push_str("\nIts final output arrives as a notification.");
             }
