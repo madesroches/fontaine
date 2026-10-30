@@ -1,6 +1,7 @@
 //! How a typed answer is obtained from a model: through a forced `submit` tool call, or, for a
-//! model that has no tool support, through the provider's schema-constrained output. Both give
-//! the same type through the same validation and the same retry loop, so a caller only differs in what it asks for.
+//! model that has no tool support, through the provider's schema-constrained output. Both give the
+//! same type through the same validation and the same retry loop, so a caller only differs in what
+//! it asks for.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
