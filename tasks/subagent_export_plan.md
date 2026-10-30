@@ -18,13 +18,13 @@ The owner-only and never-overwrite guarantees extend to every file and to the fo
 
 - `export_session` (`rust/fontaine-core/src/export.rs:51-59`) loads the root conversation with
   `load_async(&session.store(), CONVERSATION_LOG)` ("main", `session.rs:33`) and renders it via
-  `render` (`export.rs:86`). `write_new` (`export.rs:61`) writes through
+  `render` (`export.rs:126`). `write_new` (`export.rs:61`) writes through
   `owner_only::create_new` (mode 0600 / user-only DACL, `owner_only.rs`), maps `AlreadyExists`
   to `ExportError::Exists`, and deletes a partially written file on write failure. The `/export`
   handler (`rust/fontaine-tui/src/ui/commands/session.rs:119-133`) is its only caller; the
   default path is `fontaine-<id8>.md` in the launch directory.
 - Subagent conversations exist only in per-child `MemoryStore`s: `CoreChildRunner::spawn`
-  (`rust/fontaine-core/src/child_runner.rs:317-323`) builds each child with
+  (`rust/fontaine-core/src/child_runner.rs:347-362`) builds each child with
   `MemoryStore::default()` (or a seeded one for context forks, `fork_context.rs:57-70`) under
   log "main". rig-agent saves a store only when a run ends
   (`rig-agent-0.45.0/src/agent/engine.rs:425`); the in-flight run lives only in the run engine.
@@ -100,6 +100,9 @@ seeded inherited context into the child's log instead of a fresh `MemoryStore`.
 - `pub agents: Vec<AgentRecord>` — one entry per agent, in spawn order:
   `{ id, parent: Option<String>, agent_type: String, ended: Option<String> }`, where `ended` is
   the `finished` record's status, or `None` if no `finished` record exists (crashed session).
+  A `resumed` record for an id resets its entry's `ended` to `None` — a finished agent resumed
+  for another run is unfinished again until a new `finished` record lands (so a session that
+  crashes mid-second-run exports the agent as unfinished, not "done").
 
 `AgentTree::new` takes the seed: `AgentTree::new(limits, next_agent: u64)`, and `AgentRuntime::new`
 (`agent.rs:241-243`) passes the value from the opened session's ledger view. `/branch` needs no
@@ -198,10 +201,11 @@ fact of their work. This is documented, not worked around.
    "exported the session and N subagent transcripts to X").
 7. **`rust/fontaine-tui/src/commands.rs`** — update the `/export` help line.
 8. **Tests** (see Testing Strategy).
-9. **Docs** — `docs/tui.md` (§Sessions paragraph + command table), `docs/architecture.md`
-   (session layout and "Subagents in the ledger": per-agent logs now exist and persist across
-   resume), `docs/agents.md` (a subagent's conversation now survives on disk for the session's
-   life).
+9. **Docs** — `CHANGELOG.md` (`Added` entry under `[Unreleased]` for persisted subagent
+   transcripts and the folder export), `docs/tui.md` (§Sessions paragraph + command table),
+   `docs/architecture.md` (session layout and "Subagents in the ledger": per-agent logs now
+   exist and persist across resume), `docs/agents.md` (a subagent's conversation now survives
+   on disk for the session's life).
 10. **`tasks/fontaine_harness_plan.md`** — dated Decisions lines at the end of `### Sessions`:
     per-agent persisted logs and ledger-derived stable ids (noting it supersedes the id-
     instability note at `tasks/completed/task_list_tool_plan.md:169`), the folder export
@@ -218,6 +222,7 @@ fact of their work. This is documented, not worked around.
 - `rust/fontaine-tui/src/ui/commands/session.rs`, `src/commands.rs`
 - `rust/fontaine-evals/src/none.rs` and test harnesses (mechanical `AgentTree::new` call sites)
 - `rust/fontaine-tui/tests/agents.rs` (or `sessions.rs`) — integration coverage
+- `CHANGELOG.md`
 - `docs/tui.md`, `docs/architecture.md`, `docs/agents.md`
 - `tasks/fontaine_harness_plan.md` (Decisions)
 
@@ -294,7 +299,8 @@ Unit and core integration (all deterministic, no live APIs):
 
 - `ledger.rs`: `LedgerView` folds `spawned`/`finished` into `agents` (order, parent, type, ended
   status, missing-finished case) and derives `next_agent` (largest ordinal; non-conforming ids
-  ignored; empty ledger → 1).
+  ignored; empty ledger → 1); a `finished` → `resumed` → crash sequence leaves `ended` as
+  `None`, not the stale finished status.
 - `tree.rs`: two trees seeded from the same ledger-derived value mint disjoint ids (restart
   simulation); a tree seeded after N spawns starts at `agent-<N+1>`.
 - `fork_context.rs` / `child_runner.rs`: a forked child's seeded conversation lands in the
