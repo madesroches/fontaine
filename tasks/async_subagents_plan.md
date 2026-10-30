@@ -74,8 +74,10 @@ course sync tools available to allow parents to wait on their children."
   calling `watch_report` (its doc loses "as a background child does").
 - `SpawnRequest.background`, `NodeInfo.background` and `reserve`'s `background` parameter go.
   `background_running()` is replaced by `AgentTree::running_below(agent) -> bool` (running
-  descendants of `agent`, built on `Inner::running_descendants`); headless calls it with
-  `ROOT_AGENT`, which is what `background_running` meant once every child is "background".
+  descendants of `agent`, built on `Inner::running_descendants`); only the subagent join uses it.
+  Headless `wait_for_news` uses the existing `tree.any_running()`, which equals what
+  `background_running` meant once every child is async (`running_descendants` walks only through
+  running nodes, so `running_below(ROOT_AGENT)` would miss a resumed child under an ended parent).
 - `AgentDelivery::AlreadyDelivered { foreground }` becomes a unit variant `AlreadyDelivered`, and
   `render_agent_wait` keeps only the "already delivered to you" line.
 
@@ -97,20 +99,23 @@ loop {
 ```
 
 - `join_wait` loops, registering on `tree.changed()` before each check (as `AgentTree::wait` does),
-  and each pass checks in the order headless `wait_for_news` does: the child's inbox (a report or a
-  `send_message`) and `steering.has_deliverable_message_for(id)`; then `tree.running_below(id)`; and
+  and each pass checks in the order headless `wait_for_news` does: the child's inbox
+  (`tree.has_notifications(id)`, which covers reports and messages; `has_message` and `CoreWake`
+  see messages only) and `steering.has_deliverable_message_for(id)`; then `tree.running_below(id)`; and
   when nothing runs, the inbox once more before returning `Joined::Done`. A report is queued before
   its child is marked finished (`watch_report`), so the last check cannot miss one. The human's
   typing never notifies the tree (`Steering::queue_for`, `message_agent`), so the wait races
   `tree.changed()` against a short sleep (the same poll interval as `job_output`'s wake,
-  `WAKE_POLL`) and re-checks `has_deliverable_message_for` on each wake.
+  `WAKE_POLL`, which Step 5 makes `pub` in `fontaine-tools/src/jobs/tools.rs:24` and re-exports from
+  `fontaine_tools::jobs`) and re-checks `has_deliverable_message_for` on each wake.
 - The prompt for an inbox wake is the same text the root builds today. `notification_prompt` and
   `screened_notes` move out of `AgentRuntime` into a free function
   `notification_prompt(state, results, agent) -> Option<String>` (in `child_runner.rs`, beside
   `NotificationStage`), with `CallView.agent` set to the waiting agent; `AgentRuntime::
   notification_prompt` calls it with `ROOT_AGENT`. `ChildContext` gains
   `results: Arc<ResultPipeline>` (set in `agent/setup.rs` where it is built). The notes are thus
-  screened exactly as the root's are.
+  screened exactly as the root's are, and the join turn emits `AgentViewEvent::Prompt` with that
+  screened prompt so the agent view shows what the turn answers.
 - A steering wake takes the human's pending text (`steering.take_pending_for(id)`) as the prompt
   and records it the way `ChildRun::resume` does (`Record::UserMessage` with the agent, an
   `AgentViewEvent::Prompt`). Factor that recording out of `resume` into one helper both use.
@@ -121,17 +126,18 @@ loop {
   with the usual report, and `AgentTree::finish` still kills the running descendants of a child
   that was killed, failed or ran out of budget — the abnormal end, where no join is possible.
   Normally none remain; a descendant resumed between the join's last check and `finish` is stopped.
+- If the session budget runs out while a child joins, its next join turn's call marks it
+  exhausted and the report is `BudgetExhausted` carrying the last answer text; the news that woke
+  it is not processed.
 - `ChildHandle::kill` is unchanged.
 
 ### 3. Root behavior
 
-- **Headless** keeps `settle`; `wait_for_news` uses `tree.running_below(ROOT_AGENT)` instead of
+- **Headless** keeps `settle`; `wait_for_news` uses `tree.any_running()` instead of
   `background_running()`. Its doc and `docs/headless.md` drop "background".
 - **TUI**: unchanged mechanically. Interrupting a root turn (Esc) no longer kills any child, because
   there is no blocking call to drop: every child keeps running and reports later, as background
   children do today; the agents panel kills one. Quitting still kills all.
-- The root's own turn has no join: the TUI root is never "terminating" until quit, and an
-  answering headless root is joined by `settle`.
 
 ## Implementation Steps
 
@@ -141,7 +147,7 @@ loop {
    running children are stopped: a child ends normally only once they have reported"). Update the
    unit tests (`bg` helper, `reserve` calls).
 2. **Jobs seam** (`rust/fontaine-tools/src/jobs.rs`, `jobs/tools.rs`): `AlreadyDelivered` becomes a
-   unit variant; `render_agent_wait` drops the foreground line; reword any "background subagent"
+   unit variant, with its doc comment (`jobs.rs:123`) reworded to "Already handed over as a notification."; `render_agent_wait` drops the foreground line; reword any "background subagent"
    text in `job_output`'s description to "subagent", including `jobs/tools.rs:282` ("For a subagent
    (`agent-*`, from `agent` with `background`)").
 3. **Spawn** (`rust/fontaine-agents/src/spawn.rs`, `runner.rs`): remove `background` from
@@ -153,12 +159,15 @@ loop {
    to it.
 5. **Join** (`rust/fontaine-core/src/child_runner.rs`, `agent/setup.rs`): pass `results` from `gates()` (in
    scope at `agent.rs:252`) through `subagent_support` → `child_runner` (`agent/setup.rs:490-530`)
-   → `ChildContext` → `RunShared` → `run_child` (`RunShared` already holds `steering`; the free
-   `notification_prompt` calls `state.clear_current_call(agent)`); add
+   → `ChildContext` → `RunShared` → `run_child`, which takes `&RunShared` (carrying `steering` and
+   the new `results`) in place of its loose params, and `launch` is updated to match (the free
+   `notification_prompt` calls `state.clear_current_call(agent)`); make `WAKE_POLL` `pub` and
+   re-export it from `fontaine_tools::jobs`; add
    `join_wait` and the run loop; factor the human-prompt recording shared with `resume`.
-6. **Headless** (`rust/fontaine/src/headless.rs`): `running_below(ROOT_AGENT)`; doc wording.
+6. **Headless** (`rust/fontaine/src/headless.rs`): `any_running()`; doc wording.
 7. **Wording sweep**: `rg -n -i "background agent|background subagent|background child"` over
-   `rust/` (TUI turn label `fontaine-tui/src/ui/turn.rs:226` → "an agent reported back", comments
+   `rust/` (TUI turn label `fontaine-tui/src/ui/turn.rs:226` → "an agent reported back"; the tests waiting on the old
+   notice, `tui.rs:1272`, `sessions.rs:389` and `providers.rs:263`, wait on the new label; comments
    in `ui/mod.rs`, `app.rs`, `goal.rs`, `agent/goal.rs`, `agents_panel.rs`, `commands.rs:142`
    "the agents panel"). Also `fontaine-tools/src/ask_user.rs:204` and `fontaine-agents/src/tree.rs:50, 712`, which the
    regex misses. Shell background jobs keep their wording.
@@ -169,7 +178,8 @@ loop {
    `evals/dataset/overdeny.jsonl`; run the live guardian eval after the prompt change.
 8. **Tests** (see Testing Strategy) and **docs** (see Documentation).
 9. **Plan Decisions** (`tasks/fontaine_harness_plan.md`, end of `### Agents`): the lines in
-   `## Decisions` below that amend the master plan, dated 2026-10-30.
+   `## Decisions` below that amend the master plan, dated 2026-10-30. Also amend line 374 (#321):
+   missed messages drain on the background path only (drop "the foreground and").
 
 ## Files to Modify
 
@@ -179,7 +189,7 @@ loop {
 - `rust/fontaine-core/src/{child_runner.rs, agent.rs, agent/setup.rs, goal.rs, agent/goal.rs}`
 - `rust/fontaine/src/headless.rs`
 - `rust/fontaine/tests/{parallel_agents.rs, fork_agent.rs, telemetry_otlp.rs, common/mod.rs}`
-- `rust/fontaine-core/tests/{agent_pipeline.rs, extensions.rs, choke_point.rs, agent_resume.rs, guardian_off.rs,
+- `rust/fontaine-core/tests/{common/runtime.rs, agent_pipeline.rs, extensions.rs, choke_point.rs, agent_resume.rs, guardian_off.rs,
   permissions_screen.rs}`
   (fake `ChildRunner` on `SpawnRequest`, `reserve` calls)
 - `rust/fontaine-guardian/prompts/guardian_prompt.md`, its `the_defaults_marker_snapshot.snap`,
@@ -280,8 +290,8 @@ Integration (`fontaine -p` with the routed scripted endpoint, `fontaine/tests/pa
 - Convert the remaining blocking-spawn tests (`a_blocking_agent_call_returns_…`,
   `a_foreground_child_is_stopped_when_the_headless_cap_is_passed`,
   `a_blocking_report_and_a_background_notification_pass_through_the_result_pipeline`, the spawns in
-  `fork_agent.rs` and `fontaine-tui/tests/agents.rs`) to the async flow: spawn, then the report as a
-  notification or `job_output` result. Also in `parallel_agents.rs`:
+  `fork_agent.rs`) to the async flow: spawn, then the report as a notification or `job_output`
+  result. The TUI test spawns already pass `background: true`, so they only lose that arg. Also in `parallel_agents.rs`:
   `a_childs_token_budget_stops_it_and_its_report_is_partial`,
   `a_cost_cap_on_an_unpriced_model_is_inactive_with_one_notice_and_the_token_cap_still_binds` and
   `the_per_call_model_overrides_the_types_and_bad_values_are_error_results` read the report from the
@@ -293,19 +303,22 @@ Integration (`fontaine -p` with the routed scripted endpoint, `fontaine/tests/pa
   resume/undelivered state. `telemetry_otlp.rs`
   `subagents_have_spans_under_their_spawning_call_and_decisions_keyed_by_agent`: the subagent span
   still nests under the spawning `agent` call's span; `docs/telemetry.md:102` stays consistent.
-  Both tests in `fork_agent.rs` use one ordered queue `[fork_call(), "fork done", "root done"]` and
-  index `requests[1]`/`requests[2]`; with async spawn the root's follow-up races the fork's first
-  request for that queue, and the routed endpoint cannot tell them apart because a fork shares the
-  root's first user message. They move to the routed endpoint with a new `Route::on_last_user(marker)`
-  matcher in `tests/common/mod.rs` (matches the last user message, which for the fork is its task and
-  for the root is still the turn's prompt), the fork's route listed before the root's; the fork's
-  request is found by content (its last user message), not by index. `with_one_child` in `fontaine-core/tests/agent_resume.rs`
-  (:54-70) is reworked to spawn first and then get the report as a notification, using a routed,
-  keyed mock instead of one ordered queue `[spawn, "child answer", "root done"]`, which assumed a
-  blocking child.
-- **TUI**: `parallel_subagents_one_killed_the_others_finish_and_every_call_is_audited_by_agent`
-  (`fontaine-tui/tests/agents.rs:83-130`) is extended with an assertion that the agent ids appear
-  on the root's tool cards before any child ends.
+  The first test in `fork_agent.rs` uses one ordered queue `[fork_call(), "fork done", "root done"]`
+  and `requests[1]`; the second uses `[read, fork_call(), "fork done", "root done"]` and
+  `requests[2]` (:75-99). With async spawn the root's follow-up races the fork's first request for
+  that queue, and the routed endpoint cannot tell them apart because a fork shares the root's first
+  user message. They move to the routed endpoint with a new `Route::on_last_user(marker)` matcher
+  in `tests/common/mod.rs` (matches the last user message, which for the fork is its task and for
+  the root is still the turn's prompt), the fork's route listed before the root's; the fork's
+  request is found by content (its last user message), not by index. Both assert `requests.len()`
+  (3 and 4), which change because `settle` adds a root notification turn. `with_one_child` in
+  `fontaine-core/tests/agent_resume.rs` (:54-70) is reworked to spawn first and then get the
+  report as a notification. `fontaine-core/tests` has no routed mock (`build()` in
+  `tests/common/runtime.rs:50` uses `MockCompletionModel::from_stream_turns`, one ordered queue
+  `[spawn, "child answer", "root done"]` that assumed a blocking child), so add a small keyed
+  `CompletionModel` wrapper there that routes by a marker in the request's messages. The assertions
+  at `agent_resume.rs:100-106` (status Done, no root notifications right after the root turn) need
+  an `until_ended`-style wait.
 
 ## Open Questions
 
