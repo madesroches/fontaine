@@ -549,16 +549,6 @@ impl App {
         self.questions.retain(|panel| !panel.is_closed());
     }
 
-    /// The calls `agent` is waiting for the human to decide, as the call text.
-    pub fn pending_for(&self, agent: &str) -> Vec<String> {
-        self.approval
-            .iter()
-            .chain(self.queued_approvals.iter())
-            .filter(|approval| approval.request.agent == agent)
-            .map(|approval| format!("{} {}", approval.request.tool, approval.request.summary))
-            .collect()
-    }
-
     pub fn begin_server(&mut self, mut prompt: ServerPrompt) {
         self.servers_opened += 1;
         prompt.id = self.servers_opened;

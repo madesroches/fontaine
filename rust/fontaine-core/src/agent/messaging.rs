@@ -58,6 +58,37 @@ fn ended_words(status: ChildStatus) -> &'static str {
     }
 }
 
+/// What `message_agent` does once a message is queued for an agent that was running.
+#[derive(Debug, PartialEq, Eq)]
+enum AfterQueue {
+    Settled(Result<Delivered, MessageRefusal>),
+    /// The queue was taken back after the agent ended; resume it with this text.
+    Resume(String),
+}
+
+fn after_queue(
+    running_again: bool,
+    back: Vec<String>,
+    running_after_take: bool,
+    status: Option<ChildStatus>,
+) -> AfterQueue {
+    if running_again {
+        return AfterQueue::Settled(Ok(Delivered::Queued));
+    }
+    if !back.is_empty() {
+        return AfterQueue::Resume(back.join("\n\n"));
+    }
+    // The end-of-run drain took it; it only reached the agent if that resume ran.
+    AfterQueue::Settled(if running_after_take {
+        Ok(Delivered::Resumed)
+    } else {
+        match status {
+            Some(status) => Err(MessageRefusal::Ended(status)),
+            None => Err(MessageRefusal::Unknown),
+        }
+    })
+}
+
 impl AgentRuntime {
     /// Delivers what the human typed in `id`'s view. Nothing is written to the ledger here: the
     /// words become intent for that agent only when its model reads them.
@@ -71,21 +102,16 @@ impl AgentRuntime {
             self.steering.queue_for(id, text.clone());
             // The tree and the queue are separate locks: the run can end between the check and
             // the queueing, after its end-of-run drain already looked.
-            if tree.is_running(id) {
-                return Ok(Delivered::Queued);
+            let running_again = tree.is_running(id);
+            let back = if running_again {
+                Vec::new()
+            } else {
+                self.steering.take_pending_for(id)
+            };
+            match after_queue(running_again, back, tree.is_running(id), tree.status_of(id)) {
+                AfterQueue::Settled(outcome) => return outcome,
+                AfterQueue::Resume(taken_back) => text = taken_back,
             }
-            let back = self.steering.take_pending_for(id);
-            if back.is_empty() {
-                // The end-of-run drain took it; it only reached the agent if that resume ran.
-                if tree.is_running(id) {
-                    return Ok(Delivered::Resumed);
-                }
-                return match tree.status_of(id) {
-                    Some(status) => Err(MessageRefusal::Ended(status)),
-                    None => Err(MessageRefusal::Unknown),
-                };
-            }
-            text = back.join("\n\n");
         }
         if tree.exhausted_of(id).is_some() {
             return Err(MessageRefusal::BudgetSpent);
@@ -111,5 +137,47 @@ impl AgentRuntime {
             }
             Err(refusal) => Err(MessageRefusal::Limit(describe(&refusal))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn running_again_stays_queued() {
+        assert_eq!(
+            after_queue(true, Vec::new(), true, Some(ChildStatus::Running)),
+            AfterQueue::Settled(Ok(Delivered::Queued))
+        );
+    }
+
+    #[test]
+    fn taken_back_after_the_end_resumes_with_the_text() {
+        let back = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            after_queue(false, back, false, Some(ChildStatus::Done)),
+            AfterQueue::Resume("a\n\nb".to_string())
+        );
+    }
+
+    #[test]
+    fn drained_and_running_counts_as_resumed() {
+        assert_eq!(
+            after_queue(false, Vec::new(), true, Some(ChildStatus::Running)),
+            AfterQueue::Settled(Ok(Delivered::Resumed))
+        );
+    }
+
+    #[test]
+    fn drained_and_not_running_is_refused() {
+        assert_eq!(
+            after_queue(false, Vec::new(), false, Some(ChildStatus::Killed)),
+            AfterQueue::Settled(Err(MessageRefusal::Ended(ChildStatus::Killed)))
+        );
+        assert_eq!(
+            after_queue(false, Vec::new(), false, None),
+            AfterQueue::Settled(Err(MessageRefusal::Unknown))
+        );
     }
 }
