@@ -1782,11 +1782,12 @@ mod tests {
     #[test]
     fn the_selection_is_keyed_on_the_token() {
         let mut app = app();
-        type_text(&mut app, "/mod");
+        type_text(&mut app, "/mod /mod");
         press(&mut app, KeyCode::Down);
         assert_eq!(selected_name(&app), "guardian-model");
-        app.input.set_text("");
-        type_text(&mut app, "x /mod");
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Left);
+        }
         assert_eq!(selected_name(&app), "model");
     }
 
