@@ -16,8 +16,8 @@ use tokio::sync::oneshot;
 
 use crate::agents_panel::{AgentsPanel, PanelKey};
 use crate::approval::Approval;
-use crate::commands::{MenuEntry, builtin_menu, match_menu, parse_command};
-use crate::complete::{self, Mention};
+use crate::commands::{MenuEntry, builtin_menu, common_prefix, match_menu, parse_command};
+use crate::complete::{self, Token};
 use crate::config_panel::{ConfigKey, ConfigPanel};
 use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt};
 use crate::guardian_prompt::GuardianOffPrompt;
@@ -113,7 +113,7 @@ pub struct HistorySearch {
 /// The `@` candidates for the token under the cursor.
 #[derive(Clone, Debug)]
 pub struct CompletionList {
-    pub mention: Mention,
+    pub mention: Token,
     pub matches: Vec<String>,
     pub selected: usize,
 }
@@ -180,9 +180,9 @@ pub struct App {
     pub completion: Option<CompletionList>,
     /// The mention whose list the human closed, which stays closed until the token changes.
     dismissed: Option<(usize, String)>,
-    /// The name typed after the `/` that the menu selection applies to, and the selected row.
-    /// A different name reads as row 0, so typing needs no reset.
-    slash_selected: (String, usize),
+    /// Where the `/` token starts and the name typed after it, which the menu selection applies
+    /// to, and the selected row. A different token reads as row 0, so typing needs no reset.
+    slash_selected: (usize, String, usize),
     /// The input text the human closed the `/` menu on, which keeps it closed until it changes.
     slash_dismissed: Option<String>,
     /// The workspace files `@` completes, as paths under the roots.
@@ -197,7 +197,10 @@ pub struct App {
 
 /// The `/` menu while it is open.
 pub struct SlashMenu<'a> {
-    pub typed: String,
+    /// The `/token` under the cursor; `token.query` is the typed name.
+    pub token: Token,
+    /// Whether the token is the whole input, the only place Enter belongs to the menu.
+    pub bare: bool,
     pub matches: Vec<&'a MenuEntry>,
     pub selected: usize,
 }
@@ -247,7 +250,7 @@ impl App {
             search: None,
             completion: None,
             dismissed: None,
-            slash_selected: (String::new(), 0),
+            slash_selected: (0, String::new(), 0),
             slash_dismissed: None,
             files: Arc::default(),
             primary_root: PathBuf::new(),
@@ -775,8 +778,10 @@ impl App {
         if self.slash_dismissed.as_deref() != Some(&text) {
             self.slash_dismissed = None;
         }
-        if text.strip_prefix('/') != Some(self.slash_selected.0.as_str()) {
-            self.slash_selected = (String::new(), 0);
+        let token = complete::token_at(&text, '/', self.input.cursor());
+        let current = token.as_ref().map(|t| (t.start, t.query.as_str()));
+        if current != Some((self.slash_selected.0, self.slash_selected.1.as_str())) {
+            self.slash_selected = (0, String::new(), 0);
         }
     }
 
@@ -797,31 +802,36 @@ impl App {
         false
     }
 
-    /// The `/` menu, when the input is a bare `/name` and nothing else wants the keys.
+    /// The `/` menu, when the cursor is in a `/token` at the start of the input or after
+    /// whitespace and nothing else wants the keys.
     pub fn slash_menu(&self) -> Option<SlashMenu<'_>> {
         if self.covered()
             || self.search.is_some()
             || self.completion.is_some()
             || self.history.navigating()
+            || self.shell_mode()
         {
             return None;
         }
         let text = self.input.text();
-        let typed = text.strip_prefix('/')?;
-        if typed.contains(char::is_whitespace) || self.slash_dismissed.as_deref() == Some(&text) {
+        let token = complete::token_at(&text, '/', self.input.cursor())?;
+        if self.slash_dismissed.as_deref() == Some(&text) {
             return None;
         }
-        let matches = match_menu(&self.menu, typed);
+        let matches = match_menu(&self.menu, &token.query);
         if matches.is_empty() {
             return None;
         }
-        let selected = if self.slash_selected.0 == typed {
-            self.slash_selected.1.min(matches.len() - 1)
-        } else {
-            0
-        };
+        let selected =
+            if self.slash_selected.0 == token.start && self.slash_selected.1 == token.query {
+                self.slash_selected.2.min(matches.len() - 1)
+            } else {
+                0
+            };
+        let bare = token.start == 0 && token.end == text.chars().count();
         Some(SlashMenu {
-            typed: typed.to_string(),
+            token,
+            bare,
             matches,
             selected,
         })
@@ -830,27 +840,49 @@ impl App {
     /// Keys the `/` menu takes; `None` when the key is for the input.
     fn slash_key(&mut self, key: KeyEvent) -> Option<Action> {
         let menu = self.slash_menu()?;
-        let (typed, count, selected) = (menu.typed.clone(), menu.matches.len(), menu.selected);
+        let (token, bare, count, selected) = (
+            menu.token.clone(),
+            menu.bare,
+            menu.matches.len(),
+            menu.selected,
+        );
         let entry = menu.matches[selected];
         let name = entry.name.clone();
         let argument = entry.hint.is_some();
         let required = entry.requires_argument();
+        let prefix = common_prefix(
+            &menu
+                .matches
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>(),
+        );
+        let narrows = count > 1
+            && prefix.chars().count() > token.query.chars().count()
+            && prefix
+                .to_lowercase()
+                .starts_with(&token.query.to_lowercase());
         let plain = !key
             .modifiers
             .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Up if plain => {
-                self.slash_selected = (typed, selected.saturating_sub(1));
+                self.slash_selected = (token.start, token.query, selected.saturating_sub(1));
             }
             KeyCode::Down if plain => {
-                self.slash_selected = (typed, (selected + 1).min(count - 1));
+                self.slash_selected = (token.start, token.query, (selected + 1).min(count - 1));
             }
-            KeyCode::Tab if plain => self.complete_slash(&name, argument),
-            KeyCode::Enter if plain => {
+            KeyCode::Tab if plain && narrows => {
+                self.input
+                    .replace_range(token.start, token.end, &format!("/{prefix}"));
+                self.history.reset();
+            }
+            KeyCode::Tab if plain => self.accept_slash(&token, bare, &name, argument),
+            KeyCode::Enter if plain && bare => {
                 if required {
-                    self.complete_slash(&name, argument);
+                    self.accept_slash(&token, bare, &name, argument);
                 } else {
-                    self.complete_slash(&name, false);
+                    self.accept_slash(&token, bare, &name, false);
                     return Some(self.enter(false));
                 }
             }
@@ -859,9 +891,23 @@ impl App {
         Some(Action::None)
     }
 
-    fn complete_slash(&mut self, name: &str, space: bool) {
-        let space = if space { " " } else { "" };
-        self.input.set_text(&format!("/{name}{space}"));
+    /// Writes the chosen name over the typed one: the whole input when the token is bare, else
+    /// only the token, with a space after it unless one is already there.
+    fn accept_slash(&mut self, token: &Token, bare: bool, name: &str, argument: bool) {
+        if bare {
+            let space = if argument { " " } else { "" };
+            self.input.set_text(&format!("/{name}{space}"));
+        } else {
+            let followed_by_space = self
+                .input
+                .text()
+                .chars()
+                .nth(token.end)
+                .is_some_and(char::is_whitespace);
+            let space = if followed_by_space { "" } else { " " };
+            self.input
+                .replace_range(token.start, token.end, &format!("/{name}{space}"));
+        }
         self.history.reset();
     }
 
@@ -1630,7 +1676,7 @@ mod tests {
     }
 
     #[test]
-    fn the_slash_menu_opens_only_for_a_bare_name() {
+    fn the_slash_menu_opens_for_a_name_being_typed() {
         let mut app = app();
         assert!(app.slash_menu().is_none());
         type_text(&mut app, "/");
@@ -1641,8 +1687,117 @@ mod tests {
         assert!(app.slash_menu().is_none());
         app.input.set_text("/zzz");
         assert!(app.slash_menu().is_none());
-        app.input.set_text("hello /mod");
+    }
+
+    fn with_zork(app: &mut App) {
+        for name in ["zork-alpha", "zork-alphabet", "zork-beta"] {
+            app.menu.push(MenuEntry {
+                name: name.into(),
+                hint: None,
+                description: "d".into(),
+                aliases: Vec::new(),
+            });
+        }
+    }
+
+    #[test]
+    fn the_menu_opens_for_a_slash_token_after_whitespace() {
+        let mut app = app();
+        type_text(&mut app, "hello /mod");
+        assert_eq!(menu_names(&app), ["model", "guardian-model"]);
+        assert!(!app.slash_menu().unwrap().bare);
+        app.input.set_text("a/mod");
         assert!(app.slash_menu().is_none());
+        app.input.set_text("hello /mod x");
+        assert!(app.slash_menu().is_none());
+        app.input.set_text("a\n/add");
+        assert!(app.slash_menu().is_some());
+    }
+
+    #[test]
+    fn the_menu_stays_shut_in_shell_mode() {
+        let mut app = app();
+        type_text(&mut app, "!ls /u");
+        assert!(app.slash_menu().is_none());
+        app.input.set_text("!cd /p");
+        assert!(app.slash_menu().is_none());
+    }
+
+    #[test]
+    fn inline_tab_replaces_only_the_token() {
+        let mut app = app();
+        type_text(&mut app, "please run /add");
+        assert_eq!(press(&mut app, KeyCode::Tab), Action::None);
+        assert_eq!(app.input.text(), "please run /add-dir ");
+        assert!(app.slash_menu().is_none());
+
+        app.input.set_text("run /cle now");
+        for _ in 0.." now".len() {
+            press(&mut app, KeyCode::Left);
+        }
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input.text(), "run /clear now");
+        assert!(app.slash_menu().is_some());
+    }
+
+    #[test]
+    fn tab_extends_to_the_common_prefix_before_accepting() {
+        let mut app = app();
+        with_zork(&mut app);
+        type_text(&mut app, "/zork-al");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input.text(), "/zork-alpha");
+        assert_eq!(menu_names(&app), ["zork-alpha", "zork-alphabet"]);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input.text(), "/zork-alpha");
+        assert_eq!(selected_name(&app), "zork-alpha");
+
+        app.input.set_text("/zork-");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input.text(), "/zork-alpha");
+
+        app.input.set_text("go /zork-al");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input.text(), "go /zork-alpha");
+    }
+
+    #[test]
+    fn tab_through_a_contains_match_does_not_narrow() {
+        let mut app = app();
+        type_text(&mut app, "/mod");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input.text(), "/model ");
+    }
+
+    #[test]
+    fn inline_enter_submits_the_text_as_typed() {
+        let mut app = app();
+        type_text(&mut app, "go /mod");
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            Action::Submit("go /mod".into())
+        );
+    }
+
+    #[test]
+    fn the_selection_is_keyed_on_the_token() {
+        let mut app = app();
+        type_text(&mut app, "/mod");
+        press(&mut app, KeyCode::Down);
+        assert_eq!(selected_name(&app), "guardian-model");
+        app.input.set_text("");
+        type_text(&mut app, "x /mod");
+        assert_eq!(selected_name(&app), "model");
+    }
+
+    #[test]
+    fn esc_dismisses_an_inline_menu_until_the_text_changes() {
+        let mut app = app();
+        type_text(&mut app, "go /mod");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.slash_menu().is_none());
+        type_text(&mut app, "e");
+        assert!(app.slash_menu().is_some());
     }
 
     #[test]
@@ -1809,6 +1964,13 @@ mod tests {
         app.refresh_completion();
         assert!(app.completion.is_some());
         assert!(app.slash_menu().is_none());
+
+        let mut app = app_with_files();
+        type_text(&mut app, "hi /mod");
+        ctrl(&mut app, 'r');
+        assert!(app.slash_menu().is_none());
+        press(&mut app, KeyCode::Esc);
+        assert!(app.slash_menu().is_some());
     }
 
     #[test]

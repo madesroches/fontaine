@@ -368,8 +368,13 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
         let footer = if linear {
             Vec::new()
         } else {
+            let keys = if app.slash_menu().is_some_and(|m| m.bare) {
+                "↑/↓ select · Tab complete · Enter run · Esc close"
+            } else {
+                "↑/↓ select · Tab complete · Esc close"
+            };
             vec![Line::styled(
-                "↑/↓ select · Tab complete · Enter run · Esc close",
+                keys,
                 Style::default().add_modifier(Modifier::DIM),
             )]
         };
@@ -379,7 +384,7 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
 }
 
 /// The `/` menu: the commands and skills the text typed so far could be, the selected one
-/// marked. Shown while the first word of the message is a bare `/name`.
+/// marked. Shown while the cursor is in a `/name` at the start of the message or after a space.
 fn menu_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let Some(menu) = app.slash_menu() else {
         return Vec::new();
@@ -400,7 +405,7 @@ fn menu_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 .as_deref()
                 .map_or(String::new(), |h| format!(" {h}"));
             let alias = entry
-                .matched_alias(&menu.typed)
+                .matched_alias(&menu.token.query)
                 .map_or(String::new(), |a| format!(" ({a})"));
             let marker = if i == menu.selected { "> " } else { "  " };
             let head = format!("{marker}/{}{alias}{hint}", entry.name);
@@ -569,6 +574,13 @@ mod tests {
             ["↑/↓ select · Tab complete · Enter run · Esc close"]
         );
         assert!(overlay(&app, 80, 40, true).footer.is_empty());
+    }
+
+    #[test]
+    fn an_inline_menu_footer_leaves_out_enter() {
+        let app = typed("hello /mod");
+        let footer = flatten_all(&overlay(&app, 80, 40, false).footer);
+        assert_eq!(footer, ["↑/↓ select · Tab complete · Esc close"]);
     }
 
     #[test]

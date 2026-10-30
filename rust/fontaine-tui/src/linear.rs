@@ -724,7 +724,7 @@ mod tests {
 
         let mut app = App::new(PermissionMode::Manual, "m".into());
         app.completion = Some(crate::app::CompletionList {
-            mention: crate::complete::Mention {
+            mention: crate::complete::Token {
                 start: 0,
                 end: 1,
                 query: String::new(),

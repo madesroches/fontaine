@@ -692,6 +692,9 @@ scorecard run (see `## Remaining work`).
   fontaine-tools cannot depend on fontaine-core.
 - 2026-10-30: Late diagnostics drain only on real tool calls; the synthetic screening calls set
   `CallView.synthetic` and are skipped — their text becomes a user-role turn prompt.
+- 2026-10-30: In the TUI `/` menu, Tab first extends the typed name to the longest common prefix of
+  the matches and only then accepts the selected row; Claude Code accepts the selected row on the
+  first Tab. (#294)
 
 ## Open Questions
 
