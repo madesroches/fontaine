@@ -16,7 +16,7 @@ result passes one post-call step before the model sees it.
 | `edit` | workspace write | Replaces text in a file. The file must have been read first. The file's earlier contents are saved first for [`/rewind`](checkpoints.md). |
 | `notebook_edit` | workspace write | Saves the notebook for [`/rewind`](checkpoints.md) first. Edits one cell of a Jupyter notebook (`.ipynb`): `replace` a cell's source (default), `insert` a new cell after `cell_id` (at the start when none) or `delete` a cell. Arguments: `path`, `cell_id`, `cell_type` (`code` or `markdown`; required to insert), `edit_mode`, `new_source`. Name a cell by its id, or `cell-N` (0-based) when it has none. Replacing a code cell clears its outputs. The notebook must have been read first, and is refused if it changed since. The rest of the notebook and its key order are kept; indentation other than spaces is normalized to nbformat's 1-space form, and number formatting outside the edited cell may be normalized (`1e-05` becomes `0.00001`). A `.ipynb` that does not parse as a notebook (invalid JSON, nbformat 3) is read as plain text. `edit` and `write` still work on a notebook but their descriptions point the model here. |
 | `shell` | arbitrary | Runs a shell command. A command still running at its timeout keeps running as a [background job](#background-jobs). Arguments: `command`, `timeout_secs`, `cwd`, `run_in_background`. |
-| `job_output` | read-only | Lists the [background jobs](#background-jobs) you started, or reads what one printed since it was last read. Arguments: `id`, `wait_secs` (0 to 60). Main conversation only. |
+| `job_output` | read-only | Lists the [background jobs](#background-jobs) you started, or reads what one printed since it was last read; on a [monitor](#monitor) it waits and reports status instead. Arguments: `id`, `wait_secs` (0 to 60). Main conversation only. |
 | `job_cancel` | arbitrary | Stops a background job or monitor with its whole process group. Argument: `id`. Main conversation only. |
 | `monitor` | arbitrary | Runs a command in the background and delivers each line it prints as a [notification](#monitor). Arguments: `command`, `description`, `timeout_secs`. Main conversation only. |
 | `webfetch` | arbitrary | Fetches one web page. |
@@ -68,7 +68,7 @@ The `skill`, `ask_user_question`, `todo_write`, `cron_jobs`, `cron_delete`, `sch
 only a skill name, resolved against the skills loaded at startup, so all it can do is put that
 skill's text in the conversation. `ask_user_question` can only show you text and collect your
 choice, and its answer comes from you alone, never from a permission mode. `todo_write` takes only
-the task list, which it keeps in the session. `job_output` takes the id of a job this session started and returns only what that job printed; the command that made the job was judged when it was called. The three scheduling tools only list, cancel or re-time
+the task list, which it keeps in the session. `job_output` takes the id of a job this session started and returns only what that job printed; the command that made the job was judged when it was called. On a monitor id it returns only a wait status, never output lines: those arrive as notifications. The three scheduling tools only list, cancel or re-time
 scheduled text; `cron_create` is [arbitrary](permissions.md#scheduled-prompts) because it plants model-written text that
 later runs as a turn without you typing anything. None needs a scope check. The deterministic floor
 still runs first, so a deny or ask rule or a `pre_tool_use` hook can block any of them. An MCP tool
@@ -188,7 +188,9 @@ running is killed as soon as the shell exits, so `server &` dies with its shell.
   With an `id` it returns what the job printed since it was last read and whether it still runs.
   `wait_secs` (at most 60) waits for new output or the job's end, so the model has no need to poll
   with `sleep`. A job that ended and was already reported in a notification answers with a short
-  marker instead of its output.
+  marker instead of its output. On a monitor the same call waits instead: it reports that a
+  notification was posted, the monitor ended, or it is still running — never output bytes. A
+  zero `wait_secs` asks for the status at once.
 - **`job_cancel`.** Stops the job's whole process group (`SIGTERM`, then `SIGKILL` after 2 seconds)
   and returns what it printed since it was last read, not counting what a notification already
   carried. A job that already ended is left as it is.
@@ -226,8 +228,9 @@ allow it with a `monitor(...)` rule or leave it to the guardian.
   at most 200 lines, and a monitor that has sent 1,000 notifications is terminated with a final
   notice, so a chatty script cannot become an unbounded loop.
 - It ends at its timeout or when its command ends, with a final notice either way; `job_cancel`
-  stops it early and posts nothing. `job_output` on a monitor is refused: its lines arrive as
-  notifications, and only the listing without an `id` shows it.
+  stops it early and posts nothing. `job_output` on a monitor never returns output — it waits
+  (bounded by `wait_secs`) and reports whether a notification was posted, the monitor ended, or
+  it still runs; its lines and its final notice always arrive as notifications.
 - Like the other job tools it is for the main conversation only, and it counts against the limit
   of 8 running jobs.
 

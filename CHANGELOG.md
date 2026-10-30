@@ -8,6 +8,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `job_output` on a monitor id is no longer refused: it waits up to `wait_secs` (a zero wait
+  asks for the status at once) and reports whether a notification was posted, the monitor
+  ended, or it still runs — never carrying output bytes, since a monitor's lines and its final
+  notice stay on the notification path, delivered exactly once (#304).
+
 - Input typed while a turn runs now queues and executes once the turn ends, per Claude Code's
   documented behavior (#292). A skill invocation (`/review 42`) queues as typed and runs as its
   expanded prompt; a built-in command queues and executes through the same dispatch it would get
