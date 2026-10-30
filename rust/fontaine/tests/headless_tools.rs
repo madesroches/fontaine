@@ -172,10 +172,12 @@ async fn an_auto_guardian_allow_reads_an_external_source_file() {
     assert_eq!(decisions[0]["decision"], "allow");
     let asked = judge.requests().await;
     assert_eq!(asked.len(), 1);
+    // The request is JSON, so a Windows path appears with its backslashes escaped.
+    let escaped = serde_json::to_string(&deps.join("src/lib.rs").display().to_string()).unwrap();
     assert!(
         asked[0]
             .to_string()
-            .contains(&deps.join("src/lib.rs").display().to_string()),
+            .contains(&escaped[1..escaped.len() - 1]),
         "the guardian request names the resolved target"
     );
 }

@@ -116,10 +116,9 @@ async fn an_external_read_reaches_the_guardian_and_runs_with_the_resolved_target
         .iter()
         .map(|r| format!("{r:?}"))
         .collect();
-    assert!(
-        sent.contains(&outside.join("lib.rs").display().to_string()),
-        "{sent}"
-    );
+    // `sent` is Debug output, which escapes a Windows path's backslashes.
+    let target = format!("{:?}", outside.join("lib.rs").display().to_string());
+    assert!(sent.contains(&target[1..target.len() - 1]), "{sent}");
 
     // dontAsk denies the same call: no guardian, no pre-approval.
     let strict = Rig::with(Options::new(DontAsk).guardian(fake.guardian.clone()));
