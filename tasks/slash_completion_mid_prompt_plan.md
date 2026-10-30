@@ -141,7 +141,8 @@ leave the cursor at the end, so this only shows after the cursor has been moved 
    - `slash_key()`: add the Tab prefix step; Enter only when `bare`; inline accept.
    - Replace `complete_slash` with the bare/inline accept described above.
 4. `view.rs`: `menu_lines` reads `menu.token.query` in place of `menu.typed`. Update its doc
-   comment.
+   comment. The `commands` footer keeps `Enter run` only when `menu.bare`; inline it reads
+   `↑/↓ select · Tab complete · Esc close`, since Enter is not a menu key there.
 5. Docs: `docs/tui.md`.
 6. Master plan `## Decisions`: add the common-prefix Tab deviation from Claude Code (the first
    Decisions bullet below) as a `YYYY-MM-DD: ... (#294)` line; the date is the day it lands.
@@ -178,6 +179,7 @@ leave the cursor at the end, so this only shows after the cursor has been moved 
 - Enter with an inline menu open submits the message as typed (Claude Code's behavior); only a bare
   `/name` runs on Enter, because running a built-in from mid-prompt would discard the surrounding
   text.
+- AFK: The inline menu's footer drops the `Enter run` hint (`↑/↓ select · Tab complete · Esc close`) rather than relabeling it, since Enter is not a menu key inline; the bare footer is unchanged.
 
 ## Documentation
 
@@ -224,6 +226,8 @@ All of this is reachable with unit tests in `app.rs` (existing `type_text`/`pres
     precedence tests).
   - Esc inline dismisses until the text changes.
   - Shell mode: `!ls /u` opens no menu.
+- `view.rs`: for an inline menu (`hello /mod`) the footer is `↑/↓ select · Tab complete · Esc
+  close`; the existing bare-footer test stays as is.
 - Update `the_slash_menu_opens_only_for_a_bare_name`, which asserts `hello /mod` has no menu, to
   the new rule.
 
