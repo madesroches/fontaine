@@ -62,8 +62,7 @@ pub fn token_at(text: &str, sigil: char, cursor: usize) -> Option<Token>;
 pub fn mention_at(text: &str, cursor: usize) -> Option<Token> { token_at(text, '@', cursor) }
 ```
 
-`Mention` becomes `Token`. Keep the `Mention` name as a type alias only if a rename touches more
-than `app.rs`/`complete.rs`; otherwise rename it. The rules stay those of `mention_at`: the token
+`Mention` is renamed to `Token` outright. The rules stay those of `mention_at`: the token
 starts the input or follows whitespace, and the cursor is after the sigil and inside the token or
 at its end.
 
@@ -81,7 +80,8 @@ pub struct SlashMenu<'a> {
 }
 ```
 
-`slash_menu()` keeps every guard. It finds the token with `token_at(text, '/', cursor)` in place
+`slash_menu()` keeps every guard and adds `!self.shell_mode()`, so `!ls /u` or `!cd /p` opens no
+menu (today `strip_prefix('/')` excludes `!` input implicitly). It finds the token with `token_at(text, '/', cursor)` in place
 of `strip_prefix('/')`, and the rest is unchanged: `match_menu` on `token.query`, `None` on no
 matches, and the `slash_dismissed` check. The mid-prompt menu lists the same entries, built-ins
 included, as Claude Code does.
@@ -129,19 +129,22 @@ leave the cursor at the end, so this only shows after the cursor has been moved 
 
 1. `complete.rs`: add `Token` and `token_at(text, sigil, cursor)`. Re-express `mention_at` through
    it, rename `Mention` to `Token` at its uses in `app.rs` (`CompletionList`,
-   `refresh_completion`, `accept_completion`, `dismiss_completion`), and update the module doc to
-   cover both sigils.
+   `refresh_completion`, `accept_completion`, `dismiss_completion`) and in `linear.rs` (the
+   `crate::complete::Mention { start, end, query }` literal in its test), and update the module doc
+   to cover both sigils.
 2. `commands.rs`: add `pub fn common_prefix(names: &[&str]) -> String`, with unit tests.
 3. `app.rs`:
    - `SlashMenu`: replace `typed` with `token` and add `bare`.
-   - `slash_menu()`: find the token at the cursor; compute `bare`.
+   - `slash_menu()`: find the token at the cursor; compute `bare`; add the `!self.shell_mode()`
+     guard.
    - `slash_selected` key `(usize, String)`; update `refresh_slash()` to match.
    - `slash_key()`: add the Tab prefix step; Enter only when `bare`; inline accept.
    - Replace `complete_slash` with the bare/inline accept described above.
 4. `view.rs`: `menu_lines` reads `menu.token.query` in place of `menu.typed`. Update its doc
    comment.
 5. Docs: `docs/tui.md`.
-6. Master plan `## Decisions`: add the dated lines listed under Decisions below.
+6. Master plan `## Decisions`: add the common-prefix Tab deviation from Claude Code (the first
+   Decisions bullet below) as a `YYYY-MM-DD: ... (#294)` line; the date is the day it lands.
 
 ## Files to Modify
 
@@ -149,6 +152,7 @@ leave the cursor at the end, so this only shows after the cursor has been moved 
 - `rust/fontaine-tui/src/commands.rs`
 - `rust/fontaine-tui/src/app.rs`
 - `rust/fontaine-tui/src/view.rs`
+- `rust/fontaine-tui/src/linear.rs` (its test's `Mention` literal)
 - `docs/tui.md`
 - `tasks/fontaine_harness_plan.md` (`## Decisions`)
 - `CHANGELOG.md` (by the PR step)
@@ -162,8 +166,6 @@ leave the cursor at the end, so this only shows after the cursor has been moved 
   selected row. That is predictable and needs no ranking knowledge in the prefix logic.
   Restricting the prefix to name-prefix matches would extend text that other listed rows do not
   share.
-- **Enter inline submits rather than accepts.** This matches Claude Code. An inline token is part
-  of a message, and running a built-in from mid-prompt would discard the surrounding text.
 
 ## Decisions
 
@@ -174,7 +176,8 @@ leave the cursor at the end, so this only shows after the cursor has been moved 
 - The inline menu lists built-in commands as well as skills, as Claude Code does. Accepting one
   only edits the text; a built-in named mid-prompt is not run.
 - Enter with an inline menu open submits the message as typed (Claude Code's behavior); only a bare
-  `/name` runs on Enter.
+  `/name` runs on Enter, because running a built-in from mid-prompt would discard the surrounding
+  text.
 - The bare menu now needs the cursor inside the token, as `@` does (see Design).
 
 ## Documentation
@@ -187,6 +190,8 @@ leave the cursor at the end, so this only shows after the cursor has been moved 
   `/name`, and inline it sends the message. Replace "The menu only opens while the input is a bare
   `/name`" with the cursor-in-token rule, keeping the existing guard list (panels, history search,
   `@` list, recalled history).
+- Main key table, Enter row (`docs/tui.md:93`): with the slash menu open, Enter runs the selected
+  command only for a bare `/name`; inline it sends the message.
 
 ## Testing Strategy
 
@@ -217,6 +222,7 @@ All of this is reachable with unit tests in `app.rs` (existing `type_text`/`pres
   - Guards: no inline menu while a `@` list, history search or panel is open (extend the existing
     precedence tests).
   - Esc inline dismisses until the text changes.
+  - Shell mode: `!ls /u` opens no menu.
 - Update `the_slash_menu_opens_only_for_a_bare_name`, which asserts `hello /mod` has no menu, to
   the new rule.
 
