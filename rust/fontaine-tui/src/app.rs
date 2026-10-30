@@ -1155,9 +1155,9 @@ impl App {
                 if self.on_last_line()
                     && self.agent_list.has_rows()
                     && !self.linear
-                    && !key
-                        .modifiers
-                        .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+                    && !key.modifiers.intersects(
+                        KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL,
+                    ) =>
             {
                 self.agent_list.focus();
             }
@@ -1460,6 +1460,26 @@ mod tests {
         let mut plain = self::app();
         press(&mut plain, KeyCode::Down);
         assert!(!plain.agent_list.focused);
+    }
+
+    #[test]
+    fn ctrl_down_does_not_focus_the_agent_list() {
+        let mut app = with_agent_list();
+        app.handle_input(key(KeyCode::Down, KeyModifiers::CONTROL));
+        assert!(!app.agent_list.focused);
+    }
+
+    #[test]
+    fn shift_enter_with_the_list_focused_inserts_a_newline_and_does_not_view() {
+        let mut app = with_agent_list();
+        type_text(&mut app, "a");
+        press(&mut app, KeyCode::Down);
+        assert!(app.agent_list.focused);
+        press(&mut app, KeyCode::Down);
+        app.handle_input(key(KeyCode::Enter, KeyModifiers::SHIFT));
+        assert!(!app.agent_list.focused);
+        assert_eq!(app.viewing, None);
+        assert_eq!(app.input.text(), "a\n");
     }
 
     #[test]

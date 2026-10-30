@@ -213,6 +213,15 @@ impl AgentList {
                 self.focused = false;
                 return ListKey::Blur { typed: false };
             }
+            // Shift/Alt+Enter is the prompt's newline, not a view.
+            KeyCode::Enter
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+            {
+                self.focused = false;
+                return ListKey::Blur { typed: true };
+            }
             KeyCode::Enter => {
                 if let Some(id) = self.selected_id() {
                     self.focused = false;
@@ -412,6 +421,18 @@ mod tests {
             ids(&rows(&agents, Some("agent-1"), &dismissed, now)),
             [None, Some("agent-1"), Some("agent-3")]
         );
+    }
+
+    #[test]
+    fn a_modified_enter_is_handed_to_the_prompt_not_a_view() {
+        let now = Instant::now();
+        let agents = [agent("agent-1", "main", ChildStatus::Running, now)];
+        for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
+            let mut list = focused(rows(&agents, None, &HashSet::new(), now));
+            let enter = KeyEvent::new(KeyCode::Enter, modifiers);
+            assert_eq!(list.handle_key(enter, None), ListKey::Blur { typed: true });
+            assert!(!list.focused);
+        }
     }
 
     #[test]

@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use fontaine_agents::runner::ChildStatus;
+use fontaine_core::agent::{Delivered, MessageRefusal};
 use fontaine_core::config::PermissionMode;
 use fontaine_core::notice::Severity;
 use fontaine_core::permissions::{Answer, ApprovalRequest, Offers};
@@ -366,4 +368,20 @@ fn expand_and_copy_act_on_the_transcript_on_screen() {
     assert!(shown.contains("there is no tool call number 9"), "{shown}");
     assert!(shown.contains("copied reply 1"), "{shown}");
     assert!(ui.app.transcript.entries.is_empty());
+}
+
+#[test]
+fn a_message_handed_to_a_resume_is_not_restored_to_the_input() {
+    let mut ui = ui(unbounded_channel().1);
+    let before = ui.app.transcript.entries.len();
+    ui.delivered("agent-1", "hello", Ok(Delivered::HandedToResume));
+    assert_eq!(ui.app.input.text(), "");
+    assert_eq!(ui.app.transcript.entries.len(), before + 1);
+
+    ui.delivered(
+        "agent-1",
+        "hello",
+        Err(MessageRefusal::Ended(ChildStatus::Done)),
+    );
+    assert_eq!(ui.app.input.text(), "hello");
 }

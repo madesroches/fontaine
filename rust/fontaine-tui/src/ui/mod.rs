@@ -21,7 +21,7 @@ use crate::ui::schedule::IDLE_POLL;
 use crate::ui::turn::{CommandOutcome, SkillRun, Submission};
 use crate::{Action, App, Command, Prompt, Ui, parse_command};
 use crate::{reports, statusbar};
-use fontaine_core::agent::{AgentRuntime, Delivered};
+use fontaine_core::agent::{AgentRuntime, Delivered, MessageRefusal};
 use fontaine_core::config::PermissionMode;
 use fontaine_core::goal::{GoalArg, first_turn_prompt, parse_goal_arg};
 use fontaine_core::instructions;
@@ -325,15 +325,26 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// Delivers what the human typed in an agent's view. A running agent reads it with its next
     /// tool result, which the view shows dimmed until then; an ended one starts another run.
     pub(crate) fn message_agent(&mut self, runtime: &AgentRuntime, id: String, text: String) {
-        match runtime.message_agent(&id, text.clone()) {
-            Ok(Delivered::Queued) => self.remember(&text),
+        let outcome = runtime.message_agent(&id, text.clone());
+        self.delivered(&id, &text, outcome);
+    }
+
+    fn delivered(&mut self, id: &str, text: &str, outcome: Result<Delivered, MessageRefusal>) {
+        match outcome {
+            Ok(Delivered::Queued) => self.remember(text),
             Ok(Delivered::Resumed) => {
-                self.remember(&text);
+                self.remember(text);
                 self.app.transcript.notice(format!("you resumed {id}"));
             }
+            Ok(Delivered::HandedToResume) => {
+                self.remember(text);
+                self.app.shown_mut().notice(format!(
+                    "{id} ended as your message arrived; it was handed to its resume (a warning follows if that resume was refused)"
+                ));
+            }
             Err(refusal) => {
-                self.app.shown_mut().notice(refusal.notice(&id));
-                self.app.restore_to_input(&text);
+                self.app.shown_mut().notice(refusal.notice(id));
+                self.app.restore_to_input(text);
             }
         }
     }

@@ -18,6 +18,9 @@ pub enum Delivered {
     Queued,
     /// The agent had ended and started another run with it.
     Resumed,
+    /// The agent's end-of-run drain took the message and resumed the agent with it, or warned
+    /// that its resume was refused.
+    HandedToResume,
 }
 
 /// Why a message typed to a subagent was not delivered.
@@ -78,14 +81,12 @@ fn after_queue(
     if !back.is_empty() {
         return AfterQueue::Resume(back.join("\n\n"));
     }
-    // The end-of-run drain took it; it only reached the agent if that resume ran.
-    AfterQueue::Settled(if running_after_take {
-        Ok(Delivered::Resumed)
-    } else {
-        match status {
-            Some(status) => Err(MessageRefusal::Ended(status)),
-            None => Err(MessageRefusal::Unknown),
-        }
+    // The end-of-run drain took it. Its resume may not have marked the agent running yet, and a
+    // refused resume already warned, so a refusal here would invite a duplicate resend.
+    AfterQueue::Settled(match (running_after_take, status) {
+        (true, _) => Ok(Delivered::Resumed),
+        (false, None) => Err(MessageRefusal::Unknown),
+        (false, Some(_)) => Ok(Delivered::HandedToResume),
     })
 }
 
@@ -170,10 +171,14 @@ mod tests {
     }
 
     #[test]
-    fn drained_and_not_running_is_refused() {
+    fn drained_and_not_running_is_handed_to_the_resume() {
         assert_eq!(
             after_queue(false, Vec::new(), false, Some(ChildStatus::Killed)),
-            AfterQueue::Settled(Err(MessageRefusal::Ended(ChildStatus::Killed)))
+            AfterQueue::Settled(Ok(Delivered::HandedToResume))
+        );
+        assert_eq!(
+            after_queue(false, Vec::new(), false, Some(ChildStatus::Done)),
+            AfterQueue::Settled(Ok(Delivered::HandedToResume))
         );
         assert_eq!(
             after_queue(false, Vec::new(), false, None),
