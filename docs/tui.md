@@ -317,7 +317,7 @@ since a transcript can hold secrets, and an existing file is an error: an export
 
 | Command | Action |
 |---|---|
-| `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Until then a file-tool call outside the roots is denied with a hint naming this command and the session's scratch directory, which is always a root. Only between turns. |
+| `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Until then a file-tool *write* outside the roots is denied with a hint naming this command and the session's scratch directory, which is always a root; the read-only tools (`read`, `ls`, `glob`, `grep`) instead ask or go to the guardian like any unapproved call. Only between turns. |
 | `/agents`, `/tasks` | Opens the [agents panel](#the-agents-panel). |
 | `/branch [<name>]`, `/fork` | Copies the session under a new id and carries on in the copy; the original is left as it was. Only between turns, and refused while a subagent runs. See [Sessions](#sessions). |
 | `/clear`, `/reset`, `/new` | Starts over with an empty context. See [Context](#context). It takes no name for the old conversation; `/rename` names a session, and `/resume` returns to one later. |

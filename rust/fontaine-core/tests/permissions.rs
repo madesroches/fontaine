@@ -1,9 +1,16 @@
 mod common;
 
+#[cfg(unix)]
+use std::path::PathBuf;
+#[cfg(unix)]
+use std::sync::Arc;
+
 use common::pipeline::{Options, Rig, allow_verdict, allowed, denied_message, fake_guardian};
 use fontaine_core::audit::Decision;
 use fontaine_core::config::PermissionMode::{self, AcceptEdits, DontAsk, Manual, Plan};
 use fontaine_core::permissions::Answer;
+#[cfg(unix)]
+use fontaine_core::permissions::ApprovalRequest;
 use fontaine_core::tier::Tier;
 use serde_json::{Value, json};
 
@@ -52,7 +59,12 @@ async fn the_mode_and_risk_class_matrix() {
         (
             "read",
             json!({"path": "../outside.txt"}),
-            [(Deny, Mode), (Deny, Mode), (Deny, Mode), (Deny, Dont)],
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, Guardian),
+                (Deny, Dont),
+            ],
         ),
         (
             "write",
@@ -198,7 +210,7 @@ async fn plan_mode_blocks_edits_outright_and_sends_the_rest_to_the_guardian() {
 }
 
 #[tokio::test]
-async fn a_symlink_out_of_the_workspace_is_not_read_only_in_scope() {
+async fn a_symlink_out_of_the_workspace_is_adjudicated_not_fast_pathed() {
     #[cfg(unix)]
     {
         let rig = Rig::new(Manual);
@@ -206,11 +218,16 @@ async fn a_symlink_out_of_the_workspace_is_not_read_only_in_scope() {
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("secret.txt"), "s").unwrap();
         std::os::unix::fs::symlink(&outside, rig.work().join("linked")).unwrap();
-        // File tools are confined to the roots, so an escape is denied outright; the shell
-        // has no such confinement and still asks.
+        // An out-of-root read no longer takes the containment denial: it follows the same
+        // pipeline as any other unapproved call, so in manual mode it asks. The shell has
+        // no such confinement and still asks.
         for (tool, args, decision) in [
-            ("read", json!({"path": "linked/secret.txt"}), Decision::Deny),
-            ("ls", json!({"path": "linked"}), Decision::Deny),
+            (
+                "read",
+                json!({"path": "linked/secret.txt"}),
+                Decision::Prompt,
+            ),
+            ("ls", json!({"path": "linked"}), Decision::Prompt),
             ("shell", shell("ls linked/"), Decision::Prompt),
             ("shell", shell("cat linked/secret.txt"), Decision::Prompt),
         ] {
@@ -235,6 +252,288 @@ async fn a_shell_cwd_outside_the_roots_disqualifies_the_pre_classifier() {
     assert_eq!(
         first(&rig, "shell", shell("cat n.txt")).await,
         (Decision::Allow, Tier::Tier05)
+    );
+}
+
+#[tokio::test]
+async fn external_reads_follow_the_mode_matrix_and_never_take_a_fast_path() {
+    use Decision::{Allow, Deny, Prompt};
+    use Tier::{DontAsk as Dont, Guardian, Mode, ReadOnlyFastPath};
+    // An in-root read keeps its fast path in every mode.
+    for mode in MODES {
+        let rig = Rig::new(mode);
+        std::fs::write(rig.work().join("a.txt"), "a").unwrap();
+        assert_eq!(
+            first(&rig, "read", json!({"path": "a.txt"})).await,
+            (Allow, ReadOnlyFastPath),
+            "in {mode:?}"
+        );
+    }
+
+    // An external read follows the ordinary pipeline: it asks in the interactive modes,
+    // reaches the guardian in auto and plan, and denies in dontAsk.
+    let cases: Vec<(PermissionMode, (Decision, Tier))> = vec![
+        (Manual, (Prompt, Mode)),
+        (AcceptEdits, (Prompt, Mode)),
+        (Plan, (Deny, Guardian)),
+        (DontAsk, (Deny, Dont)),
+    ];
+    for (mode, want) in cases {
+        let rig = Rig::new(mode);
+        let got = first(&rig, "read", json!({"path": "../outside.txt"})).await;
+        assert_eq!(got, want, "in {mode:?}");
+    }
+
+    // With a working guardian, auto and plan allow it at the guardian tier.
+    for mode in [fontaine_core::config::PermissionMode::Auto, Plan] {
+        let fake = common::pipeline::fake_guardian(common::pipeline::allow_verdict());
+        let rig = Rig::with(Options::new(mode).guardian(fake.guardian.clone()));
+        let got = first(&rig, "read", json!({"path": "../outside.txt"})).await;
+        assert_eq!(got, (Allow, Guardian), "in {mode:?}");
+        assert!(
+            !rig.audit()
+                .iter()
+                .any(|r| r.tier == Tier::ReadOnlyFastPath || r.tier == Tier::Tier05)
+        );
+    }
+
+    // Headless turns the prompt into a denial, as for any other call.
+    let rig = Rig::with(Options::new(Manual).headless());
+    let d = rig.check("read", json!({"path": "../outside.txt"})).await;
+    assert!(!allowed(&d));
+    assert!(denied_message(&d).contains("headless"));
+    assert_eq!(rig.audit()[0].tier, Mode);
+}
+
+#[cfg(unix)]
+async fn symlinked_external_reads_keep_the_floor() {
+    // A workspace symlink pointing outside every root, and a home directory the rules
+    // anchor at without knowing either temp world's layout. The TempDir guard outlives
+    // the rig: dropping it deletes the home the symlink points at.
+    fn rig_with(rule_list: &str, rule: &str) -> (Rig, PathBuf, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(tmp.path()).unwrap();
+        std::fs::create_dir_all(home.join("outside")).unwrap();
+        std::fs::write(home.join("outside").join("secret.txt"), "s").unwrap();
+        let mut options = Options::new(Manual);
+        options.home = Some(home.clone());
+        options.settings = format!("[permissions]\n{rule_list} = [\"{rule}\"]\n");
+        let rig = Rig::with(options);
+        std::os::unix::fs::symlink(&home, rig.work().join("linked")).unwrap();
+        (rig, home, tmp)
+    }
+
+    // A deny rule anchored at the resolved target wins, whatever the mode.
+    for mode in MODES {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(tmp.path()).unwrap();
+        std::fs::create_dir_all(home.join("outside")).unwrap();
+        std::fs::write(home.join("outside").join("secret.txt"), "s").unwrap();
+        let mut options = Options::new(mode);
+        options.home = Some(home.clone());
+        options.settings = "[permissions]\ndeny = [\"read(~/outside/secret.txt)\"]\n".into();
+        let rig = Rig::with(options);
+        {
+            std::os::unix::fs::symlink(&home, rig.work().join("linked")).unwrap();
+            let d = rig
+                .check("read", json!({"path": "linked/outside/secret.txt"}))
+                .await;
+            assert!(!allowed(&d), "{mode:?}");
+            assert_eq!(rig.audit()[0].tier, Tier::DenyRule, "{mode:?}");
+        }
+    }
+
+    // An ask rule forces the human even in auto.
+    let fake = common::pipeline::fake_guardian(common::pipeline::allow_verdict());
+    let tmp = tempfile::tempdir().unwrap();
+    let home = std::fs::canonicalize(tmp.path()).unwrap();
+    std::fs::create_dir_all(home.join("outside")).unwrap();
+    std::fs::write(home.join("outside").join("secret.txt"), "s").unwrap();
+    let mut options = Options::new(fontaine_core::config::PermissionMode::Auto);
+    options.home = Some(home.clone());
+    options.guardian = Some(fake.guardian.clone());
+    options.settings = "[permissions]\nask = [\"read(~/outside/secret.txt)\"]\n".into();
+    let rig = Rig::with(options);
+    std::os::unix::fs::symlink(&home, rig.work().join("linked")).unwrap();
+    rig.approver.answer(Answer::AllowOnce);
+    assert!(allowed(
+        &rig.check("read", json!({"path": "linked/outside/secret.txt"}))
+            .await
+    ));
+    assert_eq!(rig.approver.asked(), 1);
+    assert_eq!(fake.calls(), 0);
+
+    // A home-anchored allow rule runs the call at the allow_rule tier, and the allowed
+    // arguments are the resolved target, never the alias the call was written with.
+    let (rig, home, _tmp) = rig_with("allow", "read(~/outside/secret.txt)");
+    let decision = rig
+        .check("read", json!({"path": "linked/outside/secret.txt"}))
+        .await;
+    match decision {
+        fontaine_tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(
+                args,
+                json!({"path": home.join("outside/secret.txt").to_str().unwrap()})
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(rig.audit()[0].tier, Tier::AllowRule);
+}
+
+#[tokio::test]
+async fn external_reads_keep_the_floor_and_their_preapproved_tiers() {
+    #[cfg(unix)]
+    symlinked_external_reads_keep_the_floor().await;
+
+    // dontAsk denies an external read no rule covers.
+    let rig = Rig::new(DontAsk);
+    let d = rig.check("read", json!({"path": "../outside.txt"})).await;
+    assert!(!allowed(&d));
+    assert_eq!(rig.audit()[0].tier, Tier::DontAsk);
+}
+
+#[tokio::test]
+async fn malformed_external_read_arguments_are_an_argument_error_after_the_floor() {
+    for mode in MODES {
+        let fake = common::pipeline::fake_guardian(common::pipeline::allow_verdict());
+        let rig = Rig::with(Options::new(mode).guardian(fake.guardian.clone()));
+        for args in [json!({"path": 3}), json!({}), json!("a.txt")] {
+            let d = rig.check("read", args.clone()).await;
+            assert!(!allowed(&d), "{args} {mode:?}");
+            let message = denied_message(&d);
+            assert!(message.contains("arguments could not be read"), "{message}");
+            assert_eq!(
+                rig.audit().last().unwrap().tier,
+                Tier::Mode,
+                "{args} {mode:?}"
+            );
+        }
+        assert_eq!(fake.calls(), 0, "{mode:?}: the guardian never sees them");
+        assert_eq!(rig.approver.asked(), 0, "{mode:?}: neither does a human");
+    }
+    // A deny rule still precedes the argument error.
+    let rig = Rig::with(Options::new(Manual).settings("[permissions]\ndeny = [\"read\"]\n"));
+    let d = rig.check("read", json!({"path": 3})).await;
+    assert!(!allowed(&d));
+    assert_eq!(rig.audit()[0].tier, Tier::DenyRule);
+}
+
+#[tokio::test]
+async fn an_external_read_prompt_shows_the_resolved_grep_and_glob_target() {
+    let rig = Rig::new(Manual);
+    let outside = rig.world.root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("lib.rs"), "fn x() {}\n").unwrap();
+    for (tool, args, summary_path) in [
+        (
+            "grep",
+            json!({"pattern": "fn x", "path": "../outside"}),
+            outside.to_str().unwrap(),
+        ),
+        (
+            "glob",
+            json!({"pattern": "../outside/*.rs"}),
+            outside.to_str().unwrap(),
+        ),
+        (
+            "ls",
+            json!({"path": "../outside"}),
+            outside.to_str().unwrap(),
+        ),
+        (
+            "read",
+            json!({"path": "../outside/lib.rs"}),
+            outside.join("lib.rs").to_str().unwrap(),
+        ),
+    ] {
+        rig.approver.answer(Answer::AllowOnce);
+        assert!(allowed(&rig.check(tool, args).await), "{tool}");
+        let request = rig.approver.last_request();
+        assert!(
+            request.summary.contains(summary_path),
+            "{}",
+            request.summary
+        );
+    }
+}
+
+/// An approver that retargets the symlink after the pipeline has resolved the call, so an
+/// approval granted mid-decision cannot redirect the call to the new target.
+#[cfg(unix)]
+struct Retargeting {
+    link: std::sync::Mutex<Option<std::path::PathBuf>>,
+    new_target: std::sync::Mutex<Option<std::path::PathBuf>>,
+    requests: std::sync::Mutex<Vec<ApprovalRequest>>,
+}
+
+#[cfg(unix)]
+impl Retargeting {
+    fn aim(&self, link: std::path::PathBuf, new_target: std::path::PathBuf) {
+        *self.link.lock().unwrap() = Some(link);
+        *self.new_target.lock().unwrap() = Some(new_target);
+    }
+}
+
+#[cfg(unix)]
+impl fontaine_core::permissions::Approver for Retargeting {
+    fn approve<'a>(&'a self, request: ApprovalRequest) -> futures::future::BoxFuture<'a, Answer> {
+        Box::pin(async move {
+            self.requests.lock().unwrap().push(request);
+            let (link, new_target) = (
+                self.link.lock().unwrap().clone(),
+                self.new_target.lock().unwrap().clone(),
+            );
+            if let (Some(link), Some(new_target)) = (link, new_target) {
+                std::fs::remove_file(&link).unwrap();
+                std::os::unix::fs::symlink(&new_target, &link).unwrap();
+            }
+            Answer::AllowOnce
+        })
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_approval_cannot_be_redirected_by_retargeting_the_symlink() {
+    let retargeting = Arc::new(Retargeting {
+        link: std::sync::Mutex::new(None),
+        new_target: std::sync::Mutex::new(None),
+        requests: std::sync::Mutex::new(Vec::new()),
+    });
+    let mut options = Options::new(Manual);
+    options.approver = Some(retargeting.clone());
+    let rig = Rig::with(options);
+    let outside = rig.world.root.join("outside");
+    let swapped = rig.world.root.join("swapped");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::create_dir_all(&swapped).unwrap();
+    std::fs::write(outside.join("secret.txt"), "ORIGINAL").unwrap();
+    std::fs::write(swapped.join("secret.txt"), "SWAPPED").unwrap();
+    std::os::unix::fs::symlink(&outside, rig.work().join("linked")).unwrap();
+    retargeting.aim(rig.work().join("linked"), swapped);
+
+    match rig
+        .check("read", json!({"path": "linked/secret.txt"}))
+        .await
+    {
+        fontaine_tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(
+                args,
+                json!({"path": outside.join("secret.txt").to_str().unwrap()}),
+                "the allowed arguments stay with the resolved target"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // The approval prompt itself showed the resolved target.
+    let request = retargeting.requests.lock().unwrap()[0].clone();
+    assert!(
+        request
+            .summary
+            .contains(outside.join("secret.txt").to_str().unwrap()),
+        "{}",
+        request.summary
     );
 }
 
@@ -582,7 +881,15 @@ async fn the_ledger_gets_an_action_or_denial_for_every_decision() {
 #[tokio::test]
 async fn an_out_of_scope_file_call_says_why_and_how_to_fix_it() {
     let rig = Rig::with(Options::new(Manual).headless());
+    // A read outside the roots now follows the ordinary pipeline: headless, its prompt
+    // becomes a denial.
     let d = rig.check("read", json!({"path": "../outside.txt"})).await;
+    let message = denied_message(&d);
+    assert!(message.contains("needs the user's approval"), "{message}");
+    assert!(message.contains("headless"), "{message}");
+
+    // A write outside the roots keeps the containment denial with its guidance.
+    let d = rig.check("write", write_args("../outside.txt")).await;
     let message = denied_message(&d);
     assert!(message.contains("outside the workspace roots"), "{message}");
     assert!(message.contains("/add-dir"), "{message}");
@@ -910,7 +1217,8 @@ async fn a_shell_write_to_the_memory_store_takes_the_ordinary_shell_path() {
 #[tokio::test]
 async fn the_out_of_scope_error_points_at_the_memory_directory() {
     let rig = Rig::with(Options::new(Manual).memory());
-    let d = rig.check("read", json!({"path": "/etc/hostname"})).await;
+    // Only writes keep the containment denial; it still points at the memory directory.
+    let d = rig.check("write", write_args("/etc/hostname")).await;
     let message = denied_message(&d);
     let memory = rig.memory.as_ref().unwrap().display().to_string();
     assert!(message.contains(&memory), "{message}");

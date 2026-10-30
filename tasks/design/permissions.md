@@ -17,6 +17,15 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               `updated_input` that replaces the call — every later step, the audit record and the
               guardian judge the rewritten call; their decision is held and applied below
               (deny → Deny here; ask → joins the step-2 forced prompt; allow → acts at step 5a only)
+              After the hooks, an out-of-root read (step 5b's read tools) is resolved once to its
+              absolute target — symlinks followed — and that normalized form is what steps 2 and
+              5a match (deny/ask rules keep seeing the written form as well), what the guardian,
+              the approval prompt and every allow return, and what execution consumes; retargeting
+              the named symlink mid-decision cannot redirect the call. A hook `allow`'s matcher is
+              revalidated against the normalized arguments before it acts: an allow that no longer
+              covers the resolved target falls through to the mode. Malformed read arguments (a
+              missing or non-string path, an untranslatable or non-absolute resolution) are an
+              argument error right after the floor: never a prompt, never the guardian.
            2. Deterministic floor — evaluated BEFORE the mode branches, in EVERY mode (no mode,
               flag, or verdict reaches past it; it can only prompt or deny, never allow; order:
               deny → ask → critical-path → protected-path):
@@ -75,9 +84,14 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               PreToolUse hook `allow` → Allow (no guardian), audit `tier = allow_rule` / `hook`;
               in `auto`, broad code-execution rules and hooks are suspended (§Permission rules);
               in `plan`, edit-class calls never get here
-           5b. file tool (read/ls/glob/grep/write/edit) with a path outside every root → Deny with
-              the per-session scratch directory and the `/add-dir` hint (file tools are confined to the roots, so an approved call
-              would still be refused); never reaches the prompt
+           5b. file WRITE tool (`write`/`edit`/`notebook_edit`) with a path outside every root → Deny with
+              the per-session scratch directory and the `/add-dir` hint (the write tools are confined to the roots, so an approved call
+              would still be refused); never reaches the prompt. An out-of-root READ
+              (`read`/`ls`/`glob`/`grep`) does not stop here: it falls through to the mode (step 6
+              asks in manual/acceptEdits, step 7 asks the guardian in auto, step 8 denies in
+              dontAsk), pre-approved calls run at the step-5a tiers, and an allowed call executes
+              on the tool's unconfined read-only fallback instance (below). An external
+              path never becomes a root: no write reach, no fast path, no instruction discovery.
            6. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
            7. mode == auto → the composed guardian (`fontaine_guardian::cascade::adjudicate`):
               the optional screen stage (`[guardian.screen]`) and `Guardian::adjudicate(request)`
@@ -112,6 +126,18 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
  `tool_concurrency = 1`); each call gets its own tool_result and a Deny does not affect the turn's
  later calls.
 ```
+
+**Workspace roots and the external-read fallback.** Each file tool and `shell` keeps one confined
+instance per root, built by `make(root)`, and a call is served by the instance of the root that
+holds its path. Beside them, each of the four read-only file tools registers one unconfined,
+read-only fallback instance based at the primary root through a dedicated routing mode
+(`per_root_with_fallback`). The fallback is reached only when strict `Scope::locate` answers
+`OutOfScope` and only after the gate has returned `Allow` — it validates the normalized arguments'
+absolute external shape (`external_shape`, no file system access) and consumes them as they are,
+never re-resolving the original symlink. `write`, `edit`, `notebook_edit` and `shell` register no
+fallback and keep strict per-root routing. The fallback is an execution capability only: the gate
+remains the single choke point, the four registrations keep their explicit `ReadOnly` risk class,
+and an external path is added to no root list.
 
 **Protected paths** (step 2, last floor check): applies to the edit-class tools `edit` and `write`
 — the only registered tools that write structurally (`delete`/`move` are not registered; shell writes

@@ -100,7 +100,10 @@ pipeline before the model sees it:
    |   1. gate: allow (maybe with changed          |
    |      arguments) or deny with a reason         |
    |   2. on allow: the tool instance of the root  |
-   |      that holds the call's path               |
+   |      that holds the call's path; an approved  |
+   |      out-of-root read of read/ls/glob/grep    |
+   |      goes to the unconfined read-only         |
+   |      fallback instance instead                |
    |   3. result pipeline                          |
    +----------------------------------------------+
         |
@@ -111,7 +114,11 @@ pipeline before the model sees it:
 A deny goes back to the model as the tool result and the run goes on. The registry is built at
 session start (and rebuilt between turns by `/add-dir`); each file tool and `shell` has one confined
 instance per workspace root, and `webfetch` has one; `websearch` joins only when a backend is configured.
-The session's scratch directory
+Beside the per-root instances, `read`, `ls`, `glob` and `grep` carry one unconfined, read-only
+fallback instance based at the primary root. It serves only a call whose resolved target lies
+outside every root, only after the gate has allowed it, and it consumes the resolved absolute
+arguments the pipeline normalized — so approval and execution cannot drift to two spellings of
+one target. Write tools and `shell` have no fallback and stay confined. The session's scratch directory
 (`scratch`) is created beside the session and appended to the roots, so it needs no special case
 here; it is removed when the session ends. MCP tools join the registry as their servers
 connect, wrapped by the same gate. A subagent gets a copy of the registry cut down to its type's
@@ -141,6 +148,13 @@ decision before anything else sees it:
     v
  audit log -> tool_decision event -> gate_decision event / transcript
 ```
+
+Out-of-root reads are not refused before this diagram runs. After the hooks (step 1), a `read`,
+`ls`, `glob` or `grep` call whose target lies outside every root is resolved once to its
+absolute path; that normalized form is what steps 2 and 5 match (deny and ask rules against the
+written form as well), what the guardian and the approval prompt see, and what an allow returns
+for execution on the fallback instance. Malformed arguments end in an argument error right after
+the floor. Writes outside the roots keep their containment denial before the mode.
 
 Asking is a call into an approval callback; headless runs and `dontAsk` turn every ask into a
 denial. [Permissions](permissions.md) describes each step.

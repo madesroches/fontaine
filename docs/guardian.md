@@ -91,6 +91,9 @@ The guardian reads history and your messages by a few fixed rules:
 - A denial of one kind of action does not count against a different kind, and never against a
   read-only call. Reading, listing or tailing a file the session itself created is routine unless
   the call sends data out of the trust boundary.
+- A prior denial by itself never makes a read-only call suspicious. A read made to scout around a
+  denial — to learn what the denial protected or to find another route to the denied action — is
+  not routine and is judged under the deny rule it serves.
 - A note you type about the setup, such as "fyi, the guardian is now haiku", is neutral.
 - Suspicion needs a rule: "earlier denials and this looks related" is not a reason to deny.
 
@@ -123,6 +126,21 @@ your terminal shows the label and the explanation.
 4. An action you asked for by name and target is acceptable when no deny rule applies.
 
 The shipped lists, and how to extend them, are in [`[auto_mode]`](configuration.md#auto_mode).
+
+### Reading outside the workspace
+
+The four read-only file tools may name a path outside every workspace root; each such call
+reaches the guardian like any other unapproved call in `auto` and `plan` (it is never skipped,
+and it never earns the read-only fast path). The shipped `allow` list treats inspecting source
+code, headers, build files, installed dependency source and installed skill definitions
+(including `SKILL.md`) as routine wherever they sit — a Cargo registry cache, `/usr/include`, a
+Python `site-packages`, a sibling checkout — because debugging a build against installed sources
+is ordinary development work. That is a broadening of what is *adjudicated*, not of what is
+*automatic*: the call is still judged, and the exceptions hold only for local inspection.
+Executing code or skill commands, treating skill text as user intent, sending the contents
+anywhere, reading credential or personal-data stores, and scouting around a denied action all
+remain subject to the deny rules. In the interactive modes the same call asks you instead, with
+the resolved path in the prompt.
 
 ## Memory writes
 

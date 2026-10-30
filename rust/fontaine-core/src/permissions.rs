@@ -20,7 +20,7 @@ use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
 use fontaine_tools::lock::lock;
 use fontaine_tools::preclassify::{Environment, Preclassifier, analyze};
 use fontaine_tools::risk::RiskClass;
-use fontaine_tools::scope::Scope;
+use fontaine_tools::scope::{Scope, ScopeError, is_external_read};
 use futures::future::BoxFuture;
 use serde_json::Value;
 use tracing::Instrument;
@@ -35,8 +35,8 @@ use crate::gate::{
 };
 use crate::ledger::{Existence, Record};
 use crate::permission_rules::{
-    CallContext, Posture, RuleSource, SourcedRule, is_broad_code_execution, matches, parse_rule,
-    propose,
+    CallContext, Posture, Rule, RuleSource, SourcedRule, is_broad_code_execution, matches,
+    parse_rule, propose,
 };
 use crate::preview::{self, DiffPreview};
 use crate::runtime_error::RuntimeError;
@@ -348,8 +348,10 @@ pub struct PermissionPipeline {
 struct HookOutcome {
     deny: Option<(String, Option<String>)>,
     ask: Option<String>,
-    /// The hook id, and whether its matcher is narrow enough to act in `auto`.
-    allow: Option<(String, bool)>,
+    /// The hook id, whether its matcher is narrow enough to act in `auto`, and the parsed
+    /// matcher itself, revalidated against the normalized arguments before the allow takes
+    /// effect.
+    allow: Option<(String, bool, Option<Rule>)>,
     updated_input: Option<Value>,
     guardian_context: Vec<String>,
 }
@@ -357,8 +359,13 @@ struct HookOutcome {
 /// One call as the pipeline carries it from the first hook to the last record.
 struct CallCtx<'a> {
     call: &'a CallView<'a>,
-    /// The arguments every step judges: the model's, or a hook's rewrite of them.
+    /// The execution arguments every allow returns: the model's, a hook's rewrite, or an
+    /// out-of-root read resolved once to its canonical absolute target.
     args: Value,
+    /// Why out-of-root read arguments are unusable, when they are. Set after the floor has
+    /// judged the call, they end in an immediate argument error: never a prompt, never the
+    /// guardian.
+    arg_error: Option<String>,
     tool_use_id: Option<String>,
     digest: String,
     original_digest: Option<String>,
@@ -608,7 +615,7 @@ impl PermissionPipeline {
                     let narrow = rule
                         .as_ref()
                         .is_some_and(|rule| !is_broad_code_execution(rule));
-                    outcome.allow.get_or_insert((id, narrow));
+                    outcome.allow.get_or_insert((id, narrow, rule.clone()));
                 }
                 Some(HookPermission::Allow) => {}
                 None => {}
@@ -620,11 +627,14 @@ impl PermissionPipeline {
         outcome
     }
 
-    /// The verdict for one call, with no side effects.
+    /// The verdict for one call, with no side effects. `judged` is the post-hook form the
+    /// floor's deny and ask rules see, so a rule for the path as written keeps matching;
+    /// `cx.args` is the resolved execution form every allow returns.
     fn evaluate(
         &self,
         call: &CallView<'_>,
-        args: &Value,
+        judged: &Value,
+        cx: &CallCtx<'_>,
         hook: &HookOutcome,
         mode: PermissionMode,
         plan_block: bool,
@@ -634,12 +644,19 @@ impl PermissionPipeline {
         let home = self.state.home.as_deref();
         let ctx = CallContext {
             tool: call.tool,
-            args,
+            args: judged,
+            scope: &scope,
+            home,
+        };
+        let allow_ctx = CallContext {
+            tool: call.tool,
+            args: &cx.args,
             scope: &scope,
             home,
         };
         let tool = call.tool;
         let edit_class = call.risk == RiskClass::WorkspaceWrite;
+        let args = &cx.args;
 
         if let Some((id, reason)) = &hook.deny {
             let why = match reason {
@@ -754,7 +771,17 @@ impl PermissionPipeline {
             );
         }
 
-        let located = scope.locate(tool, args);
+        // Unusable out-of-root read arguments end here, after the floor: they are never put
+        // to a human or the guardian.
+        if let Some(why) = &cx.arg_error {
+            return Verdict::Deny {
+                tier: Tier::Mode,
+                rule: None,
+                why: format!("its arguments could not be read ({why})"),
+            };
+        }
+
+        let located = scope.locate(tool, judged);
         if call.risk == RiskClass::ReadOnly && (located.is_ok() || names_no_path(tool)) {
             return Verdict::Allow {
                 tier: Tier::ReadOnlyFastPath,
@@ -809,25 +836,33 @@ impl PermissionPipeline {
             .allow
             .iter()
             .chain(skill_grants.iter())
-            .find(|r| !suspended(r) && matches(&r.rule, &ctx, Posture::Allow))
+            .find(|r| !suspended(r) && matches(&r.rule, &allow_ctx, Posture::Allow))
         {
             return Verdict::Allow {
                 tier: Tier::AllowRule,
                 rule: Some(rule.label()),
             };
         }
-        if let Some((id, narrow)) = &hook.allow
+        if let Some((id, narrow, matcher)) = &hook.allow
             && (mode != PermissionMode::Auto || *narrow)
         {
-            return Verdict::Allow {
-                tier: Tier::Hook,
-                rule: Some(id.clone()),
-            };
+            // The allow vouches for the target it saw: a hook that allowed the written path
+            // must not approve a call the resolution no longer covers, so an allow that no
+            // longer matches falls through to the mode.
+            let still_covers = matcher
+                .as_ref()
+                .is_none_or(|rule| matches(rule, &allow_ctx, Posture::Allow));
+            if still_covers {
+                return Verdict::Allow {
+                    tier: Tier::Hook,
+                    rule: Some(id.clone()),
+                };
+            }
         }
 
         let outside = match &located {
             // Model-facing text; the scope error has no source.
-            Err(e) if call.risk != RiskClass::Arbitrary => {
+            Err(e) if call.risk != RiskClass::Arbitrary && !is_external_read(tool) => {
                 let mut why = match &self.state.scratch {
                     Some(scratch) => format!(
                         "{e}; file tools work inside the workspace roots only. Put temporary files in the session scratch directory {} (or add a root with /add-dir)",
@@ -888,6 +923,30 @@ impl PermissionPipeline {
                     self.would_prompt(mode, needs_approval())
                 }
             }
+        }
+    }
+
+    /// The execution arguments of an out-of-root read: the target resolved once, after the
+    /// hooks, so an approval and the call it approves cannot drift to two spellings of one
+    /// target and a symlink retargeted mid-decision cannot redirect the call. In-root calls
+    /// and every other tool pass through unchanged; malformed or unresolvable read arguments
+    /// become an argument error the floor still gets to precede.
+    fn normalize_external_read(&self, tool: &str, judged: &Value) -> (Value, Option<String>) {
+        if !is_external_read(tool) {
+            return (judged.clone(), None);
+        }
+        let scope = self.state.scope();
+        let unusable = |error: &ScopeError| match error {
+            ScopeError::Unreadable(why) => Some(why.clone()),
+            ScopeError::OutOfScope(_) => None,
+        };
+        match scope.locate(tool, judged) {
+            Ok(_) => (judged.clone(), None),
+            Err(ScopeError::OutOfScope(_)) => match scope.external_read(tool, judged) {
+                Ok(normalized) => (normalized, None),
+                Err(failed) => (judged.clone(), unusable(&failed)),
+            },
+            Err(error @ ScopeError::Unreadable(_)) => (judged.clone(), unusable(&error)),
         }
     }
 
@@ -1183,6 +1242,7 @@ impl PermissionPipeline {
                 digest: args_digest(call.args),
                 original_digest: None,
                 args: call.args.clone(),
+                arg_error: None,
                 tool_use_id,
                 mode: PermissionMode::DontAsk,
                 started,
@@ -1200,11 +1260,21 @@ impl PermissionPipeline {
         // guardian. Children are never loosened by it, and no call from an unregistered agent
         // reaches it.
         if call.agent == fontaine_tools::gate::ROOT_AGENT && self.state.guardian_off() {
+            // The call still executes the resolved form of an out-of-root read, as every
+            // allow does; nothing else of the pipeline runs.
+            let scope = self.state.scope();
+            let args = match scope.locate(call.tool, call.args) {
+                Err(ScopeError::OutOfScope(_)) if is_external_read(call.tool) => scope
+                    .external_read(call.tool, call.args)
+                    .unwrap_or_else(|_| call.args.clone()),
+                _ => call.args.clone(),
+            };
             let cx = CallCtx {
                 call: &call,
-                digest: args_digest(call.args),
+                digest: args_digest(&args),
                 original_digest: None,
-                args: call.args.clone(),
+                args,
+                arg_error: None,
                 tool_use_id,
                 mode,
                 started,
@@ -1216,21 +1286,23 @@ impl PermissionPipeline {
             );
         }
         let hook = self.run_hooks(&call, tool_use_id.as_deref(), mode).await;
-        let args = hook
+        let judged = hook
             .updated_input
             .clone()
             .unwrap_or_else(|| call.args.clone());
+        let (args, arg_error) = self.normalize_external_read(call.tool, &judged);
         let cx = CallCtx {
             call: &call,
             digest: args_digest(&args),
             original_digest: hook.updated_input.is_some().then(|| args_digest(call.args)),
             args,
+            arg_error,
             tool_use_id,
             mode,
             started,
         };
 
-        match self.evaluate(&call, &cx.args, &hook, mode, plan_block) {
+        match self.evaluate(&call, &judged, &cx, &hook, mode, plan_block) {
             Verdict::Allow { tier, rule } => self.allow(&cx, tier, rule),
             Verdict::Deny { tier, rule, why } => {
                 self.deny(&cx, tier, rule, denied(call.tool, &why)).await
@@ -1850,8 +1922,14 @@ pub fn summarize(tool: &str, args: &Value) -> String {
         "read" | "write" | "edit" | "notebook_edit" => text("path").map(str::to_string),
         "webfetch" => text("url").map(str::to_string),
         "websearch" => text("query").map(str::to_string),
-        "glob" => text("pattern").map(str::to_string),
-        "grep" => text("pattern").map(str::to_string),
+        "glob" => text("pattern").map(|pattern| match text("path") {
+            Some(path) => format!("{pattern} in {path}"),
+            None => pattern.to_string(),
+        }),
+        "grep" => text("pattern").map(|pattern| match text("path") {
+            Some(path) => format!("{pattern} in {path}"),
+            None => pattern.to_string(),
+        }),
         "ls" => Some(text("path").unwrap_or(".").to_string()),
         "ask_user_question" => {
             let headers: Vec<&str> = args

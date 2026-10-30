@@ -258,3 +258,140 @@ async fn an_erroring_timing_out_or_malformed_hook_decides_nothing() {
     assert!(allowed(&rig.check("read", json!({"path": "a.txt"})).await));
     assert!(rig.audit()[0].original_args_digest.is_none());
 }
+
+/// A hook allow recorded for the original resolution must not approve a call whose symlink
+/// was retargeted before normalization.
+#[cfg(unix)]
+mod external_read_revalidation {
+    use super::*;
+    use fontaine_core::permissions::Answer;
+
+    /// Allows with a matcher that covers only the original resolution.
+    struct Matcher {
+        rule: String,
+    }
+
+    impl PreToolUseHook for Matcher {
+        fn id(&self) -> String {
+            "allower".to_string()
+        }
+
+        fn matcher(&self) -> Option<String> {
+            Some(self.rule.clone())
+        }
+
+        fn run<'a>(
+            &'a self,
+            _event: PreToolUseEvent<'a>,
+        ) -> BoxFuture<'a, Result<HookDecision, HookError>> {
+            Box::pin(async move {
+                Ok(HookDecision {
+                    permission: Some(HookPermission::Allow),
+                    updated_input: None,
+                    reason: None,
+                    guardian_context: None,
+                })
+            })
+        }
+    }
+
+    /// Retargets the workspace symlink, so the resolution changes between the allow and
+    /// the normalization. The link path arrives through a shared cell because it only
+    /// exists once the rig's world does.
+    struct Retargeter {
+        cell: Arc<std::sync::Mutex<String>>,
+        new_target: std::path::PathBuf,
+    }
+
+    impl PreToolUseHook for Retargeter {
+        fn id(&self) -> String {
+            "retargeter".to_string()
+        }
+
+        fn run<'a>(
+            &'a self,
+            event: PreToolUseEvent<'a>,
+        ) -> BoxFuture<'a, Result<HookDecision, HookError>> {
+            Box::pin(async move {
+                if event.tool == "read" {
+                    let link = self.cell.lock().unwrap().clone();
+                    if !link.is_empty() {
+                        std::fs::remove_file(&link).unwrap();
+                        std::os::unix::fs::symlink(&self.new_target, &link).unwrap();
+                    }
+                }
+                Ok(HookDecision::default())
+            })
+        }
+    }
+
+    fn world() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(tmp.path()).unwrap();
+        let first = home.join("first");
+        let second = home.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(first.join("x.txt"), "one").unwrap();
+        std::fs::write(second.join("x.txt"), "two").unwrap();
+        (tmp, home, first, second)
+    }
+
+    fn absolute_rule(path: &std::path::Path) -> String {
+        format!(
+            "read(//{})",
+            path.display().to_string().trim_start_matches('/')
+        )
+    }
+
+    #[tokio::test]
+    async fn the_allow_runs_the_call_with_the_resolved_target() {
+        let (_tmp, home, first, _second) = world();
+        let mut options = Options::new(Manual);
+        options.home = Some(home);
+        options.hooks = vec![Arc::new(Matcher {
+            rule: absolute_rule(&first.join("x.txt")),
+        })];
+        let rig = Rig::with(options);
+        std::os::unix::fs::symlink(&first, rig.work().join("linked")).unwrap();
+        match rig.check("read", json!({"path": "linked/x.txt"})).await {
+            fontaine_tools::gate::GateDecision::Allow { args } => {
+                assert_eq!(args, json!({"path": first.join("x.txt").to_str().unwrap()}));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(rig.audit()[0].tier, Tier::Hook);
+    }
+
+    #[tokio::test]
+    async fn a_retarget_between_the_allow_and_the_resolution_falls_to_the_mode() {
+        let (_tmp, home, first, second) = world();
+        let cell = Arc::new(std::sync::Mutex::new(String::new()));
+        let mut options = Options::new(Manual);
+        options.home = Some(home);
+        options.hooks = vec![
+            Arc::new(Matcher {
+                rule: absolute_rule(&first.join("x.txt")),
+            }),
+            Arc::new(Retargeter {
+                cell: cell.clone(),
+                new_target: second,
+            }),
+        ];
+        let rig = Rig::with(options);
+        *cell.lock().unwrap() = rig.work().join("linked").to_string_lossy().into();
+        std::os::unix::fs::symlink(&first, rig.work().join("linked")).unwrap();
+
+        // The scripted approver answers the prompt the fall-through produces.
+        rig.approver.answer(Answer::Deny { feedback: None });
+        let d = rig.check("read", json!({"path": "linked/x.txt"})).await;
+        assert!(!allowed(&d));
+        assert_eq!(rig.approver.asked(), 1, "the hook allow did not act");
+        assert_eq!(rig.audit()[1].tier, Tier::Human);
+    }
+}

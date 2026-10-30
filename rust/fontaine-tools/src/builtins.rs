@@ -562,6 +562,17 @@ pub fn read_for(root: &Path, seen: &Seen) -> Read {
     }
 }
 
+/// The unconfined external-read fallback: the gate has already adjudicated the resolved
+/// target, so nothing here re-checks containment.
+pub fn read_external(primary: &Path, seen: &Seen) -> Read {
+    Read {
+        base: Some(primary.to_path_buf()),
+        confine: false,
+        seen: seen.clone(),
+        ..Read::default()
+    }
+}
+
 pub fn write_for(root: &Path, seen: &Seen) -> Write {
     Write {
         base: Some(root.to_path_buf()),
@@ -597,10 +608,28 @@ pub fn list_for(root: &Path) -> List {
     }
 }
 
+/// The unconfined external-read fallback for `ls`.
+pub fn list_external(primary: &Path) -> List {
+    List {
+        base: Some(primary.to_path_buf()),
+        confine: false,
+        ..List::default()
+    }
+}
+
 pub fn search_for(root: &Path) -> Search {
     Search {
         base: Some(root.to_path_buf()),
         confine: true,
+        ..Search::default()
+    }
+}
+
+/// The unconfined external-read fallback for `glob` and `grep`.
+pub fn search_external(primary: &Path) -> Search {
+    Search {
+        base: Some(primary.to_path_buf()),
+        confine: false,
         ..Search::default()
     }
 }
@@ -683,36 +712,48 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
     let guard = &env.guard;
     let seen = env.seen.clone();
     let mut tools = vec![
-        register(GuardedTool::per_root(
+        register(GuardedTool::per_root_with_fallback(
             scope.clone(),
             risk_of(Read::NAME),
             guard.clone(),
             |root| NotebookRead {
                 read: read_for(root, &seen),
             },
+            |primary| NotebookRead {
+                read: read_external(primary, &seen),
+            },
         )),
-        register(GuardedTool::per_root(
+        register(GuardedTool::per_root_with_fallback(
             scope.clone(),
             risk_of(Ls::NAME),
             guard.clone(),
             |root| Ls {
                 list: list_for(root),
             },
+            |primary| Ls {
+                list: list_external(primary),
+            },
         )),
-        register(GuardedTool::per_root(
+        register(GuardedTool::per_root_with_fallback(
             scope.clone(),
             risk_of(Glob::NAME),
             guard.clone(),
             |root| Glob {
                 search: search_for(root),
             },
+            |primary| Glob {
+                search: search_external(primary),
+            },
         )),
-        register(GuardedTool::per_root(
+        register(GuardedTool::per_root_with_fallback(
             scope.clone(),
             risk_of(Grep::NAME),
             guard.clone(),
             |root| Grep {
                 search: search_for(root),
+            },
+            |primary| Grep {
+                search: search_external(primary),
             },
         )),
         register(GuardedTool::per_root(

@@ -34,6 +34,39 @@ impl ToolGate for AllowAll {
     }
 }
 
+/// A gate that adjudicates out-of-root reads the way the permission pipeline does: the
+/// target is resolved once and the allow carries the normalized arguments. Everything
+/// else is denied, so no fallback capability is reachable without an allow.
+pub struct Adjudicated {
+    pub scope: Arc<Scope>,
+    pub seen: Mutex<Vec<(String, Value)>>,
+}
+
+impl ToolGate for Adjudicated {
+    fn check<'a>(&'a self, call: CallView<'a>) -> BoxFuture<'a, GateDecision> {
+        Box::pin(async move {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((call.tool.to_string(), call.args.clone()));
+            let allowed = match self.scope.locate(call.tool, call.args) {
+                Ok(_) => Some(call.args.clone()),
+                Err(fontaine_tools::scope::ScopeError::OutOfScope(_)) => {
+                    fontaine_tools::scope::Scope::external_read(&self.scope, call.tool, call.args)
+                        .ok()
+                }
+                Err(_) => None,
+            };
+            match allowed {
+                Some(args) => GateDecision::Allow { args },
+                None => GateDecision::Deny {
+                    message: "denied by the test gate".to_string(),
+                },
+            }
+        })
+    }
+}
+
 /// A scratch directory with canonical paths.
 pub struct Dirs {
     _tmp: TempDir,

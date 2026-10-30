@@ -87,16 +87,142 @@ async fn an_out_of_scope_read_is_denied() {
     let results = tool_results(&lines);
     assert_eq!(results[0]["success"], json!(false));
     let text = results[0]["text"].as_str().unwrap();
-    assert!(
-        text.contains("denied") && text.contains("outside the workspace roots"),
-        "{text}"
-    );
+    // An unapproved external read would prompt; headless turns that into a denial.
+    assert!(text.contains("denied"), "{text}");
+    assert!(text.contains("needs the user's approval"), "{text}");
     assert!(!out.stdout.contains("TOP-SECRET"));
     assert!(
         !endpoint.requests().await[1]
             .to_string()
             .contains("TOP-SECRET")
     );
+}
+
+/// Two scripted endpoints and a sandbox pointing at them: `agent` drives the model,
+/// `judge` answers the guardian, so what the guardian was asked can be told apart.
+fn auto_sandbox(agent: &Endpoint, judge: &Endpoint) -> Sandbox {
+    let s = Sandbox::new();
+    s.user_config(&format!(
+        "[accounts.agent]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"scripted\"]\n\n[accounts.judge]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"scripted\"]\n\n[model]\nmodel = \"agent/scripted\"\n\n[guardian]\nmodel = \"judge/scripted\"\n",
+        agent.url(),
+        judge.url()
+    ));
+    s
+}
+
+fn verdict(decision: &str, rule: &str, confidence: f64) -> Value {
+    json!({
+        "decision": decision,
+        "rule": rule,
+        "explanation": format!("{decision} because of {rule}"),
+        "confidence": confidence,
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_auto_guardian_allow_reads_an_external_source_file() {
+    let agent = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool("c1", "read", json!({"path": "../deps/src/lib.rs"})),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let judge = Endpoint::start(
+        Wire::Chat,
+        vec![Turn::tool("g1", "submit", verdict("allow", "allow", 0.95))],
+    )
+    .await;
+    let s = auto_sandbox(&agent, &judge);
+    let deps = s.work.parent().unwrap().join("deps");
+    std::fs::create_dir_all(deps.join("src")).unwrap();
+    std::fs::write(deps.join("src/lib.rs"), "pub fn dependency() {}\n").unwrap();
+
+    let out = s
+        .run(&[
+            "-p",
+            "--permission-mode",
+            "auto",
+            "--output-format",
+            "stream-json",
+            "read the dependency source",
+        ])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let results = tool_results(&lines);
+    assert_eq!(results[0]["success"], json!(true), "{}", results[0]);
+    assert!(
+        results[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("pub fn dependency"),
+        "{}",
+        results[0]
+    );
+
+    // The decision is the guardian's, and the guardian saw the resolved external target.
+    let decisions: Vec<_> = lines
+        .iter()
+        .filter(|l| l["type"] == "gate_decision")
+        .collect();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0]["tier"], "guardian");
+    assert_eq!(decisions[0]["decision"], "allow");
+    let asked = judge.requests().await;
+    assert_eq!(asked.len(), 1);
+    // The request is JSON, so a Windows path appears with its backslashes escaped.
+    let escaped = serde_json::to_string(&deps.join("src/lib.rs").display().to_string()).unwrap();
+    assert!(
+        asked[0]
+            .to_string()
+            .contains(&escaped[1..escaped.len() - 1]),
+        "the guardian request names the resolved target"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_external_read_allowed_by_a_user_rule_executes_at_the_allow_rule_tier() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool("c1", "read", json!({"path": "../deps/src/lib.rs"})),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let deps = s.work.parent().unwrap().join("deps");
+    std::fs::create_dir_all(deps.join("src")).unwrap();
+    std::fs::write(deps.join("src/lib.rs"), "pub fn dependency() {}\n").unwrap();
+    s.user_config(&format!(
+        "[accounts.mock]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"scripted\"]\n\n[model]\nmodel = \"mock/scripted\"\n\n[permissions]\nallow = [\"read(//*)\"]\n",
+        endpoint.url()
+    ));
+
+    let out = s
+        .headless(&["--output-format", "stream-json", "read it"])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let results = tool_results(&lines);
+    assert_eq!(results[0]["success"], json!(true), "{}", results[0]);
+    assert!(
+        results[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("pub fn dependency"),
+        "{}",
+        results[0]
+    );
+    let decisions: Vec<_> = lines
+        .iter()
+        .filter(|l| l["type"] == "gate_decision")
+        .collect();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0]["tier"], "allow_rule");
+    assert_eq!(decisions[0]["decision"], "allow");
 }
 
 /// A sandbox with a sibling directory `extra` holding `shared.txt`, for tests that script the

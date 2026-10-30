@@ -71,6 +71,104 @@ async fn the_read_only_fast_path_never_reaches_the_guardian() {
 }
 
 #[tokio::test]
+async fn an_external_read_reaches_the_guardian_and_runs_with_the_resolved_target() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig(&fake, "");
+    let outside = rig.world.root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("lib.rs"), "fn external() {}\n").unwrap();
+
+    // A workspace symlink lets the model name the file with an alias.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, rig.work().join("linked")).unwrap();
+    #[cfg(unix)]
+    let written = json!({"path": "linked/lib.rs"});
+    #[cfg(not(unix))]
+    let written = json!({"path": outside.join("lib.rs").to_str().unwrap()});
+
+    match rig.check("read", written.clone()).await {
+        fontaine_tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(
+                args,
+                json!({"path": outside.join("lib.rs").to_str().unwrap()}),
+                "the guardian's allow carries the resolved target"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(fake.calls(), 1);
+    let record = last(&rig);
+    assert_eq!(
+        (record.decision, record.tier),
+        (Decision::Allow, Tier::Guardian)
+    );
+    assert!(
+        !rig.audit()
+            .iter()
+            .any(|r| r.tier == Tier::ReadOnlyFastPath || r.tier == Tier::Tier05),
+        "an external read is never a fast path"
+    );
+
+    // The guardian's request names the resolved external target as a touched path.
+    let sent: String = fake
+        .mock
+        .requests()
+        .iter()
+        .map(|r| format!("{r:?}"))
+        .collect();
+    // `sent` is Debug output, which escapes a Windows path's backslashes.
+    let target = format!("{:?}", outside.join("lib.rs").display().to_string());
+    assert!(sent.contains(&target[1..target.len() - 1]), "{sent}");
+
+    // dontAsk denies the same call: no guardian, no pre-approval.
+    let strict = Rig::with(Options::new(DontAsk).guardian(fake.guardian.clone()));
+    let absolute = json!({"path": outside.join("lib.rs").to_str().unwrap()});
+    let d = strict.check("read", absolute).await;
+    assert!(!allowed(&d));
+    assert_eq!(last(&strict).tier, Tier::DontAsk);
+}
+
+#[tokio::test]
+async fn an_external_read_allowed_by_a_rule_skips_the_guardian() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig(&fake, "[permissions]\nallow = [\"read(//*)\"]\n");
+    let outside = rig.world.root.join("outside.txt");
+    std::fs::write(&outside, "o").unwrap();
+    let d = rig
+        .check("read", json!({"path": outside.to_str().unwrap()}))
+        .await;
+    assert!(allowed(&d));
+    assert_eq!(last(&rig).tier, Tier::AllowRule);
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
+async fn a_human_retry_of_an_external_read_matches_the_resolved_digest() {
+    let fake = fake_guardian(deny_verdict());
+    let rig = auto_rig(&fake, "");
+    let args = json!({"path": "../outside.txt"});
+    assert!(!allowed(&rig.check("read", args.clone()).await));
+    assert_eq!(rig.state.denied_calls().len(), 1);
+
+    // The retry grant is keyed by the resolved digest; the identical written call
+    // normalizes identically and matches it, and the allow carries the resolved target.
+    rig.state.approve_retry(0).unwrap();
+    match rig.check("read", args.clone()).await {
+        fontaine_tools::gate::GateDecision::Allow { args } => {
+            assert!(
+                args["path"].as_str().unwrap().ends_with("outside.txt")
+                    && std::path::Path::new(args["path"].as_str().unwrap()).is_absolute()
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        (last(&rig).decision, last(&rig).tier),
+        (Decision::Allow, Tier::Human)
+    );
+}
+
+#[tokio::test]
 async fn an_ask_rule_forces_the_human_even_in_auto_and_denies_in_dont_ask() {
     let fake = fake_guardian(allow_verdict());
     let rig = auto_rig(&fake, "[permissions]\nask = [\"shell(npm publish)\"]\n");

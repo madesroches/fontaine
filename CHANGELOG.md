@@ -38,6 +38,21 @@ All notable changes are recorded here. The format follows
   An omitted value still reads a job now and waits for a subagent to end. Any wait returns
   early when a message from another agent arrives or, in the main conversation, when the user
   types one (#301).
+- Gated out-of-root reads (#284). `read`, `ls`, `glob` and `grep` can now inspect files
+  outside the workspace roots through the normal permission pipeline instead of being
+  refused for containment: the call asks in `manual`/`acceptEdits`, the guardian decides in
+  `auto`/`plan`, and `dontAsk` and headless runs deny it unless an allow rule or hook covers
+  it. The target is resolved once after the hooks and the guardian, the approval prompt, the
+  audit record and the execution all use that resolved form, so retargeting a symlink while a
+  decision is pending cannot redirect an approved call. Execution runs on a dedicated
+  unconfined, read-only fallback instance reached only after the gate allows the call; writes,
+  `notebook_edit` and `shell` stay confined, and an external path never becomes a workspace
+  root (no write reach, no fast path, no instruction discovery). The guardian's shipped allow
+  list treats source, header, build-file, installed-dependency and installed-skill-definition
+  reads outside the roots as routine, while credential stores and scouting around a denial
+  remain denied. `grep` and `glob` approval prompts now show the search path as well as the
+  pattern. The eval dataset gains the external-read slice; its version changes, so existing
+  scorecards are re-baselined by the next live run.
 
 ### Fixed
 

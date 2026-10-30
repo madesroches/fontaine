@@ -58,6 +58,40 @@ async fn guardian_off_runs_a_denied_call_and_is_recorded() {
 }
 
 #[tokio::test]
+async fn guardian_off_normalizes_an_external_read_and_runs_no_floor_or_hooks() {
+    let rig = Rig::new(PermissionMode::Manual);
+    let outside = rig.world.root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("x.txt"), "x").unwrap();
+
+    rig.state.set_guardian_off(true);
+    // The escape hatch applies the same execution normalization as every other allow, with
+    // no hooks and no floor.
+    match rig.check("read", json!({"path": "../outside/x.txt"})).await {
+        fontaine_tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(
+                args,
+                json!({"path": outside.join("x.txt").to_str().unwrap()})
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let record = rig.audit().last().cloned().expect("a record");
+    assert_eq!(
+        (record.decision, record.tier),
+        (Decision::Allow, Tier::GuardianOff)
+    );
+
+    // A malformed external read falls back to the raw arguments: the tool refuses them.
+    match rig.check("read", json!({"path": 3})).await {
+        fontaine_tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(args, json!({"path": 3}));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn guardian_off_never_loosens_a_child() {
     let rig = Rig::new(PermissionMode::Auto);
     let id = child(&rig, Ladder::Manual);
