@@ -251,10 +251,12 @@ fn external_reads_resolve_the_target_to_an_absolute_path() {
 fn external_read_preserves_every_non_path_argument() {
     let d = Dirs::new();
     let s = scope(&d.dir("work"), &[]);
+    let outside = d.dir("outside");
+    let file = outside.join("x.txt");
     let read = s
         .external_read(
             "read",
-            &json!({"path": "/etc/hostname", "offset": 3, "limit": 9}),
+            &json!({"path": file.to_str().unwrap(), "offset": 3, "limit": 9}),
         )
         .unwrap();
     assert_eq!(read["offset"], json!(3));
@@ -262,7 +264,7 @@ fn external_read_preserves_every_non_path_argument() {
     let grep = s
         .external_read(
             "grep",
-            &json!({"pattern": "x", "path": "/etc", "files": true}),
+            &json!({"pattern": "x", "path": outside.to_str().unwrap(), "files": true}),
         )
         .unwrap();
     assert_eq!(grep["pattern"], json!("x"));
@@ -351,10 +353,11 @@ fn external_reads_reject_malformed_arguments() {
         );
     }
     // Only the four read tools have the route.
+    let hostname = d.dir("outside").join("hostname");
     for tool in ["write", "edit", "notebook_edit", "shell", "webfetch"] {
         assert!(
             matches!(
-                s.external_read(tool, &json!({"path": "/etc/hostname"})),
+                s.external_read(tool, &json!({"path": hostname.to_str().unwrap()})),
                 Err(ScopeError::Unreadable(_))
             ),
             "{tool}"
@@ -365,17 +368,21 @@ fn external_reads_reject_malformed_arguments() {
 #[test]
 fn the_external_shape_check_validates_normalized_arguments_only() {
     use fontaine_tools::scope::external_shape;
+    let d = Dirs::new();
+    let dir = d.dir("outside");
+    let dir = dir.to_str().unwrap();
+    let file = format!("{dir}/hostname");
     for tool in ["read", "ls", "grep"] {
-        assert!(external_shape(tool, &json!({"path": "/etc/hostname"})).is_ok());
+        assert!(external_shape(tool, &json!({"path": file})).is_ok());
         assert!(external_shape(tool, &json!({"path": "relative"})).is_err());
         assert!(external_shape(tool, &json!({"path": 3})).is_err());
         assert!(external_shape(tool, &json!({})).is_err());
     }
-    assert!(external_shape("glob", &json!({"pattern": "*.rs", "path": "/etc"})).is_ok());
+    assert!(external_shape("glob", &json!({"pattern": "*.rs", "path": dir})).is_ok());
     assert!(external_shape("glob", &json!({"pattern": "*.rs"})).is_err());
-    assert!(external_shape("shell", &json!({"path": "/etc"})).is_err());
+    assert!(external_shape("shell", &json!({"path": dir})).is_err());
     // No file system state is consulted: a missing absolute path is still well formed.
-    assert!(external_shape("read", &json!({"path": "/no/such/place"})).is_ok());
+    assert!(external_shape("read", &json!({"path": format!("{dir}/no/such/place")})).is_ok());
 }
 
 #[tokio::test]
