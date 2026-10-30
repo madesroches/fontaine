@@ -51,6 +51,7 @@ struct KillOnDrop {
     ledger: Arc<dyn RootLedger>,
     id: String,
     agent_type: String,
+    handle: Arc<dyn ChildHandle>,
     armed: bool,
 }
 
@@ -63,6 +64,12 @@ impl Drop for KillOnDrop {
                 status: ChildStatus::Killed.as_str().to_string(),
             });
             subagent_event("killed", &self.id, &self.agent_type);
+            // A killed child never reads what the human queued for it.
+            let missed = self.handle.take_missed();
+            if !missed.is_empty() {
+                self.handle
+                    .report_undelivered("it was killed", &missed.join("\n\n"));
+            }
         }
     }
 }
@@ -390,6 +397,7 @@ impl Tool for AgentTool {
             ledger: self.ledger.clone(),
             id: id.clone(),
             agent_type: agent_type.name.clone(),
+            handle: handle.clone(),
             armed: true,
         };
         let report = handle.report().await;

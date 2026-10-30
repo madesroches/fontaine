@@ -76,8 +76,14 @@ impl AgentRuntime {
             }
             let back = self.steering.take_pending_for(id);
             if back.is_empty() {
-                // The end-of-run drain took it and resumed the agent with it.
-                return Ok(Delivered::Resumed);
+                // The end-of-run drain took it; it only reached the agent if that resume ran.
+                if tree.is_running(id) {
+                    return Ok(Delivered::Resumed);
+                }
+                return match tree.status_of(id) {
+                    Some(status) => Err(MessageRefusal::Ended(status)),
+                    None => Err(MessageRefusal::Unknown),
+                };
             }
             text = back.join("\n\n");
         }

@@ -575,6 +575,22 @@ async fn dropping_a_blocking_call_kills_the_child() {
 }
 
 #[tokio::test]
+async fn messages_queued_for_a_child_killed_by_a_dropped_call_are_reported_undelivered() {
+    let rig = rig();
+    *rig.runner.missed.lock().unwrap() = vec!["are you there".into()];
+    let mut call = Box::pin(spawn(&rig, args("explore", "x")));
+    tokio::select! {
+        _ = &mut call => panic!("the child never finishes"),
+        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+    }
+    drop(call);
+    let undelivered = rig.runner.child(0).undelivered.lock().unwrap().clone();
+    assert_eq!(undelivered.len(), 1, "{undelivered:?}");
+    assert!(undelivered[0].0.contains("killed"), "{undelivered:?}");
+    assert_eq!(undelivered[0].1, "are you there");
+}
+
+#[tokio::test]
 async fn nesting_stops_at_three_layers_and_the_agent_tool_is_withheld_there() {
     let mut types = AgentTypes::builtin();
     types.insert(AgentType {
@@ -974,8 +990,13 @@ async fn an_abandoned_wait_leaves_the_child_running_and_its_report_queued() {
     assert_eq!(reports_for(&rig, ROOT_AGENT), 1);
 }
 
-async fn settle() {
-    tokio::time::sleep(Duration::from_millis(50)).await;
+async fn until(mut done: impl FnMut() -> bool) {
+    for _ in 0..100 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 #[tokio::test]
@@ -1004,7 +1025,7 @@ async fn a_foreground_child_that_missed_a_message_is_resumed_with_it_after_its_r
 
     // The second run reports to the parent as a background child does.
     child.finish(ChildStatus::Done, "second answer");
-    settle().await;
+    until(|| rig.tree.has_notifications(ROOT_AGENT)).await;
     let notes = rig.tree.take_notifications(ROOT_AGENT);
     assert_eq!(notes.len(), 1);
     assert!(notes[0].text.contains("second answer"), "{notes:?}");
@@ -1019,7 +1040,11 @@ async fn a_background_child_that_missed_a_message_is_resumed_and_reports_twice()
     let mut background = args("worker", "look around");
     background.background = Some(true);
     spawn(&rig, background).await.unwrap();
-    settle().await;
+    until(|| {
+        rig.tree.has_notifications(ROOT_AGENT)
+            && !rig.runner.child(0).resumes.lock().unwrap().is_empty()
+    })
+    .await;
 
     let child = rig.runner.child(0);
     let id = rig.runner.spawned()[0].id.clone();
@@ -1029,7 +1054,7 @@ async fn a_background_child_that_missed_a_message_is_resumed_and_reports_twice()
     assert!(first[0].text.contains("first answer"), "{first:?}");
 
     child.finish(ChildStatus::Done, "second answer");
-    settle().await;
+    until(|| rig.tree.has_notifications(ROOT_AGENT)).await;
     let second = rig.tree.take_notifications(ROOT_AGENT);
     assert!(second[0].text.contains("second answer"), "{second:?}");
 }

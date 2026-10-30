@@ -90,8 +90,9 @@ The bar shows the permission mode, the model, how many subagents are running, `�
 `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on` and `dontAsk`.
 
 While a [subagent's transcript](#the-agent-list-and-the-agent-view) is on screen the bar's key hint
-is about that agent: `viewing agent-3 · working · ↓ then Enter on main to go back`, with the
-agent's own state (`working`, or how it ended) in place of the main turn's. When any subagent is
+is about that agent: `viewing agent-3 · working · ↓ then Enter on main to go back · shift+tab mode`,
+with the agent's own state (`working`, how it ended, or `no longer listed`) in place of the main
+turn's. When any subagent is
 running or recently ended, the [agent list](#the-agent-list-and-the-agent-view) sits on the rows
 below the bar.
 

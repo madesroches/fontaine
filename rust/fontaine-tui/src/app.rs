@@ -148,6 +148,8 @@ pub struct App {
     pub committed_under_overlay: bool,
     /// The agents listed below the status line.
     pub agent_list: AgentList,
+    /// The linear renderer draws no agent list, so the keyboard must never move onto it.
+    pub linear: bool,
     /// What the human typed to the viewed agent that it has not read yet.
     pub queued_agent: Vec<String>,
     pub input: InputBuffer,
@@ -252,6 +254,7 @@ impl App {
             reprint: false,
             committed_under_overlay: false,
             agent_list: AgentList::default(),
+            linear: false,
             queued_agent: Vec::new(),
             input: InputBuffer::default(),
             mode,
@@ -1161,6 +1164,7 @@ impl App {
             KeyCode::Down
                 if self.on_last_line()
                     && self.agent_list.has_rows()
+                    && !self.linear
                     && !key
                         .modifiers
                         .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
@@ -1466,6 +1470,14 @@ mod tests {
         let mut plain = self::app();
         press(&mut plain, KeyCode::Down);
         assert!(!plain.agent_list.focused);
+    }
+
+    #[test]
+    fn down_does_not_focus_the_agent_list_in_linear_mode() {
+        let mut app = with_agent_list();
+        app.linear = true;
+        press(&mut app, KeyCode::Down);
+        assert!(!app.agent_list.focused);
     }
 
     #[test]

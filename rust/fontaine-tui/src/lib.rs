@@ -517,7 +517,10 @@ pub async fn run(
                     .is_ok(),
                     Err(_) => false,
                 },
-                None => linear.render(app).is_ok(),
+                None => {
+                    app.linear = true;
+                    linear.render(app).is_ok()
+                }
             };
             if !rendered {
                 on_error.store(true, Ordering::Relaxed);

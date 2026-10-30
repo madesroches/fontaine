@@ -18,9 +18,6 @@ use crate::config_panel::ConfigKey;
 use crate::denials::{DeniedList, UnavailablePrompt};
 use crate::resume_picker::ResumePicker;
 use crate::ui::schedule::IDLE_POLL;
-
-/// How often the agent list redraws while it lists anything.
-const LIST_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 use crate::ui::turn::{CommandOutcome, SkillRun, Submission};
 use crate::{Action, App, Command, Prompt, Ui, parse_command};
 use crate::{reports, statusbar};
@@ -34,6 +31,10 @@ use fontaine_core::prompt;
 use fontaine_core::session;
 use fontaine_tools::gate::ROOT_AGENT;
 use fontaine_tools::lock::read_recovering;
+use std::time::Duration;
+
+/// How often the agent list redraws while it lists anything.
+const LIST_TICK: Duration = Duration::from_secs(1);
 
 impl<R: FnMut(&mut App)> Ui<R> {
     fn draw(&mut self, runtime: &AgentRuntime) {
@@ -237,8 +238,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             // Elapsed times in the agent list, and the end of an ended row's 30 seconds there,
             // are shown without anything else happening.
             if self.app.agent_list.counts_time() {
-                tick =
-                    Some(tick.map_or(LIST_TICK, |wait: std::time::Duration| wait.min(LIST_TICK)));
+                tick = Some(tick.map_or(LIST_TICK, |wait: Duration| wait.min(LIST_TICK)));
             }
             self.draw(runtime);
             let action = tokio::select! {

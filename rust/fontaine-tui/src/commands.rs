@@ -78,10 +78,6 @@ pub struct Builtin {
 }
 
 impl Command {
-    /// Whether the command runs immediately, even while a turn works: its handler is
-    /// synchronous and touches only UI state — never the turn, the conversation, the ledger
-    /// or a blocking wait. Every other built-in queues like a message and executes once the
-    /// turn ends; `/loop` and unknown names stay refused mid-turn.
     /// Whether the command changes the main conversation, which a subagent's view cannot show:
     /// there it is refused instead of run.
     pub fn main_only(&self) -> bool {
@@ -100,6 +96,10 @@ impl Command {
         }
     }
 
+    /// Whether the command runs immediately, even while a turn works: its handler is
+    /// synchronous and touches only UI state — never the turn, the conversation, the ledger
+    /// or a blocking wait. Every other built-in queues like a message and executes once the
+    /// turn ends; `/loop` and unknown names stay refused mid-turn.
     pub fn runs_mid_turn(&self) -> bool {
         matches!(
             self,
