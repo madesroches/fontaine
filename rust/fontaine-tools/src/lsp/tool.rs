@@ -3,7 +3,7 @@
 //! outside the workspace roots is a pointer the model must follow with the gated `read`.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lsp_types::request::{
@@ -70,10 +70,22 @@ pub struct LspTool {
 
 /// `path` relative to the primary root when it is inside it, absolute otherwise.
 pub fn display_path(path: &Path, primary: &Path) -> String {
-    path.strip_prefix(primary)
-        .unwrap_or(path)
+    // Roots are canonical, which on Windows means verbatim (`\\?\C:\...`), while a path from a
+    // file URI never is; `Path::strip_prefix` treats the two spellings as different prefixes.
+    let path = without_verbatim(path);
+    let primary = without_verbatim(primary);
+    path.strip_prefix(&primary)
+        .unwrap_or(&path)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+fn without_verbatim(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with(r"UNC\") => rest.into(),
+        _ => path.to_path_buf(),
+    }
 }
 
 /// Turns the server's URIs and positions into the locations the model reads.
@@ -694,6 +706,38 @@ mod tests {
         assert_eq!(
             display_path(Path::new("/home/me/.cargo/registry/lib.rs"), primary),
             "/home/me/.cargo/registry/lib.rs"
+        );
+    }
+
+    #[test]
+    fn a_verbatim_prefix_is_dropped_but_a_unc_one_is_kept() {
+        assert_eq!(
+            without_verbatim(Path::new(r"\\?\C:\work\a.rs")),
+            Path::new(r"C:\work\a.rs")
+        );
+        assert_eq!(
+            without_verbatim(Path::new(r"\\?\UNC\host\share")),
+            Path::new(r"\\?\UNC\host\share")
+        );
+        assert_eq!(without_verbatim(Path::new("/work")), Path::new("/work"));
+    }
+
+    #[test]
+    fn a_file_uri_round_trips_to_a_path_the_root_prefixes() {
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        let uri = Url::from_file_path(root.join("src").join("main.rs")).unwrap();
+        let path = uri.to_file_path().unwrap();
+        assert_eq!(display_path(&path, &root), "src/main.rs");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_verbatim_root_prefixes_the_plain_path_of_a_uri() {
+        let uri = Url::parse("file:///C:/work/src/main.rs").unwrap();
+        let path = uri.to_file_path().unwrap();
+        assert_eq!(
+            display_path(&path, Path::new(r"\\?\C:\work")),
+            "src/main.rs"
         );
     }
 
