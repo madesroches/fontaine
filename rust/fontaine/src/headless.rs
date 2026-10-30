@@ -13,9 +13,7 @@ use fontaine_core::gate::GuardianUsage;
 use fontaine_core::goal::{GoalArg, Step, first_turn_prompt};
 use fontaine_core::ledger::Record;
 use fontaine_core::trust;
-use fontaine_core::turn::{
-    DEFAULT_MAX_TURNS, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
-};
+use fontaine_core::turn::{Flow, SessionEvent, TurnOutcome, TurnParams, run_turn};
 use rig_core::schemars::Schema;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -500,7 +498,7 @@ async fn run_one(
             agent: &runtime.agent,
             state: &runtime.state,
             prompt: text,
-            max_turns: options.max_turns.unwrap_or(DEFAULT_MAX_TURNS),
+            max_turns: options.max_turns,
             priced: runtime.models.main.catalog_billed(),
             model,
             provider,

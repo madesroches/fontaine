@@ -88,7 +88,7 @@ async fn with_one_child_seen(
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "start it".to_string(),
-            max_turns: 5,
+            max_turns: Some(5),
             priced: true,
             model: "scripted".to_string(),
             provider: "mock".to_string(),

@@ -13,9 +13,7 @@ use fontaine_core::ledger::Record;
 use fontaine_core::schedule::{Fired, Kind};
 use fontaine_core::steering::Queued;
 use fontaine_core::tier::Tier;
-use fontaine_core::turn::{
-    DEFAULT_MAX_TURNS, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
-};
+use fontaine_core::turn::{Flow, SessionEvent, TurnOutcome, TurnParams, run_turn};
 use tokio::sync::mpsc::unbounded_channel;
 
 /// How a turn ended from the interface's side.
@@ -641,7 +639,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     agent: &runtime.agent,
                     state: &runtime.state,
                     prompt,
-                    max_turns: DEFAULT_MAX_TURNS,
+                    max_turns: None,
                     priced: runtime.models.main.catalog_billed(),
                     model,
                     provider,

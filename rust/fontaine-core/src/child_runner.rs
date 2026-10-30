@@ -33,7 +33,7 @@ use crate::models::{ModelHandle, SharedSwitcher};
 use crate::permission_rules::parse_rule;
 use crate::permissions::Approver;
 use crate::steering::{Steering, SteeringHook};
-use crate::turn::{DEFAULT_MAX_TURNS, Drive, Flow, SessionEvent, TurnOutcome, drive};
+use crate::turn::{Drive, Flow, SessionEvent, TurnOutcome, drive};
 use crate::turn_recovery::RecoveryHook;
 
 const TARGET: &str = "fontaine::telemetry";
@@ -606,7 +606,7 @@ async fn run_child(
                 state,
                 agent_id: id,
                 prompt,
-                max_turns: DEFAULT_MAX_TURNS,
+                max_turns: None,
                 priced: shared.model.priced,
                 model: shared.model.model.clone(),
                 provider: shared.model.provider.clone(),

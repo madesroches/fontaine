@@ -120,7 +120,7 @@ loop {
   and records it the way `ChildRun::resume` does (`Record::UserMessage` with the agent, an
   `AgentViewEvent::Prompt`). Factor that recording out of `resume` into one helper both use.
 - The join turns share the run's kill switch and budget: the `select!` on `kill` covers the wait
-  and each `drive` (each `drive` gets its own `DEFAULT_MAX_TURNS`, as resumes do); a spent budget ends the next `drive` as `Stopped` as today. A child joining is
+  and each `drive`; a spent budget ends the next `drive` as `Stopped` as today. A child joining is
   `ChildStatus::Running` (it is not waiting on a permission prompt); its row's age keeps counting.
 - The report text is the final `drive`'s answer. A non-`Answer` outcome of any run ends the loop
   with the usual report, and `AgentTree::finish` still kills the running descendants of a child

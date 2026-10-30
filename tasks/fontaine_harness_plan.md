@@ -560,6 +560,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-21: Deviation — without `--max-turns` a headless turn is capped at 1000 model calls (Claude Code is unbounded); reason: rig requires a bound and a looping model should not run forever. `--max-budget-usd` is checked between model calls: the call that crosses the cap stops the run before its tool calls execute, and an answer already complete is kept.
 - 2026-10-21: The headless I/O contract is versioned (`schema_version`; additive keeps it, rename or removal bumps it), mirroring Claude Code's flags plus `gate_decision` events.
 - 2026-10-21: The headless I/O contract is a checked-in JSON Schema per version, `docs/schemas/headless-v1.schema.json`, published with the docs and validated with the exact-pinned `jsonschema` crate (Phase 1).
+- 2026-10-30 (user, supersedes the 2026-10-21 1000-call cap): A turn, headless or interactive, and every subagent run has no model-call limit unless `--max-turns` sets one, as in Claude Code; rig's limit is set to `usize::MAX` when none is given, since unset it allows one call. The token and cost budgets bound a run; no per-spawn turn limit (#326).
 
 ### MCP
 

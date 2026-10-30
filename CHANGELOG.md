@@ -582,6 +582,12 @@ All notable changes are recorded here. The format follows
   clippy line-count limit and one builder configuration shared by the root agent and subagents
   (#187).
 
+#### Headless
+
+- A turn no longer stops at 1,000 model calls when `--max-turns` is not given; interactive
+  turns and subagent runs have no call limit either, as in Claude Code. The token and cost budgets
+  still bound a run (#326).
+
 #### Permissions
 
 - Gated out-of-root reads (#284). `read`, `ls`, `glob` and `grep` can now inspect files
