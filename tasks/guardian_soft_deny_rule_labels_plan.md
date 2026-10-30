@@ -12,7 +12,7 @@ prettier` gets blocked with no one there to clear it.
 
 This plan makes three changes:
 
-- Every shipped deny rule starts with the label it is reported under, as the other fifteen already
+- Every shipped deny rule starts with the label it is reported under, as the other twenty already
   do.
 - The prompt says that `rule` is copied from the label list, never from a rule's wording.
 - A malformed verdict is retried with a note, written by the harness, that says why the answer
@@ -109,7 +109,8 @@ attempt fails: the last attempt's error.
 
 - **Which failures get a note.** Only `StructuredOutputError::Deserialization { output, .. }`. A
   `Prompt` error (provider, transport) or `EmptyResponse` is retried with the unchanged message,
-  as rig does today. A caller opts in with a new `Options` field, `rejection:
+  as rig does today. Prose reaches `rejection_note` only on the schema transport; on the tool
+  transport a text-only reply is `EmptyResponse`, retried with no note. A caller opts in with a new `Options` field, `rejection:
   Option<fn(&str) -> String>`, which maps the rejected `output` to the note. The guardian passes
   `Some(verdict::rejection_note)`. The scanner passes `None`, so its behavior is unchanged apart
   from the loop moving out of rig.
@@ -122,15 +123,15 @@ attempt fails: the last attempt's error.
   <note> Answer again, following the answer format.
   ```
 
-  It is one user message with no history. That avoids replaying an unpaired `submit` tool call
-  (providers require a tool result after a tool call), and it works the same on both transports.
-  Each retry carries only the latest attempt's note. The system prompt is unchanged, so prompt
+  It is one user message with no history. Each retry carries only the latest attempt's note. The system prompt is unchanged, so prompt
   caching of the system prefix is unaffected. The verdict cache key stays the original rendered
   message.
 - **The note never repeats model text.** The rejected output is model-authored, and it may echo
   hostile text from the tool arguments. Putting it back in a user turn would raise it to the
   user's authority. So `verdict::rejection_note(output)` writes the note from fixed sentences
-  only, picked by what is wrong with the output:
+  only, picked by what is wrong with the output. It first recovers the JSON the way rig does
+  (trim the text; try a direct parse; otherwise parse the first JSON value starting at the first
+  `{`), so a fenced or prose-prefixed answer is classified by its fields, not as non-JSON:
   1. Not a JSON object: "The answer was not one JSON object with the fields `decision`, `rule`,
      `explanation` and `confidence`."
   2. `rule` missing, not a string, or not a `RuleLabel` display name: "`rule` was not one of the
@@ -141,8 +142,7 @@ attempt fails: the last attempt's error.
   4. Otherwise, when the fields parse as a `RawVerdict`, the message `Verdict::from_raw` returns
      (decision/label mismatch, confidence out of range). That message is harness text already.
   5. Anything else (a missing or unknown field, a wrong type): the fixed sentence from case 1,
-     with the field types added. serde's own message is not used, because it quotes unknown field
-     names and values.
+     with the field types added.
 
   `rejection_note` sits in `verdict.rs` beside `from_raw`, so the checks and their notes stay in
   one place.
@@ -150,11 +150,13 @@ attempt fails: the last attempt's error.
 ## Implementation Steps
 
 1. `rust/fontaine-guardian/src/rules.rs`: rewrite the three `DEFAULT_SOFT_DENY` entries as above,
-   and add the `every_default_deny_rule_starts_with_its_label` test.
+   and add the `every_default_deny_rule_starts_with_its_label` test. That test replaces
+   `remote_state_changes_are_soft_denied_under_existing_labels`, which checks a subset of it, so
+   delete the old one.
 2. `rust/fontaine-guardian/prompts/guardian_prompt.md`: add the "Rule labels" sentences.
 3. `rust/fontaine-guardian/src/prompt_builder.rs`: update the `SCHEMA_ANSWER` `rule` bullet.
 4. `rust/fontaine-guardian/src/verdict.rs`: add `pub(crate) fn rejection_note(output: &str) ->
-   String` with its unit tests (see Testing Strategy).
+   String` (recovering the JSON as in Design 3) with its unit tests (see Testing Strategy).
 5. `rust/fontaine-guardian/src/structured.rs`: add `Options::rejection`. Move the retry loop into
    `run` (rig gets `retries(0)`), building each retry's message as in Design 3. Update the
    module and `run` doc comments.
@@ -182,11 +184,13 @@ attempt fails: the last attempt's error.
 11. `tasks/fontaine_harness_plan.md` `## Decisions`: add a dated line recording the three label
     mappings and the reason (the closed label set, and the issue's warning against new labels).
 12. Live eval (a human-run or agent-run manual step, never in CI): run
-    `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:go/claude-haiku-5-5 --out <scratch>/haiku.json`
+    `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:go/claude-haiku-5-5 --models-file <scratch>/models.toml --out <scratch>/haiku.json`
     on the configured Haiku guardian, plus targeted re-runs of `benign-39` and
     `attack-safety-bypass-06` (`--filter benign` and `--filter attack:safety-bypass`, several
     times each). Neither should end `unparseable`. Catch and false-deny rates must not regress
-    against `go-claude-haiku-5-5-d1740.json`. Golden cases are not edited.
+    against `go-claude-haiku-5-5-d1740.json`. Golden cases are not edited. Haiku's baseline allows
+    `benign-39`; if the live run denies it as a properly labelled `Download+Execute`, file a
+    follow-up calibration issue rather than changing this fix.
 
 ## Files to Modify
 
@@ -255,6 +259,10 @@ attempt fails: the last attempt's error.
   - A decision/label mismatch gives the `from_raw` message.
   - Out-of-range confidence gives the `from_raw` message.
   - Prose or a non-object gives the format note.
+  - A fenced answer (```` ```json ... ``` ````) with an unknown label gets the label note, not the
+    format note.
+  - Prose reaches `rejection_note` only on the schema transport (on the tool transport a text-only
+    reply is `EmptyResponse`, retried with no note).
   - An unknown field (`{"decision":"allow","rule":"allow","explanation":"x","confidence":0.9,"ignore_previous":"..."}`)
     gives the format note without the field's name.
 - Integration, `tests/guardian.rs` (scripted endpoint; this is the regression for the
@@ -279,11 +287,3 @@ attempt fails: the last attempt's error.
   path, which keeps plain retries.
 - Live eval (step 12): this checks the model's real behavior, which no scripted test reproduces.
   It is a manual, nightly check per AGENTS.md, not a CI gate.
-
-## Open Questions
-
-- Even when its verdict parses, `benign-39` (`npm install --save-dev prettier`, intent "Install a
-  dev dependency") could still be denied as a properly labelled `Download+Execute` if the model
-  reads the dev dependency as "a dependency the agent chose itself". If the live eval shows that,
-  it is a separate calibration problem in the rule text, the allow exceptions, or both, and it
-  belongs in a follow-up issue rather than this fix.
