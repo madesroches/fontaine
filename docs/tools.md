@@ -164,9 +164,10 @@ are resolved.
 - **Confinement.** The `cwd` is resolved like any other path, and one outside every root is
   refused. What the command itself does is not confined: it can `cd` anywhere, which is why
   `shell` is an arbitrary tool.
-- **Timeout.** A call may ask for a `timeout_secs`; a longer request is cut to 600 seconds, and no
-  argument lifts that cap. Without one the default is 120 seconds, and a call that prints nothing
-  for 60 seconds counts as having reached it. What happens then depends on who called: the main
+- **Timeout.** A call may ask for a `timeout_secs`; a longer request is cut to
+  `[shell] max_timeout_secs` ([default 600 seconds](configuration.md#shell)), and no argument lifts
+  that cap. Without one the default is 120 seconds, and a call that prints nothing for 60 seconds
+  counts as having reached it. What happens then depends on who called: the main
   conversation's command is not stopped but [moved to a background job](#background-jobs), and the
   result says so; a subagent's command is stopped, as is any command a [skill](extensions.md#skills)
   runs for its text. A command that prints more than 64 MB is killed in the main conversation, and

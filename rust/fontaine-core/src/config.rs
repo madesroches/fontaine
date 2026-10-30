@@ -619,6 +619,12 @@ pub struct GoalSection {
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct ShellSection {
+    pub max_timeout_secs: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ShellPreclassifierSection {
     pub allow_extra: Option<Vec<String>>,
 }
@@ -808,6 +814,7 @@ pub struct Settings {
     pub memory: Option<MemorySection>,
     pub checkpoints: Option<CheckpointsSection>,
     pub goal: Option<GoalSection>,
+    pub shell: Option<ShellSection>,
     pub shell_preclassifier: Option<ShellPreclassifierSection>,
     pub telemetry: Option<TelemetrySection>,
     pub websearch: Option<WebsearchSection>,
@@ -1204,6 +1211,15 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
             return bad("goal.max_cost_usd", "must be a finite number, zero or more");
         }
     }
+    if let Some(sh) = &s.shell
+        && let Some(v) = sh.max_timeout_secs
+        && !(1..=MAX_SHELL_TIMEOUT_SECS).contains(&v)
+    {
+        return bad(
+            "shell.max_timeout_secs",
+            &format!("must be between 1 and {MAX_SHELL_TIMEOUT_SECS}"),
+        );
+    }
     if let Some(c) = &s.checkpoints {
         for (key, v) in [
             ("checkpoints.max_file_bytes", c.max_file_bytes),
@@ -1461,6 +1477,9 @@ pub struct Context {
 
 pub const DEFAULT_GOAL_MAX_TURNS: u32 = 50;
 const MAX_GOAL_TURNS: u32 = 1000;
+/// A full day; keeps `Instant + Duration` far from overflow.
+const MAX_SHELL_TIMEOUT_SECS: u64 = 86_400;
+const DEFAULT_SHELL_MAX_TIMEOUT_SECS: u64 = 600;
 
 /// The merged `[schedule]` section.
 #[derive(Clone, Debug, PartialEq)]
@@ -1510,6 +1529,13 @@ pub struct Goal {
     pub max_cost_usd: Option<f64>,
 }
 
+/// The merged `[shell]` section.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shell {
+    /// The ceiling on a model-requested `shell` timeout, in seconds.
+    pub max_timeout_secs: u64,
+}
+
 /// The merged `[tui]` section.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tui {
@@ -1551,6 +1577,7 @@ pub struct Config {
     pub memory: Memory,
     pub checkpoints: Checkpoints,
     pub goal: Goal,
+    pub shell: Shell,
     pub shell_preclassifier_allow_extra: Vec<String>,
     pub telemetry: Telemetry,
     pub websearch: Websearch,
@@ -1631,6 +1658,9 @@ impl Config {
             goal: Goal {
                 max_turns: DEFAULT_GOAL_MAX_TURNS,
                 max_cost_usd: None,
+            },
+            shell: Shell {
+                max_timeout_secs: DEFAULT_SHELL_MAX_TIMEOUT_SECS,
             },
             shell_preclassifier_allow_extra: Vec::new(),
             tui: Tui {
@@ -1857,6 +1887,9 @@ impl Config {
             if let Some(v) = g.max_cost_usd {
                 self.goal.max_cost_usd = Some(v);
             }
+        }
+        if let Some(v) = s.shell.as_ref().and_then(|sh| sh.max_timeout_secs) {
+            self.shell.max_timeout_secs = v;
         }
         if let Some(sp) = &s.shell_preclassifier {
             union(

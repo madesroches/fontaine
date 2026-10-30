@@ -1850,3 +1850,45 @@ fn the_checkpoint_caps_default_and_only_the_user_file_sets_them() {
         "{err}"
     );
 }
+
+#[test]
+fn the_shell_timeout_cap_defaults_and_only_the_user_scopes_set_it() {
+    let w = World::new();
+    assert_eq!(w.load().unwrap().shell.max_timeout_secs, 600);
+
+    w.user_file("[shell]\nmax_timeout_secs = 1800\n");
+    assert_eq!(w.load().unwrap().shell.max_timeout_secs, 1800);
+    let cli = w.cli_file("[shell]\nmax_timeout_secs = 900\n");
+    assert_eq!(
+        w.load_with_settings(&cli).unwrap().shell.max_timeout_secs,
+        900
+    );
+
+    for column in [Column::Project, Column::ProjectLocal] {
+        let err = parse_settings(
+            "[shell]\nmax_timeout_secs = 900\n",
+            Path::new("p.toml"),
+            column,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
+    }
+}
+
+#[test]
+fn the_shell_timeout_cap_is_validated() {
+    for text in [
+        "[shell]\nmax_timeout_secs = 0\n",
+        "[shell]\nmax_timeout_secs = 86401\n",
+    ] {
+        let err = parse_settings(text, Path::new("u.toml"), Column::User).unwrap_err();
+        assert!(err.to_string().contains("shell.max_timeout_secs"), "{err}");
+    }
+    parse_settings(
+        "[shell]\nmax_timeout_secs = 86400\n",
+        Path::new("u.toml"),
+        Column::User,
+    )
+    .unwrap();
+    assert!(parse_settings("[shell]\ntimeout = 5\n", Path::new("u.toml"), Column::User).is_err());
+}
