@@ -54,6 +54,8 @@ impl PreExistence {
 pub struct TouchedPath {
     pub path: String,
     pub status: PreExistence,
+    /// Set by the harness when the resolved path lies inside the session scratch directory.
+    pub in_scratch: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -78,6 +80,20 @@ pub struct SessionFacts {
     /// The agent's persistent memory directory, set by the harness from the session and never
     /// from a tool argument. Future sessions load what is written there as notes.
     pub memory_dir: Option<String>,
+    /// The session scratch directory, set by the harness from the session and never from a tool
+    /// argument. It is created empty when the session starts.
+    pub scratch_dir: Option<String>,
+    /// What the agent a call would start can do. Set only for an `agent` call.
+    pub spawn: Option<SpawnFacts>,
+}
+
+/// The toolset of the agent an `agent` call starts, computed by the harness.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SpawnFacts {
+    pub agent_type: String,
+    pub tools: Vec<String>,
+    /// False only when every tool in `tools` is read-only.
+    pub changes_state: bool,
 }
 
 /// A denial earlier in the session, reason-coded, for loop detection.

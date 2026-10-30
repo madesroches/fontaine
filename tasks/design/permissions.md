@@ -55,7 +55,11 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               Structurally blocked = WorkspaceWrite / edit-class only; write-capable/unparsed
               shell is NOT edit-class — it is adjudicated at branch 9 with the other
               consequential calls
-           4. RiskClass::ReadOnly && args within workspace scope? → Allow (no guardian)
+           4. RiskClass::ReadOnly && args within workspace scope? → Allow (no guardian);
+              likewise an `agent` call whose Fontaine-computed child toolset holds only
+              ReadOnly + Destructive::Never tools (plus `send_message`); an MCP tool, a missing
+              descriptor row or a parent toolset that was never set never qualifies (a known, empty set can change nothing and does), and the child's own calls are
+              gated one by one
               (scope check enforced by Fontaine's wrapper/scope validator — `rig_tools::fs::place`
                against each canonicalized workspace root; inside any root counts — first-party only;
                MCP-declared readOnlyHint does not qualify — such tools register as Arbitrary;
@@ -115,7 +119,8 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
          Escalate ──▶ human prompt (with guardian's explanation shown)
 
  (the `agent` tool call that spawns a subagent is an ordinary `Arbitrary`-class pipeline request —
-  gated at steps 6–9 like any other; every tool call the subagent then makes re-enters this same
+  gated at steps 6–9 like any other, except that a spawn whose child can only read takes step 4;
+  every tool call the subagent then makes re-enters this same
   pipeline)
 
   `ResultPipeline` is the post-call step inside `GuardedTool` (Phase 2) through which every tool result

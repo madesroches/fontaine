@@ -25,8 +25,8 @@ pub use guardian::{Adjudication, EXTRACTOR_RETRIES, Guardian, Settings, WireIds}
 pub use profile::{FULL_PROMPT, MINIMAL_PROMPT, Profile};
 pub use request::{
     ACTIONS_TAKEN, ActionTaken, AdjudicationRequest, DenialRecord, PreExistence,
-    RECENT_USER_MESSAGES, SessionFacts, TASK_INTENT_CHARS, ToolCallSummary, TouchedPath,
-    task_intent, trailing_chars,
+    RECENT_USER_MESSAGES, SessionFacts, SpawnFacts, TASK_INTENT_CHARS, ToolCallSummary,
+    TouchedPath, task_intent, trailing_chars,
 };
 pub use rule_label::RuleLabel;
 pub use rules::{EnvironmentConfig, List, RuleConfig};

@@ -64,6 +64,10 @@ inside a workspace root after symlinks are resolved. The label alone earns nothi
 step, and it is read-only too. A call whose path arguments cannot be read, or that names a path
 outside every root, is outside the fast path.
 
+A spawn of an agent type that can only read takes the same fast path: the child's toolset is
+enforced by Fontaine and each call the child makes is gated on its own. See
+[Agents](agents.md#every-call-is-gated).
+
 That is not a denial for the four read-only tools. An out-of-root `read`, `ls`, `glob` or `grep`
 call goes through the [ordinary permission pipeline](permissions.md#the-pipeline): it asks in the
 interactive modes, the guardian decides in `auto` and `plan`, and it is denied in `dontAsk` and in

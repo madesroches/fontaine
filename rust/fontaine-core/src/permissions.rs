@@ -793,6 +793,21 @@ impl PermissionPipeline {
                 rule: None,
             };
         }
+        // The child's toolset is enforced by Fontaine and every call it makes is gated, so a
+        // spawn of a type that can only read is contained like a read.
+        if tool == "agent"
+            && adjudication::spawn_facts(
+                self.state.agent_types(),
+                self.state.agents().known_tools_of(call.agent).as_deref(),
+                args,
+            )
+            .is_some_and(|spawn| !spawn.changes_state)
+        {
+            return Verdict::Allow {
+                tier: Tier::ReadOnlyFastPath,
+                rule: None,
+            };
+        }
         // Only `shell` is classified here: a monitor is a long-lived watcher whose command the
         // read-only table says nothing about, so it needs a `Monitor` allow rule or the guardian.
         if tool == "shell"
@@ -1396,6 +1411,7 @@ impl PermissionPipeline {
 
         let request = adjudication::build(
             &self.state,
+            call.agent,
             call.tool,
             &cx.args,
             hook.guardian_context.clone(),

@@ -230,7 +230,11 @@ pub(super) fn agent_limits(config: &Config) -> Limits {
 }
 
 /// The permission state of a new session: its scope, rules, guardian and the agent tree.
-pub(super) fn session_state(setup: &AgentSetup, tree: &Arc<AgentTree>) -> Arc<SessionState> {
+pub(super) fn session_state(
+    setup: &AgentSetup,
+    tree: &Arc<AgentTree>,
+    agent_types: &Arc<AgentTypes>,
+) -> Arc<SessionState> {
     let scope = Arc::new(Scope::new(
         setup.roots[0].clone(),
         setup.roots[1..].iter().cloned(),
@@ -280,6 +284,7 @@ pub(super) fn session_state(setup: &AgentSetup, tree: &Arc<AgentTree>) -> Arc<Se
             )),
         },
         agents: tree.clone(),
+        agent_types: agent_types.clone(),
         reveal_mcp_names: telemetry.enabled && telemetry.log_tool_details,
         auto_edits: AutoEdits {
             tracked: permissions.auto_tracked_edits,
@@ -574,18 +579,16 @@ pub(super) fn prepare(setup: &mut AgentSetup) {
 /// The loaded extensions with what is derived from them: the agent types and the skills.
 pub(super) fn extension_runtimes(
     extensions: Extensions,
-    config: &Config,
     state: &Arc<SessionState>,
     project_executables: bool,
-) -> (Arc<Extensions>, Arc<AgentTypes>, Arc<SkillRuntime>) {
+) -> (Arc<Extensions>, Arc<SkillRuntime>) {
     let extensions = Arc::new(extensions);
-    let agent_types = Arc::new(build_agent_types(config, &extensions));
     let skills = Arc::new(SkillRuntime::new(
         extensions.clone(),
         state.clone(),
         project_executables,
     ));
-    (extensions, agent_types, skills)
+    (extensions, skills)
 }
 
 /// Tells the agent tree which model and tools the root agent has.

@@ -72,6 +72,12 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    and no mode, `auto` included, ever answers it: the answer comes from you or, in a headless run,
    from nobody (the model is told to use its best judgment). Your typed "Other" answers count as
    intent for the guardian; the options you pick do not.
+   An `agent` call whose child can only read takes this step too: Fontaine computes the child's
+   toolset, and when every tool in it is read-only (plus `send_message`), the spawn runs without
+   the guardian or a prompt, in every mode. `worker`, `fork` and any type whose set holds `agent`,
+   `shell`, a write tool, a network tool or an MCP tool do not qualify. A `deny` or `ask` rule on
+   `agent` and a hook still act first, and each call the child makes goes through the whole
+   pipeline.
    A file-tool *write* (`write`, `edit`, `notebook_edit`) that names a path outside every root
    is denied, with a hint naming the session's scratch directory and `/add-dir`: the write tools
    are confined to the roots, so an approval could never make the call run. The scratch
@@ -354,5 +360,5 @@ one by one. `read` deny rules are not a containment boundary for shell; use a `s
 ask rule, or the protected paths.
 
 A pre-classified call is audited with `tier = tier05`. In `auto` these calls, the read-only
-fast path and the [tracked and scratch edits](#the-pipeline) are the only guardian skips earned without a grant of yours; an out-of-scope read such
+fast path (a read-only spawn included) and the [tracked and scratch edits](#the-pipeline) are the only guardian skips earned without a grant of yours; an out-of-scope read such
 as `ls ../`, anything the pre-classifier cannot fully parse, and every MCP tool go to the guardian.

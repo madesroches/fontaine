@@ -132,6 +132,12 @@ pipeline request of its own: the `agent` call is an `arbitrary` call, so `manual
 the guardian judge the task, toolset and model together, and a rule like `agent(worker)` in `deny`
 or `ask` works. A bare `agent` allow rule is one of the broad rules `auto` sets aside.
 
+The exception is a spawn whose child can only read, such as `explore`: Fontaine computes the
+child's toolset, and when every tool in it is read-only, the spawn takes the read-only fast path
+in every mode, with no prompt and no guardian call. `worker`, `fork` and any type with `agent`,
+`shell`, a write tool, a network tool or an MCP tool still go through the paths above, and the
+guardian is shown the child's toolset. A `deny` or `ask` rule on `agent` still applies first.
+
 The guardian's picture of what you asked for comes from your own messages in the root session's
 ledger, for every agent in the tree. A subagent's prompt, and a message another agent sends, reach
 the guardian only inside its delimited, untrusted blocks, never as the task intent.

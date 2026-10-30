@@ -703,6 +703,7 @@ async fn the_guardian_is_told_the_env_names_and_never_the_values() {
     built.runtime.record_session_start().await;
     let request = adjudication::build(
         &built.runtime.state,
+        fontaine_tools::gate::ROOT_AGENT,
         "shell",
         &serde_json::json!({"command": "ls"}),
         Vec::new(),

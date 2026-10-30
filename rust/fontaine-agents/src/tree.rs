@@ -264,16 +264,19 @@ impl AgentTree {
     }
 
     pub fn tools_of(&self, agent: &str) -> Vec<String> {
-        if agent == ROOT_AGENT
-            && let Some(source) = read(&self.root_tools, "root tools").clone()
-        {
-            return source();
+        self.known_tools_of(agent).unwrap_or_default()
+    }
+
+    /// Like [`tools_of`](Self::tools_of), but `None` when the agent's tools were never set (the
+    /// root before `set_root_tools`) or the agent is not in the tree, so a caller can tell
+    /// "unknown" from "known and empty".
+    pub fn known_tools_of(&self, agent: &str) -> Option<Vec<String>> {
+        if agent == ROOT_AGENT {
+            return read(&self.root_tools, "root tools")
+                .clone()
+                .map(|source| source());
         }
-        self.lock()
-            .nodes
-            .get(agent)
-            .map(|n| n.info.tools.clone())
-            .unwrap_or_default()
+        self.lock().nodes.get(agent).map(|n| n.info.tools.clone())
     }
 
     pub fn depth_of(&self, agent: &str) -> usize {

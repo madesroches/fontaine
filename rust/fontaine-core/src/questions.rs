@@ -85,6 +85,13 @@ mod tests {
     fn rig(approver: Arc<dyn Approver>) -> (HumanQuestions, Arc<Ledger>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let ledger = Arc::new(Ledger::create(dir.path()).unwrap());
+        let agents = Arc::new(AgentTree::new(Limits::default()));
+        agents.set_root_tools(|| {
+            fontaine_tools::descriptor::TOOLS
+                .iter()
+                .map(|d| d.name.to_string())
+                .collect()
+        });
         let state = Arc::new(SessionState::new(StateParams {
             session_id: "questions-test".into(),
             mode: PermissionMode::Manual,
@@ -101,7 +108,8 @@ mod tests {
             memory_root: None,
             guardian: no_guardian(),
             auto: AutoContext::default(),
-            agents: Arc::new(AgentTree::new(Limits::default())),
+            agents: agents.clone(),
+            agent_types: Arc::new(fontaine_agents::registry::AgentTypes::builtin()),
             reveal_mcp_names: false,
             auto_edits: crate::gate::AutoEdits::default(),
         }));
@@ -144,6 +152,7 @@ mod tests {
         );
         let request = crate::adjudication::build(
             &questions.state,
+            fontaine_tools::gate::ROOT_AGENT,
             "shell",
             &serde_json::json!({ "command": "ls" }),
             Vec::new(),

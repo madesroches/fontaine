@@ -8,7 +8,8 @@ from being the only thing standing between a model and your machine.
 
 A call reaches the guardian in `auto` mode, and in `plan` mode for the consequential calls that
 mode does not block outright. The [deterministic floor](permissions.md#the-pipeline) (deny and ask
-rules, critical paths, protected-path handling), the read-only fast path and the shell
+rules, critical paths, protected-path handling), the read-only fast path (which includes a spawn of
+an agent type that can only read) and the shell
 pre-classifier all run first, in every mode; the guardian never sees a call they decided. In `auto`
 it also does not see file-tool edits to tracked, new or session-created files in your workspace or
 writes into the session scratch directory (see [the pipeline](permissions.md#the-pipeline)); it
@@ -62,7 +63,7 @@ The request is built from the ledger and the call itself:
 | `project_instructions` | The instruction files the agent had at launch (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and their imports), as they stood when the session started: the primary root's level first, then each directory above it, then yours, cut at 16,000 characters. Files loaded later on demand never reach it. See [Instruction files](instructions.md#what-the-guardian-reads). |
 | `environment`, `rules` | The `[auto_mode]` prose lists, with the shipped defaults spliced in. |
 | `tool_call` | The tool, its full arguments, a digest of them, and `destructive`, derived by Fontaine from the call itself (below). Every `powershell` call is judged, none is read as safe beforehand, and the request says the command was not parsed. |
-| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session` or `unindexed`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets and path-like arguments, and the last 20 actions of the session. When [auto memory](memory.md) is on it also has an `agent_memory_directory` line naming the memory store, set by Fontaine and never from a tool argument. |
+| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session`, `unindexed` or `session_scratch`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets and path-like arguments, and the last 20 actions of the session. When [auto memory](memory.md) is on it also has an `agent_memory_directory` line naming the memory store, set by Fontaine and never from a tool argument. It also has a `session_scratch_directory` line naming the session scratch directory, whose paths carry the `session_scratch` status, and for an `agent` call a `spawned_agent` line with the type, its tools and whether it can write, run commands or reach the network. Fontaine sets all of these from the session, never from a tool argument; the [minimal profile](#the-minimal-profile) and the [screen stage](#the-screen-stage) get none of them. |
 | `hook_context` | Notes from `pre_tool_use` hooks, in an untrusted block. |
 | `prior_denials` | Reason-coded denials earlier in the session, for loop detection. They are context, not evidence about the current call (see [How history and your words are weighed](#how-history-and-your-words-are-weighed)). |
 
@@ -94,8 +95,32 @@ The guardian reads history and your messages by a few fixed rules:
 - A prior denial by itself never makes a read-only call suspicious. A read made to scout around a
   denial — to learn what the denial protected or to find another route to the denied action — is
   not routine and is judged under the deny rule it serves.
+- A standing grant ("you may post gh issues", "git commits in the scratch folder are fine") counts
+  as your consent for every later call of that class until you withdraw it. It names the class,
+  not the arguments or the content, and the content is still judged by every rule. Like a
+  vouching message it clears soft denies only. A request names its action: "log a gh issue about
+  X" asks for that issue.
+- A guardian denial is not you rejecting the action. When it denies a soft-deny match, the
+  explanation says what would clear it: you naming the action and its target, or a standing grant.
 - A note you type about the setup, such as "fyi, the guardian is now haiku", is neutral.
 - Suspicion needs a rule: "earlier denials and this looks related" is not a reason to deny.
+
+### Subagents and the scratch directory
+
+The session scratch directory is created empty when the session starts and deleted when it ends,
+so nothing in it predates the session. It is inside the trust boundary: creating, overwriting or
+deleting files there, or running `git init`, `commit` or `reset` confined to it, destroys nothing
+pre-existing. A path counts as scratch only if it resolves there; a `..` or a link that leads out
+of it does not. Every other rule still applies, such as running code downloaded into it or sending
+its contents out. Only literal paths carry the `session_scratch` status: a path built from a shell
+variable is not marked.
+
+An `agent` call delegates its prompt to a child whose tools the guardian is shown. The guardian
+denies a spawn only when the prompt asks the child for something a deny rule would block. A child
+that cannot write, run commands or reach the network cannot destroy files, rewrite history or
+exfiltrate by spawning, and each call the child makes is judged on its own when it makes it. A
+spawn whose child can only read skips the guardian altogether (see
+[the read-only fast path](permissions.md#the-pipeline)).
 
 ## The verdict
 
@@ -493,6 +518,8 @@ valid for the dataset it was scored on.
   remove, the chance that hostile text in a command, a file or a repository steers the verdict.
   The deterministic floor and the fail-closed rules exist so that the guardian is not the only
   control, and your `deny` rules apply whatever it says.
+- **Standing grants have a window.** The guardian reads your last 5 messages and 2,000
+  characters of intent. A grant you gave earlier than that drops out and has to be repeated.
 - **Judgment.** The scorecard measures a fixed dataset. Novel attacks, and benign commands the
   dataset never saw, will be misjudged at some rate. A guardian allow is a decision to run the
   command with your permissions, not a proof that it is safe.

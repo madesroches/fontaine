@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use fontaine_agents::budget::Spend;
 use fontaine_agents::mode::{Ladder, RootMode};
+use fontaine_agents::registry::AgentTypes;
 use fontaine_agents::tree::AgentTree;
 use fontaine_guardian::{EnvironmentConfig, Guardian, LoopBreaker, RuleConfig, Screen, Settings};
 use fontaine_tools::gate::ROOT_AGENT;
@@ -121,6 +122,8 @@ pub struct StateParams {
     pub auto: AutoContext,
     /// The session's agents, root included.
     pub agents: Arc<AgentTree>,
+    /// The agent types the session can spawn, which tell the guardian what a spawn can do.
+    pub agent_types: Arc<AgentTypes>,
     /// Telemetry may carry MCP server and tool names (`log_tool_details`).
     pub reveal_mcp_names: bool,
     pub auto_edits: AutoEdits,
@@ -290,6 +293,7 @@ pub struct SessionState {
     mode: Arc<RwLock<PermissionMode>>,
     guardian_off: RwLock<bool>,
     agents: Arc<AgentTree>,
+    agent_types: Arc<AgentTypes>,
     reveal_mcp_names: bool,
     pub auto_edits: AutoEdits,
     decisions_by_agent: Mutex<HashMap<String, std::collections::VecDeque<DecisionRecord>>>,
@@ -338,6 +342,7 @@ impl SessionState {
             mode,
             guardian_off: RwLock::new(false),
             agents: params.agents,
+            agent_types: params.agent_types,
             reveal_mcp_names: params.reveal_mcp_names,
             auto_edits: params.auto_edits,
             decisions_by_agent: Mutex::default(),
@@ -387,6 +392,11 @@ impl SessionState {
     /// The session's agents.
     pub fn agents(&self) -> &Arc<AgentTree> {
         &self.agents
+    }
+
+    /// The agent types the `agent` tool can start.
+    pub fn agent_types(&self) -> &AgentTypes {
+        &self.agent_types
     }
 
     /// Switches the mode for the next call. The change is recorded in the ledger and reported
@@ -890,6 +900,13 @@ mod tests {
     #[should_panic(expected = "the loop breaker lock is not poisoned")]
     fn a_poisoned_breaker_panics_instead_of_deciding() {
         let dir = tempfile::tempdir().unwrap();
+        let agents = Arc::new(AgentTree::new(Limits::default()));
+        agents.set_root_tools(|| {
+            fontaine_tools::descriptor::TOOLS
+                .iter()
+                .map(|d| d.name.to_string())
+                .collect()
+        });
         let state = Arc::new(SessionState::new(StateParams {
             session_id: "poison-test".into(),
             mode: PermissionMode::Auto,
@@ -906,7 +923,8 @@ mod tests {
             memory_root: None,
             guardian: no_guardian(),
             auto: AutoContext::default(),
-            agents: Arc::new(AgentTree::new(Limits::default())),
+            agents: agents.clone(),
+            agent_types: Arc::new(AgentTypes::builtin()),
             reveal_mcp_names: false,
             auto_edits: AutoEdits::default(),
         }));

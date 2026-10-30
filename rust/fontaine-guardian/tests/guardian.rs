@@ -497,6 +497,7 @@ async fn a_cache_entry_is_not_reused_after_the_session_changes() {
     with_status.session_facts.touched_paths.push(TouchedPath {
         path: "/work/proj/x.sh".into(),
         status: PreExistence::CreatedThisSession,
+        in_scratch: false,
     });
     assert!(!guardian.adjudicate(&with_status).await.cache_hit);
 
