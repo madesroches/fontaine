@@ -76,8 +76,9 @@ spin-on-error stops even for zero waits) and returns one of:
   - never touches `cursor`, `reported`, or `held`, and never builds a `Chunk` — output state is
     the notification path's alone. `job_cancel`'s cursor accounting is unaffected.
 - `Shared::monitor_tick` calls `Shared::wake()` after posting a note, so a wait parked on the
-  watch wakes at the post rather than at the job thread's next periodic flush (the `dirty`/`WAKE`
-  path can be up to a second stale when a batch posts on the interval timer alone).
+  watch wakes at the post. Without it there is no wake at all: `dirty` is set only on appends
+  and cleared by the loop's only `wake()`, so a batch that posts after the appends stop wakes
+  nothing, and a parked wait sleeps until the next append, the monitor's end, or its deadline.
 - Return type: `Jobs::output` currently yields `Read`. Introduce a small sum so the tool layer can
   render the two shapes without flag fields on `Read`, e.g.
   `pub enum JobOutput { Read(Read), MonitorWait { id: String, age: Duration, end: Option<EndInfo>, note_posted: bool, already_reported: bool } }`,
@@ -126,7 +127,13 @@ spin-on-error stops even for zero waits) and returns one of:
 3. **`tools.rs` — render and describe.** Match `JobOutput` in `JobOutputTool::call`; render the
    three monitor statuses; update `JobOutputTool::description`.
 4. **Unit tests (`jobs/tests.rs`).** Replace `a_monitor_is_refused_by_job_output_but_listed` and
-   add the monitor-wait cases (below).
+   add the monitor-wait cases (below). The other existing `jobs.output(` call sites also need a
+   mechanical adaption to the `JobOutput` sum (unwrap or match the `Read` arm):
+   `the_buffer_drops_old_lines_and_counts_them_and_a_read_returns_only_new_ones`,
+   `waiting_returns_early_on_new_output`,
+   `the_end_news_goes_out_exactly_once_whichever_side_gets_it`,
+   `an_abandoned_wait_hands_the_held_note_on`, and
+   `the_user_killing_a_job_tells_the_model_and_leaves_the_tail_readable`.
 5. **Integration tests (`rust/fontaine-tools/tests/jobs.rs`).** Update
    `a_monitor_delivers_its_lines_as_notifications` (the refusal assertion becomes a wait
    assertion) and add a tool-level wait case.
@@ -213,7 +220,9 @@ notifications"; a tool-level case asserts the rendered text of each status shape
 `job_output` on an unknown id still errors with `there is no job`.
 
 Existing tests that must change: `a_monitor_is_refused_by_job_output_but_listed` (replaced by the
-wait tests above) and the refusal assertion in `a_monitor_delivers_its_lines_as_notifications`.
+wait tests above), the refusal assertion in
+`a_monitor_delivers_its_lines_as_notifications`, and — mechanically, for the new `JobOutput`
+return type — the plain-job `jobs.output(` consumers in the unit tests listed in step 4.
 
 ## Open Questions
 
