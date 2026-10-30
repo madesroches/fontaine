@@ -106,7 +106,9 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
   records stay on the root feed as today. A child's decisions and denial notices now show only in
   that agent's view, not the main chat.
 - Delete `log_agent_line`, `agent_log`, `agent_logs`, `AGENT_LOG_LINES`, `decisions_by_agent` and
-  `decisions_of`, `DECISIONS_PER_AGENT`. The transcript shows decisions as verdict lines, so nothing reads them any more.
+  `decisions_of`, `DECISIONS_PER_AGENT`. The view shows what the main chat shows: denials only
+  (`Transcript::on_event` renders only `Deny`). A subagent's allowed tier and rule live in the audit
+  log, as for the main conversation, so nothing reads those accessors any more.
   Port the `agent_pipeline.rs:207` assertion to the sink: each child's `Decision` events arrive
   under its own id, and none reaches the root feed.
 
@@ -238,7 +240,7 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
     `Steering` is created before `setup::subagent_support(...)` (`agent.rs:262` today, after it)
     and passed in.
   - `steer` drains the child's queue for that agent with the same wording and
-    `Record::UserMessage` as the root's. Only the root path keeps the `Queued` variants and
+    `Record::UserMessage` as the root's, but with `agent: Some(id)`. Only the root path keeps the `Queued` variants and
     `hold`.
   - `CoreWake::pending` (`child_runner.rs:80`) checks steering only for `ROOT_AGENT`, so a child
     parked in a long wait (`job_output`, agent wait) would not wake. `Steering` gains a per-agent
@@ -246,7 +248,10 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
   - The view shows a queued message dimmed under the transcript until delivery. The driver then
     moves it into the agent's transcript as a `User` entry (`take_delivered_for(id)`, drained
     before that agent's next sink event).
-- **Ended `done` or `failed`** → `CoreChildRunner::resume(id, text)` → `Delivered::Resumed`.
+- **Ended `done` or `failed`** → `AgentTree::handle_of(id)` gives the `ChildHandle`, then
+  `tree.resume(id)`, `handle.resume(text)` and `watch_report` (as the post-conclude path does)
+  → `Delivered::Resumed`. `AgentTree::handle_of(id) -> Option<Arc<dyn ChildHandle>>` reads the
+  node's handle, which is private today; `CoreChildRunner` keeps no id→`ChildRun` map.
   Refused with the budget-spent notice whenever `exhausted_of(id).is_some()`, whatever the status.
 - **Ended `killed` or `budget-exhausted`** → `MessageRefusal::Ended(status)`. The notice reads
   `agent-3 was killed; it cannot be resumed`, or `…its budget is spent…`.
@@ -277,7 +282,8 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
   idle root then gets a turn of its own, as for any background report.
 - The ledger gets `AgentEvent::Resumed { agent }` → `Record::Agent { event: "resumed" }`, with an
   arm in `LedgerWindow`'s mapping (`child_runner.rs:95-110`). Then the
-  human's text is appended as `Record::UserMessage` and becomes the prompt of the new run.
+  human's text is appended as `Record::UserMessage { agent: Some(id) }` and becomes the prompt of
+  the new run.
 - The main transcript gets the notice `you resumed agent-3`. The resumed child keeps its
   `own_mode` and its tool set. Every call still goes through the floor and the gate, and
   `posture` is computed per call against its parent. The resumed run inherits nothing from
@@ -303,15 +309,34 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
   message back (`take_pending_for`) and goes down the resume branch. That is a no-op when the
   end-of-run drain already took the message and resumed.
 
+**Human messages are scoped by agent** (`fontaine-core`):
+
+- `Record::UserMessage` gains `#[serde(default, skip_serializing_if = "Option::is_none")] agent:
+  Option<String>`; `None` is the main conversation, so existing sessions load unchanged. Steering's
+  child delivery and the resume path append it with `agent: Some(id)`; every other writer uses
+  `agent: None`.
+- The ledger view keeps each user message with its target. `adjudication::build`
+  (`adjudication.rs`) for a caller uses the main-conversation messages plus the messages typed to
+  the caller or one of its ancestors (via the agent tree's `parent_of`). For the root caller, only
+  main messages.
+- Session naming and the first prompt (`derive_name` over the view's first message in `session.rs`,
+  and the scan in `session.rs`) use only main-conversation messages.
+- `/rewind`: `user_messages_before` and `dropped_user_messages` count only main-conversation
+  messages. `Record::Rewound` drops the most recent N main messages and also every agent-typed
+  message recorded after the first dropped one. That is stricter, never looser, and a rewind is
+  refused while a subagent runs anyway.
+
 ### Security
 
 - A message typed into an agent view is the human's own words. It enters the ledger as
-  `UserMessage` only when the model reads it, the same as steering.
+  `UserMessage { agent: Some(id) }` only when the model reads it, the same as steering. It is
+  guardian intent only for that agent and its descendants, never for the main conversation or a
+  sibling, so the guardian never judges a call by words its model has not read.
 - Resume never widens anything. The tool set, `own_mode`, budget caps (cumulative across runs),
   `max_parallel` and the session budget all hold. A killed or budget-exhausted agent, or one whose budget is spent whatever its status, cannot be
   resumed. Headless runs have no view, and `send_message` keeps its "target not running" refusal.
-- `/rewind` drops later `UserMessage` records from the guardian's intent, those typed to agents
-  included. That direction is stricter, never looser.
+- `/rewind` drops later `UserMessage` records from the guardian's intent, agent-typed ones after
+  the first dropped main message included. That direction is stricter, never looser.
 
 ## Mockups
 
@@ -335,7 +360,12 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
      after `conclude` on the foreground and background paths.
    - `fontaine-core`: `ChildContext` gains a `steering` field set in `agent/setup.rs`, with `Steering` created before `subagent_support`; `ChildRun` keeps its agent and run generation, `CoreChildRunner` resume, and
      `ChildRun`'s `take_missed` / `report_undelivered`.
-   - Add `AgentRuntime::message_agent` with `Delivered` / `MessageRefusal`.
+   - `fontaine-agents`: `AgentTree::handle_of`.
+   - Add `AgentRuntime::message_agent` with `Delivered` / `MessageRefusal`; its resume branch gets
+     the handle through `handle_of`.
+   - Scope human messages: `Record::UserMessage.agent`, the ledger view's targeted messages,
+     `adjudication::build`, session naming and the rewind counts; fix every `UserMessage` match
+     and construction.
 4. **TUI transcripts.**
    - Add `AgentView`, `agent_views`, `viewing`, `shown()`/`shown_mut()` and `apply_event`.
    - Install the sink in `drive` right after `AgentRuntime::new`.
@@ -359,11 +389,17 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
 - `rust/fontaine-core/src/gate.rs` — event sink; remove agent logs and per-agent decisions
 - `rust/fontaine-core/src/child_runner.rs` — sink, steering hook on children, `ChildContext.steering`, `CoreWake`, `LedgerWindow` arm for `Resumed`, resume, `take_missed` / `report_undelivered`
 - `rust/fontaine-core/src/agent/setup.rs` — set `ChildContext.steering`
-- `rust/fontaine-core/src/steering.rs` — per-agent queues
+- `rust/fontaine-core/src/steering.rs` — per-agent queues; child delivery appends `agent: Some(id)`
+- `rust/fontaine-core/src/ledger.rs` — `Record::UserMessage.agent`, targeted messages in the view, rewind trim
+- `rust/fontaine-core/src/session.rs` — session naming and first-prompt scan use main messages; rewind count
+- `rust/fontaine-core/src/adjudication.rs` — intent for a caller by agent and ancestors
+- `rust/fontaine-core/src/questions.rs`, `rust/fontaine-core/src/agent/rewind.rs` — `UserMessage` pattern / count
+- `rust/fontaine/src/headless.rs`, `rust/fontaine-evals/src/none.rs` — `UserMessage` construction
+- `rust/fontaine-tui/src/ui/mod.rs`, `ui/turn.rs`, `ui/schedule.rs`, `rust/fontaine-tui/tests/sessions.rs`, and the `fontaine-core` tests that build or match `UserMessage` — compile with `agent: None` / `..`
 - `rust/fontaine-core/src/agent.rs` (or `agent/` module owning `AgentRuntime`) — `message_agent`
 - `rust/fontaine-core/tests/agent_pipeline.rs` — sink assertion, resume and steering tests
 - `rust/fontaine-agents/src/runner.rs` — `ChildHandle::resume`, `take_missed`, `report_undelivered`
-- `rust/fontaine-agents/src/tree.rs` — `resume`, `ended`
+- `rust/fontaine-agents/src/tree.rs` — `resume`, `ended`, `handle_of`
 - `rust/fontaine-agents/src/spawn.rs` — `watch_report`, missed-message resume after `conclude`
 - `rust/fontaine-agents/tests/seam.rs` — fake handle keeps compiling via the default methods
 - `rust/fontaine-agents/src/root_ledger.rs` — `AgentEvent::Resumed`
@@ -405,6 +441,30 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
 - 2026-10-30: The mockup in `tasks/subagent_view_mockups/states.html` was approved by the maintainer.
 - 2026-10-30: Ended agents leave the list as in Claude Code (done at once, others after 30 s) and
   stay reachable from the agents panel.
+- 2026-10-30: `message_agent`'s resume branch gets the handle through a new
+  `AgentTree::handle_of(id)`, with no id→`ChildRun` map in `CoreChildRunner`; reason: the tree
+  already owns the handle.
+- 2026-10-30: An agent view shows denials only, as the main chat does, and a subagent's allowed
+  tier and rule live in the audit log (`decisions_by_agent` / `decisions_of` are deleted, and
+  docs/tui.md's "gate decisions, with the tier and rule of each" is replaced by a pointer to the
+  audit log); reason: matches the main conversation and Claude Code.
+- 2026-10-30: Human messages are scoped by agent: `Record::UserMessage` gains an optional `agent`,
+  and a message typed to a subagent is guardian intent only for that agent and its descendants,
+  never for main or siblings, and is ignored by session naming and the rewind count; reason: the
+  guardian never judges a call by words its model has not read.
+- 2026-10-30: AFK: the agent sink carries `(String, AgentViewEvent)` with `AgentViewEvent {
+  Prompt(String), Event(SessionEvent) }`, and no new `SessionEvent` variant is added; reason: the
+  task prompt and the events need no change to the root paths.
+- 2026-10-30: AFK: human messages left in an agent's queue after a run are drained through
+  `ChildHandle::take_missed` after `conclude` on the foreground and background paths, and a refused
+  automatic resume warns with the undelivered text; reason: a late `finish` then cannot end the new
+  run, and the human is told what was not delivered.
+- 2026-10-30: AFK: `message_agent` re-checks `is_running` after `queue_for` and takes its message
+  back to resume if the run ended, and `AgentTree::resume` refuses an already-running node
+  atomically; reason: the tree and steering locks are separate, so a run can end between them.
+- 2026-10-30: AFK: child decisions and previews are routed to the agent sink at
+  `SessionState::publish` / `publish_preview` and kept off the root feed when a sink is installed
+  (headless unchanged); reason: the sink sees them where they are produced.
 
 ## Documentation
 
@@ -412,13 +472,14 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
   - rewrite "The agents panel" around the agent list and the agent view: selecting, viewing,
     messaging, resuming, switching back, what a reprint drops, and refused commands;
   - update the Keys table rows for Down (`tui.md:94`), Enter, x, Esc and Ctrl-T, the
-    Esc/Ctrl-C-while-a-turn-runs row (~`:96`) and the double-Esc rewind row (~`:98`), and the
+    Esc/Ctrl-C-while-a-turn-runs row (~`:98`) and the double-Esc rewind row (~`:100`), and the
     `/agents` row in the Commands table (`tui.md:322`);
   - update "## The task panel" (~`:574`): the agent list takes rows from the task list's cap;
   - the intro (`tui.md:9-18`): a reprint erases scrollback;
   - the status bar section (`tui.md:84-87`): the agent list and the viewed agent's state;
-  - state that a child's decisions and denial notices show only in that agent's view, not the main
-    chat.
+  - state that a child's denial notices show only in that agent's view, not the main chat, and
+    replace the "gate decisions, with the tier and rule of each" promise with a pointer to the audit
+    log, where a subagent's allowed tier and rule live as for the main conversation.
 - `docs/terminal.md`: in "## Screen-reader mode", describe the `viewing …` / `back to …` lines;
   and update `terminal.md:187` (no agent list in screen-reader mode).
 - `docs/agents.md`: rewrite "Watching and stopping subagents" (~`:192-195`) around the agent list
@@ -426,7 +487,8 @@ unscrollable detail view (#299). It also fixes the blank main chat after leaving
   carry over, report goes to the parent or main), and the "resumed" ledger event; and the
   "Watching and stopping" lines at `agents.md:47-49` (the agent list also lists and kills).
 - `docs/architecture.md:233-237` "Subagents in the ledger": the `resumed` event and the
-  agent-directed `UserMessage`.
+  agent-directed `UserMessage`, which is intent only for that agent and its descendants.
+  `docs/agents.md` states the same scoping rule.
 - `docs/guardian.md:139-141`: a subagent's denial shows in its view.
 - `tasks/fontaine_harness_plan.md` `## Decisions`: the dated deviation lines above.
 - `CHANGELOG.md`: entry under the unreleased section.
@@ -492,6 +554,15 @@ Unit / integration (core, `rig_core::test_utils` deterministic models, no live A
 - Two racing resumes of one ended child (`message_agent` and the post-conclude resume): exactly one
   starts a run, the other gets `Refusal::AlreadyRunning` and queues its text, which the running
   child reads.
+- Message scoping:
+  - a message typed to agent-3 is intent for agent-3 and its descendants, but not for main or for
+    siblings (`adjudication::build`); main-conversation messages are intent for everyone;
+  - an old session file whose `UserMessage` lacks `agent` loads as main;
+  - session naming and the first-prompt scan ignore agent-typed messages;
+  - rewind counts only main messages, and drops agent-typed messages recorded after the first
+    dropped main one.
+- `message_agent`'s resume branch gets the handle through `AgentTree::handle_of` (`None` for an
+  unknown id).
 - Mode invariant: a resumed child's posture is never looser than its parent's. Reuse the
   existing posture test with a resumed child.
 
