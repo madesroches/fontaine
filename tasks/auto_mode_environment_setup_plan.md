@@ -136,8 +136,12 @@ pub struct RemoteFacts {
 }
 ```
 
-The `SessionFacts` side of this record lives in `fontaine-guardian/src/request.rs`, so the
-guardian stays dependency-light. Core owns discovery and storage.
+The guardian's `ProjectEnvironmentFacts` lives in `fontaine-guardian/src/request.rs`, so the
+guardian stays dependency-light. Core owns discovery and storage; the ledger stores core's
+`ProjectEnvironment` (Serialize + Deserialize), and `adjudication.rs` maps it into
+`ProjectEnvironmentFacts` when building `SessionFacts`, as it copies `git_remotes`
+(`adjudication.rs:144-160`). Guardian request types are Serialize-only, so they can't sit in
+`Record`.
 
 **Discovery steps.** Each step runs under a timeout and, on any failure, leaves its field at
 `Unknown` or empty.
@@ -212,10 +216,11 @@ same timeout and `additional_params`.
   saves the first layer's facts and says the scan was skipped.
 - **Review.** Validated findings are shown grouped with their evidence. Entries that relax
   (`trusted_destinations`) are listed first, under their own heading:
-  - The CLI asks `Save these N proposals? [y/N]`. `--no-model` skips the scan.
+  - The CLI asks `Save these N proposals? [y/N]`. `--no-model` skips the scan, and so does a
+    run whose stdin is not a terminal (`stdin().is_terminal()`, as `fontaine/src/lib.rs:280`
+    checks), before the prompt is built.
   - Model output is never saved without review, as in Claude Code ("one-shot apply isn't
-    available"). When stdin is not a terminal, the command saves the first layer's facts only
-    and says the proposals need an interactive run.
+    available"). The report of a non-terminal run says the proposals need an interactive run.
   - The TUI asks with a dedicated review prompt.
 - **Failure.** A missing guardian model, a timeout, a model error or an unparseable reply never
   fails setup. The deterministic facts are saved, `scan` stays `None`, and the report names
@@ -263,7 +268,8 @@ When the user confirms a `/auto-mode-setup` review, the result applies at once:
    call. A resume reloads the record into its new `SessionStart`, so it picks up the current file.
 4. The new facts change the rendered request, so verdicts cached before the change are not
    reused. There is no explicit cache flush.
-5. The setup warning is marked shown for the session and is not raised again.
+5. The setup-warning-shown flag (an `AtomicBool` on `SessionState`) is set by the apply method,
+   so the warning is not raised again.
 
 The value is filtered against the remotes recorded at session start, the same filter session
 start applies. A `fontaine auto-mode setup` run from another terminal updates only the file, and
@@ -286,8 +292,10 @@ It fires when all of these hold:
 
 1. The session's mode is `auto`. This covers a headless `-p` run and a TUI start in `auto`. In
    the TUI it also fires the first time a session switches into `auto`, once per session, where
-   the TUI applies a mode change through `SessionState::set_mode` (`gate.rs:404`, called from
-   `ui/mod.rs:165`).
+   the TUI applies a mode change, from `Ui::announce_auto` (`ui/mod.rs`, also called at startup
+   in `auto`). A once-per-session "setup warning shown" flag, an `AtomicBool` on `SessionState`,
+   is set by `record_session_start` and by the mid-session apply method, so start-in-auto then
+   manual then auto does not warn twice.
 2. The guardian is on (no `/guardian-disable`). `guardian_off` always starts `false` and is not
    replayed, so this applies only to the mode-switch path.
 3. This is the root session. `record_session_start` is root-only by construction (subagents run
@@ -307,7 +315,7 @@ project_environment (collected by `fontaine auto-mode setup` on 2026-10-30):
 - remote https://github.com/acme/proj.git: visibility public (GitHub API); default branch main, protected (rules: pull_request, non_fast_forward); deploy environments: github-pages
 - remote https://github.com/acme/old.git: visibility unknown (last seen public on 2026-08-01); default branch main
 - read from repository files: tag-push release workflows: .github/workflows/release.yml; workflow environments: pages; package registries: (none); env files: .env (gitignored); stack: rust
-- proposed by a repository scan and accepted by the user: sensitive locations: rust/fontaine-core/src/credentials.rs; deploy targets: (none); protected targets: (none); trusted destinations (accepted by the user): docs.acme.dev
+- proposed by a repository scan and accepted by the user: sensitive locations: config/secrets.yml; deploy targets: (none); protected targets: (none); trusted destinations (accepted by the user): docs.acme.dev
 ```
 
 With no record the block says nothing, which keeps today's output byte-identical (existing
@@ -340,7 +348,7 @@ fixed meanings, matching Claude Code's `repoVisibility` semantics:
 - **CLI:** `fontaine auto-mode setup [--no-model] [--format text|json]` is added to
   `AutoModeAction` (`fontaine/src/cli.rs`) and `auto_mode.rs`. It resolves the primary root the
   way a session would and runs `discover`. Unless `--no-model` is set, it then runs the scan and
-  the review. It writes the record and prints the report: each fact, its source, each step that
+  the review (a non-terminal run behaves like `--no-model`). It writes the record and prints the report: each fact, its source, each step that
   fell back to unknown and why, and any dropped scan entries. Exit 0 even when steps degrade. Exit 1
   only when the record cannot be written. It never starts a session.
 - **TUI:** `/auto-mode-setup` in `fontaine-tui/src/commands.rs` runs the same `discover` and
@@ -378,45 +386,46 @@ fixed meanings, matching Claude Code's `repoVisibility` semantics:
 
 ## Implementation Steps
 
-1. **Guardian types and rendering.** Add `ProjectEnvironmentFacts` (with `Visibility`,
-   `Protection`) to `fontaine-guardian/src/request.rs` and `SessionFacts.project_environment:
+1. **Guardian types and rendering.** Add `ProjectEnvironmentFacts` (`discovered_at`, `remotes`,
+   the repo-file facts, and the scan findings without evidence; with `Visibility`, `Protection`) to `fontaine-guardian/src/request.rs` and `SessionFacts.project_environment:
    Option<…>`. Render it in `prompt_builder.rs` (guardian view only), and add the fixed-meaning
    paragraph to the full and minimal prompt assets. The minimal profile
    (`profile.rs:56-73`, which rebuilds `SessionFacts` field by field) copies
    `project_environment` through. Update the test literal at `prompt_builder.rs:319`;
-   `adjudication.rs:144` is covered by step 5.
+   `adjudication.rs:144` is covered by step 4.
 2. **Discovery and storage.** Add `fontaine-core/src/project_env.rs` with `discover`, `load`,
    `store`, `filter_to_remotes`, `setup_notice`, and the `gh` runner (argv, timeout, capped
    output, error → `Unknown`/`Unverified` mapping). Add `yaml-rust2 = "=0.13.0"` to the
    workspace and `fontaine-core`, and run `cargo deny check`.
-3. **Model scan.** Add `fontaine-guardian/src/env_scan.rs` (prompt, reply schema, parse). Add
-   the sample gathering and validation in `project_env.rs`.
-4. **Config.** `[auto_mode] setup_reminder: bool` (default true): add it to `AutoModeSection`
+   **Config.** `[auto_mode] setup_reminder: bool` (default true): add it to `AutoModeSection`
    (`config.rs:638`) and the resolved `AutoMode` (`config.rs:1458`) with an override merge (not
    `union`). `AutoMode` is `#[derive(Default)]` (`config.rs:1457`), which would default the bool to
    `false`, so it gets a hand-written `Default` with `setup_reminder: true`, following
    `auto_tracked_edits` (set true at `config.rs:1772`); give it a `config_scope.rs` row (`user_trust`) plus its `SNIPPETS` entry and a
    `config_catalog.rs` row, and document it in
    `tasks/design/config.md`.
-5. **Session wiring.** Load and filter in `agent.rs:730`. Add `project_environment` to
-   `Record::SessionStart` and the ledger view, copy it in `adjudication.rs`, add the field to the `Record::SessionStart` literals at
+3. **Model scan.** Add `fontaine-guardian/src/env_scan.rs` (prompt, reply schema, parse). Add
+   the sample gathering and validation in `project_env.rs`.
+4. **Session wiring.** Load and filter in `agent.rs:730`. Add `project_environment` to
+   `Record::SessionStart` and the ledger view, map it into `ProjectEnvironmentFacts` in `adjudication.rs`, add the field to the `Record::SessionStart` literals at
    `fontaine-evals/src/none.rs:98`, `fontaine-tui/tests/sessions.rs:31`,
    `fontaine-core/tests/sessions.rs:24` and `fontaine-core/tests/ledger.rs:673`, and raise
    `setup_notice` from `record_session_start`, next to the load and filter, through
-   `Approver::warn`. Add
+   `Approver::warn`. Set the shown flag there. Add
    `Record::ProjectEnvironment` and have the ledger view keep the latest value.
-6. **TUI.** Show the notice on the first switch into `auto` in `fontaine-tui/src/app.rs`. Add
+5. **TUI.** Raise the notice on the first switch into `auto` from `Ui::announce_auto` in
+   `fontaine-tui/src/ui/mod.rs`, honouring the shown flag. Add
    the `/auto-mode-setup` command (`commands.rs` and a handler under `ui/commands/`) and a review
    prompt modelled on `GuardianOffPrompt` (`fontaine-tui/src/guardian_prompt.rs`): the type, an
    `App` field and an `Action` variant. On confirm the handler calls a core method modelled on
    `set_guardian_off` (`gate.rs:429-434`) that filters against the view's start-time
    `git_remotes` and appends `Record::ProjectEnvironment` via `SessionState::append`
    (`gate.rs:727`).
-7. **CLI.** Add `fontaine auto-mode setup` (`cli.rs`, `auto_mode.rs`) and the
+6. **CLI.** Add `fontaine auto-mode setup` (`cli.rs`, `auto_mode.rs`) and the
    `project_environment` section of `auto-mode config` (text and JSON).
-8. **Evals.** Add the `session_facts.project_environment` parsing and the cases above to
+7. **Evals.** Add the `session_facts.project_environment` parsing and the cases above to
    `evals/dataset`.
-9. **Plan and docs.** Add the Decisions lines (below) to `tasks/fontaine_harness_plan.md` under
+8. **Plan and docs.** Add the Decisions lines (below) to `tasks/fontaine_harness_plan.md` under
    `### Guardian`, then do the Documentation step.
 
 ## Files to Modify
@@ -427,7 +436,7 @@ fixed meanings, matching Claude Code's `repoVisibility` semantics:
   `adjudication.rs`, `config.rs`, `config_scope.rs`, `config_catalog.rs`, `Cargo.toml`
 - `rust/Cargo.toml` (`yaml-rust2 = "=0.13.0"` pin)
 - `rust/fontaine/src/cli.rs`, `auto_mode.rs`, `lib.rs`
-- `rust/fontaine-tui/src/commands.rs`, `app.rs`, `ui/commands/` (new handler)
+- `rust/fontaine-tui/src/commands.rs`, `app.rs`, `ui/mod.rs`, `ui/commands/` (new handler)
 - `rust/fontaine-evals/src/live.rs`, `none.rs`, `evals/dataset/` (new cases)
 - `rust/fontaine-tui/tests/sessions.rs`, `rust/fontaine-core/tests/sessions.rs`,
   `rust/fontaine-core/tests/ledger.rs` (`SessionStart` literals)
@@ -436,18 +445,8 @@ fixed meanings, matching Claude Code's `repoVisibility` semantics:
 
 ## Trade-offs
 
-- **Typed facts plus a reviewed model scan instead of Claude Code's LLM-drafted prose.**
-  Claude Code runs an LLM over a recon block, has it write every slot as prose, and saves that
-  to user settings.
-  - A model adds nothing to the API facts (visibility, branches, environments): it can only
-    copy them or garble them. So those are read directly and are unit-testable.
-  - A model does earn its place on the long tail no parser covers: non-GitHub CI, Makefile
-    deploys, infra directories and, above all, sensitive source locations. That is the scan.
-
-  Rule tweaks and history mining (shell history, transcripts, sibling repos) are out of scope.
+- Rule tweaks and history mining (shell history, transcripts, sibling repos) are out of scope.
   `auto-mode critique` and hand-edited `[auto_mode]` lists already cover rule tweaks.
-- **Guardian model for the scan.** This is the only cheap-model knob today, and critique
-  already borrows it.
 - **Data dir, not `settings.local.toml` or the user config file.** The user config file is
   global, and these facts are per project. `.fontaine/settings.local.toml` would leave a file in
   the work tree that the agent can edit, and an edited file there would read as user-trust config.
@@ -531,8 +530,8 @@ Unit tests (`project_env.rs`, `prompt_builder.rs`, `config_scope.rs`):
     wildcards past one org prefix, is dropped;
   - an unparseable reply, a timeout or a missing model → `scan: None`, deterministic facts
     saved, and the cause in the report.
-- **Review gate.** Without a terminal, nothing from the scan is saved. An untrusted workspace
-  never builds the prompt, and neither does `--no-model`.
+- **Review gate.** Without a terminal, nothing from the scan is saved and the prompt is never
+  built. An untrusted workspace never builds the prompt, and neither does `--no-model`.
 - **Store and load round trip.** Owner-only mode on Unix, an unknown newer version is ignored
   with a warning, and a corrupt file → `None` plus a warning (not a crash).
 - **`filter_to_remotes`** drops entries for remotes that have gone.
@@ -572,13 +571,14 @@ These need a real `gh` login against GitHub, which is outside CI by policy:
    - `visibility public`, `default branch main, protected`, and
      `tag-push release workflows: .github/workflows/release.yml` (read from the git root, though the
      primary root is `rust/`);
-   - a review listing scan proposals that include the credential-handling sources
-     (`rust/fontaine-core/src/credentials.rs`), with the token usage shown.
+   - a review listing scan proposals, with the token usage shown. Source files that only handle
+     credentials (`rust/fontaine-core/src/credentials.rs`) are not listed as sensitive locations;
+     only files that hold secrets are.
 
    This step also judges the scan's quality on a real repo, which no fixture can.
 2. Run `cargo run -p fontaine -- auto-mode config`. Expected: a `project_environment` section
    with the same facts.
 3. Move the record aside and run `cargo run -p fontaine` in `auto`. Expected: the warning in the
    transcript. Run `/auto-mode-setup` and confirm. Expected: the report ends with
-   `applied to this session`, and the next guardian verdict's request (in the observability
-   log) carries `project_environment`.
+   `applied to this session`, the session ledger gained a `Record::ProjectEnvironment` line, and
+   `auto-mode config` shows the facts.
