@@ -38,7 +38,13 @@ const STRUCTURE: [char; 10] = [';', '|', '&', '(', ')', '{', '}', '@', '\n', '\r
 
 #[derive(Debug, PartialEq, Eq)]
 enum Token {
-    Word { text: String, quoted: bool },
+    /// `plain_head` is the byte length of `text` before its first quote, so `-Path:'x'` can be
+    /// told from a quoted operand that merely looks like an option.
+    Word {
+        text: String,
+        quoted: bool,
+        plain_head: usize,
+    },
     Sep(char),
 }
 
@@ -61,12 +67,15 @@ fn scan(command: &str, base: &Path, env: &CriticalEnv<'_>) -> Option<String> {
     if calls_dotnet_delete(command) {
         return Some("a .NET delete cannot be resolved".to_string());
     }
+    if calls_string_eval(command) {
+        return Some("a string is run as code this check cannot read".to_string());
+    }
     let tokens = tokenize(command);
     for (at, token) in tokens.iter().enumerate() {
         if is_call_operator(&tokens, at) {
             return Some("the command name cannot be resolved".to_string());
         }
-        let Token::Word { text, quoted } = token else {
+        let Token::Word { text, quoted, .. } = token else {
             continue;
         };
         let name = command_name(text);
@@ -114,7 +123,7 @@ fn scan(command: &str, base: &Path, env: &CriticalEnv<'_>) -> Option<String> {
 fn is_call_operator(tokens: &[Token], at: usize) -> bool {
     let operator = match &tokens[at] {
         Token::Sep('&') => true,
-        Token::Word { text, quoted } => text == "." && !quoted,
+        Token::Word { text, quoted, .. } => text == "." && !quoted,
         Token::Sep(_) => false,
     };
     if !operator {
@@ -152,20 +161,43 @@ fn mentions_deleter(text: &str) -> bool {
     })
 }
 
+/// The raw text lowercased with quotes and backticks removed, so `::'Delete'(` and `` Del`ete ``
+/// read as the member they name.
+fn member_text(command: &str) -> String {
+    command
+        .chars()
+        .filter(|c| *c != '`' && !is_single_quote(*c) && !is_double_quote(*c))
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
 /// A `::Delete` or `.Delete…(` call, which `[IO.File]::Delete(...)`, `[IO.Directory]:: Delete(...)`,
-/// `$directory.Delete()` and `$fso.DeleteFolder(...)` all are. Scanned in the raw text, whatever
-/// the quoting.
+/// `$directory.Delete()`, `$directory.Delete.Invoke()` and `$fso.DeleteFolder(...)` all are.
+/// Scanned in the raw text, whatever the quoting.
 fn calls_dotnet_delete(command: &str) -> bool {
-    let lower = command.to_ascii_lowercase();
+    let lower = member_text(command);
     lower
         .match_indices("::")
         .any(|(at, found)| lower[at + found.len()..].trim_start().starts_with("delete"))
         || lower.match_indices(".delete").any(|(at, found)| {
-            lower[at + found.len()..]
+            let rest = lower[at + found.len()..]
                 .trim_start_matches(|c: char| c.is_alphanumeric() || c == '_')
-                .trim_start()
-                .starts_with('(')
+                .trim_start();
+            rest.starts_with('(') || rest.starts_with(".invoke")
         })
+}
+
+/// Calls that run a string as code, which hide what they run from this scan whatever the string.
+fn calls_string_eval(command: &str) -> bool {
+    let lower = member_text(command);
+    lower.match_indices("::").any(|(at, found)| {
+        lower[..at].trim_end().ends_with("scriptblock]")
+            && lower[at + found.len()..].trim_start().starts_with("create")
+    }) || [".invokescript", ".newscriptblock"].iter().any(|member| {
+        lower
+            .match_indices(member)
+            .any(|(at, found)| lower[at + found.len()..].trim_start().starts_with('('))
+    })
 }
 
 /// `-ComObject` or an abbreviation of it: `Scripting.FileSystemObject` deletes through methods
@@ -203,13 +235,22 @@ struct Pending {
     text: String,
     started: bool,
     quoted: bool,
+    plain_head: Option<usize>,
 }
 
 impl Pending {
+    fn open_quote(&mut self) {
+        self.started = true;
+        self.quoted = true;
+        self.plain_head.get_or_insert(self.text.len());
+    }
+
     fn flush(&mut self, tokens: &mut Vec<Token>) {
         if self.started {
+            let text = std::mem::take(&mut self.text);
             tokens.push(Token::Word {
-                text: std::mem::take(&mut self.text),
+                plain_head: self.plain_head.unwrap_or(text.len()),
+                text,
                 quoted: self.quoted,
             });
         }
@@ -224,9 +265,18 @@ fn tokenize(text: &str) -> Vec<Token> {
     let mut word = Pending::default();
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
-        if is_single_quote(c) {
-            word.started = true;
-            word.quoted = true;
+        if c == '#' && !word.started {
+            while chars.next_if(|next| !matches!(next, '\n' | '\r')).is_some() {}
+        } else if c == '<' && !word.started && chars.next_if_eq(&'#').is_some() {
+            let mut previous = ' ';
+            for inner in chars.by_ref() {
+                if previous == '#' && inner == '>' {
+                    break;
+                }
+                previous = inner;
+            }
+        } else if is_single_quote(c) {
+            word.open_quote();
             while let Some(inner) = chars.next() {
                 if !is_single_quote(inner) || chars.next_if(|next| is_single_quote(*next)).is_some()
                 {
@@ -237,8 +287,7 @@ fn tokenize(text: &str) -> Vec<Token> {
                 }
             }
         } else if is_double_quote(c) {
-            word.started = true;
-            word.quoted = true;
+            word.open_quote();
             while let Some(inner) = chars.next() {
                 if inner == '`' {
                     if let Some(escaped) = chars.next() {
@@ -283,8 +332,12 @@ fn check_operands(rest: &[Token], base: &Path, env: &CriticalEnv<'_>) -> Option<
     let mut operands = 0;
     let mut at = 0;
     while at < rest.len() {
-        let (text, quoted) = match &rest[at] {
-            Token::Word { text, quoted } => (text.as_str(), *quoted),
+        let (text, quoted, plain_head) = match &rest[at] {
+            Token::Word {
+                text,
+                quoted,
+                plain_head,
+            } => (text.as_str(), *quoted, *plain_head),
             Token::Sep(',') => {
                 at += 1;
                 continue;
@@ -292,7 +345,8 @@ fn check_operands(rest: &[Token], base: &Path, env: &CriticalEnv<'_>) -> Option<
             Token::Sep(_) => break,
         };
         at += 1;
-        let is_option = !quoted
+        // `-Path:'x'` is an option whose value is quoted; `'-Path'` is an operand.
+        let is_option = (!quoted || text[..plain_head].contains(':'))
             && text.len() > 1
             && text.starts_with('-')
             && text[1..].starts_with(|c: char| c.is_ascii_alphabetic());
@@ -530,6 +584,8 @@ mod tests {
             format!("Remove-Item -Lit {top_dir}"),
             format!("Remove-Item -Path:{top_dir}"),
             format!("Remove-Item -Path:{top_dir} -Recurse"),
+            format!("Remove-Item -Path:'{top_dir}' -Recurse"),
+            format!("Remove-Item -LiteralPath:\"{top_dir}\" -Recurse"),
             format!("rm -r {proj}"),
             format!("rm -r {parent}"),
             format!("rm {proj}{sep}"),
@@ -629,6 +685,11 @@ mod tests {
             "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -c 1",
             "[scriptblock]::Create(\"rm x\").Invoke()",
             "Start-Job -ScriptBlock ([scriptblock]::Create('Remove-Item x'))",
+            "[scriptblock]::Create($s).Invoke()",
+            "$ExecutionContext.InvokeCommand.InvokeScript($s)",
+            "$ExecutionContext.InvokeCommand.NewScriptBlock($s)",
+            "# don't\nrm C:\\",
+            "<# it's #> Remove-Item C:\\",
         ] {
             assert!(critical(command), "{command}");
         }
@@ -647,6 +708,10 @@ mod tests {
             "$obj.delete ()",
             "(Get-Item x).Delete()",
             "$fso.DeleteFile('x')",
+            "[IO.Directory]::'Delete'('x')",
+            "[IO.Directory]::\"Delete\"('x')",
+            "$o.Delete.Invoke()",
+            "$o.'Delete'()",
             "(New-Object -ComObject Scripting.FileSystemObject).DeleteFolder('x')",
             "New-Object -Com Scripting.FileSystemObject",
             "Get-Item $HOME | ForEach-Object Delete",

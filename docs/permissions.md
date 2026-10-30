@@ -278,9 +278,9 @@ allow rule can act there.
 ## PowerShell
 
 On Windows the `powershell` tool is an `arbitrary` tool whose commands are never read in advance:
-the [shell pre-classifier](#the-shell-pre-classifier) below handles POSIX only, so no PowerShell
-command is allowed without a prompt in `manual`, and every one reaches the [guardian](guardian.md)
-in `auto`.
+the [shell pre-classifier](#the-shell-pre-classifier) below handles POSIX only and never allows a
+PowerShell command. Without an allow rule or hook, every call prompts in `manual` and reaches the
+[guardian](guardian.md) in `auto`.
 
 - **Rules name the tool whole.** `powershell` is a rule by itself; `powershell(Get-ChildItem *)` is
   a configuration error. A bare `shell` deny or ask rule also covers `powershell`, so a blanket
