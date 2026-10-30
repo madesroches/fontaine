@@ -63,10 +63,6 @@ spin-on-error stops even for zero waits) and returns one of:
 - **Timeout.** The wait expired while the monitor runs: a successful "still running, Ns old"
   status, never an error.
 
-Waking on a *posted* notification (not on raw appends) is deliberate: a wait that returned on
-appended-but-unbatched lines would wake the model for output it cannot yet receive, inviting the
-very spin this plan removes. Batching delays are bounded (~0.5–1 s), well inside "promptly".
-
 ### Registry changes (`rust/fontaine-tools/src/jobs.rs`)
 
 - Delete the `JobError::Monitor` variant and its Display arm and the refusal branch in
@@ -94,9 +90,9 @@ very spin this plan removes. Batching delays are bounded (~0.5–1 s), well insi
   leaving `WaitGuard` posts the standard end note — which says "killed by the user" through
   `EndInfo::describe` and carries the tail — exactly once. With no waiter, a monitor instead
   posts that same standard end note and is marked `reported = true` with the cursor at the
-  buffer end: the short variant exists so the tail stays readable through the read path, which
-  monitors no longer have — `job_cancel` still returns the tail through `read`. Plain
-  background jobs keep today's short note, `reported = false` and all.
+  buffer end: the end note carries the tail, and a later `job_cancel` finds the cursor at the
+  buffer end and returns only the end marker, no output. Plain background jobs keep today's
+  short note, `reported = false` and all.
 - `MonitorWait::already_reported` is `ended.is_some() && reported` — without the read path's
   `user_killed` exclusion, because a wait never carries the tail: once the end note went out,
   the model has been told all it will get.
