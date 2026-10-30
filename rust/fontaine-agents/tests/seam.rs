@@ -57,9 +57,27 @@ struct FakeChild {
     status: Mutex<ChildStatus>,
     report: watch::Sender<Option<ChildReport>>,
     killed: Mutex<bool>,
+    /// What the human typed that the last run never read.
+    missed: Mutex<Vec<String>>,
+    /// Runs while the missed messages are taken, after the run was concluded.
+    on_take: Mutex<Option<Box<dyn Fn() + Send>>>,
+    resumes: Mutex<Vec<String>>,
+    undelivered: Mutex<Vec<(String, String)>>,
 }
 
 impl FakeChild {
+    fn running() -> FakeChild {
+        FakeChild {
+            status: Mutex::new(ChildStatus::Running),
+            report: watch::channel(None).0,
+            killed: Mutex::new(false),
+            missed: Mutex::new(Vec::new()),
+            on_take: Mutex::new(None),
+            resumes: Mutex::new(Vec::new()),
+            undelivered: Mutex::new(Vec::new()),
+        }
+    }
+
     fn finish(&self, status: ChildStatus, text: &str) {
         *self.status.lock().unwrap() = status;
         self.report.send_replace(Some(ChildReport {
@@ -95,6 +113,26 @@ impl ChildHandle for FakeChild {
             }
         })
     }
+
+    fn resume(&self, prompt: String) {
+        self.resumes.lock().unwrap().push(prompt);
+        *self.status.lock().unwrap() = ChildStatus::Running;
+        self.report.send_replace(None);
+    }
+
+    fn take_missed(&self) -> Vec<String> {
+        if let Some(hook) = self.on_take.lock().unwrap().as_ref() {
+            hook();
+        }
+        std::mem::take(&mut *self.missed.lock().unwrap())
+    }
+
+    fn report_undelivered(&self, refusal: &str, text: &str) {
+        self.undelivered
+            .lock()
+            .unwrap()
+            .push((refusal.to_string(), text.to_string()));
+    }
 }
 
 #[derive(Default)]
@@ -106,6 +144,10 @@ struct FakeRunner {
     fail: Mutex<Option<String>>,
     /// Never finish starting a child, as when resolving its model takes long.
     hang: Mutex<bool>,
+    /// Messages each new child's first run will have left unread.
+    missed: Mutex<Vec<String>>,
+    /// Installed as each new child's `on_take`.
+    fill: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 
 impl FakeRunner {
@@ -149,10 +191,15 @@ impl ChildRunner for FakeRunner {
                 status: Mutex::new(ChildStatus::Running),
                 report,
                 killed: Mutex::new(false),
+                missed: Mutex::new(self.missed.lock().unwrap().clone()),
+                on_take: Mutex::new(None),
+                resumes: Mutex::new(Vec::new()),
+                undelivered: Mutex::new(Vec::new()),
             });
             if let Some((status, text)) = self.answer.lock().unwrap().clone() {
                 child.finish(status, &text);
             }
+            *child.on_take.lock().unwrap() = self.fill.lock().unwrap().take();
             self.children.lock().unwrap().push(child.clone());
             Ok(child as Arc<dyn ChildHandle>)
         })
@@ -528,6 +575,22 @@ async fn dropping_a_blocking_call_kills_the_child() {
 }
 
 #[tokio::test]
+async fn messages_queued_for_a_child_killed_by_a_dropped_call_are_reported_undelivered() {
+    let rig = rig();
+    *rig.runner.missed.lock().unwrap() = vec!["are you there".into()];
+    let mut call = Box::pin(spawn(&rig, args("explore", "x")));
+    tokio::select! {
+        _ = &mut call => panic!("the child never finishes"),
+        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+    }
+    drop(call);
+    let undelivered = rig.runner.child(0).undelivered.lock().unwrap().clone();
+    assert_eq!(undelivered.len(), 1, "{undelivered:?}");
+    assert!(undelivered[0].0.contains("killed"), "{undelivered:?}");
+    assert_eq!(undelivered[0].1, "are you there");
+}
+
+#[tokio::test]
 async fn nesting_stops_at_three_layers_and_the_agent_tool_is_withheld_there() {
     let mut types = AgentTypes::builtin();
     types.insert(AgentType {
@@ -671,12 +734,7 @@ async fn a_kill_that_lands_before_the_handle_attaches_still_stops_the_child() {
         .reserve(ROOT_AGENT, "explore", "m", vec![], Ladder::Manual, false)
         .unwrap();
     assert!(rig.tree.kill(&id));
-    let (report, _) = watch::channel(None);
-    let child = Arc::new(FakeChild {
-        status: Mutex::new(ChildStatus::Running),
-        report,
-        killed: Mutex::new(false),
-    });
+    let child = Arc::new(FakeChild::running());
     rig.tree.attach(&id, child.clone());
     assert!(*child.killed.lock().unwrap());
 }
@@ -691,12 +749,7 @@ async fn a_child_that_finishes_stops_its_own_background_children() {
         .tree
         .reserve("agent-1", "explore", "m", vec![], Ladder::Manual, true)
         .unwrap();
-    let (report, _) = watch::channel(None);
-    let handle = Arc::new(FakeChild {
-        status: Mutex::new(ChildStatus::Running),
-        report,
-        killed: Mutex::new(false),
-    });
+    let handle = Arc::new(FakeChild::running());
     rig.tree.attach(&grandchild, handle.clone());
 
     rig.runner.child(0).finish(ChildStatus::Done, "finished");
@@ -935,4 +988,136 @@ async fn an_abandoned_wait_leaves_the_child_running_and_its_report_queued() {
     assert!(!rig.tree.was_killed("agent-1"));
     assert!(!*rig.runner.child(0).killed.lock().unwrap());
     assert_eq!(reports_for(&rig, ROOT_AGENT), 1);
+}
+
+async fn until(mut done: impl FnMut() -> bool) {
+    for _ in 0..100 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_foreground_child_that_missed_a_message_is_resumed_with_it_after_its_report() {
+    let rig = rig();
+    *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "first answer".into()));
+    *rig.runner.missed.lock().unwrap() = vec!["count the lines".into(), "and the words".into()];
+    // The parent reads the first run's report.
+    let out = spawn(&rig, args("worker", "look around")).await.unwrap();
+    assert_eq!(out, "first answer");
+
+    let child = rig.runner.child(0);
+    let id = rig.runner.spawned()[0].id.clone();
+    assert_eq!(
+        *child.resumes.lock().unwrap(),
+        ["count the lines\n\nand the words"]
+    );
+    assert!(rig.tree.is_running(&id));
+    assert!(
+        rig.ledger
+            .events
+            .lock()
+            .unwrap()
+            .contains(&AgentEvent::Resumed { agent: id.clone() })
+    );
+
+    // The second run reports to the parent as a background child does.
+    child.finish(ChildStatus::Done, "second answer");
+    until(|| rig.tree.has_notifications(ROOT_AGENT)).await;
+    let notes = rig.tree.take_notifications(ROOT_AGENT);
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].text.contains("second answer"), "{notes:?}");
+    assert_eq!(rig.tree.status_of(&id), Some(ChildStatus::Done));
+}
+
+#[tokio::test]
+async fn a_background_child_that_missed_a_message_is_resumed_and_reports_twice() {
+    let rig = rig();
+    *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "first answer".into()));
+    *rig.runner.missed.lock().unwrap() = vec!["more please".into()];
+    let mut background = args("worker", "look around");
+    background.background = Some(true);
+    spawn(&rig, background).await.unwrap();
+    until(|| {
+        rig.tree.has_notifications(ROOT_AGENT)
+            && !rig.runner.child(0).resumes.lock().unwrap().is_empty()
+    })
+    .await;
+
+    let child = rig.runner.child(0);
+    let id = rig.runner.spawned()[0].id.clone();
+    assert_eq!(*child.resumes.lock().unwrap(), ["more please"]);
+    assert!(rig.tree.is_running(&id));
+    let first = rig.tree.take_notifications(ROOT_AGENT);
+    assert!(first[0].text.contains("first answer"), "{first:?}");
+
+    child.finish(ChildStatus::Done, "second answer");
+    until(|| rig.tree.has_notifications(ROOT_AGENT)).await;
+    let second = rig.tree.take_notifications(ROOT_AGENT);
+    assert!(second[0].text.contains("second answer"), "{second:?}");
+}
+
+#[tokio::test]
+async fn a_refused_automatic_resume_hands_the_refusal_and_the_text_to_the_child() {
+    let rig = rig_with(
+        Limits {
+            max_parallel: 1,
+            ..Limits::default()
+        },
+        AgentTypes::builtin(),
+        RootMode::Ladder(Ladder::Auto),
+    );
+    *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "first answer".into()));
+    *rig.runner.missed.lock().unwrap() = vec!["too late".into()];
+    // By the time the leftovers are taken, another agent holds the only place.
+    let tree = rig.tree.clone();
+    let runner = rig.runner.clone();
+    *runner.fill.lock().unwrap() = Some(Box::new(move || {
+        tree.reserve(ROOT_AGENT, "worker", "m", vec![], Ladder::Manual, true)
+            .unwrap();
+    }));
+    spawn(&rig, args("worker", "look around")).await.unwrap();
+
+    let child = rig.runner.child(0);
+    assert!(child.resumes.lock().unwrap().is_empty());
+    let undelivered = child.undelivered.lock().unwrap().clone();
+    assert_eq!(undelivered.len(), 1, "{undelivered:?}");
+    assert!(
+        undelivered[0].0.contains("max_parallel = 1"),
+        "{undelivered:?}"
+    );
+    assert_eq!(undelivered[0].1, "too late");
+}
+
+#[tokio::test]
+async fn a_killed_child_that_missed_a_message_is_not_resumed() {
+    let rig = rig();
+    *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Killed, "partial".into()));
+    *rig.runner.missed.lock().unwrap() = vec!["are you there".into()];
+    let _ = spawn(&rig, args("worker", "look around")).await;
+    let child = rig.runner.child(0);
+    assert!(child.resumes.lock().unwrap().is_empty());
+    let undelivered = child.undelivered.lock().unwrap().clone();
+    assert_eq!(undelivered.len(), 1);
+    assert!(undelivered[0].0.contains("killed"), "{undelivered:?}");
+}
+
+#[tokio::test]
+async fn of_two_racing_resumes_of_an_ended_child_one_starts_a_run() {
+    use fontaine_agents::spawn::resume_child;
+    let rig = rig();
+    *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "first answer".into()));
+    spawn(&rig, args("worker", "look around")).await.unwrap();
+    let id = rig.runner.spawned()[0].id.clone();
+    let handle = rig.tree.handle_of(&id).expect("the tree holds the handle");
+    let ledger: Arc<dyn RootLedger> = rig.ledger.clone();
+
+    assert!(resume_child(&rig.tree, &ledger, &id, &handle, "first".into()).is_ok());
+    assert_eq!(
+        resume_child(&rig.tree, &ledger, &id, &handle, "second".into()),
+        Err(fontaine_agents::tree::Refusal::AlreadyRunning)
+    );
+    assert_eq!(*rig.runner.child(0).resumes.lock().unwrap(), ["first"]);
 }

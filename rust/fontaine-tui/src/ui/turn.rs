@@ -2,10 +2,12 @@ use std::collections::VecDeque;
 use std::path::Path;
 
 use crate::config_panel::ConfigKey;
+use crate::transcript::Transcript;
 use crate::{Action, App, Ui, parse_command};
 use fontaine_core::RuntimeError;
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::Decision;
+use fontaine_core::gate::AgentViewEvent;
 use fontaine_core::goal::Continue;
 use fontaine_core::ledger::Record;
 use fontaine_core::schedule::{Fired, Kind};
@@ -160,6 +162,33 @@ fn group(entries: Vec<Queued>) -> Vec<Submission> {
     submissions
 }
 
+/// Shows an event in `transcript`. A call the guardian refused is shown with its rule label and
+/// its own words rather than the note the agent is given.
+fn apply_event(transcript: &mut Transcript, runtime: &AgentRuntime, event: SessionEvent) {
+    let denial = match &event {
+        SessionEvent::Decision(record)
+            if record.tier == Tier::Guardian && record.decision == Decision::Deny =>
+        {
+            runtime
+                .state
+                .denied_calls()
+                .into_iter()
+                .rev()
+                .find(|call| call.tool_use_id == record.tool_use_id)
+        }
+        _ => None,
+    };
+    transcript.on_event(event);
+    if let Some(call) = denial {
+        transcript.guardian_denied(
+            call.tool_use_id.as_deref().unwrap_or(""),
+            &call.tool,
+            &call.rule,
+            &call.explanation,
+        );
+    }
+}
+
 impl<R: FnMut(&mut App)> Ui<R> {
     /// Brings the provider's search tool in line with the mode and rules now in force, which a
     /// mode switch or a session rule may have changed since the agent was built.
@@ -295,6 +324,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::RetryDenied(index) if retry => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
                         Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                        Action::MessageAgent { id, text } => self.message_agent(runtime, id, text),
                         Action::KillJob(id) => self.kill_job(runtime, &id),
                         Action::PickModel(purpose, reference) => {
                             self.pending_pick = Some((purpose, reference));
@@ -318,6 +348,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     },
                 },
                 Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
+                Some(first) = self.agent_events.recv() => self.on_agent_events(runtime, first),
             }
         }
     }
@@ -363,6 +394,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         // this turn's intent in the ledger.
         runtime.append(Record::UserMessage {
             text: raw.to_string(),
+            agent: None,
         });
         let result = self.expand_serving(runtime, name, argument).await;
         self.app.running = false;
@@ -517,6 +549,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.on_prompt(Some(runtime), prompt);
                     Action::None
                 }
+                Some(first) = self.agent_events.recv() => {
+                    self.on_agent_events(runtime, first);
+                    Action::None
+                }
             };
             match action {
                 Action::PickModel(purpose, reference) => {
@@ -547,6 +583,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Action::RetryDenied(index) => self.retry_denied(runtime, index),
                 Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
                 Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                Action::MessageAgent { id, text } => self.message_agent(runtime, id, text),
                 Action::KillJob(id) => self.kill_job(runtime, &id),
                 Action::None
                 | Action::Submit(_)
@@ -578,6 +615,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if let Some(typed) = human {
             runtime.append(Record::UserMessage {
                 text: typed.to_string(),
+                agent: None,
             });
         }
         // What the agent reads is the user's words behind any note the harness owes it.
@@ -618,6 +656,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             tokio::pin!(changed);
             changed.as_mut().enable();
             self.draw(runtime);
+            let has_list = self.app.agent_list.counts_time();
             tokio::select! {
                 biased;
                 _ = &mut changed => {}
@@ -638,6 +677,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::RetryDenied(index) => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
                         Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                        Action::MessageAgent { id, text } => self.message_agent(runtime, id, text),
                         Action::KillJob(id) => self.kill_job(runtime, &id),
                         Action::PickModel(purpose, reference) => {
                             self.pending_pick = Some((purpose, reference));
@@ -669,6 +709,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     },
                 },
                 Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
+                Some(first) = self.agent_events.recv() => self.on_agent_events(runtime, first),
+                () = async {
+                    if has_list {
+                        tokio::time::sleep(super::LIST_TICK).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => {}
             }
         };
         drop(run);
@@ -691,37 +739,53 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
-    /// Shows an event. A call the guardian refused is shown with its rule label and its own
-    /// words rather than the note the agent is given.
+    /// Shows an event of the main conversation.
     fn on_event(&mut self, runtime: &AgentRuntime, event: SessionEvent) {
-        let denial = match &event {
-            SessionEvent::Decision(record)
-                if record.tier == Tier::Guardian && record.decision == Decision::Deny =>
-            {
-                runtime
-                    .state
-                    .denied_calls()
-                    .into_iter()
-                    .rev()
-                    .find(|call| call.tool_use_id == record.tool_use_id)
-            }
-            _ => None,
-        };
         let todos_changed = matches!(
             &event,
             SessionEvent::ToolResult { tool, .. } if tool == "todo_write"
         );
-        self.app.on_event(event);
+        apply_event(&mut self.app.transcript, runtime, event);
         if todos_changed {
             self.app.todos.set_items(runtime.session.todos().root());
         }
-        if let Some(call) = denial {
-            self.app.transcript.guardian_denied(
-                call.tool_use_id.as_deref().unwrap_or(""),
-                &call.tool,
-                &call.rule,
-                &call.explanation,
-            );
+    }
+
+    /// Shows what subagents did: the event that woke the loop and everything already queued
+    /// behind it, for one redraw.
+    pub(crate) fn on_agent_events(
+        &mut self,
+        runtime: &AgentRuntime,
+        first: (String, AgentViewEvent),
+    ) {
+        self.on_agent_event(runtime, first);
+        while let Ok(next) = self.agent_events.try_recv() {
+            self.on_agent_event(runtime, next);
+        }
+    }
+
+    fn on_agent_event(&mut self, runtime: &AgentRuntime, (agent, event): (String, AgentViewEvent)) {
+        // What the human typed to the agent reached it before this event happened.
+        self.show_delivered_to(runtime, &agent);
+        let transcript = &mut self.app.view_of(agent).transcript;
+        match event {
+            AgentViewEvent::Prompt(text) => transcript.user(text),
+            AgentViewEvent::Event(event) => apply_event(transcript, runtime, event),
+        }
+    }
+
+    /// Moves messages the agents have read from the queue to where each agent's transcript
+    /// shows them.
+    pub(crate) fn show_delivered_to_agents(&mut self, runtime: &AgentRuntime) {
+        let ids: Vec<String> = self.app.agent_views.keys().cloned().collect();
+        for id in ids {
+            self.show_delivered_to(runtime, &id);
+        }
+    }
+
+    fn show_delivered_to(&mut self, runtime: &AgentRuntime, agent: &str) {
+        for text in runtime.steering.take_delivered_for(agent) {
+            self.app.view_of(agent.to_string()).transcript.user(text);
         }
     }
 

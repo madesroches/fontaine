@@ -46,7 +46,7 @@ result, and never a second time.
   later as usual.
 
 The model still gets no tool to list or kill agents: those are controls for you, in the
-[agents panel](tui.md#the-agents-panel).
+[agent list and the agents panel](tui.md#the-agent-list-and-the-agent-view).
 
 ## Agent types
 
@@ -191,10 +191,38 @@ user file or `[agents.types]` entry of the same name, and so stays narrowed.
 
 ## Watching and stopping subagents
 
-In the terminal UI, `Ctrl+T` (or `/agents`, or `/tasks`) opens the [agents panel](tui.md#the-agents-panel): one row
-per subagent with its status, spend against budget, a view of what it did and the gate decisions it
-got, and a key to kill it. A background subagent's approval prompts appear like any other, labelled
-with its id, and the panel lists them per agent, so none hides behind the main transcript.
+In the terminal UI, a list below the status bar shows `main` and every running subagent, and
+`x` in it stops one. Enter on an agent shows its own transcript, drawn like the main chat, and
+what you type there goes to that agent: see [the agent list and the agent
+view](tui.md#the-agent-list-and-the-agent-view). `Ctrl+T` (or `/agents`, or `/tasks`) opens the
+[agents panel](tui.md#the-agents-panel), the full overview with one row per subagent, ended ones
+included, its status, spend against budget and a key to kill it. A background subagent's approval
+prompts appear like any other, labelled with its id, whichever transcript is on screen, so none
+hides behind another.
+
+### Messaging a subagent
+
+Text typed in a subagent's view is yours, not another agent's, and is handled as the main
+agent handles what you type mid-turn:
+
+- **A running subagent** reads it with its next tool result, marked as sent by you. It enters
+  the ledger then, as a message typed to that agent (`user_message` with an `agent` field), and
+  is intent for that agent and its own subagents only: the guardian never judges the main
+  conversation's calls, or a sibling's, by words those models have not read.
+- **An ended subagent** (`done` or `failed`) is resumed: another run starts on the same
+  conversation and the same `MemoryStore`, with the same tools, mode, budget (spend carries
+  over, so the cap is cumulative) and a `resumed` event in the ledger, followed by your words.
+  The resumed run is held to the same posture as before, never looser than its parent's on any
+  call. Its report goes to the agent that started it, or to the main conversation when that agent
+  has ended, and an idle main conversation gets a turn to read it.
+- **A killed subagent, one that ran out of budget, or any whose budget is spent** is never
+  resumed. A resume that would exceed `max_parallel` or the session's agent budget is refused.
+- A message a run ended without reading (the agent answered without another tool call) resumes the
+  agent with it once the run ends; if that resume is refused, you are told what was not
+  delivered.
+
+`send_message` from another agent keeps its rule: it reaches only a running agent, and the
+recipient reads it as untrusted data, not as you.
 
 A headless run has no panel. If background subagents are still running when the main conversation
 gives its final answer, the run waits for them and gives the main conversation a further turn for

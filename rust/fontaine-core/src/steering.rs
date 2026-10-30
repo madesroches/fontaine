@@ -2,6 +2,7 @@
 //! next tool result, which carries them to the model; only then do they enter the ledger, so the
 //! guardian never judges a call by words the model has not read.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
@@ -58,6 +59,14 @@ struct SteeringState {
     /// While held, nothing is delivered: replay keeps typed order across queued entries
     /// that already left the queue.
     hold: bool,
+    /// What the human typed in a subagent's view, by agent.
+    agents: HashMap<String, AgentQueue>,
+}
+
+#[derive(Default)]
+struct AgentQueue {
+    queued: Vec<String>,
+    delivered: Vec<String>,
 }
 
 impl Steering {
@@ -97,6 +106,57 @@ impl Steering {
         !state.hold && matches!(state.queued.first(), Some(Queued::Message(_)))
     }
 
+    /// Queues what the human typed in `agent`'s view. The agent reads it with its next tool
+    /// result.
+    pub fn queue_for(&self, agent: &str, text: String) {
+        self.state()
+            .agents
+            .entry(agent.to_string())
+            .or_default()
+            .queued
+            .push(text);
+    }
+
+    /// What the human typed to `agent` that it has not read yet, oldest first.
+    pub fn queued_for(&self, agent: &str) -> Vec<String> {
+        self.state()
+            .agents
+            .get(agent)
+            .map(|queue| queue.queued.clone())
+            .unwrap_or_default()
+    }
+
+    /// What `agent` has read since the last call, oldest first.
+    pub fn take_delivered_for(&self, agent: &str) -> Vec<String> {
+        self.state()
+            .agents
+            .get_mut(agent)
+            .map(|queue| std::mem::take(&mut queue.delivered))
+            .unwrap_or_default()
+    }
+
+    /// Takes what the human typed to `agent` that it never read, such as when its run ended
+    /// without another tool call.
+    pub fn take_pending_for(&self, agent: &str) -> Vec<String> {
+        self.state()
+            .agents
+            .get_mut(agent)
+            .map(|queue| std::mem::take(&mut queue.queued))
+            .unwrap_or_default()
+    }
+
+    /// Whether `agent`'s next tool result would carry a message: the wake-up for an agent parked
+    /// in a long wait.
+    pub fn has_deliverable_message_for(&self, agent: &str) -> bool {
+        if agent == ROOT_AGENT {
+            return self.has_deliverable_message();
+        }
+        self.state()
+            .agents
+            .get(agent)
+            .is_some_and(|queue| !queue.queued.is_empty())
+    }
+
     /// The messages delivered since the last call, oldest first.
     pub fn take_delivered(&self) -> Vec<String> {
         std::mem::take(&mut self.state().delivered)
@@ -118,44 +178,62 @@ impl SteeringHook {
         let Ok(Answered::ToolResult { result }) = outcome else {
             return OutcomeAction::Proceed;
         };
-        if agent != ROOT_AGENT {
-            return OutcomeAction::Proceed;
-        }
         // One lock from take to delivered, so a retract cannot split the two.
         let mut state = self.steering.state();
-        if state.queued.is_empty() || state.hold {
-            return OutcomeAction::Proceed;
-        }
-        // Only the leading run of plain messages can ride a tool result; a skill, command or
-        // shell line needs the turn to end, and nothing queued behind one may overtake it.
-        let leading = state
-            .queued
-            .iter()
-            .take_while(|entry| matches!(entry, Queued::Message(_)))
-            .count();
-        if leading == 0 {
-            return OutcomeAction::Proceed;
-        }
-        let messages: Vec<String> = state
-            .queued
-            .drain(..leading)
-            .map(|entry| match entry {
-                Queued::Message(text) => text,
-                // The take above counts message entries only.
-                _ => unreachable!("only message entries are drained"),
-            })
-            .collect();
+        let messages: Vec<String> = if agent == ROOT_AGENT {
+            if state.queued.is_empty() || state.hold {
+                return OutcomeAction::Proceed;
+            }
+            // Only the leading run of plain messages can ride a tool result; a skill, command
+            // or shell line needs the turn to end, and nothing queued behind one may overtake
+            // it.
+            let leading = state
+                .queued
+                .iter()
+                .take_while(|entry| matches!(entry, Queued::Message(_)))
+                .count();
+            if leading == 0 {
+                return OutcomeAction::Proceed;
+            }
+            state
+                .queued
+                .drain(..leading)
+                .map(|entry| match entry {
+                    Queued::Message(text) => text,
+                    // The take above counts message entries only.
+                    _ => unreachable!("only message entries are drained"),
+                })
+                .collect()
+        } else {
+            let Some(queue) = state.agents.get_mut(agent) else {
+                return OutcomeAction::Proceed;
+            };
+            if queue.queued.is_empty() {
+                return OutcomeAction::Proceed;
+            }
+            std::mem::take(&mut queue.queued)
+        };
+        let target = (agent != ROOT_AGENT).then(|| agent.to_string());
         let mut text = result.output().render();
         for message in &messages {
             self.state.append(Record::UserMessage {
                 text: message.clone(),
+                agent: target.clone(),
             });
             text.push_str(
                 "\n\n[The user sent this message while you were working. Address it, then continue:]\n",
             );
             text.push_str(message);
         }
-        state.delivered.extend(messages);
+        match &target {
+            None => state.delivered.extend(messages),
+            Some(agent) => state
+                .agents
+                .entry(agent.to_string())
+                .or_default()
+                .delivered
+                .extend(messages),
+        }
         OutcomeAction::Replace(Ok(Answered::ToolResult {
             result: result.clone().with_output(ToolOutput::text(text)),
         }))
@@ -414,5 +492,74 @@ mod tests {
         assert_eq!(retracted[1], skill("/review 42"));
         assert_eq!(retracted[3], Queued::Shell("!echo hi".into()));
         assert!(steering.retract().is_empty());
+    }
+
+    #[test]
+    fn a_message_for_a_child_rides_its_next_result_and_enters_the_ledger_for_that_agent() {
+        let (hook, steering, ledger, _dir) = hook();
+        steering.queue(Queued::Message("for main".into()));
+        steering.queue_for("agent-1", "count the lines".into());
+        assert_eq!(steering.queued_for("agent-1"), vec!["count the lines"]);
+        let ok = answered(ToolResult::success(ToolOutput::text("done")));
+
+        let action = hook.steer("agent-1", &ok);
+        let text = rewritten(&action)
+            .expect("a rewritten result")
+            .output()
+            .render();
+        assert!(text.contains("The user sent this message while you were working"));
+        assert!(text.contains("count the lines"));
+        assert!(!text.contains("for main"));
+
+        // Only then does the ledger hold it, and for that agent alone.
+        assert!(ledger.view().user_messages.is_empty());
+        assert_eq!(ledger.view().agent_messages.len(), 1);
+        assert_eq!(ledger.view().agent_messages[0].agent, "agent-1");
+        assert_eq!(
+            steering.take_delivered_for("agent-1"),
+            vec!["count the lines"]
+        );
+        assert!(steering.take_delivered_for("agent-1").is_empty());
+
+        // The root's queue is untouched.
+        assert_eq!(steering.queued(), vec!["for main"]);
+        assert!(steering.take_delivered().is_empty());
+    }
+
+    #[test]
+    fn a_childs_queue_never_steers_the_root_or_another_child() {
+        let (hook, steering, ledger, _dir) = hook();
+        steering.queue_for("agent-1", "only for one".into());
+        let ok = answered(ToolResult::success(ToolOutput::text("done")));
+        assert!(matches!(
+            hook.steer(ROOT_AGENT, &ok),
+            OutcomeAction::Proceed
+        ));
+        assert!(matches!(hook.steer("agent-2", &ok), OutcomeAction::Proceed));
+        assert_eq!(steering.queued_for("agent-1"), vec!["only for one"]);
+        assert!(ledger.view().agent_messages.is_empty());
+        assert!(ledger.view().user_messages.is_empty());
+    }
+
+    #[test]
+    fn a_child_parked_in_a_wait_is_woken_by_its_own_message_only() {
+        let steering = Steering::default();
+        assert!(!steering.has_deliverable_message_for("agent-1"));
+        steering.queue_for("agent-1", "wake up".into());
+        assert!(steering.has_deliverable_message_for("agent-1"));
+        assert!(!steering.has_deliverable_message_for("agent-2"));
+        assert!(!steering.has_deliverable_message_for(ROOT_AGENT));
+        steering.queue(Queued::Message("main".into()));
+        assert!(steering.has_deliverable_message_for(ROOT_AGENT));
+    }
+
+    #[test]
+    fn what_a_child_never_read_can_be_taken_back_once() {
+        let steering = Steering::default();
+        steering.queue_for("agent-1", "one".into());
+        steering.queue_for("agent-1", "two".into());
+        assert_eq!(steering.take_pending_for("agent-1"), vec!["one", "two"]);
+        assert!(steering.take_pending_for("agent-1").is_empty());
+        assert!(steering.queued_for("agent-1").is_empty());
     }
 }

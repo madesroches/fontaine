@@ -223,6 +223,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             Action::RetryDenied(index) => self.retry_denied(runtime, index),
                             Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
                             Action::KillAgent(id) => self.kill_agent(runtime, &id),
+                            Action::MessageAgent { id, text } => {
+                                self.message_agent(runtime, id, text);
+                            }
                             Action::KillJob(id) => self.kill_job(runtime, &id),
                             Action::PickModel(purpose, reference) => {
                                 self.pending_pick = Some((purpose, reference));
@@ -248,6 +251,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         },
                     },
                     Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
+                    Some(first) = self.agent_events.recv() => self.on_agent_events(runtime, first),
                 }
             }
         };

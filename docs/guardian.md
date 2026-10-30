@@ -78,7 +78,10 @@ do not, because the model wrote them and a bare label carries no context. A mess
 the moment the agent receives it, with its next tool result, not from when you typed it: until then
 the model has not read it, and a call judged earlier must not rest on words the model never saw.
 Commands you run with `!` and their output never count, and neither does anything a tool or the
-model wrote.
+model wrote. A message you type in a [subagent's view](tui.md#the-agent-list-and-the-agent-view)
+counts the same way, from when that agent reads it, but only for that subagent and its own
+subagents: a call of the main conversation or of a sibling is never judged by words only another
+agent's model has read.
 
 ### How history and your words are weighed
 
@@ -138,7 +141,8 @@ Exfiltration`, `Production Deploy`, `Git Destructive`, `Destroy Pre-existing Fil
 flags or security-guarding tests, adding persistence, or editing the agent's own settings), `Remote
 Redirect`, `Unreviewed Merge` and `Container Escape` (minimal profile only). A deny reaches the
 agent as `Denied by guardian: [Rule] explanation`, and your terminal shows the label and the
-explanation. Every shipped deny rule starts with the label it is reported under.
+explanation; a subagent's denial shows in that agent's [view](tui.md#the-agent-list-and-the-agent-view),
+not in the main chat. Every shipped deny rule starts with the label it is reported under.
 
 ### Rule precedence
 

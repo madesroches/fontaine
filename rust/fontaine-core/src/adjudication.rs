@@ -9,6 +9,7 @@ use fontaine_guardian::{
     TouchedPath, task_intent,
 };
 use fontaine_tools::descriptor::{self, Destructive};
+use fontaine_tools::gate::ROOT_AGENT;
 use fontaine_tools::risk::RiskClass;
 use fontaine_tools::scope::Scope;
 use rig_core::redact;
@@ -160,6 +161,25 @@ fn facts(
     }
 }
 
+/// `caller` and every agent above it below the root: the agents whose own view's messages are
+/// intent for `caller`. Empty for the root.
+fn ancestry(state: &SessionState, caller: &str) -> Vec<String> {
+    let mut chain = Vec::new();
+    let mut at = caller.to_string();
+    // A tree is a few layers deep; the bound keeps a corrupt parent link finite.
+    for _ in 0..64 {
+        if at == ROOT_AGENT {
+            break;
+        }
+        chain.push(at.clone());
+        match state.agents().parent_of(&at) {
+            Some(parent) => at = parent,
+            None => break,
+        }
+    }
+    chain
+}
+
 /// The request for `tool` called with `args`, read from the ledger as it stands now.
 pub fn build(
     state: &SessionState,
@@ -171,11 +191,9 @@ pub fn build(
 ) -> AdjudicationRequest {
     let scope = state.scope();
     let view = state.ledger.view();
-    let from = view
-        .user_messages
-        .len()
-        .saturating_sub(RECENT_USER_MESSAGES);
-    let recent = view.user_messages[from..].to_vec();
+    let intent = view.intent_for(&ancestry(state, caller));
+    let from = intent.len().saturating_sub(RECENT_USER_MESSAGES);
+    let recent = intent[from..].to_vec();
     let destructive = destructive::derive(
         tool,
         args,
@@ -201,7 +219,7 @@ pub fn build(
     }
     let denials_from = view.denials.len().saturating_sub(PRIOR_DENIALS);
     AdjudicationRequest {
-        task_intent: task_intent(&view.user_messages, TASK_INTENT_CHARS),
+        task_intent: task_intent(&intent, TASK_INTENT_CHARS),
         recent_user_messages: recent,
         project_instructions: state.auto.project_instructions.clone(),
         environment: state.auto.environment.clone(),

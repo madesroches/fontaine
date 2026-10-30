@@ -11,7 +11,7 @@ use fontaine_agents::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus
 use fontaine_agents::tree::AgentTree;
 use fontaine_guardian::WireIds;
 use fontaine_tools::error_chain::chain;
-use fontaine_tools::gate::{CallView, ROOT_AGENT};
+use fontaine_tools::gate::CallView;
 use fontaine_tools::jobs::WaitWake;
 use fontaine_tools::lock::{lock, lock_recovering, read};
 use fontaine_tools::result_pipeline::{ResultStage, ToolOutcome, append_note};
@@ -24,12 +24,12 @@ use tracing::Instrument;
 
 use crate::agent::apply_common;
 use crate::fork_context::{FORK_NOTE, ParentContext};
-use crate::gate::{ChildRestrictions, SessionState, spend_of};
+use crate::gate::{AgentViewEvent, ChildRestrictions, SessionState, spend_of};
 use crate::ledger::Record;
 use crate::models::{ModelHandle, SharedSwitcher};
 use crate::permission_rules::parse_rule;
 use crate::permissions::Approver;
-use crate::steering::Steering;
+use crate::steering::{Steering, SteeringHook};
 use crate::turn::{DEFAULT_MAX_TURNS, Drive, Flow, SessionEvent, TurnOutcome, drive};
 use crate::turn_recovery::RecoveryHook;
 
@@ -70,8 +70,8 @@ impl ResultStage for NotificationStage {
     }
 }
 
-/// What ends a parked `job_output` wait early: a message from another agent, and for the main
-/// agent a message the user typed meanwhile.
+/// What ends a parked `job_output` wait early: a message from another agent, and a message the
+/// user typed to the waiting agent meanwhile.
 pub struct CoreWake {
     pub tree: Arc<AgentTree>,
     pub steering: Steering,
@@ -79,8 +79,7 @@ pub struct CoreWake {
 
 impl WaitWake for CoreWake {
     fn pending(&self, agent: &str) -> bool {
-        self.tree.has_message(agent)
-            || (agent == ROOT_AGENT && self.steering.has_deliverable_message())
+        self.tree.has_message(agent) || self.steering.has_deliverable_message_for(agent)
     }
 }
 
@@ -116,6 +115,12 @@ impl RootLedger for LedgerWindow {
                 parent: None,
                 detail: Some(to),
             },
+            AgentEvent::Resumed { agent } => Record::Agent {
+                event: "resumed".into(),
+                agent,
+                parent: None,
+                detail: None,
+            },
         };
         self.0.append(record);
     }
@@ -134,6 +139,8 @@ pub struct ChildContext {
     pub record_content: bool,
     /// What the main agent's model last read, for the agent types that inherit context.
     pub parent_context: ParentContext,
+    /// What the human types in a subagent's view, which the child reads with its tool results.
+    pub steering: Steering,
 }
 
 pub struct CoreChildRunner {
@@ -212,19 +219,55 @@ impl ChildContext {
     }
 }
 
-/// A running child: its status, its kill switch and its report.
-struct ChildRun {
+/// What one child keeps across its runs: the agent with its conversation, and how to start
+/// the next run.
+struct RunShared {
     id: String,
     state: Arc<SessionState>,
+    steering: Steering,
+    approver: Arc<dyn Approver>,
+    agent: Agent,
+    model: ChildModel,
+    agent_type: String,
     kill: watch::Sender<bool>,
-    status: Arc<Mutex<ChildStatus>>,
-    report: watch::Receiver<Option<ChildReport>>,
+    status: Mutex<ChildStatus>,
+    /// The ordinal of the latest run, and its report once it has ended.
+    reports: watch::Sender<(u64, Option<ChildReport>)>,
+}
+
+/// A running child: its status, its kill switch and its report.
+struct ChildRun {
+    shared: Arc<RunShared>,
+}
+
+/// Starts one run of the child in the background; the run records its own end. The span closes
+/// with the run, so nothing but the task holds it.
+fn launch(shared: Arc<RunShared>, prompt: String, span: tracing::Span) {
+    let kill = shared.kill.subscribe();
+    tokio::spawn(
+        async move {
+            let report = run_child(
+                &shared.state,
+                &shared.agent,
+                &shared.id,
+                prompt,
+                shared.model.clone(),
+                kill,
+            )
+            .await;
+            *lock(&shared.status, "child status") = report.status;
+            shared
+                .reports
+                .send_modify(|(_, latest)| *latest = Some(report));
+        }
+        .instrument(span),
+    );
 }
 
 impl ChildHandle for ChildRun {
     fn status(&self) -> ChildStatus {
-        let status = *lock(&self.status, "child status");
-        if status == ChildStatus::Running && self.state.is_waiting(&self.id) {
+        let status = *lock(&self.shared.status, "child status");
+        if status == ChildStatus::Running && self.shared.state.is_waiting(&self.shared.id) {
             ChildStatus::WaitingOnPermission
         } else {
             status
@@ -232,39 +275,71 @@ impl ChildHandle for ChildRun {
     }
 
     fn spend(&self) -> Spend {
-        self.state.agents().spend_of(&self.id)
+        self.shared.state.agents().spend_of(&self.shared.id)
     }
 
     fn kill(&self) {
-        let _ = self.kill.send(true);
+        let _ = self.shared.kill.send(true);
     }
 
     fn report(&self) -> BoxFuture<'_, ChildReport> {
-        let mut report = self.report.clone();
+        let mut reports = self.shared.reports.subscribe();
+        let run = reports.borrow().0;
         Box::pin(async move {
             loop {
-                if let Some(done) = report.borrow().clone() {
+                let latest = {
+                    let seen = reports.borrow();
+                    seen.1.clone().filter(|_| seen.0 >= run)
+                };
+                if let Some(done) = latest {
                     return done;
                 }
-                if report.changed().await.is_err() {
-                    return report.borrow().clone().unwrap_or(ChildReport {
+                if reports.changed().await.is_err() {
+                    return ChildReport {
                         status: ChildStatus::Failed,
                         text: String::new(),
                         reason: Some("the subagent's task ended without a report".into()),
-                    });
+                    };
                 }
             }
         })
     }
-}
 
-fn short(text: &str) -> String {
-    let line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if line.chars().count() > 200 {
-        let cut: String = line.chars().take(199).collect();
-        format!("{cut}…")
-    } else {
-        line
+    fn resume(&self, prompt: String) {
+        let shared = &self.shared;
+        // `Node::live_status` reads this while the node runs; `launch` writes it only at run end.
+        *lock(&shared.status, "child status") = ChildStatus::Running;
+        shared.state.append(Record::UserMessage {
+            text: prompt.clone(),
+            agent: Some(shared.id.clone()),
+        });
+        shared
+            .state
+            .emit_agent_event(&shared.id, AgentViewEvent::Prompt(prompt.clone()));
+        shared.reports.send_modify(|(run, latest)| {
+            *run += 1;
+            *latest = None;
+        });
+        let span = tracing::info_span!(
+            target: TARGET,
+            "fontaine.subagent",
+            agent.id = shared.id.as_str(),
+            agent.type = shared.agent_type.as_str(),
+            model.priced = shared.model.priced,
+            resumed = true,
+        );
+        launch(shared.clone(), prompt, span);
+    }
+
+    fn take_missed(&self) -> Vec<String> {
+        self.shared.steering.take_pending_for(&self.shared.id)
+    }
+
+    fn report_undelivered(&self, refusal: &str, text: &str) {
+        self.shared.approver.warn(&format!(
+            "{} could not read your message ({refusal}); it was not delivered: {text}",
+            self.shared.id
+        ));
     }
 }
 
@@ -316,6 +391,7 @@ impl ChildRunner for CoreChildRunner {
                 .memory(store.clone())
                 .conversation("main");
             let agent = apply_common(builder, &state, context.record_content)
+                .add_hook(SteeringHook::new(context.steering.clone(), state.clone()))
                 .add_hook(RecoveryHook::new(store, "main", context.approver.clone()))
                 .tool_server_handle(tools)
                 .build();
@@ -328,50 +404,43 @@ impl ChildRunner for CoreChildRunner {
                 agent.type = request.agent_type.name.as_str(),
                 model.priced = priced,
             );
-            let (kill, kill_rx) = watch::channel(false);
-            let (report_tx, report_rx) = watch::channel(None);
-            let status = Arc::new(Mutex::new(ChildStatus::Running));
-            let handle = Arc::new(ChildRun {
+            let (kill, _) = watch::channel(false);
+            let (reports, _) = watch::channel((0, None));
+            let shared = Arc::new(RunShared {
                 id: request.id.clone(),
                 state: state.clone(),
+                steering: context.steering.clone(),
+                approver: context.approver.clone(),
+                agent,
+                model: ChildModel {
+                    priced,
+                    model: model_id,
+                    provider,
+                },
+                agent_type: request.agent_type.name.clone(),
                 kill,
-                status: status.clone(),
-                report: report_rx,
+                status: Mutex::new(ChildStatus::Running),
+                reports,
+            });
+            let handle = Arc::new(ChildRun {
+                shared: shared.clone(),
             });
 
-            let id = request.id.clone();
+            // The view opens on the task as the parent gave it, without the fork note.
+            state.emit_agent_event(&request.id, AgentViewEvent::Prompt(request.prompt.clone()));
             let prompt = if forked {
                 format!("{FORK_NOTE}\n\n{}", request.prompt)
             } else {
                 request.prompt
             };
-            let task_state = state.clone();
-            tokio::spawn(
-                async move {
-                    let report = run_child(
-                        &task_state,
-                        &agent,
-                        &id,
-                        prompt,
-                        ChildModel {
-                            priced,
-                            model: model_id,
-                            provider,
-                        },
-                        kill_rx,
-                    )
-                    .await;
-                    *lock(&status, "child status") = report.status;
-                    report_tx.send_replace(Some(report));
-                }
-                .instrument(span.clone()),
-            );
+            launch(shared, prompt, span);
             Ok(handle as Arc<dyn ChildHandle>)
         })
     }
 }
 
 /// What a child's model call reports to usage and error telemetry.
+#[derive(Clone)]
 struct ChildModel {
     priced: bool,
     model: String,
@@ -390,37 +459,16 @@ async fn run_child(
     let tree = state.agents().clone();
     let last_text = Arc::new(Mutex::new(String::new()));
     let seen = last_text.clone();
-    let log_state = state.clone();
-    let log_id = id.to_string();
+    let view_state = state.clone();
+    let view_id = id.to_string();
     let budget_tree = tree.clone();
     let budget_id = id.to_string();
     let mut on_event = move |event: SessionEvent| -> Flow {
-        match &event {
-            SessionEvent::Assistant(text) => {
-                // Partial text only labels an interrupted child's report; a stale value is harmless.
-                *lock_recovering(&seen) = text.clone();
-                log_state.log_agent_line(&log_id, short(text));
-            }
-            SessionEvent::ToolCall { tool, args, .. } => {
-                log_state.log_agent_line(
-                    &log_id,
-                    format!(
-                        "→ {tool} {}",
-                        short(&crate::permissions::summarize(tool, args))
-                    ),
-                );
-            }
-            SessionEvent::ToolResult { tool, success, .. } => {
-                log_state.log_agent_line(
-                    &log_id,
-                    format!("← {tool} {}", if *success { "ok" } else { "failed" }),
-                );
-            }
-            SessionEvent::Decision(_)
-            | SessionEvent::AssistantDelta(_)
-            | SessionEvent::ToolPreview { .. }
-            | SessionEvent::Usage { .. } => {}
+        if let SessionEvent::Assistant(text) = &event {
+            // Partial text only labels an interrupted child's report; a stale value is harmless.
+            *lock_recovering(&seen) = text.clone();
         }
+        view_state.emit_agent_event(&view_id, AgentViewEvent::Event(event));
         // A spent budget ends the run at the next event: the guardian's calls for this child
         // count against it too.
         if budget_tree.exhausted_of(&budget_id).is_some() {
@@ -491,6 +539,7 @@ mod tests {
     use super::*;
     use fontaine_agents::mode::ModeSetting;
     use fontaine_agents::registry::TypeOrigin;
+    use fontaine_tools::gate::ROOT_AGENT;
 
     fn typed(tools: &[&str]) -> AgentType {
         AgentType {
@@ -511,5 +560,20 @@ mod tests {
         let only = restrictions(&typed(&["shell", "shell(git *)", "read(src/*)"])).only;
         let tools: Vec<&str> = only.iter().map(|r| r.tool.as_str()).collect();
         assert_eq!(tools, ["read"]);
+    }
+
+    #[test]
+    fn a_message_the_human_typed_to_a_child_wakes_its_wait_and_no_other() {
+        let tree = Arc::new(AgentTree::new(fontaine_agents::tree::Limits::default()));
+        let steering = Steering::default();
+        let wake = CoreWake {
+            tree,
+            steering: steering.clone(),
+        };
+        assert!(!wake.pending("agent-1"));
+        steering.queue_for("agent-1", "wake up".into());
+        assert!(wake.pending("agent-1"));
+        assert!(!wake.pending("agent-2"));
+        assert!(!wake.pending(ROOT_AGENT));
     }
 }

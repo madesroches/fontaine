@@ -232,9 +232,17 @@ copy itself, before leaving, so a failure is shown in the session that is still 
 
 ### Subagents in the ledger
 
-A subagent tree has one source of intent, the human messages in the root session's ledger. The
-ledger records when subagents start and end and when they message each other, but a spawn prompt or
-a message is never recorded as something the human said.
+A subagent tree has one source of intent, the human messages in the session's ledger. The
+ledger records when subagents start, end, are resumed by you and message each other, but a spawn
+prompt or a message from another agent is never recorded as something the human said.
+
+A `user_message` record may carry an `agent` field: you typed it in that subagent's view, and the
+record is written only when the agent's model reads it. It is intent for that agent and its own
+subagents only, never for the main conversation or a sibling; records without the field are the
+main conversation's, so existing sessions load unchanged. Session naming, the first prompt a
+listing shows and the `/rewind` count use main-conversation messages alone, and a rewind also
+drops the agent-directed messages recorded after the first message it drops. A `resumed` agent
+record marks the start of a later run of an ended subagent.
 
 ## Models
 

@@ -88,6 +88,9 @@ pub struct Transcript {
     /// already written. The screen writes them out before anything newer so the conversation
     /// that was on display is not lost from the terminal.
     retired: Vec<(Entry, usize)>,
+    /// Entries that only repeat a call whose pending row was already in scrollback when it
+    /// settled; the original holds the outcome too, so a reprint drops them.
+    follow_ups: Vec<usize>,
     pub glyphs: Glyphs,
 }
 
@@ -173,6 +176,23 @@ impl Transcript {
             self.retired.push((entry, if i == 0 { skip } else { 0 }));
         }
         self.entries.clear();
+        self.follow_ups.clear();
+        self.committed = 0;
+        self.committed_chars = 0;
+    }
+
+    /// Makes the next render write the whole transcript into scrollback again, for a screen
+    /// that was erased. Rows `/clear` retired are gone with the erased screen, and a call's
+    /// follow-up line is dropped, since its original now settles in place.
+    pub fn recommit(&mut self) {
+        let mut at = 0;
+        let follow_ups = std::mem::take(&mut self.follow_ups);
+        self.entries.retain(|_| {
+            let keep = !follow_ups.contains(&at);
+            at += 1;
+            keep
+        });
+        self.retired.clear();
         self.committed = 0;
         self.committed_chars = 0;
     }
@@ -247,6 +267,7 @@ impl Transcript {
         if written {
             let follow_up = self.entries[i].clone();
             self.finish_streaming();
+            self.follow_ups.push(self.entries.len());
             self.entries.push(follow_up);
         }
     }
@@ -1842,5 +1863,60 @@ mod tests {
         call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
         result_with(&mut t, "a", "shell", true, "out");
         assert_eq!(text(&t.lines(40, &theme()))[1], "  | out");
+    }
+
+    #[test]
+    fn recommit_writes_every_entry_again_and_drops_what_clear_retired() {
+        let mut t = Transcript::default();
+        t.user("one".into());
+        t.notice("two");
+        let first = text(&t.commit(40, &theme()));
+        assert!(text(&t.commit(40, &theme())).is_empty());
+        t.clear();
+        t.user("three".into());
+        t.recommit();
+        assert!(text(&t.take_retired(40, &theme())).is_empty());
+        let again = text(&t.commit(40, &theme()));
+        assert_eq!(again, text(&t.lines(40, &theme())));
+        assert!(again.iter().any(|row| row.contains("three")));
+        assert!(first.iter().any(|row| row.contains("one")));
+        assert!(
+            !again
+                .iter()
+                .any(|row| row.contains("one") || row.contains("two"))
+        );
+        t.recommit();
+        assert_eq!(text(&t.commit(40, &theme())), again);
+    }
+
+    #[test]
+    fn a_hidden_transcript_keeps_its_entries_and_commits_nothing() {
+        let mut hidden = Transcript::default();
+        hidden.user("typed".into());
+        hidden.notice("kept");
+        let before = hidden.entries.len();
+        // Nothing asks it to commit while another transcript is shown.
+        hidden.notice("arrived later");
+        assert_eq!(hidden.entries.len(), before + 1);
+        assert_eq!(text(&hidden.live_lines(40, &theme())).len(), 4);
+        // Shown at last, it is written whole.
+        hidden.recommit();
+        assert_eq!(text(&hidden.commit(40, &theme())).len(), 4);
+    }
+
+    #[test]
+    fn a_call_that_settled_in_place_is_not_repeated_by_its_follow_up() {
+        let mut t = Transcript::default();
+        call(&mut t, "a", "shell");
+        // The pending row reaches scrollback, so its outcome can only follow it.
+        let written = text(&t.commit_within(40, &theme(), 1));
+        assert!(!written.is_empty());
+        result(&mut t, "a", "shell");
+        assert_eq!(t.entries.len(), 2);
+        t.recommit();
+        assert_eq!(t.entries.len(), 1);
+        let again = text(&t.commit(40, &theme()));
+        assert_eq!(again, text(&t.lines(40, &theme())));
+        assert_eq!(again.iter().filter(|row| row.contains("shell")).count(), 1);
     }
 }

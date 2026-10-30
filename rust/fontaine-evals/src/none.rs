@@ -112,7 +112,10 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
         said.push(case.task_intent.clone());
     }
     for message in said {
-        append(Record::UserMessage { text: message })?;
+        append(Record::UserMessage {
+            text: message,
+            agent: None,
+        })?;
     }
     let audit = AuditLog::create(&data, &session_id).map_err(|e| format!("audit log: {e}"))?;
     let approver = Arc::new(DenyAll);

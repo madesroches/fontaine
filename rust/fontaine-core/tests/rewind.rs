@@ -43,6 +43,7 @@ async fn say(built: &Built, prompt: &str) {
     built.runtime.begin_turn(prompt, false);
     built.runtime.append(Record::UserMessage {
         text: prompt.to_string(),
+        agent: None,
     });
     let outcome = run_turn(
         TurnParams {

@@ -48,6 +48,7 @@ fn session_with_history(w: &World, pairs: usize) -> (Session, Vec<String>) {
             .ledger
             .append(Record::UserMessage {
                 text: question.clone(),
+                agent: None,
             })
             .unwrap();
         conversation.extend([
@@ -76,7 +77,7 @@ fn user_messages(session: &Session) -> Vec<String> {
         .unwrap()
         .into_iter()
         .filter_map(|e| match e.record {
-            Record::UserMessage { text } => Some(text),
+            Record::UserMessage { text, agent: None } => Some(text),
             _ => None,
         })
         .collect()
@@ -234,6 +235,7 @@ fn a_scheduled_record_is_kept_but_adds_nothing_to_what_the_user_asked() {
     ledger
         .append(Record::UserMessage {
             text: "check the build every 5 minutes".into(),
+            agent: None,
         })
         .unwrap();
     for event in [
@@ -276,7 +278,10 @@ fn the_ledger_is_append_only_and_owner_only() {
     let session = Session::create(&w.data, SESSION_ID).unwrap();
     let ledger = &session.ledger;
     ledger
-        .append(Record::UserMessage { text: "one".into() })
+        .append(Record::UserMessage {
+            text: "one".into(),
+            agent: None,
+        })
         .unwrap();
     let first = ledger.read().unwrap();
     ledger
@@ -332,6 +337,7 @@ fn a_reused_session_id_is_refused_and_leaves_the_first_ledger_alone() {
         .ledger
         .append(Record::UserMessage {
             text: "kept".into(),
+            agent: None,
         })
         .unwrap();
     let again = Session::create(&w.data, SESSION_ID).err().unwrap();

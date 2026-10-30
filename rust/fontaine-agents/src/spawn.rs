@@ -13,7 +13,7 @@ use crate::mode::own_mode;
 use crate::registry::{AgentTypes, ModelSpec};
 use crate::root_ledger::{AgentEvent, RootLedger};
 use crate::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, SpawnRequest};
-use crate::tree::{AgentTree, DeliverError, Refusal};
+use crate::tree::{AgentTree, DeliverError, NotificationKind, Refusal};
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -51,6 +51,7 @@ struct KillOnDrop {
     ledger: Arc<dyn RootLedger>,
     id: String,
     agent_type: String,
+    handle: Arc<dyn ChildHandle>,
     armed: bool,
 }
 
@@ -63,6 +64,12 @@ impl Drop for KillOnDrop {
                 status: ChildStatus::Killed.as_str().to_string(),
             });
             subagent_event("killed", &self.id, &self.agent_type);
+            // A killed child never reads what the human queued for it.
+            let missed = self.handle.take_missed();
+            if !missed.is_empty() {
+                self.handle
+                    .report_undelivered("it was killed", &missed.join("\n\n"));
+            }
         }
     }
 }
@@ -112,6 +119,101 @@ fn conclude(
         _ => "complete",
     };
     subagent_event(event, id, agent_type);
+}
+
+/// Waits for the child's current run to end, hands its report to the parent, and concludes the
+/// run. The report goes to the parent's inbox, or to the root's when the parent has ended, so an
+/// idle root still gets a turn for it. Then messages the human left for the child unread resume
+/// it.
+pub fn watch_report(
+    tree: Arc<AgentTree>,
+    ledger: Arc<dyn RootLedger>,
+    parent: String,
+    id: String,
+    type_name: String,
+    handle: Arc<dyn ChildHandle>,
+) {
+    tokio::spawn(async move {
+        let report = handle.report().await;
+        // Queued before the child is marked finished, so a surface that sees no one
+        // running always finds the report already waiting.
+        if report.status != ChildStatus::Killed && !tree.was_killed(&id) {
+            let note = format!(
+                "Background agent {id} ({type_name}) finished: {}\n{}",
+                report.status.as_str(),
+                report_text(&report)
+            );
+            if tree.is_running(&parent) {
+                tree.notify_report(&parent, &id, note);
+            } else {
+                tree.post_to_root(&id, NotificationKind::Report, note);
+            }
+        }
+        conclude(&tree, ledger.as_ref(), &id, &type_name, &report);
+        resume_missed(&tree, &ledger, &id, &handle);
+    });
+}
+
+/// Starts another run of an ended child on `text`. The run always reports back as a background
+/// child does.
+pub fn resume_child(
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
+    id: &str,
+    handle: &Arc<dyn ChildHandle>,
+    text: String,
+) -> Result<(), Refusal> {
+    tree.resume(id)?;
+    let type_name = tree.type_of(id).unwrap_or_default();
+    ledger.append_event(AgentEvent::Resumed {
+        agent: id.to_string(),
+    });
+    subagent_event("resume", id, &type_name);
+    handle.resume(text);
+    let parent = tree.parent_of(id).unwrap_or_else(|| ROOT_AGENT.to_string());
+    watch_report(
+        tree.clone(),
+        ledger.clone(),
+        parent,
+        id.to_string(),
+        type_name,
+        handle.clone(),
+    );
+    Ok(())
+}
+
+/// Resumes a child that ended with the human's messages still unread, as Claude Code does. This
+/// runs after the run was concluded, so a late conclusion cannot end the new run.
+fn resume_missed(
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
+    id: &str,
+    handle: &Arc<dyn ChildHandle>,
+) {
+    let missed = handle.take_missed();
+    if missed.is_empty() {
+        return;
+    }
+    let text = missed.join("\n\n");
+    if let Some(why) = tree.resume_blocker(id) {
+        handle.report_undelivered(&why, &text);
+        return;
+    }
+    if let Err(refusal) = resume_child(tree, ledger, id, handle, text.clone()) {
+        handle.report_undelivered(&describe(&refusal), &text);
+    }
+}
+
+/// A refusal to resume, in words for the human.
+pub fn describe(refusal: &Refusal) -> String {
+    match refusal {
+        Refusal::Parallel(max) => {
+            format!("concurrent subagent limit reached (max_parallel = {max})")
+        }
+        Refusal::Depth(max) => format!("subagents nest only {max} layers deep"),
+        Refusal::SessionBudget(why) => format!("the session's agent budget is spent: {why}"),
+        Refusal::AlreadyRunning => "it is already running".to_string(),
+    }
 }
 
 /// The text a parent reads for a child's report.
@@ -236,6 +338,10 @@ impl Tool for AgentTool {
                 Refusal::SessionBudget(why) => ToolExecutionError::refused(format!(
                     "no more subagents can start: {why}. Do not retry this call."
                 )),
+                // Only a resume can find a node already running; a reservation is always new.
+                Refusal::AlreadyRunning => {
+                    ToolExecutionError::other("the subagent slot is already taken")
+                }
             })?;
 
         let mut reservation = ReleaseOnDrop {
@@ -275,25 +381,15 @@ impl Tool for AgentTool {
         subagent_event("spawn", &id, &agent_type.name);
 
         if background {
-            let started = id.clone();
-            let tree = self.tree.clone();
-            let ledger = self.ledger.clone();
-            let type_name = agent_type.name.clone();
-            tokio::spawn(async move {
-                let report = handle.report().await;
-                // Queued before the child is marked finished, so a surface that sees no one
-                // running always finds the report already waiting.
-                if report.status != ChildStatus::Killed && !tree.was_killed(&id) {
-                    let note = format!(
-                        "Background agent {id} ({type_name}) finished: {}\n{}",
-                        report.status.as_str(),
-                        report_text(&report)
-                    );
-                    tree.notify_report(&caller, &id, note);
-                }
-                conclude(&tree, ledger.as_ref(), &id, &type_name, &report);
-            });
-            return Ok(ToolOutput::json(json!({ "agent_id": started })));
+            watch_report(
+                self.tree.clone(),
+                self.ledger.clone(),
+                caller,
+                id.clone(),
+                agent_type.name.clone(),
+                handle,
+            );
+            return Ok(ToolOutput::json(json!({ "agent_id": id })));
         }
 
         let mut guard = KillOnDrop {
@@ -301,6 +397,7 @@ impl Tool for AgentTool {
             ledger: self.ledger.clone(),
             id: id.clone(),
             agent_type: agent_type.name.clone(),
+            handle: handle.clone(),
             armed: true,
         };
         let report = handle.report().await;
@@ -312,6 +409,7 @@ impl Tool for AgentTool {
             &agent_type.name,
             &report,
         );
+        resume_missed(&self.tree, &self.ledger, &id, &handle);
         match report.status {
             ChildStatus::Killed => Err(ToolExecutionError::other(format!(
                 "subagent {id} was killed before it finished"

@@ -187,6 +187,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) -> ControlFlow<()> {
         runtime.append(Record::UserMessage {
             text: typed.to_string(),
+            agent: None,
         });
         self.converse(
             runtime,

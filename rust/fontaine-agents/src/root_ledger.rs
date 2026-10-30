@@ -18,6 +18,10 @@ pub enum AgentEvent {
         from: String,
         to: String,
     },
+    /// The human typed to an ended agent, which started another run.
+    Resumed {
+        agent: String,
+    },
 }
 
 pub trait RootLedger: Send + Sync {

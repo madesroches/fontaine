@@ -78,6 +78,24 @@ pub struct Builtin {
 }
 
 impl Command {
+    /// Whether the command changes the main conversation, which a subagent's view cannot show:
+    /// there it is refused instead of run.
+    pub fn main_only(&self) -> bool {
+        match self {
+            Command::Clear(_)
+            | Command::Compact(_)
+            | Command::Rewind(_)
+            | Command::Branch(_)
+            | Command::Resume(_)
+            | Command::Model(_)
+            | Command::Goal(_)
+            | Command::Loop(_)
+            | Command::Init(_) => true,
+            Command::OutputStyle(argument) | Command::Plan(argument) => !argument.is_empty(),
+            _ => false,
+        }
+    }
+
     /// Whether the command runs immediately, even while a turn works: its handler is
     /// synchronous and touches only UI state — never the turn, the conversation, the ledger
     /// or a blocking wait. Every other built-in queues like a message and executes once the

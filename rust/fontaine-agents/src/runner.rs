@@ -80,8 +80,23 @@ pub trait ChildHandle: Send + Sync {
     /// Stops the child. Its pending approvals are answered as denied.
     fn kill(&self);
 
-    /// Resolves when the child has ended, with how it ended.
+    /// Resolves when the child has ended, with how it ended. After a [`resume`](Self::resume)
+    /// it resolves with the report of the run that is current when it is called.
     fn report(&self) -> BoxFuture<'_, ChildReport>;
+
+    /// Starts another run on the same conversation with `prompt`, the human's words. The caller
+    /// has already moved the node back to running in the tree.
+    fn resume(&self, _prompt: String) {}
+
+    /// Takes the messages the human typed to this child that its last run ended without
+    /// reading.
+    fn take_missed(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Tells the human that `text` could not be delivered because an automatic resume was
+    /// refused.
+    fn report_undelivered(&self, _refusal: &str, _text: &str) {}
 }
 
 pub trait ChildRunner: Send + Sync {

@@ -1,7 +1,7 @@
-//! The background-agents panel: one row per subagent with its type, model, status and spend
-//! against budget, and keys to look inside a row, to kill it and to see what it is waiting for.
-//! A background agent that needs an approval is listed here, so it never hides behind the main
-//! conversation's transcript.
+//! The background-agents panel: every subagent, ended ones included, with its type, model, status
+//! and spend against budget, and the background jobs. Enter on an agent shows its transcript, x
+//! kills a row. An agent that ended and left the list below the status line is reached from
+//! here.
 
 use std::time::Duration;
 
@@ -41,24 +41,14 @@ pub struct JobRow {
     pub state: String,
 }
 
-/// What the panel shows for the row that is open.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Detail {
-    pub id: String,
-    /// The calls it is waiting for the human to decide.
-    pub pending: Vec<String>,
-    /// Its gate decisions, tier and audit entries included, oldest first.
-    pub decisions: Vec<String>,
-    /// What it has said and done.
-    pub log: Vec<String>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PanelKey {
     None,
     Close,
     Kill(String),
     KillJob(String),
+    /// Enter on an agent: close the panel and show its transcript.
+    View(String),
 }
 
 #[derive(Default)]
@@ -67,8 +57,6 @@ pub struct AgentsPanel {
     /// The background jobs, listed below the agents; the selection runs through both.
     jobs: Vec<JobRow>,
     selected: usize,
-    open: bool,
-    pub detail: Option<Detail>,
 }
 
 pub fn status_label(status: ChildStatus) -> &'static str {
@@ -82,12 +70,18 @@ pub fn status_label(status: ChildStatus) -> &'static str {
     }
 }
 
-fn spend_text(row: &PanelRow) -> String {
-    let tokens = match row.token_budget {
-        Some(cap) => format!("{} / {} tok", row.tokens, cap),
-        None => format!("{} tok", row.tokens),
+/// What an agent has spent, against its budget when it has one.
+pub(crate) fn spend_text(
+    tokens: u64,
+    token_budget: Option<u64>,
+    cost_usd: Option<f64>,
+    cost_budget: Option<f64>,
+) -> String {
+    let tokens = match token_budget {
+        Some(cap) => format!("{tokens} / {cap} tok"),
+        None => format!("{tokens} tok"),
     };
-    let cost = match (row.cost_usd, row.cost_budget) {
+    let cost = match (cost_usd, cost_budget) {
         (Some(spent), Some(cap)) => format!("${spent:.4} / ${cap:.2}"),
         (Some(spent), None) => format!("${spent:.4}"),
         (None, Some(_)) => "cost n/a".to_string(),
@@ -155,30 +149,21 @@ impl AgentsPanel {
         self.rows.get(self.selected).map(|r| r.id.clone())
     }
 
-    /// Whether a row is open and the driver should fill in its detail.
-    pub fn is_inspecting(&self) -> bool {
-        self.open
-    }
-
     pub fn handle_key(&mut self, key: KeyEvent) -> PanelKey {
         if key.kind == KeyEventKind::Release {
             return PanelKey::None;
         }
         let n = self.len();
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') if self.open => {
-                self.open = false;
-                self.detail = None;
-            }
             KeyCode::Esc | KeyCode::Char('q') => return PanelKey::Close,
-            KeyCode::Up | KeyCode::Char('k') if n > 0 && !self.open => {
+            KeyCode::Up | KeyCode::Char('k') if n > 0 => {
                 self.selected = (self.selected + n - 1) % n;
             }
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab if n > 0 && !self.open => {
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab if n > 0 => {
                 self.selected = (self.selected + 1) % n;
             }
             KeyCode::Enter | KeyCode::Char('i') if self.selected < self.rows.len() => {
-                self.open = true;
+                return PanelKey::View(self.rows[self.selected].id.clone());
             }
             KeyCode::Char('x') | KeyCode::Char('K')
                 if n > 0 && !key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -211,11 +196,6 @@ impl AgentsPanel {
                 dim,
             )];
         }
-        if self.open
-            && let Some(detail) = &self.detail
-        {
-            return self.detail_lines(detail, width, theme);
-        }
         let mut out = Vec::new();
         if !self.rows.is_empty() {
             out.push(Line::styled("Subagents", bold.fg(theme.heading)));
@@ -238,7 +218,8 @@ impl AgentsPanel {
             for piece in wrap(&head, width) {
                 out.push(Line::styled(piece, style));
             }
-            for piece in wrap(&format!("    {}", spend_text(row)), width) {
+            let spend = spend_text(row.tokens, row.token_budget, row.cost_usd, row.cost_budget);
+            for piece in wrap(&format!("    {spend}"), width) {
                 out.push(Line::styled(piece, dim));
             }
             if let Some(why) = &row.stopped_because {
@@ -276,38 +257,12 @@ impl AgentsPanel {
         out
     }
 
-    fn detail_lines(&self, detail: &Detail, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-        let bold = Style::default().add_modifier(Modifier::BOLD);
-        let dim = Style::default().add_modifier(Modifier::DIM);
-        let mut out = vec![Line::styled(
-            format!("{} in detail", detail.id),
-            bold.fg(theme.heading),
-        )];
-        let mut section = |title: &str, items: &[String], empty: &str| {
-            out.push(Line::styled(title.to_string(), bold));
-            if items.is_empty() {
-                out.push(Line::styled(format!("  {empty}"), dim));
-            }
-            for item in items {
-                for piece in wrap(&format!("  {item}"), width) {
-                    out.push(Line::raw(piece));
-                }
-            }
-        };
-        section("waiting for you", &detail.pending, "nothing");
-        section("gate decisions", &detail.decisions, "none yet");
-        section("transcript", &detail.log, "nothing yet");
-        out
-    }
-
     pub fn footer(&self) -> Vec<Line<'static>> {
         let dim = Style::default().add_modifier(Modifier::DIM);
         let hint = if self.len() == 0 {
             "Esc closes"
-        } else if self.open {
-            "Esc goes back · x kills this agent"
         } else {
-            "up/down select · Enter looks inside an agent · x kills · Esc closes"
+            "up/down select · Enter views an agent · x kills · Esc closes"
         };
         vec![Line::styled(hint, dim)]
     }

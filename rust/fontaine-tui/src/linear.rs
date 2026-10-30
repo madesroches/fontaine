@@ -366,6 +366,8 @@ pub struct Linear<W: Write> {
     on_field: bool,
     /// The task list as last printed.
     todos_printed: Vec<TodoItem>,
+    /// The agent whose transcript was last printed; `None` is the main conversation.
+    viewed: Option<String>,
 }
 
 impl<W: Write> Linear<W> {
@@ -379,6 +381,7 @@ impl<W: Write> Linear<W> {
             prompt_open: false,
             on_field: false,
             todos_printed: Vec::new(),
+            viewed: None,
         }
     }
 
@@ -386,7 +389,21 @@ impl<W: Write> Linear<W> {
         let mut lines = Vec::new();
         let mut bell = false;
 
-        for settled in app.transcript.commit_entries(Cut::Lines) {
+        // The terminal is not erased for a screen reader: switching says which conversation
+        // follows, and only what was not printed yet is printed.
+        app.reprint = false;
+        if self.viewed != app.viewing {
+            self.viewed = app.viewing.clone();
+            lines.push(match &self.viewed {
+                Some(id) => match app.viewed_row() {
+                    Some(row) => format!("viewing {id} ({})", row.agent_type),
+                    None => format!("viewing {id}"),
+                },
+                None => "back to the main conversation".to_string(),
+            });
+        }
+
+        for settled in app.shown_mut().commit_entries(Cut::Lines) {
             let mut labelled = Vec::new();
             label(&settled, &mut labelled);
             // Not `terminal_text`: its redraw handling would drop the label before a `\r`.
@@ -576,6 +593,42 @@ mod tests {
             tool: "shell".into(),
             args,
         });
+    }
+
+    #[test]
+    fn switching_views_prints_a_header_and_only_what_was_not_printed() {
+        let mut rig = Rig::new();
+        rig.app.transcript.notice("main one");
+        let out = rig.render();
+        assert!(out.contains("notice: main one"), "{out:?}");
+        rig.app
+            .view_of("agent-1".into())
+            .transcript
+            .notice("agent one");
+        rig.app.view(Some("agent-1".into()));
+        let out = rig.render();
+        assert!(out.contains("viewing agent-1"), "{out:?}");
+        assert!(out.contains("notice: agent one"), "{out:?}");
+        assert!(!out.contains("main one"), "{out:?}");
+        assert!(!rig.app.reprint, "a screen reader keeps its history");
+        rig.app
+            .view_of("agent-1".into())
+            .transcript
+            .notice("agent two");
+        let out = rig.render();
+        assert!(
+            out.contains("agent two") && !out.contains("agent one"),
+            "{out:?}"
+        );
+        rig.app.transcript.notice("main two");
+        rig.app.view(None);
+        let out = rig.render();
+        assert!(out.contains("back to the main conversation"), "{out:?}");
+        assert!(out.contains("notice: main two"), "{out:?}");
+        assert!(
+            !out.contains("main one") && !out.contains("agent"),
+            "{out:?}"
+        );
     }
 
     // --- echo_diff ---

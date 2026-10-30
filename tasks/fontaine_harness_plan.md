@@ -368,6 +368,11 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-30: The wait is `job_output`, extended to `agent-*` ids, rather than a new tool, mirroring the unified `TaskOutput` Claude Code had before removing it; `job_output` takes the legacy aliases `BashOutputTool`, `AgentOutput` and `AgentOutputTool` (#301).
 - 2026-10-30: `job_output`'s `wait_secs` has no ceiling, because the model chooses the timeout; an omitted value means "until it ends" for a subagent and "now" for a job, and any wait returns early on a message or a user interjection. Claude Code's removed `TaskOutput` capped waits at 600 s (#301).
 - 2026-10-30: A subagent may call `job_output` only with the id of a subagent it started; jobs and the list stay root-only. This amends the 2026-10-27 decision that background shell jobs and `monitor` are root-only (#301).
+- 2026-10-30: Deviation from Claude Code (#321) — a killed or budget-exhausted agent cannot be resumed by typing into its view (Claude Code lets the user resume a stopped row within 30 s); reason: the human's kill and the budget cap stay final.
+- 2026-10-30: `message_agent`'s resume branch gets the handle through `AgentTree::handle_of(id)`, with no id-to-`ChildRun` map in `CoreChildRunner`; reason: the tree already owns the handle (#321).
+- 2026-10-30: The agent sink carries `(String, AgentViewEvent)` with `AgentViewEvent { Prompt(String), Event(SessionEvent) }` and no new `SessionEvent` variant is added; with no sink installed (headless, evals) child decisions and previews stay on the root feed as before (#321).
+- 2026-10-30: Human messages left in an agent's queue after a run are drained through `ChildHandle::take_missed` after `conclude` on the foreground and background paths, and a refused automatic resume warns with the undelivered text; reason: a late `finish` then cannot end the new run, and the human is told what was not delivered (#321).
+- 2026-10-30: `message_agent` re-checks `is_running` after `queue_for` and takes its message back to resume if the run ended, and `AgentTree::resume` refuses an already-running node atomically (`Refusal::AlreadyRunning`); reason: the tree and steering locks are separate, so a run can end between them (#321).
 
 ### Build and release
 
@@ -529,6 +534,8 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-30: Guardian policy, not a deterministic bypass — the shipped `allow` list gains a `Source inspection` entry treating source, header, build-file, installed-dependency and installed-skill-definition reads (including `SKILL.md`) outside the roots as routine in `auto`/`plan`; the floor, user boundaries and hard denies keep their precedence, and the minimal profile prompt is unchanged (#284).
 - 2026-10-30: The three shipped soft-deny rules that had no label are reported under existing labels: persistence and self-modification as `Safety Bypass`, untrusted code integration as `Download+Execute`, third-party and real-world effects as `Data Exfiltration`. The label set is closed and adding labels ripples into the audit log, headless schema and scorecards; a malformed verdict is also retried with a harness-written reason (never the model's text).
 - 2026-10-30: The screen stage's input stays byte-identical: the scratch-directory and spawned-agent facts and the `session_scratch` status render only in the guardian view, following the 2026-10-27 `source="user"` decision (#312).
+- 2026-10-30: An agent view shows denials only, as the main chat does, and a subagent's allowed tier and rule live in the audit log (`decisions_by_agent` / `decisions_of` / the agent log are deleted); reason: matches the main conversation and Claude Code (#321).
+- 2026-10-30: Human messages are scoped by agent: `Record::UserMessage` gains an optional `agent`, and a message typed to a subagent is guardian intent only for that agent and its descendants, never for main or siblings, and is ignored by session naming and the rewind count (a rewind also drops agent-typed messages recorded after the first dropped main one); reason: the guardian never judges a call by words its model has not read (#321).
 
 ### Headless
 
@@ -757,6 +764,11 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-30: In the TUI `/` menu, Tab first extends the typed name to the longest common prefix of
   the matches and only then accepts the selected row; Claude Code accepts the selected row on the
   first Tab. (#294)
+- 2026-10-30: Deviation from Claude Code (#321) — skills, `!` lines and conversation-changing commands typed in an agent view are refused with a pointer back to main (Claude Code sends skills to the agent and asks to confirm `/clear`/`/compact`/`/rewind`); reason: no child-side skill path exists, and a refusal cannot act on a conversation the human is not looking at.
+- 2026-10-30: Deviation from Claude Code (#321) — Esc never interrupts the main turn while an agent is viewed; reason: the human cannot see what it would stop.
+- 2026-10-30: The agent-view mockup in `tasks/subagent_view_mockups/states.html` was approved by the maintainer (#321).
+- 2026-10-30: Ended agents leave the list below the status line as in Claude Code (done at once, others after 30 s) and stay reachable from the agents panel, which replaces its flat detail view with Enter on an agent to view it (#321, fixes #299).
+- 2026-10-30: Closing the agents panel after the screen committed rows under it reprints the transcript on screen (fixes #296); approvals and the other dialogs keep their behavior, since a reprint erases terminal history and would run after every routine prompt (#321).
 
 ## Open Questions
 

@@ -40,9 +40,12 @@ pub enum Record {
         paths: Vec<String>,
         truncated: bool,
     },
-    /// A human message, verbatim.
+    /// A human message, verbatim. `agent` names the subagent it was typed to in that agent's
+    /// view; `None` is the main conversation.
     UserMessage {
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
     },
     ModeChange {
         from: String,
@@ -206,11 +209,22 @@ pub struct LedgerView {
     pub env_keys: Vec<String>,
     index: HashSet<String>,
     pub index_truncated: bool,
-    /// Every human message, verbatim, oldest first.
+    /// Every human message typed to the main conversation, verbatim, oldest first.
     pub user_messages: Vec<String>,
+    /// The messages typed to a subagent, oldest first.
+    pub agent_messages: Vec<AgentMessage>,
     pub actions: Vec<ActionEntry>,
     pub denials: Vec<DenialEntry>,
     touched: HashSet<String>,
+}
+
+/// A human message typed to one subagent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentMessage {
+    pub agent: String,
+    pub text: String,
+    /// How many main-conversation messages came before it, which places it for a rewind.
+    pub after: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -239,6 +253,26 @@ pub enum Existence {
 }
 
 impl LedgerView {
+    /// The human messages that are intent for `caller`: those typed to the main conversation,
+    /// and those typed to `caller` or one of its `ancestors`, in the order they were typed.
+    /// The words of a sibling's or a descendant's view never count.
+    pub fn intent_for(&self, ancestry: &[String]) -> Vec<String> {
+        let mut merged = Vec::new();
+        let mut agents = self
+            .agent_messages
+            .iter()
+            .filter(|message| ancestry.contains(&message.agent))
+            .peekable();
+        for (at, text) in self.user_messages.iter().enumerate() {
+            while let Some(message) = agents.next_if(|message| message.after <= at) {
+                merged.push(message.text.clone());
+            }
+            merged.push(text.clone());
+        }
+        merged.extend(agents.map(|message| message.text.clone()));
+        merged
+    }
+
     pub fn existence(&self, path: &str) -> Existence {
         let key = path_key(path);
         if self.index.contains(&key) {
@@ -268,8 +302,19 @@ impl LedgerView {
                 self.index = paths.iter().map(|p| path_key(p)).collect();
                 self.index_truncated = *truncated;
             }
-            Record::UserMessage { text } => self.user_messages.push(text.clone()),
-            Record::ContextCleared {} => self.user_messages.clear(),
+            Record::UserMessage { text, agent: None } => self.user_messages.push(text.clone()),
+            Record::UserMessage {
+                text,
+                agent: Some(agent),
+            } => self.agent_messages.push(AgentMessage {
+                agent: agent.clone(),
+                text: text.clone(),
+                after: self.user_messages.len(),
+            }),
+            Record::ContextCleared {} => {
+                self.user_messages.clear();
+                self.agent_messages.clear();
+            }
             Record::Action {
                 tool,
                 agent,
@@ -305,6 +350,9 @@ impl LedgerView {
                     .len()
                     .saturating_sub(*dropped_user_messages);
                 self.user_messages.truncate(keep);
+                // Typed after the first dropped message, a subagent's message goes with it: that
+                // is stricter, never looser.
+                self.agent_messages.retain(|message| message.after <= keep);
             }
             Record::ModeChange { .. }
             | Record::GuardianOff { .. }
@@ -516,7 +564,10 @@ mod tests {
         let ledger = Ledger::create(dir).unwrap();
         for text in ["one", "two"] {
             ledger
-                .append(Record::UserMessage { text: text.into() })
+                .append(Record::UserMessage {
+                    text: text.into(),
+                    agent: None,
+                })
                 .unwrap();
         }
         ledger.path().to_path_buf()
@@ -534,6 +585,7 @@ mod tests {
         ledger
             .append(Record::UserMessage {
                 text: "three".into(),
+                agent: None,
             })
             .unwrap();
         drop(ledger);
@@ -554,6 +606,7 @@ mod tests {
         ledger
             .append(Record::UserMessage {
                 text: "three".into(),
+                agent: None,
             })
             .unwrap();
         drop(ledger);
@@ -626,6 +679,7 @@ mod tests {
         ledger
             .append(Record::UserMessage {
                 text: "before".into(),
+                agent: None,
             })
             .unwrap();
         ledger
@@ -650,6 +704,7 @@ mod tests {
         ledger
             .append(Record::UserMessage {
                 text: "after".into(),
+                agent: None,
             })
             .unwrap();
         let check = |ledger: &Ledger| {
@@ -667,7 +722,10 @@ mod tests {
 
     fn say(ledger: &Ledger, text: &str) {
         ledger
-            .append(Record::UserMessage { text: text.into() })
+            .append(Record::UserMessage {
+                text: text.into(),
+                agent: None,
+            })
             .unwrap();
     }
 
@@ -739,5 +797,101 @@ mod tests {
             })
             .unwrap();
         assert!(ledger.view().user_messages.is_empty());
+    }
+
+    fn said(ledger: &Ledger, text: &str, agent: Option<&str>) {
+        ledger
+            .append(Record::UserMessage {
+                text: text.into(),
+                agent: agent.map(str::to_string),
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_message_typed_to_an_agent_is_intent_for_it_and_its_descendants_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        said(&ledger, "main one", None);
+        said(&ledger, "to agent-3", Some("agent-3"));
+        said(&ledger, "main two", None);
+        said(&ledger, "to agent-4", Some("agent-4"));
+        let view = ledger.view();
+        assert_eq!(view.user_messages, ["main one", "main two"]);
+        let ancestry =
+            |ids: &[&str]| -> Vec<String> { ids.iter().map(|s| s.to_string()).collect() };
+        // The root hears only the main conversation.
+        assert_eq!(view.intent_for(&[]), ["main one", "main two"]);
+        // agent-3 hears main and itself, in the order typed; its sibling's words are not its own.
+        assert_eq!(
+            view.intent_for(&ancestry(&["agent-3"])),
+            ["main one", "to agent-3", "main two"]
+        );
+        // A child of agent-3 inherits what was typed to its ancestor.
+        assert_eq!(
+            view.intent_for(&ancestry(&["agent-5", "agent-3"])),
+            ["main one", "to agent-3", "main two"]
+        );
+        assert_eq!(
+            view.intent_for(&ancestry(&["agent-4"])),
+            ["main one", "main two", "to agent-4"]
+        );
+    }
+
+    #[test]
+    fn a_record_without_an_agent_loads_as_the_main_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        said(&ledger, "old", None);
+        let text = std::fs::read_to_string(ledger.path()).unwrap();
+        assert!(!text.contains("\"agent\""), "{text}");
+        drop(ledger);
+        let reopened = Ledger::open(dir.path()).unwrap();
+        assert_eq!(reopened.view().user_messages, ["old"]);
+        assert!(reopened.view().agent_messages.is_empty());
+        let legacy: Record =
+            serde_json::from_str(r#"{"kind":"user_message","text":"legacy"}"#).unwrap();
+        assert_eq!(
+            legacy,
+            Record::UserMessage {
+                text: "legacy".into(),
+                agent: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_rewind_drops_agent_messages_typed_after_the_first_dropped_main_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        said(&ledger, "one", None);
+        said(&ledger, "kept for agent", Some("agent-1"));
+        said(&ledger, "two", None);
+        said(&ledger, "dropped for agent", Some("agent-1"));
+        said(&ledger, "three", None);
+        ledger
+            .append(Record::Rewound {
+                turn: 2,
+                what: crate::checkpoint::RewindWhat::Conversation,
+                dropped_user_messages: 2,
+            })
+            .unwrap();
+        let view = ledger.view();
+        assert_eq!(view.user_messages, ["one"]);
+        let kept: Vec<&str> = view
+            .agent_messages
+            .iter()
+            .map(|m| m.text.as_str())
+            .collect();
+        assert_eq!(kept, ["kept for agent"]);
+    }
+
+    #[test]
+    fn a_clear_forgets_what_was_typed_to_agents_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        said(&ledger, "to agent", Some("agent-1"));
+        ledger.append(Record::ContextCleared {}).unwrap();
+        assert!(ledger.view().agent_messages.is_empty());
     }
 }

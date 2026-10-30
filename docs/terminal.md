@@ -165,6 +165,7 @@ What is printed:
 | `Permission Required:` | An approval prompt opened. Its question, the call (for an `edit`, `write` or `notebook_edit`, its diff as plain text: line numbers, then `+` or `-` and the line), the choices and the rule the lasting answers would add follow. |
 | `<name>:` | Another dialog opened, for example `model:`, `providers:`, `denied:` or `MCP server:`. |
 | `selected: ...` | The highlighted row of the open dialog. |
+| `viewing agent-3 (worker)` | You showed a subagent's transcript. Its entries not printed before follow, and `back to the main conversation` and the main chat's entries not printed before follow when you return. The terminal is not erased, so nothing is printed twice. |
 | `[plan mode on]` | The mode changed: `[manual mode on]`, `[accept edits on]`, `[plan mode on]`, `[auto mode on]` or `[dontAsk mode on]`, however it changed. |
 
 A dialog is printed in full when it opens and afterwards only the lines that changed: moving the
@@ -184,8 +185,9 @@ approval, an MCP server question or the unavailable-guardian prompt.
 
 Known limitations:
 
-- There is no status bar, so no working indicator and no running-agent count. `/status` reports the
-  mode and the model.
+- There is no status bar, so no working indicator and no running-agent count, and no agent list:
+  `/agents` (or `/tasks`) opens the agents panel, and Enter on a subagent there is how you show its
+  transcript. `/status` reports the mode and the model.
 - Messages queued while a turn runs are not announced; each is heard as `you: ...` when it is sent.
 - A running tool call is not announced until it ends. The absent bell tells you the turn is still
   going.
