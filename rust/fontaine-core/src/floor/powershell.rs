@@ -2,9 +2,11 @@
 //! this is a small token scan whose soundness rule mirrors the POSIX one: anything it cannot
 //! positively read as safe while a deleter is mentioned is critical.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use super::{CriticalEnv, is_critical_text};
+use fontaine_tools::scope::fold;
+
+use super::{CriticalEnv, is_critical, is_critical_text, same_path, under};
 
 /// Commands, aliases and executables that delete files, compared case-insensitively as the last
 /// path component without `.exe`.
@@ -78,6 +80,14 @@ fn scan(command: &str, base: &Path, env: &CriticalEnv<'_>) -> Option<String> {
         if *quoted && mentions_deleter(text) {
             return Some("a string mentions a deleter".to_string());
         }
+        if !quoted && text.starts_with('-') && is_com_object_option(&option_name(text)) {
+            return Some("a COM object can delete files this check cannot see".to_string());
+        }
+        if matches!(name.as_str(), "foreach-object" | "foreach" | "%")
+            && names_delete_member(&tokens[at + 1..])
+        {
+            return Some("a piped member call deletes".to_string());
+        }
     }
     if let Some(Token::Sep('&')) = tokens.last() {
         return Some("the command name cannot be resolved".to_string());
@@ -142,16 +152,41 @@ fn mentions_deleter(text: &str) -> bool {
     })
 }
 
-/// A `::Delete` or `.Delete(` call, which `[IO.File]::Delete(...)`, `[IO.Directory]:: Delete(...)`
-/// and `$directory.Delete()` all are. Scanned in the raw text, whatever the quoting.
+/// A `::Delete` or `.Delete…(` call, which `[IO.File]::Delete(...)`, `[IO.Directory]:: Delete(...)`,
+/// `$directory.Delete()` and `$fso.DeleteFolder(...)` all are. Scanned in the raw text, whatever
+/// the quoting.
 fn calls_dotnet_delete(command: &str) -> bool {
     let lower = command.to_ascii_lowercase();
     lower
         .match_indices("::")
         .any(|(at, found)| lower[at + found.len()..].trim_start().starts_with("delete"))
-        || lower
-            .match_indices(".delete")
-            .any(|(at, found)| lower[at + found.len()..].trim_start().starts_with('('))
+        || lower.match_indices(".delete").any(|(at, found)| {
+            lower[at + found.len()..]
+                .trim_start_matches(|c: char| c.is_alphanumeric() || c == '_')
+                .trim_start()
+                .starts_with('(')
+        })
+}
+
+/// `-ComObject` or an abbreviation of it: `Scripting.FileSystemObject` deletes through methods
+/// this scan does not follow.
+fn is_com_object_option(name: &str) -> bool {
+    name.len() >= 3 && "comobject".starts_with(name)
+}
+
+/// Whether the words after `ForEach-Object` name a `Delete…` member to call on each piped
+/// object, positionally or as `-MemberName`.
+fn names_delete_member(rest: &[Token]) -> bool {
+    rest.iter()
+        .take_while(|token| matches!(token, Token::Word { .. } | Token::Sep(',')))
+        .any(|token| match token {
+            Token::Word { text, .. } => {
+                let lower = text.to_ascii_lowercase();
+                let value = lower.split_once(':').map_or(lower.as_str(), |(_, v)| v);
+                value.starts_with("delete")
+            }
+            Token::Sep(_) => false,
+        })
 }
 
 fn is_single_quote(c: char) -> bool {
@@ -398,15 +433,43 @@ fn provider_letters(text: &str) -> Option<usize> {
     (!head.is_empty() && head.chars().all(|c| c.is_ascii_alphabetic())).then_some(head.len())
 }
 
-/// A pattern is critical when it matches everything in the directory or the part before its
-/// first wildcard names a critical place or the start of one.
+/// A pattern is critical when it matches everything in the directory, or the directory it
+/// searches is not strictly inside a workspace root: a pattern like `..\pro*` or `C:\Users\m*`
+/// can match a critical place itself, whatever its literal prefix.
 fn wildcard_critical(text: &str, base: &Path, env: &CriticalEnv<'_>) -> bool {
     if text.chars().all(|c| matches!(c, '*' | '?' | '.')) {
         return true;
     }
     let at = text.find(['*', '?', '[']).unwrap_or(text.len());
-    let prefix = &text[..at];
-    !prefix.is_empty() && is_critical_text(prefix, base, env)
+    let head = &text[..at];
+    let (dir, explicit) = match head.rfind(['\\', '/']) {
+        Some(end) => (&head[..=end], true),
+        // `C:*` searches the current directory of a drive.
+        None if head.contains(':') => return true,
+        None => ("", false),
+    };
+    let joined = if dir.is_empty() {
+        base.to_path_buf()
+    } else if Path::new(dir).is_absolute() || dir.starts_with(['/', '\\']) {
+        PathBuf::from(dir)
+    } else {
+        base.join(dir)
+    };
+    let lexical = fold(&joined);
+    // A symlink to a critical place is as critical as the place.
+    let resolved = std::fs::canonicalize(&lexical).ok();
+    let roots = env.scope.roots();
+    let inside = |path: &Path| {
+        let strictly = roots
+            .iter()
+            .any(|root| under(path, root).is_some_and(|rest| rest.components().next().is_some()));
+        let at_root = !explicit && roots.iter().any(|root| same_path(path, root));
+        (strictly && !is_critical(path, env)) || at_root
+    };
+    !([Some(lexical), resolved]
+        .into_iter()
+        .flatten()
+        .all(|path| inside(&path)))
 }
 
 #[cfg(test)]
@@ -583,6 +646,13 @@ mod tests {
             "$obj.Delete()",
             "$obj.delete ()",
             "(Get-Item x).Delete()",
+            "$fso.DeleteFile('x')",
+            "(New-Object -ComObject Scripting.FileSystemObject).DeleteFolder('x')",
+            "New-Object -Com Scripting.FileSystemObject",
+            "Get-Item $HOME | ForEach-Object Delete",
+            "Get-Item x | % Delete",
+            "Get-Item x | % -MemberName Delete -ArgumentList $true",
+            "Get-Item x | foreach -Member:Delete",
         ] {
             assert!(critical(command), "{command}");
         }
@@ -674,6 +744,34 @@ mod tests {
         ] {
             assert!(!critical(command), "{command}");
         }
+    }
+
+    #[test]
+    fn a_wildcard_that_can_match_a_critical_place_is_critical() {
+        let sep = if cfg!(windows) { '\\' } else { '/' };
+        let proj = root().display().to_string();
+        let parent = Path::new(&proj).parent().unwrap().display().to_string();
+        let name = Path::new(&proj)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let home = home();
+        let home_stem = &home[..home.len() - 1];
+        for command in [
+            format!(
+                "Remove-Item -Recurse -Force ..{sep}{}*",
+                &name[..name.len() - 1]
+            ),
+            format!("Remove-Item -Recurse {home_stem}*"),
+            format!("Remove-Item -Recurse {parent}{sep}{}*", &name[..2]),
+            format!("Remove-Item {proj}{sep}*.o"),
+            format!("Remove-Item {proj}{sep}..{sep}*"),
+            format!("Remove-Item {proj}{sep}b*{sep}x"),
+        ] {
+            assert!(critical(&command), "{command}");
+        }
+        assert!(!critical(&format!("Remove-Item {proj}{sep}build{sep}*.o")));
     }
 
     #[test]

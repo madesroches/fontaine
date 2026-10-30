@@ -463,7 +463,8 @@ fn with_background(mut schema: serde_json::Value) -> serde_json::Value {
             "run_in_background".to_owned(),
             json!({
                 "type": ["boolean", "null"],
-                "description": "Main agent only. Start the command as a background job and                                 return at once; you are told when it ends.",
+                "description": "Main agent only. Start the command as a background job and \
+                    return at once; you are told when it ends.",
             }),
         );
     }
@@ -583,7 +584,19 @@ impl Tool for PowerShellTool {
     fn description(&self) -> String {
         let max = self.shell.max_timeout.max(1);
         format!(
-            "Run a PowerShell command in the current directory, or in cwd, with {}. Write              PowerShell syntax, not POSIX `sh`: use `shell` for that. stdin is empty. Returns              the exit code and stdout and stderr interleaved line by line. Only a literal              `exit N` sets the exit code; a failing native command does not. A command still              running at timeout_secs (default {}, at most {max}), or, with the default, once it              printed nothing for {}s, keeps running as a background job and you are told when              it ends; pass run_in_background for a server or a long build you do not need to              wait for. Do not poll with `Start-Sleep`: use job_output with wait_secs. Background              jobs are for the main agent only: a subagent's command is stopped at its timeout              and run_in_background is refused. A command that prints more than {} MB is killed.              Each call starts a fresh process: a `cd` or a variable does not carry over to the              next call. Do not start programs that wait for input. Use the dedicated file              tools to read, search and edit files, not `Get-Content` or `Select-String`.",
+            "Run a PowerShell command in the current directory, or in cwd, with {}. Write \
+                PowerShell syntax, not POSIX `sh`: use `shell` for that. stdin is empty. Returns \
+                the exit code and stdout and stderr interleaved line by line. Only a literal \
+                `exit N` sets the exit code; a failing native command does not. A command still \
+                running at timeout_secs (default {}, at most {max}), or, with the default, once it \
+                printed nothing for {}s, keeps running as a background job and you are told when \
+                it ends; pass run_in_background for a server or a long build you do not need to \
+                wait for. Do not poll with `Start-Sleep`: use job_output with wait_secs. Background \
+                jobs are for the main agent only: a subagent's command is stopped at its timeout \
+                and run_in_background is refused. A command that prints more than {} MB is killed. \
+                Each call starts a fresh process: a `cd` or a variable does not carry over to the \
+                next call. Do not start programs that wait for input. Use the dedicated file \
+                tools to read, search and edit files, not `Get-Content` or `Select-String`.",
             self.edition(),
             DEFAULT_TIMEOUT.min(self.shell.max_timeout).max(1),
             QUIET_LIMIT.as_secs(),
