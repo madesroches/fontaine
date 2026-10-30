@@ -45,8 +45,8 @@ script is a fixed preamble, then a newline, then the user's command verbatim:
 `$ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding`
 (no progress records, UTF-8 output instead of the OEM codepage). The preamble never touches the
 command text, and the guardian and display see only the plain command. Exit codes: `exit N` is
-preserved; no `exit $LASTEXITCODE` is appended, so a failing native command's code is not
-propagated and `Write-Error` exits 0 (documented in `docs/tools.md`, as PowerShell's own
+preserved; no `exit $LASTEXITCODE` is appended, so a failing last statement exits 1 (not the
+native program's code) and an earlier failure leaves the code 0 (documented in `docs/tools.md`, as PowerShell's own
 `-EncodedCommand` semantics). The launch helper is extracted from `ShellTool` taking program and argv as parameters, and
 shares timeout clamp, output cut and `Jobs::start` handling. `call_job`'s timeout/cut/quiet logic
 (`builtins.rs:~348-441`) is parameterized by program+argv; `ShellTool::prepared` (the
@@ -219,7 +219,7 @@ prefer the dedicated file tools.
 - 2026-10-30: The worker agent does not get `powershell`.
 - 2026-10-30: The tool is absent when no interpreter is found; not a startup error.
 - 2026-10-30: Critical-path check is a token-level scan; non-FileSystem providers are left to the guardian.
-- AFK: 2026-10-30: `-EncodedCommand` runs a fixed preamble (silent progress, UTF-8 console output) plus `-OutputFormat Text`, without appending `exit $LASTEXITCODE`; only literal `exit N` is preserved and native exit codes collapse (documented), and the guardian still sees the plain command.
+- AFK: 2026-10-30: `-EncodedCommand` runs a fixed preamble (silent progress, UTF-8 console output) plus `-OutputFormat Text`, without appending `exit $LASTEXITCODE`; only literal `exit N` is preserved and a failing last statement exits 1 whatever the native code (documented), and the guardian still sees the plain command.
 - AFK: 2026-10-30: In the `Remove-Item` critical scan, `-Include`/`-Exclude`/`-Filter` values are ignored as patterns, parameter names match as unambiguous prefixes, and any unknown or ambiguous option makes the call critical.
 - These lines carry into the master plan's Decisions entry replacing the "backlog" line.
 - Cancel/timeout of a `powershell` call kills only the direct child process on Windows, same as

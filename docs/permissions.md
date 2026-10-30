@@ -302,7 +302,10 @@ PowerShell command. Without an allow rule or hook, every call prompts in `manual
     `-EncodedCommand` on any command, `[scriptblock]::Create`, `.InvokeScript(`,
     `.NewScriptBlock(`, and `-ComObject`;
   - a `&` or `.` call operator whose command is not a literal word, or a trailing `&` that
-    starts a background job.
+    starts a background job;
+  - a `Set-Alias` or `New-Alias` (`sal`, `nal`) whose value is a variable or expression;
+  - a quoted string that contains a deleter's name, or a deleter with no target word, so
+    `git commit -m "rm unused imports"` stops for a human in every mode.
 
   A deleter with a plain, literal target inside the workspace is not critical. Targets on other
   providers (`HKLM:`, `Env:`, `Cert:`) are not file deletes and are left to the guardian.

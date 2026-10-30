@@ -109,6 +109,11 @@ fn scan_hidden_commands(tokens: &[Token]) -> Option<String> {
         if NESTED.contains(&name.as_str()) {
             return Some(format!("`{text}` runs a command this check cannot read"));
         }
+        if matches!(name.as_str(), "set-alias" | "sal" | "new-alias" | "nal")
+            && computes_alias_value(&tokens[at + 1..])
+        {
+            return Some("an alias is bound to a computed command".to_string());
+        }
         if !quoted && text.starts_with('-') && NESTED_OPTIONS.contains(&option_name(text).as_str())
         {
             return Some(format!("`{text}` runs a command this check cannot read"));
@@ -136,6 +141,17 @@ fn scan_hidden_commands(tokens: &[Token]) -> Option<String> {
         }
     }
     None
+}
+
+/// Whether the rest of an alias statement holds an expression or variable, so the alias may name
+/// a deleter without any token spelling one.
+fn computes_alias_value(rest: &[Token]) -> bool {
+    rest.iter()
+        .take_while(|token| !matches!(token, Token::Sep(';' | '|' | '&')))
+        .any(|token| match token {
+            Token::Word { text, .. } => is_non_literal(text),
+            Token::Sep(c) => matches!(c, '(' | '{'),
+        })
 }
 
 /// Whether `tokens[at]` is a call or dot-source operator whose command is not a literal word.
@@ -825,6 +841,18 @@ mod tests {
         ] {
             assert!(critical(command), "{command}");
         }
+    }
+
+    #[test]
+    fn an_alias_bound_to_a_computed_value_is_critical() {
+        for command in [
+            "Set-Alias x ('Remove-'+'Item'); x -Recurse -Force C:\\Users\\me",
+            "sal x $name",
+            "New-Alias -Name x -Value $d",
+        ] {
+            assert!(critical(command), "{command}");
+        }
+        assert!(!critical("Set-Alias ll Get-ChildItem"));
     }
 
     #[test]

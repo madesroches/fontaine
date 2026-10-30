@@ -269,9 +269,10 @@ an error: the tool is simply not offered to the model, and on Linux and macOS it
   `using namespace`, `using module` and `using assembly` lines are moved ahead of it, since
   PowerShell requires them first. What the
   [guardian](guardian.md) judges and the approval prompt shows is the plain command.
-- **Exit codes.** A literal `exit N` sets the exit code. A failing native command does not, and
-  `Write-Error` alone exits 0: this is how PowerShell treats an encoded command. Check
-  `$LASTEXITCODE` in the command and `exit` with it when the code matters.
+- **Exit codes.** A literal `exit N` sets the exit code. A failing last statement exits 1, not the
+  native program's own code, and a failure earlier in the command does not change the exit code:
+  this is how PowerShell treats an encoded command. End the command with `exit $LASTEXITCODE` to
+  keep a native program's code.
 - **Each call is a fresh process.** A variable or a `Set-Location` does not carry over.
 - **No command analysis.** Nothing reads a PowerShell command as safe in advance, so every call
   is [judged](permissions.md#powershell). Hooks, `!` commands and skill `!` lines keep running

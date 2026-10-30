@@ -25,8 +25,8 @@ All notable changes are recorded here. The format follows
   Git Bash. The command reaches the interpreter encoded, so PowerShell parses exactly the text the
   guardian judged. It is registered only when an interpreter is found, is never pre-classified (every
   call is judged), takes bare-name rules only, and is covered by bare `shell` deny and ask rules. The
-  critical-path floor now reads `Remove-Item` and its aliases, `cmd` deletes and .NET `Delete` calls,
-  and stops any it cannot resolve for a human in every mode (#28).
+  critical-path floor now reads `Remove-Item` and its aliases and .NET `Delete` calls, treats any nested
+  `cmd`, `pwsh`, `powershell` or `iex` invocation as critical, and stops any it cannot resolve for a human in every mode (#28).
 
 - `job_output` waits on a background subagent: given an `agent-*` id it blocks until that
   subagent ends, or `wait_secs` passes, and reports only its status. The report still arrives

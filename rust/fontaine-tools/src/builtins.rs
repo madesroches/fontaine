@@ -595,8 +595,10 @@ impl Tool for PowerShellTool {
         format!(
             "Run a PowerShell command in the current directory, or in cwd, with {}. Write \
                 PowerShell syntax, not POSIX `sh`: use `shell` for that. stdin is empty. Returns \
-                the exit code and stdout and stderr interleaved line by line{kept}. Only a literal \
-                `exit N` sets the exit code; a failing native command does not. A command still \
+                the exit code and stdout and stderr interleaved line by line{kept}. A literal \
+                `exit N` sets the exit code; a failing last statement exits 1, not the native \
+                program's code, and an earlier failure does not change it (end with `exit \
+                $LASTEXITCODE` to keep a native code). A command still \
                 running at timeout_secs (default {}, at most {max}), or, with the default, once it \
                 printed nothing for {}s, keeps running as a background job and you are told when \
                 it ends; pass run_in_background for a server or a long build you do not need to \

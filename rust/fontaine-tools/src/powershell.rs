@@ -84,7 +84,13 @@ pub fn launch_args(command: &str) -> Vec<OsString> {
 fn split_usings(command: &str) -> (&str, &str) {
     let mut end = 0;
     let mut kept = 0;
+    let mut in_block_comment = false;
     for line in command.split_inclusive('\n') {
+        if in_block_comment || line.trim_start().starts_with("<#") {
+            end += line.len();
+            in_block_comment = !line.contains("#>");
+            continue;
+        }
         let trimmed = line.trim_start().to_ascii_lowercase();
         let is_using = ["namespace", "module", "assembly"].iter().any(|kind| {
             trimmed.strip_prefix("using").is_some_and(|after| {
@@ -327,6 +333,15 @@ mod tests {
             format!(
                 "#requires -Version 5\n# note\nusing namespace System.IO\n{PREAMBLE}\nGet-Date"
             )
+        );
+    }
+
+    #[test]
+    fn a_block_comment_before_the_using_block_does_not_hide_it() {
+        let script = decoded_script("<#\n  notes\n#>\nusing namespace System.IO\nGet-Date");
+        assert_eq!(
+            script,
+            format!("<#\n  notes\n#>\nusing namespace System.IO\n{PREAMBLE}\nGet-Date")
         );
     }
 
