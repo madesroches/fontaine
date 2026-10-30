@@ -356,6 +356,59 @@ async fn a_resume_picker_choice_with_later_input_is_refused_and_replay_carries_o
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_resume_pick_deferred_from_a_notification_preserves_queued_input() {
+    let server = start(vec![
+        Route::new(
+            "root task",
+            vec![
+                Turn::tool(
+                    "c1",
+                    "agent",
+                    json!({"agent_type": "worker", "prompt": "child-A: finish", "background": true}),
+                ),
+                Turn::text("launched"),
+                Turn::text("noted the report"),
+                Turn::text("queued reply"),
+            ],
+        )
+        .delay(2, 3000),
+        Route::new("child-A", vec![Turn::text("child done")]).delay(0, 1500),
+    ])
+    .await;
+    let w = World::routed(&server.uri(), "\n[permissions]\nallow = [\"agent\"]\n");
+    earlier(&w, OLD, Some("Demo"), "earlier work");
+    let outcome = w
+        .run(|ui| async move {
+            idle(&ui).await;
+            ui.send("root task");
+            ui.wait_for("launched").await;
+            idle(&ui).await;
+            ui.send("/resume");
+            ui.wait_for("sessions started in this directory").await;
+            ui.wait_for("a background agent reported back").await;
+            ui.press(KeyCode::Enter);
+            ui.send("keep me through the deferred pick");
+            ui.wait_for("queued: keep me through the deferred pick")
+                .await;
+            ui.wait_for("/resume is refused while queued input still waits")
+                .await;
+            ui.wait_for("queued reply").await;
+            idle(&ui).await;
+        })
+        .await;
+    assert_eq!(outcome, DriveOutcome::Exit, "no session switch happened");
+    assert!(
+        w.ledger_text()
+            .contains("keep me through the deferred pick"),
+        "the queued message ran in the original session"
+    );
+    assert!(
+        !ledger_of(&w, OLD).contains("keep me through the deferred pick"),
+        "the other session was never entered"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn rename_names_the_session_and_derives_a_name_from_the_first_message() {
     let w = World::new(vec![text_turn("on it")]);
     let outcome = w

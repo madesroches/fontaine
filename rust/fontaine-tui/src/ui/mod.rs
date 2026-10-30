@@ -626,10 +626,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if let Some((purpose, reference)) = self.pending_pick.take() {
             self.apply_pick(runtime, purpose, &reference).await;
         }
-        if let Some(id) = self.pending_resume.take()
-            && self.switch_to(runtime, &id).is_break()
-        {
-            return std::ops::ControlFlow::Break(());
+        if let Some(id) = self.pending_resume.take() {
+            // Switching now would strand undelivered input in this session's steering queue.
+            if !runtime.steering.queued().is_empty() {
+                self.refuse_switch("/resume");
+            } else if self.switch_to(runtime, &id).is_break() {
+                return std::ops::ControlFlow::Break(());
+            }
         }
         while let Some(change) = self.pending_config.pop_front() {
             match change {

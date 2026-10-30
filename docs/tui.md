@@ -183,11 +183,11 @@ as yours for the [guardian](guardian.md).
 - If the turn is interrupted, fails or hits its turn limit, undelivered messages return to the
   input, in front of whatever is there, and nothing is sent. Messages already delivered in that turn
   are discarded with it, like its prompt, and must be sent again.
-- A `/` command other than `/loop` queues like a message and runs when the turn ends, in the order
-  typed: a skill runs as its expanded prompt, a built-in command does exactly what it would have
-  done had it been submitted at that moment. Neither is steered into the running turn, and a
-  message queued behind one waits with it rather than overtaking it. `/loop` keeps its refusal
-  until #298.
+- A built-in command other than `/loop`, or a known skill invocation, queues like a message and
+  runs when the turn ends, in the order typed: a skill runs as its expanded prompt, a built-in
+  command does exactly what it would have done had it been submitted at that moment. Neither is
+  steered into the running turn, and a message queued behind one waits with it rather than
+  overtaking it. Unknown slash names keep their refusal, and `/loop` keeps its own until #298.
 - A `!` shell command queues the same way and executes after the turn, one at a time and in the
   order typed; while one executes, nothing else can be sent or queued.
 - The commands that act on the UI alone (`/status`, `/theme`, the panels, `/help`, …) run
