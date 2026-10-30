@@ -495,5 +495,138 @@ pub fn report(record: &ProjectEnvironment, fallbacks: &[String]) -> Vec<String> 
     lines
 }
 
+/// What the scan step produced for the record and the report.
+pub struct ScanStep {
+    pub status: ScanStatus,
+    pub accepted: Option<ScanFacts>,
+    pub dropped: Vec<String>,
+    pub usage: Option<String>,
+}
+
+impl ScanStep {
+    pub fn without(status: ScanStatus) -> ScanStep {
+        ScanStep {
+            status,
+            accepted: None,
+            dropped: Vec::new(),
+            usage: None,
+        }
+    }
+
+    /// The step after the model replied. The proposals and their count come back only when
+    /// there is something for the user to review.
+    pub fn proposed(
+        proposals: Proposals,
+        label: &str,
+        billed: bool,
+    ) -> (ScanStep, Option<(ScanFacts, usize)>) {
+        let count = proposals.scan.count();
+        let step = ScanStep {
+            dropped: proposals.dropped,
+            usage: Some(format!("{label}: {}", usage_line(&proposals.usage, billed))),
+            ..ScanStep::without(ScanStatus::Skipped(
+                "the model proposed nothing".to_string(),
+            ))
+        };
+        (step, (count > 0).then_some((proposals.scan, count)))
+    }
+
+    /// Records the user's answer on the proposals.
+    pub fn decide(&mut self, scan: ScanFacts, count: usize, accepted: bool) {
+        if accepted {
+            self.status = ScanStatus::Accepted(count);
+            self.accepted = Some(scan);
+        } else {
+            self.status = ScanStatus::Declined(count);
+        }
+    }
+
+    /// The record to store: accepted proposals replace the stored ones, and any other outcome
+    /// keeps what an earlier run saved.
+    pub fn apply_to(
+        &self,
+        mut record: ProjectEnvironment,
+        data_dir: &Path,
+        primary_root: &Path,
+    ) -> ProjectEnvironment {
+        record.scan = match &self.accepted {
+            Some(scan) => Some(scan.clone()),
+            None => load(data_dir, primary_root)
+                .record
+                .and_then(|stored| stored.scan),
+        };
+        record
+    }
+}
+
+/// The guardian model for the scan, or the status that says why there is none.
+pub fn scan_model(
+    guardian: Option<&crate::models::GuardianModel>,
+) -> Result<&crate::models::ModelHandle, ScanStatus> {
+    match guardian {
+        Some(crate::models::GuardianModel::Ready(handle)) => Ok(handle),
+        Some(crate::models::GuardianModel::Unavailable { reference, reason }) => {
+            Err(ScanStatus::Failed(format!(
+                "the guardian model {reference} is unavailable: {reason}"
+            )))
+        }
+        None => Err(ScanStatus::Failed(
+            "no guardian model is configured".to_string(),
+        )),
+    }
+}
+
+pub fn scan_notice(label: &str) -> String {
+    format!(
+        "sending a sample of this repository to {label} to propose sensitive locations, deploy targets and trusted destinations (the account's provider receives it)"
+    )
+}
+
+pub fn scan_settings(handle: &crate::models::ModelHandle, timeout_secs: u64) -> env_scan::Settings {
+    env_scan::Settings {
+        timeout: std::time::Duration::from_secs(timeout_secs),
+        additional_params: handle.thinking_off.clone(),
+    }
+}
+
+pub fn usage_line(usage: &rig_core::completion::Usage, billed: bool) -> String {
+    let tokens = |n: Option<u64>| n.map_or("unknown".to_string(), |n| n.to_string());
+    let mut line = format!(
+        "{} input tokens, {} output tokens",
+        tokens(usage.input_tokens),
+        tokens(usage.output_tokens)
+    );
+    if let Some(cost) = usage.cost.filter(|_| billed) {
+        line.push_str(&format!(", ${:.4}", cost.total));
+    }
+    line
+}
+
+/// The report lines of a setup run, with control characters in model- and repository-derived
+/// text escaped.
+pub fn report_lines(
+    record: &ProjectEnvironment,
+    fallbacks: &[String],
+    status: &ScanStatus,
+    dropped: &[String],
+    usage: Option<&str>,
+) -> Vec<String> {
+    use fontaine_tools::display::escape_controls;
+    let mut lines: Vec<String> = report(record, fallbacks)
+        .iter()
+        .map(|line| escape_controls(line))
+        .collect();
+    lines.push(status.line());
+    lines.extend(
+        dropped
+            .iter()
+            .map(|d| format!("  dropped: {}", escape_controls(d))),
+    );
+    if let Some(usage) = usage {
+        lines.push(format!("scan usage: {usage}"));
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests;

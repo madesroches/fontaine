@@ -2,6 +2,7 @@
 //! session, runs a project executable or changes a setting.
 
 use std::io::{BufRead, IsTerminal, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use fontaine_core::config::{Config, Slot};
@@ -10,10 +11,10 @@ use fontaine_core::dirs::Dirs;
 use fontaine_core::models::{self, GuardianModel, ResolveParams};
 use fontaine_core::project_env::discover::{self, SystemGh};
 use fontaine_core::project_env::sample;
-use fontaine_core::project_env::{self, ProjectEnvironment, ScanStatus};
+use fontaine_core::project_env::{self, ProjectEnvironment, ScanStatus, ScanStep};
+use fontaine_core::workspace::{self, RootSource};
 use fontaine_core::{audit, ledger, trust};
 use fontaine_guardian::critique::{self, CritiqueError};
-use fontaine_guardian::env_scan;
 use fontaine_guardian::rules::{DEFAULTS_MARKER, has_custom, lists};
 use fontaine_guardian::{EnvironmentConfig, List, Profile, RuleConfig};
 use fontaine_tools::display::escape_controls;
@@ -188,19 +189,6 @@ pub fn config_report(
     }
 }
 
-fn usage_line(usage: &Usage, billed: bool) -> String {
-    let tokens = |n: Option<u64>| n.map_or("unknown".to_string(), |n| n.to_string());
-    let mut line = format!(
-        "{} input tokens, {} output tokens",
-        tokens(usage.input_tokens),
-        tokens(usage.output_tokens)
-    );
-    if let Some(cost) = usage.cost.filter(|_| billed) {
-        line.push_str(&format!(", ${:.4}", cost.total));
-    }
-    line
-}
-
 /// The report of a critique that was asked for.
 pub fn critique_report(
     model: &str,
@@ -210,7 +198,10 @@ pub fn critique_report(
     format: ReportFormat,
 ) -> String {
     match format {
-        ReportFormat::Text => format!("{text}\n\nmodel: {model} ({})", usage_line(usage, billed)),
+        ReportFormat::Text => format!(
+            "{text}\n\nmodel: {model} ({})",
+            project_env::usage_line(usage, billed)
+        ),
         ReportFormat::Json => json_text(&json!({
             "model": model,
             "critique": text,
@@ -324,25 +315,6 @@ async fn critique_models(
     }
 }
 
-/// What the scan step produced for the record and the report.
-struct ScanStep {
-    status: ScanStatus,
-    accepted: Option<project_env::ScanFacts>,
-    dropped: Vec<String>,
-    usage: Option<String>,
-}
-
-impl ScanStep {
-    fn without(status: ScanStatus) -> ScanStep {
-        ScanStep {
-            status,
-            accepted: None,
-            dropped: Vec::new(),
-            usage: None,
-        }
-    }
-}
-
 fn confirm(question: &str) -> bool {
     eprint!("{question} [y/N] ");
     let _ = std::io::stderr().flush();
@@ -378,54 +350,24 @@ async fn scan_step(
         Err(e) => return ScanStep::without(ScanStatus::Failed(chain(&e))),
     };
     print_warnings(&models.notices);
-    let handle = match models.guardian {
-        Some(GuardianModel::Ready(handle)) => handle,
-        Some(GuardianModel::Unavailable { reference, reason }) => {
-            return ScanStep::without(ScanStatus::Failed(format!(
-                "the guardian model {reference} is unavailable: {reason}"
-            )));
-        }
-        None => {
-            return ScanStep::without(ScanStatus::Failed(
-                "no guardian model is configured".to_string(),
-            ));
-        }
+    let handle = match project_env::scan_model(models.guardian.as_ref()) {
+        Ok(handle) => handle,
+        Err(status) => return ScanStep::without(status),
     };
     let label = handle.reference.to_string();
     let sample = sample::gather(&found.repo_root, &found.settings);
-    eprintln!(
-        "fontaine: sending a sample of this repository to {label} to propose sensitive locations, deploy targets and trusted destinations (the account's provider receives it)"
-    );
-    let settings = env_scan::Settings {
-        timeout: std::time::Duration::from_secs(config.guardian.timeout_secs),
-        additional_params: handle.thinking_off.clone(),
-    };
+    eprintln!("fontaine: {}", project_env::scan_notice(&label));
+    let settings = project_env::scan_settings(handle, config.guardian.timeout_secs);
     let proposals = match project_env::propose(&handle.completion, &label, &settings, &sample).await
     {
         Ok(proposals) => proposals,
         Err(e) => return ScanStep::without(ScanStatus::Failed(chain(&e))),
     };
-    let usage = Some(format!(
-        "{label}: {}",
-        usage_line(&proposals.usage, handle.catalog_billed())
-    ));
-    let count = proposals.scan.count();
-    let mut step = ScanStep {
-        dropped: proposals.dropped,
-        usage,
-        ..ScanStep::without(ScanStatus::Skipped(
-            "the model proposed nothing".to_string(),
-        ))
-    };
-    if count == 0 {
-        return step;
-    }
-    eprintln!("\n{}\n", sample::review_text(&proposals.scan));
-    if confirm(&format!("Save these {count} proposals?")) {
-        step.status = ScanStatus::Accepted(count);
-        step.accepted = Some(proposals.scan);
-    } else {
-        step.status = ScanStatus::Declined(count);
+    let (mut step, review) = ScanStep::proposed(proposals, &label, handle.catalog_billed());
+    if let Some((scan, count)) = review {
+        eprintln!("\n{}\n", sample::review_text(&scan));
+        let accepted = confirm(&format!("Save these {count} proposals?"));
+        step.decide(scan, count, accepted);
     }
     step
 }
@@ -441,16 +383,11 @@ pub fn setup_report(
     match format {
         ReportFormat::Text => {
             let mut out = String::new();
-            for line in project_env::report(record, fallbacks) {
-                out.push_str(&escape_controls(&line));
+            for line in
+                project_env::report_lines(record, fallbacks, step.status, step.dropped, step.usage)
+            {
+                out.push_str(&line);
                 out.push('\n');
-            }
-            out.push_str(&format!("{}\n", step.status.line()));
-            for dropped in step.dropped {
-                out.push_str(&format!("  dropped: {}\n", escape_controls(dropped)));
-            }
-            if let Some(usage) = step.usage {
-                out.push_str(&format!("scan usage: {usage}\n"));
             }
             out.push_str(&format!("saved to {}", saved.display()));
             out
@@ -484,11 +421,22 @@ fn setup_run(cli: &Cli, args: &SetupArgs, config: &Config, dirs: &Dirs, host: &H
     };
     runtime.block_on(async {
         let root = &config.workspace;
-        let remotes = ledger::git_remotes(root);
+        let added = cli
+            .add_dir
+            .iter()
+            .map(|dir| (RootSource::Flag, dir.clone()))
+            .chain(
+                config
+                    .permissions
+                    .additional_directories
+                    .iter()
+                    .map(|dir| (RootSource::Settings, PathBuf::from(dir))),
+            );
+        let roots = workspace::resolve(root, &host.cwd, added).roots;
+        let remotes = ledger::git_remotes_of(&roots);
         let found = discover::discover(&SystemGh, root, &remotes, audit::now_rfc3339()).await;
         let step = scan_step(cli, args, (config, dirs, host), &found).await;
-        let mut record = found.record;
-        record.scan = step.accepted.clone();
+        let record = step.apply_to(found.record, &dirs.data, root);
         let saved = match project_env::store(&dirs.data, root, &record) {
             Ok(saved) => saved,
             Err(e) => {

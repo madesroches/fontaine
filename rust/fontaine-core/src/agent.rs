@@ -37,7 +37,7 @@ use crate::context::{self, ContextError, ContextUsage};
 use crate::extensions::Extensions;
 use crate::gate::SessionState;
 use crate::instructions::{self, InstructionStage, Loaded, MemoryEntry};
-use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes};
+use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes_of};
 use crate::memory;
 use crate::models::{AccountListing, Models, SharedSwitcher, Switcher};
 use crate::native_search;
@@ -734,10 +734,7 @@ impl AgentRuntime {
         let (data_dir, primary) = (self.setup.data_dir.clone(), self.primary_root());
         let (index, git_remotes, stored) = tokio::task::spawn_blocking(move || {
             let index = FileIndex::build(&scanned, FILE_INDEX_CAP);
-            let mut remotes: Vec<String> =
-                scanned.iter().flat_map(|root| git_remotes(root)).collect();
-            remotes.sort();
-            remotes.dedup();
+            let remotes = git_remotes_of(&scanned);
             // File I/O only: setup is an explicit command, never a step of session start.
             let stored = project_env::load(&data_dir, &primary);
             (index, remotes, stored)
@@ -836,6 +833,11 @@ impl AgentRuntime {
         )?;
         self.state.mark_setup_warning_shown();
         Some(notice)
+    }
+
+    /// The git remotes of every indexed root, as session start records them.
+    pub fn session_remotes(&self) -> Vec<String> {
+        git_remotes_of(&self.indexed_roots())
     }
 
     /// Stores the record `/auto-mode-setup` produced exactly as the command line does, then

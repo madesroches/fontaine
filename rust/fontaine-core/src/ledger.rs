@@ -541,6 +541,14 @@ pub fn git_remotes(root: &Path) -> Vec<String> {
     urls
 }
 
+/// The remotes of every root, sorted and deduplicated: what a session records at start.
+pub fn git_remotes_of(roots: &[PathBuf]) -> Vec<String> {
+    let mut remotes: Vec<String> = roots.iter().flat_map(|root| git_remotes(root)).collect();
+    remotes.sort();
+    remotes.dedup();
+    remotes
+}
+
 /// `https://user:token@host/x` without its `user:token@`; an scp-style `git@host:x` keeps its
 /// user, which names no secret.
 fn without_credentials(url: &str) -> String {

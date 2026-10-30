@@ -4,12 +4,8 @@ use crate::setup_prompt::SetupReviewPrompt;
 use crate::{Action, Ui};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::now_rfc3339;
-use fontaine_core::ledger::git_remotes;
-use fontaine_core::models::GuardianModel;
 use fontaine_core::project_env::discover::{self, SystemGh};
-use fontaine_core::project_env::{
-    self, ProjectEnvironment, ScanFacts, ScanStatus, env_scan, sample,
-};
+use fontaine_core::project_env::{self, ProjectEnvironment, ScanStatus, ScanStep, sample};
 use fontaine_core::trust;
 use fontaine_tools::error_chain::chain;
 use tokio::task::JoinHandle;
@@ -22,25 +18,6 @@ enum Waited<T> {
     Quit,
 }
 
-/// What the scan step leaves for the record and the report.
-struct ScanStep {
-    status: ScanStatus,
-    accepted: Option<ScanFacts>,
-    dropped: Vec<String>,
-    usage: Option<String>,
-}
-
-impl ScanStep {
-    fn without(status: ScanStatus) -> ScanStep {
-        ScanStep {
-            status,
-            accepted: None,
-            dropped: Vec::new(),
-            usage: None,
-        }
-    }
-}
-
 impl<R: FnMut(&mut crate::App)> Ui<R> {
     /// `/auto-mode-setup`: collects the project's environment facts and, in a trusted
     /// workspace, has the guardian's model propose more from the repository. The user reviews
@@ -48,7 +25,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
     /// this session at once.
     pub(crate) async fn auto_mode_setup(&mut self, runtime: &mut AgentRuntime) -> ControlFlow<()> {
         let root = runtime.primary_root();
-        let remotes = git_remotes(&root);
+        let remotes = runtime.session_remotes();
         self.app.transcript.notice(
             "collecting this project's environment facts (GitHub API through `gh`, repository files); Esc cancels",
         );
@@ -70,8 +47,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             Ok(step) => step,
             Err(flow) => return flow,
         };
-        let mut record = found.record;
-        record.scan = step.accepted.clone();
+        let record = step.apply_to(found.record, &self.data_dir, &runtime.primary_root());
         self.report_and_apply(runtime, record, &found.fallbacks, &step);
         ControlFlow::Continue(())
     }
@@ -87,27 +63,13 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         if let Err(why) = project_env::scan_gate(false, true, trusted) {
             return Ok(ScanStep::without(ScanStatus::Skipped(why)));
         }
-        let handle = match &runtime.models.guardian {
-            Some(GuardianModel::Ready(handle)) => handle.clone(),
-            Some(GuardianModel::Unavailable { reference, reason }) => {
-                return Ok(ScanStep::without(ScanStatus::Failed(format!(
-                    "the guardian model {reference} is unavailable: {reason}"
-                ))));
-            }
-            None => {
-                return Ok(ScanStep::without(ScanStatus::Failed(
-                    "no guardian model is configured".to_string(),
-                )));
-            }
+        let handle = match project_env::scan_model(runtime.models.guardian.as_ref()) {
+            Ok(handle) => handle.clone(),
+            Err(status) => return Ok(ScanStep::without(status)),
         };
         let label = handle.reference.to_string();
-        self.app.transcript.notice(format!(
-            "sending a sample of this repository to {label} to propose sensitive locations, deploy targets and trusted destinations (the account's provider receives it)"
-        ));
-        let settings = env_scan::Settings {
-            timeout: std::time::Duration::from_secs(runtime.config.guardian.timeout_secs),
-            additional_params: handle.thinking_off.clone(),
-        };
+        self.app.transcript.notice(project_env::scan_notice(&label));
+        let settings = project_env::scan_settings(&handle, runtime.config.guardian.timeout_secs);
         let (repo_root, project_settings) = (found.repo_root.clone(), found.settings.clone());
         let task = {
             let (model, label) = (handle.completion.clone(), label.clone());
@@ -134,33 +96,16 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             }
             Waited::Quit => return Err(ControlFlow::Break(())),
         };
-        let tokens = |n: Option<u64>| n.map_or("unknown".to_string(), |n| n.to_string());
-        let usage = Some(format!(
-            "{label}: {} input tokens, {} output tokens",
-            tokens(proposals.usage.input_tokens),
-            tokens(proposals.usage.output_tokens)
-        ));
-        let count = proposals.scan.count();
-        let mut step = ScanStep {
-            dropped: proposals.dropped,
-            usage,
-            ..ScanStep::without(ScanStatus::Skipped(
-                "the model proposed nothing".to_string(),
-            ))
-        };
-        if count == 0 {
+        let (mut step, proposed) = ScanStep::proposed(proposals, &label, handle.catalog_billed());
+        let Some((scan, count)) = proposed else {
             return Ok(step);
-        }
-        let review = sample::review_text(&proposals.scan);
+        };
+        let review = sample::review_text(&scan);
         for line in review.lines() {
             self.app.transcript.notice(line.to_string());
         }
         match self.review(runtime, review, count).await {
-            Some(true) => {
-                step.status = ScanStatus::Accepted(count);
-                step.accepted = Some(proposals.scan);
-            }
-            Some(false) => step.status = ScanStatus::Declined(count),
+            Some(accepted) => step.decide(scan, count, accepted),
             None => return Err(ControlFlow::Break(())),
         }
         Ok(step)
@@ -196,15 +141,14 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         fallbacks: &[String],
         step: &ScanStep,
     ) {
-        for line in project_env::report(&record, fallbacks) {
+        for line in project_env::report_lines(
+            &record,
+            fallbacks,
+            &step.status,
+            &step.dropped,
+            step.usage.as_deref(),
+        ) {
             self.app.transcript.notice(line);
-        }
-        self.app.transcript.notice(step.status.line());
-        for dropped in &step.dropped {
-            self.app.transcript.notice(format!("  dropped: {dropped}"));
-        }
-        if let Some(usage) = &step.usage {
-            self.app.transcript.notice(format!("scan usage: {usage}"));
         }
         let file = project_env::path(&self.data_dir, &runtime.primary_root());
         match runtime.apply_project_environment(record) {
