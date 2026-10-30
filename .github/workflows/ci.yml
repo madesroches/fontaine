@@ -115,18 +115,3 @@ jobs:
       - name: Eval pipeline run (no guardian)
         if: needs.changes.outputs.code == 'true'
         run: cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none
-
-  release-plan:
-    name: release plan
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: rust
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install the pinned cargo-dist
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh
-
-      - name: Release plan
-        run: dist plan

@@ -140,8 +140,8 @@ From `rust/`:
   `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` and the same with
   `--profile minimal` — the core CI steps; the two `fixture` evals and the pg2 clippy/test run on
   Linux only (macOS and Windows run `cargo check --features fontaine/pg2`), everything else on all
-  three OSes. Later phases add steps (`--guardian none` eval run, `cargo dist plan`); the master
-  plan's workspace layout lists the full `ci.yml` step set.
+  three OSes. Later phases add steps (`--guardian none` eval run); `dist plan` runs once per PR in
+  `release.yml`'s `plan` job. The master plan's workspace layout lists the full `ci.yml` step set.
 - `cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings` — local compile check
   of the Windows code (the toolchain file installs the target).
 - `RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes` —
