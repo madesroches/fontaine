@@ -303,7 +303,7 @@ impl LspTool {
                 after.as_secs_f64()
             ))),
             Err(RequestError::Stopped) => Err(ToolExecutionError::other(format!(
-                "{server} crashed ({}); the next call restarts it unless it is out of restarts",
+                "{server} crashed ({}); the next call may restart it",
                 prepared.client.exit_detail().await
             ))),
             Err(RequestError::Server(message)) => Err(ToolExecutionError::other(format!(

@@ -106,7 +106,7 @@ A language server gives the model what an editor has: where a symbol is defined,
 and the type errors an edit just introduced. Define servers in the user file (see
 [`[lsp.servers.<name>]`](configuration.md#lspserversname)) or install a [plugin](plugins.md)
 that carries them; a repository cannot, because a server is a program Fontaine starts on your
-machine. The `lsp` tool, the diagnostics note and the system prompt's line about them exist only
+machine. The `lsp` tool and the diagnostics note exist only
 while at least one server handles at least one file extension. A server starts the first time a
 call or an edit needs it, and one server handles an extension: the first defined (yours in name
 order, then plugins' in install order); a later one that names it is told so at startup.
@@ -127,7 +127,7 @@ Answers list at most 100 locations and then say how many more there were. Paths 
 the primary root when inside it, absolute otherwise. An empty answer is a tool error that says
 the server may still be indexing; so is a server that failed to start (`rust-analyzer failed to
 start: exit code 1`, with its last stderr line), crashed or timed out. A start that fails is
-final for the session; a server that crashed after running restarts on its next use, up to
+final until `/clear` or `/rewind`; a server that crashed after running restarts on its next use, up to
 `max_restarts` times.
 
 ### Diagnostics after edits
@@ -152,7 +152,7 @@ A set that arrives after the wait is held for the agent whose edit it belongs to
 that agent's next tool result under `Late diagnostics (rust-analyzer):`, once. It never starts a
 turn and is never a user message. The note is text from a program, so it passes the
 [tool-result scanner](guardian.md) like any other result. `/clear` and `/rewind` stop the
-servers and forget what was pending.
+servers and forget what was pending, including failed starts and restart counts.
 
 ## Workspace roots
 
