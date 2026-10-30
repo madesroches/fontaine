@@ -146,10 +146,10 @@ making every read instance unconfined.
   execution normalization directly to the model's arguments without running the disabled hooks or
   floor.
 - On an in-root call, strict `Scope::locate` selects the existing confined instance as today. On an
-  external call, and only after `GuardedTool::gated` has returned `Allow`, the new route selects
-  the fallback and consumes those already-normalized arguments. It validates their absolute
-  external shape but does not resolve the original symlink a second time. `Unreadable` arguments
-  still fail before execution.
+  external call, and only after the gate's `ToolGate::check` has returned `GateDecision::Allow`,
+  the new route selects the fallback and consumes those already-normalized arguments. It validates
+  their absolute external shape but does not resolve the original symlink a second time.
+  `Unreadable` arguments still fail before execution.
 - Keep the helper distinct from strict `locate`, and restrict the fallback registration to the
   four read-only tools. `write`, `edit`, `notebook_edit` and `shell` get no fallback and their
   existing confined factories remain unchanged.
@@ -217,8 +217,9 @@ this plan.
    the four read tools, preserve malformed-argument handling after the floor, and leave the write
    and mode branches unchanged.
    Update the mode-matrix and auto tests in `rust/fontaine-core/tests/permissions.rs` and
-   `permissions_auto.rs`, the hook-allow revalidation coverage in `hook_slot.rs`, and the
-   escape-hatch coverage in `guardian_off.rs`.
+   `permissions_auto.rs`, the hook-allow revalidation coverage in `hook_slot.rs`, the screen-allow
+   normalized-argument coverage in `permissions_screen.rs`, and the escape-hatch coverage in
+   `guardian_off.rs`.
 3. In `rust/fontaine-tools/src/guarded.rs`, add the dedicated per-root-plus-external-read routing
    mode, consuming the normalized allowed arguments without resolving the original path again. In
    `rust/fontaine-tools/src/builtins.rs`, build the four fallback instances with `confine = false`
@@ -290,6 +291,7 @@ this plan.
 
 - `rust/fontaine-core/tests/permissions.rs`
 - `rust/fontaine-core/tests/permissions_auto.rs`
+- `rust/fontaine-core/tests/permissions_screen.rs`
 - `rust/fontaine-core/tests/guardian_off.rs`
 - `rust/fontaine-core/tests/hook_slot.rs`
 - `rust/fontaine-core/tests/audit_telemetry.rs`
@@ -381,7 +383,8 @@ is required.
   instead ask for external access.
 - `docs/evals.md`: describe the external source and installed-skill read golden slice and the
   dataset re-baselining.
-- `tasks/design/permissions.md`: update steps 4 and 5b to match the implemented pipeline.
+- `tasks/design/permissions.md`: update steps 1a, 4, 5a and 5b to cover external-read
+  normalization, hook-allow revalidation and the implemented pipeline.
 - `research/research-claude-code-parity.md`: mark the external-read behavior shipped and note any
   remaining intentional difference from Claude Code's first-read prompt.
 - `CHANGELOG.md`: Unreleased entry for #284.
