@@ -26,8 +26,8 @@ use crate::permission_rules::{
 };
 use crate::permissions::Approver;
 use crate::preview::DiffPreview;
-use crate::turn::SessionEvent;
 use crate::project_env::{self, ProjectEnvironment};
+use crate::turn::SessionEvent;
 
 const TARGET: &str = "fontaine::telemetry";
 
