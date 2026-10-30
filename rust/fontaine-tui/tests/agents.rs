@@ -1,4 +1,4 @@
-//! The background-agents panel, parallel orchestration in the TUI, and the trust and approval
+//! The agents panel, parallel orchestration in the TUI, and the trust and approval
 //! prompts for what a repository defines.
 
 mod common;

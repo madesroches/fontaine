@@ -140,7 +140,7 @@ async fn an_agent_call_returns_its_id_and_the_childs_report_is_read_with_job_out
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_background_child_returns_an_id_and_its_report_comes_back_as_a_notification() {
+async fn a_child_returns_an_id_and_its_report_comes_back_as_a_notification() {
     let endpoint = Endpoint::start_routed(
         Wire::Chat,
         vec![
@@ -178,7 +178,7 @@ async fn a_background_child_returns_an_id_and_its_report_comes_back_as_a_notific
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn job_output_waits_for_a_background_child_and_its_report_rides_the_wait_result() {
+async fn job_output_waits_for_a_child_and_its_report_rides_the_wait_result() {
     let endpoint = Endpoint::start_routed(
         Wire::Chat,
         vec![
@@ -946,7 +946,7 @@ async fn a_spawn_prompt_claiming_authorization_is_never_the_guardians_intent() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_spent_budget_with_a_background_child_running_stops_the_run_and_kills_the_child() {
+async fn a_spent_budget_with_a_child_running_stops_the_run_and_kills_the_child() {
     let endpoint = Endpoint::start_routed(
         Wire::Responses,
         vec![

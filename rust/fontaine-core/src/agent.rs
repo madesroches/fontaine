@@ -255,14 +255,10 @@ impl AgentRuntime {
             setup::extension_runtimes(setup.extensions, &state, setup.project_executables);
         let steering = Steering::default();
         let (main, tool_server, runner) = setup::subagent_support(
-            &retained,
+            &setup::ChildDeps::new(&retained, &state, &setup.approver, &steering, &results),
             &tree,
-            &state,
             &setup.models,
             &setup.config,
-            &setup.approver,
-            &steering,
-            &results,
         );
         let seen = Seen::default();
         let (agent, pieces, loaded, native) = build_agent(&Parts {

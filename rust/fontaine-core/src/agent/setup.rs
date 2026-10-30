@@ -485,18 +485,40 @@ pub(super) fn retained(
     })
 }
 
+/// What the subagent runner borrows from the session being built.
+pub(super) struct ChildDeps<'a> {
+    retained: &'a Setup,
+    state: &'a Arc<SessionState>,
+    approver: &'a Arc<dyn Approver>,
+    steering: &'a Steering,
+    results: &'a Arc<ResultPipeline>,
+}
+
+impl<'a> ChildDeps<'a> {
+    pub(super) fn new(
+        retained: &'a Setup,
+        state: &'a Arc<SessionState>,
+        approver: &'a Arc<dyn Approver>,
+        steering: &'a Steering,
+        results: &'a Arc<ResultPipeline>,
+    ) -> Self {
+        Self {
+            retained,
+            state,
+            approver,
+            steering,
+            results,
+        }
+    }
+}
+
 /// The main model slot and the tool server the root agent and its subagents share, the runner
 /// that starts the subagents, and the tree wired to both.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn subagent_support(
-    retained: &Setup,
+    deps: &ChildDeps<'_>,
     tree: &AgentTree,
-    state: &Arc<SessionState>,
     models: &Models,
     config: &Config,
-    approver: &Arc<dyn Approver>,
-    steering: &Steering,
-    results: &Arc<ResultPipeline>,
 ) -> (
     Arc<RwLock<MainModel>>,
     ToolServerHandle,
@@ -508,31 +530,29 @@ pub(super) fn subagent_support(
     }));
     let tool_server = ToolServer::new().run();
     let runner = child_runner(
-        retained,
-        state,
+        deps,
         &tool_server,
         &main,
-        approver,
         config.telemetry.records_content(),
-        steering,
-        results,
     );
     wire_root_tree(tree, models, &tool_server);
     (main, tool_server, runner)
 }
 
 /// The runner that starts subagents on the session's tools and models.
-#[allow(clippy::too_many_arguments)]
 fn child_runner(
-    retained: &Setup,
-    state: &Arc<SessionState>,
+    deps: &ChildDeps<'_>,
     tool_server: &ToolServerHandle,
     main: &Arc<RwLock<MainModel>>,
-    approver: &Arc<dyn Approver>,
     record_content: bool,
-    steering: &Steering,
-    results: &Arc<ResultPipeline>,
 ) -> Arc<CoreChildRunner> {
+    let ChildDeps {
+        retained,
+        state,
+        approver,
+        steering,
+        results,
+    } = *deps;
     let preamble_state = state.clone();
     let preamble_config_dir = retained.config_dir.clone();
     let preamble_home = retained.home.clone();

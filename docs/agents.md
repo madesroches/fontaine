@@ -48,7 +48,8 @@ result, and never a second time.
   that result.
 - **Interrupted.** Interrupting a wait or a turn (Esc) leaves every subagent running; their
   reports arrive later as usual. Stop one from the agents panel. `/clear`, `/rewind` and
-  `/branch` are refused while any subagent runs, so they wait until it ends or you stop it.
+  `/branch` are refused while any subagent runs or its report waits to be delivered; run them
+  again once it ends or you stop it.
 
 The model still gets no tool to list or kill agents: those are controls for you, in the
 [agent list and the agents panel](tui.md#the-agent-list-and-the-agent-view).
