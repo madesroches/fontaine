@@ -64,7 +64,9 @@ course sync tools available to allow parents to wait on their children."
   field, which tells the model to drop it.
 - `AgentTool::call` always ends the way the background branch does today: `watch_report(..)` and
   `Ok(ToolOutput::json(json!({ "agent_id": id })))`. `KillOnDrop` and the blocking tail
-  (`spawn.rs:47-76, 395-423`) are deleted. `ReleaseOnDrop` stays: `runner.spawn` still awaits.
+  (`spawn.rs:47-76, 395-423`) are deleted; with them goes the `subagent {id} failed: {reason}`
+  tool error, so `report_text` (`spawn.rs:220-229`) appends `report.reason` for
+  `ChildStatus::Failed` as it does for `BudgetExhausted`. `ReleaseOnDrop` stays: `runner.spawn` still awaits.
 - The tool description says: the call starts the subagent and returns its `agent_id` at once;
   subagents run concurrently with you and with each other; the report arrives as a notification
   with a later tool result or turn; call `job_output` with the id to wait for one; a subagent that
@@ -119,7 +121,7 @@ loop {
 - The report text is the final `drive`'s answer. A non-`Answer` outcome of any run ends the loop
   with the usual report, and `AgentTree::finish` still kills the running descendants of a child
   that was killed, failed or ran out of budget — the abnormal end, where no join is possible.
-  After a normal end there are none to kill.
+  Normally none remain; a descendant resumed between the join's last check and `finish` is stopped.
 - `ChildHandle::kill` is unchanged; a kill during the join wait yields a `Killed` report whose text
   is the last answer.
 
@@ -133,13 +135,6 @@ loop {
 - The root's own turn has no join: the TUI root is never "terminating" until quit, and an
   answering headless root is joined by `settle`.
 
-### 4. Ordering and shared per-turn state
-
-Because each `agent` call returns once its child is attached, the tool loop never has two calls
-in flight, so `CurrentCall`, the decision feed and the ledger see the same one-call-at-a-time
-sequence as today. Concurrent children each run their own `drive` with their own `AgentId`, which
-is the background-child path that already works (#301, #321).
-
 ## Implementation Steps
 
 1. **Tree** (`rust/fontaine-agents/src/tree.rs`): drop `NodeInfo.background` and the `reserve`
@@ -149,22 +144,31 @@ is the background-child path that already works (#301, #321).
    unit tests (`bg` helper, `reserve` calls).
 2. **Jobs seam** (`rust/fontaine-tools/src/jobs.rs`, `jobs/tools.rs`): `AlreadyDelivered` becomes a
    unit variant; `render_agent_wait` drops the foreground line; reword any "background subagent"
-   text in `job_output`'s description to "subagent".
+   text in `job_output`'s description to "subagent", including `jobs/tools.rs:282` ("For a subagent
+   (`agent-*`, from `agent` with `background`)").
 3. **Spawn** (`rust/fontaine-agents/src/spawn.rs`, `runner.rs`): remove `background` from
    `AgentArgs`, the schema, `SpawnRequest` and the `reserve` call; delete `KillOnDrop` and the
-   blocking path; always `watch_report` and return `{agent_id}`; new description; reword the report
-   note. `registry.rs:119` comment loses "background".
+   blocking path; always `watch_report` and return `{agent_id}`; `report_text` appends `report.reason` for
+   `Failed` too; new description; reword the report note. `registry.rs:119` comment loses "background".
 4. **Notification prompt** (`rust/fontaine-core/src/agent.rs`, `child_runner.rs`): move
    `notification_prompt`/`screened_notes` into a free function taking the agent id; root delegates
    to it.
-5. **Join** (`rust/fontaine-core/src/child_runner.rs`, `agent/setup.rs`): add `results` to
-   `ChildContext`; give `run_child` the steering handle and the pipeline (through `RunShared`); add
+5. **Join** (`rust/fontaine-core/src/child_runner.rs`, `agent/setup.rs`): pass `results` from `gates()` (in
+   scope at `agent.rs:252`) through `subagent_support` → `child_runner` (`agent/setup.rs:490-530`)
+   → `ChildContext` → `RunShared` → `run_child` (`RunShared` already holds `steering`; the free
+   `notification_prompt` calls `state.clear_current_call(agent)`); add
    `join_wait` and the run loop; factor the human-prompt recording shared with `resume`.
 6. **Headless** (`rust/fontaine/src/headless.rs`): `running_below(ROOT_AGENT)`; doc wording.
 7. **Wording sweep**: `rg -n -i "background agent|background subagent|background child"` over
    `rust/` (TUI turn label `fontaine-tui/src/ui/turn.rs:226` → "an agent reported back", comments
    in `ui/mod.rs`, `app.rs`, `goal.rs`, `agent/goal.rs`, `agents_panel.rs`, `commands.rs:142`
-   "the agents panel"). Shell background jobs keep their wording.
+   "the agents panel"). Also `fontaine-tools/src/ask_user.rs:204` and `fontaine-agents/src/tree.rs:50, 712`, which the
+   regex misses. Shell background jobs keep their wording.
+7a. **Guardian prompt**: drop the "`background: true` is not a reason to deny" clause from
+   `fontaine-guardian/prompts/guardian_prompt.md:73` and update
+   `fontaine-guardian/src/snapshots/fontaine_guardian__prompt_builder__tests__the_defaults_marker_snapshot.snap`;
+   drop `"background": true` from the agent args of case overdeny-04 in
+   `evals/dataset/overdeny.jsonl`; run the live guardian eval after the prompt change.
 8. **Tests** (see Testing Strategy) and **docs** (see Documentation).
 9. **Plan Decisions** (`tasks/fontaine_harness_plan.md`, end of `### Agents`): the lines in
    `## Decisions` below that amend the master plan, dated 2026-10-30.
@@ -173,12 +177,16 @@ is the background-child path that already works (#301, #321).
 
 - `rust/fontaine-agents/src/{spawn.rs, runner.rs, tree.rs, registry.rs}`
 - `rust/fontaine-agents/tests/seam.rs`
-- `rust/fontaine-tools/src/{jobs.rs, jobs/tools.rs}`, `rust/fontaine-tools/src/jobs/tests.rs`
+- `rust/fontaine-tools/src/{jobs.rs, jobs/tools.rs}`, `rust/fontaine-tools/src/jobs/tests.rs`, `rust/fontaine-tools/tests/jobs.rs`
 - `rust/fontaine-core/src/{child_runner.rs, agent.rs, agent/setup.rs, goal.rs, agent/goal.rs}`
 - `rust/fontaine/src/headless.rs`
-- `rust/fontaine/tests/{parallel_agents.rs, fork_agent.rs}` and any other test passing `background`
+- `rust/fontaine/tests/{parallel_agents.rs, fork_agent.rs, telemetry_otlp.rs}`
+- `rust/fontaine-core/tests/{agent_pipeline.rs, extensions.rs, choke_point.rs, agent_resume.rs}`
+  (fake `ChildRunner` on `SpawnRequest`, `reserve` calls)
+- `rust/fontaine-guardian/prompts/guardian_prompt.md`, its `the_defaults_marker_snapshot.snap`,
+  `evals/dataset/overdeny.jsonl`
 - `rust/fontaine-tui/src/{ui/turn.rs, ui/mod.rs, app.rs, agents_panel.rs, commands.rs}`,
-  `rust/fontaine-tui/tests/agents.rs`
+  `rust/fontaine-tui/tests/{agents.rs, tui.rs, sessions.rs, providers.rs}`
 - `docs/{agents.md, tools.md, headless.md, tui.md}` (and any other page `rg background docs` finds
   about agents)
 - `tasks/fontaine_harness_plan.md` (Decisions)
@@ -224,14 +232,17 @@ is the background-child path that already works (#301, #321).
 
 ## Documentation
 
-- `docs/agents.md`: rewrite the `agent` argument table (no `background`) and the "By default the
+- `docs/agents.md` (lines 6, 80, 121, 170, 199 are stale): rewrite the `agent` argument table (no `background`) and the "By default the
   call waits…" paragraph; the "Waiting for a background subagent" section becomes "Waiting for a
-  subagent"; replace the "A subagent that nests should wait … because finishing stops them" bullet
+  subagent", which breaks the anchor `agents.md#waiting-for-a-background-subagent` linked from
+  `docs/tools.md:21` (update that link); replace the "A subagent that nests should wait … because finishing stops them" bullet
   with the join rule; the headless paragraph (`agents.md:227-230`) drops "background"; the
   interrupt behavior (children keep running).
 - `docs/tools.md`: the `agent` and `job_output` entries.
 - `docs/headless.md`: "background subagents" → "subagents" in the end-of-run wait.
-- `docs/tui.md`: any wording about foreground agents or interrupts killing them; the panel title.
+- `docs/checkpoints.md:9-11` ("A foreground subagent's edits belong to the prompt that started
+  it…") and `docs/index.md:19`.
+- `docs/tui.md:686, 725, 762`: the wording about foreground agents and background subagents.
 - `CHANGELOG.md` is updated by the `pr` step.
 
 ## Testing Strategy
@@ -240,16 +251,26 @@ Unit (`fontaine-agents`, `fontaine-tools`):
 - `tree.rs`: `running_below` counts running descendants only, and a child joining keeps its own
   children counted; `agent_state` reports `AlreadyDelivered` for a delivered report.
 - `spawn.rs` / `tests/seam.rs` with a fake `ChildRunner`: an `agent` call returns `{agent_id}`
-  before the fake child ends; a `background` argument is an `invalid_args` error; two spawns in a
+  before the fake child ends; `serde_json::from_value::<AgentArgs>(json!({.., "background": true}))`
+  fails with "unknown field `background`" (seam tests build `AgentArgs` directly); two spawns in a
   row both reach the runner while the first fake child is still blocked (the concurrency
   acceptance at the seam).
-- `jobs/tools.rs`: `render_agent_wait` text for each `AgentDelivery`.
+- Seam tests encoding the deleted blocking behavior are deleted or rewritten:
+  `a_blocking_call_returns_the_childs_report` (296), `a_budget_stopped_child_returns_a_partial_report`
+  (538), the Failed-to-tool-error half of
+  `a_failed_child_is_an_error_result_and_a_refused_start_frees_its_place` (548; the rewrite asserts
+  the failure reason reaches the parent's note), `dropping_a_blocking_call_kills_the_child` (563),
+  `messages_queued_for_a_child_killed_by_a_dropped_call_are_reported_undelivered` (578),
+  `a_foreground_child_that_missed_a_message_is_resumed_with_it_after_its_report` (1003);
+  `a_child_that_finishes_stops_its_own_background_children` (743) is renamed.
+- `fontaine-tools/tests/jobs.rs` (with its fake `AgentWaits`, :375-404): `render_agent_wait` text for
+  each `AgentDelivery`.
 
 Integration (`fontaine -p` with the routed scripted endpoint, `fontaine/tests/parallel_agents.rs`):
-- **Concurrency (acceptance 1)**: the root spawns two children in one turn, each route `.slow(…)`
-  for D; the root then `job_output`s both. Assert both children's requests overlap (each child's
-  first request reaches the endpoint before the other's response; or total wall-clock < 2·D with
-  margin) and both reports reach the root.
+- **Concurrency (acceptance 1)**: the root spawns two children in one turn, each with a
+  two-turn route (a tool call, then text) with `.slow(D)`; the root then `job_output`s both. Assert
+  from `Endpoint::requests()` order that B's first request arrives before A's second, and both
+  reports reach the root.
 - **Order and denial (acceptance 2)**: a turn of `agent(A)`, `agent(B)` that a deny rule matches,
   `agent(C)`; the audit log shows decisions in call order, B denied and never reported as spawned,
   A and C spawned.
@@ -259,24 +280,25 @@ Integration (`fontaine -p` with the routed scripted endpoint, `fontaine/tests/pa
   grandchild finished `done`, not killed.
 - **Join wakes on a message**: a lead whose child `send_message`s it mid-run gets a turn on the
   message before the child's report.
-- **Kill during join**: a joining lead killed by the headless budget cap ends `killed` and its child
-  is killed (extend `a_spent_budget_with_a_background_child_running_stops_the_run_and_kills_the_child`).
+- **Kill during join**: a cap the lead's own calls stay under, so `settle`'s `over_cap` →
+  `kill_all` fires while the lead joins a slow grandchild; assert from the ledger both ended
+  `killed`. (Extending `a_spent_budget_with_a_background_child_running_stops_the_run_and_kills_the_child`
+  would not reach the join: the lead's own call crosses the cap and ends `BudgetExhausted`.)
 - Convert the remaining blocking-spawn tests (`a_blocking_agent_call_returns_…`,
   `a_foreground_child_is_stopped_when_the_headless_cap_is_passed`,
   `a_blocking_report_and_a_background_notification_pass_through_the_result_pipeline`, the spawns in
   `fork_agent.rs` and `fontaine-tui/tests/agents.rs`) to the async flow: spawn, then the report as a
-  notification or `job_output` result.
+  notification or `job_output` result. `with_one_child` in `fontaine-core/tests/agent_resume.rs`
+  (:54-70) is reworked to spawn first and then get the report as a notification, using a routed,
+  keyed mock instead of one ordered queue `[spawn, "child answer", "root done"]`, which assumed a
+  blocking child.
+- **TUI**: `parallel_subagents_one_killed_the_others_finish_and_every_call_is_audited_by_agent`
+  (`fontaine-tui/tests/agents.rs:83-130`) is extended with an assertion that the agent ids appear
+  on the root's tool cards before any child ends.
 
 These are concurrency and lifecycle behaviors whose failure is silent (a lost report, a child
 killed early, serialized runs), so they are automated end to end through the scripted endpoint
 rather than checked by hand.
-
-## Manual Verification
-
-1. `cargo run -p fontaine` with a real model, ask "spawn two explore agents to each list a
-   different crate's files, then summarize both". Expected: the agents panel shows both running at
-   once; the root's tool cards settle immediately with the ids. Why manual: the overlapping rows in
-   a live TUI are a visual check, and the timing is already covered by the integration test.
 
 ## Open Questions
 
