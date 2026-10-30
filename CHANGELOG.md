@@ -46,6 +46,11 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- The TUI's slash-command menu also opens for a `/name` typed mid-prompt, at the start of the
+  input or after whitespace; accepting a match replaces only that word. Tab first extends the
+  name to the longest prefix all matches share, then completes the selected row. Mid-prompt,
+  Enter sends the message as typed (#294).
+
 - `job_output`'s `wait_secs` no longer has a 60-second ceiling: the model chooses the timeout.
   An omitted value still reads a job now and waits for a subagent to end. Any wait returns
   early when a message from another agent arrives or, in the main conversation, when the user
