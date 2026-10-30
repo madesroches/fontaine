@@ -49,7 +49,7 @@ argument can lift it.
 max_timeout_secs = 1800
 ```
 
-- `config.rs`: `ShellSection { max_timeout_secs: Option<u64> }` with `deny_unknown_fields`, held as
+- `config.rs`: `ShellSection { max_timeout_secs: Option<u64> }` with `deny_unknown_fields` and the same derives as `GoalSection` (`Clone, Debug, Default, Deserialize, JsonSchema`; `every_settings_leaf_has_a_row` walks the schema), held as
   `shell: Option<ShellSection>` on the settings struct. The merged config gains
   `shell: Shell { max_timeout_secs: u64 }`, default `600`. Validation: `1..=86_400`, else
   `bad("shell.max_timeout_secs", "must be from 1 to 86400")`. The upper bound keeps
@@ -58,7 +58,7 @@ max_timeout_secs = 1800
   `SHELL = "how long a model's shell command may block or run is set only in the user file or --settings"`.
   Like `[goal]`: a shared repository must not stretch how long commands run. Project-local is
   excluded, as for `[goal]`.
-- `config_catalog.rs`: a `shell.max_timeout_secs` row, `Edit::PositiveInt`, `NextLaunch`. The value
+- `config_catalog.rs`: a `shell.max_timeout_secs` row, `Edit::PositiveInt`, `NextLaunch`, placed after `memory.auto` and before `model.model` in `KEYS`. The value
   is read when the registry is built.
 
 ### Wiring
@@ -81,11 +81,11 @@ max_timeout_secs = 1800
 ## Implementation Steps
 
 1. `rust/fontaine-core/src/config.rs`: `ShellSection`, the merged `Shell` (default 600), validation,
-   merge. Unit tests: parse, default, `0` and `86401` rejected, unknown key rejected.
+   merge. Tests in `rust/fontaine-core/tests/config.rs` next to the `[goal]` tests: parse, default, `0` and `86401` rejected, unknown key rejected.
 2. `rust/fontaine-core/src/config_scope.rs`: rule and reason const; add `("shell", "[shell]\nmax_timeout_secs = 900\n", None)`
    to the scope-table test list near `:520`.
 3. `rust/fontaine-core/src/config_catalog.rs`: the row, and add `"shell.max_timeout_secs"` to the
-   expected list of `editable_rows_are_exactly_the_preference_set` (`:690`) in `KEYS` order.
+   expected list of `editable_rows_are_exactly_the_preference_set` (`:690`) after `memory.auto` and before `model.model`.
 4. `rust/fontaine-core/src/tools.rs`, `agent/build.rs`, `tests/choke_point.rs`, `tests/extensions.rs`:
    thread `shell_max_timeout_secs`.
 5. Tests (see Testing Strategy).
@@ -95,7 +95,7 @@ max_timeout_secs = 1800
 
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`, `tools.rs`,
   `agent/build.rs`
-- `rust/fontaine-core/tests/choke_point.rs`, `tests/extensions.rs`
+- `rust/fontaine-core/tests/choke_point.rs`, `tests/extensions.rs`, `tests/config.rs`
 - `rust/fontaine-core/tests/shell_settings.rs` (new)
 - `docs/tools.md`, `docs/configuration.md`, `docs/tui.md`, `tasks/fontaine_harness_plan.md`, `research/research-claude-code-parity.md`, `CHANGELOG.md`
 
@@ -123,7 +123,7 @@ max_timeout_secs = 1800
   variable, so the per-key scope rules apply (#267)."
 - `research/research-claude-code-parity.md`: note on the background Bash row that the cap is
   `[shell] max_timeout_secs` (Claude Code: `BASH_MAX_TIMEOUT_MS`).
-- `CHANGELOG.md` entry.
+- `CHANGELOG.md` entry; in the same edit, append "(default; `[shell] max_timeout_secs` sets it)" to the `[Unreleased]` line (`:111`) saying there is "no way for the model to lift the 600 s timeout".
 
 ## Testing Strategy
 
