@@ -40,7 +40,14 @@ deterministic critical-path check to `Remove-Item` targets.
 (it would yield `pwsh -Command sh -c ...`). `PowerShellTool` has its own run/launch path that
 spawns the interpreter with explicit argv `-NoProfile -NonInteractive -EncodedCommand <base64>`
 (UTF-16LE base64, avoiding Windows command-line re-parsing so PowerShell parses exactly what was
-judged). The launch helper is extracted from `ShellTool` taking program and argv as parameters, and
+judged). Argv also carries `-OutputFormat Text` (no `#< CLIXML` envelopes on stderr). The encoded
+script is a fixed preamble, then a newline, then the user's command verbatim:
+`$ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding`
+(no progress records, UTF-8 output instead of the OEM codepage). The preamble never touches the
+command text, and the guardian and display see only the plain command. Exit codes: `exit N` is
+preserved; no `exit $LASTEXITCODE` is appended, so a failing native command's code is not
+propagated and `Write-Error` exits 0 (documented in `docs/tools.md`, as PowerShell's own
+`-EncodedCommand` semantics). The launch helper is extracted from `ShellTool` taking program and argv as parameters, and
 shares timeout clamp, output cut and `Jobs::start` handling. `call_job`'s timeout/cut/quiet logic
 (`builtins.rs:~348-441`) is parameterized by program+argv; `ShellTool::prepared` (the
 `sh_command`/`through_env` rewrite) is bypassed; a foreground wait/collect path is added for the
@@ -106,9 +113,13 @@ it cannot positively read as safe while a deleter is mentioned is critical.
   is one of: literal; wildcard (contains `*` or `?` but nothing below); or non-literal (contains
   `$`, `(`, `)`, `@`, `{`, `}` or `%`, so the target cannot be resolved).
 - Wildcards: judge the literal prefix; critical if the pattern is bare `*` or the prefix is critical.
-- Operands: positional operands and values of `-Path`, `-LiteralPath`, `-Include`, `-Exclude`,
-  `-Filter`; `-Param:value` forms are split and the value judged. Other options starting with `-`
-  (`-Recurse`, `-Force`, `-WhatIf`) are skipped. A comma list (`a,b`) is split. Zero resolved
+- Operands: positional operands and values of `-Path` and `-LiteralPath`; `-Param:value` forms are
+  split and the value judged. `-Include`, `-Exclude` and `-Filter` values are patterns, not targets:
+  they are consumed and ignored (never judged, never treated as positional operands). An option name
+  is matched case-insensitively as an unambiguous prefix (min. 2 letters, e.g. `-Pa`, `-Lit`, `-Inc`,
+  `-Rec`) of the known parameters. Value-less switches (`-Recurse`, `-Force`, `-WhatIf`, `-Confirm`)
+  are skipped. Any other option (unknown name, ambiguous prefix, `-Credential`, `-Stream`, ...) makes
+  the call critical, because its value cannot be told apart from a positional target. A comma list (`a,b`) is split. Zero resolved
   operands is critical. `$env:USERPROFILE`, `$HOME` and `~` resolve to the home directory; `%` is
   always unresolved (PowerShell does not expand `%VAR%`) except `%USERPROFILE%`, mapped to home
   conservatively. Home-variable resolution runs before non-literal classification (so
@@ -208,6 +219,8 @@ prefer the dedicated file tools.
 - 2026-10-30: The worker agent does not get `powershell`.
 - 2026-10-30: The tool is absent when no interpreter is found; not a startup error.
 - 2026-10-30: Critical-path check is a token-level scan; non-FileSystem providers are left to the guardian.
+- AFK: 2026-10-30: `-EncodedCommand` runs a fixed preamble (silent progress, UTF-8 console output) plus `-OutputFormat Text`, without appending `exit $LASTEXITCODE`; only literal `exit N` is preserved and native exit codes collapse (documented), and the guardian still sees the plain command.
+- AFK: 2026-10-30: In the `Remove-Item` critical scan, `-Include`/`-Exclude`/`-Filter` values are ignored as patterns, parameter names match as unambiguous prefixes, and any unknown or ambiguous option makes the call critical.
 - These lines carry into the master plan's Decisions entry replacing the "backlog" line.
 - Cancel/timeout of a `powershell` call kills only the direct child process on Windows, same as
   `shell`; no process-tree kill is added.
@@ -249,6 +262,7 @@ Unit tests (no live APIs, runnable on every OS since the scan and encoder are pu
   match it; critical path prompts in every mode.
 - Windows-only integration test (`rust/fontaine-tools/tests/shell.rs` is the model: `#![cfg(windows)]`, like
   `a_double_backslash_reaches_git_bash_as_written`; runs in the Windows CI leg):
-  a headless `powershell` call round-trips output, cwd and exit code, and runs a command
+  a headless `powershell` call round-trips UTF-8 output (e.g. `é€ü`), cwd and a literal `exit N`
+  exit code (not native-command codes), and runs a command
   containing quotes and a backslash path unchanged — catches the command-line re-parse a fake
   launcher could not.
