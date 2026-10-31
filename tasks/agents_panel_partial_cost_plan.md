@@ -54,10 +54,12 @@ prices for gateway accounts.
 1. `fontaine-agents/src/budget.rs`: add the field, `add`, `is_partial_cost`, unit tests.
 2. `fontaine-core/src/gate.rs`: `spend_of` fills `unpriced_tokens`.
 3. `fontaine-core/src/goal.rs`: `spend_since` subtracts it.
-4. Fix existing `Spend { .. }` literals (tests in `fontaine-agents/src/tree.rs`,
-   `fontaine-core/tests/{goal,agent_resume}.rs`, `fontaine-agents/tests/seam.rs`,
-   `fontaine-tui/src/agent_list.rs`, `budget.rs`) with `..Default::default()`.
-5. `fontaine-tui`: `PanelRow.cost_partial`, `spend_text` marker, wire both callers.
+4. Fix full `Spend { .. }` literals with `..Default::default()`: `fontaine-agents/src/tree.rs`
+   (~1490), `fontaine-core/tests/{goal,agent_resume}.rs`, `fontaine-tui/src/agent_list.rs`, and the
+   `budget.rs` test helper (~line 98).
+5. `fontaine-tui`: `PanelRow.cost_partial`, `spend_text` marker, wire both callers; set
+   `cost_partial: false` in the other `PanelRow` literals (`app.rs`, `screen.rs` `panel_row`, the
+   `agents_panel.rs` test helper `row()`).
 6. `docs/tui.md`: describe the `+ unpriced` marker next to the `cost n/a` explanation.
 7. `CHANGELOG.md` entry (done by the PR step).
 
@@ -65,8 +67,9 @@ prices for gateway accounts.
 
 - `rust/fontaine-agents/src/budget.rs`
 - `rust/fontaine-core/src/gate.rs`, `rust/fontaine-core/src/goal.rs`
-- `rust/fontaine-tui/src/agents_panel.rs`, `agent_list.rs`, `ui/mod.rs`
-- Test literals listed in step 4
+- `rust/fontaine-tui/src/agents_panel.rs` (incl. test helper `row()`), `agent_list.rs`, `ui/mod.rs`,
+  `app.rs`, `screen.rs`
+- Full `Spend { .. }` test literals listed in step 4
 - `docs/tui.md`
 
 ## Trade-offs
@@ -77,6 +80,8 @@ prices for gateway accounts.
   (no `$`), which is not misleading.
 
 ## Decisions
+
+- Marker wording is `+ unpriced`, not `excl. main model`: it is accurate for any unpriced call, not only the main model's.
 
 ## Documentation
 
@@ -92,8 +97,3 @@ description there if it shows spend.
 - `agents_panel.rs` tests for `spend_text`: partial with and without a cost budget, and the
   non-partial output unchanged. `agent_list.rs` test covering the issue's scenario (a row with
   4863024 tokens, `$0.0519`, mostly unpriced tokens renders `+ unpriced`).
-
-## Open Questions
-
-- Marker wording: `+ unpriced` (chosen) versus `excl. main model`; the former is accurate for any
-  unpriced call, not only the main model's.
