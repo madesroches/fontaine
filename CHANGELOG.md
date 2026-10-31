@@ -519,6 +519,11 @@ All notable changes are recorded here. The format follows
   that opens a picker or dialog holds the later queued entries until it closes, and `/resume` and
   `/branch` are refused while later entries remain so a session switch cannot discard them.
   `/loop` and unknown slash names keep their existing mid-turn refusal.
+- Assistant replies in the terminal UI render markdown: bold, italic and inline code, headings,
+  bullet and numbered lists, fenced code, and tables with aligned, wrapped columns. Anything
+  else shows as its source text, and `/copy`, `/export` and line mode keep the exact source. A
+  streaming reply is written to scrollback a block at a time, so a paragraph appears as source
+  until it ends (#328).
 
 ### Changed
 

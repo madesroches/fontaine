@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use crate::diff::diff_rows;
 use crate::input::wrap;
+use crate::markdown;
 use crate::theme::{Glyphs, Theme};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -445,7 +446,7 @@ impl Transcript {
                 streaming: true,
             } = entry
             {
-                let end = cut.end(text, self.committed_chars);
+                let end = cut.end(text, self.committed_chars, self.glyphs);
                 if end > self.committed_chars {
                     found.push((self.committed, self.committed_chars, Some(end)));
                     self.committed_chars = end;
@@ -470,15 +471,15 @@ impl Transcript {
     }
 
     /// The lines that have settled since the last call, for the terminal's scrollback. A
-    /// streaming reply is committed a row at a time, keeping its last row live.
+    /// streaming reply is committed a block at a time; the paragraph still being written stays
+    /// live.
     pub fn commit(&mut self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let mut out = Vec::new();
         let glyphs = self.glyphs;
         for settled in self.commit_entries(Cut::Rows(width)) {
             match (settled.entry, settled.end) {
                 (Entry::Assistant { text, .. }, Some(_)) => {
-                    let mut rows = assistant_rows(text, settled.skip, width);
-                    rows.pop();
+                    let rows = stable_rows(text, settled.skip, width, glyphs);
                     out.extend(rows.into_iter().map(|(line, _)| line));
                 }
                 (entry, _) => entry_lines(entry, width, settled.skip, theme, glyphs, &mut out),
@@ -516,7 +517,8 @@ impl Transcript {
     /// only once nothing older is left and the live area is still over budget; its outcome then
     /// reaches scrollback as a follow-up line. A streaming reply that would keep the live area
     /// over budget is released too, so the tail the screen shows never hides rows that are not
-    /// in scrollback. A streaming reply is cut at a row, keeping its last row live.
+    /// in scrollback. A streaming reply is cut at a row, keeping its last row live; a cut inside a
+    /// rendered block runs on to the block's end.
     pub fn commit_within(
         &mut self,
         width: usize,
@@ -537,7 +539,7 @@ impl Transcript {
                     width,
                     rows: budget,
                 }
-                .rows(text, self.committed_chars);
+                .rows(text, self.committed_chars, self.glyphs);
                 if let Some((_, end)) = rows.last() {
                     self.committed_chars = *end;
                     out.extend(rows.into_iter().map(|(line, _)| line));
@@ -573,35 +575,43 @@ impl Transcript {
 /// Where a streaming reply is cut when it is committed.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Cut {
-    /// Whole wrapped rows at this width, keeping the last row live.
+    /// The rendered blocks of the reply that can no longer change, at this width. The paragraph
+    /// still being written stays live.
     Rows(usize),
     /// Whole lines, up to the last `\n`; the terminal does the wrapping.
     Lines,
-    /// At most this many whole wrapped rows at this width, keeping the last row live.
+    /// At most this many whole wrapped rows at this width, keeping the last row live. A cut that
+    /// lands inside a rendered block runs on to the block's end.
     Budget { width: usize, rows: usize },
 }
 
 impl Cut {
     /// The rows a budgeted cut releases.
-    fn rows(self, text: &str, from: usize) -> Vec<(Line<'static>, usize)> {
+    fn rows(self, text: &str, from: usize, glyphs: Glyphs) -> Vec<(Line<'static>, usize)> {
         let Cut::Budget { width, rows } = self else {
             return Vec::new();
         };
-        let mut all = assistant_rows(text, from, width);
+        let mut all = assistant_rows(text, from, width, true, glyphs);
         all.pop();
-        all.truncate(rows);
+        let mut keep = rows.min(all.len());
+        // A rendered block's rows share one end offset, and the cursor must not land inside it.
+        while keep > 0 && keep < all.len() && all[keep].1 == all[keep - 1].1 {
+            keep += 1;
+        }
+        all.truncate(keep);
         all
     }
 
     /// The char offset in `text` that a commit starting at `from` runs to.
-    fn end(self, text: &str, from: usize) -> usize {
+    fn end(self, text: &str, from: usize, glyphs: Glyphs) -> usize {
         match self {
-            Cut::Rows(width) => {
-                let mut rows = assistant_rows(text, from, width);
-                rows.pop();
-                rows.last().map_or(from, |(_, end)| *end)
-            }
-            Cut::Budget { .. } => self.rows(text, from).last().map_or(from, |(_, end)| *end),
+            Cut::Rows(width) => stable_rows(text, from, width, glyphs)
+                .last()
+                .map_or(from, |(_, end)| *end),
+            Cut::Budget { .. } => self
+                .rows(text, from, glyphs)
+                .last()
+                .map_or(from, |(_, end)| *end),
             Cut::Lines => text
                 .chars()
                 .skip(from)
@@ -676,9 +686,9 @@ fn row(prefix: &str, style: Style, body_style: Style, piece: String) -> Line<'st
     ])
 }
 
-/// The rows of assistant text from char offset `from`, each with the char offset just past it
-/// (including the `'\n'` that ends its line). Offsets are what survive a change of width.
-fn assistant_rows(text: &str, from: usize, width: usize) -> Vec<(Line<'static>, usize)> {
+/// Plain wrapped rows of `text` from char offset `from`, each with the char offset just past
+/// it (including the `'\n'` that ends its line). Offsets are what survive a change of width.
+fn plain_rows(text: &str, from: usize, width: usize) -> Vec<(Line<'static>, usize)> {
     let rest: String = text.chars().skip(from).collect();
     let width = width.max(1);
     let mut rows = Vec::new();
@@ -694,6 +704,51 @@ fn assistant_rows(text: &str, from: usize, width: usize) -> Vec<(Line<'static>, 
             }
             rows.push((row("", Style::default(), Style::default(), piece), offset));
         }
+    }
+    rows
+}
+
+/// The rendered rows of a streaming reply that no later delta can change, from char offset
+/// `from`. This is all the ordinary commit releases; the rest stays in the live area.
+fn stable_rows(
+    text: &str,
+    from: usize,
+    width: usize,
+    glyphs: Glyphs,
+) -> Vec<(Line<'static>, usize)> {
+    let end = markdown::stable_end(text);
+    if from < end {
+        markdown::rows(text, from, end, width, glyphs)
+    } else {
+        Vec::new()
+    }
+}
+
+/// The rows of assistant text from char offset `from`, each with the char offset just past
+/// its block. A reply still streaming renders its stable prefix as markdown and the rest as
+/// plain wrapped source.
+fn assistant_rows(
+    text: &str,
+    from: usize,
+    width: usize,
+    streaming: bool,
+    glyphs: Glyphs,
+) -> Vec<(Line<'static>, usize)> {
+    if streaming {
+        let end = markdown::stable_end(text);
+        let mut rows = stable_rows(text, from, width, glyphs);
+        rows.extend(plain_rows(text, from.max(end), width));
+        return rows;
+    }
+    let len = text.chars().count();
+    let mut rows = if from < len {
+        markdown::rows(text, from, len, width, glyphs)
+    } else {
+        Vec::new()
+    };
+    // The empty line after a final newline, as a plain reply has.
+    if from >= len || text.ends_with('\n') {
+        rows.push((Line::default(), len));
     }
     rows
 }
@@ -714,9 +769,9 @@ fn entry_lines(
             prefixed(text, width, "> ", bold, out);
             out.push(Line::default());
         }
-        Entry::Assistant { text, .. } => {
-            let rest: String = text.chars().skip(skip).collect();
-            prefixed(&rest, width, "", Style::default(), out);
+        Entry::Assistant { text, streaming } => {
+            let rows = assistant_rows(text, skip, width, *streaming, glyphs);
+            out.extend(rows.into_iter().map(|(line, _)| line));
         }
         Entry::Tool { .. } => tool_lines(entry, width, false, theme, glyphs, out),
         Entry::Expanded(call) => {
@@ -1114,6 +1169,10 @@ mod tests {
         out
     }
 
+    const MARKDOWN: &str = "# Title\n\nSome **bold** and `code` text that wraps.\nSecond line.\n\n\
+| Name | Description |\n|:--|--:|\n| one | a rather long cell that must wrap |\n| two | short |\n\n\
+- item one\n- item two with more words\n\n```rust\nlet x = 1;\n\nlet y = 2;\n```\n\n> quoted\n\nend\n";
+
     #[test]
     fn streamed_commits_equal_the_whole_transcript() {
         let samples = [
@@ -1123,6 +1182,12 @@ mod tests {
             "\n\n",
             "xxxxxxxxxxxxxxxxxxxx",
             "",
+            MARKDOWN,
+            "- a\n\n  more\n\nafter\n",
+            "1. a\n\n2. b\n\nz",
+            "- a\n\n  - b\n\nz\n",
+            "- a\n  ```\n  x\n\n  y\n  ```\n\nz\n",
+            "p\n```\ncode\n\nmore\n```\nq\n\n| a | b |\n|---|---|\n| 1 | 2 |",
         ];
         for sample in samples {
             for chunk in 1..=7 {
@@ -1135,8 +1200,8 @@ mod tests {
 
     #[test]
     fn a_width_change_mid_stream_drops_and_repeats_nothing() {
-        let full = "alpha beta\ngamma delta epsilon\n\nzeta";
-        let widths = [3, 7, 5, 11, 2, 9];
+        let full = "alpha beta\ngamma delta epsilon\n\n| h1 | h2 |\n|---|---|\n| c1 | c2 |\n\nzeta";
+        let widths = [3, 7, 5, 11, 2, 9, 40];
         let mut t = Transcript::default();
         let mut out = Vec::new();
         let chars: Vec<char> = full.chars().collect();
@@ -1146,7 +1211,8 @@ mod tests {
         }
         t.on_event(SessionEvent::Assistant(full.into()));
         out.extend(text(&t.commit(6, &theme())));
-        assert_eq!(out.concat(), full.replace('\n', ""));
+        let words = |s: &str| -> String { s.chars().filter(|c| c.is_alphanumeric()).collect() };
+        assert_eq!(words(&out.concat()), words(full));
     }
 
     #[test]
@@ -1177,17 +1243,85 @@ mod tests {
     }
 
     #[test]
-    fn live_lines_hold_the_partial_row_only() {
+    fn live_lines_hold_the_paragraph_being_written() {
         let mut t = Transcript::default();
         delta(&mut t, "abcdef");
-        assert!(t.commit(4, &theme()).len() == 1);
-        assert_eq!(text(&t.live_lines(4, &theme())), vec!["ef"]);
-        delta(&mut t, "gh");
         assert!(t.commit(4, &theme()).is_empty());
-        assert_eq!(text(&t.live_lines(4, &theme())), vec!["efgh"]);
-        delta(&mut t, "i");
-        assert_eq!(text(&t.commit(4, &theme())), vec!["efgh"]);
+        assert_eq!(text(&t.live_lines(4, &theme())), vec!["abcd", "ef"]);
+        delta(&mut t, "gh\n\ni");
+        assert_eq!(text(&t.commit(4, &theme())), vec!["abcd", "efgh", ""]);
         assert_eq!(text(&t.live_lines(4, &theme())), vec!["i"]);
+    }
+
+    #[test]
+    fn a_stable_commit_releases_every_row_of_its_block() {
+        let mut t = Transcript::default();
+        delta(&mut t, "one two three\n\nnext");
+        assert_eq!(
+            text(&t.commit(6, &theme())),
+            vec!["one", "two", "three", ""]
+        );
+        assert_eq!(text(&t.live_lines(6, &theme())), vec!["next"]);
+    }
+
+    #[test]
+    fn a_reply_renders_markdown_while_the_stored_text_stays_source() {
+        let mut t = Transcript::default();
+        t.user("q".into());
+        t.on_event(SessionEvent::Assistant("a **b** `c`\n".into()));
+        assert_eq!(text(&t.lines(40, &theme())), vec!["> q", "", "a b c", ""]);
+        assert_eq!(t.assistant_reply(1), Some("a **b** `c`\n"));
+    }
+
+    #[test]
+    fn a_tall_block_under_a_small_budget_is_emitted_whole() {
+        let mut t = Transcript::default();
+        delta(&mut t, "- a\n- b\n- c\n- d\n\nz");
+        assert_eq!(
+            text(&t.commit_within(20, &theme(), 1)),
+            vec!["• a", "• b", "• c", "• d", ""]
+        );
+        assert_eq!(text(&t.live_lines(20, &theme())), vec!["z"]);
+    }
+
+    #[test]
+    fn the_over_budget_release_of_fence_rows_advances_by_the_rows_it_emits() {
+        let mut t = Transcript::default();
+        delta(&mut t, "```\naaaa\nbbbb\ncccc\n");
+        assert_eq!(
+            text(&t.commit_within(10, &theme(), 3)),
+            vec!["```", "aaaa", "bbbb"]
+        );
+        assert_eq!(text(&t.live_lines(10, &theme())), vec!["cccc", ""]);
+        assert_eq!(text(&t.commit_within(10, &theme(), 1)), vec!["cccc"]);
+    }
+
+    #[test]
+    fn a_budget_cut_inside_a_fence_resumes_as_code_after_a_width_change() {
+        let full = "intro\n\n```\nl1\nl2\nl3\nl4\n```\n\nafter\n";
+        let mut t = Transcript::default();
+        delta(&mut t, "intro\n\n```\nl1\nl2\nl3\nl4\n");
+        let mut out = text(&t.commit_within(20, &theme(), 2));
+        out.extend(text(&t.commit_within(20, &theme(), 2)));
+        assert_eq!(out, vec!["intro", "", "```", "l1"]);
+        delta(&mut t, "```\n\nafter\n");
+        out.extend(text(&t.commit(30, &theme())));
+        t.on_event(SessionEvent::Assistant(full.into()));
+        out.extend(text(&t.commit(25, &theme())));
+        let mut whole = Transcript::default();
+        whole.on_event(SessionEvent::Assistant(full.into()));
+        let whole = text(&whole.lines(20, &theme()));
+        assert_eq!(out[4..], whole[3..]);
+        assert!(t.live_lines(20, &theme()).is_empty());
+    }
+
+    #[test]
+    fn retiring_a_streaming_reply_keeps_its_unreleased_rows() {
+        let mut t = Transcript::default();
+        delta(&mut t, "one\n\ntwo **x**");
+        assert_eq!(text(&t.commit(20, &theme())), vec!["one", ""]);
+        t.clear();
+        assert_eq!(text(&t.take_retired(20, &theme())), vec!["two **x**"]);
     }
 
     #[test]
@@ -1429,7 +1563,7 @@ mod tests {
         let second = t.commit_within(4, &theme(), 5);
         assert_eq!(text(&second), vec!["efgh"]);
         assert_eq!(text(&t.live_lines(4, &theme())), vec!["ijkl"]);
-        let end = Cut::Budget { width: 4, rows: 1 }.end("abcdefghijkl", 8);
+        let end = Cut::Budget { width: 4, rows: 1 }.end("abcdefghijkl", 8, Glyphs::default());
         assert_eq!(end, 8, "the last row stays live");
     }
 

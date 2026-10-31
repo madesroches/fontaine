@@ -91,6 +91,7 @@ serde_jcs = "=0.2.0"
 async-lsp = { version = "=0.2.4", default-features = false, features = ["omni-trait", "tracing"] }
 lsp-types = "=0.95.1"
 tokio-util = { version = "0.7.20", features = ["compat"] }
+pulldown-cmark = { version = "=0.13.6", default-features = false }
 ratatui = { version = "=0.30.2", features = ["scrolling-regions", "unstable-backend-writer"] }
 
 futures = "0.3.34"

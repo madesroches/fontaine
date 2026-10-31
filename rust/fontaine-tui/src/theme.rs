@@ -11,6 +11,12 @@ pub struct Glyphs {
     pub warning: &'static str,
     /// Starts each row of a tool call's output.
     pub gutter: &'static str,
+    /// Starts each item of a bullet list in a reply.
+    pub bullet: &'static str,
+    /// Between the columns of a table in a reply.
+    pub col_sep: &'static str,
+    /// Under a table's header row.
+    pub rule: &'static str,
 }
 
 impl Glyphs {
@@ -18,11 +24,17 @@ impl Glyphs {
         info: "· ",
         warning: "⚠ ",
         gutter: "│ ",
+        bullet: "• ",
+        col_sep: "│",
+        rule: "─",
     };
     pub const ASCII: Glyphs = Glyphs {
         info: "- ",
         warning: "* ",
         gutter: "| ",
+        bullet: "- ",
+        col_sep: "|",
+        rule: "-",
     };
 
     /// ASCII when `FONTAINE_ASCII_GLYPHS` is set to anything but empty or `0`.

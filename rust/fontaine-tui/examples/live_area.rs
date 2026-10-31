@@ -87,6 +87,19 @@ fn main() {
         )));
         draw(&mut app, &mut screen);
     }
+    // Markdown arriving in small pieces: a heading, a table whose cells wrap at 50 columns, a
+    // list and a fenced block with a blank line in it.
+    let markdown = "\n# Markdown check\n\nSome **bold** text with `inline code` in it.\n\n\
+| Name | Role | Description |\n|:--|:-:|--:|\n\
+| alpha | lead | the first row has a rather long description that must wrap |\n\
+| beta | support | a second row |\n\n\
+- first item\n- second item with enough words to wrap at the narrower width\n\n\
+```rust\nfn main() {\n    println!(\"one\");\n\n    println!(\"two\");\n}\n```\n\nDone.\n";
+    let chars: Vec<char> = markdown.chars().collect();
+    for piece in chars.chunks(7) {
+        app.on_event(SessionEvent::AssistantDelta(piece.iter().collect()));
+        draw(&mut app, &mut screen);
+    }
     // The full form of the latest call, printed above the live area like a command would.
     app.transcript.expand(None).expect("a call to expand");
     draw(&mut app, &mut screen);

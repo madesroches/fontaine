@@ -182,6 +182,30 @@ history then lasts for the session only.
   moves to the next older match, Enter or Tab put the match in the input without sending it, and Esc
   cancels.
 
+## Markdown in replies
+
+The transcript renders the markdown in the assistant's replies:
+
+- `**bold**`, `*italic*` and `` `code` `` (code is shown bold), and links as their text;
+- headings, bold, with a first-level heading also underlined;
+- bullet and numbered lists, nested by indent, wrapped under their text;
+- fenced code blocks, dimmed and indented two spaces, kept verbatim;
+- tables, with aligned columns (`:--`, `--:`, `:-:`), a rule under the header and long cells wrapped
+  inside their column. A table too narrow for its columns (4 characters wide each) shows as
+  its source lines.
+
+Everything else shows as the source text, wrapped: block quotes, HTML, horizontal rules, indented
+code and images, and a whole list with an item that holds anything other than text and nested lists (a heading,
+a code block or a table included). A line break
+in a paragraph stays a line break. Set `FONTAINE_ASCII_GLYPHS=1` for `-` bullets and `|`/`-`
+table lines.
+
+While a reply streams, the rows that can no longer change are written to scrollback a block at a
+time, and the paragraph being written stays in the live area as source until it ends, so a long
+reply shows its formatting as each block completes. The paragraph being written, an open fenced
+block, or a list taller than the live area can reach scrollback partly as source. Only the reply as it is shown changes: `/copy`
+and `/export` give the exact text the model wrote, and the line-mode renderer prints it as is.
+
 ## Messages during a turn
 
 Enter on an ordinary message while a turn runs queues it. Queued messages show above the input as
