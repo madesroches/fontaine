@@ -47,16 +47,17 @@ marketplace in one pass. Disabled plugins are auto-updated like enabled ones, ma
 
 `plugins::approval_fingerprint(plugin_root: &Path) -> String`: a stable hash over the
 unexpanded definitions read from the raw files — `hooks/hooks.json`, `.mcp.json` and `.lsp.json`
-— plus the `${VAR}` names they reference, and the `!` command lines of skills and commands.
+— plus the manifest's `hooks`, `mcpServers` and `lspServers` values (path lists that merge over
+the default files, or an inline object) and the raw content of every file they resolve to, plus the
+`${VAR}` names they reference, and the `!` command lines of skills and commands.
 `PluginBuild` is not hashed: its values are already run through `expand_vars` (`${CLAUDE_PLUGIN_ROOT}`
 is the per-run `.tmp-<uuid>` dir, and secret env values are substituted), so they would never
 match between install and update. Hook entries are hashed in full (event, matcher, command); MCP
 and LSP servers are hashed as their complete raw entries (every field: command, args, url, env
 keys and values, initialization options, settings). The `!` lines come from running the public
-`skills::parts` (`skills.rs:100`) on the raw bodies of `dir.skills` and `dir.commands` before
-`$ARGUMENTS` substitution; nothing else needs adding (skill/agent frontmatter
-hooks/mcpServers/permissionMode are refused at load, plugin allowed-tools are dropped, styles are
-text). Skill prose, agent prompts and other non-executable text are excluded, so ordinary content
+`skills::parts` (`skills.rs:101`) on the raw bodies of `dir.skills` and `dir.commands` before
+`$ARGUMENTS` substitution. Skill/agent frontmatter hooks/mcpServers/permissionMode are refused at
+load, plugin allowed-tools are dropped, and styles are text. Skill prose, agent prompts and other non-executable text are excluded, so ordinary content
 changes flow through. Stored in `InstalledPlugin` as an optional `approved = "<hash>"` written at
 install and at every manual `plugin update` (the user saw the summary). A registry entry without
 it (installed by an older build) is never auto-updated until one manual `plugin update` records
@@ -86,14 +87,16 @@ within 24 h; the stamp is written even on failure so an offline machine does not
 Locking: the pass does not hold the exclusive registry lock through git network work (`read_shared`
 in `load_installed` would block other sessions' startup). It fetches and materializes outside the
 lock into a temp dir with a distinct `.auto-<uuid>` prefix, which the CLI's `temp_workdir` sweep
-of `.tmp-*` siblings does not touch. It then takes the lock with `file_lock::try_lock` only to
+of `.tmp-*` siblings does not touch. It then calls `file_lock::try_lock(&registry_path(config).with_extension("lock"))` (the lock file
+`lock_registry` uses; `try_lock` opens the path as given) only to
 re-read the registry, check the pin has not moved, and swap + write; it skips when the lock is
 held. Git runs with `GIT_TERMINAL_PROMPT=0` and `GIT_SSH_COMMAND="ssh -o BatchMode=yes"` so it
-never prompts on the tty.
+never prompts on the tty. The extracted update functions take an env lookup (`EnvLookup` from
+`shared_env(host)`, `lib.rs` ~l.855-865, `Send + Sync`) instead of `&Host` so the pass can run on a
+`std::thread`; `git()` (`plugin.rs` ~l.78-89) gains an env parameter carrying those two variables.
 
-Interruption: the swap replaces the checkout first, then writes the pin. The next pass treats a
-checkout whose content hash/HEAD differs from the registry pin as needing re-materialization,
-which reconciles an interrupted pass.
+Interruption: swap the checkout first, then write the pin, so an interrupted pass is redone by the
+next pass's ordinary pin comparison.
 
 ### Mechanism
 
@@ -112,32 +115,40 @@ leaves the old checkout live (existing guarantee) and does not stop the rest.
 
 Each outcome other than `UpToDate` appends one JSON line to `<data dir>/plugin-updates.jsonl`
 (owner-only, via `owner_only`): timestamp, kind, name, old/new short pin, outcome, and the hold or
-failure reason. The same outcomes surface to the user once per session as a `Notice`, sent over a channel handed to
-`fontaine_tui::drive` (the `ChannelApprover` is created inside it, so the pass cannot hold the
-approver; default `Approver::warn` is `eprintln` and would corrupt the screen): moved
+failure reason. The same outcomes surface to the user once per session as a `Notice`, sent over a channel threaded
+through `fontaine_tui::run` (`fontaine/src/lib.rs` ~l.1067 → `fontaine-tui/src/lib.rs` ~l.431) into
+`drive` (~l.241/511), where its receiver is merged into drive's prompts as `Prompt::Notice` (the
+`ChannelApprover` is created inside `drive`, so the pass cannot hold the approver; default `Approver::warn` is `eprintln` and would corrupt the screen): moved
 ("plugin `review` updated to d4e5f6; active next session"), held ("`review` has a new revision
 that changes its hooks/servers; run `fontaine plugin update review` to review"), failed. Failure
-to write the log reaches the user through the same notice channel. `fontaine plugin list` gains a
+to write the log reaches the user through the same notice channel. The receiver lives in the outer
+loop in `fontaine/src/lib.rs` (~l.363-433) and is passed into each session's `run`, so outcomes
+undelivered across a `/resume` or `/branch` reach the next session. `fontaine plugin list` gains a
 `held` marker for plugins with a held revision (recorded as `held_pin` in the registry so the
-marker survives restarts and clears on update); the JSON `list` and `marketplace list` gain
-`held_pin` and `auto_update`.
+marker survives restarts and clears on update); `plugin list --format json` (plugins and
+marketplaces) gains `held_pin` and `auto_update`, and the text `marketplace list` gets an
+auto-update marker.
 
 ## Implementation Steps
 
 1. `fontaine-core/src/plugins.rs`: add `approval_fingerprint`; add optional `approved`,
    `held_pin`, `auto_update` fields to `InstalledPlugin` and `auto_update` to `MarketplaceEntry`
    (serde defaults, skipped when absent); unit tests.
-2. `fontaine-core` config: add the user-scope-only `[plugins] auto_update` key: a `RULES` row
-   (`user_only`), the `SNIPPETS` entry (`config_scope.rs` ~l.384), the `config_catalog.rs` row, and
-   the `docs/configuration.md` key-reference block (checked by `fontaine-core/tests/docs.rs`); test
-   that project and local scope are rejected.
+2. `fontaine-core` config: add a `[plugins]` section struct on `Settings` (`config.rs` ~l.879-902,
+   `deny_unknown_fields`), a merged `Config` field with default and merge like `checkpoints`, and the
+   user-scope-only `auto_update` key: a `RULES` row (`Rule::user_only`, `config_scope.rs` ~l.62-69;
+   project, local and the CLI `--settings` layer all refuse it), the `SNIPPETS` entry
+   (`config_scope.rs` ~l.384), the `config_catalog.rs` row, and the `docs/configuration.md`
+   key-reference block (`fontaine-core/tests/docs.rs` only validates TOML fences); extend the
+   coverage tests (`config_scope.rs` ~l.349, `config_catalog.rs` ~l.572) and test that project,
+   local and `--settings` are rejected.
 3. `fontaine/src/plugin.rs`: record `approved` in `install` and `update`; refactor update paths
    to return outcomes (warnings returned, not printed); add `--auto-update=yes|no`, `InstallArgs`,
    `MarketplaceAction::AutoUpdate` and `plugin auto-update <name> yes|no` (`cli.rs`); show `held`
    in `list`.
 4. `fontaine/src/plugin_auto_update.rs`: the pass, the stamp, the update log, the notices.
 5. `fontaine/src/lib.rs` and `fontaine-tui/src/lib.rs`: spawn the pass once after plugin load in
-   the TUI path only, with a notice channel into `drive`.
+   the TUI path only, with a notice channel threaded through `run` into `drive`.
 6. Docs, changelog, master plan Decisions.
 
 ## Files to Modify
@@ -145,7 +156,8 @@ marker survives restarts and clears on update); the JSON `list` and `marketplace
 - `rust/fontaine-core/src/plugins.rs`, config files for the new key (`config.rs`,
   `config_scope.rs`, `config_catalog.rs`)
 - `rust/fontaine/src/plugin.rs`, `cli.rs`, `lib.rs`, new `plugin_auto_update.rs`,
-  `rust/fontaine-tui/src/lib.rs`
+  `rust/fontaine-tui/src/lib.rs`, `rust/fontaine-tui/tests/common/mod.rs` (`drive` callers at
+  ~l.435, 472)
 - `rust/fontaine/tests/plugin.rs`, `rust/fontaine-core/tests/plugins.rs`
 - `docs/plugins.md`, `docs/configuration.md`, `docs/tui.md`,
   `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
@@ -175,16 +187,19 @@ marker survives restarts and clears on update); the JSON `list` and `marketplace
 
 - `docs/plugins.md`: new "Auto-update" section (policy, hold behavior, opt-out, log file); amend
   Commands (new flag/subcommand, `held` in `list`) and Pinning.
-- `docs/configuration.md`: the `[plugins]` section and the per-key scope table row.
+- `docs/configuration.md`: the `[plugins]` section and the per-key scope table row; amend :30
+  (`plugins.toml` "written by the `fontaine plugin` CLI") and the files table (:25-37) for the
+  stamp and `plugin-updates.jsonl` files.
 - Master plan Decisions (Extensibility): amend the 2026-10-28 "CLI commands only" line, and add
   a dated line per deviation from Claude Code, each with a one-line reason: fingerprint hold;
   trigger = interactive start + 24h stamp vs Claude Code's post-first-message randomized delay;
   global key + per-entry opt-out vs per-marketplace `autoUpdate`/env vars; default-on for all
   marketplaces vs Claude Code official-only. Headless-off cites Claude Code parity.
 - Stale lines to amend: `docs/plugins.md` :104 ("All mutations are CLI commands, run outside any
-  session"), :9-10, and the `marketplace update` row (:111, "Installed plugins are not touched");
-  the harness plan Extensibility line saying a path source moves only after `marketplace update`
-  (~l.463); `docs/tui.md` "Notices" gains the auto-update notice.
+  session"), :9-10, the `marketplace update` row (:110, "Installed plugins are not touched") and
+  :128-131 (path sources move only after `marketplace update`); the harness plan Extensibility
+  lines saying so (:447, :464); `docs/tui.md` :401 ("Installs and marketplace changes stay on the
+  CLI") and "Notices", which gains the auto-update notice.
 - `CHANGELOG.md`.
 
 ## Testing Strategy
@@ -198,8 +213,8 @@ remote-source cases:
   install-time and update-time materialization.
 - pass: marketplace moves; path-source plugin follows in the same pass; unchanged-surface plugin
   updates; changed-surface plugin is held with the old checkout live and `held_pin` recorded;
-  broken new revision keeps old checkout; sha-pinned plugin moves only when the catalog's sha differs; disabled plugin updated; interrupted
-  swap reconciled on the next pass; opted-out entries and
+  broken new revision keeps old checkout; sha-pinned plugin moves only when the catalog's sha differs; disabled plugin updated; a pass interrupted
+  between swap and pin-write is redone by the next pass; opted-out entries and
   `auto_update = false` skipped; missing `approved` skipped; stamp throttling; busy lock skips;
   update log line written for each outcome.
 - config: `[plugins] auto_update` rejected in project scope.
