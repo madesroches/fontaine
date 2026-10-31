@@ -1724,13 +1724,13 @@ mod tests {
             .collect()
     }
 
-    /// The `/` menu opens, narrows and stays open while tool rows are live and refusal notices
+    /// The `/` menu opens, narrows and stays open while tool rows are live and extra notices
     /// are committed under it.
     fn popup_scenario(
         width: u16,
         height: u16,
         todos: bool,
-        refusals: usize,
+        extra_notices: usize,
         resizes: &[(u16, u16)],
     ) {
         let mut harness = emulated::Harness::new(width, height);
@@ -1761,12 +1761,12 @@ mod tests {
             let leaked = chrome_in_history(&harness);
             assert!(leaked.is_empty(), "{}: {leaked:?}", what("typing"));
         }
-        for n in 0..refusals {
+        for n in 0..extra_notices {
             app.transcript
                 .notice("a turn is running; wait for it or press Esc to interrupt");
-            harness.render(&mut app, &what(&format!("refusal {n}")));
+            harness.render(&mut app, &what(&format!("notice {n}")));
             let leaked = chrome_in_history(&harness);
-            assert!(leaked.is_empty(), "{}: {leaked:?}", what("refusal"));
+            assert!(leaked.is_empty(), "{}: {leaked:?}", what("notice"));
         }
         started(&mut app, 1);
         harness.render(&mut app, &what("next call"));
@@ -1815,7 +1815,7 @@ mod tests {
         popup_scenario(119, 30, true, 2, &[(59, 30), (58, 30), (119, 20)]);
     }
 
-    /// The `/` menu, live tool rows and committed refusals at a fixed size, which on its own
+    /// The `/` menu, live tool rows and committed notices at a fixed size, which on its own
     /// does not duplicate the live area: `cargo test -p fontaine-tui -- --ignored issue_279_sweep`.
     #[test]
     #[ignore]

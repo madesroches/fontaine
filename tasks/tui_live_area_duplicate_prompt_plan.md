@@ -80,10 +80,10 @@ Reproduction is done; the work is:
 1. `screen.rs`: add the `size` field and the resize check in `draw_frame` (design 1).
 2. Port the harness changes: `Harness::resize(w, h)` (vt100 `set_size`); the `Sink` also flags an
    `ESC[2J` not followed by `ESC[3J` in the same write; `popup_scenario(width, height, todos,
-   refusals, resizes)`; test `issue_279_a_resize_leaves_no_copy_of_the_live_area_in_history` over
+   extra_notices, resizes)`; test `issue_279_a_resize_leaves_no_copy_of_the_live_area_in_history` over
    several sizes and resize sequences; an `#[ignore]` no-resize sweep `issue_279_sweep`.
 3. `examples/live_area.rs`: a `popup` mode (the `/` menu typed open mid-turn with a task list, a
-   finished shell call and refused Enters, then held drawing) for the tmux resize repro.
+   finished shell call and extra transcript notices, then held drawing) for the tmux resize repro.
 4. Add the border guard test (design 2).
 5. Replace the transcript notice at `app.rs:1327` with the transient status (design 3); render it in
    `statusbar.rs`; clear it in `handle_input` and `settle_turn`; render only while `app.running`.

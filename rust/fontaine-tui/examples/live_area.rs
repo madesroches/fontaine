@@ -115,7 +115,7 @@ fn main() {
 }
 
 /// Issue 279: the `/` menu typed open during a running turn, with a task list, a finished shell
-/// call with output, two refused Enters and the next call starting under the open menu. Leaves
+/// call with output, two extra notices and the next call starting under the open menu. Leaves
 /// the live area on screen and holds it, so tmux can be captured.
 fn popup<S, D>(app: &mut App, screen: &mut S, draw: &D)
 where

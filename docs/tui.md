@@ -10,10 +10,10 @@ settings, colour themes and screen-reader mode are on [Terminal setup](terminal.
 The UI draws inline, not on the alternate screen, but it takes the whole terminal when it starts:
 the shell's earlier output scrolls into the terminal's history. The transcript reads top-down, with
 the input box and status bar on the bottom rows, and this holds across resizes: a resize erases the
-scrollback and prints the transcript again at the new size. A live area down to the bottom row holds the input box, the status bar, any open prompt and the part of the transcript
-that still fits above the input. A short transcript, typically just the startup warnings, sits on
-the rows directly above the input box with empty space above it. Once the transcript no longer
-fits, the oldest entries move into the terminal's normal scrollback, and leaving the UI (or
+scrollback and prints the transcript again at the new size. A live area down to the bottom row holds
+the input box, the status bar, any open prompt and the part of the transcript that still fits above
+the input. A short transcript, typically just the startup warnings, sits on the rows directly
+above the input box with empty space above it. Once the transcript no longer fits, the oldest entries move into the terminal's normal scrollback, and leaving the UI (or
 `/clear`) writes whatever was still held back there too, so the conversation stays in the
 terminal. Scroll back with the terminal or with tmux copy mode, and select text with the mouse as
 in any shell program. Showing a [subagent's transcript](#the-agent-list-and-the-agent-view) erases
@@ -229,9 +229,10 @@ as yours for the [guardian](guardian.md).
   runs when the turn ends, in the order typed: a skill runs as its expanded prompt, a built-in
   command does exactly what it would have done had it been submitted at that moment. Neither is
   steered into the running turn, and a message queued behind one waits with it rather than
-  overtaking it. Unknown slash names and `/loop` are refused with a one-line hint that replaces the status
-  bar's key hints until the next key or paste, or the end of the turn; it adds nothing to the
-  transcript, and the input stays. `/loop` is refused until #298.
+  overtaking it. Unknown slash names and `/loop` are refused with a one-line hint that replaces
+  the status bar's key hints until the next input event (key, paste or resize), or the end of the
+  turn; it adds nothing to the transcript, and the input stays. The line renderer has no status
+  bar, so there the refusal is a transcript notice. `/loop` is refused until #298.
 - A `!` shell command queues the same way and executes after the turn, one at a time and in the
   order typed; while one executes, nothing else can be sent or queued.
 - The commands that act on the UI alone (`/status`, `/theme`, the panels, `/help`, …) run

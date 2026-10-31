@@ -627,8 +627,11 @@ impl App {
     }
 
     pub fn handle_input(&mut self, input: Input) -> Action {
-        // Before dispatch: the refusal is set by the dispatch itself.
-        self.refusal = None;
+        // Before dispatch: the refusal is set by the dispatch itself. Key releases (sent for
+        // every key on Windows) are dropped by dispatch and must not wipe the hint.
+        if !matches!(&input, Input::Key(key) if key.kind == KeyEventKind::Release) {
+            self.refusal = None;
+        }
         let action = self.dispatch_input(input);
         // Paste and history-search accept change the text outside handle_key's tails.
         self.refresh_slash();
@@ -1349,8 +1352,13 @@ impl App {
                 })
             }
             Some(Command::Loop(_)) | Some(Command::Other { .. }) => {
-                self.refusal =
-                    Some("a turn is running; wait for it or press Esc to interrupt".into());
+                let hint = "a turn is running; wait for it or press Esc to interrupt";
+                if self.linear {
+                    // The line renderer has no status bar to show the transient hint.
+                    self.transcript.notice(hint);
+                } else {
+                    self.refusal = Some(hint.into());
+                }
                 Action::None
             }
             Some(_) => {
@@ -1982,6 +1990,10 @@ mod tests {
             assert!(app.refusal.is_some());
         }
         assert_eq!(app.transcript.entries.len(), entries);
+        let mut release = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        app.handle_input(Input::Key(release));
+        assert!(app.refusal.is_some());
         press(&mut app, KeyCode::Left);
         assert_eq!(app.refusal, None);
 
@@ -1989,6 +2001,20 @@ mod tests {
         assert!(app.refusal.is_some());
         app.handle_input(Input::Paste("x".into()));
         assert_eq!(app.refusal, None);
+    }
+
+    #[test]
+    fn the_refusal_is_a_transcript_notice_in_line_mode() {
+        let mut app = app();
+        app.running = true;
+        app.linear = true;
+        type_text(&mut app, "/nope");
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        assert_eq!(app.refusal, None);
+        assert_eq!(
+            last_notice(&app),
+            Some("a turn is running; wait for it or press Esc to interrupt")
+        );
     }
 
     #[test]
