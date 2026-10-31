@@ -657,11 +657,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let changed = tree.changed().notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
+            let display = tree.display_changed().notified();
+            tokio::pin!(display);
+            display.as_mut().enable();
             self.draw(runtime);
             let has_list = self.app.agent_list.counts_time();
             tokio::select! {
                 biased;
                 _ = &mut changed => {}
+                _ = &mut display => {}
                 Some(event) = seen.recv() => {
                     self.on_event(runtime, event);
                     // One redraw for everything already queued, not one per streamed delta.

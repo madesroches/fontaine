@@ -147,6 +147,80 @@ impl Drop for EndTurnOnDrop<'_> {
     }
 }
 
+/// One model request's progress. The tree shows the characters written so far; a drop guard
+/// clears them and logs the request's end, because an interrupt drops the run's future at an
+/// await and nothing after the loop runs.
+struct ModelStep<'a> {
+    state: &'a SessionState,
+    agent: &'a str,
+    started: std::time::Instant,
+    chars: u64,
+    open: bool,
+    awaiting_next: bool,
+}
+
+impl<'a> ModelStep<'a> {
+    fn begin(state: &'a SessionState, agent: &'a str) -> Self {
+        tracing::debug!(agent.id = agent, "model request start");
+        ModelStep {
+            state,
+            agent,
+            started: std::time::Instant::now(),
+            chars: 0,
+            open: true,
+            awaiting_next: false,
+        }
+    }
+
+    fn note(&mut self, chars: usize) {
+        let chars = chars as u64;
+        self.chars += chars;
+        self.state.agents().note_writing(self.agent, chars);
+    }
+
+    /// Ends the logged request. The next one starts at its first stream item, not here: the
+    /// tools run (and may wait on approval) before the engine sends it.
+    fn end_request(&mut self) {
+        self.log_end();
+        self.state.agents().reset_writing(self.agent);
+        self.chars = 0;
+        self.open = false;
+        self.awaiting_next = true;
+    }
+
+    fn start_pending(&mut self) {
+        if self.awaiting_next {
+            self.awaiting_next = false;
+            self.started = std::time::Instant::now();
+            self.open = true;
+            tracing::debug!(agent.id = self.agent, "model request start");
+        }
+    }
+
+    /// The run is over and no further request follows.
+    fn close(&mut self) {
+        self.open = false;
+    }
+
+    fn log_end(&self) {
+        if self.open {
+            tracing::debug!(
+                agent.id = self.agent,
+                elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                chars = self.chars,
+                "model request end"
+            );
+        }
+    }
+}
+
+impl Drop for ModelStep<'_> {
+    fn drop(&mut self) {
+        self.log_end();
+        self.state.agents().reset_writing(self.agent);
+    }
+}
+
 /// One agent's run: whose it is, what it is asked and under which span it runs.
 pub struct Drive<'a> {
     pub agent: &'a Agent,
@@ -285,6 +359,7 @@ async fn drive_once(
         .tool_concurrency(1);
     // The run adopts the span it is built under as its own agent span.
     let mut stream = params.span.in_scope(|| runner.stream());
+    let mut step = ModelStep::begin(params.state, params.agent_id);
 
     let mut turn_calls_tool = false;
     let mut final_response = None;
@@ -338,9 +413,23 @@ async fn drive_once(
                 break;
             }
         };
+        if matches!(item, MultiTurnStreamItem::StreamAssistantItem(_)) {
+            step.start_pending();
+        }
         let flow = match item {
             MultiTurnStreamItem::StreamAssistantItem(Item::Event(event)) => match event {
-                StreamEvent::Text { text, .. } => on_event(SessionEvent::AssistantDelta(text)),
+                StreamEvent::Text { text, .. } => {
+                    step.note(text.chars().count());
+                    on_event(SessionEvent::AssistantDelta(text))
+                }
+                StreamEvent::Reasoning { text, .. } => {
+                    step.note(text.chars().count());
+                    Flow::Continue
+                }
+                StreamEvent::Arguments { json, .. } => {
+                    step.note(json.chars().count());
+                    Flow::Continue
+                }
                 StreamEvent::End { content, .. } => match content {
                     AssistantContent::Text(text) => on_event(SessionEvent::Assistant(text.text)),
                     AssistantContent::ToolCall(_) => {
@@ -352,6 +441,7 @@ async fn drive_once(
                 _ => Flow::Continue,
             },
             MultiTurnStreamItem::CompletionCall(call) => {
+                step.end_request();
                 let mut usage = call.usage;
                 if !params.priced {
                     usage.cost = None;
@@ -380,6 +470,7 @@ async fn drive_once(
                 text: tool_text(&tool_result.content),
             }),
             MultiTurnStreamItem::FinalResponse(response) => {
+                step.close();
                 final_response = Some(response);
                 Flow::Continue
             }

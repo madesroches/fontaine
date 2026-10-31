@@ -10,6 +10,10 @@ All notable changes are recorded here. The format follows
 
 #### Agents
 
+- The agent list and the agents panel show `· writing 4.2k chars` for an agent whose model is
+  mid-step, reasoning and tool-call arguments included, and `main` shows its own count in the
+  list, so a long model step no longer looks like a stall (#343). Model requests log their start and
+  end, with elapsed time and characters written, at debug level.
 - A built-in `fork` agent type starts a subagent from a copy of the main conversation, including
   the current turn, so its `prompt` can be a short task (#39). It runs on the session model, can be
   started only by the main conversation, and fails to start rather than run without the context. The

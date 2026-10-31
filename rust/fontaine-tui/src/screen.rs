@@ -1928,6 +1928,7 @@ mod tests {
             cost_budget: None,
             cost_partial: false,
             depth: 1,
+            writing: 0,
             stopped_because: None,
         }
     }

@@ -697,6 +697,7 @@ mod tests {
             status: id.map(|_| fontaine_agents::runner::ChildStatus::Running),
             elapsed: std::time::Duration::from_secs(5),
             spend: "12 tok".into(),
+            writing: 0,
         }
     }
 

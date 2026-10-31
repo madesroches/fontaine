@@ -215,7 +215,8 @@ view](tui.md#the-agent-list-and-the-agent-view). `Ctrl+T` (or `/agents`, or `/ta
 [agents panel](tui.md#the-agents-panel), the full overview with one row per subagent, ended ones
 included, its status, spend against budget and a key to kill it. A subagent's approval
 prompts appear like any other, labelled with its id, whichever transcript is on screen, so none
-hides behind another.
+hides behind another. While a subagent's model is mid-step, its row shows how many characters it
+has written so far (`· writing 4.2k chars`), since its usage only updates when the call ends.
 
 ### Messaging a subagent
 

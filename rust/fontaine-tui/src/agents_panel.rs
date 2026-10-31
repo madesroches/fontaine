@@ -28,6 +28,8 @@ pub struct PanelRow {
     /// `cost_usd` leaves out calls that carried no price.
     pub cost_partial: bool,
     pub depth: usize,
+    /// Characters the model has written in its current step.
+    pub writing: u64,
     /// Why it stopped early, when its budget ran out.
     pub stopped_because: Option<String>,
 }
@@ -108,6 +110,15 @@ pub(crate) fn spend_text(view: &SpendView) -> String {
         tokens
     } else {
         format!("{tokens} · {cost}")
+    }
+}
+
+/// `writing 4.2k chars`: the model's progress through a step that has not reported usage yet.
+pub(crate) fn writing_text(chars: u64) -> String {
+    if chars < 1000 {
+        format!("writing {chars} chars")
+    } else {
+        format!("writing {:.1}k chars", chars as f64 / 1000.0)
     }
 }
 
@@ -242,6 +253,11 @@ impl AgentsPanel {
                 cost_budget: row.cost_budget,
                 cost_partial: row.cost_partial,
             });
+            let spend = if row.status.is_running() && row.writing > 0 {
+                format!("{spend} · {}", writing_text(row.writing))
+            } else {
+                spend
+            };
             for piece in wrap(&format!("    {spend}"), width) {
                 out.push(Line::styled(piece, dim));
             }
@@ -307,6 +323,7 @@ mod tests {
             cost_budget: Some(2.0),
             cost_partial: false,
             depth: 1,
+            writing: 0,
             stopped_because: None,
         }
     }
@@ -450,6 +467,34 @@ mod tests {
         assert_eq!(
             status_label(ChildStatus::WaitingOnPermission),
             "waiting-on-permission"
+        );
+    }
+
+    #[test]
+    fn writing_is_counted_in_chars_then_thousands() {
+        assert_eq!(writing_text(999), "writing 999 chars");
+        assert_eq!(writing_text(1000), "writing 1.0k chars");
+        assert_eq!(writing_text(12_345), "writing 12.3k chars");
+    }
+
+    #[test]
+    fn a_running_row_shows_writing_on_the_spend_line_and_a_done_row_does_not() {
+        let mut panel = AgentsPanel::new();
+        let mut running = row("agent-1", ChildStatus::Running);
+        running.writing = 4200;
+        let mut done = row("agent-2", ChildStatus::Done);
+        done.writing = 4200;
+        panel.set_rows(vec![running, done]);
+        let text: Vec<String> = panel
+            .body(120, &Theme::default())
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(
+            text.iter()
+                .filter(|l| l.contains("writing 4.2k chars"))
+                .count(),
+            1
         );
     }
 }
