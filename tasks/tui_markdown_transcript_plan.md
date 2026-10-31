@@ -118,9 +118,10 @@ One function returns the releasable rows for the Rows path (the stable-prefix ro
 `commit()`, `Cut::rows` and `Cut::end` all call it, so the three sites cannot diverge.
 
 Only the over-budget release (`Cut::Budget` / `commit_within`) may commit plain tail rows (exact
-offsets, including rows of an open fence), as it does today. The remainder of that paragraph is then rendered as markdown from the cut, so
-a span straddling the cut shows its markers literally. This is the one visible degradation, and only
-for a single paragraph taller than the live area.
+offsets, including rows of an open fence), as it does today. The remainder is then rendered as markdown from the cut, so
+a span straddling the cut shows its markers literally. This is the visible degradation, and only
+for a paragraph, an open fenced block or a list taller than the live area, any of which can reach
+scrollback partly as source.
 
 Line mode (`Cut::Lines`, `linear.rs`) is untouched: it prints source lines.
 

@@ -217,11 +217,28 @@ fn open_fence_at(text: &str, from: usize) -> Option<Fence> {
     let head: String = text.chars().take(from).collect();
     let complete = head.rfind('\n').map_or(0, |i| i + 1);
     let mut open: Option<Fence> = None;
+    // A fence inside a list item is not resumed as a top-level code block; its remainder
+    // renders as plain source.
+    let mut in_list = false;
     for line in split_lines(&head[..complete]) {
         open = match open {
             Some(fence) if fence_closes(line.text, fence) => None,
             Some(fence) => Some(fence),
-            None => fence_open(line.text),
+            None => {
+                if is_blank(line.text) {
+                    None
+                } else if !line.text.starts_with(' ') && !list_marker(line.text) {
+                    in_list = false;
+                    fence_open(line.text)
+                } else if list_marker(line.text) {
+                    in_list = true;
+                    None
+                } else if in_list {
+                    None
+                } else {
+                    fence_open(line.text)
+                }
+            }
         };
     }
     open
@@ -310,6 +327,8 @@ struct Block<'a> {
     events: Vec<Event<'a>>,
 }
 
+/// A fresh parser per region, so a link reference definition does not resolve across streamed
+/// blocks.
 fn parse_blocks(src: &str) -> Vec<Block<'_>> {
     let mut blocks = Vec::new();
     let mut depth = 0usize;
@@ -463,7 +482,9 @@ fn render_block(events: &[Event<'_>], width: usize, glyphs: Glyphs) -> Option<Ve
                     _ => return None,
                 }
             }
-            let code = code.strip_suffix('\n').unwrap_or(&code);
+            // The parser's code text carries the blank lines up to the block's end; `render_region`
+            // draws those itself.
+            let code = code.trim_end_matches('\n');
             if code.is_empty() {
                 return Some(Vec::new());
             }
@@ -961,6 +982,11 @@ mod tests {
     }
 
     #[test]
+    fn blank_lines_after_an_unclosed_fence_are_drawn_once() {
+        assert_eq!(shown("```\na\n\n\n", 80), vec!["  a", "", ""]);
+    }
+
+    #[test]
     fn a_long_code_line_wraps() {
         assert_eq!(shown("```\nabcdefgh\n```", 6), vec!["  abcd", "  efgh"]);
     }
@@ -1133,5 +1159,13 @@ mod tests {
         let mid = render_from(9);
         assert_eq!(mid[0], "  pha");
         assert_eq!(mid[1..], whole[3..]);
+    }
+
+    #[test]
+    fn resuming_inside_a_list_fence_does_not_open_a_code_block() {
+        let text = "- a\n  ```\n  x\n  y\n  ```\n";
+        let got = rows(text, 10, text.chars().count(), 80, Glyphs::UNICODE);
+        let got = plain(&got.into_iter().map(|(l, _)| l).collect::<Vec<_>>());
+        assert!(got.iter().all(|l| !l.starts_with("    ")), "{got:?}");
     }
 }

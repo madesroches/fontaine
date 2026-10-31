@@ -580,7 +580,8 @@ pub(crate) enum Cut {
     Rows(usize),
     /// Whole lines, up to the last `\n`; the terminal does the wrapping.
     Lines,
-    /// At most this many whole wrapped rows at this width, keeping the last row live.
+    /// At most this many whole wrapped rows at this width, keeping the last row live. A cut that
+    /// lands inside a rendered block runs on to the block's end.
     Budget { width: usize, rows: usize },
 }
 
