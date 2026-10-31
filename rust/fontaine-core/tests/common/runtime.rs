@@ -250,6 +250,7 @@ pub fn build_over_session(
         false,
         Arc::new(|_| None),
         session,
+        true,
     );
     Built { runtime, main }
 }
@@ -281,10 +282,38 @@ pub fn build_with_env(
         scheduling,
         env,
         session,
+        true,
     )
 }
 
-/// [`build_with_env`] over the session the caller hands in.
+/// `build_with_approver` with prompting enabled, for a test of a permission wait a kill must
+/// cut short; the usual harness is headless, where a would-prompt outcome is a denial.
+#[allow(clippy::too_many_arguments)]
+pub fn build_prompting(
+    world: &World,
+    mode: PermissionMode,
+    models: Models,
+    approver: Arc<dyn fontaine_core::permissions::Approver>,
+) -> AgentRuntime {
+    let session = Session::create(&world.data, &session_id()).unwrap();
+    build_with_env_session(
+        world,
+        mode,
+        models,
+        None,
+        false,
+        Default::default(),
+        None,
+        approver,
+        false,
+        Arc::new(|_| None),
+        session,
+        false,
+    )
+}
+
+/// [`build_with_env`] over the session the caller hands in. `headless` is the setup's: a
+/// headless run denies what would ask, a prompting one asks the approver.
 #[allow(clippy::too_many_arguments)]
 fn build_with_env_session(
     world: &World,
@@ -298,6 +327,7 @@ fn build_with_env_session(
     scheduling: bool,
     env: fontaine_core::agent::EnvLookup,
     session: Session,
+    headless: bool,
 ) -> AgentRuntime {
     let config = world.load().unwrap();
     let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
@@ -331,7 +361,7 @@ fn build_with_env_session(
         system_prompt: None,
         append_system_prompt: None,
         json_schema: None,
-        headless: true,
+        headless,
         scheduling,
         approver,
         home: None,

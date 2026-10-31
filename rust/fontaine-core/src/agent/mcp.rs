@@ -143,6 +143,8 @@ impl AgentRuntime {
             results: self.results.clone(),
             hide_mcp_names: !reveal,
             pre_images: None,
+            // MCP tools join outside the registry, so the session's switches reach them here.
+            kills: Some(self.kills.clone()),
         };
         let mut outcomes = Vec::new();
         for plan in self.mcp_plan() {

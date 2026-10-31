@@ -14,6 +14,7 @@ use tracing::Instrument;
 
 use crate::checkpoint::{Capture, PreImages};
 use crate::gate::{AgentId, CallView, GateDecision, ToolGate};
+use crate::kills::KillSwitches;
 use crate::result_pipeline::{ResultPipeline, ToolOutcome};
 use crate::risk::{RiskClass, ToolSource};
 use crate::scope::Scope;
@@ -23,6 +24,9 @@ const TARGET: &str = "fontaine::telemetry";
 
 /// What exporters see for an MCP tool whose name is not opted in.
 pub const HIDDEN: &str = "third-party";
+
+/// What a call refused because its agent was killed reports back.
+const KILLED_REFUSAL: &str = "the agent was killed";
 
 /// How a call picks the tool instance that serves it.
 enum Routing {
@@ -45,6 +49,9 @@ pub struct Guard {
     pub hide_mcp_names: bool,
     /// Saves the file a `write` or `edit` is about to change.
     pub pre_images: Option<Arc<dyn PreImages>>,
+    /// The session's kill switches; `None` only where no agent can be killed. A call whose
+    /// agent is killed while it waits on the gate or runs is refused instead of continuing.
+    pub kills: Option<Arc<KillSwitches>>,
 }
 
 pub struct GuardedTool<T: Tool> {
@@ -284,27 +291,62 @@ where
         synthetic: false,
     };
     let mut scan = None;
-    let outcome = match guard.gate.check(view).instrument(span.clone()).await {
-        GateDecision::Deny { message } => Err(ToolExecutionError::refused(message)),
-        GateDecision::Allow { args: allowed } => {
-            let allowed = normalize(allowed);
-            let outcome = run(context, allowed.clone()).instrument(span.clone()).await;
-            let view = CallView {
-                tool: name,
-                risk,
-                args: &allowed,
-                agent: &agent,
-                annotations,
-                requires_user_interaction,
-                synthetic: false,
-            };
-            let (outcome, record) = guard
-                .results
-                .run(view, outcome)
-                .instrument(span.clone())
-                .await;
-            scan = record;
-            outcome
+    let kills = guard.kills.as_ref();
+    let outcome = if kills.is_some_and(|kills| kills.killed(&agent)) {
+        // Nothing new starts for a dead agent; this also covers a call that begins after the
+        // kill but before the run's next hook boundary stops it.
+        Err(ToolExecutionError::refused(KILLED_REFUSAL))
+    } else {
+        // A kill while the call waits on the gate drops the wait, exactly as a dropped drive
+        // future does; the wait's own guards (the permission pipeline's WaitGuard) unwind with it.
+        let decision = match kills {
+            Some(kills) => tokio::select! {
+                biased;
+                _ = kills.wait(&agent) => None,
+                decision = guard.gate.check(view).instrument(span.clone()) => Some(decision),
+            },
+            None => Some(guard.gate.check(view).instrument(span.clone()).await),
+        };
+        match decision {
+            None => Err(ToolExecutionError::refused(KILLED_REFUSAL)),
+            Some(GateDecision::Deny { message }) => Err(ToolExecutionError::refused(message)),
+            Some(GateDecision::Allow { args: allowed }) => {
+                let allowed = normalize(allowed);
+                let mut cut_short = false;
+                let outcome = match kills {
+                    Some(kills) => tokio::select! {
+                        biased;
+                        _ = kills.wait(&agent) => {
+                            // The in-flight tool is dropped from inside the harness, the same
+                            // drop an instantaneous kill performs from the top.
+                            cut_short = true;
+                            Err(ToolExecutionError::refused(KILLED_REFUSAL))
+                        }
+                        outcome = run(context, allowed.clone()).instrument(span.clone()) => outcome,
+                    },
+                    None => run(context, allowed.clone()).instrument(span.clone()).await,
+                };
+                if cut_short {
+                    outcome
+                } else {
+                    let view = CallView {
+                        tool: name,
+                        risk,
+                        args: &allowed,
+                        agent: &agent,
+                        annotations,
+                        requires_user_interaction,
+                        synthetic: false,
+                    };
+                    let (outcome, record) = guard
+                        .results
+                        .run(view, outcome)
+                        .instrument(span.clone())
+                        .await;
+                    scan = record;
+                    outcome
+                }
+            }
         }
     };
 

@@ -44,6 +44,7 @@ fn env_with_pipeline(d: &Dirs, results: ResultPipeline) -> BuiltinEnv {
         results: Arc::new(results),
         hide_mcp_names: false,
         pre_images: None,
+        kills: None,
     };
     env
 }
@@ -128,6 +129,7 @@ async fn a_call_the_gate_denies_never_reaches_the_pipeline() {
             ),
             hide_mcp_names: false,
             pre_images: None,
+            kills: None,
         },
         ..env_with(scope(&d.dir("work"), &[]), Arc::new(DenyAll))
     };

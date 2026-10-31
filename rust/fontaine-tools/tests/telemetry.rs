@@ -125,6 +125,7 @@ async fn a_scan_adds_its_verdict_and_latency_to_the_tool_result_event_and_nothin
         ),
         hide_mcp_names: false,
         pre_images: None,
+        kills: None,
     };
     let tools = registry(&env);
     call(&tools, "read", json!({"path": "a.txt"}))

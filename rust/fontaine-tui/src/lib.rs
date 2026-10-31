@@ -52,6 +52,7 @@ use fontaine_core::permissions::{
     Answer, ApprovalRequest, Approver, GuardianUnavailable, UnavailableChoice,
 };
 use fontaine_tools::ask_user::{Question, QuestionReply};
+use fontaine_tools::kills::KILL_SETTLE;
 use futures::future::BoxFuture;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::Show;
@@ -379,11 +380,7 @@ pub async fn drive(
     }
     // Whatever is still running is stopped with the session.
     runtime.state.agents().kill_all();
-    runtime
-        .state
-        .agents()
-        .settled(std::time::Duration::from_secs(5))
-        .await;
+    runtime.state.agents().settled(KILL_SETTLE).await;
     runtime.jobs().terminate_all().await;
     runtime.lsp().shutdown_all().await;
     // What stays in the terminal is the main conversation, not an agent's view.

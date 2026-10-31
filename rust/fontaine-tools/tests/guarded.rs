@@ -90,6 +90,7 @@ fn guard(gate: Arc<dyn ToolGate>) -> Guard {
         results: Arc::new(ResultPipeline::new()),
         hide_mcp_names: false,
         pre_images: None,
+        kills: None,
     }
 }
 
@@ -242,6 +243,7 @@ fn mcp_tool(
             results: Arc::new(results),
             hide_mcp_names: false,
             pre_images: None,
+            kills: None,
         },
         false,
     );
@@ -573,6 +575,7 @@ async fn an_mcp_callback_is_never_saved() {
             results: Arc::new(ResultPipeline::new()),
             hide_mcp_names: false,
             pre_images: Some(saver.clone()),
+            kills: None,
         },
         false,
     );
@@ -580,6 +583,314 @@ async fn an_mcp_callback_is_never_saved() {
         .await
         .unwrap();
     assert!(saver.recorder.events.lock().unwrap().is_empty());
+}
+
+mod kills {
+    use super::*;
+    use fontaine_tools::kills::KillSwitches;
+    use std::future::Future;
+    use std::sync::atomic::AtomicBool;
+    use std::task::Poll;
+    use tokio::sync::{Notify, watch};
+
+    const AGENT: &str = "agent-7";
+    const REFUSAL: &str = "the agent was killed";
+
+    /// Registers `AGENT`'s kill switch and wires it into the guard.
+    fn killing_guard(gate: Arc<dyn ToolGate>) -> (Arc<KillSwitches>, watch::Sender<bool>, Guard) {
+        let kills = Arc::new(KillSwitches::new());
+        let (tx, rx) = watch::channel(false);
+        kills.register(AGENT, rx);
+        let guard = Guard {
+            gate,
+            results: Arc::new(ResultPipeline::new()),
+            hide_mcp_names: false,
+            pre_images: None,
+            kills: Some(kills.clone()),
+        };
+        (kills, tx, guard)
+    }
+
+    fn as_agent() -> ToolContext {
+        let mut context = ToolContext::new();
+        context.insert(AgentId(AGENT.to_string())).unwrap();
+        context
+    }
+
+    /// A tool that signals `started` and then waits for a release that never comes unless the
+    /// test sends it.
+    struct Blocking {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+        runs: Arc<AtomicUsize>,
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    struct BlockingArgs {}
+
+    impl Tool for Blocking {
+        const NAME: &'static str = "blocking";
+        type Args = BlockingArgs;
+        type Output = String;
+        type Error = ToolExecutionError;
+
+        fn description(&self) -> String {
+            "blocks".to_string()
+        }
+
+        fn parameters(&self) -> Value {
+            json!({"type": "object"})
+        }
+
+        async fn call(
+            &self,
+            _: &mut ToolContext,
+            _: BlockingArgs,
+        ) -> Result<String, ToolExecutionError> {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok("ran".to_string())
+        }
+    }
+
+    fn blocking_tool(
+        guard: Guard,
+    ) -> (
+        Arc<Notify>,
+        Arc<Notify>,
+        Arc<AtomicUsize>,
+        rig_core::tool::DynamicTool,
+    ) {
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let runs = Arc::new(AtomicUsize::new(0));
+        let tool = GuardedTool::single(
+            Blocking {
+                started: started.clone(),
+                release: release.clone(),
+                runs: runs.clone(),
+            },
+            RiskClass::Arbitrary,
+            guard,
+        )
+        .into_dynamic();
+        (started, release, runs, tool)
+    }
+
+    #[tokio::test]
+    async fn a_kill_during_a_blocking_tool_call_returns_the_refusal() {
+        let (_kills, tx, guard) = killing_guard(Scripted::new(allow));
+        let (started, _release, runs, tool) = blocking_tool(guard);
+        let mut context = as_agent();
+        let call = tokio::spawn(async move { tool.run_with(&mut context, json!({})).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+            .await
+            .expect("the tool started");
+        tx.send(true).unwrap();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(5), call)
+            .await
+            .expect("the call resolves")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.message(), REFUSAL);
+        // The tool started and was cut short, not run to the end.
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_call_starting_after_the_kill_is_refused_before_the_gate() {
+        let (kills, tx, guard) = killing_guard(Scripted::new(allow));
+        tx.send(true).unwrap();
+        assert!(kills.killed(AGENT));
+        let (_started, _release, runs, tool) = blocking_tool(guard);
+        let error = tool.run_with(&mut as_agent(), json!({})).await.unwrap_err();
+        assert_eq!(error.message(), REFUSAL);
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+    }
+
+    /// The gate's decision future; dropped when the choke-point select cuts the wait short.
+    struct Hanging {
+        dropped: Arc<AtomicUsize>,
+        polled: Arc<AtomicBool>,
+    }
+
+    impl Future for Hanging {
+        type Output = GateDecision;
+
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> Poll<Self::Output> {
+            self.polled.store(true, Ordering::SeqCst);
+            Poll::Pending
+        }
+    }
+
+    impl Drop for Hanging {
+        fn drop(&mut self) {
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct HangingGate {
+        dropped: Arc<AtomicUsize>,
+        polled: Arc<AtomicBool>,
+    }
+
+    impl ToolGate for HangingGate {
+        fn check<'a>(&'a self, _: CallView<'a>) -> BoxFuture<'a, GateDecision> {
+            Box::pin(Hanging {
+                dropped: self.dropped.clone(),
+                polled: self.polled.clone(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_kill_during_a_permission_wait_drops_the_wait() {
+        let gate = Arc::new(HangingGate {
+            dropped: Arc::new(AtomicUsize::new(0)),
+            polled: Arc::new(AtomicBool::new(false)),
+        });
+        let (_kills, tx, guard) = killing_guard(gate.clone());
+        let (_started, _release, runs, tool) = blocking_tool(guard);
+        let mut context = as_agent();
+        let call = tokio::spawn(async move { tool.run_with(&mut context, json!({})).await });
+        // Wait until the call is parked on the gate, then kill: the wait future is dropped
+        // (the permission pipeline's WaitGuard unwinds with it) and the refusal comes back.
+        while !gate.polled.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        tx.send(true).unwrap();
+        let error = call.await.unwrap().unwrap_err();
+        assert_eq!(error.message(), REFUSAL);
+        assert_eq!(gate.dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn an_unregistered_agent_is_never_killed() {
+        let (_kills, tx, guard) = killing_guard(Scripted::new(allow));
+        let (started, release, runs, tool) = blocking_tool(guard);
+        // The root's call runs to the end while a registered agent's flag fires.
+        let call = tokio::spawn(async move { tool.run_with(&mut as_root(), json!({})).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+            .await
+            .expect("the tool started");
+        tx.send(true).unwrap();
+        release.notify_one();
+        let output = call.await.unwrap().expect("the root's call is untouched");
+        assert_eq!(output.render(), "ran");
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    /// A blocking tool under a real checkpointed name, so the pre-image capture runs.
+    struct BlockingWrite {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    struct BlockingWriteArgs {
+        path: String,
+    }
+
+    impl Tool for BlockingWrite {
+        const NAME: &'static str = "write";
+        type Args = BlockingWriteArgs;
+        type Output = String;
+        type Error = ToolExecutionError;
+
+        fn description(&self) -> String {
+            "pretends to write".to_string()
+        }
+
+        fn parameters(&self) -> Value {
+            json!({"type": "object", "properties": {"path": {"type": "string"}}})
+        }
+
+        async fn call(
+            &self,
+            _: &mut ToolContext,
+            _: BlockingWriteArgs,
+        ) -> Result<String, ToolExecutionError> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok("written".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_pre_image_survives_a_kill_and_no_after_record_is_written() {
+        let d = Dirs::new();
+        let root = d.dir("work");
+        std::fs::write(root.join("a.txt"), "old").unwrap();
+        let saver = Arc::new(Saver {
+            recorder: Arc::new(Recorder::default()),
+            content: Mutex::new(Vec::new()),
+        });
+        let gate = Scripted::new(allow);
+        let kills = Arc::new(KillSwitches::new());
+        let (tx, rx) = watch::channel(false);
+        kills.register(AGENT, rx);
+        let guard = Guard {
+            gate,
+            results: Arc::new(ResultPipeline::new()),
+            hide_mcp_names: false,
+            pre_images: Some(saver.clone()),
+            kills: Some(kills),
+        };
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let tool = GuardedTool::per_root(scope(&root, &[]), RiskClass::Arbitrary, guard, |_| {
+            BlockingWrite {
+                started: started.clone(),
+                release: release.clone(),
+            }
+        })
+        .into_dynamic();
+        let mut context = as_agent();
+        let call =
+            tokio::spawn(
+                async move { tool.run_with(&mut context, json!({"path": "a.txt"})).await },
+            );
+        started.notified().await;
+        tx.send(true).unwrap();
+        let error = call.await.unwrap().unwrap_err();
+        assert_eq!(error.message(), REFUSAL);
+        // Written before the tool ran, exactly as when a whole-drive drop kills a call
+        // mid-edit; the after-record its unwind would have written is absent.
+        let events = saver.recorder.events.lock().unwrap().clone();
+        let path = root.join("a.txt").display().to_string();
+        assert_eq!(events, [format!("before {AGENT} write {path}")]);
+        drop(release);
+    }
+
+    #[tokio::test]
+    async fn the_result_pipeline_does_not_screen_a_kill_refusal() {
+        let pipeline = ResultPipeline::new().with_stage(StageKind::Scanner, Arc::new(Suffix));
+        let gate = Scripted::new(allow);
+        let kills = Arc::new(KillSwitches::new());
+        let (tx, rx) = watch::channel(false);
+        kills.register(AGENT, rx);
+        let guard = Guard {
+            gate,
+            results: Arc::new(pipeline),
+            hide_mcp_names: false,
+            pre_images: None,
+            kills: Some(kills),
+        };
+        let (_started, _release, runs, tool) = blocking_tool(guard);
+        tx.send(true).unwrap();
+        let error = tool.run_with(&mut as_agent(), json!({})).await.unwrap_err();
+        // The raw refusal, unscreened: a synthetic result never reaches the pipeline.
+        assert_eq!(error.message(), REFUSAL);
+        assert!(!error.model_output().render().contains("[scanned]"));
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+    }
 }
 
 #[tokio::test]

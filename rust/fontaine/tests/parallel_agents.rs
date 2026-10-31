@@ -7,6 +7,7 @@ mod common;
 use std::time::Duration;
 
 use common::{Endpoint, Route, Sandbox, Turn, Wire, ledger};
+use fontaine_tools::kills::KILL_GRACE;
 use serde_json::{Value, json};
 
 fn config(url: &str, extra: &str) -> String {
@@ -482,7 +483,7 @@ async fn a_spent_headless_cap_kills_a_parent_that_is_joining_and_its_child() {
                 ],
             )
             .slow(Duration::from_millis(400)),
-            Route::new("gc-G", vec![Turn::text("G done")]).slow(Duration::from_secs(30)),
+            Route::new("gc-G", vec![Turn::text("G done")]).slow(Duration::from_secs(60)),
         ],
     )
     .await;
@@ -519,8 +520,11 @@ async fn a_spent_headless_cap_kills_a_parent_that_is_joining_and_its_child() {
             "root task",
         ])
         .await;
+    // A kill no longer interrupts a model stream mid-token: the run is graced a bounded
+    // window to settle at the next hook boundary, then dropped. The grandchild's stream
+    // outlives the grace, so the run ends at the grace, not at the stream's 60 s end.
     assert!(
-        started.elapsed() < Duration::from_secs(20),
+        started.elapsed() < KILL_GRACE + Duration::from_secs(20),
         "it did not wait out the grandchild"
     );
     assert_eq!(out.code, Some(1), "{}", out.stderr);
@@ -962,7 +966,7 @@ async fn a_spent_budget_with_a_child_running_stops_the_run_and_kills_the_child()
                     Turn::text("launched M"),
                 ],
             ),
-            Route::new("child-M", vec![Turn::text("M done")]).slow(Duration::from_secs(30)),
+            Route::new("child-M", vec![Turn::text("M done")]).slow(Duration::from_secs(60)),
         ],
     )
     .await;
@@ -989,8 +993,10 @@ async fn a_spent_budget_with_a_child_running_stops_the_run_and_kills_the_child()
             "root task",
         ])
         .await;
+    // The kill lands while the child's stream is still flowing: it ends at the grace, not at
+    // the stream's 60 s end (see the grandchild test above).
     assert!(
-        started.elapsed() < Duration::from_secs(20),
+        started.elapsed() < KILL_GRACE + Duration::from_secs(20),
         "it did not wait out the child"
     );
     assert_eq!(out.code, Some(1), "{}", out.stderr);

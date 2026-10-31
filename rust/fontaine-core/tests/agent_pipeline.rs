@@ -864,6 +864,355 @@ mod persistence {
     }
 }
 
+mod killed {
+    //! A killed subagent settles gracefully and its transcript survives: the kill hook stops
+    //! the run at rig's boundaries, the choke point cuts in-flight calls, and the recovery
+    //! hook appends what the run committed to the child's own log (#348).
+
+    use super::common::World;
+    use super::common::pipeline::Scripted;
+    use super::common::runtime::{self, Built};
+    use fontaine_agents::runner::{ChildReport, ChildStatus};
+    use fontaine_core::config::AccountKind;
+    use fontaine_core::config::PermissionMode;
+    use fontaine_core::models::{GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models};
+    use fontaine_core::permissions::{Approver, DenyAll};
+    use fontaine_core::turn::{Flow, TurnOutcome, TurnParams, run_turn};
+    use rig_core::completion::Usage;
+    use rig_core::driver::{Exchange, Model, Opening, Transport};
+    use rig_core::test_utils::{
+        MockCompletionModel, MockFrame, MockRuntime, MockScript, MockStreamEvent, mock_final,
+    };
+    use serde_json::json;
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+
+    fn usage() -> Usage {
+        let mut usage = Usage::new();
+        usage.input_tokens = Some(10);
+        usage.output_tokens = Some(5);
+        usage
+    }
+
+    fn text_turn(text: &str) -> Vec<MockStreamEvent> {
+        vec![
+            MockStreamEvent::Text(text.to_string()),
+            MockStreamEvent::FinalResponse(mock_final(usage())),
+        ]
+    }
+
+    fn tool_turn(name: &str, args: serde_json::Value) -> Vec<MockStreamEvent> {
+        vec![
+            MockStreamEvent::ToolCall {
+                id: "call-1".into(),
+                name: name.into(),
+                arguments: args,
+                call_id: None,
+            },
+            MockStreamEvent::FinalResponse(mock_final(usage())),
+        ]
+    }
+
+    fn spawn_turn(agent_type: &str, prompt: &str) -> Vec<MockStreamEvent> {
+        tool_turn("agent", json!({"agent_type": agent_type, "prompt": prompt}))
+    }
+
+    fn shell_turn(command: &str) -> Vec<MockStreamEvent> {
+        tool_turn("shell", json!({"command": command}))
+    }
+
+    /// A transport that serves the root conversation from one scripted model and every
+    /// conversation whose first user message mentions `marker` from another, holding each
+    /// child request until the test releases it. `seen` fires when the first child request
+    /// arrives, so a kill can land while the child's model call is in flight.
+    #[derive(Clone)]
+    struct HeldTransport {
+        marker: String,
+        root: MockRuntime,
+        child: MockRuntime,
+        seen: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl Transport<MockScript> for HeldTransport {
+        fn send(
+            &self,
+            request: <MockScript as rig_core::wire::Wire>::Payload,
+            exchange: Exchange,
+        ) -> Opening<MockFrame> {
+            let first = request
+                .chat_history
+                .iter()
+                .find(|m| matches!(m.as_ref(), rig_core::message::Message::User { .. }))
+                .map(|m| format!("{m:?}"))
+                .unwrap_or_default();
+            if first.contains(&self.marker) {
+                let seen = self.seen.clone();
+                let release = self.release.clone();
+                let runtime = self.child.clone();
+                Opening::new(async move {
+                    seen.notify_one();
+                    release.notified().await;
+                    runtime.send(request, exchange).await
+                })
+            } else {
+                self.root.send(request, exchange)
+            }
+        }
+    }
+
+    /// A runtime over the held transport, with the child prompt as the routing marker.
+    /// Returns the release and the seen notifies beside the built runtime.
+    fn build_held(
+        world: &World,
+        mode: PermissionMode,
+        root: Vec<Vec<MockStreamEvent>>,
+        child: Vec<Vec<MockStreamEvent>>,
+        approver: Option<Arc<dyn Approver>>,
+    ) -> (Built, Arc<Notify>, Arc<Notify>) {
+        let root_model = MockCompletionModel::from_stream_turns(root);
+        let child_model = MockCompletionModel::from_stream_turns(child);
+        let seen = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let held = HeldTransport {
+            marker: "dig into it".to_string(),
+            root: root_model.transport.clone(),
+            child: child_model.transport.clone(),
+            seen: seen.clone(),
+            release: release.clone(),
+        };
+        let model = Model::new(MockScript::default(), held);
+        let handle = ModelHandle::new(
+            ModelRef::parse("test/mock").unwrap(),
+            AccountKind::named("openai-compatible"),
+            model.into(),
+        );
+        let models = Models {
+            main: handle.clone(),
+            main_listing: Vec::new(),
+            guardian: Some(GuardianModel::Ready(handle)),
+            guardian_choice: GuardianChoice::MainFallback,
+            notices: Vec::new(),
+        };
+        let runtime = match approver {
+            // A scripted approver means the test wants the prompt to reach a human: only a
+            // prompting runtime asks instead of denying.
+            Some(approver) => runtime::build_prompting(world, mode, models, approver),
+            None => runtime::build_with_approver(
+                world,
+                mode,
+                models,
+                None,
+                false,
+                Default::default(),
+                None,
+                Arc::new(DenyAll),
+            ),
+        };
+        (
+            Built {
+                runtime,
+                main: root_model,
+            },
+            seen,
+            release,
+        )
+    }
+
+    async fn root_turn(built: &Built, prompt: &str) {
+        built.runtime.begin_turn(prompt, false);
+        let outcome = run_turn(
+            TurnParams {
+                agent: &built.runtime.agent,
+                state: &built.runtime.state,
+                prompt: prompt.to_string(),
+                max_turns: Some(5),
+                priced: true,
+                model: "scripted".to_string(),
+                provider: "mock".to_string(),
+                native_search: false,
+            },
+            &mut |_| Flow::Continue,
+        )
+        .await;
+        assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
+    }
+
+    async fn child_log(built: &Built, id: &str) -> String {
+        let conversation = rig_memory::load_async(&built.runtime.session.store(), id)
+            .await
+            .unwrap();
+        format!("{:?}", conversation.messages())
+    }
+
+    /// Polls until the tree holds the child's report, which lands after the run has settled
+    /// and the ledger's `finished` record is on file.
+    async fn wait_report(built: &Built, id: &str) -> ChildReport {
+        for _ in 0..500 {
+            if let Some(report) = built.runtime.state.agents().report_of(id) {
+                return report;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("{id} never reported");
+    }
+
+    fn ledger_ended(built: &Built, id: &str) -> Option<String> {
+        built
+            .runtime
+            .session
+            .ledger
+            .view()
+            .agents
+            .iter()
+            .find(|entry| entry.id == id)
+            .and_then(|entry| entry.ended.clone())
+    }
+
+    #[tokio::test]
+    async fn a_killed_childs_partial_transcript_is_saved() {
+        let w = World::new();
+        w.user_file("[permissions]\nallow = [\"agent\", \"shell\"]\n");
+        let (built, seen, release) = build_held(
+            &w,
+            PermissionMode::Manual,
+            vec![spawn_turn("worker", "dig into it"), text_turn("root done")],
+            // The child asks for a shell, then would answer; the kill lands while the first
+            // request is in flight, so the run stops at the tool dispatch boundary.
+            vec![shell_turn("echo hi"), text_turn("child answer")],
+            None,
+        );
+        root_turn(&built, "start it").await;
+        // The child's first request is held: kill now, then let it through.
+        tokio::time::timeout(std::time::Duration::from_secs(5), seen.notified())
+            .await
+            .expect("the child's first request");
+        assert!(built.runtime.state.agents().kill("agent-1"));
+        release.notify_one();
+        let report = wait_report(&built, "agent-1").await;
+        assert_eq!(report.status, ChildStatus::Killed);
+        assert_eq!(report.reason.as_deref(), Some("it was killed"));
+        assert_eq!(ledger_ended(&built, "agent-1").as_deref(), Some("killed"));
+        // The log exists and holds what the run committed up to the kill: the prompt and the
+        // assistant turn whose tool call was cancelled, not nothing at all (#348).
+        let log = child_log(&built, "agent-1").await;
+        assert!(log.contains("dig into it"), "{log}");
+        assert!(log.contains("call-1"), "{log}");
+        let file = w
+            .data
+            .join("sessions")
+            .join(&built.runtime.session.id)
+            .join("logs")
+            .join("agent-1.jsonl");
+        assert!(file.is_file(), "{file:?}");
+    }
+
+    #[tokio::test]
+    async fn a_kill_during_a_permission_wait_is_refused_at_the_choke_point() {
+        let w = World::new();
+        w.user_file("[permissions]\nallow = [\"agent\"]\n");
+        let approver = Arc::new(Scripted::default());
+        approver
+            .hang
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let (built, seen, release) = build_held(
+            &w,
+            PermissionMode::Manual,
+            vec![spawn_turn("worker", "dig into it"), text_turn("root done")],
+            vec![shell_turn("echo hi"), text_turn("child answer")],
+            Some(approver.clone()),
+        );
+        root_turn(&built, "start it").await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), seen.notified())
+            .await
+            .expect("the child's first request");
+        release.notify_one();
+        // The shell call parks on the human's answer, which never comes.
+        for _ in 0..500 {
+            if !approver.requests.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            built.runtime.state.is_waiting("agent-1"),
+            "the child waits on the permission prompt"
+        );
+        assert!(built.runtime.state.agents().kill("agent-1"));
+        let report = wait_report(&built, "agent-1").await;
+        assert_eq!(report.status, ChildStatus::Killed);
+        // The dropped wait unwound the WaitGuard with it.
+        assert!(
+            !built.runtime.state.is_waiting("agent-1"),
+            "the permission wait is over"
+        );
+        // The transcript shows the call the kill cut short.
+        let log = child_log(&built, "agent-1").await;
+        assert!(log.contains("dig into it"), "{log}");
+        assert!(log.contains("the agent was killed"), "{log}");
+        assert_eq!(ledger_ended(&built, "agent-1").as_deref(), Some("killed"));
+    }
+
+    #[tokio::test]
+    async fn a_kill_before_the_first_model_call_leaves_the_prompt_in_the_log() {
+        let w = World::new();
+        // Only the spawn is allowed; a fork makes the spawn await its context seed, so the
+        // kill lands while the runner is still starting the child (the shape `attach`
+        // replays: the flag is set before the run's first model call).
+        w.user_file("[permissions]\nallow = [\"agent\"]\n");
+        let (built, _seen, release) = build_held(
+            &w,
+            PermissionMode::Manual,
+            vec![spawn_turn("fork", "short task"), text_turn("root done")],
+            vec![text_turn("forked answer")],
+            None,
+        );
+        let tree = built.runtime.state.agents().clone();
+        let killer = tokio::spawn(async move {
+            while !tree.kill("agent-1") {
+                tokio::task::yield_now().await;
+            }
+        });
+        root_turn(&built, "start it").await;
+        killer.await.unwrap();
+        release.notify_waiters();
+        let report = wait_report(&built, "agent-1").await;
+        assert_eq!(report.status, ChildStatus::Killed);
+        // The log holds at least the prompt: the run settled before the first answer.
+        let log = child_log(&built, "agent-1").await;
+        assert!(log.contains("short task"), "{log}");
+        assert_eq!(ledger_ended(&built, "agent-1").as_deref(), Some("killed"));
+    }
+
+    #[tokio::test]
+    async fn a_kill_concurrent_with_an_answer_keeps_the_completed_runs_log() {
+        let w = World::new();
+        w.user_file("[permissions]\nallow = [\"agent\"]\n");
+        let (built, seen, release) = build_held(
+            &w,
+            PermissionMode::Manual,
+            vec![spawn_turn("worker", "dig into it"), text_turn("root done")],
+            vec![text_turn("child answer")],
+            None,
+        );
+        root_turn(&built, "start it").await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), seen.notified())
+            .await
+            .expect("the child's first request");
+        assert!(built.runtime.state.agents().kill("agent-1"));
+        // The answer's stream was already in flight: it completes (the run saves at its
+        // Done), and the kill still settles the report as killed.
+        release.notify_one();
+        let report = wait_report(&built, "agent-1").await;
+        assert_eq!(report.status, ChildStatus::Killed);
+        assert_eq!(report.reason.as_deref(), Some("it was killed"));
+        let log = child_log(&built, "agent-1").await;
+        assert!(log.contains("dig into it"), "{log}");
+        assert!(log.contains("child answer"), "{log}");
+        assert_eq!(ledger_ended(&built, "agent-1").as_deref(), Some("killed"));
+    }
+}
+
 #[tokio::test]
 async fn cache_tokens_reach_every_usage_bucket() {
     let rig = Rig::new(Manual);
