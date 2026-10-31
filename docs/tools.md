@@ -18,7 +18,7 @@ result passes one post-call step before the model sees it.
 | `notebook_edit` | workspace write | Saves the notebook for [`/rewind`](checkpoints.md) first. Edits one cell of a Jupyter notebook (`.ipynb`): `replace` a cell's source (default), `insert` a new cell after `cell_id` (at the start when none) or `delete` a cell. Arguments: `path`, `cell_id`, `cell_type` (`code` or `markdown`; required to insert), `edit_mode`, `new_source`. Name a cell by its id, or `cell-N` (0-based) when it has none. Replacing a code cell clears its outputs. The notebook must have been read first, and is refused if it changed since. The rest of the notebook and its key order are kept; indentation other than spaces is normalized to nbformat's 1-space form, and number formatting outside the edited cell may be normalized (`1e-05` becomes `0.00001`). A `.ipynb` that does not parse as a notebook (invalid JSON, nbformat 3) is read as plain text. `edit` and `write` still work on a notebook but their descriptions point the model here. |
 | `shell` | arbitrary | Runs a shell command. A command still running at its timeout keeps running as a [background job](#background-jobs). Arguments: `command`, `timeout_secs`, `cwd`, `run_in_background`. |
 | `powershell` | arbitrary | Windows only: runs a [PowerShell](#powershell) command. A command still running at its timeout keeps running as a [background job](#background-jobs). Arguments: `command`, `timeout_secs`, `cwd`, `run_in_background`. Registered only when a PowerShell interpreter is found. |
-| `job_output` | read-only | Lists the [background jobs](#background-jobs) you started, or reads what one printed since it was last read; on a [monitor](#monitor) it waits and reports status instead; on a subagent's id it [waits for it to end](agents.md#waiting-for-a-subagent). Arguments: `id`, `wait_secs` (no ceiling; default 0 for a job, until it ends for a subagent). Jobs and the list: main conversation only; a subagent may use it only with the id of a subagent it started. |
+| `job_output` | read-only | Lists the [background jobs](#background-jobs) you started, or reads what one printed since it was last read, waiting for it to end if asked; on a [monitor](#monitor) it waits and reports status instead; on a subagent's id it [waits for it to end](agents.md#waiting-for-a-subagent). Arguments: `id`, `wait_secs` (no ceiling; default 0 for a job, until it ends for a subagent). Jobs and the list: main conversation only; a subagent may use it only with the id of a subagent it started. |
 | `job_cancel` | arbitrary | Stops a background job or monitor with its whole process group. Argument: `id`. Main conversation only. |
 | `monitor` | arbitrary | Runs a command in the background and delivers each line it prints as a [notification](#monitor). Arguments: `command`, `description`, `timeout_secs`. Main conversation only. |
 | `webfetch` | arbitrary | Fetches one web page. |
@@ -302,11 +302,12 @@ running is killed as soon as the shell exits, so `server &` dies with its shell.
   one whose end `job_output` already returned.
 - **`job_output`.** With no `id` it lists every job: id, state, age and the start of its command.
   With an `id` it returns what the job printed since it was last read and whether it still runs.
-  `wait_secs` (no ceiling) waits for new output or the job's end, so the model has no need to poll
-  with `sleep`; any wait returns early when a message from another agent arrives or you type one. A job that ended and was already reported in a notification answers with a short
-  marker instead of its output. On a monitor the same call waits instead: it reports that a
-  notification was posted, the monitor ended, or it is still running — never output bytes. A
-  zero `wait_secs` asks for the status at once.
+  `wait_secs` (no ceiling) waits for the job to end or the wait to elapse, then returns what it
+  printed (output alone does not end the wait; use [`monitor`](#monitor) for that), so the model has no need to poll with `sleep`; any wait returns early when a message from
+  another agent arrives or you type one. A job that ended and was already reported in a notification
+  answers with a short marker instead of its output. On a monitor the same call waits instead: it
+  reports that a notification was posted, the monitor ended, or it is still running — never output
+  bytes. A zero `wait_secs` asks for the status at once.
 - **`job_cancel`.** Stops the job's whole process group (`SIGTERM`, then `SIGKILL` after 2 seconds)
   and returns what it printed since it was last read, not counting what a notification already
   carried. A job that already ended is left as it is.
