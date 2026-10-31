@@ -479,6 +479,12 @@ All notable changes are recorded here. The format follows
 
 #### TUI
 
+- The question dialog's "Other" row is a first-class free-text answer: the field is always
+  visible inline on the row with the caret while it is highlighted, typing a character anywhere
+  drops straight into it, and text typed alongside a chosen option is submitted with it as a
+  note — recorded exactly like standalone "Other" text, so the guardian reads it as intent
+  (#295). The separate typing mode and its footer field are gone; Esc on the "Other" row moves
+  the highlight back to the options, keeping the text.
 - The message box edits by word and keeps a kill buffer: Ctrl/Alt-Left/Right and Alt-B/F move by
   word, Alt-D and Ctrl-Delete delete the next word, Alt/Ctrl-Backspace the previous one, Ctrl-W
   the previous whitespace-delimited run, Ctrl-Home/End jump to the buffer's ends, and Ctrl-Y pastes

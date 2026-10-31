@@ -45,13 +45,14 @@ pub struct QuestionOption {
     pub description: String,
 }
 
-/// What the human chose for one question. A single-select answer sets exactly one of `selected`
-/// and `other`; a multi-select answer may set both.
+/// What the human chose for one question: at least one of a selected label or some typed
+/// text. A single-select answer may set both, the typed text riding along as a note on the
+/// choice; a multi-select answer may set several labels and the text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuestionAnswer {
     pub question: String,
     pub selected: Vec<String>,
-    /// The text typed into the always-present "Other" row.
+    /// The text typed into the always-present "Other" row, alone or as a note on a choice.
     pub other: Option<String>,
 }
 

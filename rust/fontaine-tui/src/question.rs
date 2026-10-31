@@ -32,11 +32,11 @@ pub struct QuestionPanel {
     reply: Option<oneshot::Sender<QuestionReply>>,
     current: usize,
     answers: Vec<QuestionAnswer>,
-    /// The highlighted row: the options, then "Other".
+    /// The highlighted row: the options, then "Other". The highlight is the mode: on the
+    /// "Other" row every printable key edits the field, anywhere else the keys navigate.
     selected: usize,
     checked: Vec<bool>,
     other: InputBuffer,
-    typing: bool,
     opened: Instant,
 }
 
@@ -57,7 +57,6 @@ impl QuestionPanel {
             selected: 0,
             checked,
             other: InputBuffer::default(),
-            typing: false,
             opened: Instant::now(),
         }
     }
@@ -67,13 +66,10 @@ impl QuestionPanel {
         self.reply.as_ref().is_none_or(oneshot::Sender::is_closed)
     }
 
-    pub fn is_typing(&self) -> bool {
-        self.typing
-    }
-
-    /// The "Other" field while it is open: its prompt and what is typed.
+    /// The question dialog keeps its text inline on the "Other" row; there is no separate
+    /// input field drawn below the overlay.
     pub fn field(&self) -> Option<(&'static str, String)> {
-        self.typing.then(|| (OTHER_PROMPT, self.other.text()))
+        None
     }
 
     /// Hands the reply to the waiting tool call. A reply nobody waits for is dropped.
@@ -120,41 +116,52 @@ impl QuestionPanel {
         {
             return None;
         }
-        if self.typing {
+        let rows = self.rows();
+        let options = rows - 1;
+        if self.on_other_row() {
+            // The highlight is the mode: everything except the keys that leave the row or
+            // answer goes to the field, Ctrl/Alt-modified keys included.
             match key.code {
-                KeyCode::Enter => return self.commit_other(),
-                KeyCode::Esc => self.typing = false,
+                KeyCode::Enter => return self.confirm(),
+                KeyCode::Esc => self.selected = 0,
+                KeyCode::Up => self.selected = (self.selected + rows - 1) % rows,
+                KeyCode::Down | KeyCode::Tab => self.selected = (self.selected + 1) % rows,
                 _ => {
                     self.other.handle_key(key);
                 }
             }
             return None;
         }
-        let rows = self.rows();
-        let options = rows - 1;
         match key.code {
             KeyCode::Esc => return Some(QuestionReply::Declined),
             KeyCode::Up => self.selected = (self.selected + rows - 1) % rows,
             KeyCode::Down | KeyCode::Tab => self.selected = (self.selected + 1) % rows,
             KeyCode::Enter => return self.confirm(),
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => match c {
-                'k' => self.selected = (self.selected + rows - 1) % rows,
-                'j' => self.selected = (self.selected + 1) % rows,
-                ' ' if self.question().multi_select => {
-                    if self.selected < options {
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .contains(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                match c {
+                    'k' => self.selected = (self.selected + rows - 1) % rows,
+                    'j' => self.selected = (self.selected + 1) % rows,
+                    ' ' if self.question().multi_select => {
                         self.checked[self.selected] = !self.checked[self.selected];
-                    } else {
-                        self.typing = true;
+                    }
+                    '1'..='9' => {
+                        let row = usize::from(c as u8 - b'1');
+                        if row < rows {
+                            self.selected = row;
+                        }
+                    }
+                    _ => {
+                        // Typing anywhere drops into the field: the highlight follows to the
+                        // "Other" row and the character starts the answer.
+                        self.selected = options;
+                        self.other.insert(c);
                     }
                 }
-                '1'..='9' => {
-                    let row = usize::from(c as u8 - b'1');
-                    if row < rows {
-                        self.selected = row;
-                    }
-                }
-                _ => {}
-            },
+            }
             _ => {}
         }
         None
@@ -162,24 +169,20 @@ impl QuestionPanel {
 
     fn confirm(&mut self) -> Option<QuestionReply> {
         if self.on_other_row() {
-            self.typing = true;
-            return None;
+            let text = self.other_text()?;
+            return if self.question().multi_select {
+                self.finish(self.chosen(), Some(text))
+            } else {
+                self.finish(Vec::new(), Some(text))
+            };
         }
+        // Text typed alongside a chosen option rides along as a note on that choice.
+        let note = self.other_text();
         if self.question().multi_select {
-            return self.finish(self.chosen(), self.other_text());
+            return self.finish(self.chosen(), note);
         }
         let label = self.question().options[self.selected].label.clone();
-        self.finish(vec![label], None)
-    }
-
-    fn commit_other(&mut self) -> Option<QuestionReply> {
-        let text = self.other_text()?;
-        self.typing = false;
-        if self.question().multi_select {
-            self.finish(self.chosen(), Some(text))
-        } else {
-            self.finish(Vec::new(), Some(text))
-        }
+        self.finish(vec![label], note)
     }
 
     fn other_text(&self) -> Option<String> {
@@ -216,7 +219,6 @@ impl QuestionPanel {
         self.selected = 0;
         self.checked = vec![false; self.question().options.len()];
         self.other = InputBuffer::default();
-        self.typing = false;
         None
     }
 
@@ -256,7 +258,10 @@ impl QuestionPanel {
                 String::new()
             };
             let label = if row == options {
-                "Other".to_string()
+                // The field is always on the "Other" row; the caret shows only while the
+                // highlight sits there.
+                let caret = if selected { "▏" } else { "" };
+                format!("{OTHER_PROMPT}{}{caret}", self.other.text())
             } else {
                 clean(&question.options[row].label)
             };
@@ -300,25 +305,23 @@ impl QuestionPanel {
 
     pub fn footer(&self) -> Vec<Line<'static>> {
         let dim = Style::default().add_modifier(Modifier::DIM);
-        let mut out = Vec::new();
-        if self.typing {
-            out.push(Line::raw(format!("{OTHER_PROMPT}{}▏", self.other.text())));
-            out.push(Line::styled(
-                "Enter confirms · Esc back to the options",
+        if self.on_other_row() {
+            return vec![Line::styled(
+                "Enter confirms your words · Esc back to the options",
                 dim,
-            ));
-        } else if self.question().multi_select {
-            out.push(Line::styled(
-                "↑/↓ or number moves · Space toggles · Enter confirms · Esc declines",
-                dim,
-            ));
-        } else {
-            out.push(Line::styled(
-                "↑/↓ or number moves · Enter chooses · Esc declines",
-                dim,
-            ));
+            )];
         }
-        out
+        if self.question().multi_select {
+            vec![Line::styled(
+                "type to answer in your own words · ↑/↓ or number move · Space toggles · Enter confirms · Esc declines",
+                dim,
+            )]
+        } else {
+            vec![Line::styled(
+                "type to answer in your own words · ↑/↓ or number move · Enter chooses · Esc declines",
+                dim,
+            )]
+        }
     }
 }
 
@@ -425,11 +428,81 @@ mod tests {
     }
 
     #[test]
+    fn typing_jumps_to_the_other_row_and_starts_the_answer() {
+        let (mut panel, _rx) = panel(vec![question("Q?", false)]);
+        press(&mut panel, KeyCode::Char('m'));
+        assert_eq!(
+            panel.selected, 3,
+            "the highlight follows the typed character"
+        );
+        type_text(&mut panel, "y own");
+        assert_eq!(panel.other.text(), "my own");
+        assert_eq!(
+            press(&mut panel, KeyCode::Enter),
+            Some(QuestionReply::Answered(vec![answered(
+                "Q?",
+                &[],
+                Some("my own")
+            )]))
+        );
+    }
+
+    #[test]
+    fn bound_keys_keep_their_meaning_on_option_rows() {
+        let (mut panel, _rx) = panel(vec![question("Q?", true)]);
+        press(&mut panel, KeyCode::Char('j'));
+        assert_eq!(panel.selected, 1, "j still moves down");
+        press(&mut panel, KeyCode::Char('k'));
+        assert_eq!(panel.selected, 0, "k still moves up");
+        press(&mut panel, KeyCode::Char('2'));
+        assert_eq!(panel.selected, 1, "digits still jump");
+        press(&mut panel, KeyCode::Char(' '));
+        assert!(panel.checked[1], "Space still toggles");
+        assert!(panel.other.is_empty(), "no text was typed");
+    }
+
+    #[test]
+    fn digits_typed_on_the_other_row_stay_in_the_text() {
+        let (mut panel, _rx) = panel(vec![question("Q?", false)]);
+        press(&mut panel, KeyCode::Up);
+        assert_eq!(panel.selected, 3);
+        type_text(&mut panel, "42 jk");
+        assert_eq!(panel.selected, 3, "digits and letters do not navigate here");
+        assert_eq!(panel.other.text(), "42 jk");
+        assert_eq!(
+            press(&mut panel, KeyCode::Enter),
+            Some(QuestionReply::Answered(vec![answered(
+                "Q?",
+                &[],
+                Some("42 jk")
+            )]))
+        );
+    }
+
+    #[test]
+    fn text_typed_alongside_a_choice_rides_as_a_note() {
+        let (mut panel, _rx) = panel(vec![question("Q?", false)]);
+        type_text(&mut panel, "only if small");
+        assert_eq!(panel.selected, 3);
+        press(&mut panel, KeyCode::Up);
+        press(&mut panel, KeyCode::Up);
+        press(&mut panel, KeyCode::Up);
+        assert_eq!(panel.selected, 0);
+        assert_eq!(
+            press(&mut panel, KeyCode::Enter),
+            Some(QuestionReply::Answered(vec![answered(
+                "Q?",
+                &["a"],
+                Some("only if small")
+            )]))
+        );
+    }
+
+    #[test]
     fn other_takes_typed_text() {
         let (mut panel, _rx) = panel(vec![question("Q?", false)]);
-        press(&mut panel, KeyCode::Char('4'));
-        assert_eq!(press(&mut panel, KeyCode::Enter), None);
-        assert!(panel.is_typing());
+        press(&mut panel, KeyCode::Up);
+        assert_eq!(panel.selected, 3);
         assert_eq!(
             press(&mut panel, KeyCode::Enter),
             None,
@@ -447,12 +520,30 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_the_other_row_with_an_empty_field_does_nothing() {
+        let (mut panel, _rx) = panel(vec![question("Q?", true)]);
+        press(&mut panel, KeyCode::Char(' '));
+        press(&mut panel, KeyCode::Up);
+        assert_eq!(panel.selected, 3);
+        assert_eq!(
+            press(&mut panel, KeyCode::Enter),
+            None,
+            "even toggled options are not submitted from the Other row"
+        );
+        // The toggled selection submits from an option row instead.
+        press(&mut panel, KeyCode::Up);
+        assert_eq!(
+            press(&mut panel, KeyCode::Enter),
+            Some(QuestionReply::Answered(vec![answered("Q?", &["a"], None)]))
+        );
+    }
+
+    #[test]
     fn multi_select_combines_labels_with_other() {
         let (mut panel, _rx) = panel(vec![question("Q?", true)]);
         press(&mut panel, KeyCode::Char(' '));
-        press(&mut panel, KeyCode::Char('4'));
-        press(&mut panel, KeyCode::Char(' '));
-        assert!(panel.is_typing());
+        press(&mut panel, KeyCode::Up);
+        assert_eq!(panel.selected, 3);
         type_text(&mut panel, "extra");
         assert_eq!(
             press(&mut panel, KeyCode::Enter),
@@ -465,13 +556,16 @@ mod tests {
     }
 
     #[test]
-    fn esc_while_typing_leaves_the_field_and_esc_elsewhere_declines() {
+    fn esc_leaves_the_other_row_and_keeps_the_text() {
         let (mut panel, _rx) = panel(vec![question("Q?", false)]);
-        press(&mut panel, KeyCode::Char('4'));
-        press(&mut panel, KeyCode::Enter);
-        type_text(&mut panel, "x");
+        press(&mut panel, KeyCode::Char('x'));
+        assert_eq!(panel.selected, 3);
         assert_eq!(press(&mut panel, KeyCode::Esc), None);
-        assert!(!panel.is_typing());
+        assert_eq!(
+            panel.selected, 0,
+            "Esc moves the highlight back to the options"
+        );
+        assert_eq!(panel.other.text(), "x", "the text stays for a later answer");
         assert_eq!(
             press(&mut panel, KeyCode::Esc),
             Some(QuestionReply::Declined)
@@ -509,6 +603,10 @@ mod tests {
         assert_eq!(panel.handle_key_at(key(KeyCode::Esc), opened), None);
         assert_eq!(panel.handle_key_at(key(KeyCode::Char('2')), opened), None);
         assert_eq!(panel.selected, 0);
+        assert!(
+            panel.other.is_empty(),
+            "a character inside the grace period does not reach the field"
+        );
         // Arrows are navigation, not answers.
         panel.handle_key_at(key(KeyCode::Down), opened);
         assert_eq!(panel.selected, 1);
@@ -565,6 +663,59 @@ mod tests {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(text.chars().count() <= 30, "{text:?} is too wide");
         }
+    }
+
+    #[test]
+    fn the_caret_shows_only_while_the_other_row_is_highlighted() {
+        let (mut panel, _rx) = panel(vec![question("Q?", false)]);
+        let text = |panel: &QuestionPanel| -> Vec<String> {
+            panel
+                .body(40, 20, &Theme::default())
+                .iter()
+                .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+                .collect()
+        };
+        assert!(
+            !text(&panel).iter().any(|row| row.contains('▏')),
+            "no caret before the field is highlighted"
+        );
+        press(&mut panel, KeyCode::Char('x'));
+        assert!(
+            text(&panel).iter().any(|row| row.contains("Other: x▏")),
+            "the caret follows the typed text on the Other row"
+        );
+        press(&mut panel, KeyCode::Up);
+        assert!(
+            text(&panel)
+                .iter()
+                .any(|row| row.contains("Other: x") && !row.contains('▏')),
+            "leaving the row keeps the text but drops the caret"
+        );
+    }
+
+    #[test]
+    fn the_inline_field_wraps_within_the_row_width() {
+        let (mut panel, _rx) = panel(vec![question("Q?", false)]);
+        type_text(
+            &mut panel,
+            "a very long custom answer that has to wrap over several rows",
+        );
+        let rows: Vec<String> = panel
+            .body(30, 40, &Theme::default())
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        for row in &rows {
+            assert!(row.chars().count() <= 30, "{row:?} is too wide");
+        }
+        assert!(
+            rows.iter().any(|row| row.contains("Other: a very")),
+            "the field opens on the Other row: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.ends_with('▏')),
+            "the caret lands on the last wrapped piece: {rows:?}"
+        );
     }
 
     #[test]

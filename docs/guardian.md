@@ -73,8 +73,11 @@ asked before it is not shown to the guardian, while the session facts are kept. 
 way, so a message you took back no longer counts as intent; the denials and approvals stay.
 
 Only messages you typed count as user intent. The text you type under "Other" when the model asks
-you a question with `ask_user_question` counts, recorded as `Other: "<text>"`; the options you pick
-do not, because the model wrote them and a bare label carries no context. A message you queue while the agent works counts from
+you a question with `ask_user_question` counts, recorded as `Other: "<text>"`; so does a note you
+type alongside a chosen option, which is recorded the same way — every `answer.other` becomes an
+`Other: "<text>"` user message whether or not options were also selected, so the guardian reads a
+note on a choice exactly like standalone "Other" text. The options you pick do not count,
+because the model wrote them and a bare label carries no context. A message you queue while the agent works counts from
 the moment the agent receives it, with its next tool result, not from when you typed it: until then
 the model has not read it, and a call judged earlier must not rest on words the model never saw.
 Commands you run with `!` and their output never count, and neither does anything a tool or the
