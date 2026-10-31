@@ -480,7 +480,7 @@ All notable changes are recorded here. The format follows
   the previous whitespace-delimited run, Ctrl-Home/End jump to the buffer's ends, and Ctrl-Y pastes
   the last text Ctrl-U/K/W or a word delete removed. Ctrl-H is Backspace, Ctrl-D deletes the
   character under the cursor when the input has text, Ctrl-P/N recall history like Up/Down, and
-  Ctrl-L redraws the screen. The deny-reason and question fields get the same keys (#257).
+  Ctrl-L redraws the screen from the transcript, erasing the terminal's scrollback (earlier terminal content and rows from before `/clear`), and does nothing in screen-reader mode. The deny-reason and question fields get the same keys (#257).
 - Tool calls in the transcript are cards: a long or multi-line command folded to three rows, the
   last ten rows of the output behind a gutter, and for `edit` and `write` the diff of the change,
   also when no prompt asked about it. `/expand [n]` prints a call in full as new lines. Output is

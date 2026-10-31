@@ -19,7 +19,7 @@ terminal. Scroll back with the terminal or with tmux copy mode, and select text 
 in any shell program. Showing a [subagent's transcript](#the-agent-list-and-the-agent-view) erases
 the terminal's scrollback and writes that transcript in its place, and going back to the main
 conversation does the same, so whatever the terminal held from before the session started, and the
-main chat's rows from before a `/clear`, are gone after the first switch.
+main chat's rows from before a `/clear`, are gone after the first switch. Ctrl-L erases the scrollback the same way.
 
 The input box title says what Enter does: it sends a message, or, when the input starts with `!`,
 runs it as a shell command. The transcript shows your messages (`>`), the streaming answer, and a
@@ -116,7 +116,7 @@ below the bar.
 | Alt-Backspace, Ctrl-Backspace, Alt-D, Ctrl-Delete, Ctrl-W | Delete the previous word, or with Alt-D and Ctrl-Delete the next one. Ctrl-W deletes back to the previous whitespace, so a path goes in one piece. See [Terminal setup](terminal.md#word-movement-and-deletion) for Ctrl-Backspace. |
 | Ctrl-Home, Ctrl-End | Jump to the start or end of the whole input; Home and End stay on the current line. |
 | Ctrl-U, Ctrl-K, Ctrl-Y | Delete to the start or end of the line, and paste the last deleted text back. One entry is kept, and it survives submitting. |
-| Ctrl-L | Redraw the screen from the transcript, keeping the conversation. |
+| Ctrl-L | Redraw the screen from the transcript, keeping the conversation. Like switching to a subagent, it erases the terminal's scrollback first. Does nothing in screen-reader mode. |
 | Ctrl-T | Open or close the [agents panel](#the-agents-panel), even over an approval prompt. Enter on an agent row there shows its transcript. |
 | Ctrl-O | Expand or collapse the [task list](#the-task-panel). Ignored while the agents panel is open. |
 | `/` at the start of the input or after a space | Opens the [slash-command menu](#slash-command-menu). |

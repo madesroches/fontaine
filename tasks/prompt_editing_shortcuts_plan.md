@@ -119,7 +119,7 @@ returns `false`.
   focus) treats them as Up/Down. A panel or dialog never sees the rewrite.
 - **Ctrl-L**: next to the Ctrl-T/Ctrl-O arms, and under the same `!typing_reason` guard, set
   `self.reprint = true` and return `Action::None`. This is the existing full redraw, which
-  matches Claude Code's "clear the screen, keep the conversation". The linear renderer already
+  erases the terminal's scrollback (documented) and matches Claude Code's "clear the screen, keep the conversation". The linear renderer already
   ignores `reprint`, so a screen reader's history stays intact.
 
 ### Left out
