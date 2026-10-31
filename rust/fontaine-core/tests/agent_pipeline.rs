@@ -820,8 +820,13 @@ mod persistence {
         .await;
         let session_id = built.runtime.session.id.clone();
         drop(built);
-        // A new process reopens the session: the ledger is the only state the counter needs.
-        let session = Session::open(&w.data, &session_id).unwrap();
+        // A new process reopens the session: the ledger is the only state the counter needs. The
+        // reopening works on a copy of the data directory because a dropped runtime still holds
+        // its session's files open (its tools and child runner reference each other), which on
+        // Windows refuses a second writer; a real restart has no such first process.
+        let restarted = tempfile::tempdir().unwrap();
+        copy_tree(&w.data, restarted.path());
+        let session = Session::open(restarted.path(), &session_id).unwrap();
         let rebuilt = build_over_session(&w, Manual, Vec::new(), false, session);
         {
             let view = rebuilt.runtime.session.ledger.view();
@@ -836,12 +841,25 @@ mod persistence {
             .unwrap();
         assert_eq!(id, "agent-2");
         // The first process's transcript keeps its name.
-        let file = w
-            .data
+        let file = restarted
+            .path()
             .join("sessions")
             .join(&session_id)
             .join("logs")
             .join("agent-1.jsonl");
         assert!(file.is_file(), "{file:?}");
+    }
+
+    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                std::fs::create_dir_all(&target).unwrap();
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).unwrap();
+            }
+        }
     }
 }
