@@ -801,6 +801,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-31: Ctrl-W deletes back to the previous whitespace while the other word shortcuts use alphanumeric words, matching Claude Code (#257).
 - 2026-10-31: The prompt box kill buffer holds a single entry with no Alt-Y paste cycle (Claude Code has one), and consecutive kills replace it rather than join; one entry covers the common case (#257).
 - 2026-10-31: No Ctrl-_ undo in the prompt box (Claude Code's undo key); it needs its own history design (#257).
+- 2026-10-31: A terminal resize purges the scrollback and rewrites the transcript at the new size, instead of ratatui's inline resize, which erases from the viewport top and which tmux turns into a stale copy of the live area in history (fixes #279); Claude Code's resize behavior was not verified. The refusal of an unknown slash name or `/loop` mid-turn is a transient status-line hint, not a transcript notice, so repeated Enters add no history.
 
 ## Open Questions
 

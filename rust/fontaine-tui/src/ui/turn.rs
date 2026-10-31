@@ -803,6 +803,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// area, and every line behind it, until the session ends.
     pub(crate) fn settle_turn(&mut self, end: &TurnEnd) {
         self.app.running = false;
+        self.app.refusal = None;
         self.app.deny_pending();
         self.drain_prompts();
         self.app.transcript.interrupt_pending();

@@ -29,6 +29,11 @@ fn main() {
         app.transcript.notice(format!("note {i}"));
         draw(&mut app, &mut screen);
     }
+    if std::env::args().nth(1).as_deref() == Some("popup") {
+        popup(&mut app, &mut screen, &draw);
+        disable_raw_mode().expect("restore the terminal");
+        return;
+    }
     for i in 0..80 {
         if i % 7 == 3 {
             app.on_event(SessionEvent::ToolCall {
@@ -107,4 +112,64 @@ fn main() {
     screen.commit_all(&mut app).expect("final commit");
     disable_raw_mode().expect("restore the terminal");
     println!("\nDONE");
+}
+
+/// Issue 279: the `/` menu typed open during a running turn, with a task list, a finished shell
+/// call with output, two refused Enters and the next call starting under the open menu. Leaves
+/// the live area on screen and holds it, so tmux can be captured.
+fn popup<S, D>(app: &mut App, screen: &mut S, draw: &D)
+where
+    D: Fn(&mut App, &mut S),
+{
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let key = |app: &mut App, code| {
+        app.handle_input(fontaine_tui::Input::Key(KeyEvent::new(
+            code,
+            KeyModifiers::NONE,
+        )))
+    };
+    app.running = true;
+    app.todos.set_items(
+        (0..7)
+            .map(|n| fontaine_tools::todo::TodoItem {
+                content: format!("task {n}"),
+                status: fontaine_tools::todo::TodoStatus::Completed,
+            })
+            .collect(),
+    );
+    app.on_event(SessionEvent::ToolCall {
+        id: "a".into(),
+        tool: "shell".into(),
+        args: serde_json::json!({ "command": "cargo fmt --check && cargo test; echo GATE_DONE" }),
+    });
+    draw(app, screen);
+    for c in "/guardian-en".chars() {
+        key(app, KeyCode::Char(c));
+        draw(app, screen);
+    }
+    app.on_event(SessionEvent::ToolResult {
+        id: "a".into(),
+        tool: "shell".into(),
+        success: true,
+        text: "    Finished `dev` profile\nGATE_DONE\n[exit code 0]".into(),
+    });
+    draw(app, screen);
+    for c in "able".chars() {
+        key(app, KeyCode::Char(c));
+        draw(app, screen);
+    }
+    for _ in 0..2 {
+        app.transcript
+            .notice("a turn is running; wait for it or press Esc to interrupt");
+        draw(app, screen);
+    }
+    app.on_event(SessionEvent::ToolCall {
+        id: "b".into(),
+        tool: "shell".into(),
+        args: serde_json::json!({ "command": "git add -A && git commit -m \"plugins: load manifest component paths\" && git push && git log --oneline -2" }),
+    });
+    // Keeps drawing, as the app does on its ticks and on resize, so a resize can be tried.
+    for _ in 0..4000 {
+        draw(app, screen);
+    }
 }
