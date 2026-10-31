@@ -139,9 +139,11 @@ shows the call that was cut short.
 What deliberately does not change: the tree flips the node to `Killed` immediately (the UI
 shows it at once; only the report and the ledger's `finished` record wait for the run to
 settle, up to the grace); a killed child still cannot be resumed; `kill_all` and session
-exit are unchanged, but their `tree.settled` waits are only 5 s — far under `KILL_GRACE` —
-so a child still wedged past the choke point at exit keeps today's behavior (transcript
-dropped); the root agent's interrupt is untouched.
+exit still kill and wait the same way, but their three `tree.settled` waits are raised to
+`KILL_GRACE` plus slack (35 s) so a child wedged past the choke point at exit keeps the
+grace window to settle and save its transcript (the wait is a timeout bound — exit is no
+slower in the normal case, since `settled` returns as soon as everything has settled); the
+root agent's interrupt is untouched.
 
 ## Implementation Steps
 
@@ -159,10 +161,19 @@ dropped); the root agent's interrupt is untouched.
 4. **`rust/fontaine-core/src/child_runner.rs` `run_child`** — on kill, grace the in-flight
    run (`tokio::time::timeout(KILL_GRACE, &mut run)`); on expiry drop as today; when the
    kill flag is set, report `ChildStatus::Killed` for any settle outcome.
-5. **`rust/fontaine-core/src/tools.rs`** — accept the session `Arc<KillSwitches>` in
+5. **Exit-path settle waits** — the three production `tree.settled` call sites after
+   `kill_all` (`rust/fontaine-tui/src/lib.rs:343`, `rust/fontaine/src/headless.rs:894` and
+   `:918`, all `Duration::from_secs(5)`) wait only a sixth of `KILL_GRACE`, so a killed
+   child wedged on a hung provider stream at exit would still be dropped before the grace
+   could save its transcript and ledger `finished` record. Raise all three to
+   `KILL_GRACE + 5 s` slack (35 s, one named constant shared with step 4's
+   `KILL_GRACE`). `settled` returns early once everything has settled, so the longer bound
+   only slows exit in the wedged case; a shared constant keeps the exit bound tracking
+   `KILL_GRACE` if the grace changes.
+6. **`rust/fontaine-core/src/tools.rs`** — accept the session `Arc<KillSwitches>` in
    `RegistryParams` and pass it into each `Guard`.
-6. **`rust/fontaine-core/src/agent/mcp.rs`** — `connect_mcp` builds its own `Guard`
-   (`mcp.rs:141-146`, feeding `GuardedSink` → `guard_callback`), so step 5 alone leaves
+7. **`rust/fontaine-core/src/agent/mcp.rs`** — `connect_mcp` builds its own `Guard`
+   (`mcp.rs:141-146`, feeding `GuardedSink` → `guard_callback`), so step 6 alone leaves
    every MCP call without a kill switch; adding `kills` to `Guard` also breaks this
    struct literal, which must be touched to compile regardless. Store the session
    `Arc<KillSwitches>` on `AgentRuntime` (created in `AgentRuntime::new` alongside
@@ -170,11 +181,11 @@ dropped); the root agent's interrupt is untouched.
    `registry()`) and set `kills: self.kills.clone()` in the literal. `connect_mcp` runs
    from `fontaine-tui/src/ui/mcp.rs` and `fontaine/src/lib.rs`,
    a different path from the `registry()` call site; check it too.
-7. **Tests** (see Testing Strategy).
-8. **Docs** — `CHANGELOG.md` (`Fixed` under `[Unreleased]`); `docs/agents.md` (what kill
+8. **Tests** (see Testing Strategy).
+9. **Docs** — `CHANGELOG.md` (`Fixed` under `[Unreleased]`); `docs/agents.md` (what kill
    keeps and when); `docs/architecture.md` (session layout: a killed agent's log holds its
    committed messages); the plan's Decisions below.
-9. **`tasks/fontaine_harness_plan.md`** — a dated Decisions line under the `Agents`
+10. **`tasks/fontaine_harness_plan.md`** — a dated Decisions line under the `Agents`
    subject: killed subagents persist their partial transcript; graceful settle + grace +
    choke-point kill, no config gate.
 
@@ -183,6 +194,8 @@ dropped); the root agent's interrupt is untouched.
 - `rust/fontaine-tools/src/kills.rs` (new), `src/guarded.rs`, `src/lib.rs`
 - `rust/fontaine-core/src/child_runner.rs`, `src/tools.rs`, `src/agent/mcp.rs`, `src/agent.rs` /
   `src/agent/setup.rs` (threading `KillSwitches`)
+- `rust/fontaine-tui/src/lib.rs`, `rust/fontaine/src/headless.rs` — the three exit-path
+  `tree.settled` waits after `kill_all`, raised to `KILL_GRACE` plus slack (step 5)
 - `rust/fontaine-core/tests/agent_pipeline.rs` (+ shared harness as needed)
 - `rust/fontaine-tools/tests/guarded.rs` (new or existing test file)
 - `Guard` / `RegistryParams` struct-literal sites that must add the new fields to compile:
@@ -215,10 +228,13 @@ dropped); the root agent's interrupt is untouched.
 - **No kill for the root.** The root has no kill switch and its interrupt is a separate
   surface; folding it in would touch the TUI's turn lifecycle for no issue requirement.
   Follow-up if wanted: the same KillHook pattern applies to a root interrupt channel.
-- **Exit path.** `kill_all` and session exit wait only 5 s after the kill, far below
-  `KILL_GRACE`. A killed child wedged on a hung provider stream at session exit can still
-  lose both its transcript and its ledger `finished` record — today's behavior, recorded
-  here as the accepted residual risk; the exit path is not redesigned.
+- **Exit path.** `kill_all` and session exit's three `tree.settled` waits (5 s today) are
+  raised to `KILL_GRACE` plus 5 s slack, so a killed child wedged on a hung provider stream
+  at exit keeps the full grace window to settle and save its transcript and ledger
+  `finished` record. The wait is a timeout bound — `settled` returns as soon as everything
+  has settled, so exit is slower only in the wedged case; only a child still unsettled past
+  the new bound loses its transcript, exactly as a wedged child loses it after `KILL_GRACE`
+  today. The exit path is otherwise not redesigned.
 - **No config gate.** The behavior is unconditional, per the user's call: during
   development every agent's transcript is worth keeping, and an opt-out knob adds a test
   matrix for a failure mode (lost evidence) that has no upside to preserve.
@@ -233,6 +249,12 @@ dropped); the root agent's interrupt is untouched.
   whole-drive drop is kept only as the grace-expiry fallback.
 - 2026-10-31: Persistence reuses the existing `RecoveryHook` append on the rig
   `RunSettled(Error)` path; no new transcript-writing code and no message reconstruction.
+- AFK: the three exit-path `tree.settled` waits after `kill_all` are raised from 5 s to
+  `KILL_GRACE` + 5 s slack (option (a)), not shortening `KILL_GRACE` — raising the timeout
+  bound changes no happy-path behavior (`settled` returns early once everything has
+  settled) and preserves the issue's transcript guarantee at session exit for a killed
+  child wedged on a hung provider stream; shortening the grace would have weakened the
+  guarantee for every kill.
 
 ## Documentation
 
