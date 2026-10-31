@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 
-use crate::agents_panel::{spend_text, status_label};
+use crate::agents_panel::{SpendView, spend_text, status_label};
 
 /// How long an agent that failed, was killed or ran out of budget stays listed.
 pub const ENDED_LISTED: Duration = Duration::from_secs(30);
@@ -77,12 +77,13 @@ pub fn rows(
                     .ended
                     .unwrap_or(now)
                     .saturating_duration_since(row.started),
-                spend: spend_text(
-                    row.spend.tokens(),
-                    row.budget.tokens,
-                    row.spend.cost_usd,
-                    row.budget.cost_usd,
-                ),
+                spend: spend_text(&SpendView {
+                    tokens: row.spend.tokens(),
+                    token_budget: row.budget.tokens,
+                    cost_usd: row.spend.cost_usd,
+                    cost_budget: row.budget.cost_usd,
+                    cost_partial: row.spend.is_partial_cost(),
+                }),
             });
         }
     }
@@ -331,7 +332,7 @@ mod tests {
             spend: Spend {
                 input_tokens: 700,
                 output_tokens: 500,
-                cost_usd: None,
+                ..Spend::default()
             },
             budget: Budget::default(),
             exhausted: None,
@@ -353,6 +354,20 @@ mod tests {
         list.set_rows(rows);
         list.focus();
         list
+    }
+
+    #[test]
+    fn a_mostly_unpriced_agent_marks_its_dollar_figure_as_partial() {
+        let now = Instant::now();
+        let mut worker = agent("agent-1", "main", ChildStatus::Running, now);
+        worker.spend = Spend {
+            input_tokens: 4_800_000,
+            output_tokens: 63_024,
+            cost_usd: Some(0.0519),
+            unpriced_tokens: 4_850_000,
+        };
+        let rows = rows(&[worker], None, &HashSet::new(), now);
+        assert_eq!(rows[1].spend, "4863024 tok · $0.0519 + unpriced");
     }
 
     #[test]

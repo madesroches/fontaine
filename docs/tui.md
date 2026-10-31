@@ -783,7 +783,10 @@ model, its status (`running`, `waiting-on-permission`, `done`, `killed`, `budget
 `failed`) and what it has used, such as `1500 tok · $0.0021`; each `/ <cap>` form
 (`1500 / 200000 tok`, `$0.0021 / $2.00`) appears only for a budget that is set, and `cost n/a`
 shows in place of the spend when a cost budget is set but no priced call has been counted yet,
-as for a model with no known price. Up and Down select a row; Enter on an agent closes the panel
+as for a model with no known price. A dollar figure that leaves out some of the agent's calls
+(an unpriced account's main model next to its priced guardian calls) ends in `+ unpriced`, as in
+`4863024 tok · $0.0519 + unpriced`: the figure is a lower bound, and a cost budget still counts
+only the priced spend. Up and Down select a row; Enter on an agent closes the panel
 and shows that agent's transcript, which is how you reach an agent that has left the
 [agent list](#the-agent-list-and-the-agent-view).
 

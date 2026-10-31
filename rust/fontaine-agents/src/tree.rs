@@ -1489,8 +1489,7 @@ mod tests {
             &c,
             &Spend {
                 input_tokens: 20,
-                output_tokens: 0,
-                cost_usd: None,
+                ..Spend::default()
             },
         );
         assert!(matches!(capped.resume(&c), Err(Refusal::SessionBudget(_))));

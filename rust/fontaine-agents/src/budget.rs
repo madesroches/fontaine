@@ -8,6 +8,8 @@ pub struct Spend {
     pub output_tokens: u64,
     /// `None` until a priced call is counted.
     pub cost_usd: Option<f64>,
+    /// Tokens of the calls that carried no price, which `cost_usd` therefore leaves out.
+    pub unpriced_tokens: u64,
 }
 
 impl Spend {
@@ -18,9 +20,15 @@ impl Spend {
     pub fn add(&mut self, other: &Spend) {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
+        self.unpriced_tokens += other.unpriced_tokens;
         if let Some(cost) = other.cost_usd {
             *self.cost_usd.get_or_insert(0.0) += cost;
         }
+    }
+
+    /// Whether `cost_usd` is a lower bound: some calls were priced and some were not.
+    pub fn is_partial_cost(&self) -> bool {
+        self.cost_usd.is_some() && self.unpriced_tokens > 0
     }
 }
 
@@ -99,6 +107,15 @@ mod tests {
             input_tokens: input,
             output_tokens: output,
             cost_usd: cost,
+            ..Spend::default()
+        }
+    }
+
+    fn unpriced(tokens: u64) -> Spend {
+        Spend {
+            input_tokens: tokens,
+            unpriced_tokens: tokens,
+            ..Spend::default()
         }
     }
 
@@ -139,5 +156,25 @@ mod tests {
         total.add(&spend(0, 0, Some(0.25)));
         assert_eq!(total.tokens(), 10);
         assert_eq!(total.cost_usd, Some(0.5));
+    }
+
+    #[test]
+    fn unpriced_tokens_add_up_and_mark_a_priced_total_as_partial() {
+        let mut total = Spend::default();
+        total.add(&unpriced(10));
+        assert_eq!(total.unpriced_tokens, 10);
+        assert!(!total.is_partial_cost(), "no price at all is not partial");
+        total.add(&unpriced(5));
+        total.add(&spend(3, 4, Some(0.25)));
+        assert_eq!(total.unpriced_tokens, 15);
+        assert!(total.is_partial_cost());
+    }
+
+    #[test]
+    fn an_all_priced_spend_is_not_partial() {
+        let mut total = Spend::default();
+        total.add(&spend(3, 4, Some(0.25)));
+        total.add(&spend(1, 1, Some(0.1)));
+        assert!(!total.is_partial_cost());
     }
 }
