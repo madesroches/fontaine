@@ -205,9 +205,7 @@ impl InputBuffer {
 
     pub fn yank(&mut self) {
         let killed = self.killed.clone();
-        for c in killed.chars() {
-            self.insert(c);
-        }
+        self.replace_range(self.cursor, self.cursor, &killed);
     }
 
     pub fn lines(&self) -> Vec<String> {
