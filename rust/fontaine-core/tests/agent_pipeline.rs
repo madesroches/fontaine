@@ -706,7 +706,7 @@ mod persistence {
                 agent: &built.runtime.agent,
                 state: &built.runtime.state,
                 prompt: prompt.to_string(),
-                max_turns: 5,
+                max_turns: Some(5),
                 priced: true,
                 model: "scripted".to_string(),
                 provider: "mock".to_string(),
@@ -832,7 +832,7 @@ mod persistence {
             .runtime
             .state
             .agents()
-            .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Manual, false)
+            .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Manual)
             .unwrap();
         assert_eq!(id, "agent-2");
         // The first process's transcript keeps its name.
