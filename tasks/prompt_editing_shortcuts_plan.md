@@ -78,7 +78,7 @@ buffer does not wipe what an earlier kill saved. It backs `kill_to_start`, `kill
 `delete_word`, `delete_word_whitespace` and the new `delete_word_forward`. Char-level Backspace/Delete do not touch the
 kill buffer, as in readline. `yank()` inserts `killed` at the cursor and leaves the cursor after
 it. `take()` and `set_text` leave `killed` alone, so a kill carries over a submit, as in a shell.
-There is one entry and no Alt-Y ring (see Decisions).
+There is one entry, consecutive kills replace it rather than append, and there is no Alt-Y ring (see Decisions).
 
 ### New `InputBuffer` operations
 
@@ -168,6 +168,7 @@ returns `false`.
   alphanumeric words, matching Claude Code.
 - 2026-10-31: the kill buffer holds a single entry with no Alt-Y paste cycle (Claude Code has
   one); one entry covers the common case.
+- 2026-10-31: AFK: consecutive kills do not join; each non-empty kill replaces the single kill-buffer entry, so Ctrl-W twice then Ctrl-Y yanks only the last word (readline joins, Claude Code's docs do not say; #257 only needs the last killed text).
 - 2026-10-31: no Ctrl-_ undo (Claude Code's undo key); it needs its own history design.
 
 ## Documentation
