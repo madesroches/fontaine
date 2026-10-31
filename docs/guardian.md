@@ -243,7 +243,7 @@ first: an `ask` rule or a critical path still asks.
   the guardian used are in the headless [`usage.guardian`](headless.md) output.
 - A provider caches a prefix only above a model-dependent minimum length, so on some guardian
   models the marker saves nothing. When you pin a Claude guardian whose minimum is above the
-  size of its prompt (about 1500 tokens under the `minimal` profile, 3000 under `full`), with
+  size of its prompt (about 1500 tokens under the `minimal` profile, 6000 under `full`), with
   caching on, Fontaine says so once at startup. Minimums, in tokens: Claude 5 models 512,
   Sonnet 4 models 1024, Haiku 3.5 and Opus 4.7 2048, Opus 4.5 and 4.6 and Haiku 4.5 4096. A
   guardian model with a lower minimum is the fix. The notice covers Claude ids on `anthropic`

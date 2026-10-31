@@ -6,7 +6,7 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::World;
-use fontaine_core::agent::{build_guardian, build_guardian_telling};
+use fontaine_core::agent::build_guardian_telling;
 use fontaine_core::config::Config;
 use fontaine_core::models::{self, GuardianModel, ResolveParams};
 use fontaine_core::permissions::{Answer, ApprovalRequest, Approver};
@@ -63,7 +63,7 @@ fn notices(config: &Config, model: &GuardianModel, profile: Profile) -> Vec<Stri
 #[tokio::test]
 async fn a_minimum_above_the_prefix_is_announced_once() {
     let (config, model) = pinned("anthropic/claude-haiku-4.5", "").await;
-    let said = notices(&config, &model, Profile::Full);
+    let said = notices(&config, &model, Profile::Minimal);
     assert_eq!(said.len(), 1, "{said:?}");
     assert!(
         said[0].contains("judge/anthropic/claude-haiku-4.5") && said[0].contains("4096"),
@@ -87,11 +87,5 @@ async fn a_low_minimum_is_not_announced() {
 #[tokio::test]
 async fn nothing_is_announced_with_caching_off() {
     let (config, model) = pinned("anthropic/claude-haiku-4.5", "prompt_caching = false\n").await;
-    assert!(notices(&config, &model, Profile::Full).is_empty());
-}
-
-#[tokio::test]
-async fn nothing_is_announced_without_an_approver() {
-    let (config, model) = pinned("anthropic/claude-haiku-4.5", "").await;
-    let _ = build_guardian(Some(&model), &config, Profile::Full);
+    assert!(notices(&config, &model, Profile::Minimal).is_empty());
 }

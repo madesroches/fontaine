@@ -352,8 +352,8 @@ All notable changes are recorded here. The format follows
   none. `prompt_caching` (on by default) and `cache_ttl` apply to it. An `openai-compatible`
   account pointed at OpenRouter keeps working, uncached (#331).
 - A pinned Claude guardian whose model caches nothing below a length its prompt does not reach
-  (Haiku 4.5, Opus 4.5 and 4.6, and others, on `anthropic` and `openrouter` accounts) gets a
-  start-up notice instead of a silent no-op (#331).
+  (Haiku 4.5, Opus 4.5 and 4.6, and others, under the `minimal` profile, on `anthropic` and
+  `openrouter` accounts) gets a start-up notice instead of a silent no-op (#331).
 
 #### Research
 

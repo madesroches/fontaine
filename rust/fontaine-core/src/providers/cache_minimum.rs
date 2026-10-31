@@ -29,6 +29,9 @@ pub fn min_cacheable_tokens(kind: &str, model: &str) -> Option<u32> {
     }
     // OpenRouter ids are dotted (`claude-haiku-4.5`); Anthropic's are dashed.
     let id = model
+        .split(':')
+        .next()
+        .unwrap_or(model)
         .strip_prefix("anthropic/")
         .unwrap_or(model)
         .replace('.', "-");
@@ -122,6 +125,14 @@ mod tests {
         assert_eq!(
             min_cacheable_tokens("openrouter", "anthropic/claude-3.5-haiku"),
             Some(2048)
+        );
+    }
+
+    #[test]
+    fn a_variant_suffix_is_ignored() {
+        assert_eq!(
+            min_cacheable_tokens("openrouter", "anthropic/claude-haiku-4.5:thinking"),
+            Some(4096)
         );
     }
 

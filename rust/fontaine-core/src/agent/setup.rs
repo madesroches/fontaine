@@ -103,7 +103,7 @@ pub fn build_guardian_telling(
 fn guardian_prefix_tokens(profile: Profile) -> u32 {
     match profile {
         Profile::Minimal => 1500,
-        Profile::Full => 3000,
+        Profile::Full => 6000,
     }
 }
 
