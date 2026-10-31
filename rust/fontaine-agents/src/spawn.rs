@@ -34,7 +34,6 @@ pub struct AgentArgs {
     pub agent_type: String,
     pub prompt: String,
     pub model: Option<String>,
-    pub background: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -43,35 +42,6 @@ pub struct AgentTool {
     pub types: Arc<AgentTypes>,
     pub runner: Arc<dyn ChildRunner>,
     pub ledger: Arc<dyn RootLedger>,
-}
-
-/// Kills a child whose blocking call was dropped, such as by an interrupt.
-struct KillOnDrop {
-    tree: Arc<AgentTree>,
-    ledger: Arc<dyn RootLedger>,
-    id: String,
-    agent_type: String,
-    handle: Arc<dyn ChildHandle>,
-    armed: bool,
-}
-
-impl Drop for KillOnDrop {
-    fn drop(&mut self) {
-        if self.armed && self.tree.kill(&self.id) {
-            // Nothing awaits the child's report any more, so nothing else concludes it.
-            self.ledger.append_event(AgentEvent::Finished {
-                agent: self.id.clone(),
-                status: ChildStatus::Killed.as_str().to_string(),
-            });
-            subagent_event("killed", &self.id, &self.agent_type);
-            // A killed child never reads what the human queued for it.
-            let missed = self.handle.take_missed();
-            if !missed.is_empty() {
-                self.handle
-                    .report_undelivered("it was killed", &missed.join("\n\n"));
-            }
-        }
-    }
 }
 
 /// Gives back a reservation if the call is dropped (the turn was interrupted) before the child
@@ -108,11 +78,12 @@ fn conclude(
     agent_type: &str,
     report: &ChildReport,
 ) {
-    tree.finish(id, report.clone());
+    // The ledger first: `AgentTree::settled` treats a report in the tree as the end being on record.
     ledger.append_event(AgentEvent::Finished {
         agent: id.to_string(),
         status: report.status.as_str().to_string(),
     });
+    tree.finish(id, report.clone());
     let event = match report.status {
         ChildStatus::Killed => "killed",
         ChildStatus::BudgetExhausted => "budget_exhausted",
@@ -139,7 +110,7 @@ pub fn watch_report(
         // running always finds the report already waiting.
         if report.status != ChildStatus::Killed && !tree.was_killed(&id) {
             let note = format!(
-                "Background agent {id} ({type_name}) finished: {}\n{}",
+                "Agent {id} ({type_name}) finished: {}\n{}",
                 report.status.as_str(),
                 report_text(&report)
             );
@@ -154,8 +125,7 @@ pub fn watch_report(
     });
 }
 
-/// Starts another run of an ended child on `text`. The run always reports back as a background
-/// child does.
+/// Starts another run of an ended child on `text`. The run reports back like the first.
 pub fn resume_child(
     tree: &Arc<AgentTree>,
     ledger: &Arc<dyn RootLedger>,
@@ -224,6 +194,14 @@ fn report_text(report: &ChildReport) -> String {
             report.text,
             report.reason.as_deref().unwrap_or("its budget was spent")
         ),
+        ChildStatus::Failed => format!(
+            "{}\n\n[The subagent failed: {}.]",
+            report.text,
+            report
+                .reason
+                .as_deref()
+                .unwrap_or("it ended without an answer")
+        ),
         _ => report.text.clone(),
     }
 }
@@ -239,11 +217,13 @@ impl Tool for AgentTool {
             "Start a subagent: a separate conversation with its own context that works on one \
              task and returns a report. Give it everything it needs in `prompt`: a subagent \
              cannot see this conversation, except a `fork`, which starts from a copy of it and \
-             needs only a short task. By default the call waits for the report and returns it; \
-             with `background` set it returns an `agent_id` at once and the report arrives later \
-             as a notification, or call `job_output` with the id to wait for it. A subagent has a \
-             subset of your tools and never more authority than \
-             you, and every call it makes passes the same permission checks. Agent types:\n{}",
+             needs only a short task. The call starts the subagent and returns its `agent_id` at \
+             once. Subagents run concurrently with you and with each other, and the report \
+             arrives as a notification with a later tool result or turn; call `job_output` with \
+             the id to wait for one. A subagent that answers while its own subagents run waits \
+             for them before it ends. A subagent has a subset of your tools and never more \
+             authority than you, and every call it makes passes the same permission checks. \
+             Agent types:\n{}",
             self.types.describe()
         )
     }
@@ -261,10 +241,6 @@ impl Tool for AgentTool {
                 "model": {
                     "type": "string",
                     "description": "Optional model for this agent: `$main`, `$guardian_default` or `<account>/<model>`. Defaults to the agent type's model.",
-                },
-                "background": {
-                    "type": "boolean",
-                    "description": "Return an agent_id at once and deliver the report later.",
                 },
             },
             "required": ["agent_type", "prompt"],
@@ -317,7 +293,6 @@ impl Tool for AgentTool {
             tools.retain(|tool| tool != "agent");
         }
         let mode = own_mode(agent_type.mode, self.tree.parent_posture(&caller));
-        let background = args.background.unwrap_or(false);
         let id = self
             .tree
             .reserve(
@@ -326,7 +301,6 @@ impl Tool for AgentTool {
                 &model.as_text(),
                 tools.clone(),
                 mode,
-                background,
             )
             .map_err(|refusal| match refusal {
                 Refusal::Parallel(max) => ToolExecutionError::refused(format!(
@@ -359,7 +333,6 @@ impl Tool for AgentTool {
             mode,
             budget: limits.subagent,
             depth,
-            background,
             ledger: self.ledger.clone(),
         };
         let handle: Arc<dyn ChildHandle> = match self.runner.spawn(request).await {
@@ -380,49 +353,15 @@ impl Tool for AgentTool {
         });
         subagent_event("spawn", &id, &agent_type.name);
 
-        if background {
-            watch_report(
-                self.tree.clone(),
-                self.ledger.clone(),
-                caller,
-                id.clone(),
-                agent_type.name.clone(),
-                handle,
-            );
-            return Ok(ToolOutput::json(json!({ "agent_id": id })));
-        }
-
-        let mut guard = KillOnDrop {
-            tree: self.tree.clone(),
-            ledger: self.ledger.clone(),
-            id: id.clone(),
-            agent_type: agent_type.name.clone(),
-            handle: handle.clone(),
-            armed: true,
-        };
-        let report = handle.report().await;
-        guard.armed = false;
-        conclude(
-            &self.tree,
-            self.ledger.as_ref(),
-            &id,
-            &agent_type.name,
-            &report,
+        watch_report(
+            self.tree.clone(),
+            self.ledger.clone(),
+            caller,
+            id.clone(),
+            agent_type.name.clone(),
+            handle,
         );
-        resume_missed(&self.tree, &self.ledger, &id, &handle);
-        match report.status {
-            ChildStatus::Killed => Err(ToolExecutionError::other(format!(
-                "subagent {id} was killed before it finished"
-            ))),
-            ChildStatus::Failed => Err(ToolExecutionError::other(format!(
-                "subagent {id} failed: {}",
-                report
-                    .reason
-                    .as_deref()
-                    .unwrap_or("it ended without an answer")
-            ))),
-            _ => Ok(ToolOutput::text(report_text(&report))),
-        }
+        Ok(ToolOutput::json(json!({ "agent_id": id })))
     }
 }
 

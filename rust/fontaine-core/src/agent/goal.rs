@@ -101,7 +101,7 @@ impl AgentRuntime {
         self.session.goal().user_prompt(self.tree_spend());
     }
 
-    /// The evaluation due now, if any; none while a background agent still runs.
+    /// The evaluation due now, if any; none while a subagent still runs.
     pub fn next_goal_step(&self) -> Option<Pending> {
         let running = self.state.agents().any_running();
         self.session.goal().next_step(running)

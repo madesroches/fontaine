@@ -239,7 +239,7 @@ async fn a_request_made_during_a_notification_turn_is_held_until_the_turn_ends()
                 Turn::tool(
                     "c1",
                     "agent",
-                    json!({"agent_type": "worker", "prompt": "child-A: finish", "background": true}),
+                    json!({"agent_type": "worker", "prompt": "child-A: finish"}),
                 ),
                 Turn::text("launched"),
                 Turn::text("noted the report"),
@@ -260,7 +260,7 @@ async fn a_request_made_during_a_notification_turn_is_held_until_the_turn_ends()
         idle(&ui).await;
         ui.send("/login work");
         ui.wait_for("API key for `work`").await;
-        ui.wait_for("a background agent reported back").await;
+        ui.wait_for("an agent reported back").await;
         ui.type_text("sk-held");
         ui.press(KeyCode::Enter);
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;

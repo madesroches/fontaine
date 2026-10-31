@@ -155,7 +155,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     headline: message,
                     hint: None,
                 }),
-                // A background agent's call is still waiting for its answer.
+                // A subagent's call is still waiting for its answer.
                 Prompt::Ask(request, reply)
                     if request.agent != ROOT_AGENT && !reply.is_closed() =>
                 {
@@ -207,7 +207,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             if self.drain_deferred(runtime).await.is_break() {
                 return;
             }
-            // A background agent that finished while nothing was running has news for the
+            // A subagent that finished while nothing was running has news for the
             // main conversation, which gets a turn of its own to read it.
             if tree.has_notifications(ROOT_AGENT) {
                 if self.notification_turn(runtime, launch_dir).await.is_break() {

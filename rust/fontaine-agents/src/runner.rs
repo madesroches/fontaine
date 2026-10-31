@@ -58,7 +58,6 @@ pub struct SpawnRequest {
     pub budget: Budget,
     /// Layers below the main conversation.
     pub depth: usize,
-    pub background: bool,
     pub ledger: Arc<dyn RootLedger>,
 }
 

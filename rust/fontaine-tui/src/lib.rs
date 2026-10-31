@@ -336,6 +336,11 @@ pub async fn drive(
     }
     // Whatever is still running is stopped with the session.
     runtime.state.agents().kill_all();
+    runtime
+        .state
+        .agents()
+        .settled(std::time::Duration::from_secs(5))
+        .await;
     runtime.jobs().terminate_all().await;
     runtime.lsp().shutdown_all().await;
     // What stays in the terminal is the main conversation, not an agent's view.

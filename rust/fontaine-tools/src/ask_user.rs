@@ -201,7 +201,7 @@ impl Tool for AskUserTool {
             .ok()
             .flatten()
             .map_or_else(|| ROOT_AGENT.to_string(), |id| id.0);
-        // A background subagent must never put a dialog in front of the human.
+        // A subagent must never put a dialog in front of the human.
         if agent != ROOT_AGENT {
             return Ok(render(&QuestionReply::Unavailable));
         }

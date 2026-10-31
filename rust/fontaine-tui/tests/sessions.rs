@@ -150,7 +150,7 @@ async fn branch_is_refused_while_a_subagent_runs() {
                 Turn::tool(
                     "c1",
                     "agent",
-                    json!({"agent_type": "worker", "prompt": "child-A: finish", "background": true}),
+                    json!({"agent_type": "worker", "prompt": "child-A: finish"}),
                 ),
                 Turn::text("launched"),
                 Turn::text("noted the report"),
@@ -366,7 +366,7 @@ async fn a_resume_pick_deferred_from_a_notification_preserves_queued_input() {
                 Turn::tool(
                     "c1",
                     "agent",
-                    json!({"agent_type": "worker", "prompt": "child-A: finish", "background": true}),
+                    json!({"agent_type": "worker", "prompt": "child-A: finish"}),
                 ),
                 Turn::text("launched"),
                 Turn::text("noted the report"),
@@ -387,7 +387,7 @@ async fn a_resume_pick_deferred_from_a_notification_preserves_queued_input() {
             idle(&ui).await;
             ui.send("/resume");
             ui.wait_for("sessions started in this directory").await;
-            ui.wait_for("a background agent reported back").await;
+            ui.wait_for("an agent reported back").await;
             ui.press(KeyCode::Enter);
             ui.send("keep me through the deferred pick");
             ui.wait_for("queued: keep me through the deferred pick")

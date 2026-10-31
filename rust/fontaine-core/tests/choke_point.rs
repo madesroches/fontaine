@@ -561,7 +561,6 @@ async fn a_child_that_inherits_the_tool_is_refused_at_call_time() {
             "m",
             Vec::new(),
             fontaine_agents::mode::Ladder::Manual,
-            false,
         )
         .unwrap();
     let mut context = ToolContext::new();

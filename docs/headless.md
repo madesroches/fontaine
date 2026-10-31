@@ -28,7 +28,7 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `--output-format text\|json\|stream-json` | `text` prints the final answer, `json` one `result` object, `stream-json` one JSON object per line. |
 | `--input-format text\|stream-json` | `stream-json` reads user messages as JSON lines on stdin. A prompt argument together with `stream-json` input is a usage error. |
 | `--include-partial-messages` | With `stream-json` output, also emits `assistant_delta` events. |
-| `--max-turns <n>` | Stops each turn after `n` model calls with `error_max_turns` (exit code 1). Without it a turn is capped at 1000 calls. |
+| `--max-turns <n>` | Stops each turn after `n` model calls with `error_max_turns` (exit code 1). Without it a turn has no call limit. |
 | `--max-budget-usd <x>` | Stops the run once the session's spend, the main model plus the guardian and subagents, exceeds `x` with `error_max_budget_usd` (exit code 1). A model with no known price makes this a usage error (exit code 2). |
 | `--json-schema <schema>` | An inline JSON Schema the final answer must follow. The parsed answer is returned in `result.structured_output`. A schema that is not a JSON object is a usage error. |
 | `--allowed-tools <rule>` | Adds an allow rule in `Tool(specifier)` syntax for this session, such as `shell(npm test)`. Repeatable. Loaded as the CLI scope's `[permissions] allow`; an invalid rule is a usage error. |
@@ -109,7 +109,7 @@ the project directory; `--resume` by id takes a session of any directory.
 
 ## Subagents
 
-When the main conversation has given its final answer but background
+When the main conversation has given its final answer but
 [subagents](agents.md#watching-and-stopping-subagents) are still running, the run waits for them.
 Their reports reach the main conversation as notifications, each batch in a further turn, until
 none is running; then the `result` is emitted. `--max-turns` and `--max-budget-usd` count those

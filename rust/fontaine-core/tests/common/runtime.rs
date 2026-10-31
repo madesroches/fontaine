@@ -12,7 +12,10 @@ use fontaine_core::models::{
 };
 use fontaine_core::permissions::DenyAll;
 use fontaine_core::session::Session;
-use rig_core::test_utils::{MockCompletionModel, MockStreamEvent};
+use rig_core::driver::{Exchange, Model, Opening, Transport};
+use rig_core::test_utils::{
+    MockCompletionModel, MockFrame, MockRuntime, MockScript, MockStreamEvent,
+};
 
 use super::World;
 
@@ -70,6 +73,72 @@ pub fn build_with_scanner(
         None,
     );
     Built { runtime, main }
+}
+
+/// A scripted transport that serves two conversations from separate scripts, so agents that ask
+/// concurrently each get their own turns whatever order they ask in. A request whose first
+/// message mentions `marker` belongs to the child; every other is the root's.
+#[derive(Clone)]
+pub struct KeyedRuntime {
+    marker: String,
+    root: MockRuntime,
+    child: MockRuntime,
+}
+
+impl Transport<MockScript> for KeyedRuntime {
+    fn send(
+        &self,
+        request: <MockScript as rig_core::wire::Wire>::Payload,
+        exchange: Exchange,
+    ) -> Opening<MockFrame> {
+        let first = request
+            .chat_history
+            .iter()
+            .find(|m| matches!(m.as_ref(), rig_core::message::Message::User { .. }))
+            .map(|m| format!("{m:?}"))
+            .unwrap_or_default();
+        let runtime = if first.contains(&self.marker) {
+            &self.child
+        } else {
+            &self.root
+        };
+        runtime.send(request, exchange)
+    }
+}
+
+/// [`build`] over two scripts: `root` answers the main conversation, `child` every conversation
+/// whose first message mentions `marker`. Returns the child's model beside the root's.
+pub fn build_keyed(
+    world: &World,
+    mode: PermissionMode,
+    marker: &str,
+    root: Vec<Vec<MockStreamEvent>>,
+    child: Vec<Vec<MockStreamEvent>>,
+) -> (Built, MockCompletionModel) {
+    let main = MockCompletionModel::from_stream_turns(root);
+    let children = MockCompletionModel::from_stream_turns(child);
+    let keyed = Model::new(
+        MockScript::default(),
+        KeyedRuntime {
+            marker: marker.to_string(),
+            root: main.transport.clone(),
+            child: children.transport.clone(),
+        },
+    );
+    let handle = ModelHandle::new(
+        ModelRef::parse("test/mock").unwrap(),
+        AccountKind::named("openai-compatible"),
+        keyed.into(),
+    );
+    let models = Models {
+        main: handle.clone(),
+        main_listing: Vec::new(),
+        guardian: Some(GuardianModel::Ready(handle)),
+        guardian_choice: GuardianChoice::MainFallback,
+        notices: Vec::new(),
+    };
+    let runtime = build_with_models(world, mode, models, None, false, Default::default(), None);
+    (Built { runtime, main }, children)
 }
 
 /// A runtime in `world` over resolved models, with a switcher to resolve more of them and the

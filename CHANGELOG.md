@@ -543,6 +543,13 @@ All notable changes are recorded here. The format follows
   agent is guardian intent only for that agent and its descendants (the ledger's `user_message`
   record gains an optional `agent`). A subagent's decisions and denials now show only in its own
   view. The agents panel's Enter opens the view in place of the old flat detail list (#299).
+- Every `agent` spawn is asynchronous (#326). The call returns `{"agent_id": …}` at once, so several
+  spawns in one turn run concurrently with each other and with their parent; the report arrives as
+  a notification, or the parent waits for it with `job_output`. The `background` argument is gone.
+  A subagent that answers while its own subagents still run waits for their reports and takes a
+  further turn on them before it ends, instead of having them killed; only a killed, failed or
+  budget-exhausted subagent's descendants are stopped. Interrupting a turn no longer kills any
+  subagent, and a failed subagent's reason now reaches its parent's report.
 
 #### Build and release
 
@@ -574,6 +581,12 @@ All notable changes are recorded here. The format follows
   opened in, and `agent.rs` is split into `setup`, `build`, `models` and `mcp` submodules with a
   clippy line-count limit and one builder configuration shared by the root agent and subagents
   (#187).
+
+#### Headless
+
+- A turn no longer stops at 1,000 model calls when `--max-turns` is not given; interactive
+  turns and subagent runs have no call limit either, as in Claude Code. The token and cost budgets
+  still bound a run (#326).
 
 #### Permissions
 

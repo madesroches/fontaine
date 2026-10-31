@@ -46,7 +46,7 @@ async fn first_prompt(built: &common::runtime::Built) -> String {
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "hello".to_string(),
-            max_turns: 5,
+            max_turns: Some(5),
             priced: true,
             model: "scripted".to_string(),
             provider: "mock".to_string(),

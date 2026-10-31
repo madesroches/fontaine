@@ -323,6 +323,8 @@ pub struct Route {
     pub marker: String,
     pub turns: Vec<Turn>,
     pub delay: std::time::Duration,
+    /// Match the marker against the last user message instead of the first.
+    pub on_last_user: bool,
 }
 
 impl Route {
@@ -331,6 +333,16 @@ impl Route {
             marker: marker.to_string(),
             turns,
             delay: std::time::Duration::ZERO,
+            on_last_user: false,
+        }
+    }
+
+    /// A route for a conversation told apart by its last user message, such as a fork, whose
+    /// first user message is the same as its parent's.
+    pub fn on_last_user(marker: &str, turns: Vec<Turn>) -> Route {
+        Route {
+            on_last_user: true,
+            ..Route::new(marker, turns)
         }
     }
 
@@ -365,26 +377,33 @@ fn text_of(content: &Value) -> Option<String> {
 
 /// The first user message of a request body, on either wire.
 fn first_user(body: &Value) -> String {
-    let items = body["messages"]
+    user_messages(body).next().unwrap_or_default()
+}
+
+/// The last user message of a request body, on either wire.
+pub fn last_user(body: &Value) -> String {
+    user_messages(body).last().unwrap_or_default()
+}
+
+fn user_messages(body: &Value) -> impl Iterator<Item = String> + '_ {
+    body["messages"]
         .as_array()
-        .or_else(|| body["input"].as_array());
-    items
+        .or_else(|| body["input"].as_array())
         .into_iter()
         .flatten()
         .filter(|m| m["role"] == "user")
-        .find_map(|m| text_of(&m["content"]))
-        .unwrap_or_default()
+        .filter_map(|m| text_of(&m["content"]))
 }
 
 impl Respond for Routed {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
         let first = first_user(&body);
-        let Some((route, next)) = self
-            .routes
-            .iter()
-            .find(|(route, _)| first.contains(&route.marker))
-        else {
+        let last = last_user(&body);
+        let Some((route, next)) = self.routes.iter().find(|(route, _)| {
+            let text = if route.on_last_user { &last } else { &first };
+            text.contains(&route.marker)
+        }) else {
             return ResponseTemplate::new(500).set_body_string(format!("no route for: {first}"));
         };
         let at = next.fetch_add(1, Ordering::SeqCst);

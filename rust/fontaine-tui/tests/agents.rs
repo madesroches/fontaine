@@ -1,4 +1,4 @@
-//! The background-agents panel, parallel orchestration in the TUI, and the trust and approval
+//! The agents panel, parallel orchestration in the TUI, and the trust and approval
 //! prompts for what a repository defines.
 
 mod common;
@@ -22,7 +22,7 @@ fn ctrl_t(ui: &Ui) {
 }
 
 fn spawn(agent_type: &str, prompt: &str) -> serde_json::Value {
-    json!({"agent_type": agent_type, "prompt": prompt, "background": true})
+    json!({"agent_type": agent_type, "prompt": prompt})
 }
 
 /// The allow rule that lets the main conversation start subagents without asking.
@@ -589,4 +589,75 @@ async fn typing_to_a_killed_agent_is_refused_and_the_text_stays() {
         assert!(ui.live().contains("hello again"), "{}", ui.live());
     })
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_joining_subagent_takes_a_turn_on_the_words_typed_into_its_view() {
+    let server = start(vec![
+        Route::new(
+            "root task",
+            vec![
+                Turn::tool("c1", "agent", spawn("lead", "lead-L: coordinate")),
+                Turn::text("launched"),
+                Turn::text("lead report seen"),
+            ],
+        ),
+        Route::new(
+            "lead-L",
+            vec![
+                Turn::tool("l1", "agent", spawn("explore", "gc-G: dig")),
+                Turn::text("lead answered early"),
+                Turn::text("lead read the words"),
+                Turn::text("lead read the report"),
+            ],
+        ),
+        Route::new("gc-G", vec![Turn::text("gc-final-report")]).delay(0, 3000),
+    ])
+    .await;
+    let w = World::routed(
+        &server.uri(),
+        &format!("{ALLOW_AGENT}\n[agents.types.lead]\nmodel = \"$main\"\n"),
+    );
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("root task");
+        ui.wait_until("both rows", |s| {
+            s.contains("agent-1") && s.contains("agent-2")
+        })
+        .await;
+        ui.press(KeyCode::Down);
+        ui.press(KeyCode::Down);
+        ui.press(KeyCode::Enter);
+        ui.wait_for("agent-1 · lead").await;
+        // The lead has answered while the grandchild is still out, so it is joining.
+        ui.wait_for("lead answered early").await;
+        ui.send("mid-join words");
+        ui.wait_for("lead read the words").await;
+        ui.wait_for("lead read the report").await;
+        ui.wait_for("agent-1 · lead · done").await;
+    })
+    .await;
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    let lead: Vec<String> = requests
+        .iter()
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .filter(|body| body.contains("lead-L: coordinate") && !body.contains("root task"))
+        .collect();
+    let typed = lead
+        .iter()
+        .position(|b| b.contains("mid-join words"))
+        .expect("a lead request carries the typed words");
+    assert!(
+        !lead[typed].contains("gc-final-report"),
+        "the turn on the words came before the grandchild's report"
+    );
+    assert!(lead.iter().any(|b| b.contains("gc-final-report")));
+
+    let ledger = w.ledger_text();
+    assert!(
+        ledger.contains(r#""text":"mid-join words","agent":"agent-1""#),
+        "{ledger}"
+    );
+    assert!(ledger.contains(r#""kind":"user_message""#), "{ledger}");
 }

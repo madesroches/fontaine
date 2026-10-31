@@ -224,7 +224,7 @@ fn a_pause_holds_until_the_user_speaks_and_a_later_turn_does_not_change_it() {
 }
 
 #[test]
-fn evaluation_waits_while_a_background_agent_runs() {
+fn evaluation_waits_while_an_agent_runs() {
     let f = Fixture::new();
     let goal = f.goal();
     goal.set("done", Spend::default()).unwrap();

@@ -1,4 +1,4 @@
-//! The background-agents panel: every subagent, ended ones included, with its type, model, status
+//! The agents panel: every subagent, ended ones included, with its type, model, status
 //! and spend against budget, and the background jobs. Enter on an agent shows its transcript, x
 //! kills a row. An agent that ended and left the list below the status line is reached from
 //! here.

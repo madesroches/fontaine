@@ -26,7 +26,7 @@ fn edit_args(path: &str) -> Value {
 
 fn child(rig: &Rig, own: Ladder) -> String {
     rig.agents
-        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), own, false)
+        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), own)
         .unwrap()
 }
 
@@ -135,7 +135,7 @@ async fn a_grandchild_is_never_looser_than_either_ancestor() {
     let parent = child(&rig, Ladder::Manual);
     let grandchild = rig
         .agents
-        .reserve(&parent, "worker", "m", Vec::new(), Ladder::Auto, false)
+        .reserve(&parent, "worker", "m", Vec::new(), Ladder::Auto)
         .unwrap();
     rig.check_as(&grandchild, "shell", shell("python a.py"))
         .await;
@@ -287,7 +287,7 @@ async fn a_message_typed_to_an_agent_is_intent_for_it_and_its_descendants_only()
     let b = child(&rig, Ladder::Auto);
     let a_child = rig
         .agents
-        .reserve(&a, "worker", "m", Vec::new(), Ladder::Auto, false)
+        .reserve(&a, "worker", "m", Vec::new(), Ladder::Auto)
         .unwrap();
     rig.state.append(Record::UserMessage {
         text: "Count the lines in a.txt".to_string(),
@@ -376,7 +376,7 @@ async fn guardian_spend_is_counted_per_agent_and_against_that_agents_budget() {
         ..Limits::default()
     });
     let id = tight
-        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Manual, false)
+        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Manual)
         .unwrap();
     let mut usage = rig_core::completion::Usage::new();
     usage.input_tokens = Some(8);
@@ -406,7 +406,7 @@ async fn an_ancestors_specifiers_bind_the_subagents_it_spawns() {
     );
     let grandchild = rig
         .agents
-        .reserve(&parent, "worker", "m", Vec::new(), Ladder::Manual, false)
+        .reserve(&parent, "worker", "m", Vec::new(), Ladder::Manual)
         .unwrap();
     let asked = rig.approver.asked();
     assert!(!allowed(
@@ -425,7 +425,7 @@ fn unregistered_ids(rig: &Rig) -> Vec<String> {
     let parent = child(rig, Ladder::Auto);
     let orphan = rig
         .agents
-        .reserve(&parent, "worker", "m", Vec::new(), Ladder::Auto, false)
+        .reserve(&parent, "worker", "m", Vec::new(), Ladder::Auto)
         .unwrap();
     rig.agents.release(&parent);
     vec!["never-reserved".to_string(), released, orphan]
@@ -625,7 +625,6 @@ async fn a_nested_child_whose_type_lists_agent_does_not_qualify() {
             "m",
             vec!["read".into(), "agent".into()],
             Ladder::Auto,
-            false,
         )
         .unwrap();
     rig.check_as(&id, "agent", spawn_of("nests")).await;
@@ -638,7 +637,7 @@ async fn a_spawn_from_a_child_with_no_tools_can_change_nothing() {
     let rig = auto_rig(&fake, Auto);
     let id = rig
         .agents
-        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Auto, false)
+        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Auto)
         .unwrap();
     assert!(allowed(
         &rig.check_as(&id, "agent", spawn_of("worker")).await

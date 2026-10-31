@@ -31,7 +31,7 @@ async fn run(built: &Built, prompt: &str) -> TurnOutcome {
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: prompt.to_string(),
-            max_turns: 3,
+            max_turns: Some(3),
             priced: true,
             model: "scripted".to_string(),
             provider: "mock".to_string(),

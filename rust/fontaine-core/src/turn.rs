@@ -18,10 +18,6 @@ use crate::audit::DecisionRecord;
 use crate::gate::{DecisionFeed, Published, SessionState, spend_of};
 use crate::preview::DiffPreview;
 
-/// Without a limit from the caller, a turn is still bounded so a looping model cannot run
-/// forever.
-pub const DEFAULT_MAX_TURNS: usize = 1000;
-
 /// The retries a transient transport failure earns, on top of the first attempt.
 const MAX_RETRIES: usize = 2;
 
@@ -84,7 +80,8 @@ pub struct TurnParams<'a> {
     pub agent: &'a Agent,
     pub state: &'a SessionState,
     pub prompt: String,
-    pub max_turns: usize,
+    /// The most model calls the turn may make; `None` for no limit.
+    pub max_turns: Option<usize>,
     /// Whether the cost the model's calls report is counted; see `ModelHandle::catalog_billed`.
     pub priced: bool,
     /// The model's id and provider, for the `api_error` event.
@@ -156,7 +153,8 @@ pub struct Drive<'a> {
     pub state: &'a SessionState,
     pub agent_id: &'a str,
     pub prompt: String,
-    pub max_turns: usize,
+    /// The most model calls the run may make; `None` for no limit.
+    pub max_turns: Option<usize>,
     /// Whether the cost the model's calls report is counted. An unpriced model's is dropped
     /// here, where usage enters, because rig attaches it inside the wire.
     pub priced: bool,
@@ -281,7 +279,8 @@ async fn drive_once(
         .agent
         .prompt(rig_core::message::Message::user(params.prompt))
         .tool_context(tool_context)
-        .max_turns(params.max_turns)
+        // rig has no unbounded setting: left unset, a run makes a single model call.
+        .max_turns(params.max_turns.unwrap_or(usize::MAX))
         // One call at a time, in order: the guardian judges each call before the next starts.
         .tool_concurrency(1);
     // The run adopts the span it is built under as its own agent span.

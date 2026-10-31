@@ -31,7 +31,6 @@ struct Spawned {
     mode: Ladder,
     budget: Budget,
     depth: usize,
-    background: bool,
     prompt: String,
     human: Vec<String>,
     inherits_context: bool,
@@ -83,7 +82,11 @@ impl FakeChild {
         self.report.send_replace(Some(ChildReport {
             status,
             text: text.to_string(),
-            reason: (status == ChildStatus::BudgetExhausted).then(|| "its budget is spent".into()),
+            reason: match status {
+                ChildStatus::BudgetExhausted => Some("its budget is spent".into()),
+                ChildStatus::Failed => Some("the provider is down".into()),
+                _ => None,
+            },
         }));
     }
 }
@@ -181,7 +184,6 @@ impl ChildRunner for FakeRunner {
                 mode: request.mode,
                 budget: request.budget,
                 depth: request.depth,
-                background: request.background,
                 prompt: request.prompt.clone(),
                 human: request.ledger.human_messages(),
                 inherits_context: request.agent_type.inherits_context,
@@ -280,7 +282,6 @@ fn args(agent_type: &str, prompt: &str) -> AgentArgs {
         agent_type: agent_type.to_string(),
         prompt: prompt.to_string(),
         model: None,
-        background: None,
     }
 }
 
@@ -292,24 +293,51 @@ async fn spawn(rig: &Rig, args: AgentArgs) -> Result<String, String> {
         .map_err(|e| e.model_output().render())
 }
 
+/// Waits for the watcher task to queue the report the fake child just produced.
+async fn until(mut done: impl FnMut() -> bool) {
+    for _ in 0..200 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test]
-async fn a_blocking_call_returns_the_childs_report() {
+async fn a_call_returns_the_agent_id_before_the_child_ends() {
     let rig = rig();
-    *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "found three files".into()));
     let out = spawn(&rig, args("explore", "list the files"))
         .await
         .unwrap();
-    assert_eq!(out, "found three files");
+    assert_eq!(out, r#"{"agent_id":"agent-1"}"#);
     let seen = &rig.runner.spawned()[0];
     assert_eq!(seen.agent_type, "explore");
     assert_eq!(seen.prompt, "list the files");
     assert_eq!(seen.parent, ROOT_AGENT);
     assert_eq!(seen.depth, 1);
-    assert!(!seen.background);
-    assert_eq!(
-        rig.tree.report_of(&seen.id).unwrap().status,
-        ChildStatus::Done
-    );
+    assert!(rig.tree.is_running(&seen.id));
+    assert!(rig.tree.report_of(&seen.id).is_none());
+    assert!(rig.tree.take_notifications(ROOT_AGENT).is_empty());
+}
+
+#[test]
+fn the_old_background_argument_is_an_unknown_field() {
+    let error = serde_json::from_value::<AgentArgs>(
+        serde_json::json!({"agent_type": "explore", "prompt": "x", "background": true}),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("unknown field `background`"), "{error}");
+}
+
+#[tokio::test]
+async fn two_spawns_in_a_row_both_reach_the_runner_while_the_first_child_is_blocked() {
+    let rig = rig();
+    spawn(&rig, args("explore", "first")).await.unwrap();
+    spawn(&rig, args("explore", "second")).await.unwrap();
+    assert_eq!(rig.runner.spawned().len(), 2);
+    assert_eq!(rig.tree.running_ids().len(), 2);
+    assert!(rig.tree.take_notifications(ROOT_AGENT).is_empty());
 }
 
 #[tokio::test]
@@ -466,9 +494,7 @@ async fn a_spawn_past_max_parallel_starts_nothing_and_says_not_to_retry() {
         AgentTypes::builtin(),
         RootMode::Ladder(Ladder::Manual),
     );
-    let mut background = args("explore", "first");
-    background.background = Some(true);
-    let started = spawn(&rig, background).await.unwrap();
+    let started = spawn(&rig, args("explore", "first")).await.unwrap();
     assert!(started.contains("agent-1"), "{started}");
 
     let error = spawn(&rig, args("explore", "second")).await.unwrap_err();
@@ -477,57 +503,72 @@ async fn a_spawn_past_max_parallel_starts_nothing_and_says_not_to_retry() {
         "{error}"
     );
     assert!(error.contains("Do not retry"), "{error}");
-    let mut also_background = args("explore", "third");
-    also_background.background = Some(true);
-    assert!(spawn(&rig, also_background).await.is_err());
+    assert!(spawn(&rig, args("explore", "third")).await.is_err());
     assert_eq!(rig.runner.spawned().len(), 1);
 }
 
 #[tokio::test]
-async fn background_returns_an_id_at_once_and_the_report_arrives_as_a_notification() {
+async fn the_report_arrives_as_a_notification_naming_the_agent() {
     let rig = rig();
-    let mut background = args("explore", "dig");
-    background.background = Some(true);
-    let started = spawn(&rig, background).await.unwrap();
+    let started = spawn(&rig, args("explore", "dig")).await.unwrap();
     assert_eq!(started, r#"{"agent_id":"agent-1"}"#);
     assert!(rig.tree.take_notifications(ROOT_AGENT).is_empty());
 
     rig.runner
         .child(0)
         .finish(ChildStatus::Done, "buried treasure");
-    for _ in 0..100 {
-        if rig.tree.has_notifications(ROOT_AGENT) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    until(|| rig.tree.has_notifications(ROOT_AGENT)).await;
     let notes = rig.tree.take_notifications(ROOT_AGENT);
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].from, "agent-1");
+    assert!(
+        notes[0]
+            .text
+            .starts_with("Agent agent-1 (explore) finished: done")
+    );
     assert!(notes[0].text.contains("buried treasure"));
     assert!(!rig.tree.is_running("agent-1"));
 }
 
 #[tokio::test]
-async fn n_background_children_run_at_once() {
+async fn n_children_run_at_once() {
     let rig = rig();
     for n in 0..4 {
-        let mut a = args("explore", &format!("task {n}"));
-        a.background = Some(true);
-        spawn(&rig, a).await.unwrap();
+        spawn(&rig, args("explore", &format!("task {n}")))
+            .await
+            .unwrap();
     }
     assert_eq!(rig.tree.running_ids().len(), 4);
-    assert!(rig.tree.background_running());
+    assert!(rig.tree.any_running());
     rig.tree.kill_all();
     assert!(rig.tree.running_ids().is_empty());
 }
 
 #[tokio::test]
-async fn a_killed_background_childs_partial_report_is_not_delivered() {
+async fn settling_after_kill_all_waits_for_every_finished_record() {
     let rig = rig();
-    let mut background = args("explore", "dig");
-    background.background = Some(true);
-    spawn(&rig, background).await.unwrap();
+    for n in 0..3 {
+        spawn(&rig, args("explore", &format!("task {n}")))
+            .await
+            .unwrap();
+    }
+    rig.tree.kill_all();
+    rig.tree.settled(std::time::Duration::from_secs(5)).await;
+    let finished = rig
+        .ledger
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Finished { status, .. } if status == "killed"))
+        .count();
+    assert_eq!(finished, 3);
+}
+
+#[tokio::test]
+async fn a_killed_childs_partial_report_is_not_delivered() {
+    let rig = rig();
+    spawn(&rig, args("explore", "dig")).await.unwrap();
     assert!(rig.tree.kill("agent-1"));
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(*rig.runner.child(0).killed.lock().unwrap());
@@ -535,21 +576,28 @@ async fn a_killed_background_childs_partial_report_is_not_delivered() {
 }
 
 #[tokio::test]
-async fn a_budget_stopped_child_returns_a_partial_report() {
+async fn a_budget_stopped_child_reports_a_partial_result() {
     let rig = rig();
     *rig.runner.answer.lock().unwrap() =
         Some((ChildStatus::BudgetExhausted, "half the files".into()));
-    let out = spawn(&rig, args("explore", "x")).await.unwrap();
-    assert!(out.contains("half the files"), "{out}");
-    assert!(out.contains("Partial result"), "{out}");
+    spawn(&rig, args("explore", "x")).await.unwrap();
+    until(|| rig.tree.has_notifications(ROOT_AGENT)).await;
+    let notes = rig.tree.take_notifications(ROOT_AGENT);
+    assert!(notes[0].text.contains("half the files"), "{notes:?}");
+    assert!(notes[0].text.contains("Partial result"), "{notes:?}");
 }
 
 #[tokio::test]
-async fn a_failed_child_is_an_error_result_and_a_refused_start_frees_its_place() {
+async fn a_failed_childs_reason_reaches_the_parent_and_a_refused_start_frees_its_place() {
     let rig = rig();
     *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Failed, String::new()));
-    assert!(spawn(&rig, args("explore", "x")).await.is_err());
+    spawn(&rig, args("explore", "x")).await.unwrap();
+    until(|| rig.tree.has_notifications(ROOT_AGENT)).await;
+    let notes = rig.tree.take_notifications(ROOT_AGENT);
+    assert!(notes[0].text.contains("failed"), "{notes:?}");
+    assert!(notes[0].text.contains("the provider is down"), "{notes:?}");
 
+    *rig.runner.answer.lock().unwrap() = None;
     *rig.runner.fail.lock().unwrap() = Some("no such model".into());
     let error = spawn(&rig, args("explore", "x")).await.unwrap_err();
     assert!(error.contains("no such model"), "{error}");
@@ -557,37 +605,6 @@ async fn a_failed_child_is_an_error_result_and_a_refused_start_frees_its_place()
         rig.tree.running_ids().is_empty(),
         "the reservation was released"
     );
-}
-
-#[tokio::test]
-async fn dropping_a_blocking_call_kills_the_child() {
-    let rig = rig();
-    let mut call = Box::pin(spawn(&rig, args("explore", "x")));
-    tokio::select! {
-        _ = &mut call => panic!("the child never finishes"),
-        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
-    }
-    drop(call);
-    assert!(*rig.runner.child(0).killed.lock().unwrap());
-    assert!(rig.ledger.events.lock().unwrap().iter().any(
-        |e| matches!(e, AgentEvent::Finished { agent, status } if agent == "agent-1" && status == "killed")
-    ));
-}
-
-#[tokio::test]
-async fn messages_queued_for_a_child_killed_by_a_dropped_call_are_reported_undelivered() {
-    let rig = rig();
-    *rig.runner.missed.lock().unwrap() = vec!["are you there".into()];
-    let mut call = Box::pin(spawn(&rig, args("explore", "x")));
-    tokio::select! {
-        _ = &mut call => panic!("the child never finishes"),
-        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
-    }
-    drop(call);
-    let undelivered = rig.runner.child(0).undelivered.lock().unwrap().clone();
-    assert_eq!(undelivered.len(), 1, "{undelivered:?}");
-    assert!(undelivered[0].0.contains("killed"), "{undelivered:?}");
-    assert_eq!(undelivered[0].1, "are you there");
 }
 
 #[tokio::test]
@@ -612,9 +629,7 @@ async fn nesting_stops_at_three_layers_and_the_agent_tool_is_withheld_there() {
         types,
         RootMode::Ladder(Ladder::Manual),
     );
-    let mut background = args("nester", "layer one");
-    background.background = Some(true);
-    spawn(&rig, background).await.unwrap();
+    spawn(&rig, args("nester", "layer one")).await.unwrap();
 
     // Each layer's registry is cut from its parent's, so give each child the parent's set.
     let mut parent = "agent-1".to_string();
@@ -622,8 +637,7 @@ async fn nesting_stops_at_three_layers_and_the_agent_tool_is_withheld_there() {
         rig.tree
             .set_root_tools(|| ["read", "agent", "send_message"].map(String::from).to_vec());
         let mut context = as_agent(&parent);
-        let mut next = args("nester", "deeper");
-        next.background = Some(true);
+        let next = args("nester", "deeper");
         let out = rig.agent.call(&mut context, next).await;
         out.unwrap();
         parent = format!("agent-{layer}");
@@ -641,8 +655,7 @@ async fn nesting_stops_at_three_layers_and_the_agent_tool_is_withheld_there() {
     );
 
     let mut context = as_agent(&parent);
-    let mut fourth = args("nester", "too deep");
-    fourth.background = Some(true);
+    let fourth = args("nester", "too deep");
     let error = rig.agent.call(&mut context, fourth).await.unwrap_err();
     assert!(error.model_output().render().contains("3 layers"));
 }
@@ -650,8 +663,7 @@ async fn nesting_stops_at_three_layers_and_the_agent_tool_is_withheld_there() {
 #[tokio::test]
 async fn send_message_queues_for_the_recipients_next_turn_and_names_the_sender() {
     let rig = rig();
-    let mut one = args("explore", "a");
-    one.background = Some(true);
+    let one = args("explore", "a");
     spawn(&rig, one.clone()).await.unwrap();
     spawn(&rig, one).await.unwrap();
 
@@ -723,7 +735,7 @@ async fn dropping_a_spawn_that_is_still_starting_gives_back_its_slot() {
     .await;
     assert!(started.is_err());
     assert!(rig.tree.running_ids().is_empty());
-    assert!(!rig.tree.background_running());
+    assert!(!rig.tree.any_running());
 }
 
 #[tokio::test]
@@ -731,7 +743,7 @@ async fn a_kill_that_lands_before_the_handle_attaches_still_stops_the_child() {
     let rig = rig();
     let id = rig
         .tree
-        .reserve(ROOT_AGENT, "explore", "m", vec![], Ladder::Manual, false)
+        .reserve(ROOT_AGENT, "explore", "m", vec![], Ladder::Manual)
         .unwrap();
     assert!(rig.tree.kill(&id));
     let child = Arc::new(FakeChild::running());
@@ -740,28 +752,23 @@ async fn a_kill_that_lands_before_the_handle_attaches_still_stops_the_child() {
 }
 
 #[tokio::test]
-async fn a_child_that_finishes_stops_its_own_background_children() {
+async fn a_child_that_ends_abnormally_stops_its_own_running_children() {
     let rig = rig();
-    let mut background = args("explore", "dig");
-    background.background = Some(true);
-    spawn(&rig, background).await.unwrap();
+    spawn(&rig, args("explore", "dig")).await.unwrap();
     let grandchild = rig
         .tree
-        .reserve("agent-1", "explore", "m", vec![], Ladder::Manual, true)
+        .reserve("agent-1", "explore", "m", vec![], Ladder::Manual)
         .unwrap();
     let handle = Arc::new(FakeChild::running());
     rig.tree.attach(&grandchild, handle.clone());
 
-    rig.runner.child(0).finish(ChildStatus::Done, "finished");
-    for _ in 0..100 {
-        if !rig.tree.is_running(&grandchild) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    rig.runner
+        .child(0)
+        .finish(ChildStatus::BudgetExhausted, "finished");
+    until(|| !rig.tree.is_running(&grandchild)).await;
     assert!(rig.tree.was_killed(&grandchild));
     assert!(*handle.killed.lock().unwrap());
-    assert!(!rig.tree.background_running());
+    assert!(!rig.tree.any_running());
 }
 
 #[tokio::test]
@@ -885,12 +892,6 @@ async fn wait_as(
     .map_err(|e| e.model_output().render())
 }
 
-fn background(prompt: &str) -> AgentArgs {
-    let mut a = args("explore", prompt);
-    a.background = Some(true);
-    a
-}
-
 fn reports_for(rig: &Rig, agent: &str) -> usize {
     let notes = rig.tree.take_notifications(agent);
     let reports = notes
@@ -902,9 +903,9 @@ fn reports_for(rig: &Rig, agent: &str) -> usize {
 }
 
 #[tokio::test]
-async fn waiting_on_a_background_child_returns_its_status_and_leaves_one_report() {
+async fn waiting_on_a_child_returns_its_status_and_leaves_one_report() {
     let rig = rig();
-    spawn(&rig, background("dig")).await.unwrap();
+    spawn(&rig, args("explore", "dig")).await.unwrap();
     let child = rig.runner.child(0);
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -938,15 +939,9 @@ async fn a_nested_parent_waits_for_its_own_child_and_stays_alive() {
         types,
         RootMode::Ladder(Ladder::Auto),
     );
-    spawn(&rig, {
-        let mut a = args("lead", "coordinate");
-        a.background = Some(true);
-        a
-    })
-    .await
-    .unwrap();
+    spawn(&rig, args("lead", "coordinate")).await.unwrap();
     rig.agent
-        .call(&mut as_agent("agent-1"), background("dig"))
+        .call(&mut as_agent("agent-1"), args("explore", "dig"))
         .await
         .unwrap();
     let grandchild = rig.runner.child(1);
@@ -971,7 +966,7 @@ async fn a_nested_parent_waits_for_its_own_child_and_stays_alive() {
 #[tokio::test]
 async fn an_abandoned_wait_leaves_the_child_running_and_its_report_queued() {
     let rig = rig();
-    spawn(&rig, background("dig")).await.unwrap();
+    spawn(&rig, args("explore", "dig")).await.unwrap();
     let tool = waiter(&rig);
     let parked = tokio::spawn(async move { wait_as(&tool, ROOT_AGENT, "agent-1", None).await });
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -979,67 +974,18 @@ async fn an_abandoned_wait_leaves_the_child_running_and_its_report_queued() {
     let _ = parked.await;
     assert!(rig.tree.is_running("agent-1"));
     rig.runner.child(0).finish(ChildStatus::Done, "late news");
-    for _ in 0..100 {
-        if rig.tree.has_notifications(ROOT_AGENT) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    until(|| rig.tree.has_notifications(ROOT_AGENT)).await;
     assert!(!rig.tree.was_killed("agent-1"));
     assert!(!*rig.runner.child(0).killed.lock().unwrap());
     assert_eq!(reports_for(&rig, ROOT_AGENT), 1);
 }
 
-async fn until(mut done: impl FnMut() -> bool) {
-    for _ in 0..100 {
-        if done() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
 #[tokio::test]
-async fn a_foreground_child_that_missed_a_message_is_resumed_with_it_after_its_report() {
-    let rig = rig();
-    *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "first answer".into()));
-    *rig.runner.missed.lock().unwrap() = vec!["count the lines".into(), "and the words".into()];
-    // The parent reads the first run's report.
-    let out = spawn(&rig, args("worker", "look around")).await.unwrap();
-    assert_eq!(out, "first answer");
-
-    let child = rig.runner.child(0);
-    let id = rig.runner.spawned()[0].id.clone();
-    assert_eq!(
-        *child.resumes.lock().unwrap(),
-        ["count the lines\n\nand the words"]
-    );
-    assert!(rig.tree.is_running(&id));
-    assert!(
-        rig.ledger
-            .events
-            .lock()
-            .unwrap()
-            .contains(&AgentEvent::Resumed { agent: id.clone() })
-    );
-
-    // The second run reports to the parent as a background child does.
-    child.finish(ChildStatus::Done, "second answer");
-    until(|| rig.tree.has_notifications(ROOT_AGENT)).await;
-    let notes = rig.tree.take_notifications(ROOT_AGENT);
-    assert_eq!(notes.len(), 1);
-    assert!(notes[0].text.contains("second answer"), "{notes:?}");
-    assert_eq!(rig.tree.status_of(&id), Some(ChildStatus::Done));
-}
-
-#[tokio::test]
-async fn a_background_child_that_missed_a_message_is_resumed_and_reports_twice() {
+async fn a_child_that_missed_a_message_is_resumed_and_reports_twice() {
     let rig = rig();
     *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "first answer".into()));
     *rig.runner.missed.lock().unwrap() = vec!["more please".into()];
-    let mut background = args("worker", "look around");
-    background.background = Some(true);
-    spawn(&rig, background).await.unwrap();
+    spawn(&rig, args("worker", "look around")).await.unwrap();
     until(|| {
         rig.tree.has_notifications(ROOT_AGENT)
             && !rig.runner.child(0).resumes.lock().unwrap().is_empty()
@@ -1075,12 +1021,13 @@ async fn a_refused_automatic_resume_hands_the_refusal_and_the_text_to_the_child(
     let tree = rig.tree.clone();
     let runner = rig.runner.clone();
     *runner.fill.lock().unwrap() = Some(Box::new(move || {
-        tree.reserve(ROOT_AGENT, "worker", "m", vec![], Ladder::Manual, true)
+        tree.reserve(ROOT_AGENT, "worker", "m", vec![], Ladder::Manual)
             .unwrap();
     }));
     spawn(&rig, args("worker", "look around")).await.unwrap();
 
     let child = rig.runner.child(0);
+    until(|| !child.undelivered.lock().unwrap().is_empty()).await;
     assert!(child.resumes.lock().unwrap().is_empty());
     let undelivered = child.undelivered.lock().unwrap().clone();
     assert_eq!(undelivered.len(), 1, "{undelivered:?}");
@@ -1098,6 +1045,7 @@ async fn a_killed_child_that_missed_a_message_is_not_resumed() {
     *rig.runner.missed.lock().unwrap() = vec!["are you there".into()];
     let _ = spawn(&rig, args("worker", "look around")).await;
     let child = rig.runner.child(0);
+    until(|| !child.undelivered.lock().unwrap().is_empty()).await;
     assert!(child.resumes.lock().unwrap().is_empty());
     let undelivered = child.undelivered.lock().unwrap().clone();
     assert_eq!(undelivered.len(), 1);
@@ -1111,6 +1059,7 @@ async fn of_two_racing_resumes_of_an_ended_child_one_starts_a_run() {
     *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "first answer".into()));
     spawn(&rig, args("worker", "look around")).await.unwrap();
     let id = rig.runner.spawned()[0].id.clone();
+    until(|| !rig.tree.is_running(&id)).await;
     let handle = rig.tree.handle_of(&id).expect("the tree holds the handle");
     let ledger: Arc<dyn RootLedger> = rig.ledger.clone();
 

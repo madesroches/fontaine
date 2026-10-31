@@ -578,7 +578,7 @@ impl SessionGoal {
         }
     }
 
-    /// The evaluation due now, if one is. Nothing while a background agent still runs: the
+    /// The evaluation due now, if one is. Nothing while a subagent still runs: the
     /// turn that delivers its news is evaluated instead.
     pub fn next_step(&self, agents_running: bool) -> Option<Pending> {
         let state = lock(&self.state, "goal");

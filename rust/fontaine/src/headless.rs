@@ -13,9 +13,7 @@ use fontaine_core::gate::GuardianUsage;
 use fontaine_core::goal::{GoalArg, Step, first_turn_prompt};
 use fontaine_core::ledger::Record;
 use fontaine_core::trust;
-use fontaine_core::turn::{
-    DEFAULT_MAX_TURNS, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
-};
+use fontaine_core::turn::{Flow, SessionEvent, TurnOutcome, TurnParams, run_turn};
 use rig_core::schemars::Schema;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -500,7 +498,7 @@ async fn run_one(
             agent: &runtime.agent,
             state: &runtime.state,
             prompt: text,
-            max_turns: options.max_turns.unwrap_or(DEFAULT_MAX_TURNS),
+            max_turns: options.max_turns,
             priced: runtime.models.main.catalog_billed(),
             model,
             provider,
@@ -577,7 +575,7 @@ enum News {
     Done,
 }
 
-/// Waits until a background subagent has news for the main conversation, the budget is spent, or
+/// Waits until a subagent has news for the main conversation, the budget is spent, or
 /// no subagent is left running.
 async fn wait_for_news(runtime: &AgentRuntime, over_cap: &dyn Fn() -> bool) -> News {
     let tree = runtime.state.agents().clone();
@@ -588,7 +586,7 @@ async fn wait_for_news(runtime: &AgentRuntime, over_cap: &dyn Fn() -> bool) -> N
         if let Some(prompt) = runtime.notification_prompt().await {
             return News::Prompt(prompt);
         }
-        if !tree.background_running() {
+        if !tree.any_running() {
             // A report is queued before its child is marked finished, so nothing is missed
             // between the check above and this one.
             return match runtime.notification_prompt().await {
@@ -667,7 +665,7 @@ async fn guarded_turn(
     outcome
 }
 
-/// Background subagents still running when the answer comes are waited for: their reports
+/// Subagents still running when the answer comes are waited for: their reports
 /// reach the main conversation as notifications, each a turn of its own, until none is running.
 /// A run stopped by a limit kills them and drops their reports.
 async fn settle(
@@ -884,6 +882,11 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             .filter(|_| handled.goal_ran && !failed);
         if failed {
             runtime.state.agents().kill_all();
+            runtime
+                .state
+                .agents()
+                .settled(std::time::Duration::from_secs(5))
+                .await;
             runtime.jobs().terminate_all().await;
             runtime.lsp().shutdown_all().await;
         }
@@ -903,6 +906,11 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
         }
     }
     runtime.state.agents().kill_all();
+    runtime
+        .state
+        .agents()
+        .settled(std::time::Duration::from_secs(5))
+        .await;
     // Jobs still running when the run ends are not waited for; they end with it.
     runtime.jobs().terminate_all().await;
     runtime.lsp().shutdown_all().await;

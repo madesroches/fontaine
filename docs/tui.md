@@ -106,7 +106,7 @@ below the bar.
 | Ctrl-R | Search the prompt history; see [History](#history). |
 | Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. In the menu it first extends the name to what all the listed commands share. |
 | Shift+Tab | Cycle the mode: manual, accept edits, plan, auto, and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` lists the broad allow rules it sets aside and says so when the guardian cannot be asked. |
-| Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
+| Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. Interrupting never stops a subagent: it keeps running and reports later, and the agents panel stops one. While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
 | Esc twice in quick succession when idle with an empty input | Opens the `/rewind` picker; see [Checkpoints and /rewind](checkpoints.md). Any other meaning of Esc above wins first. Off while a subagent's transcript is on screen. |
 | Ctrl-C, or Ctrl-D on an empty input, when idle | Quit. |
@@ -684,7 +684,7 @@ the goal's.
 
 A goal is saved with the session (`goal.json`) and comes back on `--continue`, `--resume` and
 `--fork-session` with its counters reset: the clock, the evaluations and the spend baseline start
-again. While background subagents run, the goal waits and is evaluated after the turn that reads
+again. While subagents run, the goal waits and is evaluated after the turn that reads
 their reports. Headless runs accept `-p "/goal <condition>"`; see
 [Headless runs](headless.md#goals). The limits are under [Configuration](configuration.md#goal).
 
@@ -723,7 +723,7 @@ conversation:
 - An agent that ended with `done` or `failed` is resumed with it: another run starts on the same
   conversation, with the same tools, mode and budget, and the main conversation shows
   `you resumed agent-3`. The new run's report reaches the agent that started it, or the main
-  conversation when that agent has ended, like any background report. A message that a run ended
+  conversation when that agent has ended, like any other report. A message that a run ended
   without reading resumes the agent the same way once it ends.
 - An agent that was killed or whose budget is spent cannot be resumed; the view says so and the text
   stays in the input. A resume that would exceed the parallel-agent limit or the session's agent
@@ -760,8 +760,8 @@ open it has the keyboard, so a pending approval waits until you close it. Closin
 was tall enough to push the transcript into scrollback writes the transcript again, so the last
 messages are on screen.
 
-When a background subagent finishes while nothing is running, the main conversation gets a turn of
+When a subagent finishes while nothing is running, the main conversation gets a turn of
 its own to read the report. A background job that ends, or a monitor that prints lines, does the
-same: the transcript says `a background job reported back` and the turn reads the job's notice,
+same: the transcript says `an agent reported back` or `a background job reported back`, and the turn reads the notice,
 which names the output as untrusted data. `/clear` and a `/rewind` that restores the conversation stop running jobs and discard their
 notices; `/branch` is refused while a notice is waiting.

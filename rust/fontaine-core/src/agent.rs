@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use fontaine_agents::registry::AgentTypes;
-use fontaine_agents::tree::{AgentTree, NotificationKind};
+use fontaine_agents::tree::AgentTree;
 use fontaine_guardian::Profile;
 use fontaine_mcp::Connected;
 use fontaine_tools::builtins::Seen;
@@ -255,13 +255,10 @@ impl AgentRuntime {
             setup::extension_runtimes(setup.extensions, &state, setup.project_executables);
         let steering = Steering::default();
         let (main, tool_server, runner) = setup::subagent_support(
-            &retained,
+            &setup::ChildDeps::new(&retained, &state, &setup.approver, &steering, &results),
             &tree,
-            &state,
             &setup.models,
             &setup.config,
-            &setup.approver,
-            &steering,
         );
         let seen = Seen::default();
         let (agent, pieces, loaded, native) = build_agent(&Parts {
@@ -510,69 +507,9 @@ impl AgentRuntime {
     }
 
     /// The reports, messages and job notes queued for the main conversation, as a prompt for a
-    /// turn of its own. They pass through the result pipeline like any tool result: agent notes
-    /// as `agent` results, job output as `job_output` results.
+    /// turn of its own.
     pub async fn notification_prompt(&self) -> Option<String> {
-        let tree = self.state.agents();
-        let notes = tree.take_notifications(ROOT_AGENT);
-        if notes.is_empty() {
-            return None;
-        }
-        // No model call produced these results, so hooks get no tool_use_id for them.
-        self.state.clear_current_call(ROOT_AGENT);
-        let (jobs, agents): (Vec<_>, Vec<_>) = notes
-            .iter()
-            .partition(|note| note.kind == NotificationKind::Job);
-        let mut screened = Vec::new();
-        if !agents.is_empty() {
-            screened.push(
-                self.screened_notes("agent", RiskClass::Arbitrary, &agents)
-                    .await,
-            );
-        }
-        if !jobs.is_empty() {
-            screened.push(
-                self.screened_notes("job_output", RiskClass::ReadOnly, &jobs)
-                    .await,
-            );
-        }
-        let news = if jobs.is_empty() {
-            "agents you started or that wrote to you have news"
-        } else {
-            "agents or background jobs you started have news"
-        };
-        Some(format!(
-            "[Harness note, not the user's words: {news}.]\n\n{}",
-            screened.join("\n\n")
-        ))
-    }
-
-    async fn screened_notes(
-        &self,
-        tool: &str,
-        risk: RiskClass,
-        notes: &[&fontaine_agents::tree::Notification],
-    ) -> String {
-        let text = notes
-            .iter()
-            .map(|note| note.render())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let args = json!({});
-        let view = CallView {
-            tool,
-            risk,
-            args: &args,
-            agent: ROOT_AGENT,
-            annotations: None,
-            requires_user_interaction: false,
-            synthetic: true,
-        };
-        let (screened, _) = self.results.run(view, Ok(ToolOutput::text(text))).await;
-        match screened {
-            Ok(output) => output.render(),
-            Err(error) => error.model_output().render(),
-        }
+        crate::child_runner::notification_prompt(&self.state, &self.results, ROOT_AGENT).await
     }
 
     /// The prompt for a turn on a scheduled task that came due. It is a harness note, not the
