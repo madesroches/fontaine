@@ -56,8 +56,11 @@ bindings.
   Tab move the highlight.
 - **Note on a choice.** Leaving the "Other" row (arrows/Tab) keeps the text. Enter on an option
   row submits the selected label(s) plus any text in the field as a note. Enter on the "Other"
-  row submits the text alone for single-select; for multi-select it keeps combining the
-  toggled options with the text, as `commit_other` does today. An answer with neither a
+  row with text submits the text alone for single-select; for multi-select it keeps combining
+  the toggled options with the text, as `commit_other` does today. With an empty field, Enter
+  on the "Other" row does nothing — even in a multi-select with options toggled; the toggled
+  options are submitted by pressing Enter on an option row instead (this matches today's
+  shipped behavior, where an empty "Other" field never submits). An answer with neither a
   selection nor text is still ignored.
 - **Esc.** On the "Other" row, Esc moves the highlight back to the first option row (text kept);
   anywhere else Esc declines the call as today.
@@ -94,8 +97,11 @@ bindings.
    option row jump to the "Other" row and insert; on the "Other" row they all insert; digits/`j`/
    `k`/Space keep navigation/toggle meaning only on option rows.
 2. `question.rs`: rework `confirm()`/`finish()` — Enter on an option row includes `other_text()`
-   when non-empty; Enter on the "Other" row submits the text alone for single-select and keeps
-   combining toggled options with the text for multi-select; drop `commit_other`.
+   when non-empty; Enter on the "Other" row with text submits the text alone for single-select
+   and keeps combining toggled options with the text for multi-select; with an empty field,
+   Enter on the "Other" row does nothing even when multi-select options are toggled (submit a
+   toggled selection with Enter on an option row instead — same as shipped `commit_other`);
+   drop `commit_other`.
 3. `question.rs`: `body()` renders `Other: <text>` on the last row with the caret when
    highlighted; `footer()` and `field()` updated; `is_typing`/`typing` removed.
 4. `ask_user.rs`: update the `QuestionAnswer` doc comment.
@@ -142,6 +148,10 @@ bindings.
 - 2026-11-04: No separate `n` shortcut; typed text alongside a chosen option rides the existing
   `selected` + `other` answer shape (issue maintainer's live feedback confirmed the inline-field
   direction during design).
+- AFK: 2026-11-04: Enter on the "Other" row with an empty field does nothing, even when
+  multi-select options are toggled — the smallest change from today's shipped `commit_other`,
+  which never submits on empty text; a toggled selection is submitted with Enter on an option
+  row.
 
 ## Documentation
 
