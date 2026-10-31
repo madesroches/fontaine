@@ -58,8 +58,8 @@ half the screen, so the call it asks about stays visible above the input.
 
 The model's reasoning shows as a dim, italic card behind a `thinking` header. While it streams, the
 card shows the last five wrapped rows live and is not written to scrollback; once the reasoning
-settles it is written folded to its first five rows, with `expand: /expand thinking` as its last
-row, so a long trace does not push the answer off screen. `/expand thinking` prints the latest
+settles it is written folded to its first five rows, so a long trace does not push the answer off
+screen; when the card was cut, `expand: /expand thinking` is its last row. `/expand thinking` prints the latest
 settled card in full as new transcript lines; it is an error while that card is still streaming,
 and when there is no reasoning. Like tool output, reasoning is made safe to paint (control
 characters blanked, credential-shaped text redacted) and at most 64 KiB of it is kept, its start

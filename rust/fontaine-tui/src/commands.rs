@@ -211,7 +211,7 @@ pub const BUILTINS: &[Builtin] = &[
         name: "expand",
         aliases: &[],
         hint: Some("[n | thinking]"),
-        description: "print a tool call or the model's reasoning in full: command, output and diff",
+        description: "print a tool call (command, output and diff) or the model's reasoning in full",
         command: Command::Expand,
     },
     Builtin {
