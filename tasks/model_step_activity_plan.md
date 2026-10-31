@@ -38,12 +38,15 @@ one in the issue is possible from logs alone.
   spend text (in the list it is dropped before the `+ unpriced` marker is truncated; in the panel it
   goes on the spend line). `main`'s row uses the same field. One shared formatter next to `spend_text` in
   `agents_panel.rs`. The TUI redraws on tree `changed` (it selects on `tree.changed().notified()`
-  and re-reads `tree.rows()`; the 1 s list tick is only a backstop), so the throttled notify is
-  what drives updates.
+  and re-reads `tree.rows()`; the 1 s list tick runs only while subagent rows exist), so the throttled notify is
+  what drives updates. There is no trailing notify: a stale count after the model pauses is accepted
+  until the next event.
 - **Debug logs.** In `drive_once`, `tracing::debug!(agent.id = ..., ...)` at model
-  request start (`drive_once` entry or the previous `CompletionCall`, whichever is later) and, at
-  `CompletionCall`/failure, request end with elapsed ms and characters written. `drive_once` keeps a
-  local `Instant` and a local char counter and reads both for the end log before `reset_writing`. Debug level, not telemetry spans, so no telemetry doc contract changes.
+  request start (`drive_once` entry or the previous `CompletionCall`, whichever is later) and request
+  end with elapsed ms and characters written. The end log is emitted from the drop guard (so on all
+  exit paths): completion, failure and cancellation each log exactly once. `drive_once` keeps a
+  local `Instant` and a local char counter and reads both for the end log before `reset_writing`.
+  Each `drive` retry runs a new `drive_once`, which logs a new start. Debug level, not telemetry spans, so no telemetry doc contract changes.
 - **Agents panel last tool call + age** (issue's other suggestion): out of scope here; file a
   follow-up issue if wanted.
 - **Killed agents' transcripts** (issue side finding): out of scope; file a separate issue.
@@ -84,8 +87,11 @@ clears when the model step ends. `docs/agents.md`: one line.
   throttled (many calls → bounded wakeups), unknown agent id is a no-op.
 - Unit (tui): formatter (`999`, `1.0k`, `12.3k`), list/panel row render with and without `writing`,
   not shown for non-running agents.
-- Integration (core, `fontaine-core/tests/billing.rs` style): call `drive_once` with `MockStreamEvent`
+- Integration (core, `fontaine-core/tests/billing.rs` style): call `drive` (or `run_turn`) with `MockStreamEvent`
   (`ReasoningDelta`, `ToolCallNameDelta`, `ToolCallArgumentsDelta`, then `Text`) and read
   `agents().rows()` inside `on_event` on `AssistantDelta` (`Usage`/`on_event` don't fire on
   Reasoning/Arguments alone); assert the counter is nonzero mid-step and zero after the
   `CompletionCall`. Pins the #343 bug: counter stayed invisible during reasoning-only steps.
+- Narrow-width list row with `+ unpriced` and `writing > 0` keeps the marker (the writing suffix is added only if the row still fits).
+- Dropping the `drive` future mid-stream zeroes the counter.
+- A failed or retried step zeroes the counter.
