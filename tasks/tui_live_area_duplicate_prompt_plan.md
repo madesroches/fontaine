@@ -54,33 +54,32 @@ Reproduce before changing anything:
    height change; the one-row-region path at `screen.rs:431`). Pin the repro as a regression test
    named for issue 279 in the harness; the tmux steps remain the manual check.
 
-If neither the harness nor tmux reproduces after the sweep, record that finding in `## Decisions`,
-ship the other two fixes, and leave the issue's primary item open with the evidence.
-
 ### 2. Truncated bottom border
 
-Determine whether the missing `┘` is a copy artifact of the capture or a real defect (check the
-box's bottom row width against `area.width` in `view::draw` with the popup open, in a test at the
-issue's width, and in the tmux capture). Fix only if real; a covered-by-test non-defect is recorded
-in `## Decisions`.
+Add one test drawing the message box at about 59 columns with the popup open, asserting the box's
+last row ends in `┘` (`draw_input`, `view.rs:575`, uses `Borders::ALL`, so the missing corner should
+be a paste trim). Fix only if the test fails.
 
 ### 3. Transient refusal notice
 
 The refusal ("a turn is running; wait for it or press Esc to interrupt") must not enter the
-transcript. Show it as a one-line, dimmed status in the live area (replacing the status line text
-for the duration, as `statusbar.rs` already composes the hint), cleared when the input changes, the
-turn ends, or after the next keypress. State lives on `App` (an `Option<String>`), not in the
-transcript, so nothing is committed to scrollback and repeated Enters leave one line. Behavior
-otherwise unchanged: the input stays, the popup stays.
+transcript. Show it as a one-line, dimmed notice that replaces the hint segment of the status line
+(`statusbar.rs` composes the hint as the tail of the line); `statusbar::render` takes `&App`, so no
+`view.rs` plumbing is needed. State lives on `App` (an `Option<String>`), not in the transcript, so
+nothing is committed to scrollback and repeated Enters leave one line. Clear it at the top of
+`handle_key` (`app.rs:685`), before dispatch, and in `settle_turn` (`ui/turn.rs`, where `running`
+is set to false at turn end). Clearing before dispatch matters: the refusal is set in
+`queue_during_turn` (`app.rs:1327`), reached from `handle_key`, so clearing at the end would wipe it
+at once. Behavior otherwise unchanged: the input stays, the popup stays.
 
 ## Implementation Steps
 
 1. Add the harness scenario (popup open/narrow/close and refused Enter while tool rows are live,
    across heights); run it; if green, repro in tmux via the example (design 1.2).
 2. Fix the root cause in `screen.rs` (or `view.rs` if the height is miscomputed); keep the new test.
-3. Resolve the border question (design 2).
+3. Add the border test (design 2).
 4. Replace the transcript notice at `app.rs:1327` with the transient status (design 3); render it
-   in `statusbar.rs`; clear it on input change, key press and turn end.
+   in `statusbar.rs`; clear it at the top of `handle_key` and in `settle_turn`.
 5. Update the existing test at `app.rs:1940` and add tests for the transient behavior.
 6. `CHANGELOG.md` entry.
 
@@ -94,14 +93,15 @@ otherwise unchanged: the input stays, the popup stays.
 
 ## Trade-offs
 
-- Closing the popup while a turn runs and the command cannot run was considered and rejected: the
-  popup is also the way to reach mid-turn commands, and Claude Code shows it.
-- Making the notice transient rather than deduplicating transcript entries: a deduplicated notice
-  would still be permanent history for something that is only feedback on a keypress.
+- Transient notice rather than deduplicated transcript entries: a deduplicated notice would still
+  be permanent history for a keypress's feedback.
 
-## Documentation
+## Decisions
 
-No `docs/` change expected; update `docs/` only if a TUI page describes the refusal message.
+- 2026-10-31: If neither the harness nor tmux reproduces the duplication after the sweep, record the
+  finding here, ship the other two fixes, and leave the primary item open with the evidence.
+- 2026-10-31: If the border test passes, the missing `┘` is a paste trim and not a defect; record
+  that result here.
 
 ## Testing Strategy
 
@@ -113,12 +113,8 @@ No `docs/` change expected; update `docs/` only if a TUI page describes the refu
 
 ## Manual Verification
 
-1. Build `cargo build -p fontaine-tui --example live_area`, run it in a detached tmux (`env -u TMUX
+1. From `rust/`, run `cargo build -p fontaine-tui --example live_area`, then run it in a detached tmux (`env -u TMUX
    tmux -L repro -f /dev/null new-session -d -s repro -x 80 -y 12 target/debug/examples/live_area`),
    then `tmux -L repro capture-pane -p -t repro -S - -E -`; expect one `message ·` box and each
    note once. Not automated because tmux's handling of erase and scroll differs from the vt100
    model.
-
-## Open Questions
-
-- The reporter's terminal and size are unknown; the sweep in design 1 stands in for them.
