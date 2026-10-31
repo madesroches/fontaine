@@ -22,7 +22,9 @@ re-read. Display is **on by default** (the user's call on the issue), switchable
   scrollback by block/row with `committed_chars`. Tool cards fold output to `OUTPUT_ROWS` with an
   `expand:` footer; output is clipped to `OUTPUT_KEEP_BYTES` (64 KiB).
 - `[tui]` is `TuiSection`/`Tui` in `fontaine-core/src/config.rs:809,1675`, user-scope only.
-- The mock model already has `MockStreamEvent::ReasoningDelta` (used in `tests/billing.rs`).
+- The mock model already has `MockStreamEvent::ReasoningDelta` (used in `tests/billing.rs`). It
+  emits `End{Reasoning}` after the text unless a closing `MockStreamEvent::Reasoning` with the same
+  id is sent before the text.
 
 ## Design
 
@@ -33,14 +35,19 @@ never reaches the guardian or permission pipeline, and history is untouched (rig
 reasoning parts).
 
 **Transcript.** Add `Entry::Reasoning { text, streaming, clipped }`. A `ReasoningDelta` appends
-to a trailing streaming `Reasoning` entry or pushes a new one. Event order is not guaranteed
+to a trailing streaming `Reasoning` entry or pushes a new one; the push calls the generalised
+`finish_streaming` first (settling a trailing streaming `Assistant`), symmetric with
+`AssistantDelta` settling `Reasoning`. Event order is not guaranteed
 (OpenAI-compatible chat and the mock emit `End{Reasoning}` after the text; rig can interleave
-Reasoning, ToolCall, Reasoning), so `Reasoning(full)` settles the latest streaming `Reasoning`
-entry wherever it is, and is ignored if already settled. `AssistantDelta`, a tool call, a user
+Reasoning, ToolCall, Reasoning), so `Reasoning(full)` settles the latest `Reasoning`
+entry if it has not yet been committed, replacing its text (End text replaces rather than appends:
+rig's Responses API can restate it), and is otherwise ignored. `AssistantDelta`, a tool call, a user
 entry and every other push settle a trailing streaming `Reasoning`: `finish_streaming` is
 generalised to both variants. An empty settled `Reasoning` (redacted block) is dropped, not
 rendered. Raw text is bounded: once the buffer passes `OUTPUT_KEEP_BYTES` it is head+tail clipped
-(the clip factored out of `keep_output`, `transcript.rs:131-159`) and `clipped` is set. Per-line
+(the clip factored out of `keep_output`, `transcript.rs:131-159`) and `clipped` is set. The
+sanitised text is cached and refreshed only when the buffer grows (the UI renders live entries
+several times per frame). Per-line
 sanitise and redaction (`fontaine_core::preview::display_text`) plus the clip run on the
 accumulated text at render/settle time, not per delta; `/expand thinking` shows the clipped text.
 
@@ -48,7 +55,9 @@ accumulated text at render/settle time, not per delta; `/expand thinking` shows 
 text path (no markdown). While streaming the card shows the header plus the last `REASONING_ROWS`
 (5) wrapped rows live, in the live area only. A streaming `Entry::Reasoning` is unsettled in
 `is_settled` and excluded from the `Assistant` special cases in `commit_entries`/`commit_within`
-(which write rows to scrollback permanently); it is committed once, folded to its first 5 rows
+(which write rows to scrollback permanently), so `commit_within` (`transcript.rs:549-560`)
+stops at a streaming `Reasoning` entry as `commit_entries` stops at an unsettled one, rather than
+writing it when the live area is over budget; it is committed once, folded to its first 5 rows
 plus a footer `  expand: /expand thinking`, when it settles, as tool cards are
 (`transcript.rs:636-647, 835-836`). `/expand thinking` prints the latest reasoning card in full
 (an `Expanded` wrapper generalised to hold a `Reasoning` entry; render arms in `transcript.rs`
@@ -57,7 +66,10 @@ mode prints the settled text prefixed `thinking:`, folded with the same `expand:
 tool output (`linear.rs:270-286`).
 
 **Config.** `[tui] show_reasoning` (bool, default `true`). When false the transcript
-ignores both events. Added to `TuiSection`/`Tui` and the schema; scope comes from the existing
+ignores both events. Added to `TuiSection`/`Tui` (the schema is the `JsonSchema` derive on
+`TuiSection`) and to the settings panel catalog as a `tui.show_reasoning` bool-choice row
+(`Applies::NextLaunch`, like `tui.screen_reader`). `Transcript` gets a manual `Default` with
+`show_reasoning: true` (the derived one would give false). Scope comes from the existing
 `tui` row in `config_scope.rs`, no table change.
 
 **Subagents.** Their events already flow through `AgentViewEvent::Event` into that agent's own
@@ -66,14 +78,16 @@ parent's transcript. `show_reasoning` is a field on `Transcript`, set next to `g
 `fontaine-tui/src/lib.rs` `run` and copied in `App::view_of` (`app.rs:348-355`) so view
 transcripts honor it.
 
-**Headless `-p`.** Prints nothing for reasoning (Claude Code parity): `ReasoningDelta` and
-`Reasoning` are explicit no-op arms in both text and `stream-json` (a closed versioned schema,
-`docs/schemas/headless-v1.schema.json`).
+**Headless `-p`.** Text `-p` prints nothing for reasoning (Claude Code parity). `stream-json`
+carries no reasoning: it is not in the closed v1 schema (`docs/schemas/headless-v1.schema.json`),
+a deviation since Claude Code's stream-json carries thinking blocks. `ReasoningDelta` and
+`Reasoning` are explicit no-op arms in both.
 
 ## Implementation Steps
 
 1. `fontaine-core/src/turn.rs`: add the two variants; emit them in `drive()`.
-2. `fontaine-core/src/config.rs`: `show_reasoning` in `TuiSection`/`Tui`, merge, schema.
+2. `fontaine-core/src/config.rs`: `show_reasoning` in `TuiSection`/`Tui`, merge, `JsonSchema`
+   derive; `fontaine-core/src/config_catalog.rs`: `tui.show_reasoning` row.
 3. `fontaine-tui/src/transcript.rs`: `Entry::Reasoning`, event handling, clipping, row rendering,
    commit logic, `Expanded(Reasoning)` arm. `fontaine-tui/src/commands.rs` (`/expand` hint at
    `:210-215`; `call_number` at `:690-700` accepts only numbers, add `thinking`, plus a parse test)
@@ -86,7 +100,7 @@ transcripts honor it.
 ## Files to Modify
 
 `rust/fontaine-core/src/turn.rs`, `rust/fontaine-core/src/config.rs`,
-`rust/fontaine-tui/src/transcript.rs`, `rust/fontaine-tui/src/linear.rs`,
+`rust/fontaine-core/src/config_catalog.rs`, `rust/fontaine-tui/src/transcript.rs`, `rust/fontaine-tui/src/linear.rs`,
 `rust/fontaine-tui/src/ui/turn.rs`, `rust/fontaine-tui/src/commands.rs`,
 `rust/fontaine-tui/src/ui/commands/reports.rs`, `rust/fontaine-tui/src/lib.rs`,
 `rust/fontaine-tui/src/app.rs`, `rust/fontaine/src/headless.rs`, `docs/configuration.md`,
@@ -101,13 +115,16 @@ transcripts honor it.
 ## Decisions
 
 - 2026-10-31: Model reasoning is shown in the transcript by default, folded once settled;
-  `[tui] show_reasoning = false` hides it; unlike Claude Code, which keeps thinking out of the main
-  transcript (#344). Appended to `### TUI` in `tasks/fontaine_harness_plan.md`.
+  `[tui] show_reasoning = false` hides it; unlike Claude Code, as observed to keep thinking out of the main
+  transcript (Ctrl-O transcript view; not re-verified with `claude -p` in this plan). Headless
+  `stream-json` omits reasoning, though Claude Code's carries thinking blocks (#344). Appended to `### TUI` in `tasks/fontaine_harness_plan.md`.
 
 ## Documentation
 
 `docs/configuration.md` `[tui]` table (`show_reasoning`); `docs/tui.md` (the card, folding,
-subagent behaviour; `/expand` row ~line 397 becomes `[<n> | thinking]`); `docs/terminal.md` (a
+subagent behaviour; `/expand` row ~line 397 becomes `[<n> | thinking]`, and the `/expand`
+paragraph ~lines 46-51 mentions `/expand thinking`; the Settings panel example ~lines 494-520
+gains a `tui.show_reasoning` row); `docs/terminal.md` (a
 `thinking:` row, ~lines 163-176); `CHANGELOG.md`.
 
 ## Testing Strategy
@@ -119,9 +136,10 @@ subagent behaviour; `/expand` row ~line 397 becomes `[<n> | thinking]`); `docs/t
 - Transcript unit tests: deltas accumulate into one entry; settle on `Reasoning`/`finish_streaming`;
   ordering after the user entry; late `Reasoning(full)` settles the earlier entry and an
   interleaved Reasoning, ToolCall, Reasoning stays two entries; empty settled reasoning is dropped;
+  an over-budget live area holding a streaming reasoning card is not committed by `commit_within`;
   a view transcript for a subagent honors `show_reasoning`; clipping bounds memory; streaming card shows last 5 rows, settled
   card shows first 5 plus footer; `show_reasoning = false` drops the entries; control characters
   are stripped; `/expand thinking` prints the whole text.
-- Config: default true, schema.
+- Config: default true, schema; catalog row `tui.show_reasoning`.
 - Headless: `-p` output has no reasoning text.
 - Layout of live area and scrollback commits is reproduced in a real tmux per `tasks/design/testing.md`.
