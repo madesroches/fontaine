@@ -16,9 +16,9 @@ up to the kill — always on, with no config gate.
   `conversation.extend(run.messages()); store.save(...)`). A run that never reaches `Done`
   leaves nothing on disk.
 - Fontaine implements the kill by dropping the run's future: `run_child`
-  (`rust/fontaine-core/src/child_runner.rs:615-623`) selects
+  (`rust/fontaine-core/src/child_runner.rs:627`) selects
   `kill.wait_for(|killed| *killed) => break None` over the in-flight `drive` future, and the
-  `join_wait` after a completed run (`child_runner.rs:627-631`) the same. Dropping the drive
+  `join_wait` after a completed run (`child_runner.rs:636`) the same. Dropping the drive
   future drops rig's run state with the run's committed messages inside; the run never
   settles.
 - `RecoveryHook` (`rust/fontaine-core/src/turn_recovery.rs:40-62`) persists a *settled*
@@ -38,7 +38,7 @@ up to the kill — always on, with no config gate.
   `messages: Some(run.messages())` — exactly what `RecoveryHook` already persists.
 - Kill plumbing today: `AgentTree::kill` (`rust/fontaine-agents/src/tree.rs:590-617`) marks
   the node `Killed` immediately and calls `ChildHandle::kill`; the core handle
-  (`child_runner.rs:349-351`) sets a `tokio::sync::watch` flag, and `run_child` selects on
+  (`child_runner.rs:358`) sets a `tokio::sync::watch` flag, and `run_child` selects on
   its receiver. `attach` (`tree.rs:434-449`) replays a kill that landed before the handle
   existed. `tree.finish` (`tree.rs:503-526`) keeps a node already marked `Killed`.
 - Every tool call passes the single choke point `gated` (`rust/fontaine-tools/src/guarded.rs`),
@@ -187,8 +187,9 @@ dropped); the root agent's interrupt is untouched.
 - `rust/fontaine-tools/tests/guarded.rs` (new or existing test file)
 - `Guard` / `RegistryParams` struct-literal sites that must add the new fields to compile:
   `rust/fontaine-core/src/agent/build.rs` (the actual `tools::registry()` call),
-  `rust/fontaine-core/tests/choke_point.rs`, `tests/extensions.rs`,
+  `rust/fontaine-core/tests/choke_point.rs`,
   `rust/fontaine-mcp/tests/common/mod.rs`, `rust/fontaine-tools/tests/common/mod.rs`,
+  `rust/fontaine-tools/tests/guarded.rs`,
   `tests/result_pipeline.rs`, `tests/telemetry.rs`
 - `CHANGELOG.md`, `docs/agents.md`, `docs/architecture.md`
 - `tasks/fontaine_harness_plan.md` (Decisions)
@@ -273,8 +274,7 @@ first integration test.
 
 1. `cargo run -p fontaine` in a scratch repo; ask for a long-running subagent (e.g. one that
    runs a slow build), select it in the agents panel and kill it mid-run.
-2. Check `<data dir>/sessions/<id>/logs/`: `agent-<n>.jsonl` exists and ends at the kill.
-3. `/export` and open the folder: the killed agent's file renders its conversation up to the
+2. `/export` and open the folder: the killed agent's file renders its conversation up to the
    kill.
 
 Not automated above the integration tier because the TUI agents-panel keystrokes and the
