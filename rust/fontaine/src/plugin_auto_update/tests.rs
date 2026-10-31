@@ -36,7 +36,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Fixture {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = temp_root(&tmp);
         let dirs = Dirs {
             config: root.join("config"),
             data: root.join("data"),
@@ -455,6 +455,16 @@ fn every_outcome_is_logged_as_one_json_line_and_noticed() {
     assert!(updates[2].notice().to_string().contains("offline"));
 }
 
+/// The temp dir with symlinks resolved but without the Windows `\\?\` prefix, which git rejects as
+/// a clone destination.
+fn temp_root(tmp: &TempDir) -> PathBuf {
+    let path = tmp.path().canonicalize().unwrap();
+    match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+        Some(plain) => PathBuf::from(plain),
+        None => path,
+    }
+}
+
 /// A `file://` URL git accepts on every OS: canonicalized Windows paths carry a `\\?\` prefix and
 /// backslashes, and need a third slash before the drive letter.
 fn file_url(repo: &Path) -> String {
@@ -511,7 +521,7 @@ fn url_catalog(url: &str, sha: &str) -> String {
 #[test]
 fn a_sha_pinned_plugin_moves_only_when_the_catalog_sha_differs() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = temp_root(&tmp);
     let repo = root.join("plugin-repo");
     std::fs::create_dir_all(&repo).unwrap();
     let first = commit_plugin(&repo, "First.");
@@ -597,7 +607,7 @@ fn fetch_in<'a>(config: &'a Path) -> Fetch<'a> {
 #[test]
 fn an_up_to_date_git_marketplace_is_not_cloned() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = temp_root(&tmp);
     let repo = root.join("market-repo");
     write(
         &repo.join(".claude-plugin/marketplace.json"),
@@ -631,7 +641,7 @@ fn an_up_to_date_git_marketplace_is_not_cloned() {
 #[test]
 fn a_sha_pinned_or_held_plugin_revision_is_recognised_without_cloning() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = temp_root(&tmp);
     let repo = root.join("plugin-repo");
     std::fs::create_dir_all(&repo).unwrap();
     let head = commit_plugin(&repo, "Body.");
