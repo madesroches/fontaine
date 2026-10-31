@@ -4,9 +4,13 @@
 
 ## Overview
 
-`read` of an image or PDF returns the file to the model as a rig-core image/document
-content part when the current model accepts that modality (rig's catalog `Modalities`
-flag), and a text fallback otherwise. The TUI gains clipboard-image attach, so a pasted
+`read` of an image returns the file to the model as a rig-core image content part
+when the current model accepts images (rig's catalog `Modalities` flag), and a text
+fallback otherwise. `read` of a PDF never sends the file as a tool result — rig
+0.45.0's `ToolResultContent` has no `Document` variant and Anthropic's wire format
+rejects document blocks in tool results — so it falls back to a text stub naming the
+file and pointing at attach; PDFs reach the model only as user-message `Document`
+attachments (§2). The TUI gains clipboard-image attach, so a pasted
 or dragged screenshot reaches a vision-capable model the same way typed text does.
 Workspace containment and the guardian pipeline are unchanged — resolution and gating
 happen exactly where they do today.
@@ -63,44 +67,53 @@ Rename `NotebookRead` to `ReadView` (it now presents more than notebooks) and ch
 
 1. Resolve the path exactly as rig's `Read` does — via `rig_tools::fs::place` with the
    same `base`/`confine` fields — so confinement errors are byte-identical to today's.
-2. Sniff the first bytes: `ImageMediaType::sniff` → image; `%PDF-` → PDF. Anything else,
-   including `.ipynb`, delegates to the inner rig `Read` and wraps the string in
-   `ToolOutput::text` (notebook cell rendering unchanged).
+2. Sniff the first bytes: `ImageMediaType::sniff` → image; `%PDF-` → PDF (always the
+   text-stub path, §5). Anything else, including `.ipynb`, delegates to the inner rig
+   `Read` and wraps the string in `ToolOutput::text` (notebook cell rendering
+   unchanged).
 3. Read the file's bytes with a 5 MiB cap (rig-tools' attach constant). Over the cap → a
    text result saying the file is too large, naming the limit (no partial sends).
 4. Modalities come from the call's `ToolContext`, not construction time, so a mid-session
    model switch takes effect on the next turn: fontaine-core defines
    `InputModalities(Modalities)` as a `ContextValue`, `drive_once` inserts it per turn,
    and the tool defaults to text-only when absent.
-5. Supported: `ToolOutput::content([Text(header), part])` — the header names the file,
-   kind, and size (e.g. `[image: PNG · 231 KB] /abs/path`), so every text-only consumer
-   sees a description without touching the part; then `Image` (media type from sniff,
-   `DocumentSourceKind::base64`) or `Document` (`DocumentMediaType::PDF`).
-   Unsupported: a single text part explaining the file is an image/PDF, its size, and
-   that the current model does not accept that input.
+5. Supported (image only): `ToolOutput::content([Text(header), Image])` — the header
+   names the file, kind, and size (e.g. `[image: PNG · 231 KB] /abs/path`), so every
+   text-only consumer sees a description without touching the part; `Image`'s media
+   type comes from the sniff, source `DocumentSourceKind::base64`. A PDF read yields a
+   text stub naming the file, its size, and that PDFs reach the model as attachments
+   (§2) — never a document tool result. Unsupported modality: a single text part
+   explaining the file is an image, its size, and that the current model does not
+   accept that input.
 
 ### 2. Prompts with attachments (`fontaine-core`)
 
 - `TurnParams` gains `attachments: Vec<Attachment>` and `modalities: Modalities`.
-  `Attachment { label: String, bytes: Vec<u8>, media: ImageMediaType }` carries an inline
-  clipboard image (sniffed at attach time). File *paths* stay plain text — the agent
-  reads them through `read`, which now sees the image. Headless runs pass none.
-- `drive_once` builds `Message::User { content }` directly: a `Text` part for the prompt,
-  then `UserContent::image_base64` per attachment when `modalities.image`, else the
-  attachments collapse into a text note appended to the prompt (labels + sizes). This is
-  the single gating point; the TUI warns at attach time but never decides alone.
+  `Attachment { label: String, bytes: Vec<u8>, media: AttachmentMedia }` carries an
+  inline clipboard image (sniffed at attach time, `AttachmentMedia::Image`) or a PDF
+  (`AttachmentMedia::Pdf`, sniffed `%PDF-` from a dropped file). File *paths* stay
+  plain text except a dropped PDF, which attaches as a document — the agent reads
+  other files through `read`, which now sees images. Headless runs pass none.
+- `drive_once` builds `Message::User { content }` directly: a `Text` part for the
+  prompt, then per attachment `UserContent::image_base64` when `modalities.image`
+  (an `Image` attachment) or `UserContent::document_base64` (`DocumentMediaType::PDF`)
+  when `modalities.pdf` (a `Pdf` attachment), else the attachments collapse into a
+  text note appended to the prompt (labels + sizes). This is the single gating point;
+  the TUI warns at attach time but never decides alone.
 - `InputModalities` is inserted into the `ToolContext` next to `AgentId` (`turn.rs:351`).
 - Ledger: `Record::UserMessage` gains `attachments: Vec<String>` (labels) with
   `#[serde(default)]` so existing ledgers load unchanged.
-- `tool_text` (`turn.rs:99-108`) renders non-text result parts as `[image]` / `[pdf]`
-  placeholders (today: `[image]`) so transcripts, notifications and the audit trail never
-  carry base64.
+- `tool_text` (`turn.rs:99-108`) renders non-text result parts as `[image]`
+  placeholders (today's behavior) so transcripts, notifications and the audit trail
+  never carry base64; PDFs never appear in tool results, so no `[pdf]` marker is
+  needed.
 
 ### 3. Result-pipeline text derivation
 
 Add `text_view(&ToolOutput) -> String` in `fontaine-tools::result_pipeline`: `Text` parts
-verbatim, `Json` parts serialized, `Image`/`Document` parts as `[image: png]` /
-`[document: pdf]` placeholders — never base64. Switch `scanner_stage::text_of`, the
+verbatim, `Json` parts serialized, `Image` parts as `[image: png]` placeholders — never
+base64 (`ToolResultContent` has no `Document` variant, so none can occur). Switch
+`scanner_stage::text_of`, the
 instructions stage, the notifications stage, and user hooks to it. The scanner thus
 screens the text of a multimodal result and the image bytes are not scanned: they come
 from the user's own clipboard or from files that already passed the gate (see Decisions).
@@ -114,6 +127,9 @@ Mockup A (attachment chips) is the chosen UX:
   `PendingAttachment { label, path, media_type, size }` to the input buffer. No image on
   the clipboard → a one-line notice, nothing else. Terminals that turn Ctrl+V into a
   bracketed paste never deliver the key event; the paste path already handled their text.
+- A dropped file that sniffs as PDF becomes a `Pdf` attachment instead of plain text;
+  other dropped paths stay text. Ctrl+V stays image-only (the clipboard path delivers
+  no PDF bytes).
 - The composer renders a removable chip row above the typed text; the input view's height
   accounts for it. `Backspace` on an empty input pops the last attachment (no mouse).
 - On send, chips become `Attachment`s in `TurnParams`; the transcript shows
@@ -190,10 +206,19 @@ Mockup A (attachment chips) is the chosen UX:
 - 2026-10-27: The PromptGuard scanner and every text-deriving result stage see text parts
   only; image/PDF bytes are not scanned. Trust boundary: clipboard contents are user
   input, and files already passed the permission gate before `read` opened them.
-- 2026-10-27: No PDF text extraction — on a model without PDF support the read falls
-  back to a descriptive text stub.
+- 2026-10-27: No PDF text extraction, and no PDF leaves `read` as a tool result —
+  a PDF read always falls back to a descriptive text stub pointing at attach.
 - 2026-10-27: The context-usage gauge does not account image tokens; noted as an accepted
   gap rather than blocking the feature.
+- 2026-10-31 AFK: Multimodal `read` is image-only. rig 0.45.0's `ToolResultContent`
+  has no `Document` variant and Anthropic's wire format rejects document blocks in
+  tool results, so a PDF read always falls back to a text stub naming the file and
+  pointing at attach; PDFs reach the model only as user-message `Document`
+  attachments (`UserContent::document_base64`, `DocumentMediaType::PDF`).
+- 2026-10-31 AFK: Ctrl+V is the attach binding. Bracketed paste is enabled,
+  supporting terminals deliver Ctrl+V as a key event, and no existing Ctrl+V binding
+  conflicts; terminals that swallow it deliver the paste through the bracketed-paste
+  path the plan already handles.
 
 ## Documentation
 
@@ -213,11 +238,13 @@ Mockup A (attachment chips) is the chosen UX:
   `tool_text` markers; old ledgers without `attachments` deserialize.
 - Unit (`fontaine-tui`, `TestBackend`): chip row and input height; Backspace-on-empty
   pops an attachment; transcript marker line.
-- Integration (cassette, CI): a headless run reading a fixture PNG and a fixture PDF
-  replays a recorded cassette whose request JSON carries the base64 part — this catches
-  wiring regressions (part dropped between tool and request) that unit tests cannot see
-  because they never build a provider request; plus the text-fallback run against a
-  no-image fixture model.
+- Integration (cassette, CI): a headless run reading a fixture PNG replays a
+  recorded cassette whose request JSON carries the base64 image part — this catches
+  wiring regressions (part dropped between tool and request) that unit tests cannot
+  see because they never build a provider request; a headless run reading a fixture
+  PDF replays the text-stub fallback (no base64 in the request); a run with a PDF
+  attached via `TurnParams` replays a cassette whose request carries the base64
+  `document` part; plus the text-fallback run against a no-image fixture model.
 
 ## Manual Verification
 
@@ -228,9 +255,3 @@ Mockup A (attachment chips) is the chosen UX:
 2. `cargo run -p fontaine -- -p "read <fixture>.png and describe it"` against a live
    vision model; expect a description, not a base64 dump. Not automated: needs a live
    provider key (the eval harness's tier, not CI's).
-
-## Open Questions
-
-- None blocking. The Ctrl+V binding assumes the terminal passes the key event through;
-  if review finds a common terminal where it collides with bracketed paste, the fallback
-  is a different chord (decided at implementation, recorded here).
