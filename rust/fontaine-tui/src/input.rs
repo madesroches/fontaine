@@ -1,11 +1,15 @@
 //! The multi-line text buffer behind the message box and the deny-reason field.
 
+use std::ops::Range;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Clone, Debug, Default)]
 pub struct InputBuffer {
     chars: Vec<char>,
     cursor: usize,
+    /// The last non-empty kill, for Ctrl-Y; it outlives `take` and `set_text`.
+    killed: String,
 }
 
 impl InputBuffer {
@@ -122,6 +126,39 @@ impl InputBuffer {
         self.cursor = (next_start + column).min(self.line_end(next_start));
     }
 
+    /// Removes `range`, leaves the cursor at its start, and keeps the text for Ctrl-Y.
+    fn kill(&mut self, range: Range<usize>) {
+        if !range.is_empty() {
+            self.killed = self.chars[range.clone()].iter().collect();
+        }
+        self.cursor = range.start;
+        self.chars.drain(range);
+    }
+
+    /// Start of the word before `pos`: skip separators back, then word chars back.
+    fn word_start_before(&self, pos: usize, is_word: fn(char) -> bool) -> usize {
+        let mut start = pos;
+        while start > 0 && !is_word(self.chars[start - 1]) {
+            start -= 1;
+        }
+        while start > 0 && is_word(self.chars[start - 1]) {
+            start -= 1;
+        }
+        start
+    }
+
+    /// End of the word after `pos`: skip separators forward, then word chars forward.
+    fn word_end_after(&self, pos: usize, is_word: fn(char) -> bool) -> usize {
+        let mut end = pos;
+        while end < self.chars.len() && !is_word(self.chars[end]) {
+            end += 1;
+        }
+        while end < self.chars.len() && is_word(self.chars[end]) {
+            end += 1;
+        }
+        end
+    }
+
     pub fn kill_to_end(&mut self) {
         let end = self.line_end(self.cursor);
         // At a line's end the kill joins the next line, as in a shell.
@@ -130,25 +167,45 @@ impl InputBuffer {
         } else {
             end
         };
-        self.chars.drain(self.cursor..end);
+        self.kill(self.cursor..end);
     }
 
     pub fn kill_to_start(&mut self) {
-        let start = self.line_start(self.cursor);
-        self.chars.drain(start..self.cursor);
-        self.cursor = start;
+        self.kill(self.line_start(self.cursor)..self.cursor);
     }
 
     pub fn delete_word(&mut self) {
-        let mut start = self.cursor;
-        while start > 0 && self.chars[start - 1].is_whitespace() {
-            start -= 1;
-        }
-        while start > 0 && !self.chars[start - 1].is_whitespace() {
-            start -= 1;
-        }
-        self.chars.drain(start..self.cursor);
-        self.cursor = start;
+        self.kill(self.word_start_before(self.cursor, char::is_alphanumeric)..self.cursor);
+    }
+
+    /// Ctrl-W: a word is a run of non-whitespace, so a path goes in one piece.
+    pub fn delete_word_whitespace(&mut self) {
+        self.kill(self.word_start_before(self.cursor, |c| !c.is_whitespace())..self.cursor);
+    }
+
+    pub fn delete_word_forward(&mut self) {
+        self.kill(self.cursor..self.word_end_after(self.cursor, char::is_alphanumeric));
+    }
+
+    pub fn word_left(&mut self) {
+        self.cursor = self.word_start_before(self.cursor, char::is_alphanumeric);
+    }
+
+    pub fn word_right(&mut self) {
+        self.cursor = self.word_end_after(self.cursor, char::is_alphanumeric);
+    }
+
+    pub fn buffer_start(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub fn buffer_end(&mut self) {
+        self.cursor = self.chars.len();
+    }
+
+    pub fn yank(&mut self) {
+        let killed = self.killed.clone();
+        self.replace_range(self.cursor, self.cursor, &killed);
     }
 
     pub fn lines(&self) -> Vec<String> {
@@ -172,20 +229,34 @@ impl InputBuffer {
                 'e' => self.end(),
                 'u' => self.kill_to_start(),
                 'k' => self.kill_to_end(),
-                'w' => self.delete_word(),
+                'w' => self.delete_word_whitespace(),
                 'b' => self.left(),
                 'f' => self.right(),
+                'h' => self.backspace(),
+                'd' => self.delete(),
+                'y' => self.yank(),
                 _ => return false,
             },
-            KeyCode::Char(_) if alt => return false,
+            KeyCode::Char(c) if alt => match c.to_ascii_lowercase() {
+                'b' => self.word_left(),
+                'f' => self.word_right(),
+                'd' => self.delete_word_forward(),
+                _ => return false,
+            },
             KeyCode::Char(c) => self.insert(c),
+            KeyCode::Backspace if control || alt => self.delete_word(),
             KeyCode::Backspace => self.backspace(),
+            KeyCode::Delete if control => self.delete_word_forward(),
             KeyCode::Delete => self.delete(),
+            KeyCode::Left if control || alt => self.word_left(),
             KeyCode::Left => self.left(),
+            KeyCode::Right if control || alt => self.word_right(),
             KeyCode::Right => self.right(),
             KeyCode::Up => self.up(),
             KeyCode::Down => self.down(),
+            KeyCode::Home if control => self.buffer_start(),
             KeyCode::Home => self.home(),
+            KeyCode::End if control => self.buffer_end(),
             KeyCode::End => self.end(),
             _ => return false,
         }
@@ -252,5 +323,156 @@ mod tests {
     fn wrapping_splits_by_width() {
         assert_eq!(wrap("abcde", 2), vec!["ab", "cd", "e"]);
         assert_eq!(wrap("", 4), vec![""]);
+    }
+
+    fn press(b: &mut InputBuffer, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        b.handle_key(KeyEvent::new(code, modifiers))
+    }
+
+    fn at(text: &str, cursor: usize) -> InputBuffer {
+        let mut b = buffer(text);
+        b.cursor = cursor;
+        b
+    }
+
+    #[test]
+    fn word_movement_crosses_spaces_newlines_and_stops_at_the_ends() {
+        let mut b = buffer("one   two\nthree");
+        b.word_left();
+        assert_eq!(b.cursor(), 10);
+        b.word_left();
+        assert_eq!(b.cursor(), 6);
+        b.word_left();
+        assert_eq!(b.cursor(), 0);
+        b.word_left();
+        assert_eq!(b.cursor(), 0);
+        b.word_right();
+        assert_eq!(b.cursor(), 3);
+        b.word_right();
+        assert_eq!(b.cursor(), 9);
+        b.word_right();
+        assert_eq!(b.cursor(), 15);
+        b.word_right();
+        assert_eq!(b.cursor(), 15);
+    }
+
+    #[test]
+    fn forward_and_backward_word_deletes_share_boundaries() {
+        let mut b = at("one  two three", 3);
+        b.delete_word_forward();
+        assert_eq!(b.text(), "one three");
+        let mut b = at("one  two three", 8);
+        b.delete_word();
+        assert_eq!(b.text(), "one   three");
+        let mut b = at("one  two three", 5);
+        b.delete_word();
+        assert_eq!(b.text(), "two three");
+    }
+
+    #[test]
+    fn words_go_by_segment_but_ctrl_w_takes_the_whole_path() {
+        let mut b = buffer("src/main.rs");
+        b.word_left();
+        assert_eq!(b.cursor(), 9);
+        b.word_left();
+        assert_eq!(b.cursor(), 4);
+        b.delete_word();
+        assert_eq!(b.text(), "main.rs");
+        let mut b = buffer("cat src/main.rs");
+        b.delete_word();
+        assert_eq!(b.text(), "cat src/main.");
+        let mut b = buffer("cat src/main.rs");
+        b.delete_word_whitespace();
+        assert_eq!(b.text(), "cat ");
+    }
+
+    #[test]
+    fn a_kill_can_be_yanked_for_every_kind() {
+        type Kill = (&'static str, usize, fn(&mut InputBuffer), &'static str);
+        let kills: [Kill; 5] = [
+            ("one two", 7, InputBuffer::kill_to_start, "one two"),
+            ("one two", 0, InputBuffer::kill_to_end, "one two"),
+            ("one two", 7, InputBuffer::delete_word, "two"),
+            ("one two", 7, InputBuffer::delete_word_whitespace, "two"),
+            ("one two", 0, InputBuffer::delete_word_forward, "one"),
+        ];
+        for (text, cursor, kill, killed) in kills {
+            let mut b = at(text, cursor);
+            kill(&mut b);
+            b.set_text("x");
+            b.yank();
+            assert_eq!(b.text(), format!("x{killed}"));
+            assert_eq!(b.cursor(), 1 + killed.len());
+        }
+    }
+
+    #[test]
+    fn an_empty_kill_keeps_the_entry_and_take_keeps_the_buffer() {
+        let mut b = buffer("one two");
+        b.delete_word();
+        b.kill_to_end();
+        b.take();
+        b.yank();
+        assert_eq!(b.text(), "two");
+        let mut empty = InputBuffer::default();
+        empty.yank();
+        assert_eq!(empty.text(), "");
+    }
+
+    #[test]
+    fn buffer_jumps_span_lines_while_home_and_end_stay_on_one() {
+        let mut b = at("ab\ncd\nef", 4);
+        b.home();
+        assert_eq!(b.cursor(), 3);
+        b.end();
+        assert_eq!(b.cursor(), 5);
+        b.buffer_start();
+        assert_eq!(b.cursor(), 0);
+        b.buffer_end();
+        assert_eq!(b.cursor(), 8);
+    }
+
+    #[test]
+    fn the_editing_keys_map_to_their_actions() {
+        use KeyCode::{Backspace, Char, Delete, End, Home, Left, Right};
+        const C: KeyModifiers = KeyModifiers::CONTROL;
+        const A: KeyModifiers = KeyModifiers::ALT;
+        // (key, modifiers, text, cursor before, text after, cursor after)
+        let rows = [
+            (Left, C, "one two", 7, "one two", 4),
+            (Left, A, "one two", 7, "one two", 4),
+            (Char('b'), A, "one two", 7, "one two", 4),
+            (Char('B'), A, "one two", 7, "one two", 4),
+            (Right, C, "one two", 0, "one two", 3),
+            (Right, A, "one two", 0, "one two", 3),
+            (Char('f'), A, "one two", 0, "one two", 3),
+            (Char('d'), A, "one two", 0, " two", 0),
+            (Delete, C, "one two", 0, " two", 0),
+            (Backspace, A, "one two", 7, "one ", 4),
+            (Backspace, C, "one two", 7, "one ", 4),
+            (Char('w'), C, "a src/x.rs", 10, "a ", 2),
+            (Home, C, "ab\ncd", 4, "ab\ncd", 0),
+            (End, C, "ab\ncd", 0, "ab\ncd", 5),
+            (Char('h'), C, "abc", 3, "ab", 2),
+            (Char('d'), C, "abc", 1, "ac", 1),
+            (Left, KeyModifiers::NONE, "abc", 3, "abc", 2),
+            (Home, KeyModifiers::NONE, "ab\ncd", 4, "ab\ncd", 3),
+            (Backspace, KeyModifiers::NONE, "abc", 3, "ab", 2),
+            (Delete, KeyModifiers::NONE, "abc", 0, "bc", 0),
+        ];
+        for (code, modifiers, text, cursor, after, cursor_after) in rows {
+            let mut b = at(text, cursor);
+            assert!(press(&mut b, code, modifiers), "{code:?} {modifiers:?}");
+            assert_eq!(
+                (b.text().as_str(), b.cursor()),
+                (after, cursor_after),
+                "{code:?} {modifiers:?}"
+            );
+        }
+        let mut b = at("one two", 7);
+        press(&mut b, Char('w'), C);
+        press(&mut b, Char('y'), C);
+        assert_eq!(b.text(), "one two");
+        assert!(!press(&mut at("abc", 1), Char('z'), A));
     }
 }
