@@ -146,6 +146,11 @@ Mockup A (attachment chips) is the chosen UX:
 2. `fontaine-core`: `Attachment`, `InputModalities`, `TurnParams` fields; `drive_once`
    message build + ToolContext insert; `Record::UserMessage.attachments`; `tool_text`
    markers; switch scanner/instructions/notifications/hooks to `text_view`.
+   `TurnParams` is a plain struct built with struct literals, so this step must also
+   update every struct-literal site in `rust/fontaine-core/tests/` (16 sites across
+   billing ×6, audit_telemetry ×2, and one each in output_styles, turn_recovery,
+   rewind, memory, prefix_stability, agent_resume, native_search, agent_pipeline) to
+   pass empty attachments/default modalities.
 3. `fontaine-tui`: `PendingAttachment` on the input buffer; chip row in `view.rs`
    (`draw_input`, height calc); `Ctrl+V` handler (`app.rs`); send path in `ui/turn.rs`;
    transcript marker.
@@ -158,6 +163,10 @@ Mockup A (attachment chips) is the chosen UX:
 - `rust/fontaine-tools/src/notebook.rs` (→ `ReadView`), `builtins.rs`, `result_pipeline.rs`
 - `rust/fontaine-core/src/turn.rs`, `scanner_stage.rs`, `instructions/on_demand.rs`,
   notifications/user-hook stage call sites, `ledger.rs`, `export.rs`
+- `rust/fontaine-core/tests/`: `billing.rs`, `audit_telemetry.rs`, `output_styles.rs`,
+  `turn_recovery.rs`, `rewind.rs`, `memory.rs`, `prefix_stability.rs`,
+  `agent_resume.rs`, `native_search.rs`, `agent_pipeline.rs` (struct-literal
+  `TurnParams` sites from step 2)
 - `rust/fontaine-tui/src/input.rs`, `view.rs`, `app.rs`, `clipboard.rs`, `ui/turn.rs`
 - `rust/fontaine/src/headless.rs`
 - `docs/tools.md`, `docs/tui.md`, `research/research-claude-code-parity.md`
