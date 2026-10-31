@@ -159,6 +159,7 @@ Line mode (`Cut::Lines`, `linear.rs`) is untouched: it prints source lines.
 
 - AFK: Resume inside a fence is derived by re-scanning the source before the cursor (not a carried flag); the ordinary path holds an open fence in the live area until it closes, and only the over-budget release cuts inside one.
 - AFK: `stable_end` treats a blank line as a boundary only once the next non-blank line has arrived and is neither indented nor a list marker; fences are tracked with up to 3 spaces of indent; a list stays in the plain tail until a column-0 non-list line follows.
+- AFK: A blank line before an indented or list-marker line is a boundary unless the block run holds a list, so a table or paragraph ahead of a list is released when the list starts instead of waiting for the list to end (found in the tmux check: the held table overflowed the live area and was committed as source).
 - AFK: A soft break keeps the source line break rather than reflowing to a space, matching today's renderer and source fidelity.
 
 ## Documentation

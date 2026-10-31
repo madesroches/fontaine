@@ -17,6 +17,7 @@ pub mod guardian_prompt;
 pub mod history;
 pub mod input;
 pub mod linear;
+mod markdown;
 pub mod model_picker;
 pub mod provider_dialog;
 pub mod question;
