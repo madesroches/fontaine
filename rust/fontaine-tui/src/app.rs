@@ -682,8 +682,8 @@ impl App {
             || self.agents.is_some()
     }
 
-    fn handle_key(&mut self, key: KeyEvent) -> Action {
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    fn handle_key(&mut self, mut key: KeyEvent) -> Action {
+        let mut control = key.modifiers.contains(KeyModifiers::CONTROL);
         if key.code != KeyCode::Esc {
             self.last_esc = None;
         }
@@ -855,6 +855,20 @@ impl App {
             self.question_key(key);
             return Action::None;
         }
+        if control
+            && matches!(key.code, KeyCode::Char('p' | 'n'))
+            && !key.modifiers.contains(KeyModifiers::ALT)
+            && !self.covered()
+            && self.search.is_none()
+        {
+            let code = if key.code == KeyCode::Char('p') {
+                KeyCode::Up
+            } else {
+                KeyCode::Down
+            };
+            key = KeyEvent::new(code, key.modifiers - KeyModifiers::CONTROL);
+            control = false;
+        }
         if self.agent_list.focused && !control && !self.covered() {
             return self.list_key(key);
         }
@@ -865,6 +879,10 @@ impl App {
         }
         if control && key.code == KeyCode::Char('o') && !typing_reason {
             self.todos.toggle();
+            return Action::None;
+        }
+        if control && key.code == KeyCode::Char('l') && !typing_reason {
+            self.reprint = true;
             return Action::None;
         }
         if key.code == KeyCode::Esc && self.approval.is_none() && self.close_palette() {
@@ -913,11 +931,11 @@ impl App {
             self.last_esc = Some(now);
             return Action::None;
         }
-        if control && key.code == KeyCode::Char('d') {
-            return if !self.running && self.input.is_empty() {
-                Action::Quit
-            } else {
+        if control && key.code == KeyCode::Char('d') && self.input.is_empty() {
+            return if self.running {
                 Action::None
+            } else {
+                Action::Quit
             };
         }
         let action = self.message_key(key);
@@ -2014,6 +2032,68 @@ mod tests {
         assert_eq!(app.input.text(), "draft");
         press(&mut app, KeyCode::Down);
         assert_eq!(app.input.text(), "draft");
+    }
+
+    #[test]
+    fn ctrl_d_deletes_with_text_and_quits_only_on_an_empty_idle_input() {
+        let mut app = app();
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(ctrl(&mut app, 'd'), Action::None);
+        assert_eq!(app.input.text(), "ac");
+        app.input.take();
+        assert_eq!(ctrl(&mut app, 'd'), Action::Quit);
+        app.running = true;
+        assert_eq!(ctrl(&mut app, 'd'), Action::None);
+    }
+
+    #[test]
+    fn ctrl_p_and_ctrl_n_walk_the_history_like_up_and_down() {
+        let mut app = app();
+        app.history.push("first");
+        app.history.push("second");
+        type_text(&mut app, "draft");
+        ctrl(&mut app, 'p');
+        assert_eq!(app.input.text(), "second");
+        ctrl(&mut app, 'p');
+        assert_eq!(app.input.text(), "first");
+        ctrl(&mut app, 'n');
+        assert_eq!(app.input.text(), "second");
+        ctrl(&mut app, 'n');
+        assert_eq!(app.input.text(), "draft");
+    }
+
+    #[test]
+    fn ctrl_n_and_ctrl_p_move_the_focused_agent_list_selection() {
+        let mut app = with_agent_list();
+        press(&mut app, KeyCode::Down);
+        assert!(app.agent_list.focused);
+        ctrl(&mut app, 'n');
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        assert_eq!(app.viewing.as_deref(), Some("agent-1"));
+        press(&mut app, KeyCode::Down);
+        ctrl(&mut app, 'n');
+        ctrl(&mut app, 'p');
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.viewing, None);
+    }
+
+    #[test]
+    fn ctrl_l_reprints_the_screen() {
+        let mut app = app();
+        app.reprint = false;
+        assert_eq!(ctrl(&mut app, 'l'), Action::None);
+        assert!(app.reprint);
+    }
+
+    #[test]
+    fn ctrl_left_moves_the_message_box_cursor_by_word() {
+        let mut app = app();
+        type_text(&mut app, "one two three");
+        app.handle_input(key(KeyCode::Left, KeyModifiers::CONTROL));
+        app.handle_input(key(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(app.input.cursor(), 4);
     }
 
     #[test]

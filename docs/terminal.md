@@ -71,7 +71,7 @@ set -s extended-keys on
 set -as terminal-features 'xterm*:extkeys'
 ```
 
-and restart the tmux server. Alt+Enter, Ctrl+J and `\` then Enter need no setting.
+and restart the tmux server. Alt+Enter, Ctrl+J, `\` then Enter and Ctrl/Alt with the arrow keys need no setting.
 
 `/copy` sends the reply with an OSC 52 escape. tmux forwards it to the outer terminal under its
 default `set-clipboard external`; if you changed that to `off`, set it back:
@@ -83,9 +83,15 @@ set -g set-clipboard external
 The outer terminal must itself accept OSC 52 clipboard writes. See
 [the commands table](tui.md#commands) for `/copy`.
 
+## Word movement and deletion
+
+Most Unix terminals send Ctrl-Backspace as Ctrl-H, which Fontaine treats as Backspace, so there it
+deletes one character. Use Alt-Backspace or Ctrl-W to delete a word; Alt needs
+[Option as Meta](#option-as-meta-on-macos) on macOS.
+
 ## Option as Meta on macOS
 
-Alt+Enter arrives as `ESC` plus Enter only when the terminal sends Option as Meta:
+Alt+Enter, Alt-B, Alt-F and Alt-D arrive as `ESC` plus the key only when the terminal sends Option as Meta:
 
 - **Terminal.app**: Settings, Profiles, Keyboard, tick "Use Option as Meta key".
 - **iTerm2**: Settings, Profiles, Keys, General, set "Left Option key" (and "Right Option key" if

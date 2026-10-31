@@ -798,6 +798,9 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-30: Ended agents leave the list below the status line as in Claude Code (done at once, others after 30 s) and stay reachable from the agents panel, which replaces its flat detail view with Enter on an agent to view it (#321, fixes #299).
 - 2026-10-30: Closing the agents panel after the screen committed rows under it reprints the transcript on screen (fixes #296); approvals and the other dialogs keep their behavior, since a reprint erases terminal history and would run after every routine prompt (#321).
 - 2026-10-30: The transcript renders a bounded markdown subset for assistant replies (bold, italic, inline code, headings, bullet and numbered lists, fenced code, aligned and wrapped tables) with `pulldown-cmark`; anything else shows as its source lines, `/copy` and `/export` give the stored source, and line mode stays raw because the terminal does its own wrapping there. A streaming reply is committed to scrollback a whole block at a time, so a paragraph shows as source until it ends; a soft break keeps the source line break instead of reflowing (#328).
+- 2026-10-31: Ctrl-W deletes back to the previous whitespace while the other word shortcuts use alphanumeric words, matching Claude Code (#257).
+- 2026-10-31: The prompt box kill buffer holds a single entry with no Alt-Y paste cycle (Claude Code has one), and consecutive kills replace it rather than join; one entry covers the common case (#257).
+- 2026-10-31: No Ctrl-_ undo in the prompt box (Claude Code's undo key); it needs its own history design (#257).
 
 ## Open Questions
 

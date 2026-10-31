@@ -101,7 +101,7 @@ below the bar.
 | Key | Action |
 |---|---|
 | Enter | Submit. Alt+Enter, Shift+Enter or Ctrl+J insert a newline; a trailing `\` before Enter also continues the line. Which of these your terminal sends, and how to bind Shift+Enter, is in [Terminal setup](terminal.md#new-lines-in-the-message-box). While a turn runs, a message is queued (see [Messages during a turn](#messages-during-a-turn)). With a `@` list open, Enter completes instead; with the [slash-command menu](#slash-command-menu) open on a bare `/name`, it runs the selected command; after other text, it sends the message. |
-| Up, Down | With the `@` list or the slash-command menu open, move the selection. Otherwise, on the first or last line of the input, recall older or newer submitted inputs; elsewhere they move the cursor. With messages queued, Up takes them back into the input. Down on the last line, when the input is not walking the history and the [agent list](#the-agent-list-and-the-agent-view) shows, moves the keyboard into the list: Up and Down select a row, Up on the first row gives the keyboard back. |
+| Up, Down, Ctrl-P, Ctrl-N | With the `@` list or the slash-command menu open, move the selection. Otherwise, on the first or last line of the input, recall older or newer submitted inputs; elsewhere they move the cursor. With messages queued, Up takes them back into the input. Down on the last line, when the input is not walking the history and the [agent list](#the-agent-list-and-the-agent-view) shows, moves the keyboard into the list: Up and Down select a row, Up on the first row gives the keyboard back. |
 | Enter, x, Esc in the agent list | Enter shows the selected row's transcript (`main` or a subagent). `x` stops a running subagent, or hides an ended one; on `main` or the agent on screen it is typed into the input. Esc gives the keyboard back to the input, and any printable key does too and is typed there. |
 | Ctrl-R | Search the prompt history; see [History](#history). |
 | Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. In the menu it first extends the name to what all the listed commands share. |
@@ -109,9 +109,14 @@ below the bar.
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. Interrupting never stops a subagent: it keeps running and reports later, and the agents panel stops one. While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
 | Esc twice in quick succession when idle with an empty input | Opens the `/rewind` picker; see [Checkpoints and /rewind](checkpoints.md). Any other meaning of Esc above wins first. Off while a subagent's transcript is on screen. |
-| Ctrl-C, or Ctrl-D on an empty input, when idle | Quit. |
+| Ctrl-C, or Ctrl-D on an empty input, when idle | Quit. With text in the input, Ctrl-D deletes the character under the cursor. |
 | PageUp, PageDown | Scroll the command or diff in an open approval prompt. |
-| Arrows, Home, End, Backspace, Delete, Ctrl-A/E/U/K/W/B/F | Edit the input. |
+| Arrows, Home, End, Backspace, Delete, Ctrl-A/E/B/F/H/D | Move by character or line and delete a character. Ctrl-H is Backspace, Ctrl-D is Delete. |
+| Ctrl-Left, Ctrl-Right, Alt-Left, Alt-Right, Alt-B, Alt-F | Move by word. A word is a run of letters and digits, so `/`, `.` and `_` separate words. |
+| Alt-Backspace, Ctrl-Backspace, Alt-D, Ctrl-Delete, Ctrl-W | Delete the previous word, or with Alt-D and Ctrl-Delete the next one. Ctrl-W deletes back to the previous whitespace, so a path goes in one piece. See [Terminal setup](terminal.md#word-movement-and-deletion) for Ctrl-Backspace. |
+| Ctrl-Home, Ctrl-End | Jump to the start or end of the whole input; Home and End stay on the current line. |
+| Ctrl-U, Ctrl-K, Ctrl-Y | Delete to the start or end of the line, and paste the last deleted text back. One entry is kept, and it survives submitting. |
+| Ctrl-L | Redraw the screen from the transcript, keeping the conversation. |
 | Ctrl-T | Open or close the [agents panel](#the-agents-panel), even over an approval prompt. Enter on an agent row there shows its transcript. |
 | Ctrl-O | Expand or collapse the [task list](#the-task-panel). Ignored while the agents panel is open. |
 | `/` at the start of the input or after a space | Opens the [slash-command menu](#slash-command-menu). |
@@ -178,6 +183,7 @@ history then lasts for the session only.
 
 - Up on the first line of the input shows older entries, Down on the last line shows newer ones,
   and going past the newest restores what you had typed. Editing a recalled entry stops the walk.
+  Ctrl-P and Ctrl-N do the same as Up and Down.
 - Ctrl-R opens a search above the input. Typing narrows the match (case-insensitive), Ctrl-R again
   moves to the next older match, Enter or Tab put the match in the input without sending it, and Esc
   cancels.
