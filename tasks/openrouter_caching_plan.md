@@ -77,7 +77,8 @@ as-is); the OpenRouter `Connected` builds the conversation completion with `Conv
 `guardian_completion` with `StaticPrefix` scope. `encode` sets `request.options.cache` and `request.options.cache_key` when the
 request does not already carry them, then delegates to the inner wire; every other `Wire` method
 delegates. It is generic over the inner `Wire<Op = Completion>` so another Chat-wire kind can adopt
-it later without a change here.
+it later without a change here; the guardian-scope body rewrite (Design 3) additionally needs
+`W: Wire<Payload = Encoded>`, since it parses the encoded `Body::Bytes` JSON and rewrites it.
 
 - `CacheRetention`: `Short` for `cache_ttl = "5m"`, `Long` for `"1h"`, never `CacheRetention::None`
   (rig treats `None` on an automatic upstream as unsupported too); `options.cache` is left unset when
@@ -95,13 +96,13 @@ it later without a change here.
 The main-agent scope takes rig's top-level automatic `cache_control`. For the guardian, whose last
 message is per-call and never reused, a top-level marker lands on that tail (write premium, no
 read), the opposite of the Anthropic `StaticPrefix` design. The first implementation step is a spike
-that records what rig's OPENROUTER Chat encoding emits for a system message, to choose, in order:
+that records what rig's OPENROUTER Chat encoding emits for a system message. rig's openai provider
+maps `cache_control` only at the top level, so it cannot express a per-block breakpoint. The design:
+`CacheWire::encode` (the wrapper owns the encoded body) parses the encoded `Body::Bytes` JSON and adds
+`cache_control` to the system message's content block for the guardian scope, sending no top-level
+marker. The spike only settles the system-content shape (string vs. block array) and the fallback:
 
-1. rig can express a per-block breakpoint on the system content for the guardian: use it, no tail
-   marker.
-2. It cannot: `CacheWire::encode` (the wrapper owns the encoded body) adds `cache_control` to the
-   system message's content block itself for the guardian scope and sends no top-level marker.
-3. Neither works cheaply: the guardian scope sends no marker and the conversation scope still
+1. The body rewrite is not workable cheaply: the guardian scope sends no marker and the conversation scope still
    caches; the gap is recorded in Decisions and docs. A top-level marker on the guardian tail is not
    an acceptable fallback.
 
@@ -113,7 +114,8 @@ that records what rig's OPENROUTER Chat encoding emits for a system message, to 
 Rename-free: add `cache_read_input_tokens` and `cache_creation_input_tokens` (`u64`) to
 `GuardianUsage`; every `add_*_usage` that sums a `Usage` (`add_guardian_usage`, `add_goal_usage`,
 `add_subagent_usage`) adds them through one shared helper on `GuardianUsage` (`fn add(&mut self, &Usage)`)
-instead of three copies of the same four lines. Headless `result_event` emits the two fields for
+instead of three copies of the same four lines. The helper covers only the token and cost sums;
+`agents.debit` and `add_guardian_usage`'s per-agent second application stay at each call site. Headless `result_event` emits the two fields for
 `guardian`, `subagents` and `goal`, and `docs/schemas/headless-v1.schema.json` makes
 `usage_bucket` carry them (`main_usage_bucket` collapses into `usage_bucket`, since every bucket now
 has the fields; safe because `result_event` is the only emitter and neither def sets
@@ -123,20 +125,25 @@ change for consumers, called out in the CHANGELOG.
 ### 5. Minimum-cacheable-length notice
 
 A pure function `min_cacheable_tokens(kind, model) -> Option<u32>` (in `fontaine-core`, next to the
-provider code) matches the model id (after stripping an OpenRouter `anthropic/` prefix) against the
+provider code) matches the model id against the
 table from the issue: 512 for Claude 5.x, 1024 for Sonnet 4.x, 2048 for Haiku 3.5 / Opus 4.7,
-4096 for Opus 4.5/4.6 and Haiku 4.5; `None` for unknown or non-Anthropic ids. `build_guardian_telling`
-emits one `approver.notice` when the guardian model is ready, its account has prompt caching
-enabled, and the minimum exceeds a named constant `GUARDIAN_PREFIX_TOKENS` (1500, the low end of the
-~1.5-2k prefix), saying the minimum, that cache markers on this guardian are a no-op below it, and
-that a lower-minimum model is the fix. The table is data in one place, so a new model is one line.
+4096 for Opus 4.5/4.6 and Haiku 4.5; `None` for unknown or non-Anthropic ids. Normalization: strip an
+OpenRouter `anthropic/` prefix and map '.' to '-' (OpenRouter ids are dotted, e.g.
+`anthropic/claude-haiku-4.5`; direct ids are dashed), and match both `haiku-3-5` and `3-5-haiku`
+orderings. `build_guardian_telling` (which already receives `profile`) emits one `approver.notice`
+when the guardian model is ready, its account has prompt caching enabled, and the minimum exceeds a
+per-profile prefix-size constant (about 1500 tokens for `minimal`, about 3000 for the full profile,
+matching the sizes of `guardian_minimal.md` and `guardian_prompt.md`), saying the minimum, that cache markers on this guardian are a no-op below it, and
+that a lower-minimum model is the fix. The notice is emitted only when an approver is present (none when `approver` is `None`), once per
+guardian rebuild; a model switch re-emitting it is acceptable. The table is data in one place, so a
+new model is one line.
 The caching-enabled check uses `PromptCaching::of(account)` for kinds where
 `accepts_prompt_caching()` is true.
 
 ## Implementation Steps
 
 1. Spike (Design 3): wiremock a rig OPENROUTER Chat request with `.cache(Short)` and `.cache_key(..)`
-   and record the exact body; settle the guardian-scope option and the `Long`-on-automatic behavior.
+   and record the exact body; settle the system-content shape, the fallback, and the `Long`-on-automatic behavior.
 2. `providers/cache_wire.rs`: `CacheWire<W>` with unit tests on the encoded body (no network).
 3. `providers/openrouter.rs` + registry line in `providers/mod.rs`; `config.rs` doc comments for
    `prompt_caching` / `cache_ttl` name `openrouter`.
@@ -151,7 +158,7 @@ The caching-enabled check uses `PromptCaching::of(account)` for kinds where
 - `rust/fontaine-core/src/config.rs` (doc comments), `gate.rs`, `agent/setup.rs`
 - `rust/fontaine/src/headless.rs`, `docs/schemas/headless-v1.schema.json`
 - `rust/fontaine-core/tests/account_session.rs`, `tests/providers.rs`
-- `docs/configuration.md`, `docs/guardian.md`, `docs/headless.md`, `docs/architecture.md`, `README.md` (provider list)
+- `docs/configuration.md` (also :161-162), `docs/guardian.md` (also :236-241), `docs/headless.md` (also ~:204), `docs/architecture.md`, `docs/telemetry.md` (:129), `README.md` (provider list, :4, :68)
 - `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
 
 ## Decisions
@@ -170,6 +177,10 @@ The caching-enabled check uses `PromptCaching::of(account)` for kinds where
   the main model"; both go stale. Also check `docs/tui.md` and `docs/evals.md` for provider-kind lists.
 - `docs/headless.md`: `usage.guardian` / `subagents` / `goal` cache fields; schema file updated.
 - `README.md`: provider list if it names kinds.
+- Stale spots to fix: `docs/configuration.md:161-162` ("anthropic and opencode-go only"),
+  `docs/guardian.md:236-241` (says caching is on by default for anthropic), `docs/headless.md:~204`
+  (says only main has cache fields), `docs/telemetry.md:129` (kinds list), `README.md:4` and `:68`
+  (name OpenRouter as an OpenAI-compatible endpoint).
 
 ## Testing Strategy
 
@@ -190,9 +201,11 @@ The caching-enabled check uses `PromptCaching::of(account)` for kinds where
   (`headless.rs:964`) makes one `result_event` call with distinct per-bucket values and asserts all
   four buckets; the JSON validates against the updated schema
   (existing schema test, if present, otherwise one assertion on the new required fields).
-- Notice: `min_cacheable_tokens` table cases (each tier, `anthropic/`-prefixed ids, unknown ids),
-  and `build_guardian_telling` notices once for a 4096-minimum model with caching on, not for a
-  512-minimum model, not with caching off.
+- Notice: `min_cacheable_tokens` table cases (each tier, `anthropic/`-prefixed ids, dotted ids such as
+  `anthropic/claude-haiku-4.5` and `anthropic/claude-3.5-haiku`, both `haiku-3-5` / `3-5-haiku`
+  orderings, unknown ids), and `build_guardian_telling` notices once for a 4096-minimum model with
+  caching on (both profiles), for a 2048-minimum model on `full` but not `minimal`, not for a
+  512-minimum model, not with caching off, and not without an approver.
 - Pinned bug: the live observation (zero cache tokens through OpenRouter) is pinned by the wiremock
   test above, which fails on the old `openai-compatible` path.
 
