@@ -455,6 +455,17 @@ fn every_outcome_is_logged_as_one_json_line_and_noticed() {
     assert!(updates[2].notice().to_string().contains("offline"));
 }
 
+/// A `file://` URL git accepts on every OS: canonicalized Windows paths carry a `\\?\` prefix and
+/// backslashes, and need a third slash before the drive letter.
+fn file_url(repo: &Path) -> String {
+    let path = repo.to_string_lossy().replace('\\', "/");
+    let path = path.trim_start_matches("//?/");
+    format!(
+        "file://{}{path}",
+        if path.starts_with('/') { "" } else { "/" }
+    )
+}
+
 fn git(cwd: &Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
         .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
@@ -504,7 +515,7 @@ fn a_sha_pinned_plugin_moves_only_when_the_catalog_sha_differs() {
     let repo = root.join("plugin-repo");
     std::fs::create_dir_all(&repo).unwrap();
     let first = commit_plugin(&repo, "First.");
-    let url = format!("file://{}", repo.display());
+    let url = file_url(&repo);
 
     let src = root.join("src");
     write(
@@ -598,7 +609,7 @@ fn an_up_to_date_git_marketplace_is_not_cloned() {
     let head = git(&repo, &["rev-parse", "HEAD"]);
     let entry = MarketplaceEntry {
         name: "team".into(),
-        url: format!("file://{}", repo.display()),
+        url: file_url(&repo),
         pin: head.clone(),
         ..Default::default()
     };
@@ -636,7 +647,7 @@ fn a_sha_pinned_or_held_plugin_revision_is_recognised_without_cloning() {
         checkout: &checkout,
         pin: "m",
     };
-    let url = format!("file://{}", repo.display());
+    let url = file_url(&repo);
 
     // A catalog sha equal to the installed pin needs no network at all: the repository does not
     // even exist.
@@ -684,7 +695,7 @@ fn a_sha_pinned_or_held_plugin_revision_is_recognised_without_cloning() {
     let branch = git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
     let by_ref = CatalogPlugin {
         source: CatalogSource::Url {
-            url: format!("file://{}", repo.display()),
+            url: file_url(&repo),
             r#ref: Some(branch),
             sha: None,
         },
