@@ -15,7 +15,7 @@ changed, so `/copy`, `/export` and the plain line-mode renderer keep exact sourc
 
 - `rust/fontaine-tui/src/transcript.rs`: `Entry::Assistant { text, streaming }`. `assistant_rows`
   (line ~681) wraps source lines with `input::wrap` and returns `(Line, char_offset_past_row)`.
-  `entry_lines` (~717) renders a settled reply from a `skip` char offset.
+  `entry_lines` (~702) renders a reply (settled or streaming) from a `skip` char offset.
 - Streaming: `Transcript` tracks `committed_chars` into `entries[committed]`. `Cut::{Rows, Budget, Lines}`
   (~575) decide how far a streaming reply is written to scrollback; `Rows`/`Budget` use
   `assistant_rows` and always keep the last row live because it may still grow. `commit_within`
@@ -43,8 +43,8 @@ pub(crate) fn rows(text: &str, width: usize, glyphs: Glyphs) -> Vec<(Line<'stati
 pub(crate) fn stable_end(text: &str) -> usize;
 ```
 
-**Parsing.** `pulldown-cmark` (pinned exactly like the rig crates; run `cargo deny check`) with only
-`ENABLE_TABLES` enabled. `into_offset_iter` gives source ranges, so
+**Parsing.** `pulldown-cmark` (pinned exactly like the rig crates) with default features off;
+`Options::ENABLE_TABLES` is set at runtime. `into_offset_iter` gives source ranges, so
 each top-level block knows the source char range it came from. Supported blocks: paragraph, heading,
 fenced code, bullet/ordered list (nested by indent), table. Supported inline: strong, emphasis, code,
 soft/hard break; link text renders as its text. **Soundness rule:** any block kind not in that list
@@ -53,17 +53,17 @@ exactly as today.
 
 **Styling** uses modifiers only, no new theme tokens (works in every theme): strong `BOLD`, emphasis
 `ITALIC`, inline code `BOLD` (the existing precedent for backtick spans), heading `BOLD` (h1 also
-`UNDERLINED`), fenced code lines `DIM` with a two-space indent, lists with `• `/`1. ` markers (ASCII glyph
-set: `- `), continuation lines indented under the text.
+`UNDERLINED`), fenced code lines `DIM` with a two-space indent, lists with `• `/`1. ` markers (a new `bullet`
+glyph: `• `, ASCII `- `), continuation lines indented under the text.
 
-**Wrapping styled text.** `wrap_spans(Vec<Span>, width) -> Vec<Vec<Span>>` word-wraps with the same
-break rules and width measure as `input::wrap` (reuse its helper for breaking an over-long word), keeping
-each span's style across rows. Used by paragraphs, list items, headings and table cells.
+**Wrapping styled text.** `wrap_spans(Vec<Span>, width) -> Vec<Vec<Span>>` word-wraps by char count and
+hard-splits over-long words by chars like `input::wrap`, keeping each span's style across rows. Wide
+(CJK) glyphs count as one char, so such tables misalign; that is accepted. Used by paragraphs, list items, headings and table cells.
 
 **Tables.** Column natural width = widest cell. If the sum plus separators exceeds `width`, shrink the
 widest columns first down to a floor of 4 columns, wrapping cell text inside its column. If the floors
 do not fit, the table renders as raw wrapped source lines. Header is bold, followed by a rule row; column
-alignment from the separator row (`:--`, `--:`, `:-:`). Separator glyphs come from two new `Glyphs`
+alignment from the separator row (`:--`, `--:`, `:-:`). Separator glyphs come from new `Glyphs`
 fields (`col_sep`, `rule`: `│`/`─` and ASCII `|`/`-`).
 
 ### Row to source-offset mapping
@@ -74,6 +74,8 @@ are not exact. The rule that keeps scrollback correct:
 - **A block's rows are released atomically.** Every row of a block carries the block's end offset (past
   its trailing blank lines). The commit cursor therefore only ever stops on a block boundary, and a
   resume from `committed_chars` re-parses from a block start. Width changes just re-layout from there.
+  The budget path (`Cut::Budget` / `commit_within`) releases whole blocks only: it emits every row of
+  the first reachable block, overshooting the budget as entries already do, never a partial block.
 - **Fenced code lines are row-exact**, like plain text, so an open fence is renderable (and committable)
   line by line without waiting for its closing fence.
 - **The plain tail keeps today's exact offsets.**
@@ -85,11 +87,12 @@ the opener's character and be at least as long), plus, when inside an open fence
 complete line. A table ends at a blank line, so a half-arrived table row is always in the tail. A
 non-streaming entry (`streaming: false`) is all stable.
 
-`assistant_rows(text, from, width)` gains a `streaming: bool` parameter (callers in `Cut::rows`/`end`,
-`commit`, `entry_lines`, `live_lines` already know the entry): rows = `markdown::rows` of the stable
+`assistant_rows(text, from, width)` gains a `streaming: bool` parameter (`entry_lines` takes it from the entry; `Cut::rows`/`end` are
+reached only for streaming entries and pass `true`; settled-entry callers (`take_retired`,
+`commit_all`, `commit_within` for settled entries) pass `false`; `live_lines` goes through `entry_lines`): rows = `markdown::rows` of the stable
 prefix after `from`, then plain rows (today's code) of the tail. The "keep the last row live" pop applies
 to the tail only; when the tail is empty nothing is popped, since a stable block never grows. Because
-the stable prefix is re-rendered per frame, no cache is kept.
+the stable prefix is re-rendered per frame, no cache is kept. A paragraph shows raw until it ends.
 
 `commit_within`'s over-budget release may commit plain tail rows (exact offsets) as it does today. The
 remainder of that paragraph is then rendered as markdown from the cut, so a span straddling the cut shows
@@ -100,14 +103,16 @@ Line mode (`Cut::Lines`, `linear.rs`) is untouched: it prints source lines.
 
 ## Implementation Steps
 
-1. Add `pulldown-cmark` to `rust/Cargo.toml` `[workspace.dependencies]` (exact pin) and to
-   `fontaine-tui`; `cargo deny check`.
-2. `theme.rs`: add `col_sep`/`rule` to `Glyphs` (UNICODE and ASCII sets).
+1. Add `pulldown-cmark = { version = "=0.13.6", default-features = false }` to `rust/Cargo.toml`
+   `[workspace.dependencies]` and to `fontaine-tui`; `cargo deny check`.
+2. `theme.rs`: add `bullet`/`col_sep`/`rule` (three new fields) to `Glyphs` (UNICODE and ASCII sets).
 3. `markdown.rs`: `wrap_spans`, inline flattening, blocks other than tables, `stable_end`, `rows`, with
    the unsupported-block fallback.
 4. `markdown.rs`: tables (widths, shrink, wrap, alignment, raw fallback).
-5. `transcript.rs`: thread `streaming` through `assistant_rows`, `Cut::rows/end`, `commit`,
-   `commit_within`, `entry_lines`, `live_lines`; plain-tail pop rule.
+5. `transcript.rs`: thread `streaming` through `assistant_rows`: `entry_lines` takes it from the entry,
+   `Cut::rows/end` pass `true`, settled-entry callers (`take_retired`, `commit_all`, `commit_within`)
+   pass `false`; `live_lines` is unchanged (it calls `entry_lines`); plain-tail pop rule; whole-block
+   release in `Cut::Budget`/`commit_within`.
 6. `examples/live_area.rs`: add a markdown scenario (streamed reply with a table and a fence) for the
    tmux check.
 7. Docs, CHANGELOG, plan Decisions.
@@ -121,15 +126,9 @@ Line mode (`Cut::Lines`, `linear.rs`) is untouched: it prints source lines.
 
 ## Trade-offs
 
-- **`pulldown-cmark` vs a hand-written subset parser:** hand parsing inline emphasis and tables
-  correctly (nesting, escapes, `*` vs `_` flanking) is where bugs live; the crate is small, MIT and
-  event-based, and the issue suggests it.
 - **Atomic block release vs exact mid-block offsets:** exact offsets cannot exist for re-flowed text;
   atomic release makes the cursor a block boundary at the cost of a block possibly exceeding a row
   budget (the existing "entries commit whole" precedent).
-- **Modifier-only styling vs new theme tokens:** keeps all themes and `NO_COLOR`-like setups working.
-- **Stable boundary = blank line:** simpler than per-construct completion detection and covers tables;
-  costs that a paragraph shows raw until it ends.
 
 ## Documentation
 
@@ -152,8 +151,8 @@ Unit tests in `markdown.rs` and `transcript.rs` (no live APIs):
 - Streaming: extend `streamed_commits_equal_the_whole_transcript` with a markdown sample over many chunk
   sizes and widths (commits through `Cut::Rows` equal the one-shot render); the width-change test with a
   table mid-stream drops and repeats nothing; a stable-prefix commit never pops a block row; the
-  over-budget release still advances by exactly the rows it emits.
-- vt100 harness (`screen.rs`): a streamed reply with a table commits to scrollback once, not repeated.
+  over-budget release of tail and fence rows advances by exactly the rows it emits; a tall block under a
+  small budget is emitted whole, none lost.
 
 ## Manual Verification
 
@@ -166,11 +165,3 @@ Layout bugs in live area/scrollback must be reproduced in real tmux (`tasks/desi
    order, and no raw `**` or pipe-table source remains for supported constructs.
 
 Not automated because the behavior under test is the terminal's handling of the escape stream.
-
-## Open Questions
-
-- Which `pulldown-cmark` version to pin (latest stable that passes `cargo deny check`); decide at
-  implementation time.
-- Display width of wide (CJK) characters in table columns: use whatever measure `input::wrap` uses so
-  tables and paragraphs agree; if it counts chars, wide-glyph tables misalign and that is accepted for
-  now.
