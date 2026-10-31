@@ -102,7 +102,10 @@ wants to diagnose. So the choke point becomes kill-aware:
 `KillSwitches { inner: Mutex<HashMap<String, watch::Receiver<bool>>> }` with `register(agent,
 receiver)` and a non-awaiting `killed(agent) -> bool`. Core creates one per session and
 hands it to both the child runner (which registers each child's receiver at spawn) and the
-tool registry. The root registers nothing and is unaffected.
+tool registry. The root registers nothing and is unaffected. The session
+instance also reaches the
+separate `Guard` that wraps MCP tools — `connect_mcp` builds it directly rather than
+through the registry, so it takes the same `Arc` by a different path (step 6).
 
 **The select in `gated`.** `Guard` gains `kills: Option<Arc<KillSwitches>>`. In `gated`
 (`guarded.rs`), once the agent is known:
@@ -155,18 +158,28 @@ interrupt is untouched.
    kill flag is set, report `ChildStatus::Killed` for any settle outcome.
 5. **`rust/fontaine-core/src/tools.rs`** — accept the session `Arc<KillSwitches>` in
    `RegistryParams` and pass it into each `Guard`.
-6. **Tests** (see Testing Strategy).
-7. **Docs** — `CHANGELOG.md` (`Fixed` under `[Unreleased]`); `docs/agents.md` (what kill
+6. **`rust/fontaine-core/src/agent/mcp.rs`** — `connect_mcp` builds its own `Guard`
+   (`mcp.rs:141-146`, feeding `GuardedSink` → `guard_callback`), so step 5 alone leaves
+   every MCP call without a kill switch; adding `kills` to `Guard` also breaks this
+   struct literal, which must be touched to compile regardless. Store the session
+   `Arc<KillSwitches>` on `AgentRuntime` (created in `AgentRuntime::new` alongside
+   `pipeline`/`results`, so the same instance also feeds `subagent_support` and
+   `registry()`) and set `kills: self.kills.clone()` in the literal. The instance reaches
+   the runtime through `AgentSetup` — built in `fontaine/src/lib.rs`, driven by the TUI —
+   and `connect_mcp` runs from `fontaine-tui/src/ui/mcp.rs` and `fontaine/src/lib.rs`,
+   a different path from the `registry()` call site; check it too.
+7. **Tests** (see Testing Strategy).
+8. **Docs** — `CHANGELOG.md` (`Fixed` under `[Unreleased]`); `docs/agents.md` (what kill
    keeps and when); `docs/architecture.md` (session layout: a killed agent's log holds its
    committed messages); the plan's Decisions below.
-8. **`tasks/fontaine_harness_plan.md`** — a dated Decisions line under the subagents
+9. **`tasks/fontaine_harness_plan.md`** — a dated Decisions line under the `Agents`
    subject: killed subagents persist their partial transcript; graceful settle + grace +
    choke-point kill, no config gate.
 
 ## Files to Modify
 
 - `rust/fontaine-tools/src/kills.rs` (new), `src/guarded.rs`, `src/lib.rs`
-- `rust/fontaine-core/src/child_runner.rs`, `src/tools.rs`, `src/agent.rs` /
+- `rust/fontaine-core/src/child_runner.rs`, `src/tools.rs`, `src/agent/mcp.rs`, `src/agent.rs` /
   `src/agent/setup.rs` (threading `KillSwitches`)
 - `rust/fontaine-core/tests/agent_pipeline.rs` (+ shared harness as needed)
 - `rust/fontaine-tools/tests/guarded.rs` (new or existing test file)
