@@ -113,20 +113,40 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     /// `/export [path]`: writes the conversation as Markdown, to `fontaine-<id>.md` in the launch
-    /// directory unless a path is given.
+    /// directory unless a path is given. With subagents the target is a folder, `fontaine-<id>/`,
+    /// holding `main.md` and one `<agent-id>.md` per subagent.
     pub(crate) async fn export(&mut self, runtime: &AgentRuntime, launch_dir: &Path, path: &str) {
         let path = path.trim_matches(|c| c == '"' || c == '\'');
+        let agents = fontaine_core::export::subagents(&runtime.session, runtime.state.agents());
         let path: PathBuf = if path.is_empty() {
             let id = &runtime.session.id;
-            launch_dir.join(format!("fontaine-{}.md", id.get(..8).unwrap_or(id)))
+            let base = format!("fontaine-{}", id.get(..8).unwrap_or(id));
+            if agents.is_empty() {
+                launch_dir.join(format!("{base}.md"))
+            } else {
+                launch_dir.join(base)
+            }
         } else {
             launch_dir.join(path)
         };
-        match fontaine_core::export::export_session(&runtime.session, &path).await {
-            Ok(()) => self
+        match fontaine_core::export::export_session(&runtime.session, runtime.state.agents(), &path)
+            .await
+        {
+            Ok(()) if agents.is_empty() => self
                 .app
                 .transcript
                 .notice(format!("exported the conversation to {}", path.display())),
+            Ok(()) => {
+                let transcripts = if agents.len() == 1 {
+                    "1 subagent transcript".to_string()
+                } else {
+                    format!("{} subagent transcripts", agents.len())
+                };
+                self.app.transcript.notice(format!(
+                    "exported the session and {transcripts} to {}",
+                    path.display()
+                ));
+            }
             Err(e) => self.app.transcript.error(format!("/export: {}", chain(&e))),
         }
     }

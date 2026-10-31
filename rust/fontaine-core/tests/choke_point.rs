@@ -109,7 +109,7 @@ fn extension() -> ExtensionTools {
 }
 
 fn extension_asking(ask_user: AskUserTool) -> ExtensionTools {
-    let tree = Arc::new(AgentTree::new(Limits::default()));
+    let tree = Arc::new(AgentTree::new(Limits::default(), 1));
     ExtensionTools(vec![
         ExtensionTool::new(AgentTool {
             tree: tree.clone(),

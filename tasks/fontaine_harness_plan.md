@@ -679,6 +679,10 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-27: Rewind points are limited to the current `/clear` epoch; reason: a `/clear` resets the conversation the checkpoints index, so earlier turns cannot be rewound to coherently (#12).
 - 2026-10-27: The auto-memory directory is excluded from pre-image capture and from restore, so a code rewind never touches memory notes; reason: memory is persistent state across sessions, not workspace edits to undo (#12).
 - 2026-10-27: `[checkpoints]` is user-scope only, stricter than the user-or-CLI scope of comparable keys; reason: it sets what is kept on disk and size caps, and a project file or flag has no business changing that (#12).
+- 2026-11-21: Every subagent's conversation persists for the session's life as a per-agent log (`logs/agent-<n>.jsonl`) in the session store, and agent ids are stable across `--resume` via a counter derived from the ledger's `spawned` records — no `agents.json`, no UUIDs; this supersedes the id-instability note at `tasks/completed/task_list_tool_plan.md:169` (#300).
+- 2026-11-21: `/export` of a session with subagents writes a folder (`fontaine-<id8>/` with `main.md` and one `<agent-id>.md` per subagent, merged from the ledger as spine plus the live tree); a session without subagents keeps the single-file export byte for byte. Zip and single-file layouts were offered and rejected (#300).
+- 2026-11-21: A running subagent is exported rather than refused; its file holds completed runs only, because rig saves a log when a run ends, and the index row says so (#300).
+- 2026-11-21: Root rewind and `/clear` do not touch agent logs, and the ledger is never rewound; `/export` lists every agent recorded in the ledger, including agents whose spawn turn was rewound away, with the transcript as per-agent evidence (#300).
 
 ### Tools
 

@@ -218,7 +218,7 @@ pub const BUILTINS: &[Builtin] = &[
         name: "export",
         aliases: &[],
         hint: Some("[path]"),
-        description: "write the conversation to a Markdown file",
+        description: "write the conversation to a Markdown file, or a folder with subagent transcripts",
         command: Command::Export,
     },
     Builtin {

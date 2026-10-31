@@ -320,10 +320,21 @@ not carry that state.
 
 `/export [<path>]` writes the conversation as Markdown. The default is `fontaine-<first 8 characters
 of the session id>.md` in the project directory (the launch directory, or `--cd`); a relative path is relative to it.
+When the session has subagents — live, or recorded in its ledger before a `--resume` — the target
+is a folder, `fontaine-<first 8 characters of the session id>/`, instead. The folder holds
+`main.md`, the root conversation with a `## Subagents` index after the session header, and one
+`<agent-id>.md` per subagent. The index lists every subagent the ledger recorded, oldest first:
+its id, type, parent and status, with a link to its transcript file. Each `<agent-id>.md` opens
+with the same identification and renders the subagent's conversation exactly like the root's. A
+subagent that is still running is exported rather than refused: its file holds its completed runs
+only (a log is saved when a run ends), and its index row says so. Subagents whose spawn turn was
+later rewound away are still listed: their transcripts stand as per-agent evidence, the way the
+ledger keeps the fact of their work.
 The text is the model's conversation, so after a compaction the summary stands where the older
 messages were (labelled as one), and after `/clear` or a `/rewind` only the conversation that remains is in it. A tool
-call is one line, and a tool result appears only as its length. The file is readable by you alone,
-since a transcript can hold secrets, and an existing file is an error: an export never overwrites.
+call is one line, and a tool result appears only as its length. Everything the export writes is
+readable by you alone, since a transcript can hold secrets, and an existing file or folder is an
+error: an export never overwrites.
 
 ## Commands
 
@@ -341,7 +352,7 @@ since a transcript can hold secrets, and an existing file is an error: an export
 | `/denied` | Lists the calls the guardian denied this session, with their rule label and explanation. Up and Down select; `r` approves the selected call once, as if you had approved it at a prompt, and tells the agent on its next turn that it may retry exactly that call. The retry runs without asking the guardian, never enters the verdict cache and does not count toward the denial limits. The deterministic floor still runs first, so an `ask` rule or a critical path still prompts. Esc closes the list. |
 | `/exit`, `/quit` | Leave. |
 | `/expand [<n>]` | Prints tool call `n` in full (command, retained output, diff) as new transcript lines; the latest call without a number. `n` is the number in the card's `expand:` hint, counted from the start of the session. It is an error for a call that does not exist or that `/clear` removed. |
-| `/export [<path>]` | Writes the conversation to a Markdown file, owner-only, never over an existing file. See [Sessions](#sessions). |
+| `/export [<path>]` | Writes the conversation to a Markdown file, owner-only, never over an existing file; with subagents it is a folder — `main.md` plus one `<agent-id>.md` per subagent. See [Sessions](#sessions). |
 | `/goal [<condition> \| clear]` | Keeps working until the condition is met; see [Goals](#goals). Bare `/goal` shows the goal's status. |
 | `/guardian-disable` | Turns the guardian and the permission floor off for the rest of this session, after a confirmation. A warning chip stays in the status bar until `/guardian-enable`. Session-scoped only: it is never saved to settings, a project cannot turn it on, and subagents are never loosened by it. Intended as a development escape hatch. |
 | `/guardian-enable` | Turns the guardian and the permission floor back on for this session. |

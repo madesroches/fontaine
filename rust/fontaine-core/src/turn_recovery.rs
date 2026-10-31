@@ -29,12 +29,12 @@ pub(crate) async fn append_messages<S: AsyncStore + ?Sized>(
 /// conversation, and the retry primitive relies on the failed attempt being there.
 pub struct RecoveryHook<S> {
     store: S,
-    log: &'static str,
+    log: String,
     approver: Arc<dyn Approver>,
 }
 
 impl<S> RecoveryHook<S> {
-    pub fn new(store: S, log: &'static str, approver: Arc<dyn Approver>) -> RecoveryHook<S> {
+    pub fn new(store: S, log: String, approver: Arc<dyn Approver>) -> RecoveryHook<S> {
         RecoveryHook {
             store,
             log,
@@ -48,7 +48,7 @@ impl<S: AsyncStore + Send + Sync> AgentHook for RecoveryHook<S> {
         let (SettledOutcome::Error(_), Some(messages)) = (event.outcome, event.messages) else {
             return;
         };
-        if let Err(e) = append_messages(&self.store, self.log, messages).await {
+        if let Err(e) = append_messages(&self.store, &self.log, messages).await {
             let message = format!(
                 "the interrupted turn could not be saved to the conversation: {}",
                 chain(&e)

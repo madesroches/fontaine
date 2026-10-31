@@ -216,6 +216,44 @@ pub fn build_scheduling(
     )
 }
 
+/// `build`, over an existing session: a restart simulation reopens the session and runs a
+/// new runtime on it.
+pub fn build_over_session(
+    world: &World,
+    mode: PermissionMode,
+    turns: Vec<Vec<MockStreamEvent>>,
+    project_executables: bool,
+    session: Session,
+) -> Built {
+    let main = MockCompletionModel::from_stream_turns(turns);
+    let handle = ModelHandle::new(
+        ModelRef::parse("test/mock").unwrap(),
+        AccountKind::named("openai-compatible"),
+        main.clone().into(),
+    );
+    let models = Models {
+        main: handle.clone(),
+        main_listing: Vec::new(),
+        guardian: Some(GuardianModel::Ready(handle)),
+        guardian_choice: GuardianChoice::MainFallback,
+        notices: Vec::new(),
+    };
+    let runtime = build_with_env_session(
+        world,
+        mode,
+        models,
+        None,
+        project_executables,
+        Default::default(),
+        None,
+        Arc::new(DenyAll),
+        false,
+        Arc::new(|_| None),
+        session,
+    );
+    Built { runtime, main }
+}
+
 /// Like [`build_scheduling`], with the process environment the runtime looks variables up in.
 #[allow(clippy::too_many_arguments)]
 pub fn build_with_env(
@@ -229,6 +267,37 @@ pub fn build_with_env(
     approver: Arc<dyn fontaine_core::permissions::Approver>,
     scheduling: bool,
     env: fontaine_core::agent::EnvLookup,
+) -> AgentRuntime {
+    let session = Session::create(&world.data, &session_id()).unwrap();
+    build_with_env_session(
+        world,
+        mode,
+        models,
+        switcher,
+        project_executables,
+        scanner,
+        user_config,
+        approver,
+        scheduling,
+        env,
+        session,
+    )
+}
+
+/// [`build_with_env`] over the session the caller hands in.
+#[allow(clippy::too_many_arguments)]
+fn build_with_env_session(
+    world: &World,
+    mode: PermissionMode,
+    models: Models,
+    switcher: Option<Switcher>,
+    project_executables: bool,
+    scanner: fontaine_core::scanner_stage::ScannerStart,
+    user_config: Option<std::path::PathBuf>,
+    approver: Arc<dyn fontaine_core::permissions::Approver>,
+    scheduling: bool,
+    env: fontaine_core::agent::EnvLookup,
+    session: Session,
 ) -> AgentRuntime {
     let config = world.load().unwrap();
     let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
@@ -249,7 +318,7 @@ pub fn build_with_env(
         config_dir: world.config.clone(),
         data_dir: world.data.clone(),
         models,
-        session: Session::create(&world.data, &session_id()).unwrap(),
+        session,
         roots: std::iter::once(world.work.clone())
             .chain(memory_root.clone())
             .collect(),

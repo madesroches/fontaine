@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use fontaine_agents::registry::AgentTypes;
-use fontaine_agents::tree::AgentTree;
 use fontaine_guardian::Profile;
 use fontaine_mcp::Connected;
 use fontaine_tools::builtins::Seen;
@@ -28,7 +27,7 @@ use rig_agent::tool::server::ToolServerHandle;
 use rig_core::completion::ToolDefinition;
 use rig_core::schemars::Schema;
 use rig_core::tool::ToolOutput;
-use rig_memory::{estimate_tokens, load_async};
+use rig_memory::{DirStore, estimate_tokens, load_async};
 use serde_json::json;
 
 use crate::child_runner::{CoreChildRunner, MainModel};
@@ -221,6 +220,8 @@ pub(crate) struct Setup {
     /// The language servers, created once so a registry rebuild keeps the running ones. They
     /// end with `/clear`, `/rewind` and the runtime.
     pub(crate) lsp: Arc<LspServers>,
+    /// The session store, which every subagent's conversation persists into under its own log.
+    store: DirStore,
 }
 
 /// One line when the main model has no way to search: no provider search for its account, no
@@ -240,7 +241,7 @@ fn warn_if_no_search(setup: &AgentSetup) {
 impl AgentRuntime {
     pub fn new(mut setup: AgentSetup) -> Result<AgentRuntime, RuntimeError> {
         setup::prepare(&mut setup);
-        let tree = Arc::new(AgentTree::new(setup::agent_limits(&setup.config)));
+        let tree = setup::agent_tree(&setup);
         let agent_types = Arc::new(build_agent_types(&setup.config, &setup.extensions));
         let state = setup::session_state(&setup, &tree, &agent_types);
         setup::attach_screen(&state, &setup);

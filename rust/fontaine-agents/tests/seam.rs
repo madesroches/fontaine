@@ -217,7 +217,7 @@ struct Rig {
 }
 
 fn rig_with(limits: Limits, types: AgentTypes, root_mode: RootMode) -> Rig {
-    let tree = Arc::new(AgentTree::new(limits));
+    let tree = Arc::new(AgentTree::new(limits, 1));
     tree.set_root_mode(move || root_mode);
     tree.set_root_tools(|| {
         [

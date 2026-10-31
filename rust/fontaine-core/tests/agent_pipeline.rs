@@ -368,13 +368,16 @@ async fn guardian_spend_is_counted_per_agent_and_against_that_agents_budget() {
     use fontaine_agents::tree::{AgentTree, Limits};
     // Own tree: a tight per-agent token budget.
     let rig = Rig::with(Options::new(Manual));
-    let tight = AgentTree::new(Limits {
-        subagent: Budget {
-            tokens: Some(10),
-            cost_usd: None,
+    let tight = AgentTree::new(
+        Limits {
+            subagent: Budget {
+                tokens: Some(10),
+                cost_usd: None,
+            },
+            ..Limits::default()
         },
-        ..Limits::default()
-    });
+        1,
+    );
     let id = tight
         .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Manual)
         .unwrap();
@@ -644,4 +647,201 @@ async fn a_spawn_from_a_child_with_no_tools_can_change_nothing() {
     ));
     assert_eq!(rig.audit().last().unwrap().tier, Tier::ReadOnlyFastPath);
     assert_eq!(fake.calls(), 0);
+}
+
+mod persistence {
+    //! A subagent's conversation persists in the session store under its own log, and the
+    //! ledger anchors the id counter across a restart.
+
+    use super::common::World;
+    use super::common::runtime::{Built, build, build_over_session};
+    use fontaine_agents::mode::Ladder;
+    use fontaine_agents::runner::ChildStatus;
+    use fontaine_core::config::PermissionMode::Manual;
+    use fontaine_core::session::Session;
+    use fontaine_core::turn::{Flow, TurnOutcome, TurnParams, run_turn};
+    use fontaine_tools::gate::ROOT_AGENT;
+    use rig_core::ProviderResponseError;
+    use rig_core::completion::Usage;
+    use rig_core::test_utils::{MockError, MockStreamEvent, mock_final};
+    use serde_json::json;
+
+    fn usage() -> Usage {
+        let mut usage = Usage::new();
+        usage.input_tokens = Some(10);
+        usage.output_tokens = Some(5);
+        usage
+    }
+
+    fn text_turn(text: &str) -> Vec<MockStreamEvent> {
+        vec![
+            MockStreamEvent::Text(text.to_string()),
+            MockStreamEvent::FinalResponse(mock_final(usage())),
+        ]
+    }
+
+    fn spawn_turn(agent_type: &str, prompt: &str) -> Vec<MockStreamEvent> {
+        vec![
+            MockStreamEvent::ToolCall {
+                id: "call-agent".into(),
+                name: "agent".into(),
+                arguments: json!({"agent_type": agent_type, "prompt": prompt}),
+                call_id: None,
+            },
+            MockStreamEvent::FinalResponse(mock_final(usage())),
+        ]
+    }
+
+    fn error_turn(status: u16) -> Vec<MockStreamEvent> {
+        vec![MockStreamEvent::Error(MockError::ProviderResponse(
+            ProviderResponseError::new(http::StatusCode::from_u16(status).unwrap(), "boom"),
+        ))]
+    }
+
+    /// One root turn over a runtime where `agent` needs no approval.
+    async fn root_turn(built: &Built, prompt: &str) {
+        built.runtime.begin_turn(prompt, false);
+        let outcome = run_turn(
+            TurnParams {
+                agent: &built.runtime.agent,
+                state: &built.runtime.state,
+                prompt: prompt.to_string(),
+                max_turns: 5,
+                priced: true,
+                model: "scripted".to_string(),
+                provider: "mock".to_string(),
+                native_search: false,
+            },
+            &mut |_| Flow::Continue,
+        )
+        .await;
+        assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
+    }
+
+    /// Runs the root turn that starts a child, over a world where `agent` needs no approval.
+    async fn with_child(w: &World, turns: Vec<Vec<MockStreamEvent>>) -> Built {
+        w.user_file("[permissions]\nallow = [\"agent\"]\n");
+        let built = build(w, Manual, turns, false);
+        root_turn(&built, "start it").await;
+        built
+    }
+
+    async fn child_log(built: &Built, id: &str) -> String {
+        let conversation = rig_memory::load_async(&built.runtime.session.store(), id)
+            .await
+            .unwrap();
+        format!("{:?}", conversation.messages())
+    }
+
+    #[tokio::test]
+    async fn a_completed_childs_conversation_is_saved_in_its_own_session_log() {
+        let w = World::new();
+        let built = with_child(
+            &w,
+            vec![
+                spawn_turn("worker", "dig into it"),
+                text_turn("child answer"),
+                text_turn("root done"),
+            ],
+        )
+        .await;
+        let log = child_log(&built, "agent-1").await;
+        assert!(log.contains("dig into it"), "{log}");
+        assert!(log.contains("child answer"), "{log}");
+        // The log is a file in the session store, beside the root transcript.
+        let file = w
+            .data
+            .join("sessions")
+            .join(&built.runtime.session.id)
+            .join("logs")
+            .join("agent-1.jsonl");
+        assert!(file.is_file(), "{file:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_childs_interrupted_turn_is_saved_to_its_own_log() {
+        let w = World::new();
+        // A 400 is not retried: the run ends failed, and the recovery hook commits what it
+        // had to the child's log since rig saves only a finished run.
+        let built = with_child(
+            &w,
+            vec![
+                spawn_turn("worker", "dig into it"),
+                error_turn(400),
+                text_turn("root carries on"),
+            ],
+        )
+        .await;
+        assert_eq!(
+            built.runtime.state.agents().status_of("agent-1"),
+            Some(ChildStatus::Failed)
+        );
+        let log = child_log(&built, "agent-1").await;
+        assert!(log.contains("dig into it"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn a_forked_childs_seeded_context_lands_in_its_own_log() {
+        let w = World::new();
+        w.user_file("[permissions]\nallow = [\"agent\"]\n");
+        let built = build(
+            &w,
+            Manual,
+            vec![
+                text_turn("root lays context"),
+                spawn_turn("fork", "short task"),
+                text_turn("forked answer"),
+                text_turn("root done"),
+            ],
+            false,
+        );
+        // The first turn answers; only the second spawns, so the fork records real context.
+        root_turn(&built, "start it").await;
+        root_turn(&built, "fork it").await;
+        let log = child_log(&built, "agent-1").await;
+        // The seed carries the main conversation the fork started from...
+        assert!(log.contains("start it"), "{log}");
+        assert!(log.contains("root lays context"), "{log}");
+        // ...and the child's own run is saved there on top of it.
+        assert!(log.contains("forked answer"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn a_restart_seeds_the_tree_from_the_ledger_so_ids_do_not_collide() {
+        let w = World::new();
+        let built = with_child(
+            &w,
+            vec![
+                spawn_turn("worker", "dig into it"),
+                text_turn("child answer"),
+                text_turn("root done"),
+            ],
+        )
+        .await;
+        let session_id = built.runtime.session.id.clone();
+        drop(built);
+        // A new process reopens the session: the ledger is the only state the counter needs.
+        let session = Session::open(&w.data, &session_id).unwrap();
+        let rebuilt = build_over_session(&w, Manual, Vec::new(), false, session);
+        {
+            let view = rebuilt.runtime.session.ledger.view();
+            assert_eq!(view.agents.len(), 1);
+            assert_eq!(view.next_agent, 2);
+        }
+        let id = rebuilt
+            .runtime
+            .state
+            .agents()
+            .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Manual, false)
+            .unwrap();
+        assert_eq!(id, "agent-2");
+        // The first process's transcript keeps its name.
+        let file = w
+            .data
+            .join("sessions")
+            .join(&session_id)
+            .join("logs")
+            .join("agent-1.jsonl");
+        assert!(file.is_file(), "{file:?}");
+    }
 }

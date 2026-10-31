@@ -244,6 +244,12 @@ listing shows and the `/rewind` count use main-conversation messages alone, and 
 drops the agent-directed messages recorded after the first message it drops. A `resumed` agent
 record marks the start of a later run of an ended subagent.
 
+The ledger does not only record the lifecycle, it anchors id continuity: the largest `agent-<n>`
+ordinal in its `spawned` records seeds the counter a resumed session mints ids from, so a restarted
+process never reuses an id whose per-agent log a previous process persisted. Folding the same
+records rebuilds the session's subagent list after a restart — id, parent, type and the latest
+finished status — which is what `/export` merges with the live tree when the tree is empty.
+
 ## Models
 
 Every model, for the session and for the guardian alike, is a rig completion model behind one
