@@ -18,7 +18,8 @@ submitted as a note on that choice.
   has two modes: option navigation, and a `typing` mode entered with Enter/Space on the "Other"
   row, in which keystrokes go to an `InputBuffer` and the field renders in the *footer*
   (`footer()` shows `Other: <text>▏`). Printable characters in navigation mode do nothing except
-  the `j`/`k`/`1`-`9` bindings; the field is invisible until typing mode starts.
+  the `j`/`k`/`1`-`9` bindings and Space (which toggles a multi-select option / opens the
+  field on "Other"); the field is invisible until typing mode starts.
 - `view.rs` (~line 350) renders the panel with `field: panel.field()`, drawing the typing field
   below the overlay like the other dialogs' input fields.
 - `rust/fontaine-tools/src/ask_user.rs` — `QuestionAnswer` carries `selected: Vec<String>` and
@@ -50,10 +51,14 @@ bindings.
   their meaning in navigation mode: `1`-`9` jump to a row, `j`/`k` move, Space toggles a
   multi-select option. While the highlight is on the "Other" row, *all* printable characters —
   including digits, `j`, `k` and Space — insert into the field; arrows and Tab still move the
-  highlight off it.
+  highlight off it. On the "Other" row, Backspace/Delete/Home/End and Ctrl/Alt-modified keys
+  keep their `InputBuffer` meaning, as the typing mode gives them today; only plain arrows and
+  Tab move the highlight.
 - **Note on a choice.** Leaving the "Other" row (arrows/Tab) keeps the text. Enter on an option
-  row submits the selected label(s) plus any text in the field as a note; Enter on the "Other"
-  row submits the text alone. An answer with neither a selection nor text is still ignored.
+  row submits the selected label(s) plus any text in the field as a note. Enter on the "Other"
+  row submits the text alone for single-select; for multi-select it keeps combining the
+  toggled options with the text, as `commit_other` does today. An answer with neither a
+  selection nor text is still ignored.
 - **Esc.** On the "Other" row, Esc moves the highlight back to the first option row (text kept);
   anywhere else Esc declines the call as today.
 - **Grace period unchanged.** Enter/Esc/Char stay blocked for `ANSWER_GRACE` after the dialog
@@ -88,19 +93,23 @@ bindings.
    option row jump to the "Other" row and insert; on the "Other" row they all insert; digits/`j`/
    `k`/Space keep navigation/toggle meaning only on option rows.
 2. `question.rs`: rework `confirm()`/`finish()` — Enter on an option row includes `other_text()`
-   when non-empty; Enter on the "Other" row submits the text alone; drop `commit_other`.
+   when non-empty; Enter on the "Other" row submits the text alone for single-select and keeps
+   combining toggled options with the text for multi-select; drop `commit_other`.
 3. `question.rs`: `body()` renders `Other: <text>` on the last row with the caret when
    highlighted; `footer()` and `field()` updated; `is_typing`/`typing` removed and the `app.rs`
    call site adjusted.
 4. `ask_user.rs`: update the `QuestionAnswer` doc comment.
 5. Update the existing `question.rs` tests to the new interaction model and add: type-to-answer
    jump, note attached on Enter (single-select), Esc leaving the "Other" row keeps text, digits
-   typed on the "Other" row stay in the text, grace period still blocks Char, multi-select note
-   combining, and the inline field fitting the row width.
+   typed on the "Other" row stay in the text, grace period still blocks Char, multi-select
+   combining on Enter at the "Other" row, and the inline field fitting the row width.
 6. `docs/tui.md` "Questions from the model": key table and the paragraph on answers — typing
    starts a custom answer, text can accompany a choice as a note.
-7. Check `docs/guardian.md` (~line 75): the sentence about "Other" text being recorded as intent
-   still holds; adjust wording only if the note-on-choice flow makes it inaccurate.
+7. `docs/guardian.md` (~line 75): acknowledge that a note attached to a choice is recorded the
+   same way as standalone "Other" text — `fontaine-core` appends every `answer.other` as an
+   `Other: "<text>"` user message regardless of whether options were also selected, so the
+   guardian reads a note-on-choice exactly like standalone "Other" text (no code change).
+8. `CHANGELOG.md` entry (via the PR step).
 
 ## Files to Modify
 
@@ -108,6 +117,7 @@ bindings.
 - `rust/fontaine-tui/src/app.rs` (`is_typing` call site only)
 - `rust/fontaine-tools/src/ask_user.rs` (doc comment only)
 - `docs/tui.md`, maybe `docs/guardian.md`
+- `CHANGELOG.md`
 
 ## Trade-offs
 
@@ -132,7 +142,9 @@ bindings.
 ## Documentation
 
 - `docs/tui.md` "Questions from the model" — key table and answer semantics.
-- `docs/guardian.md` "what the guardian sees" — only if the note flow needs a wording tweak.
+- `docs/guardian.md` "what the guardian sees" — acknowledge that a note attached to a choice is
+  recorded identically to standalone "Other" text (every `answer.other` becomes an
+  `Other: "<text>"` user message), so the guardian reads both the same way.
 
 ## Testing Strategy
 
@@ -151,8 +163,3 @@ and an option highlighted answers with both; Esc on the "Other" row returns to t
 automated because caret placement and row wrapping in a live terminal are layout, not logic
 (see `tasks/design/testing.md`, "Reproducing terminal layout bugs").
 
-## Open Questions
-
-- Should the guardian read a note attached to a picked option as user intent the same way as
-  standalone "Other" text (it is recorded the same way today)? Leaning yes — no code change —
-  but the guardian-doc wording should acknowledge it if so.
