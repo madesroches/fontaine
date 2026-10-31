@@ -62,7 +62,7 @@ New `providers/openrouter.rs`, `pub struct OpenRouter`, registered in `PROVIDERS
   keyed kinds do), `connect(caused_client(...))`. A `base_url` on the account is honored if set
   (same as `anthropic`/`openai`, which keep `Fixed` for the dialog but accept an override for
   proxies and wiremock tests).
-- `list` reuses `openai::Connected`'s listing (`/models`), so `/models` and account validation work.
+- `list` is a direct `list_models()` call on OpenRouter's own client (`openai::Connected` is `pub(super) struct Connected(pub(super) Client)`, so it is not wrapped), so `/models` and account validation work.
 - The completion model is `Model<CacheWire>` where `CacheWire` is a `Wire` wrapper (below) over the
   client's Chat wire: `Connected` builds the model with `client.chat(model)` (rig's
   `OpenAI::completion()` returns an enum of Chat and Responses wires) and wraps the resulting Chat
@@ -137,8 +137,10 @@ matching the sizes of `guardian_minimal.md` and `guardian_prompt.md`), saying th
 that a lower-minimum model is the fix. The notice is emitted only when an approver is present (none when `approver` is `None`), once per
 guardian rebuild; a model switch re-emitting it is acceptable. The table is data in one place, so a
 new model is one line.
-The caching-enabled check uses `PromptCaching::of(account)` for kinds where
-`accepts_prompt_caching()` is true.
+The caching-enabled check needs the guardian account's `PromptCaching`, which `ModelHandle` does not
+carry (it has `reference`, account plus model id, and `kind`): look up
+`config.accounts[handle.reference.account]` and call `PromptCaching::of` (`pub(crate)`, usable from
+`agent/setup.rs`), for kinds where `handle.kind.accepts_prompt_caching()` is true.
 
 ## Implementation Steps
 
