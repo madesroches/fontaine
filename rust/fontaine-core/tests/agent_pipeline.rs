@@ -1184,6 +1184,200 @@ mod killed {
         assert_eq!(ledger_ended(&built, "agent-1").as_deref(), Some("killed"));
     }
 
+    /// A transport for the join-wait kill shape: the root conversation is served by one
+    /// scripted model; the child conversation (first user message mentioning `CHILD_MARKER`)
+    /// and the grandchild conversation (mentioning `GRANDCHILD_MARKER`) are served by their
+    /// own scripted models, and every routed request is held at its gate until the test
+    /// releases it, with a per-channel `seen` notify for deterministic interleaving. Each
+    /// mock call consumes one scripted turn globally, so the child and grandchild cannot
+    /// share a model.
+    #[derive(Clone)]
+    struct JoinWaitTransport {
+        root: MockRuntime,
+        child: MockRuntime,
+        grandchild: MockRuntime,
+        child_seen: Arc<Notify>,
+        child_release: Arc<Notify>,
+        grandchild_seen: Arc<Notify>,
+        grandchild_release: Arc<Notify>,
+    }
+
+    const CHILD_MARKER: &str = "dig into it";
+    const GRANDCHILD_MARKER: &str = "grandchild job";
+
+    fn first_user_text(request: &<MockScript as rig_core::wire::Wire>::Payload) -> String {
+        request
+            .chat_history
+            .iter()
+            .find(|m| matches!(m.as_ref(), rig_core::message::Message::User { .. }))
+            .map(|m| format!("{m:?}"))
+            .unwrap_or_default()
+    }
+
+    fn held_opening(
+        seen: Arc<Notify>,
+        release: Arc<Notify>,
+        runtime: MockRuntime,
+        request: <MockScript as rig_core::wire::Wire>::Payload,
+        exchange: Exchange,
+    ) -> Opening<MockFrame> {
+        Opening::new(async move {
+            seen.notify_one();
+            release.notified().await;
+            runtime.send(request, exchange).await
+        })
+    }
+
+    impl Transport<MockScript> for JoinWaitTransport {
+        fn send(
+            &self,
+            request: <MockScript as rig_core::wire::Wire>::Payload,
+            exchange: Exchange,
+        ) -> Opening<MockFrame> {
+            let first = first_user_text(&request);
+            if first.contains(GRANDCHILD_MARKER) {
+                held_opening(
+                    self.grandchild_seen.clone(),
+                    self.grandchild_release.clone(),
+                    self.grandchild.clone(),
+                    request,
+                    exchange,
+                )
+            } else if first.contains(CHILD_MARKER) {
+                held_opening(
+                    self.child_seen.clone(),
+                    self.child_release.clone(),
+                    self.child.clone(),
+                    request,
+                    exchange,
+                )
+            } else {
+                self.root.send(request, exchange)
+            }
+        }
+    }
+
+    /// Builds the join-wait runtime: a held child and grandchild over their own scripted
+    /// models, deny-all permissions so the only tools are the scripted spawns. Returns the
+    /// built runtime beside the child and grandchild gates.
+    fn build_join_wait(
+        world: &World,
+        root: Vec<Vec<MockStreamEvent>>,
+        child: Vec<Vec<MockStreamEvent>>,
+        grandchild: Vec<Vec<MockStreamEvent>>,
+    ) -> (Built, Arc<Notify>, Arc<Notify>, Arc<Notify>, Arc<Notify>) {
+        let root_model = MockCompletionModel::from_stream_turns(root);
+        let child_model = MockCompletionModel::from_stream_turns(child);
+        let grandchild_model = MockCompletionModel::from_stream_turns(grandchild);
+        let child_seen = Arc::new(Notify::new());
+        let child_release = Arc::new(Notify::new());
+        let grandchild_seen = Arc::new(Notify::new());
+        let grandchild_release = Arc::new(Notify::new());
+        let transport = JoinWaitTransport {
+            root: root_model.transport.clone(),
+            child: child_model.transport.clone(),
+            grandchild: grandchild_model.transport.clone(),
+            child_seen: child_seen.clone(),
+            child_release: child_release.clone(),
+            grandchild_seen: grandchild_seen.clone(),
+            grandchild_release: grandchild_release.clone(),
+        };
+        let model = Model::new(MockScript::default(), transport);
+        let handle = ModelHandle::new(
+            ModelRef::parse("test/mock").unwrap(),
+            AccountKind::named("openai-compatible"),
+            model.into(),
+        );
+        let models = Models {
+            main: handle.clone(),
+            main_listing: Vec::new(),
+            guardian: Some(GuardianModel::Ready(handle)),
+            guardian_choice: GuardianChoice::MainFallback,
+            notices: Vec::new(),
+        };
+        let runtime = runtime::build_with_approver(
+            world,
+            PermissionMode::Manual,
+            models,
+            None,
+            false,
+            Default::default(),
+            None,
+            Arc::new(DenyAll),
+        );
+        (
+            Built {
+                runtime,
+                main: root_model,
+            },
+            child_seen,
+            child_release,
+            grandchild_seen,
+            grandchild_release,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_kill_during_the_join_wait_keeps_the_completed_runs_log() {
+        let w = World::new();
+        // The child needs the `agent` tool to spawn its own subagent; a plain configured
+        // type keeps the spawn independent of the child's context, unlike `fork`.
+        w.user_file(
+            "[permissions]\nallow = [\"agent\"]\n\n[agents.types.spawner]\ntools = [\"agent\"]\n",
+        );
+        let (built, child_seen, child_release, grandchild_seen, grandchild_release) =
+            build_join_wait(
+                &w,
+                vec![spawn_turn("spawner", "dig into it"), text_turn("root done")],
+                // Run one spawns a grandchild and then answers, so it completes and saves at
+                // its Done; the grandchild's held request keeps the child waiting in the join
+                // for a further turn that never comes.
+                vec![
+                    spawn_turn("worker", "grandchild job"),
+                    text_turn("child answer"),
+                ],
+                vec![text_turn("grandchild answer")],
+            );
+        root_turn(&built, "start it").await;
+        // The child's first request is held: let the spawn turn through, then hold the
+        // child's next request at the same gate until the grandchild's request has arrived.
+        tokio::time::timeout(std::time::Duration::from_secs(5), child_seen.notified())
+            .await
+            .expect("the child's first request");
+        child_release.notify_one();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            grandchild_seen.notified(),
+        )
+        .await
+        .expect("the grandchild's request");
+        child_release.notify_one();
+        // The completed first run is on file once its answer lands in the log.
+        for _ in 0..500 {
+            if child_log(&built, "agent-1").await.contains("child answer") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let log = child_log(&built, "agent-1").await;
+        assert!(log.contains("child answer"), "{log}");
+        assert!(built.runtime.state.agents().kill("agent-1"));
+        // The grandchild's request is still held; let it through so the kill hook settles
+        // the grandchild's run well inside the grace.
+        grandchild_release.notify_waiters();
+        let report = wait_report(&built, "agent-1").await;
+        assert_eq!(report.status, ChildStatus::Killed);
+        assert_eq!(report.reason.as_deref(), Some("it was killed"));
+        assert_eq!(ledger_ended(&built, "agent-1").as_deref(), Some("killed"));
+        // The join-wait kill dropped the wait, not the completed run: the log still holds it.
+        let log = child_log(&built, "agent-1").await;
+        assert!(log.contains("dig into it"), "{log}");
+        assert!(log.contains("child answer"), "{log}");
+        // The kill reached the running grandchild too, through the tree.
+        let grandchild = wait_report(&built, "agent-2").await;
+        assert_eq!(grandchild.status, ChildStatus::Killed);
+    }
+
     #[tokio::test]
     async fn a_kill_concurrent_with_an_answer_keeps_the_completed_runs_log() {
         let w = World::new();
