@@ -2309,6 +2309,10 @@ pub fn approval_fingerprint(plugin_root: &Path) -> Result<String, String> {
 
     // Markdown under the component bases is prompt text; markdown elsewhere (a script's
     // template, a file a hook reads) can be executable surface, so it is hashed.
+    // Component paths are canonical (verbatim `\\?\` on Windows), so strip the canonical root.
+    let canonical_root = plugin_root
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", plugin_root.display()))?;
     let mut bases: Vec<PathBuf> = Vec::new();
     for (files, depth) in [
         (&build.dir.skills, 1),
@@ -2321,7 +2325,7 @@ pub fn approval_fingerprint(plugin_root: &Path) -> Result<String, String> {
             for _ in 0..depth + file.segments.len() {
                 base = base.and_then(Path::parent);
             }
-            if let Some(base) = base.and_then(|b| b.strip_prefix(plugin_root).ok()) {
+            if let Some(base) = base.and_then(|b| b.strip_prefix(&canonical_root).ok()) {
                 bases.push(base.to_path_buf());
             }
         }
