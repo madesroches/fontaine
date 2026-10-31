@@ -99,16 +99,17 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
-    /// `/expand`: prints call `n` (the latest by default) in full, as new transcript lines.
+    /// `/expand`: prints call `n` (the latest by default) or the latest reasoning card in full,
+    /// as new transcript lines.
     pub(crate) fn expand(&mut self, argument: &str) {
-        let n = match commands::call_number(argument) {
-            Ok(n) => n,
+        let target = match commands::expand_target(argument) {
+            Ok(target) => target,
             Err(e) => {
                 self.app.shown_mut().error(e);
                 return;
             }
         };
-        if let Err(e) = self.app.shown_mut().expand(n) {
+        if let Err(e) = self.app.shown_mut().expand(target) {
             self.app.shown_mut().error(e);
         }
     }

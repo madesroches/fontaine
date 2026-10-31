@@ -455,6 +455,8 @@ async fn run_one(
             SessionEvent::Assistant(text) => {
                 emit(event("assistant", sid, json!({ "text": text })));
             }
+            // Not in the closed stream-json schema; text output prints no reasoning either.
+            SessionEvent::ReasoningDelta(_) | SessionEvent::Reasoning(_) => {}
             SessionEvent::ToolCall { id, tool, args } => emit(event(
                 "tool_call",
                 sid,

@@ -836,6 +836,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-31: The prompt box kill buffer holds a single entry with no Alt-Y paste cycle (Claude Code has one), and consecutive kills replace it rather than join; one entry covers the common case (#257).
 - 2026-10-31: No Ctrl-_ undo in the prompt box (Claude Code's undo key); it needs its own history design (#257).
 - 2026-10-31: A terminal resize purges the scrollback and rewrites the transcript at the new size, instead of ratatui's inline resize, which erases from the viewport top and which tmux turns into a stale copy of the live area in history (fixes #279); Claude Code's resize behavior was not verified. The refusal of an unknown slash name or `/loop` mid-turn is a transient status-line hint, not a transcript notice, so repeated Enters add no history.
+- 2026-10-31: Model reasoning is shown in the transcript by default, folded once settled, and `[tui] show_reasoning = false` hides it; Claude Code keeps thinking out of the main transcript (Ctrl-O transcript view), not re-verified with `claude -p`. Headless `stream-json` omits reasoning though Claude Code's carries thinking blocks, because it is not in the closed v1 schema (#344).
 
 ## Open Questions
 

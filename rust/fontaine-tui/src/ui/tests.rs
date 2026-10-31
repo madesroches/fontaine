@@ -319,12 +319,49 @@ fn expand_prints_a_call_and_reports_an_unknown_one() {
     let all = shown.join("\n");
     assert!(all.contains("there is no tool call to expand"), "{all}");
     assert!(all.contains("there is no tool call number 7"), "{all}");
-    assert!(all.contains("/expand takes a call number"), "{all}");
+    assert!(
+        all.contains("/expand takes a call number or `thinking`"),
+        "{all}"
+    );
     assert_eq!(
         shown.iter().filter(|l| l.as_str() == "  │ a").count(),
         2,
         "{all}"
     );
+}
+
+#[test]
+fn expand_thinking_acts_on_the_reasoning_and_view_transcripts_honor_show_reasoning() {
+    let (_tx, rx) = unbounded_channel();
+    let mut ui = ui(rx);
+    ui.expand("thinking");
+    ui.app
+        .transcript
+        .on_event(SessionEvent::Reasoning("pondering".into()));
+    ui.expand("thinking");
+    let all = ui
+        .app
+        .transcript
+        .lines(80, &crate::theme::Theme::default())
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(all.contains("there is no reasoning to expand"), "{all}");
+    assert_eq!(all.matches("pondering").count(), 2, "{all}");
+
+    ui.app.transcript.show_reasoning = false;
+    let view = ui.app.view_of("agent-1".into());
+    view.transcript
+        .on_event(SessionEvent::Reasoning("hidden".into()));
+    assert!(view.transcript.entries.is_empty());
+    let view = ui.app.view_of("agent-2".into());
+    assert!(!view.transcript.show_reasoning);
 }
 
 #[test]

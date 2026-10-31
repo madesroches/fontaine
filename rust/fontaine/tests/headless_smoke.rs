@@ -22,6 +22,31 @@ async fn a_prompt_streams_to_stdout_and_exits_zero() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn reasoning_is_not_printed_or_streamed() {
+    let secret = "private deliberation";
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::reasoned(secret, "the answer"),
+            Turn::reasoned(secret, "the answer"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let out = s.headless(&["think"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert_eq!(out.stdout, "the answer\n");
+    assert!(!out.stderr.contains(secret), "{}", out.stderr);
+
+    let out = s
+        .headless(&["--output-format", "stream-json", "think"])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert!(!out.stdout.contains(secret), "{}", out.stdout);
+    assert!(out.stdout.contains("the answer"), "{}", out.stdout);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_registered_tools_are_advertised_to_the_model() {
     let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("ok")]).await;
     let mut s = Sandbox::compatible(&endpoint.url());

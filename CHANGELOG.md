@@ -493,6 +493,10 @@ All notable changes are recorded here. The format follows
 
 #### TUI
 
+- The model's reasoning shows in the transcript as a dim `thinking` card that streams its last five
+  rows live and folds to its first five once it settles; `/expand thinking` prints it in full.
+  `[tui] show_reasoning = false` hides it, and `tui.show_reasoning` is a row in the settings panel.
+  Headless `-p` and `stream-json` still carry no reasoning (#344).
 - The question dialog's "Other" row is a first-class free-text answer: the field is always
   visible inline on the row with the caret while it is highlighted, typing a character anywhere
   drops straight into it, and text typed alongside a chosen option is submitted with it as a

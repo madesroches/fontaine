@@ -20,6 +20,9 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 pub enum Turn {
     /// Answer text, streamed in two deltas.
     Text(String),
+    /// Reasoning streamed as `reasoning_content` deltas, then answer text. Only the Chat wire
+    /// carries the reasoning.
+    Reasoned { reasoning: String, text: String },
     /// A single tool call.
     Tool {
         id: String,
@@ -36,6 +39,21 @@ pub enum Turn {
 impl Turn {
     pub fn text(text: &str) -> Turn {
         Turn::Text(text.to_string())
+    }
+
+    pub fn reasoned(reasoning: &str, text: &str) -> Turn {
+        Turn::Reasoned {
+            reasoning: reasoning.to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    /// The turn without its reasoning, for the wires that do not carry it.
+    fn answer(&self) -> Turn {
+        match self {
+            Turn::Reasoned { text, .. } => Turn::Text(text.clone()),
+            other => other.clone(),
+        }
     }
 
     pub fn tool(id: &str, name: &str, args: Value) -> Turn {
@@ -114,6 +132,16 @@ fn chat_response(turn: &Turn, usage: Usage) -> ResponseTemplate {
             frames.push(chat_chunk(json!({"content": b}), None));
             frames.push(chat_chunk(json!({}), Some("stop")));
         }
+        Turn::Reasoned { reasoning, text } => {
+            let (a, b) = halves(reasoning);
+            frames.push(chat_chunk(
+                json!({"role": "assistant", "reasoning_content": a}),
+                None,
+            ));
+            frames.push(chat_chunk(json!({"reasoning_content": b}), None));
+            frames.push(chat_chunk(json!({"content": text}), None));
+            frames.push(chat_chunk(json!({}), Some("stop")));
+        }
         Turn::Tool { id, name, args } => {
             frames.push(chat_chunk(
                 json!({"role": "assistant", "tool_calls": [{
@@ -156,7 +184,9 @@ fn chat_response(turn: &Turn, usage: Usage) -> ResponseTemplate {
 /// guardian's typed-extraction call.
 fn chat_json(turn: &Turn, usage: Usage) -> ResponseTemplate {
     let message = match turn {
-        Turn::Text(text) => json!({"role": "assistant", "content": text}),
+        Turn::Text(text) | Turn::Reasoned { text, .. } => {
+            json!({"role": "assistant", "content": text})
+        }
         Turn::Tool { id, name, args } => json!({
             "role": "assistant",
             "content": null,
@@ -195,6 +225,7 @@ fn responses_response(turn: &Turn, usage: Usage, id: usize) -> ResponseTemplate 
         json!({"type": "response.created",
                "response": {"id": format!("resp_{id}"), "status": "in_progress", "output": []}}),
     )];
+    let turn = &turn.answer();
     let output = match turn {
         Turn::Text(text) => {
             let (a, b) = halves(text);
@@ -250,6 +281,7 @@ fn responses_response(turn: &Turn, usage: Usage, id: usize) -> ResponseTemplate 
             ));
             json!([done])
         }
+        Turn::Reasoned { .. } => unreachable!("answer() drops the reasoning"),
         Turn::Fail(status) => return ResponseTemplate::new(*status).set_body_string("scripted"),
         Turn::Cut(prefix) => {
             frames.push(event(

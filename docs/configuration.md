@@ -938,11 +938,13 @@ project or project-local file that has a `[tui]` table is an error.
 |---|---|---|
 | `theme` | The colour theme: `dark-ansi`, `light-ansi`, `dark`, `light`, `dark-daltonized` or `light-daltonized`. `/theme` writes it. See [Terminal setup](terminal.md#colours). | `dark-ansi` |
 | `screen_reader` | Turns on screen-reader mode. `--ax-screen-reader` turns it on and `FONTAINE_AX_SCREEN_READER=0` keeps it off over this setting. See [Terminal setup](terminal.md#screen-reader-mode). | `false` |
+| `show_reasoning` | Shows the model's reasoning in the conversation: it streams live, then folds to a few rows once it settles, and `/expand thinking` prints it in full. `false` hides it. See [Terminal UI](tui.md#model-reasoning). | `true` |
 
 ```toml
 [tui]
 theme = "dark"
 screen_reader = false
+show_reasoning = true
 ```
 
 ## Workspace trust

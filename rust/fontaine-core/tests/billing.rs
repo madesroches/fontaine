@@ -287,3 +287,88 @@ async fn argument_characters_count_toward_writing_at_the_next_delta() {
     let arguments = "{\"path\":\"a.txt\"}".len() as u64;
     assert_eq!(seen[0], arguments + "done".len() as u64);
 }
+
+async fn reasoning_events(turn: Vec<MockStreamEvent>) -> Vec<String> {
+    let w = World::new();
+    let built = build(&w, Manual, vec![turn], true);
+    let mut seen = Vec::new();
+    let mut on_event = |event: SessionEvent| {
+        match event {
+            SessionEvent::ReasoningDelta(text) => seen.push(format!("reasoning delta {text}")),
+            SessionEvent::Reasoning(text) => seen.push(format!("reasoning {text}")),
+            SessionEvent::AssistantDelta(text) => seen.push(format!("delta {text}")),
+            SessionEvent::Assistant(text) => seen.push(format!("assistant {text}")),
+            _ => {}
+        }
+        Flow::Continue
+    };
+    let outcome = run_turn(
+        TurnParams {
+            agent: &built.runtime.agent,
+            state: &built.runtime.state,
+            prompt: "hi".to_string(),
+            max_turns: Some(3),
+            priced: true,
+            model: "scripted".to_string(),
+            provider: "mock".to_string(),
+            native_search: false,
+        },
+        &mut on_event,
+    )
+    .await;
+    assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
+    seen
+}
+
+fn reasoning_delta(text: &str) -> MockStreamEvent {
+    MockStreamEvent::ReasoningDelta {
+        id: "r1".to_string(),
+        reasoning: text.to_string(),
+    }
+}
+
+#[tokio::test]
+async fn reasoning_streams_then_settles_before_the_answer() {
+    let usage = Usage::new().input_tokens(10).output_tokens(5);
+    let seen = reasoning_events(vec![
+        reasoning_delta("let me "),
+        reasoning_delta("think"),
+        MockStreamEvent::Reasoning {
+            id: "r1".to_string(),
+            text: "let me think".to_string(),
+        },
+        MockStreamEvent::Text("done".to_string()),
+        MockStreamEvent::FinalResponse(mock_final(usage)),
+    ])
+    .await;
+    assert_eq!(
+        seen,
+        [
+            "reasoning delta let me ",
+            "reasoning delta think",
+            "reasoning let me think",
+            "delta done",
+            "assistant done",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn reasoning_that_settles_after_the_text_arrives_last() {
+    let usage = Usage::new().input_tokens(10).output_tokens(5);
+    let seen = reasoning_events(vec![
+        reasoning_delta("hm"),
+        MockStreamEvent::Text("done".to_string()),
+        MockStreamEvent::FinalResponse(mock_final(usage)),
+    ])
+    .await;
+    assert_eq!(
+        seen,
+        [
+            "reasoning delta hm",
+            "delta done",
+            "assistant done",
+            "reasoning hm",
+        ]
+    );
+}

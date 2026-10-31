@@ -9,6 +9,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
+use crate::commands::ExpandTarget;
 use crate::diff::diff_rows;
 use crate::input::wrap;
 use crate::markdown;
@@ -29,6 +30,9 @@ pub const OUTPUT_KEEP_BYTES: usize = 64 * 1024;
 const CALL_ROWS: usize = 3;
 /// Wrapped rows of output a card shows, the last ones.
 pub(crate) const OUTPUT_ROWS: usize = 10;
+/// Wrapped rows of reasoning a card shows: the last ones while it streams, the first ones once
+/// it has folded.
+pub(crate) const REASONING_ROWS: usize = 5;
 /// Lines of a diff a card shows.
 const DIFF_ROWS: usize = 20;
 
@@ -60,7 +64,19 @@ pub enum Entry {
         output: Option<ToolOutput>,
         diff: Option<DiffPreview>,
     },
-    /// A call printed in full by `/expand`; always wraps an `Entry::Tool`.
+    /// The model's reasoning. While `streaming`, `text` is the raw buffer and `live` its safe
+    /// form, refreshed when the buffer grows; once settled `text` is safe and `live` is empty.
+    Reasoning {
+        text: String,
+        live: String,
+        streaming: bool,
+        /// Only the head and the tail of the reasoning were kept.
+        clipped: bool,
+        /// The provider's settled copy of the text has been applied.
+        ended: bool,
+    },
+    /// A call or reasoning card printed in full by `/expand`; wraps an `Entry::Tool` or an
+    /// `Entry::Reasoning`.
     Expanded(Box<Entry>),
     Notice {
         severity: Severity,
@@ -76,7 +92,7 @@ pub enum Entry {
     },
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Transcript {
     pub entries: Vec<Entry>,
     /// Entries fully written to scrollback.
@@ -93,6 +109,23 @@ pub struct Transcript {
     /// settled; the original holds the outcome too, so a reprint drops them.
     follow_ups: Vec<usize>,
     pub glyphs: Glyphs,
+    /// Whether the model's reasoning is shown; both reasoning events are ignored otherwise.
+    pub show_reasoning: bool,
+}
+
+impl Default for Transcript {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            committed: 0,
+            committed_chars: 0,
+            calls: 0,
+            retired: Vec::new(),
+            follow_ups: Vec::new(),
+            glyphs: Glyphs::default(),
+            show_reasoning: true,
+        }
+    }
 }
 
 const SUMMARY_KEYS: &[&str] = &["command", "path", "file_path", "url", "pattern", "query"];
@@ -135,12 +168,21 @@ fn keep_output(tool: &str, text: &str) -> Option<ToolOutput> {
     // Redact before clipping: a cut through a credential would leave a prefix the redactor
     // no longer recognises.
     let safe = display_text(text.trim_end_matches('\n'));
+    let (text, clipped) = clip_middle(safe);
+    Some(ToolOutput { text, clipped })
+}
+
+/// Reasoning as the card keeps it: made safe, then capped like tool output.
+fn keep_reasoning(raw: &str) -> (String, bool) {
+    clip_middle(display_text(raw.trim_end_matches('\n')))
+}
+
+/// Keeps the head and the tail of `safe` when it is over `OUTPUT_KEEP_BYTES`. The text must
+/// already be redacted, since a cut can leave a credential prefix nothing recognises.
+fn clip_middle(safe: String) -> (String, bool) {
     let half = OUTPUT_KEEP_BYTES / 2;
     if safe.len() <= OUTPUT_KEEP_BYTES {
-        return Some(ToolOutput {
-            text: safe,
-            clipped: false,
-        });
+        return (safe, false);
     }
     let mut head = half;
     while !safe.is_char_boundary(head) {
@@ -152,10 +194,7 @@ fn keep_output(tool: &str, text: &str) -> Option<ToolOutput> {
         tail += 1;
     }
     tail = safe[tail..].find('\n').map_or(tail, |i| tail + i + 1);
-    Some(ToolOutput {
-        text: format!("{}\n{}", &safe[..head], &safe[tail..]),
-        clipped: true,
-    })
+    (format!("{}\n{}", &safe[..head], &safe[tail..]), true)
 }
 
 fn first_line(text: &str) -> String {
@@ -230,9 +269,96 @@ impl Transcript {
     }
 
     fn finish_streaming(&mut self) {
-        if let Some(Entry::Assistant { streaming, .. }) = self.entries.last_mut() {
-            *streaming = false;
+        match self.entries.last_mut() {
+            Some(Entry::Assistant { streaming, .. }) => *streaming = false,
+            Some(Entry::Reasoning {
+                text,
+                live,
+                streaming: streaming @ true,
+                clipped,
+                ..
+            }) => {
+                let (kept, cut) = keep_reasoning(text);
+                *clipped |= cut;
+                *text = kept;
+                live.clear();
+                *streaming = false;
+                if text.trim().is_empty() {
+                    self.entries.pop();
+                }
+            }
+            _ => {}
         }
+    }
+
+    /// Bounds the streaming reasoning buffer and refreshes its safe form. Past twice the kept
+    /// size the buffer is made safe and clipped for good, so memory stays bounded while it grows.
+    fn refresh_reasoning(&mut self) {
+        let Some(Entry::Reasoning {
+            text,
+            live,
+            clipped,
+            ..
+        }) = self.entries.last_mut()
+        else {
+            return;
+        };
+        if text.len() > 2 * OUTPUT_KEEP_BYTES {
+            let (kept, cut) = keep_reasoning(text);
+            *clipped |= cut;
+            *text = kept;
+        }
+        *live = display_text(text);
+    }
+
+    /// The provider's settled reasoning. It replaces the latest card's text unless that card
+    /// already took a settled copy or reached scrollback; with no such card it is a card of its
+    /// own, as for a provider that sends no deltas.
+    fn settle_reasoning(&mut self, full: String) {
+        let latest = self
+            .entries
+            .iter()
+            .rposition(|e| matches!(e, Entry::Reasoning { .. }));
+        if let Some(i) = latest
+            && let Entry::Reasoning { ended: false, .. } = &self.entries[i]
+        {
+            if i < self.committed {
+                return;
+            }
+            let (kept, cut) = keep_reasoning(&full);
+            let last = i + 1 == self.entries.len();
+            let Entry::Reasoning {
+                text,
+                live,
+                streaming,
+                clipped,
+                ended,
+            } = &mut self.entries[i]
+            else {
+                return;
+            };
+            *text = kept;
+            *clipped = cut;
+            live.clear();
+            *streaming = false;
+            *ended = true;
+            if text.trim().is_empty() && last {
+                self.entries.pop();
+            }
+            return;
+        }
+        let (kept, cut) = keep_reasoning(&full);
+        if kept.trim().is_empty() {
+            return;
+        }
+        self.finish_streaming();
+        self.entries.push(Entry::Reasoning {
+            text: kept,
+            live: String::new(),
+            streaming: false,
+            clipped: cut,
+            ended: true,
+        });
     }
 
     fn find_tool(&self, id: &str, tool: &str) -> Option<usize> {
@@ -275,6 +401,34 @@ impl Transcript {
 
     pub fn on_event(&mut self, event: SessionEvent) {
         match event {
+            SessionEvent::ReasoningDelta(delta) => {
+                if !self.show_reasoning {
+                    return;
+                }
+                if let Some(Entry::Reasoning {
+                    text,
+                    streaming: true,
+                    ..
+                }) = self.entries.last_mut()
+                {
+                    text.push_str(&delta);
+                } else {
+                    self.finish_streaming();
+                    self.entries.push(Entry::Reasoning {
+                        text: delta,
+                        live: String::new(),
+                        streaming: true,
+                        clipped: false,
+                        ended: false,
+                    });
+                }
+                self.refresh_reasoning();
+            }
+            SessionEvent::Reasoning(full) => {
+                if self.show_reasoning {
+                    self.settle_reasoning(full);
+                }
+            }
             SessionEvent::AssistantDelta(delta) => {
                 if let Some(Entry::Assistant {
                     text,
@@ -283,6 +437,7 @@ impl Transcript {
                 {
                     text.push_str(&delta);
                 } else {
+                    self.finish_streaming();
                     self.entries.push(Entry::Assistant {
                         text: delta,
                         streaming: true,
@@ -299,6 +454,7 @@ impl Transcript {
                 ) {
                     self.finish_streaming();
                 } else {
+                    self.finish_streaming();
                     self.entries.push(Entry::Assistant {
                         text: full,
                         streaming: false,
@@ -393,23 +549,55 @@ impl Transcript {
         }
     }
 
-    /// Prints call `ordinal` (the latest by default) in full as new lines. The last entry with
-    /// that ordinal wins, so a settled follow-up is chosen over its stale pending row.
-    pub fn expand(&mut self, ordinal: Option<usize>) -> Result<(), String> {
-        let at = self.entries.iter().rposition(
-            |e| matches!(e, Entry::Tool { ordinal: o, .. } if ordinal.is_none_or(|n| n == *o)),
-        );
-        let Some(i) = at else {
-            return Err(match ordinal {
-                Some(n) => format!(
-                    "there is no tool call number {n} to expand; numbers count from the start of the session and the calls /clear removed are gone"
-                ),
-                None => "there is no tool call to expand".to_string(),
-            });
+    /// Prints call `n` (the latest by default) or the latest reasoning card in full as new
+    /// lines. The last tool entry with that ordinal wins, so a settled follow-up is chosen over
+    /// its stale pending row.
+    pub fn expand(&mut self, target: ExpandTarget) -> Result<(), String> {
+        let at = match target {
+            ExpandTarget::Thinking => {
+                let Some(i) = self
+                    .entries
+                    .iter()
+                    .rposition(|e| matches!(e, Entry::Reasoning { .. }))
+                else {
+                    return Err("there is no reasoning to expand".to_string());
+                };
+                if matches!(
+                    self.entries[i],
+                    Entry::Reasoning {
+                        streaming: true,
+                        ..
+                    }
+                ) {
+                    return Err(
+                        "the reasoning is still streaming; /expand thinking works once it settles"
+                            .to_string(),
+                    );
+                }
+                i
+            }
+            ExpandTarget::Latest | ExpandTarget::Call(_) => {
+                let ordinal = match target {
+                    ExpandTarget::Call(n) => Some(n),
+                    _ => None,
+                };
+                let at = self.entries.iter().rposition(|e| {
+                    matches!(e, Entry::Tool { ordinal: o, .. } if ordinal.is_none_or(|n| n == *o))
+                });
+                let Some(i) = at else {
+                    return Err(match ordinal {
+                        Some(n) => format!(
+                            "there is no tool call number {n} to expand; numbers count from the start of the session and the calls /clear removed are gone"
+                        ),
+                        None => "there is no tool call to expand".to_string(),
+                    });
+                };
+                i
+            }
         };
-        let call = self.entries[i].clone();
+        let card = self.entries[at].clone();
         self.finish_streaming();
-        self.entries.push(Entry::Expanded(Box::new(call)));
+        self.entries.push(Entry::Expanded(Box::new(card)));
         Ok(())
     }
 
@@ -517,7 +705,8 @@ impl Transcript {
     /// only once nothing older is left and the live area is still over budget; its outcome then
     /// reaches scrollback as a follow-up line. A streaming reply that would keep the live area
     /// over budget is released too, so the tail the screen shows never hides rows that are not
-    /// in scrollback. A streaming reply is cut at a row, keeping its last row live; a cut inside a
+    /// in scrollback. A streaming reasoning card stays live whatever the budget: it is written once,
+    /// folded, when it settles. A streaming reply is cut at a row, keeping its last row live; a cut inside a
     /// rendered block runs on to the block's end.
     pub fn commit_within(
         &mut self,
@@ -544,6 +733,15 @@ impl Transcript {
                     self.committed_chars = *end;
                     out.extend(rows.into_iter().map(|(line, _)| line));
                 }
+                break;
+            }
+            if matches!(
+                entry,
+                Entry::Reasoning {
+                    streaming: true,
+                    ..
+                }
+            ) {
                 break;
             }
             let before = out.len();
@@ -637,6 +835,9 @@ fn is_settled(entry: &Entry) -> bool {
     !matches!(
         entry,
         Entry::Assistant {
+            streaming: true,
+            ..
+        } | Entry::Reasoning {
             streaming: true,
             ..
         } | Entry::Tool {
@@ -774,8 +975,12 @@ fn entry_lines(
             out.extend(rows.into_iter().map(|(line, _)| line));
         }
         Entry::Tool { .. } => tool_lines(entry, width, false, theme, glyphs, out),
-        Entry::Expanded(call) => {
-            tool_lines(call, width, true, theme, glyphs, out);
+        Entry::Reasoning { .. } => reasoning_lines(entry, width, false, out),
+        Entry::Expanded(card) => {
+            match &**card {
+                Entry::Reasoning { .. } => reasoning_lines(card, width, true, out),
+                _ => tool_lines(card, width, true, theme, glyphs, out),
+            }
             out.push(Line::default());
         }
         Entry::Notice {
@@ -806,6 +1011,92 @@ pub(crate) fn tail_lines(text: &str, rows: usize) -> (Vec<&str>, usize) {
     let lines: Vec<&str> = text.split('\n').collect();
     let skipped = lines.len().saturating_sub(rows);
     (lines[skipped..].to_vec(), skipped)
+}
+
+/// The reasoning card: a `thinking` header over dim italic rows. A streaming card shows its last
+/// rows, a settled one its first rows and an `expand:` footer when it was cut; `full` is the
+/// `/expand` form, which folds nothing.
+fn reasoning_lines(entry: &Entry, width: usize, full: bool, out: &mut Vec<Line<'static>>) {
+    let Entry::Reasoning {
+        text,
+        live,
+        streaming,
+        clipped,
+        ..
+    } = entry
+    else {
+        return;
+    };
+    let source = if *streaming { live } else { text };
+    if source.trim().is_empty() && !*streaming {
+        return;
+    }
+    let style = Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC);
+    out.push(Line::styled("thinking", style));
+    let body = width.saturating_sub(2).max(1);
+    let lines: Vec<&str> = source.trim_end_matches('\n').split('\n').collect();
+    let push = |out: &mut Vec<Line<'static>>, piece: &str| {
+        out.push(Line::from(vec![
+            Span::styled("  ", style),
+            Span::styled(piece.to_string(), style),
+        ]));
+    };
+    let mut cut = false;
+    if full {
+        for line in &lines {
+            for piece in wrap(line, body) {
+                push(out, &piece);
+            }
+        }
+        if *clipped {
+            push(
+                out,
+                &format!(
+                    "… clipped: only the first and last {} KiB of the reasoning are kept",
+                    OUTPUT_KEEP_BYTES / 2048
+                ),
+            );
+        }
+    } else if *streaming {
+        // Wrap from the end so a long buffer costs only the rows shown.
+        let mut tail: Vec<Vec<String>> = Vec::new();
+        let mut count = 0;
+        for line in lines.iter().rev() {
+            if count >= REASONING_ROWS {
+                break;
+            }
+            let wrapped = wrap(line, body);
+            count += wrapped.len();
+            tail.push(wrapped);
+        }
+        let rows: Vec<String> = tail.into_iter().rev().flatten().collect();
+        for piece in &rows[rows.len().saturating_sub(REASONING_ROWS)..] {
+            push(out, piece);
+        }
+    } else {
+        let mut shown = 0;
+        'lines: for line in &lines {
+            for piece in wrap(line, body) {
+                if shown == REASONING_ROWS {
+                    cut = true;
+                    break 'lines;
+                }
+                push(out, &piece);
+                shown += 1;
+            }
+        }
+        cut |= *clipped;
+    }
+    if cut {
+        out.push(Line::styled("  expand: /expand thinking", style));
+    }
+}
+
+/// The first `rows` lines of `text` and how many came after them.
+pub(crate) fn head_lines(text: &str, rows: usize) -> (Vec<&str>, usize) {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let after = lines.len().saturating_sub(rows);
+    (lines[..lines.len() - after].to_vec(), after)
 }
 
 /// A tool call: its outcome row and, once it has settled, the whole call, its diff and the end of
@@ -1935,7 +2226,7 @@ mod tests {
         );
         result_with(&mut t, "b", "shell", true, &numbered(14));
         t.commit(40, &theme());
-        t.expand(None).unwrap();
+        t.expand(ExpandTarget::Latest).unwrap();
         let rows = text(&t.commit(40, &theme()));
         assert_eq!(rows[0], "• shell ✓");
         assert_eq!(
@@ -1952,12 +2243,12 @@ mod tests {
         assert_eq!(rows[19], "  │ row 14");
         assert_eq!(rows[20], "");
         assert_eq!(rows.len(), 21);
-        t.expand(Some(1)).unwrap();
+        t.expand(ExpandTarget::Call(1)).unwrap();
         assert_eq!(
             text(&t.commit(40, &theme())),
             vec!["• shell first ✓", "  │ one", ""]
         );
-        assert!(t.expand(Some(9)).is_err());
+        assert!(t.expand(ExpandTarget::Call(9)).is_err());
     }
 
     #[test]
@@ -1967,7 +2258,7 @@ mod tests {
         t.notice("after");
         t.commit_within(40, &theme(), 1);
         result_with(&mut t, "a", "shell", true, "out");
-        t.expand(Some(1)).unwrap();
+        t.expand(ExpandTarget::Call(1)).unwrap();
         let Some(Entry::Expanded(inner)) = t.entries.last() else {
             panic!("an expanded entry");
         };
@@ -1980,7 +2271,7 @@ mod tests {
             }
         ));
         t.clear();
-        assert!(t.expand(Some(1)).is_err());
+        assert!(t.expand(ExpandTarget::Call(1)).is_err());
         call_with(&mut t, "b", "shell", serde_json::json!({"command": "go"}));
         let Entry::Tool { ordinal, .. } = &t.entries[0] else {
             panic!("a tool entry");
@@ -2052,5 +2343,306 @@ mod tests {
         let again = text(&t.commit(40, &theme()));
         assert_eq!(again, text(&t.lines(40, &theme())));
         assert_eq!(again.iter().filter(|row| row.contains("shell")).count(), 1);
+    }
+
+    fn think(t: &mut Transcript, s: &str) {
+        t.on_event(SessionEvent::ReasoningDelta(s.into()));
+    }
+
+    fn reasoning_text(t: &Transcript, i: usize) -> (&str, bool) {
+        let Entry::Reasoning {
+            text, streaming, ..
+        } = &t.entries[i]
+        else {
+            panic!("a reasoning entry at {i}: {:?}", t.entries);
+        };
+        (text, *streaming)
+    }
+
+    #[test]
+    fn reasoning_deltas_accumulate_into_one_card_after_the_user_entry() {
+        let mut t = Transcript::default();
+        t.user("q".into());
+        think(&mut t, "let me ");
+        think(&mut t, "think");
+        assert_eq!(t.entries.len(), 2);
+        assert!(matches!(t.entries[0], Entry::User(_)));
+        assert_eq!(reasoning_text(&t, 1), ("let me think", true));
+        t.on_event(SessionEvent::Reasoning("let me think".into()));
+        assert_eq!(t.entries.len(), 2);
+        assert_eq!(reasoning_text(&t, 1), ("let me think", false));
+    }
+
+    #[test]
+    fn reasoning_and_text_settle_each_other() {
+        let mut t = Transcript::default();
+        think(&mut t, "hm");
+        delta(&mut t, "answer");
+        assert_eq!(reasoning_text(&t, 0), ("hm", false));
+        think(&mut t, "more");
+        assert!(matches!(
+            t.entries[1],
+            Entry::Assistant {
+                streaming: false,
+                ..
+            }
+        ));
+        assert_eq!(reasoning_text(&t, 2), ("more", true));
+        t.on_event(SessionEvent::ToolCall {
+            id: "a".into(),
+            tool: "shell".into(),
+            args: serde_json::json!({"command": "ls"}),
+        });
+        assert_eq!(reasoning_text(&t, 2), ("more", false));
+    }
+
+    #[test]
+    fn a_late_settled_reasoning_replaces_the_earlier_card_and_stays_one() {
+        let mut t = Transcript::default();
+        think(&mut t, "par");
+        delta(&mut t, "answer");
+        t.on_event(SessionEvent::Assistant("answer".into()));
+        t.on_event(SessionEvent::Reasoning("partial and full".into()));
+        assert_eq!(t.entries.len(), 2);
+        assert_eq!(reasoning_text(&t, 0), ("partial and full", false));
+    }
+
+    #[test]
+    fn interleaved_reasoning_and_tool_calls_stay_separate_cards() {
+        let mut t = Transcript::default();
+        think(&mut t, "first");
+        t.on_event(SessionEvent::Reasoning("first".into()));
+        t.on_event(SessionEvent::ToolCall {
+            id: "a".into(),
+            tool: "shell".into(),
+            args: serde_json::json!({"command": "ls"}),
+        });
+        think(&mut t, "second");
+        t.on_event(SessionEvent::Reasoning("second".into()));
+        let cards: Vec<_> = t
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Reasoning { .. }))
+            .collect();
+        assert_eq!(cards.len(), 2);
+        assert_eq!(reasoning_text(&t, 0), ("first", false));
+        assert_eq!(reasoning_text(&t, 2), ("second", false));
+    }
+
+    #[test]
+    fn a_reasoning_without_deltas_is_a_card_of_its_own() {
+        let mut t = Transcript::default();
+        t.on_event(SessionEvent::Reasoning("whole".into()));
+        assert_eq!(reasoning_text(&t, 0), ("whole", false));
+    }
+
+    #[test]
+    fn a_late_settled_reasoning_for_a_card_in_scrollback_is_ignored() {
+        let mut t = Transcript::default();
+        think(&mut t, "old");
+        delta(&mut t, "answer");
+        t.commit(40, &theme());
+        assert_eq!(t.committed, 1);
+        t.on_event(SessionEvent::Reasoning("old, restated".into()));
+        assert_eq!(reasoning_text(&t, 0), ("old", false));
+        assert_eq!(t.entries.len(), 2);
+    }
+
+    #[test]
+    fn empty_settled_reasoning_is_dropped() {
+        let mut t = Transcript::default();
+        t.on_event(SessionEvent::Reasoning(String::new()));
+        assert!(t.entries.is_empty());
+        think(&mut t, "");
+        t.on_event(SessionEvent::Reasoning("  \n".into()));
+        assert!(t.entries.is_empty());
+        think(&mut t, "");
+        t.interrupt_pending();
+        assert!(t.entries.is_empty());
+        assert!(t.commit(40, &theme()).is_empty());
+    }
+
+    #[test]
+    fn show_reasoning_false_drops_both_events() {
+        let mut t = Transcript {
+            show_reasoning: false,
+            ..Transcript::default()
+        };
+        think(&mut t, "hidden");
+        t.on_event(SessionEvent::Reasoning("hidden".into()));
+        assert!(t.entries.is_empty());
+        assert!(Transcript::default().show_reasoning);
+    }
+
+    #[test]
+    fn a_streaming_card_shows_its_last_five_rows_and_a_settled_one_its_first_five() {
+        let mut t = Transcript::default();
+        think(&mut t, &numbered_lines(8));
+        let live = text(&t.live_lines(40, &theme()));
+        assert_eq!(
+            live,
+            [
+                "thinking", "  line 4", "  line 5", "  line 6", "  line 7", "  line 8"
+            ]
+        );
+        assert!(t.commit(40, &theme()).is_empty());
+        t.on_event(SessionEvent::Reasoning(numbered_lines(8)));
+        let settled = text(&t.commit(40, &theme()));
+        assert_eq!(
+            settled,
+            [
+                "thinking",
+                "  line 1",
+                "  line 2",
+                "  line 3",
+                "  line 4",
+                "  line 5",
+                "  expand: /expand thinking"
+            ]
+        );
+    }
+
+    fn numbered_lines(n: usize) -> String {
+        (1..=n)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_short_settled_card_has_no_footer() {
+        let mut t = Transcript::default();
+        t.on_event(SessionEvent::Reasoning(numbered_lines(5)));
+        let rows = text(&t.commit(40, &theme()));
+        assert_eq!(rows.len(), 6);
+        assert!(!rows.iter().any(|r| r.contains("expand")));
+    }
+
+    #[test]
+    fn reasoning_control_characters_are_stripped() {
+        let mut t = Transcript::default();
+        think(&mut t, "a\x1b[2Jb\x07");
+        let live = text(&t.live_lines(40, &theme())).join("\n");
+        assert!(!live.contains('\x1b') && !live.contains('\x07'), "{live:?}");
+        t.on_event(SessionEvent::Reasoning("a\x1b[2Jb\x07".into()));
+        let (kept, _) = reasoning_text(&t, 0);
+        assert!(!kept.contains('\x1b') && !kept.contains('\x07'), "{kept:?}");
+    }
+
+    #[test]
+    fn an_over_budget_live_area_does_not_commit_a_streaming_reasoning_card() {
+        let mut t = Transcript::default();
+        t.notice("older");
+        think(&mut t, &numbered_lines(8));
+        let out = t.commit_within(40, &theme(), 50);
+        assert_eq!(out.len(), 1);
+        assert_eq!(t.committed, 1);
+        assert!(matches!(
+            t.entries[1],
+            Entry::Reasoning {
+                streaming: true,
+                ..
+            }
+        ));
+        t.on_event(SessionEvent::Reasoning(numbered_lines(8)));
+        let out = t.commit_within(40, &theme(), 50);
+        assert_eq!(out.len(), 7);
+        assert_eq!(t.committed, 2);
+    }
+
+    #[test]
+    fn streaming_reasoning_memory_is_bounded_and_a_straddling_credential_is_masked() {
+        let mut t = Transcript::default();
+        let key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";
+        let lead = format!("{} ", "x".repeat(OUTPUT_KEEP_BYTES / 2 - 11));
+        think(
+            &mut t,
+            &format!("{lead}{key} {}", "y".repeat(OUTPUT_KEEP_BYTES * 3)),
+        );
+        let Entry::Reasoning {
+            text,
+            live,
+            clipped,
+            ..
+        } = &t.entries[0]
+        else {
+            panic!("a reasoning entry");
+        };
+        assert!(*clipped);
+        assert!(text.len() <= OUTPUT_KEEP_BYTES + 16, "{}", text.len());
+        assert!(!text.contains("sk-ant") && !text.contains("abcdefghij"));
+        assert!(!live.contains("abcdefghij"));
+        for _ in 0..40 {
+            think(&mut t, &"z".repeat(OUTPUT_KEEP_BYTES / 4));
+        }
+        let Entry::Reasoning { text, .. } = &t.entries[0] else {
+            panic!("a reasoning entry");
+        };
+        assert!(text.len() <= 2 * OUTPUT_KEEP_BYTES + OUTPUT_KEEP_BYTES / 4);
+    }
+
+    #[test]
+    fn settling_clips_long_reasoning_and_redacts_before_cutting() {
+        let mut t = Transcript::default();
+        let key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";
+        let lead = format!("{} ", "x".repeat(OUTPUT_KEEP_BYTES / 2 - 11));
+        t.on_event(SessionEvent::Reasoning(format!(
+            "{lead}{key} {}",
+            "y".repeat(OUTPUT_KEEP_BYTES)
+        )));
+        let Entry::Reasoning { text, clipped, .. } = &t.entries[0] else {
+            panic!("a reasoning entry");
+        };
+        assert!(*clipped);
+        assert!(!text.contains("sk-ant") && !text.contains("abcdefghij"));
+    }
+
+    #[test]
+    fn expand_thinking_prints_the_whole_settled_text_and_the_clip_notice() {
+        let mut t = Transcript::default();
+        assert_eq!(
+            t.expand(ExpandTarget::Thinking),
+            Err("there is no reasoning to expand".to_string())
+        );
+        think(&mut t, "one\ntwo");
+        assert_eq!(
+            t.expand(ExpandTarget::Thinking),
+            Err(
+                "the reasoning is still streaming; /expand thinking works once it settles"
+                    .to_string()
+            )
+        );
+        t.on_event(SessionEvent::Reasoning(numbered_lines(9)));
+        t.commit(40, &theme());
+        t.expand(ExpandTarget::Thinking).unwrap();
+        let rows = text(&t.commit(40, &theme()));
+        assert_eq!(rows.len(), 1 + 9 + 1);
+        assert_eq!(rows[0], "thinking");
+        assert_eq!(rows[9], "  line 9");
+        assert_eq!(rows[10], "");
+
+        let mut big = Transcript::default();
+        big.on_event(SessionEvent::Reasoning("w\n".repeat(OUTPUT_KEEP_BYTES)));
+        big.expand(ExpandTarget::Thinking).unwrap();
+        let shown = text(&big.lines(40, &theme()));
+        assert!(
+            shown
+                .iter()
+                .any(|r| r.contains("… clipped: only the first and last 32 KiB")),
+            "{:?}",
+            &shown[shown.len() - 4..]
+        );
+    }
+
+    #[test]
+    fn bare_expand_still_means_the_latest_tool_call_when_reasoning_is_newer() {
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+        t.on_event(SessionEvent::Reasoning("later".into()));
+        t.expand(ExpandTarget::Latest).unwrap();
+        assert!(matches!(
+            t.entries.last(),
+            Some(Entry::Expanded(card)) if matches!(**card, Entry::Tool { .. })
+        ));
     }
 }

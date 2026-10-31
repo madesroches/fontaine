@@ -15,7 +15,9 @@ use ratatui::text::Line;
 
 use crate::app::App;
 use crate::todo_panel;
-use crate::transcript::{Cut, Entry, OUTPUT_ROWS, Settled, ToolStatus, tail_lines};
+use crate::transcript::{
+    Cut, Entry, OUTPUT_ROWS, REASONING_ROWS, Settled, ToolStatus, head_lines, tail_lines,
+};
 use crate::view;
 
 const SELECTED: &str = "selected: ";
@@ -248,6 +250,13 @@ fn label(settled: &Settled<'_>, out: &mut Vec<String>) {
                 out.extend(piece.split('\n').map(str::to_string));
             }
         }
+        Entry::Reasoning { text, clipped, .. } => {
+            let (rows, skipped) = head_lines(text.trim_end_matches('\n'), REASONING_ROWS);
+            labelled("thinking:", &rows.join("\n"), out);
+            if skipped > 0 || *clipped {
+                out.push("expand: /expand thinking".into());
+            }
+        }
         Entry::Tool {
             tool,
             summary,
@@ -287,6 +296,13 @@ fn label(settled: &Settled<'_>, out: &mut Vec<String>) {
             }
         }
         Entry::Expanded(call) => {
+            if let Entry::Reasoning { text, clipped, .. } = &**call {
+                labelled("thinking:", text.trim_end_matches('\n'), out);
+                if *clipped {
+                    out.push("… clipped: only the start and end of the reasoning are kept".into());
+                }
+                return;
+            }
             let Entry::Tool {
                 tool,
                 status,
@@ -510,6 +526,7 @@ impl<W: Write> Linear<W> {
 mod tests {
     use super::*;
     use crate::app::Input;
+    use crate::commands::ExpandTarget;
     use crate::model_picker::{Group, ModelPicker, PickerPurpose};
     use fontaine_core::models::ModelRef;
     use fontaine_core::permissions::{ApprovalRequest, Offers};
@@ -987,13 +1004,36 @@ mod tests {
         assert_eq!(lines[2], "row 5");
         assert_eq!(lines[11], "row 14");
         assert_eq!(lines[12], "expand: /expand 1");
-        rig.app.transcript.expand(None).unwrap();
+        rig.app.transcript.expand(ExpandTarget::Latest).unwrap();
         let out = rig.render();
         let lines: Vec<&str> = out.split("\r\n").collect();
         assert!(lines[0].ends_with("tool: shell — done"), "{lines:?}");
         assert_eq!(lines[1], "go");
         assert_eq!(lines[2], "row 1");
         assert_eq!(lines[15], "row 14");
+    }
+
+    #[test]
+    fn reasoning_prints_once_settled_folded_with_an_expand_hint() {
+        let mut rig = Rig::new();
+        rig.render();
+        let rows: Vec<String> = (1..=7).map(|i| format!("step {i}")).collect();
+        rig.app
+            .transcript
+            .on_event(SessionEvent::ReasoningDelta(rows.join("\n")));
+        let out = rig.render();
+        assert!(!out.contains("thinking:"), "{out:?}");
+        rig.app
+            .transcript
+            .on_event(SessionEvent::Reasoning(rows.join("\n")));
+        let out = rig.render();
+        let lines: Vec<&str> = out.split("\r\n").collect();
+        assert!(lines[0].ends_with("thinking: step 1"), "{lines:?}");
+        assert_eq!(lines[4], "step 5");
+        assert_eq!(lines[5], "expand: /expand thinking");
+        rig.app.transcript.expand(ExpandTarget::Thinking).unwrap();
+        let out = rig.render();
+        assert!(out.contains("step 7"), "{out:?}");
     }
 
     #[test]
