@@ -784,13 +784,11 @@ async fn notices_from_outside_the_session_show_up_and_wait_across_a_session_swit
         "plugin `review` updated to abc1234; active next session",
     ))
     .unwrap();
+    // The feed reaches the screen on its own task, so an idle prompt does not mean the notice
+    // has been drained yet: wait for the notice itself.
     w.run(|ui| async move {
-        idle(&ui).await;
-        let live = ui.live();
-        assert!(
-            live.contains("plugin `review` updated to abc1234; active next session"),
-            "{live}"
-        );
+        ui.wait_for_live("plugin `review` updated to abc1234; active next session")
+            .await;
     })
     .await;
 
@@ -802,13 +800,9 @@ async fn notices_from_outside_the_session_show_up_and_wait_across_a_session_swit
     ))
     .unwrap();
     w.run(|ui| async move {
-        idle(&ui).await;
-        let live = ui.live();
-        assert!(
-            live.contains("plugin `review` has a new revision")
-                && live.contains("run `fontaine plugin update review`"),
-            "{live}"
-        );
+        ui.wait_for_live("plugin `review` has a new revision").await;
+        ui.wait_for_live("run `fontaine plugin update review`")
+            .await;
     })
     .await;
 }
