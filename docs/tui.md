@@ -277,25 +277,33 @@ opens, and key repeats never answer, so text typed ahead during a turn cannot ap
 
 The model can stop and ask you 1 to 4 multiple-choice questions with `ask_user_question`. A dialog
 shows one question at a time: a header chip, the question and numbered options with their
-descriptions, then an "Other" row for your own words.
+descriptions, then an "Other" row holding a text field for your own words. The field is always
+visible; the highlight marks where your keys go. On an option row the keys choose, on the "Other"
+row they type.
 
 | Key | Action |
 |---|---|
 | Up, Down, Tab, `j`, `k` | Move the highlight. |
 | `1`-`9` | Jump to that row. |
-| Space | Toggle the highlighted option, when the question allows several. On "Other" it opens the field for your text. |
-| Enter | Choose the option (several: confirm the toggled ones) and go to the next question. On "Other", opens a field for your text. |
-| Esc | Decline the whole call and discard the answers already given. Inside the "Other" field it only leaves the field. |
+| Space | Toggle the highlighted option, when the question allows several. |
+| Enter | Choose the option (several: confirm the toggled ones) and go to the next question, together with any text in the field as a note. On "Other" with text, submit the text (several: combined with the toggled options). |
+| Esc | Decline the whole call and discard the answers already given. On "Other" it only moves the highlight back to the options. |
 
-With several selections allowed, "Other" text is added to the toggled options. An answer needs at
-least one selection or some text. Enter, Esc and the letter and number keys are ignored for the
-first 400 ms after a dialog opens, and key repeats never answer, so text typed ahead during a turn
-cannot answer for you. Esc here declines the question rather than interrupting the turn; Ctrl-C
-still interrupts, and answers the question as declined. Only the main conversation asks: questions
-queue behind each other, and behind an open approval prompt, which takes the keys first. Declining
-tells the model so, and it carries on with its best judgment or asks in plain text. The words you
-type under "Other" are recorded as your message, so the [guardian](guardian.md#what-the-guardian-sees) reads
-them as intent; the options you pick are not.
+Typing a character while the highlight is on an option row drops straight into the field: the
+highlight jumps to the "Other" row and the character starts your answer. Once the highlight is
+there, every printable character — digits, `j`, `k` and Space included — goes into the field;
+arrows and Tab move the highlight off it, and the text stays when you leave. Leaving and coming
+back works: text typed alongside a chosen option is submitted with it as a note. An answer needs
+at least one selection or some text, so Enter on the "Other" row with an empty field does
+nothing — with several selections allowed, confirm the toggled options with Enter on an option
+row. Enter, Esc and the letter and number keys are ignored for the first 400 ms after a dialog
+opens, and key repeats never answer, so text typed ahead during a turn cannot answer for you. Esc
+here declines the question rather than interrupting the turn; Ctrl-C still interrupts, and
+answers the question as declined. Only the main conversation asks: questions queue behind each
+other, and behind an open approval prompt, which takes the keys first. Declining tells the model
+so, and it carries on with its best judgment or asks in plain text. The words you type under
+"Other" are recorded as your message, so the [guardian](guardian.md#what-the-guardian-sees) reads
+them as intent — a note on a choice included; the options you pick are not.
 
 ## When the guardian asks
 

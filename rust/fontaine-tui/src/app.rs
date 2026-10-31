@@ -1841,16 +1841,34 @@ mod tests {
     }
 
     #[test]
-    fn esc_while_typing_other_only_leaves_the_field() {
+    fn esc_leaving_the_other_row_does_not_answer_and_esc_elsewhere_declines() {
         let mut app = app();
         app.running = true;
         let mut rx = open_question(&mut app, "root", false);
-        press(&mut app, KeyCode::Char('3'));
-        press(&mut app, KeyCode::Enter);
-        assert!(app.questions[0].is_typing());
-        type_text(&mut app, "mine");
+        press(&mut app, KeyCode::Char('m'));
+        type_text(&mut app, "ine");
+        let highlighted = |app: &App| -> Option<String> {
+            app.questions[0]
+                .body(80, 20, &Theme::default())
+                .iter()
+                .find(|line| {
+                    line.style
+                        .add_modifier
+                        .contains(ratatui::style::Modifier::REVERSED)
+                })
+                .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+        };
+        assert_eq!(
+            highlighted(&app).as_deref(),
+            Some("3. Other: mine▏"),
+            "typing landed on the Other row"
+        );
         assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
-        assert!(!app.questions[0].is_typing());
+        assert_eq!(
+            highlighted(&app).as_deref(),
+            Some("1. a"),
+            "Esc moves the highlight back to the options without answering"
+        );
         assert!(rx.try_recv().is_err());
         press(&mut app, KeyCode::Esc);
         assert_eq!(rx.try_recv().unwrap(), QuestionReply::Declined);
