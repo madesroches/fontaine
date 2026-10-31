@@ -188,7 +188,7 @@ pub struct Registry {
     pub plugin: Vec<InstalledPlugin>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MarketplaceEntry {
     pub name: String,
@@ -196,9 +196,15 @@ pub struct MarketplaceEntry {
     pub url: String,
     /// Pinned catalog commit; a content hash for a local directory.
     pub pin: String,
+    /// `Some(false)` opts this marketplace out of auto-update; absent follows `[plugins]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_update: Option<bool>,
+    /// A validated revision waiting in `.staged-<name>` for the next interactive start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged_pin: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstalledPlugin {
     pub name: String,
@@ -209,6 +215,33 @@ pub struct InstalledPlugin {
     /// Pinned install commit; a path source shares the marketplace's pin.
     pub pin: String,
     pub enabled: bool,
+    /// Fingerprint of the executable surface the user saw at install or at the last manual
+    /// update; an entry without one (installed by an older build) is never auto-updated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved: Option<String>,
+    /// A newer revision auto-update refused to apply because its executable surface differs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_pin: Option<String>,
+    /// A validated revision waiting in `.staged-<name>` for the next interactive start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged_pin: Option<String>,
+    /// `Some(false)` opts this plugin out of auto-update; absent follows `[plugins]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_update: Option<bool>,
+}
+
+/// Where a validated revision waits beside the live checkout until the next start swaps it in.
+pub fn staged_dir(checkout: &Path) -> PathBuf {
+    sibling(checkout, ".staged-", "")
+}
+
+/// A sibling of `checkout` named `<prefix><checkout name><suffix>`.
+fn sibling(checkout: &Path, prefix: &str, suffix: &str) -> PathBuf {
+    let name = checkout.file_name().unwrap_or_default().to_string_lossy();
+    checkout
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{prefix}{name}{suffix}"))
 }
 
 /// A parsed marketplace catalog.
@@ -2046,6 +2079,16 @@ impl crate::config::Config {
 /// git operation does not. Symlinks are followed, so the hash covers what `copy_tree` copies;
 /// directory cycles through symlinks are cut at the second visit.
 pub fn content_hash(dir: &Path) -> Result<String, String> {
+    tree_hash(dir, &|_| false, &|_, bytes| bytes)
+}
+
+/// [`content_hash`] over the files `skip` does not name (by path relative to `dir`), each file's
+/// bytes passed through `normalize` first.
+fn tree_hash(
+    dir: &Path,
+    skip: &dyn Fn(&Path) -> bool,
+    normalize: &dyn Fn(&Path, Vec<u8>) -> Vec<u8>,
+) -> Result<String, String> {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     let mut visited = std::collections::HashSet::new();
@@ -2075,7 +2118,7 @@ pub fn content_hash(dir: &Path) -> Result<String, String> {
                 if visited.insert(real) {
                     stack.push(path);
                 }
-            } else if is_file {
+            } else if is_file && !skip(path.strip_prefix(dir).unwrap_or(&path)) {
                 files.push(path);
             }
         }
@@ -2092,14 +2135,218 @@ pub fn content_hash(dir: &Path) -> Result<String, String> {
         hasher.update([0]);
         let bytes =
             std::fs::read(&file).map_err(|e| format!("cannot read {}: {}", file.display(), e))?;
-        hasher.update(bytes);
+        hasher.update(normalize(&file, bytes));
         hasher.update([0]);
     }
-    Ok(hasher
+    Ok(hex(hasher))
+}
+
+fn hex(hasher: Sha256) -> String {
+    hasher
         .finalize()
         .iter()
         .map(|b| format!("{b:02x}"))
-        .collect())
+        .collect()
+}
+
+/// A JSON value rendered with object keys in sorted order, so two spellings of the same
+/// definition render identically.
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let fields: Vec<String> = keys
+                .into_iter()
+                .map(|key| {
+                    format!(
+                        "{}:{}",
+                        Value::String(key.clone()),
+                        canonical_json(&map[key])
+                    )
+                })
+                .collect();
+            format!("{{{}}}", fields.join(","))
+        }
+        Value::Array(items) => {
+            let items: Vec<String> = items.iter().map(canonical_json).collect();
+            format!("[{}]", items.join(","))
+        }
+        other => other.to_string(),
+    }
+}
+
+/// A definition file as hashed: canonical JSON when it parses, the raw text otherwise, and a
+/// marker when it is absent, so adding or removing the file changes the fingerprint.
+fn definition_text(path: &Path) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(text) => match serde_json::from_str::<Value>(&text) {
+            Ok(value) => canonical_json(&value),
+            Err(_) => text,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "\u{0}absent".to_string(),
+        Err(e) => format!("\u{0}unreadable:{:?}", e.kind()),
+    }
+}
+
+/// The `${NAME}` references in `text`, minus the two the loader always supplies.
+fn referenced_vars(text: &str, into: &mut BTreeSet<String>) {
+    let mut rest = text;
+    while let Some(at) = rest.find("${") {
+        let after = &rest[at + 2..];
+        let Some(end) = after.find('}') else {
+            break;
+        };
+        let name = &after[..end];
+        if name != "CLAUDE_PLUGIN_ROOT" && name != "CLAUDE_PROJECT_DIR" {
+            into.insert(name.to_string());
+        }
+        rest = &after[end + 1..];
+    }
+}
+
+/// The `!` command lines of the plugin's skills and commands, as (file relative to the plugin
+/// root, command), read from the raw bodies before any argument substitution and sorted. A skill
+/// runs these through the shell tool when it is invoked.
+pub fn skill_commands(dir: &PluginDir) -> Result<Vec<(String, String)>, String> {
+    let canonical_root = dir
+        .root
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", dir.root.display()))?;
+    let mut out = Vec::new();
+    for file in dir.skills.iter().chain(&dir.commands) {
+        let text = std::fs::read_to_string(&file.path)
+            .map_err(|e| format!("cannot read {}: {e}", file.path.display()))?;
+        let rel = file
+            .path
+            .strip_prefix(&canonical_root)
+            .unwrap_or(&file.path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        for part in crate::skills::parts(&text) {
+            if let crate::skills::Part::Command(command) = part {
+                out.push((rel.clone(), command));
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// A stable hash of everything a plugin checkout can make Fontaine execute, for deciding whether
+/// an update changes what the user approved at install. It covers the unexpanded hook, MCP and
+/// LSP definitions (the default files, the manifest's `hooks`, `mcpServers` and `lspServers`
+/// values and the files they name), the `${VAR}` names they reference, the `!` command lines of
+/// skills and commands, and the content of every non-markdown file (JSON as its parsed value), so a
+/// script a hook or server runs under `${CLAUDE_PLUGIN_ROOT}` is covered too. Skill, agent, style and command prose is
+/// left out, so ordinary content edits flow through. An `Err` means the checkout could not be
+/// read; the caller treats that as "changed".
+///
+/// The built [`PluginBuild`] is deliberately not hashed: its values are already expanded against
+/// the per-run checkout path and the environment, so they would never match between runs.
+pub fn approval_fingerprint(plugin_root: &Path) -> Result<String, String> {
+    let manifest_path = plugin_root.join(MANIFEST_FILE);
+    let manifest_text = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("cannot read {}: {e}", manifest_path.display()))?;
+    let manifest: Value = serde_json::from_str(&manifest_text)
+        .map_err(|e| format!("{} is not JSON: {e}", manifest_path.display()))?;
+
+    let mut hasher = Sha256::new();
+    let mut section = |label: &str, text: &str| {
+        hasher.update(label.as_bytes());
+        hasher.update([0]);
+        hasher.update(text.as_bytes());
+        hasher.update([0]);
+    };
+    let mut vars = BTreeSet::new();
+
+    for file in [HOOKS_FILE, MCP_FILE, LSP_FILE] {
+        let text = definition_text(&plugin_root.join(file));
+        referenced_vars(&text, &mut vars);
+        section(file, &text);
+    }
+    for key in ["hooks", "mcpServers", "lspServers"] {
+        let Some(value) = manifest.get(key) else {
+            continue;
+        };
+        let text = canonical_json(value);
+        referenced_vars(&text, &mut vars);
+        section(&format!("manifest {key}"), &text);
+        // A path (or list of paths) names files that merge over the defaults.
+        let rels: Vec<&str> = match value {
+            Value::String(rel) => vec![rel.as_str()],
+            Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
+        };
+        for rel in rels {
+            let text = definition_text(&plugin_root.join(rel));
+            referenced_vars(&text, &mut vars);
+            section(&format!("manifest {key} file {rel}"), &text);
+        }
+    }
+    section(
+        "variables",
+        &vars.iter().cloned().collect::<Vec<_>>().join("\n"),
+    );
+
+    // The component lists come from the same discovery a session runs, without hashing its
+    // expanded output.
+    let name = manifest
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{} has no `name`", manifest_path.display()))?;
+    let ctx = PluginContext {
+        project_root: Path::new("."),
+        env: &|_| None,
+    };
+    let build = build_plugin(plugin_root, name, &ctx).map_err(|e| e.to_string())?;
+    let mut lines: Vec<String> = skill_commands(&build.dir)?
+        .into_iter()
+        .map(|(rel, command)| format!("{rel}\0{command}"))
+        .collect();
+    lines.sort();
+    section("skill commands", &lines.join("\n"));
+
+    // Markdown under the component bases is prompt text; markdown elsewhere (a script's
+    // template, a file a hook reads) can be executable surface, so it is hashed.
+    // Component paths are canonical (verbatim `\\?\` on Windows), so strip the canonical root.
+    let canonical_root = plugin_root
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", plugin_root.display()))?;
+    let mut bases: Vec<PathBuf> = Vec::new();
+    for (files, depth) in [
+        (&build.dir.skills, 1),
+        (&build.dir.commands, 0),
+        (&build.dir.agents, 0),
+        (&build.dir.styles, 0),
+    ] {
+        for file in files {
+            let mut base = file.path.parent();
+            for _ in 0..depth + file.segments.len() {
+                base = base.and_then(Path::parent);
+            }
+            if let Some(base) = base.and_then(|b| b.strip_prefix(&canonical_root).ok()) {
+                bases.push(base.to_path_buf());
+            }
+        }
+    }
+    // JSON is hashed as its parsed value, so reordered keys or reformatting are not a change.
+    let tree = tree_hash(
+        plugin_root,
+        &|rel| {
+            rel.extension().is_some_and(|e| e == "md") && bases.iter().any(|b| rel.starts_with(b))
+        },
+        &|path, bytes| {
+            if path.extension().is_some_and(|e| e == "json")
+                && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+            {
+                return canonical_json(&value).into_bytes();
+            }
+            bytes
+        },
+    )?;
+    section("files", &tree);
+    Ok(hex(hasher))
 }
 
 #[cfg(test)]
@@ -2280,6 +2527,7 @@ mod tests {
                 name: "team".to_string(),
                 url: "./team".to_string(),
                 pin: "a1b2c3".to_string(),
+                ..Default::default()
             }],
             plugin: vec![InstalledPlugin {
                 name: "review".to_string(),
@@ -2287,6 +2535,7 @@ mod tests {
                 source: "./plugins/review".to_string(),
                 pin: "d4e5f6".to_string(),
                 enabled: true,
+                ..Default::default()
             }],
         };
         let text = toml::to_string_pretty(&registry).unwrap();

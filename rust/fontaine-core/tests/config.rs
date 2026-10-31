@@ -1852,6 +1852,30 @@ fn the_checkpoint_caps_default_and_only_the_user_file_sets_them() {
 }
 
 #[test]
+fn plugin_auto_update_defaults_on_and_only_the_user_file_turns_it_off() {
+    let w = World::new();
+    assert!(w.load().unwrap().plugins.auto_update);
+
+    w.user_file("[plugins]\nauto_update = false\n");
+    assert!(!w.load().unwrap().plugins.auto_update);
+
+    // Project, project-local and the `--settings` layer all refuse it: updating changes code the
+    // user approved at install.
+    for column in [Column::Project, Column::ProjectLocal, Column::Cli] {
+        let err = parse_settings(
+            "[plugins]\nauto_update = false\n",
+            Path::new("p.toml"),
+            column,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
+    }
+    let settings = w.cli_file("[plugins]\nauto_update = false\n");
+    let err = w.load_with_settings(&settings).unwrap_err();
+    assert!(matches!(err, ConfigError::Scope { .. }), "{err}");
+}
+
+#[test]
 fn the_shell_timeout_cap_defaults_and_only_the_user_scopes_set_it() {
     let w = World::new();
     assert_eq!(w.load().unwrap().shell.max_timeout_secs, 600);

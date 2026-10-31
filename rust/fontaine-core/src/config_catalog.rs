@@ -444,6 +444,10 @@ pub const KEYS: &[KeyRow] = &[
         .checkpoints
         .max_session_bytes
         .to_string()),
+    row!("plugins.auto_update", Scalar, |c, _| c
+        .plugins
+        .auto_update
+        .to_string()),
     row!("shell_preclassifier.allow_extra", List, |c, _| entries(
         c.shell_preclassifier_allow_extra.len()
     )),

@@ -2,6 +2,7 @@ mod auto_mode;
 pub mod cli;
 pub mod headless;
 mod plugin;
+mod plugin_auto_update;
 pub mod telemetry;
 
 use std::ffi::OsString;
@@ -347,6 +348,12 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
     if headless.is_some() {
         print_warnings(&std::mem::take(&mut prep.warnings));
     }
+    // The pass runs once per process, in the background, and only on the interactive surface.
+    // Its outcomes wait in the feed, which outlives any one session of a `/resume` chain.
+    let (plugin_notices, plugin_feed) = fontaine_tui::notice_feed();
+    if headless.is_none() && config.plugins.auto_update {
+        plugin_auto_update::spawn(dirs.clone(), shared_env(&host), plugin_notices);
+    }
 
     let export = telemetry::install(
         sink.as_ref(),
@@ -383,7 +390,10 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
                             &dirs,
                             &host,
                             screen_reader,
-                            std::mem::take(&mut ax_warnings),
+                            fontaine_tui::Notices {
+                                startup: std::mem::take(&mut ax_warnings),
+                                feed: Some(plugin_feed.clone()),
+                            },
                         )
                         .await
                     }
@@ -699,6 +709,15 @@ fn prepare_session(
     };
     // Last, so the scratch root stays the final root.
     roots.roots.extend(scratch_path.clone());
+    // Revisions an earlier run staged replace the live checkouts before anything loads them; a
+    // headless run neither stages nor swaps, so scripted runs see a fixed set of plugins.
+    if !cli.print && config.plugins.auto_update {
+        warnings.extend(
+            plugin_auto_update::apply_staged(&dirs.config, std::time::SystemTime::now())
+                .into_iter()
+                .map(|warning| Notice::warning(warning, None)),
+        );
+    }
     // Enabled plugins are third-party but user-installed: they load in the TUI and headless
     // alike, and install is the approval that lets their hooks, servers and skill commands run
     // without the workspace-trust gate.
@@ -997,8 +1016,12 @@ async fn run_interactive(
     dirs: &Dirs,
     host: &Host,
     screen_reader: Option<accessibility::Source>,
-    ax_warnings: Vec<Notice>,
+    notices: fontaine_tui::Notices,
 ) -> Outcome {
+    let fontaine_tui::Notices {
+        startup: ax_warnings,
+        feed,
+    } = notices;
     // Every exit before the screen draws leaves the warnings nowhere else to go.
     let bail = |prep: &SessionPrep| {
         print_warnings(&ax_warnings);
@@ -1060,7 +1083,17 @@ async fn run_interactive(
     let scanner = start_scanner(&launch, &prep, &models).await;
     let pending = (ax_warnings.clone(), prep.warnings.clone());
     let setup = agent_setup(&launch, prep, models, scanner, false, None);
-    match fontaine_tui::run(setup, host.cwd.clone(), screen_reader, ax_warnings).await {
+    match fontaine_tui::run(
+        setup,
+        host.cwd.clone(),
+        screen_reader,
+        fontaine_tui::Notices {
+            startup: ax_warnings,
+            feed,
+        },
+    )
+    .await
+    {
         Ok(fontaine_tui::DriveOutcome::Exit) => Outcome::Done(0),
         Ok(fontaine_tui::DriveOutcome::Switch(target)) => {
             Outcome::Switch(target, added.map(Box::new))

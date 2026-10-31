@@ -80,6 +80,8 @@ pub struct World {
     pub startup_warnings: Vec<fontaine_core::Notice>,
     /// Warnings the caller of `run` shows first (the ignored screen-reader setting).
     pub startup: Vec<fontaine_core::Notice>,
+    /// Notices produced outside the session, such as the plugin auto-update pass's.
+    pub feed: Option<fontaine_tui::NoticeFeed>,
     /// A `--settings` file, as the command line would name one.
     pub settings_file: Option<PathBuf>,
     /// How many times the interface has been driven.
@@ -142,6 +144,7 @@ impl World {
             without_user_config: false,
             startup_warnings: Vec::new(),
             startup: Vec::new(),
+            feed: None,
             settings_file: None,
             runs: Cell::new(0),
             clock: Arc::new(ManualClock::new(CLOCK_START_MS)),
@@ -435,7 +438,10 @@ impl World {
             drive(
                 self.setup(),
                 self.work.clone(),
-                self.startup.clone(),
+                fontaine_tui::Notices {
+                    startup: self.startup.clone(),
+                    feed: self.feed.clone(),
+                },
                 rx,
                 render,
                 clipboard,
@@ -472,7 +478,10 @@ impl World {
             drive(
                 self.setup(),
                 self.work.clone(),
-                self.startup.clone(),
+                fontaine_tui::Notices {
+                    startup: self.startup.clone(),
+                    feed: self.feed.clone(),
+                },
                 rx,
                 render,
                 |_: &str| Ok(()),

@@ -762,6 +762,7 @@ mod tests {
                 source: "./plugins/p".to_string(),
                 pin: "a1b2c3d4e5".to_string(),
                 enabled: true,
+                ..Default::default()
             }],
         };
         let mut extensions = Extensions::default();

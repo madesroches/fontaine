@@ -120,6 +120,8 @@ const SCHEDULE: &str = "scheduled prompts run without the user typing them, so o
 const MEMORY: &str = "auto memory persists text into later sessions, so only the user file or --settings turns it on";
 const CHECKPOINTS: &str =
     "checkpoint storage is a recovery aid the user sizes, so only the user file sets it";
+const PLUGINS: &str =
+    "plugin auto-update changes code the user approved at install, so only the user file sets it";
 const GOAL: &str =
     "goal turns run unattended, so only the user file or --settings sets how long they may run";
 const SHELL: &str =
@@ -146,6 +148,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::user_or_cli("goal", GOAL),
     Rule::user_or_cli("shell", SHELL),
     Rule::user_only("checkpoints", CHECKPOINTS),
+    Rule::user_only("plugins.auto_update", PLUGINS),
     Rule::user_or_cli("accounts", USER_FILE),
     Rule::user_or_cli("network", NETWORK),
     Rule::user_or_cli("websearch", WEBSEARCH),
@@ -540,6 +543,11 @@ mod tests {
         (
             "checkpoints",
             "[checkpoints]\nmax_file_bytes = 1000\n",
+            None,
+        ),
+        (
+            "plugins.auto_update",
+            "[plugins]\nauto_update = false\n",
             None,
         ),
         ("context", "[context]\nautocompact_window = 150000\n", None),

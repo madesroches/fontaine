@@ -7,7 +7,8 @@ plugins and marketplaces load unmodified.
 
 Everything lives in the user config directory; nothing in project scope can add a marketplace,
 install a plugin or enable one, because a plugin runs code. Install is the explicit action that
-approves a plugin's executables: `fontaine plugin install`.
+approves a plugin's executables: `fontaine plugin install`. Marketplaces and plugins then
+[update themselves](#auto-update), but only to revisions that leave those executables unchanged.
 
 ## Layout and manifest
 
@@ -77,8 +78,8 @@ One tree under the config directory:
 <config dir>/plugins/installed/<marketplace>/<name>/  # a pinned plugin checkout
 ```
 
-The registry is not a settings file: no scope stack applies to it, and only the `plugin` CLI
-writes it. A missing file means no marketplaces and no plugins. A corrupt file loads nothing and
+The registry is not a settings file: no scope stack applies to it, and only the `plugin` CLI and
+the [auto-update](#auto-update) pass write it. A missing file means no marketplaces and no plugins. A corrupt file loads nothing and
 warns once; a broken registry never silently enables or disables anything.
 
 ```toml plugins.toml
@@ -93,7 +94,13 @@ marketplace = "team-tools"
 source = "./plugins/review"
 pin = "d4e5f6"
 enabled = true
+approved = "9f2c..."    # fingerprint of the executables you approved; see Auto-update
 ```
+
+`approved` is written by `install` and by every `plugin update`. Auto-update also records
+`staged_pin` (a validated revision waiting for the next start) and `held_pin` (a newer revision it
+refused to apply), and `fontaine plugin auto-update` / `marketplace auto-update` write
+`auto_update = false` on an entry; none of these is meant to be edited by hand.
 
 Plugin names are unique across marketplaces (component names are `plugin:name`), and marketplace
 names are unique. A path-source plugin lives inside its marketplace repository and shares its pin;
@@ -101,23 +108,30 @@ names are unique. A path-source plugin lives inside its marketplace repository a
 
 ## Commands
 
-All mutations are CLI commands, run outside any session:
+Installs, manual updates and marketplace changes are CLI commands, run outside any session. The
+only change made from inside a running Fontaine is the staged [auto-update](#auto-update) pass.
 
 | Command | Effect |
 |---|---|
 | `fontaine plugin marketplace add <url-or-path> [--name N]` | Clone (or copy a local dir), pin it, read the catalog, register it under the catalog's `name` (`--name` overrides the registry key). A catalog that does not parse keeps nothing. |
 | `fontaine plugin marketplace list` | Name, url, pin, plugin count. |
-| `fontaine plugin marketplace update [name]` | Fetch, move the pin to the remote default-branch HEAD, report old and new sha. Installed plugins are not touched. |
+| `fontaine plugin marketplace update [name]` | Fetch, move the pin to the remote default-branch HEAD, report old and new sha. Installed plugins are not touched: a path-source plugin follows on its next `plugin update` or auto-update. Discards a staged revision of the marketplace. |
+| `fontaine plugin marketplace auto-update <name> yes\|no` | Opts one marketplace out of (or back into) [auto-update](#auto-update). |
 | `fontaine plugin marketplace remove <name>` | Refuses while an installed plugin names it; else drops the clone and the entry. |
 | `fontaine plugin install <name>@<marketplace>` | Resolve the entry in the pinned catalog, fetch or copy it, pin the commit, validate every component, record it enabled. Refuses a plugin name already installed from any marketplace. A failed install leaves nothing. |
 | `fontaine plugin uninstall <name>` | Remove the checkout and the entry. |
-| `fontaine plugin update <name>` | Re-fetch or re-copy, re-validate; a broken new revision keeps the old checkout live. |
+| `fontaine plugin update <name>` | Re-fetch or re-copy, re-validate, print the approval summary and record the new approval; a broken new revision keeps the old checkout live. Clears a held or staged revision. This is how a revision that auto-update held is approved. |
+| `fontaine plugin auto-update <name> yes\|no` | Opts one plugin out of (or back into) [auto-update](#auto-update). |
 | `fontaine plugin enable / disable <name>` | Flip the registry flag; a disabled plugin stays on disk and contributes nothing. |
-| `fontaine plugin list [--format json]` | Name, marketplace, pinned short sha, enabled, component counts. |
+| `fontaine plugin list [--format json]` | Name, marketplace, pinned short sha, enabled, component counts; `held <sha>` marks a plugin with a newer revision auto-update refused to apply, and `auto-update off` an opt-out. The JSON adds `held_pin` and `auto_update` (plugins and marketplaces). |
 
-Install and update print what the plugin brings before touching the registry: counts of skills,
-agents, styles, hooks, servers, its deny/ask and guardian additions, and every warning the load
-collected, so the approval the install represents is an informed one.
+Install and update print what the plugin brings: counts of skills, agents, styles, hooks, servers,
+its deny/ask and guardian additions, every hook command, every MCP server definition and language
+server command, the `!` command lines of its skills and commands, the environment variables it
+reads (names only, never values) and every warning the load collected, so the approval is an
+informed one. `${CLAUDE_PLUGIN_ROOT}` and `${VAR}` references are shown as written. The summary
+lists the revision's whole executable surface, not a difference from what you approved before,
+because the registry keeps only a hash of it.
 
 ## Pinning
 
@@ -126,9 +140,65 @@ local-directory marketplace is copied and pinned by a content hash of its workin
 excluded), so a content change moves the pin even when the catalog file is untouched.
 
 A path-source plugin takes its marketplace's pin, so `plugin update` for one re-copies from the
-current marketplace checkout and moves only after `marketplace update`. A `github`/`url` source is
-re-fetched; an entry pinned to a `sha` stays on it, and an entry pinned to a `ref` moves to that
-ref's new HEAD.
+current marketplace checkout and moves only after the marketplace moves, by `marketplace update`
+or by [auto-update](#auto-update) (which moves the marketplace first and the plugin in the same
+pass). A `github`/`url` source is re-fetched; an entry pinned to a `sha` follows the catalog: it
+moves when the catalog names a different sha, and an entry pinned to a `ref` moves to that ref's
+new HEAD.
+
+## Auto-update
+
+Registered marketplaces and installed plugins update themselves, on by default. The pin stays the
+approval boundary: an automatic update applies only when it leaves the set of executables you
+approved at install unchanged.
+
+| Item | Applies automatically when |
+|---|---|
+| Marketplace | the new catalog parses. Only the pin and catalog move; no installed code changes. |
+| Plugin | the new revision validates **and** its approval fingerprint equals the one recorded at install or at your last `plugin update`. |
+| Plugin pinned to a `sha` | the catalog names a different sha; the same rules apply. |
+| Local-directory marketplace | its content hash changed; the same rules apply. |
+
+Disabled plugins update like enabled ones. A plugin installed by an older build has no recorded
+fingerprint and is never updated automatically until one `fontaine plugin update` records it.
+
+**What the fingerprint covers.** The hook, MCP and LSP definitions as written (`hooks/hooks.json`,
+`.mcp.json`, `.lsp.json`, the manifest's `hooks`, `mcpServers` and `lspServers` values and the
+files they name), the `${VAR}` names they reference, the `!` command lines of skills and commands,
+and the content of every file in the checkout except the markdown under the skill, agent, style
+and command directories, so a changed script, binary or other markdown file under
+`${CLAUDE_PLUGIN_ROOT}` is covered too. JSON is compared as its parsed value, so reordered keys or
+reformatting are not a change. Skill, agent, style and command prose is left out, so ordinary
+content edits flow through.
+
+**Held revisions.** A revision whose fingerprint differs is held: the old checkout stays live,
+`held_pin` records the revision (shown as `held` in `plugin list`), and a notice, shown once in
+the open session when the background pass finishes, tells you to run `fontaine plugin update <name>`, which prints the approval
+summary and records the new approval. A held revision is not fetched or announced again until the
+upstream moves on.
+
+**When it runs.** At the start of an interactive session, in the background, at most once every 24
+hours (`plugin-update.stamp` in the data dir; written even when a fetch failed, so an offline
+machine does not retry at every start). It never delays startup and never changes the running
+session: a validated revision is staged beside the live checkout (`.staged-<name>`), and the next
+interactive start swaps it in before plugins load. A swap that cannot rename a checkout (a running
+server on Windows) is retried at the next start. `fontaine -p` runs never fetch, stage or swap, so
+scripted runs see a fixed set of plugins. Git never prompts on the terminal during the pass; a
+remote that needs credentials fails and is reported.
+
+An interrupted swap is repaired at the next start: a checkout left only as `.<name>.bak-*` is
+restored, and backup, scratch and staged leftovers older than a day are removed.
+
+**Outcomes.** Each moved, held or failed update is appended as one JSON line to
+`plugin-updates.jsonl` in the data dir (timestamp, kind, name, old and new short pin, outcome and
+the reason) and shown once as a [notice](tui.md#notices): `plugin review updated to d4e5f6; active
+next session`, the held notice above, or the failure.
+
+**Opting out.** `[plugins] auto_update = false` in the
+[user config](configuration.md#plugins) turns it off everywhere (a project file or `--settings`
+cannot set it). `fontaine plugin auto-update <name> no` and `fontaine plugin marketplace
+auto-update <name> no` opt out one entry; `yes` removes the override. A manual `plugin update` or
+`marketplace update` works regardless and discards any staged revision of its entry.
 
 ## What install approves
 
@@ -141,7 +211,9 @@ Installed plugin content is third-party, so it loads under tighten-only rules:
   or the guardian;
 - its hooks answer `deny`/`ask` but their `allow`/`retry` never counts;
 - its hooks, MCP servers and skill `!` commands run without the workspace-trust gate, because
-  install approved them, in the terminal UI and headless runs alike.
+  install approved them, in the terminal UI and headless runs alike;
+- an [automatic update](#auto-update) keeps that approval: it never applies a revision that adds or
+  changes a hook command, server, skill `!` command, referenced variable or script.
 
 ## Namespacing
 

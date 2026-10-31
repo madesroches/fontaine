@@ -685,6 +685,12 @@ pub struct CheckpointsSection {
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct PluginsSection {
+    pub auto_update: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MemorySection {
     pub auto: Option<bool>,
 }
@@ -893,6 +899,7 @@ pub struct Settings {
     pub schedule: Option<ScheduleSection>,
     pub memory: Option<MemorySection>,
     pub checkpoints: Option<CheckpointsSection>,
+    pub plugins: Option<PluginsSection>,
     pub goal: Option<GoalSection>,
     pub shell: Option<ShellSection>,
     pub shell_preclassifier: Option<ShellPreclassifierSection>,
@@ -1625,6 +1632,20 @@ impl Default for Checkpoints {
 pub const DEFAULT_CHECKPOINT_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub const DEFAULT_CHECKPOINT_SESSION_BYTES: u64 = 256 * 1024 * 1024;
 
+/// The merged `[plugins]` section.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Plugins {
+    /// Whether registered marketplaces and installed plugins update themselves at interactive
+    /// start.
+    pub auto_update: bool,
+}
+
+impl Default for Plugins {
+    fn default() -> Self {
+        Plugins { auto_update: true }
+    }
+}
+
 /// The merged `[memory]` section.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Memory {
@@ -1693,6 +1714,7 @@ pub struct Config {
     pub schedule: Schedule,
     pub memory: Memory,
     pub checkpoints: Checkpoints,
+    pub plugins: Plugins,
     pub goal: Goal,
     pub shell: Shell,
     pub shell_preclassifier_allow_extra: Vec<String>,
@@ -1808,6 +1830,7 @@ impl Config {
             schedule: Schedule { enabled: true },
             memory: Memory { auto: true },
             checkpoints: Checkpoints::default(),
+            plugins: Plugins::default(),
             goal: Goal {
                 max_turns: DEFAULT_GOAL_MAX_TURNS,
                 max_cost_usd: None,
@@ -2038,6 +2061,9 @@ impl Config {
             if let Some(v) = c.max_session_bytes {
                 self.checkpoints.max_session_bytes = v;
             }
+        }
+        if let Some(v) = s.plugins.as_ref().and_then(|c| c.auto_update) {
+            self.plugins.auto_update = v;
         }
         if let Some(g) = &s.goal {
             if let Some(v) = g.max_turns {
