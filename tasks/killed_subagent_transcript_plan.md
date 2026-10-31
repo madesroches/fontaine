@@ -42,10 +42,11 @@ up to the kill — always on, with no config gate.
   its receiver. `attach` (`tree.rs:434-449`) replays a kill that landed before the handle
   existed. `tree.finish` (`tree.rs:503-526`) keeps a node already marked `Killed`.
 - Every tool call passes the single choke point `gated` (`rust/fontaine-tools/src/guarded.rs`),
-  which extracts the calling agent (`agent_of`, `guarded.rs:167-172`) and then awaits
+  which extracts the calling agent (`agent_of`, `guarded.rs:210-216`) and then awaits
   `guard.gate.check` (the floor, rules, guardian and the human's prompt — the wait carries a
   drop-safe `WaitGuard`, `rust/fontaine-core/src/gate.rs:853-864`) and, on allow, the tool
-  body. Pre-edit images are captured around the body (`guarded.rs:148-176`).
+  body. Pre-edit images are captured before the body (created in `run` at
+  `guarded.rs:157`, `capture` defined at `guarded.rs:186-208`).
 - The root agent has no kill switch; a TUI interrupt of the root turn drops the drive future
   the same way (`turn.rs:151`) and is out of scope here.
 
@@ -183,6 +184,11 @@ interrupt is untouched.
   `src/agent/setup.rs` (threading `KillSwitches`)
 - `rust/fontaine-core/tests/agent_pipeline.rs` (+ shared harness as needed)
 - `rust/fontaine-tools/tests/guarded.rs` (new or existing test file)
+- `Guard` / `RegistryParams` struct-literal sites that must add the new fields to compile:
+  `rust/fontaine-core/src/agent/build.rs` (the actual `tools::registry()` call),
+  `rust/fontaine-core/tests/choke_point.rs`, `tests/extensions.rs`,
+  `rust/fontaine-mcp/tests/common/mod.rs`, `rust/fontaine-tools/tests/common/mod.rs`,
+  `tests/result_pipeline.rs`, `tests/telemetry.rs`
 - `CHANGELOG.md`, `docs/agents.md`, `docs/architecture.md`
 - `tasks/fontaine_harness_plan.md` (Decisions)
 
@@ -240,8 +246,10 @@ first integration test.
 - `fontaine-tools` `kills.rs`: register/lookup, unknown agent is never killed, `wait`
   pending for an unregistered agent.
 - `fontaine-tools` choke point: a registered kill during a blocking tool call returns the
-  refusal and the pre-image capture still completes; a kill during a never-answered
-  permission wait drops the wait (the `WaitGuard` clears `is_waiting`); an unregistered
+  refusal; the pre-image record survives the kill (it is written before the tool runs), and
+  no after-record is written — exactly what happens when today's whole-drive drop kills a
+  call mid-edit; a kill during a never-answered permission wait drops the wait (the
+  `WaitGuard` clears `is_waiting`); an unregistered
   agent (root) is untouched; a call starting after the kill is refused pre-flight.
 - Core integration (`rust/fontaine-core/tests/agent_pipeline.rs` harness, scripted completion
   models): spawn a child, kill it after its first committed turn (the harness observes the
