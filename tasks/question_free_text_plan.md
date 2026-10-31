@@ -8,7 +8,7 @@ The TUI question dialog (`ask_user_question`) already offers an "Other" row that
 text, but it reads as a hidden extra: the user must know to navigate past the last option, and
 once they do, the dialog swaps to a footer field that looks like the dialog dismissed. This plan
 makes free text a first-class part of the dialog: the textbox is always visible on the "Other"
-row, typing any character drops straight into it, and text typed alongside a chosen option is
+row, typing a character without a binding drops straight into it, and text typed alongside a chosen option is
 submitted as a note on that choice.
 
 ## Current State
@@ -97,8 +97,7 @@ bindings.
    when non-empty; Enter on the "Other" row submits the text alone for single-select and keeps
    combining toggled options with the text for multi-select; drop `commit_other`.
 3. `question.rs`: `body()` renders `Other: <text>` on the last row with the caret when
-   highlighted; `footer()` and `field()` updated; `is_typing`/`typing` removed and the `app.rs`
-   call site adjusted.
+   highlighted; `footer()` and `field()` updated; `is_typing`/`typing` removed.
 4. `ask_user.rs`: update the `QuestionAnswer` doc comment.
 5. Update the existing `question.rs` tests to the new interaction model and add: type-to-answer
    jump, note attached on Enter (single-select), Esc leaving the "Other" row keeps text, digits
@@ -162,9 +161,8 @@ no tests.
 ## Manual Verification
 
 In a real tmux (`cargo run -p fontaine` from `rust/`), ask the model something that triggers
-`ask_user_question` (or use `/ship-issue`-style flows) and check: the "Other" row shows its
-field at once; typing a letter with an option highlighted jumps to the field; Enter with text
-and an option highlighted answers with both; Esc on the "Other" row returns to the options. Not
+`ask_user_question` (or use `/ship-issue`-style flows) and check that the inline caret renders on
+the "Other" row when highlighted and that typed text wraps/clips within the row width. Not
 automated because caret placement and row wrapping in a live terminal are layout, not logic
 (see `tasks/design/testing.md`, "Reproducing terminal layout bugs").
 
