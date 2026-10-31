@@ -8,7 +8,7 @@ use common::runtime::build;
 use fontaine_core::config::PermissionMode::Manual;
 use fontaine_core::turn::{Drive, Flow, SessionEvent, TurnOutcome, TurnParams, drive, run_turn};
 use rig_core::completion::{Cost, Usage};
-use rig_core::test_utils::{MockStreamEvent, mock_final};
+use rig_core::test_utils::{MockError, MockStreamEvent, mock_final};
 use serde_json::json;
 
 fn costed_answer() -> Vec<MockStreamEvent> {
@@ -145,6 +145,37 @@ async fn reasoning_counts_as_writing_mid_step_and_clears_after_the_call() {
     let (seen, after) = writing_during_a_step(false).await;
     assert_eq!(seen, vec!["thinking".len() as u64 + "done".len() as u64]);
     assert_eq!(after, 0);
+}
+
+#[tokio::test]
+async fn a_failed_step_leaves_no_writing_behind() {
+    let w = World::new();
+    let turn = vec![
+        MockStreamEvent::ReasoningDelta {
+            id: "r1".to_string(),
+            reasoning: "thinking".to_string(),
+        },
+        MockStreamEvent::Error(MockError::provider("stream broke")),
+    ];
+    let built = build(&w, Manual, vec![turn], true);
+    let agents = built.runtime.state.agents();
+    let mut on_event = |_: SessionEvent| Flow::Continue;
+    let outcome = run_turn(
+        TurnParams {
+            agent: &built.runtime.agent,
+            state: &built.runtime.state,
+            prompt: "hi".to_string(),
+            max_turns: Some(3),
+            priced: true,
+            model: "scripted".to_string(),
+            provider: "mock".to_string(),
+            native_search: false,
+        },
+        &mut on_event,
+    )
+    .await;
+    assert!(matches!(outcome, TurnOutcome::Failed(_)), "{outcome:?}");
+    assert_eq!(agents.writing_of(fontaine_tools::gate::ROOT_AGENT), 0);
 }
 
 #[tokio::test]

@@ -48,11 +48,14 @@ one in the issue is possible from logs alone.
   what drives updates. There is no trailing notify: a stale count after the model pauses is accepted
   until the next event.
 - **Debug logs.** In `drive_once`, `tracing::debug!(agent.id = ..., ...)` at model
-  request start (`drive_once` entry or the previous `CompletionCall`, whichever is later) and request
-  end with elapsed ms and characters written. The end log is emitted from the drop guard (so on all
-  exit paths): completion, failure and cancellation each log exactly once. `drive_once` keeps a
-  local `Instant` and a local char counter and reads both for the end log before `reset_writing`.
-  Each `drive` retry runs a new `drive_once`, which logs a new start. Debug level, not telemetry spans, so no telemetry doc contract changes.
+  request start and request end with elapsed ms and characters written. A request is timed and
+  logged from its first stream item, so tool and approval time are excluded and `elapsed_ms` omits
+  time-to-first-token. A request that errors, hangs or is cancelled before its first item logs
+  nothing; its failure is reported on the normal path. Once started, the end log is emitted from the
+  drop guard (so on all exit paths): completion, failure and cancellation each log exactly once.
+  `drive_once` keeps a local `Instant` and a local char counter and reads both for the end log before
+  `reset_writing`. Each `drive` retry runs a new `drive_once`. Debug level, not telemetry spans, so no
+  telemetry doc contract changes.
 - **Agents panel last tool call + age** (issue's other suggestion): out of scope here; file a
   follow-up issue if wanted.
 - **Killed agents' transcripts** (issue side finding): out of scope; file a separate issue.
