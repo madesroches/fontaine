@@ -17,13 +17,13 @@ one in the issue is possible from logs alone.
   is the only moment `AgentRow.spend` changes.
 - `AgentRow` (`tree.rs:168`) feeds `agent_list.rs` (`ListRow`, elapsed + `spend_text`) and
   `agents_panel.rs` (`PanelRow`).
-- The tree wakes watchers through `changed: Notify`.
+- The tree wakes watchers through `changed: Notify`; join and budget watchers depend on it.
 
 ## Design
 - **Counter in the tree.** Add `AgentTree::note_writing(agent, chars)`: adds to a per-node
-  `writing: u64` and, throttled (at most one `changed` notification per ~250 ms per tree, measured with
-  `tokio::time::Instant`), wakes watchers. `reset_writing(agent)` zeroes it and always notifies,
-  bypassing the throttle. `AgentRow` gains `writing: u64`. The root is a tree node but never an `AgentRow`
+  `writing: u64` and, throttled (at most one `display_changed` notification per ~250 ms per tree, measured with
+  `tokio::time::Instant`), wakes watchers. `reset_writing(agent)` zeroes it and always notifies
+  `display_changed`, bypassing the throttle. Neither touches `changed`. `AgentRow` gains `writing: u64`. The root is a tree node but never an `AgentRow`
   (`rows()` keeps `parent.is_some()`), so add an accessor `AgentTree::writing_of(agent) -> u64` that
   works for any node, root included.
   It is display state: not part of `Spend`, never budgeted, never persisted.
@@ -43,8 +43,8 @@ one in the issue is possible from logs alone.
   `writing > 0` alone (main has no Running status). List visibility is unchanged: `main` appears only
   while at least one subagent row is listed, so a root step with no subagents shows no indicator, and
   the agents panel has no main row. One shared formatter next to `spend_text` in
-  `agents_panel.rs`. The TUI redraws on tree `changed` (it selects on `tree.changed().notified()`
-  and re-reads `tree.rows()`; the 1 s list tick runs only while subagent rows exist), so the throttled notify is
+  `agents_panel.rs`. The TUI also redraws on the tree's `display_changed` (it selects on it beside
+  `tree.changed().notified()` and re-reads `tree.rows()`; the 1 s list tick runs only while subagent rows exist), so the throttled notify is
   what drives updates. There is no trailing notify: a stale count after the model pauses is accepted
   until the next event.
 - **Debug logs.** In `drive_once`, `tracing::debug!(agent.id = ..., ...)` at model
@@ -86,6 +86,7 @@ one in the issue is possible from logs alone.
 ### Model-step activity
 - 2026-10-31: the indicator reads `· writing N chars` (`<n>` below 1000, else `<n.n>k`); chars, not token estimates.
 - 2026-10-31: tree wakeups from `note_writing` are throttled to ~250 ms per tree; `reset_writing` bypasses the throttle.
+- 2026-10-31: display state has its own `Notify` (`display_changed`); waking the shared `changed` flaked the headless budget kill.
 - 2026-10-31: AFK: the root's indicator is read through `AgentTree::writing_of` and shown on the `main` list row only while the list is shown (a subagent row exists); the agents panel stays subagents-only, since the root is never an `AgentRow` and widening list/panel visibility is out of scope for #343.
 
 ## Documentation

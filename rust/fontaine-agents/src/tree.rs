@@ -197,6 +197,9 @@ pub struct AgentTree {
     root_mode: RwLock<RootModeSource>,
     root_tools: RwLock<Option<RootToolsSource>>,
     changed: Notify,
+    /// Display-only state (step progress) wakes this, never `changed`: join and budget
+    /// watchers hang off `changed` and must not run on a redraw's account.
+    display: Notify,
     next: AtomicU64,
     unpriced_noticed: AtomicBool,
 }
@@ -237,6 +240,7 @@ impl AgentTree {
             root_mode: RwLock::new(Arc::new(|| RootMode::Ladder(Ladder::Manual))),
             root_tools: RwLock::new(None),
             changed: Notify::new(),
+            display: Notify::new(),
             next: AtomicU64::new(next_agent),
             unpriced_noticed: AtomicBool::new(false),
         }
@@ -675,7 +679,7 @@ impl AgentTree {
         own
     }
 
-    /// Adds `chars` the model just wrote to `agent`'s current step. Wakes watchers at most once
+    /// Adds `chars` the model just wrote to `agent`'s current step. Wakes display watchers at most once
     /// per `WRITING_WAKE_INTERVAL` across the tree, since deltas arrive far faster than a
     /// surface can usefully redraw.
     pub fn note_writing(&self, agent: &str, chars: u64) {
@@ -693,11 +697,11 @@ impl AgentTree {
         }
         drop(inner);
         if due {
-            self.changed.notify_waiters();
+            self.display.notify_waiters();
         }
     }
 
-    /// Zeroes `agent`'s step counter and always wakes watchers, so a finished step never
+    /// Zeroes `agent`'s step counter and always wakes display watchers, so a finished step never
     /// lingers on screen.
     pub fn reset_writing(&self, agent: &str) {
         let mut inner = self.lock();
@@ -706,7 +710,7 @@ impl AgentTree {
         };
         node.writing = 0;
         drop(inner);
-        self.changed.notify_waiters();
+        self.display.notify_waiters();
     }
 
     /// Characters written in `agent`'s current step; works for the root, which has no row.
@@ -947,6 +951,12 @@ impl AgentTree {
     /// await, or a change between the two is missed.
     pub fn changed(&self) -> &Notify {
         &self.changed
+    }
+
+    /// Resolves when display-only state changes; surfaces that redraw wait on this as well as
+    /// `changed`. Register before reading state, as with `changed`.
+    pub fn display_changed(&self) -> &Notify {
+        &self.display
     }
 
     /// Wakes whoever waits for a change, such as a surface that polls the tree.
@@ -1611,7 +1621,7 @@ mod tests {
         use futures::FutureExt;
 
         fn wakes(tree: &AgentTree, a: &str) -> bool {
-            let notified = tree.changed().notified();
+            let notified = tree.display_changed().notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
             tree.note_writing(a, 1);
@@ -1624,10 +1634,24 @@ mod tests {
         assert!(!wakes(&tree, &a), "a delta inside the interval does not");
         tokio::time::advance(WRITING_WAKE_INTERVAL).await;
         assert!(wakes(&tree, &a), "one after the interval does");
-        let notified = tree.changed().notified();
+        let notified = tree.display_changed().notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
         tree.reset_writing(&a);
         assert!(notified.now_or_never().is_some(), "a reset always wakes");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn writing_never_wakes_the_shared_watchers() {
+        use futures::FutureExt;
+
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        let notified = tree.changed().notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        tree.note_writing(&a, 1);
+        tree.reset_writing(&a);
+        assert!(notified.now_or_never().is_none());
     }
 }

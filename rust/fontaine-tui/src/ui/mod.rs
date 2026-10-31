@@ -208,6 +208,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let changed = tree.changed().notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
+            let display = tree.display_changed().notified();
+            tokio::pin!(display);
+            display.as_mut().enable();
             if self.drain_deferred(runtime).await.is_break() {
                 return;
             }
@@ -262,6 +265,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     Action::None
                 }
                 _ = &mut changed => Action::None,
+                _ = &mut display => Action::None,
                 () = async {
                     match tick {
                         Some(wait) => tokio::time::sleep(wait).await,
