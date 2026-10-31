@@ -740,7 +740,12 @@ async fn the_per_call_model_overrides_the_types_and_bad_values_are_error_results
     let out = run(&s, &["--allowed-tools", "agent"], "root task").await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let lines = out.lines();
-    assert_eq!(agent_result(&lines, 0)["text"], r#"{"agent_id":"agent-1"}"#);
+    // A fast child's report can ride the spawn result itself, so only the prefix is fixed.
+    assert!(
+        agent_result(&lines, 0)["text"]
+            .as_str()
+            .is_some_and(|t| t.starts_with(r#"{"agent_id":"agent-1"}"#))
+    );
     assert!(results_text(&lines).contains("F done"));
     // The model the call named is the one the child ran on.
     let child_bodies = requests_with(&endpoint, "child-F").await;
