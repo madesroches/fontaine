@@ -731,7 +731,8 @@ for example `◯ agent-3 worker running 1m02s 1500 tok`. A nested agent is inden
 parent. The row on screen is marked `●` and the others `◯`. The list shows every running agent, the
 agent on screen, and an agent that failed, was killed or ran out of budget for 30 seconds after it
 ended or until you hide it with `x`. An agent that finished normally leaves at once. With nothing
-to list, the list is not drawn.
+to list, the list is not drawn. The spend uses the same format as the
+[agents panel](#the-agents-panel), including the `+ unpriced` marker.
 
 Down on the last line of the input moves the keyboard into the list, on `main`. Up and Down select a
 row, Enter shows that row, `x` stops a running subagent (or hides an ended one), and Esc, Up on the

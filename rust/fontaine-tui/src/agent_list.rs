@@ -292,17 +292,18 @@ impl AgentList {
                 ),
                 _ => (format!("{marker} main"), String::new()),
             };
-            // The spend keeps its tail (" + unpriced") whole: cutting it would show a partial
-            // cost as complete, so the leading columns give way instead.
             let spend_len = spend.chars().count();
             let shown: String = if head.chars().count() + spend_len <= width {
                 head + &spend
-            } else if spend_len < width {
+            } else if spend.ends_with(" + unpriced") && spend_len < width {
+                // Cutting the tail would show a partial cost as complete, so the leading
+                // columns give way instead.
                 let keep = width - spend_len;
                 let mut cut: String = head.chars().take(keep.saturating_sub(1)).collect();
                 cut.push('…');
                 cut + &spend
             } else {
+                // An ordinary row, or a partial one whose spend alone fills the width: cut the end.
                 (head + &spend).chars().take(width).collect()
             };
             let style = if self.focused && at == self.selected {
@@ -403,6 +404,18 @@ mod tests {
         let text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.chars().count() <= 80, "{text}");
         assert!(text.ends_with("$0.0519 + unpriced"), "{text}");
+    }
+
+    #[test]
+    fn a_narrow_ordinary_row_is_cut_at_the_end() {
+        let now = Instant::now();
+        let mut worker = agent("agent-1", "main", ChildStatus::Running, now);
+        worker.agent_type = "general-purpose".into();
+        let mut list = AgentList::default();
+        list.set_rows(rows(&[worker], None, &HashSet::new(), now));
+        let lines = list.lines(None, 20, 5);
+        let text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "◯ agent-1 general-pu", "{text}");
     }
 
     #[test]
