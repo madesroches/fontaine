@@ -1,7 +1,8 @@
 //! Drives the real `Screen` on a real terminal, with no session behind it: sixty settled notes,
 //! then eighty streamed reply lines with tool calls (a shell call with fifteen rows of output, an edit with a diff) starting and finishing between them, and an `/expand` at the end. Run it
 //! inside tmux to see what the live area does to the terminal's scrollback (see
-//! `tasks/design/testing.md`, "Reproducing terminal layout bugs").
+//! `tasks/design/testing.md`, "Reproducing terminal layout bugs"). `live_area popup` holds the `/`
+//! menu open mid-turn so a tmux resize can be tried.
 
 use fontaine_core::config::PermissionMode;
 use fontaine_core::preview::{DiffKind, DiffLine, DiffPreview};

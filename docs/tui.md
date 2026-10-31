@@ -13,13 +13,15 @@ the input box and status bar on the bottom rows, and this holds across resizes: 
 scrollback and prints the transcript again at the new size. A live area down to the bottom row holds
 the input box, the status bar, any open prompt and the part of the transcript that still fits above
 the input. A short transcript, typically just the startup warnings, sits on the rows directly
-above the input box with empty space above it. Once the transcript no longer fits, the oldest entries move into the terminal's normal scrollback, and leaving the UI (or
-`/clear`) writes whatever was still held back there too, so the conversation stays in the
-terminal. Scroll back with the terminal or with tmux copy mode, and select text with the mouse as
-in any shell program. Showing a [subagent's transcript](#the-agent-list-and-the-agent-view) erases
-the terminal's scrollback and writes that transcript in its place, and going back to the main
-conversation does the same, so whatever the terminal held from before the session started, and the
-main chat's rows from before a `/clear`, are gone after the first switch. Ctrl-L erases the scrollback the same way.
+above the input box with empty space above it. Once the transcript no longer fits, the oldest
+entries move into the terminal's normal scrollback, and leaving the UI (or `/clear`) writes
+whatever was still held back there too, so the conversation stays in the terminal. Scroll back with
+the terminal or with tmux copy mode, and select text with the mouse as in any shell program.
+Showing a [subagent's transcript](#the-agent-list-and-the-agent-view) erases the terminal's
+scrollback and writes that transcript in its place, and going back to the main conversation does
+the same, so whatever the terminal held from before the session started, and the
+main chat's rows from before a `/clear`, are gone after the first switch. Ctrl-L erases the
+scrollback the same way.
 
 The input box title says what Enter does: it sends a message, or, when the input starts with `!`,
 runs it as a shell command. The transcript shows your messages (`>`), the streaming answer, and a
