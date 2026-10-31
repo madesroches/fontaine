@@ -86,7 +86,10 @@ There is one entry and no Alt-Y ring (see Decisions).
 
 ### `InputBuffer::handle_key` mapping
 
-The modifier arms go before the plain ones:
+The modifier arms go before the plain ones. A key with both CONTROL and ALT takes its Ctrl
+meaning, as the existing control arm (first in the match) already gives it (crossterm parses
+ESC+key by re-parsing and adding ALT, so on a terminal whose Backspace is 0x08, Alt-Backspace
+arrives as Ctrl-H+ALT and deletes one char).
 
 | Key | Action |
 |---|---|
@@ -128,8 +131,9 @@ returns `false`.
 ## Implementation Steps
 
 1. `input.rs`: add `killed`, `kill`, `word_start_before` and `word_end_after`. Reimplement
-   `kill_to_start`, `kill_to_end` and `delete_word` on `kill`. Add `word_left`, `word_right`,
-   `delete_word_forward`, `buffer_start`, `buffer_end` and `yank`.
+   `kill_to_start`, `kill_to_end` and `delete_word` on `kill`; `delete_word` moves from the
+   whitespace boundary to the alphanumeric one. Add `word_left`, `word_right`,
+   `delete_word_forward`, `delete_word_whitespace`, `buffer_start`, `buffer_end` and `yank`.
 2. `input.rs`: extend `handle_key` with the mapping table above, with the modifier arms ahead of
    the plain arrow, Home, End, Backspace and Delete arms.
 3. `app.rs`: narrow the Ctrl-D branch to an empty input. Add the Ctrl-P/N rewrite (after the
@@ -186,8 +190,8 @@ Unit tests in `input.rs`, next to the existing ones:
 - `word_left` / `word_right` across several spaces, across a newline, and at both buffer ends.
 - `delete_word_forward` and `delete_word` use the same boundaries (one test drives both
   directions over the same text).
-- `src/main.rs`: word movement and `delete_word` go by segment, while Ctrl-W removes the whole
-  path.
+- On the text `src/main.rs`, word movement and `delete_word` go by segment, while Ctrl-W
+  removes the whole path.
 - Kill then yank, for each kill kind. An empty kill keeps the previous entry. `take()` keeps the
   kill buffer. A yank with nothing killed changes nothing.
 - `buffer_start` / `buffer_end` on a multi-line buffer, next to Home/End staying per line.
