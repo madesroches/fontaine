@@ -22,11 +22,11 @@ cause, and makes the refusal notice transient.
   or closing the popup changes the height, so every keystroke that changes the match count
   triggers a rebuild.
 - Held-back transcript rows are released with `commit_within(over)` so the chrome fits the screen
-  (`screen.rs:407`).
-- Existing coverage: the vt100 `emulated::Harness` scenarios (`screen.rs:1462` onward) and the
-  `live_area` example. None opens the `/` menu, or any overlay, while tool rows are live.
+  (`screen.rs:411`).
+- Existing coverage: the vt100 `emulated::Harness` scenarios (`emulated` module, `screen.rs:1075` onward)
+  and the `live_area` example. No scenario opens the `/` slash menu while tool rows are live.
 - The refusal notice is `self.transcript.notice(...)` in the `Some(Command::Loop(_)) |
-  Some(Command::Other { .. })` arm of the running-turn submit (`app.rs:1327`). A transcript entry is
+  Some(Command::Other { .. })` arm of the running-turn submit (`app.rs:1327-1329`). A transcript entry is
   permanent and is committed to scrollback, so each Enter adds a line. The input is deliberately
   left in place, so the user presses Enter again and gets another.
 - The popup opening mid-turn is intended: `/` completion is shared with the idle state, and several
@@ -51,7 +51,7 @@ Reproduce before changing anything:
 3. Fix at the cause found (candidates, in order of likelihood: the viewport grows past the screen
    bottom on `rebuild` so ratatui scrolls the old live rows into history instead of overwriting
    them; a rebuild-then-`insert_before` ordering when a notice is committed in the same frame as a
-   height change; the one-row-region path at `screen.rs:431`). Pin the repro as a regression test
+   height change; the one-row-region path at `screen.rs:434`). Pin the repro as a regression test
    named for issue 279 in the harness; the tmux steps remain the manual check.
 
 ### 2. Truncated bottom border
@@ -67,9 +67,11 @@ transcript. Show it as a one-line, dimmed notice that replaces the hint segment 
 (`statusbar.rs` composes the hint as the tail of the line); `statusbar::render` takes `&App`, so no
 `view.rs` plumbing is needed. State lives on `App` (an `Option<String>`), not in the transcript, so
 nothing is committed to scrollback and repeated Enters leave one line. Clear it at the top of
-`handle_key` (`app.rs:685`), before dispatch, and in `settle_turn` (`ui/turn.rs`, where `running`
-is set to false at turn end). Clearing before dispatch matters: the refusal is set in
-`queue_during_turn` (`app.rs:1327`), reached from `handle_key`, so clearing at the end would wipe it
+`handle_input` (`app.rs:625`), before `dispatch_input`, so keys and paste (which never reaches
+`handle_key`) both clear it, and in `settle_turn` (`ui/turn.rs`). Render it only while
+`app.running` is true: `ui/goal.rs:43` and `ui/turn.rs:398` clear `running` without `settle_turn`,
+and the notice must not outlive the turn. Clearing before dispatch matters: the refusal is set in
+`queue_during_turn` (`app.rs:1308`), reached from `handle_key`, so clearing at the end would wipe it
 at once. Behavior otherwise unchanged: the input stays, the popup stays.
 
 ## Implementation Steps
@@ -79,9 +81,12 @@ at once. Behavior otherwise unchanged: the input stays, the popup stays.
 2. Fix the root cause in `screen.rs` (or `view.rs` if the height is miscomputed); keep the new test.
 3. Add the border test (design 2).
 4. Replace the transcript notice at `app.rs:1327` with the transient status (design 3); render it
-   in `statusbar.rs`; clear it at the top of `handle_key` and in `settle_turn`.
-5. Update the existing test at `app.rs:1940` and add tests for the transient behavior.
-6. `CHANGELOG.md` entry.
+   in `statusbar.rs`; clear it at the top of `handle_input` and in `settle_turn`, and render
+   it only while `app.running`.
+5. Update the existing test at `app.rs:1935-1943` and add tests for the transient behavior.
+6. Update `docs/tui.md` (~line 226): the refusal of unknown slash names and `/loop` shows as a
+   transient status hint, not a transcript line.
+7. `CHANGELOG.md` entry.
 
 ## Files to Modify
 
@@ -89,6 +94,7 @@ at once. Behavior otherwise unchanged: the input stays, the popup stays.
 - `rust/fontaine-tui/src/view.rs`: only if the height or border is miscomputed.
 - `rust/fontaine-tui/src/app.rs`, `statusbar.rs`: transient refusal status.
 - `rust/fontaine-tui/examples/live_area.rs`: popup sequence for the tmux repro, if needed.
+- `docs/tui.md`: refusal is a transient status hint.
 - `CHANGELOG.md`.
 
 ## Trade-offs
@@ -108,7 +114,7 @@ at once. Behavior otherwise unchanged: the input stays, the popup stays.
 - Harness regression test for the duplicated live area (a bug that happened in the wild; vt100
   emulation is the tier that reproduces it, tmux is the manual confirmation).
 - Unit tests: refusal sets the transient status and leaves the transcript unchanged; repeated
-  Enter leaves one status; the status clears on input change and on turn end; border width at the
+  Enter leaves one status; the status clears on the next input event (key or paste) and on turn end, and does not render when `running` is false; border width at the
   issue's width with the popup open.
 
 ## Manual Verification
