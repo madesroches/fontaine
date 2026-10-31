@@ -74,8 +74,9 @@ are not exact. The rule that keeps scrollback correct:
 - **A block's rows are released atomically.** Every row of a block carries the block's end offset (past
   its trailing blank lines). The commit cursor therefore only ever stops on a block boundary, and a
   resume from `committed_chars` re-parses from a block start. Width changes just re-layout from there.
-  The budget path (`Cut::Budget` / `commit_within`) releases whole blocks only: it emits every row of
-  the first reachable block, overshooting the budget as entries already do, never a partial block.
+  The budget path (`Cut::Budget` / `commit_within`) cuts at the Nth row as today, then extends the cut
+  to the end of the block containing that row, overshooting the budget as entries already do. Fenced-code
+  lines are cut per row; tables, paragraphs and lists are cut as a whole block.
 - **Fenced code lines are row-exact**, like plain text, so an open fence is renderable (and committable)
   line by line without waiting for its closing fence.
 - **The plain tail keeps today's exact offsets.**
@@ -87,17 +88,23 @@ the opener's character and be at least as long), plus, when inside an open fence
 complete line. A table ends at a blank line, so a half-arrived table row is always in the tail. A
 non-streaming entry (`streaming: false`) is all stable.
 
-`assistant_rows(text, from, width)` gains a `streaming: bool` parameter (`entry_lines` takes it from the entry; `Cut::rows`/`end` are
-reached only for streaming entries and pass `true`; settled-entry callers (`take_retired`,
-`commit_all`, `commit_within` for settled entries) pass `false`; `live_lines` goes through `entry_lines`): rows = `markdown::rows` of the stable
-prefix after `from`, then plain rows (today's code) of the tail. The "keep the last row live" pop applies
-to the tail only; when the tail is empty nothing is popped, since a stable block never grows. Because
-the stable prefix is re-rendered per frame, no cache is kept. A paragraph shows raw until it ends.
+`assistant_rows(text, from, width, streaming, glyphs)` gains `streaming: bool` (`entry_lines` takes it from the entry,
+so `take_retired` and `commit_all` get `true` for an entry still streaming at `/clear`; `live_lines` goes
+through `entry_lines`): rows = `markdown::rows` of the stable prefix after `from`, then plain rows (today's
+code) of the tail. The live area shows all of them. The ordinary commit path (`Transcript::commit()`,
+`Cut::Rows`) releases only the stable-prefix rows (block rows and row-exact fence lines) and holds the
+plain tail back entirely: it stays in the live area, never committed. The old "keep the last row live"
+pop no longer applies; a stable row never grows, so nothing is popped from the prefix. The cursor
+therefore only stops on a block boundary or a complete fence line, and a paragraph shows raw until it
+ends. Because the stable prefix is re-rendered per frame, no cache is kept.
 
-`commit_within`'s over-budget release may commit plain tail rows (exact offsets) as it does today. The
-remainder of that paragraph is then rendered as markdown from the cut, so a span straddling the cut shows
-its markers literally. This is the one visible degradation, and only for a single paragraph taller than
-the live area.
+One function returns the releasable rows for the Rows path (the stable-prefix rows, without the tail);
+`commit()`, `Cut::rows` and `Cut::end` all call it, so the three sites cannot diverge.
+
+Only the over-budget release (`Cut::Budget` / `commit_within`) may commit plain tail rows (exact
+offsets), as it does today. The remainder of that paragraph is then rendered as markdown from the cut, so
+a span straddling the cut shows its markers literally. This is the one visible degradation, and only
+for a single paragraph taller than the live area.
 
 Line mode (`Cut::Lines`, `linear.rs`) is untouched: it prints source lines.
 
@@ -109,10 +116,12 @@ Line mode (`Cut::Lines`, `linear.rs`) is untouched: it prints source lines.
 3. `markdown.rs`: `wrap_spans`, inline flattening, blocks other than tables, `stable_end`, `rows`, with
    the unsupported-block fallback.
 4. `markdown.rs`: tables (widths, shrink, wrap, alignment, raw fallback).
-5. `transcript.rs`: thread `streaming` through `assistant_rows`: `entry_lines` takes it from the entry,
-   `Cut::rows/end` pass `true`, settled-entry callers (`take_retired`, `commit_all`, `commit_within`)
-   pass `false`; `live_lines` is unchanged (it calls `entry_lines`); plain-tail pop rule; whole-block
-   release in `Cut::Budget`/`commit_within`.
+5. `transcript.rs`: thread `streaming` and `glyphs` as parameters through `assistant_rows`, `Cut::rows` and
+   `Cut::end`, updating their call sites and the existing direct test call (~1432). `entry_lines` takes
+   `streaming` from the entry; `live_lines` is unchanged (it calls `entry_lines`). `commit()` (which
+   calls `assistant_rows` directly), `Cut::rows` and `Cut::end` share the single Rows-path release
+   function (stable-prefix rows only, tail held back, no pop); whole-block extension of the cut in
+   `Cut::Budget`/`commit_within`.
 6. `examples/live_area.rs`: add a markdown scenario (streamed reply with a table and a fence) for the
    tmux check.
 7. Docs, CHANGELOG, plan Decisions.
