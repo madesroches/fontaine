@@ -63,8 +63,9 @@ bindings.
   anywhere else Esc declines the call as today.
 - **Grace period unchanged.** Enter/Esc/Char stay blocked for `ANSWER_GRACE` after the dialog
   opens, so keystrokes typed ahead during a turn cannot answer; arrows still navigate.
-- The `typing` flag and `commit_other` go away; `is_typing()` is redefined (highlight on "Other"
-  with the panel active) or removed along with its call site in `app.rs` (~line 1850, a test).
+- The `typing` flag, `is_typing()`, and `commit_other` go away. `is_typing()` has no production
+  call sites — `view.rs` consumes only the already-`Option` `field()` — and its only call site is
+  an assertion in the `app.rs` test (~line 1850), which step 5 reworks.
 
 ### Answer model (`rust/fontaine-tools/src/ask_user.rs`)
 
@@ -102,7 +103,11 @@ bindings.
 5. Update the existing `question.rs` tests to the new interaction model and add: type-to-answer
    jump, note attached on Enter (single-select), Esc leaving the "Other" row keeps text, digits
    typed on the "Other" row stay in the text, grace period still blocks Char, multi-select
-   combining on Enter at the "Other" row, and the inline field fitting the row width.
+   combining on Enter at the "Other" row, and the inline field fitting the row width. Also
+   rework the app.rs test `esc_while_typing_other_only_leaves_the_field` to the new model: type a
+   character to land on the "Other" row, assert Esc moves the highlight back to the options
+   without answering (there is no row accessor, so assert via `body()`'s highlight), and a second
+   Esc declines.
 6. `docs/tui.md` "Questions from the model": key table and the paragraph on answers — typing
    starts a custom answer, text can accompany a choice as a note.
 7. `docs/guardian.md` (~line 75): acknowledge that a note attached to a choice is recorded the
@@ -114,7 +119,7 @@ bindings.
 ## Files to Modify
 
 - `rust/fontaine-tui/src/question.rs`
-- `rust/fontaine-tui/src/app.rs` (`is_typing` call site only)
+- `rust/fontaine-tui/src/app.rs` (rework the `esc_while_typing_other_only_leaves_the_field` test)
 - `rust/fontaine-tools/src/ask_user.rs` (doc comment only)
 - `docs/tui.md`, maybe `docs/guardian.md`
 - `CHANGELOG.md`
