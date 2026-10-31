@@ -4,14 +4,14 @@
 
 ## Overview
 The ~60 s gaps in #343 are model output time (reasoning and tool-call arguments being written),
-not a harness stall. The defect is that nothing shows it: `drive` drops `StreamEvent::Reasoning`
+not a harness stall. The defect is that nothing shows it: the drive loop drops `StreamEvent::Reasoning`
 and `StreamEvent::Arguments`, and tokens/cost only update at `CompletionCall`. This plan surfaces a
 live count of characters written in the current model step, per agent (main included), in the agent
 list and agents panel, and adds debug logs for model-request start and end so a diagnosis like the
 one in the issue is possible from logs alone.
 
 ## Current State
-- `fontaine-core/src/turn.rs` (`drive` loop, ~l.340): only `StreamEvent::Text` (→ `AssistantDelta`)
+- `fontaine-core/src/turn.rs` (`drive_once` loop, ~l.340; `drive` is only its retry wrapper): only `StreamEvent::Text` (→ `AssistantDelta`)
   and `End` are handled; `_ => Flow::Continue` drops `Reasoning` and `Arguments`.
 - `CompletionCall` debits the agent via `AgentTree::debit` (`fontaine-agents/src/tree.rs`), which
   is the only moment `AgentRow.spend` changes.
@@ -25,21 +25,25 @@ one in the issue is possible from logs alone.
   `tokio::time::Instant`), wakes watchers. `reset_writing(agent)` zeroes it and always notifies,
   bypassing the throttle. `AgentRow` gains `writing: u64`.
   It is display state: not part of `Spend`, never budgeted, never persisted.
-- **`drive` feeds it.** On `StreamEvent::Reasoning { text, .. }` add `text.chars().count()`; on
+- **`drive_once` feeds it.** On `StreamEvent::Reasoning { text, .. }` add `text.chars().count()`; on
   `StreamEvent::Arguments { json, .. }` add `json.chars().count()`; `Text` also counts (the fragment
-  still goes out as `AssistantDelta` unchanged). Reset on `CompletionCall` and when the drive loop
-  ends (including failure/stop), so a finished step never shows stale progress.
+  still goes out as `AssistantDelta` unchanged). Reset on each `CompletionCall`, and via a drop guard
+  in `drive_once` that calls `reset_writing` (following the `EndTurnOnDrop` pattern), because `run_turn`
+  drops the future at an await on interrupt and code after the loop never runs; so a finished,
+  failed or cancelled step never shows stale progress.
   No new `SessionEvent` variant: the tree is the channel, because it already serves the root and
   subagents uniformly and the list/panel already read it.
-- **TUI.** `ListRow` and `PanelRow` get `writing: u64`. While the agent is running and
+- **TUI.** `ListRow` and `PanelRow` get `writing: u64`, a separate field, not folded into the `spend` string. While the agent is running and
   `writing > 0`, append `· writing 4.2k chars` (format `<n>` below 1000, else `<n.n>k`) after the
-  spend text. `main`'s row uses the same field. One shared formatter next to `spend_text` in
+  spend text (in the list it is dropped before the `+ unpriced` marker is truncated; in the panel it
+  goes on the spend line). `main`'s row uses the same field. One shared formatter next to `spend_text` in
   `agents_panel.rs`. The TUI redraws on tree `changed` (it selects on `tree.changed().notified()`
   and re-reads `tree.rows()`; the 1 s list tick is only a backstop), so the throttled notify is
   what drives updates.
-- **Debug logs.** In `drive`, `tracing::debug!(agent.id = ..., ...)` at model
-  request start and, at `CompletionCall`/failure, request end with elapsed ms and characters
-  written. Debug level, not telemetry spans, so no telemetry doc contract changes.
+- **Debug logs.** In `drive_once`, `tracing::debug!(agent.id = ..., ...)` at model
+  request start (`drive_once` entry or the previous `CompletionCall`, whichever is later) and, at
+  `CompletionCall`/failure, request end with elapsed ms and characters written. `drive_once` keeps a
+  local `Instant` and a local char counter and reads both for the end log before `reset_writing`. Debug level, not telemetry spans, so no telemetry doc contract changes.
 - **Agents panel last tool call + age** (issue's other suggestion): out of scope here; file a
   follow-up issue if wanted.
 - **Killed agents' transcripts** (issue side finding): out of scope; file a separate issue.
@@ -47,9 +51,9 @@ one in the issue is possible from logs alone.
 ## Implementation Steps
 1. `fontaine-agents/src/tree.rs`: add `writing` to the node and `AgentRow`; add `note_writing` (throttled
    notify) and `reset_writing`; populate in the snapshot.
-2. `fontaine-core/src/turn.rs`: handle `Reasoning`/`Arguments`/`Text` counts; reset points; debug logs.
+2. `fontaine-core/src/turn.rs` (`drive_once`): handle `Reasoning`/`Arguments`/`Text` counts; reset on `CompletionCall` plus drop guard; debug logs.
 3. `fontaine-tui/src/agents_panel.rs`: `PanelRow.writing`, formatter, render; `agent_list.rs`:
-   `ListRow.writing`, render; update the driver code that maps `AgentRow` to both. Update every
+   `ListRow.writing`, render; update the mapping sites: `agent_list.rs::rows()` and `ui/mod.rs::refresh_panel`. Update every
    `ListRow`, `PanelRow` and `AgentRow` struct literal, including tests: `ListRow` at
    `agent_list.rs:33,71`, `app.rs:1453,1465`, `view.rs:582,693`; `PanelRow` at `ui/mod.rs:93`,
    `agents_panel.rs:299`, `screen.rs:1766`, `app.rs:1683`; `AgentRow` at `tree.rs:916`,
@@ -60,21 +64,19 @@ one in the issue is possible from logs alone.
 ## Files to Modify
 - `rust/fontaine-agents/src/tree.rs`
 - `rust/fontaine-core/src/turn.rs`
-- `rust/fontaine-tui/src/agents_panel.rs`, `rust/fontaine-tui/src/agent_list.rs` (and the row mapping site)
+- `rust/fontaine-tui/src/agents_panel.rs`, `rust/fontaine-tui/src/agent_list.rs` (`agent_list.rs::rows()`)
 - `rust/fontaine-tui/src/app.rs`, `rust/fontaine-tui/src/view.rs`, `rust/fontaine-tui/src/screen.rs`,
-  `rust/fontaine-tui/src/ui/mod.rs` (struct literals)
+  `rust/fontaine-tui/src/ui/mod.rs` (`refresh_panel` mapping, struct literals)
 - `docs/tui.md`, `docs/agents.md`, `CHANGELOG.md`
 
-## Trade-offs
-- Token estimates instead of chars rejected: no tokenizer is available mid-stream; chars are exact
-  and enough to show motion.
-- Unthrottled notify rejected: reasoning streams emit many tiny fragments.
 
 ## Decisions
-(none yet)
+### Model-step activity
+- 2026-10-31: the indicator reads `· writing N chars` (`<n>` below 1000, else `<n.n>k`); chars, not token estimates.
+- 2026-10-31: tree wakeups from `note_writing` are throttled to ~250 ms per tree; `reset_writing` bypasses the throttle.
 
 ## Documentation
-`docs/tui.md` agent list / agents panel: describe the `writing N chars` indicator and that it
+`docs/tui.md` agent list / agents panel: describe the `· writing 4.2k chars` indicator and that it
 clears when the model step ends. `docs/agents.md`: one line.
 
 ## Testing Strategy
@@ -82,7 +84,7 @@ clears when the model step ends. `docs/agents.md`: one line.
   throttled (many calls → bounded wakeups), unknown agent id is a no-op.
 - Unit (tui): formatter (`999`, `1.0k`, `12.3k`), list/panel row render with and without `writing`,
   not shown for non-running agents.
-- Integration (core, `fontaine-core/tests/billing.rs` style): call `drive` with `MockStreamEvent`
+- Integration (core, `fontaine-core/tests/billing.rs` style): call `drive_once` with `MockStreamEvent`
   (`ReasoningDelta`, `ToolCallNameDelta`, `ToolCallArgumentsDelta`, then `Text`) and read
   `agents().rows()` inside `on_event` on `AssistantDelta` (`Usage`/`on_event` don't fire on
   Reasoning/Arguments alone); assert the counter is nonzero mid-step and zero after the
