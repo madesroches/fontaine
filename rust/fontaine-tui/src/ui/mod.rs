@@ -44,7 +44,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.prune_closed();
         let rows = runtime.state.agents().rows();
         self.app.running_agents = rows.iter().filter(|r| r.status.is_running()).count();
-        self.refresh_agent_list(&rows);
+        let main_writing = runtime.state.agents().writing_of(ROOT_AGENT);
+        self.refresh_agent_list(&rows, main_writing);
         if self.app.agents.is_some() {
             self.refresh_panel(runtime, &rows);
         }
@@ -68,7 +69,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     /// The list below the status line, from the tree as it stands now.
-    fn refresh_agent_list(&mut self, rows: &[fontaine_agents::tree::AgentRow]) {
+    fn refresh_agent_list(&mut self, rows: &[fontaine_agents::tree::AgentRow], main_writing: u64) {
         let list = &mut self.app.agent_list;
         list.forget_running(rows);
         let shown = agent_list::rows(
@@ -76,6 +77,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             self.app.viewing.as_deref(),
             self.app.agent_list.dismissed(),
             std::time::Instant::now(),
+            main_writing,
         );
         self.app.agent_list.set_rows(shown);
         // A call whose agent stopped never gets a result, and would hold the live area.
@@ -101,6 +103,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 cost_budget: row.budget.cost_usd,
                 cost_partial: row.spend.is_partial_cost(),
                 depth: row.depth,
+                writing: row.writing,
                 stopped_because: row.exhausted.map(|why| why.describe()),
             })
             .collect();

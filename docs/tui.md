@@ -745,6 +745,13 @@ ended or until you hide it with `x`. An agent that finished normally leaves at o
 to list, the list is not drawn. The spend uses the same format as the
 [agents panel](#the-agents-panel), including the `+ unpriced` marker.
 
+While an agent's model is writing a reply, its reasoning or a tool call's arguments, its row ends in
+`· writing 4.2k chars` (the count is plain below 1000, then in thousands), so a long model step
+does not look like a stall. `main` shows its own count the same way, while the list is shown.
+Usage and cost still update only when the model call ends; the count is characters, not tokens,
+and clears when the step ends, fails or is interrupted. A paused model leaves the last count until
+its next output. On a narrow terminal the count is left out before anything else is cut.
+
 Down on the last line of the input moves the keyboard into the list, on `main`. Up and Down select a
 row, Enter shows that row, `x` stops a running subagent (or hides an ended one), and Esc, Up on the
 first row, or any printable key gives the keyboard back to the input. A hint line above the rows
@@ -800,7 +807,8 @@ as for a model with no known price. A dollar figure that leaves out some of the 
 `4863024 tok · $0.0519 + unpriced`: the figure is a lower bound, and a cost budget still counts
 only the priced spend. Up and Down select a row; Enter on an agent closes the panel
 and shows that agent's transcript, which is how you reach an agent that has left the
-[agent list](#the-agent-list-and-the-agent-view).
+[agent list](#the-agent-list-and-the-agent-view). A running agent's spend line also ends in
+`· writing 4.2k chars` while its model is mid-step, as in the list; it clears when the step ends.
 
 `x` kills the selected subagent: its row shows `killed` and what it had spent, and its pending
 approval prompts are cancelled as denied. On a job row it stops the job and its process group,

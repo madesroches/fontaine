@@ -91,3 +91,65 @@ async fn an_unpriced_subagent_adds_tokens_but_no_cost_to_the_subagent_total() {
     assert_eq!(total.input_tokens, 10);
     assert_eq!(total.cost_usd, None);
 }
+
+fn reasoned_answer() -> Vec<MockStreamEvent> {
+    let usage = Usage::new().input_tokens(10).output_tokens(5);
+    vec![
+        MockStreamEvent::ReasoningDelta {
+            id: "r1".to_string(),
+            reasoning: "thinking".to_string(),
+        },
+        MockStreamEvent::Text("done".to_string()),
+        MockStreamEvent::FinalResponse(mock_final(usage)),
+    ]
+}
+
+async fn writing_during_a_step(stop_at_delta: bool) -> (Vec<u64>, u64) {
+    let w = World::new();
+    let built = build(&w, Manual, vec![reasoned_answer()], true);
+    let agents = built.runtime.state.agents();
+    let mut seen = Vec::new();
+    let mut on_event = |event: SessionEvent| {
+        if matches!(event, SessionEvent::AssistantDelta(_)) {
+            seen.push(agents.writing_of(fontaine_tools::gate::ROOT_AGENT));
+            if stop_at_delta {
+                return Flow::Stop;
+            }
+        }
+        Flow::Continue
+    };
+    let outcome = run_turn(
+        TurnParams {
+            agent: &built.runtime.agent,
+            state: &built.runtime.state,
+            prompt: "hi".to_string(),
+            max_turns: Some(3),
+            priced: true,
+            model: "scripted".to_string(),
+            provider: "mock".to_string(),
+            native_search: false,
+        },
+        &mut on_event,
+    )
+    .await;
+    if stop_at_delta {
+        assert!(matches!(outcome, TurnOutcome::Stopped), "{outcome:?}");
+    } else {
+        assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
+    }
+    (seen, agents.writing_of(fontaine_tools::gate::ROOT_AGENT))
+}
+
+#[tokio::test]
+async fn reasoning_counts_as_writing_mid_step_and_clears_after_the_call() {
+    let (seen, after) = writing_during_a_step(false).await;
+    assert_eq!(seen, vec!["thinking".len() as u64 + "done".len() as u64]);
+    assert_eq!(after, 0);
+}
+
+#[tokio::test]
+async fn a_stopped_step_leaves_no_writing_behind() {
+    let (seen, after) = writing_during_a_step(true).await;
+    assert!(seen[0] > 0);
+    assert_eq!(after, 0);
+}

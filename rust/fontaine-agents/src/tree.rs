@@ -17,6 +17,9 @@ use crate::budget::{Budget, Exhausted, Spend};
 use crate::mode::{Ladder, Posture, RootMode};
 use crate::runner::{ChildHandle, ChildReport, ChildStatus};
 
+/// Minimum gap between tree wakeups caused by `note_writing`.
+const WRITING_WAKE_INTERVAL: Duration = Duration::from_millis(250);
+
 /// What addresses the root session in `send_message`.
 pub const MAIN: &str = "main";
 
@@ -122,6 +125,7 @@ struct Node {
     exhausted: Option<Exhausted>,
     started: Instant,
     ended: Option<Instant>,
+    writing: u64,
 }
 
 impl Node {
@@ -139,6 +143,7 @@ struct Inner {
     nodes: HashMap<String, Node>,
     order: Vec<String>,
     session_spend: Spend,
+    last_writing_wake: Option<tokio::time::Instant>,
 }
 
 impl Inner {
@@ -179,6 +184,8 @@ pub struct AgentRow {
     pub started: Instant,
     /// When the latest run ended; `None` while it runs.
     pub ended: Option<Instant>,
+    /// Characters the model wrote in its current step; display state, cleared when the step ends.
+    pub writing: u64,
 }
 
 type RootModeSource = Arc<dyn Fn() -> RootMode + Send + Sync>;
@@ -217,6 +224,7 @@ impl AgentTree {
             exhausted: None,
             started: Instant::now(),
             ended: None,
+            writing: 0,
         };
         AgentTree {
             limits,
@@ -224,6 +232,7 @@ impl AgentTree {
                 nodes: HashMap::from([(ROOT_AGENT.to_string(), root)]),
                 order: vec![ROOT_AGENT.to_string()],
                 session_spend: Spend::default(),
+                last_writing_wake: None,
             }),
             root_mode: RwLock::new(Arc::new(|| RootMode::Ladder(Ladder::Manual))),
             root_tools: RwLock::new(None),
@@ -400,6 +409,7 @@ impl AgentTree {
                 exhausted: None,
                 started: Instant::now(),
                 ended: None,
+                writing: 0,
             },
         );
         drop(inner);
@@ -665,6 +675,45 @@ impl AgentTree {
         own
     }
 
+    /// Adds `chars` the model just wrote to `agent`'s current step. Wakes watchers at most once
+    /// per `WRITING_WAKE_INTERVAL` across the tree, since deltas arrive far faster than a
+    /// surface can usefully redraw.
+    pub fn note_writing(&self, agent: &str, chars: u64) {
+        let mut inner = self.lock();
+        let Some(node) = inner.nodes.get_mut(agent) else {
+            return;
+        };
+        node.writing = node.writing.saturating_add(chars);
+        let now = tokio::time::Instant::now();
+        let due = inner
+            .last_writing_wake
+            .is_none_or(|at| now.duration_since(at) >= WRITING_WAKE_INTERVAL);
+        if due {
+            inner.last_writing_wake = Some(now);
+        }
+        drop(inner);
+        if due {
+            self.changed.notify_waiters();
+        }
+    }
+
+    /// Zeroes `agent`'s step counter and always wakes watchers, so a finished step never
+    /// lingers on screen.
+    pub fn reset_writing(&self, agent: &str) {
+        let mut inner = self.lock();
+        let Some(node) = inner.nodes.get_mut(agent) else {
+            return;
+        };
+        node.writing = 0;
+        drop(inner);
+        self.changed.notify_waiters();
+    }
+
+    /// Characters written in `agent`'s current step; works for the root, which has no row.
+    pub fn writing_of(&self, agent: &str) -> u64 {
+        self.lock().nodes.get(agent).map_or(0, |n| n.writing)
+    }
+
     pub fn spend_of(&self, agent: &str) -> Spend {
         self.lock()
             .nodes
@@ -925,6 +974,7 @@ impl AgentTree {
                 exhausted: n.exhausted,
                 started: n.started,
                 ended: n.ended,
+                writing: n.writing,
             })
             .collect()
     }
@@ -1525,5 +1575,59 @@ mod tests {
         let a = reserve(&tree, ROOT_AGENT).unwrap();
         assert!(tree.handle_of(&a).is_none());
         assert!(tree.handle_of("agent-99").is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn writing_accumulates_and_a_reset_zeroes_it() {
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.note_writing(&a, 40);
+        tree.note_writing(&a, 2);
+        assert_eq!(tree.writing_of(&a), 42);
+        assert_eq!(tree.rows()[0].writing, 42);
+        tree.reset_writing(&a);
+        assert_eq!(tree.writing_of(&a), 0);
+        assert_eq!(tree.rows()[0].writing, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_root_counts_writing_though_it_has_no_row() {
+        let tree = tree(4);
+        tree.note_writing(ROOT_AGENT, 7);
+        assert_eq!(tree.writing_of(ROOT_AGENT), 7);
+        assert!(tree.rows().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unknown_agent_is_a_no_op() {
+        let tree = tree(4);
+        tree.note_writing("agent-99", 5);
+        tree.reset_writing("agent-99");
+        assert_eq!(tree.writing_of("agent-99"), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn writing_wakes_watchers_at_most_once_per_interval() {
+        use futures::FutureExt;
+
+        fn wakes(tree: &AgentTree, a: &str) -> bool {
+            let notified = tree.changed().notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            tree.note_writing(a, 1);
+            notified.now_or_never().is_some()
+        }
+
+        let tree = tree(4);
+        let a = reserve(&tree, ROOT_AGENT).unwrap();
+        assert!(wakes(&tree, &a), "the first delta wakes");
+        assert!(!wakes(&tree, &a), "a delta inside the interval does not");
+        tokio::time::advance(WRITING_WAKE_INTERVAL).await;
+        assert!(wakes(&tree, &a), "one after the interval does");
+        let notified = tree.changed().notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        tree.reset_writing(&a);
+        assert!(notified.now_or_never().is_some(), "a reset always wakes");
     }
 }
